@@ -56,6 +56,7 @@ def base(frame_type: str, nonce: str, **fields: object) -> dict:
 
 
 def main() -> None:
+    time.sleep(int(os.environ.get("MOCK_CAPTURE_STARTUP_DELAY_MS", "0")) / 1000)
     scenario = os.environ.get("MOCK_CAPTURE_SCENARIO", "happy")
     if scenario == "hang_then_happy":
         marker = os.environ["MOCK_CAPTURE_MARKER"]
@@ -115,6 +116,10 @@ def main() -> None:
             block_forever()
         if scenario == "delayed_active":
             time.sleep(0.25)
+        marker = os.environ.get("MOCK_CAPTURE_ACTIVE_MARKER")
+        if marker:
+            with open(marker, "x", encoding="utf-8"):
+                pass
         write_frame(base("phase", nonce, phase="active"))
     if scenario == "phase_regression":
         write_frame(base("phase", nonce, phase="enumeration"))

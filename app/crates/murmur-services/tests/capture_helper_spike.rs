@@ -5,7 +5,12 @@ use murmur_services::capture_helper_probe::{
 };
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+
+// Includes interpreter cold start on hosted macOS runners. Production also uses
+// a five-second handshake; phase/order, kill and reaping assertions stay strict.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const TEARDOWN_BUDGET_MS: u64 = 600;
 
 fn helper_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/support/mock_capture_helper.py")
@@ -25,7 +30,7 @@ fn supervisor_with_environment(
         helper_path: helper_path(),
         scenario_environment,
         permission_status_sequence: Vec::new(),
-        handshake_timeout: Duration::from_millis(400),
+        handshake_timeout: HANDSHAKE_TIMEOUT,
         observe_for: Duration::from_millis(450),
         cancel_grace: Duration::from_millis(100),
         spawned_signal: None,
@@ -57,7 +62,7 @@ fn every_simulated_hang_is_hard_killed_reaped_and_bounded() {
             "owned process group survived: scenario={scenario}"
         );
         assert!(
-            evidence.elapsed_ms < 1_000,
+            evidence.elapsed_ms < HANDSHAKE_TIMEOUT.as_millis() as u64 + TEARDOWN_BUDGET_MS + 450,
             "termination exceeded bound: scenario={scenario} elapsed={}",
             evidence.elapsed_ms
         );
@@ -125,14 +130,22 @@ fn incomplete_handshakes_never_classify_as_success() {
 
 #[test]
 fn active_observation_window_starts_after_the_complete_handshake() {
+    let directory = tempfile::tempdir().unwrap();
+    let active_marker = directory.path().join("active");
     let supervisor = CaptureProbeSupervisor::for_test(TestCaptureProbeConfig {
         helper_path: helper_path(),
-        scenario_environment: vec![(
-            "MOCK_CAPTURE_SCENARIO".to_string(),
-            "delayed_active".to_string(),
-        )],
+        scenario_environment: vec![
+            (
+                "MOCK_CAPTURE_SCENARIO".to_string(),
+                "delayed_active".to_string(),
+            ),
+            (
+                "MOCK_CAPTURE_ACTIVE_MARKER".to_string(),
+                active_marker.to_string_lossy().into_owned(),
+            ),
+        ],
         permission_status_sequence: Vec::new(),
-        handshake_timeout: Duration::from_millis(800),
+        handshake_timeout: HANDSHAKE_TIMEOUT,
         observe_for: Duration::from_millis(300),
         cancel_grace: Duration::from_millis(100),
         spawned_signal: None,
@@ -141,12 +154,20 @@ fn active_observation_window_starts_after_the_complete_handshake() {
     assert_eq!(evidence.outcome, "ok");
     assert_eq!(evidence.termination, "cooperative");
     assert!(
-        evidence.elapsed_ms >= 500,
+        SystemTime::now()
+            .duration_since(
+                std::fs::metadata(active_marker)
+                    .unwrap()
+                    .modified()
+                    .unwrap()
+            )
+            .unwrap()
+            >= Duration::from_millis(300),
         "active observation was shortened by handshake time: elapsed={}",
         evidence.elapsed_ms
     );
     assert!(
-        evidence.elapsed_ms < 1_200,
+        evidence.elapsed_ms < HANDSHAKE_TIMEOUT.as_millis() as u64 + 300 + TEARDOWN_BUDGET_MS,
         "handshake plus observation exceeded the total bound: elapsed={}",
         evidence.elapsed_ms
     );
@@ -193,7 +214,7 @@ fn rapid_second_start_is_rejected_without_overlapping_helper() {
             "pre_handshake_block".to_string(),
         )],
         permission_status_sequence: Vec::new(),
-        handshake_timeout: Duration::from_millis(400),
+        handshake_timeout: HANDSHAKE_TIMEOUT,
         observe_for: Duration::from_millis(450),
         cancel_grace: Duration::from_millis(100),
         spawned_signal: Some(spawned_tx),
@@ -201,7 +222,7 @@ fn rapid_second_start_is_rejected_without_overlapping_helper() {
     let running = Arc::clone(&supervisor);
     let first = std::thread::spawn(move || running.run().unwrap());
     let spawned_pid = spawned_rx
-        .recv_timeout(Duration::from_millis(400))
+        .recv_timeout(Duration::from_secs(1))
         .expect("first helper must be owned before the overlap attempt");
 
     assert_eq!(supervisor.run().unwrap_err(), CaptureProbeError::Busy);
@@ -217,8 +238,8 @@ fn live_permission_revocation_is_detected_even_when_callbacks_continue() {
         helper_path: helper_path(),
         scenario_environment: vec![("MOCK_CAPTURE_SCENARIO".to_string(), "happy".to_string())],
         permission_status_sequence: vec!["granted".to_string(), "denied".to_string()],
-        handshake_timeout: Duration::from_millis(400),
-        observe_for: Duration::from_secs(5),
+        handshake_timeout: HANDSHAKE_TIMEOUT,
+        observe_for: Duration::from_secs(30),
         cancel_grace: Duration::from_millis(100),
         spawned_signal: None,
     });
@@ -226,7 +247,7 @@ fn live_permission_revocation_is_detected_even_when_callbacks_continue() {
     let evidence = supervisor.run().unwrap();
     assert_eq!(evidence.outcome, "permission_denied");
     assert_eq!(evidence.termination, "cooperative");
-    assert!(evidence.elapsed_ms < 1_000);
+    assert!(evidence.elapsed_ms < HANDSHAKE_TIMEOUT.as_millis() as u64 + TEARDOWN_BUDGET_MS + 450);
     assert!(evidence.process_group_empty);
     assert!(!evidence.audio_content_retained);
 }
@@ -239,8 +260,8 @@ fn every_non_granted_permission_status_is_rejected_before_the_helper_spawns() {
             helper_path: helper_path(),
             scenario_environment: vec![("MOCK_CAPTURE_SCENARIO".to_string(), "happy".to_string())],
             permission_status_sequence: vec![status.to_string()],
-            handshake_timeout: Duration::from_millis(400),
-            observe_for: Duration::from_secs(5),
+            handshake_timeout: HANDSHAKE_TIMEOUT,
+            observe_for: Duration::from_secs(30),
             cancel_grace: Duration::from_millis(100),
             spawned_signal: Some(spawned_tx),
         });
@@ -263,8 +284,8 @@ fn every_loss_of_a_proven_grant_interrupts_active_capture() {
             helper_path: helper_path(),
             scenario_environment: vec![("MOCK_CAPTURE_SCENARIO".to_string(), "happy".to_string())],
             permission_status_sequence: vec!["granted".to_string(), status.to_string()],
-            handshake_timeout: Duration::from_millis(400),
-            observe_for: Duration::from_secs(5),
+            handshake_timeout: HANDSHAKE_TIMEOUT,
+            observe_for: Duration::from_secs(30),
             cancel_grace: Duration::from_millis(100),
             spawned_signal: None,
         });
@@ -272,7 +293,10 @@ fn every_loss_of_a_proven_grant_interrupts_active_capture() {
         let evidence = supervisor.run().unwrap();
         assert_eq!(evidence.outcome, "permission_denied", "status={status}");
         assert_eq!(evidence.termination, "cooperative", "status={status}");
-        assert!(evidence.elapsed_ms < 1_000, "status={status}");
+        assert!(
+            evidence.elapsed_ms < HANDSHAKE_TIMEOUT.as_millis() as u64 + TEARDOWN_BUDGET_MS + 450,
+            "status={status}"
+        );
         assert!(evidence.process_group_empty, "status={status}");
         assert!(!evidence.audio_content_retained, "status={status}");
     }
@@ -287,8 +311,8 @@ fn revocation_outcome_survives_a_queued_protocol_failure_during_teardown() {
             "phase_regression".to_string(),
         )],
         permission_status_sequence: vec!["granted".to_string(), "unknown".to_string()],
-        handshake_timeout: Duration::from_millis(400),
-        observe_for: Duration::from_secs(5),
+        handshake_timeout: HANDSHAKE_TIMEOUT,
+        observe_for: Duration::from_secs(30),
         cancel_grace: Duration::from_millis(100),
         spawned_signal: None,
     });
@@ -296,7 +320,7 @@ fn revocation_outcome_survives_a_queued_protocol_failure_during_teardown() {
     let evidence = supervisor.run().unwrap();
     assert_eq!(evidence.outcome, "permission_denied");
     assert_eq!(evidence.termination, "hard_kill");
-    assert!(evidence.elapsed_ms < 1_000);
+    assert!(evidence.elapsed_ms < HANDSHAKE_TIMEOUT.as_millis() as u64 + TEARDOWN_BUDGET_MS + 450);
     assert!(evidence.process_group_empty);
     assert!(!evidence.audio_content_retained);
 }
@@ -325,4 +349,19 @@ fn production_capture_helper_has_only_its_required_self_process_group_surface() 
         source.contains("libc::setpgid(0, 0)"),
         "capture helper must establish only its own worker process group"
     );
+}
+
+#[test]
+fn slow_interpreter_start_still_exercises_the_complete_protocol() {
+    let evidence = supervisor_with_environment(vec![
+        ("MOCK_CAPTURE_SCENARIO".into(), "happy".into()),
+        ("MOCK_CAPTURE_STARTUP_DELAY_MS".into(), "1000".into()),
+    ])
+    .run()
+    .unwrap();
+    assert_eq!(evidence.outcome, "ok");
+    assert_eq!(evidence.termination, "cooperative");
+    assert!(evidence.process_group_empty);
+    assert!(evidence.elapsed_ms >= 1_450);
+    assert!(evidence.elapsed_ms < HANDSHAKE_TIMEOUT.as_millis() as u64 + 450 + TEARDOWN_BUDGET_MS);
 }

@@ -89,6 +89,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.150
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: app
@@ -97,8 +100,17 @@ jobs:
           brew install meson ninja pkg-config
           python3 scripts/build_capture_helpers.py
           cargo check --locked --manifest-path app/Cargo.toml -p murmur-services -p murmur-webkit
-          cargo test --locked --manifest-path app/Cargo.toml -p murmur-services -p murmur-core -p murmur-webkit -p murmur-capture-helper-protocol -- --test-threads=1
-          cargo test --locked --manifest-path app/sidecars/capture/Cargo.toml -- --test-threads=1
+          # Isolate process-global state for every unit test, as before Phase 4.
+          cargo nextest run --locked --manifest-path app/Cargo.toml -p murmur-services -p murmur-core -p murmur-webkit -p murmur-capture-helper-protocol --lib -E 'kind(lib)'
+          # Keep the synthetic helper integration test in CI, including cold starts.
+          cargo test --locked --manifest-path app/Cargo.toml -p murmur-services --test capture_helper_spike --test main_thread_queue --test native_host_contract -- --test-threads=1
+          cargo test --locked --manifest-path app/Cargo.toml -p murmur-webkit --test synthetic_store
+          # Tao's shutdown_appkit fixture is replaced by the GPUI host hook below.
+          xcrun clang -fobjc-arc -fblocks -framework AppKit app/gpui/native/host.m app/gpui/tests/shutdown_appkit.m -o "$CARGO_TARGET_DIR/shutdown_appkit"
+          "$CARGO_TARGET_DIR/shutdown_appkit"
+          python3 scripts/check_native_only.py
+          # Includes bin unit tests and topology_watch, each in its own process.
+          cargo nextest run --locked --manifest-path app/sidecars/capture/Cargo.toml
           cargo run --locked --manifest-path app/Cargo.toml -p murmur-services --example murmur-eval -- deterministic --output app/target/murmur-eval/ci-report.json
   gpui-macos:
     runs-on: macos-latest

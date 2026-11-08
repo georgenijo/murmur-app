@@ -94,6 +94,7 @@ def build_capture_agent(profile: str, env: dict[str, str]) -> None:
         [
             "xcrun",
             "swiftc",
+            "-warnings-as-errors",
             optimization,
             "-parse-as-library",
             "-target",

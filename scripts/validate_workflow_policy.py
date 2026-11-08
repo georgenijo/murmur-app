@@ -287,8 +287,17 @@ def validate_ci(ci: str) -> int:
     assert "cargo fmt --manifest-path app/Cargo.toml" in lint and "-- --check" in lint
     assert "cargo clippy --locked --manifest-path app/sidecars/capture/Cargo.toml --all-targets -- -D warnings" in lint
     native = job_block(ci, "rust-macos")
-    assert "-p murmur-services -p murmur-core -p murmur-webkit -p murmur-capture-helper-protocol -- --test-threads=1" in native
-    assert "cargo test --locked --manifest-path app/sidecars/capture/Cargo.toml" in native
+    assert "cargo-nextest@0.9.150" in native
+    assert "cargo nextest run --locked --manifest-path app/Cargo.toml" in native
+    assert "--lib -E 'kind(lib)'" in native
+    assert "-p murmur-services -p murmur-core -p murmur-webkit -p murmur-capture-helper-protocol" in native
+    assert "--test capture_helper_spike --test main_thread_queue --test native_host_contract" in native
+    assert "-p murmur-webkit --test synthetic_store" in native
+    assert "app/gpui/tests/shutdown_appkit.m" in native
+    assert '"$CARGO_TARGET_DIR/shutdown_appkit"' in native
+    assert "python3 scripts/check_native_only.py" in native
+    assert "python3 scripts/build_capture_helpers.py" in native
+    assert "cargo nextest run --locked --manifest-path app/sidecars/capture/Cargo.toml" in native
     assert "--example murmur-eval -- deterministic" in native
     assert "scripts/test_gpui.py --features production-host" in job_block(ci, "gpui-macos")
     for job in ("visual-linux", "visual-regression"):

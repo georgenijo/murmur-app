@@ -53,6 +53,18 @@ def main():
         bad = {name for name in names if forbidden(name) or name in {'murmur-webkit', 'objc2-web-kit'}}
         if bad:
             raise SystemExit(f'{package}: forbidden service edges: {sorted(bad)}')
+    # The production GPUI host launches the retained importer as a standalone
+    # executable. Neither WebKit crate belongs in its linked normal graph.
+    tree = subprocess.check_output([
+        'cargo', 'tree', '--locked', '--manifest-path', str(ROOT / 'app/Cargo.toml'),
+        '-p', 'murmur-ui', '--features', 'production-host', '--target', 'aarch64-apple-darwin',
+        '--edges', 'normal', '--prefix', 'none', '--format', '{p}',
+    ], text=True)
+    names = {line.split()[0] for line in tree.splitlines() if line.strip()}
+    assert 'murmur-ui' in names, 'Missing GPUI dependency root'
+    bad = {name for name in names if forbidden(name) or name in {'murmur-webkit', 'objc2-web-kit'}}
+    if bad:
+        raise SystemExit(f'murmur-ui: forbidden production host edges: {sorted(bad)}')
     print('Native-only manifests and all-target service graphs passed; importer is standalone')
 
 

@@ -20,6 +20,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WorkflowPolicyMutationTests(unittest.TestCase):
+    def test_native_ci_retains_isolation_and_native_contracts(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        validate_ci(workflow)
+        start = workflow.index('  rust-macos:\n')
+        end = workflow.index('  gpui-macos:\n', start)
+        for marker in ("--lib -E 'kind(lib)'", '--test capture_helper_spike',
+                       '--test main_thread_queue', '--test native_host_contract',
+                       '-p murmur-webkit --test synthetic_store',
+                       'app/gpui/tests/shutdown_appkit.m',
+                       'python3 scripts/check_native_only.py',
+                       'cargo nextest run --locked --manifest-path app/sidecars/capture/Cargo.toml'):
+            mutated = workflow[:start] + workflow[start:end].replace(marker, '', 1) + workflow[end:]
+            with self.subTest(marker=marker), self.assertRaises(AssertionError):
+                validate_ci(mutated)
+
     def test_release_button_requires_main_credential_and_exact_source(self):
         workflow = (ROOT / ".github/workflows/release-start.yml").read_text()
         validate_release_start(workflow)
