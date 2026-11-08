@@ -95,6 +95,12 @@ fn main() {
         let mut snapshot = Snapshot {
             generation: 1,
             disabled: state.starts_with("disabled"),
+            hotkey_feedback: state == "tap-missed",
+            meeting: match state.as_str() {
+                "meeting" => Meeting::Recording,
+                "meeting-processing" => Meeting::Processing,
+                _ => Meeting::Idle,
+            },
             placement: if floating {
                 OverlayPlacement::FloatingPill
             } else {
@@ -103,8 +109,9 @@ fn main() {
             ..Snapshot::default()
         };
         snapshot.status = match state.as_str() {
-            "idle" | "suggestion" | "disabled" | "disabled-expanded" => Status::Idle,
-            "starting" => Status::Starting,
+            "idle" | "suggestion" | "disabled" | "disabled-expanded" | "done" | "tap-missed"
+            | "meeting" | "meeting-processing" => Status::Idle,
+            "starting" | "slow" => Status::Starting,
             "processing" => Status::Processing,
             "recovering" => Status::Recovering,
             _ => Status::Recording,
@@ -131,6 +138,29 @@ fn main() {
             model.phase = Phase::Open;
         }
         match state.as_str() {
+            "done" => {
+                model.event(
+                    Event::Lifecycle {
+                        generation: 1,
+                        status: Status::Processing,
+                        at_ms: 0,
+                    },
+                    0,
+                );
+                model.event(
+                    Event::Lifecycle {
+                        generation: 1,
+                        status: Status::Idle,
+                        at_ms: 0,
+                    },
+                    0,
+                );
+            }
+            "slow" => model.event(Event::Stalled(1), 0),
+            "tap-missed" => model.event(Event::TapMissed, 0),
+            "failure-permission" => model.event(Event::Failure(1, Failure::Permission), 0),
+            "failure-partial" => model.event(Event::Failure(1, Failure::Partial), 0),
+            "failure-retry" => model.event(Event::Failure(1, Failure::Retry), 0),
             "cancelled" => model.event(Event::Cancelled(1), 0),
             "failure" => model.event(Event::Failure(1, Failure::ChooseInput), 0),
             "delivery" | "delivery-min-height" => {
