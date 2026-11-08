@@ -442,9 +442,30 @@ impl Render for Overlay {
             // Tint belongs above the AppKit effect in the same Metal scene as
             // the foreground. NSVisualEffectView's backing color is not a tint.
             .bg(if g.floating {
-                p.surface
+                p.surface.opacity(
+                    if preferences::current(cx).reduce_transparency
+                        || preferences::current(cx).increase_contrast
+                    {
+                        1.
+                    } else if matches!(
+                        window.appearance(),
+                        WindowAppearance::Dark | WindowAppearance::VibrantDark
+                    ) {
+                        0.74
+                    } else {
+                        0.76
+                    },
+                )
             } else {
-                tokens::overlay_surface()
+                tokens::overlay_surface().opacity(
+                    if preferences::current(cx).reduce_transparency
+                        || preferences::current(cx).increase_contrast
+                    {
+                        1.
+                    } else {
+                        0.92
+                    },
+                )
             })
             .when(g.floating, |s| {
                 s.child(

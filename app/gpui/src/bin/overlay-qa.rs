@@ -3,6 +3,7 @@ use gpui::{prelude::*, *};
 use murmur_core::{dictation::Status, overlay_geometry::*};
 use murmur_ui::overlay::{Host, Overlay, model::*};
 use std::rc::Rc;
+gpui::actions!(overlay_qa, [Quit]);
 struct Synthetic {
     inbox: murmur_ui::overlay::inbox::Inbox,
     snapshot: std::cell::RefCell<Snapshot>,
@@ -72,6 +73,15 @@ fn main() {
         gpui_platform::application()
     };
     app.run(move |cx| {
+        if !headless {
+            cx.on_action(|_: &Quit, cx| cx.quit());
+            cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
+            cx.set_menus(vec![Menu {
+                name: "Overlay QA".into(),
+                disabled: false,
+                items: vec![MenuItem::action("Quit Overlay QA", Quit)],
+            }]);
+        }
         if headless {
             murmur_ui::init_with_preferences(
                 cx,

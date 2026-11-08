@@ -25,6 +25,7 @@
 }
 @end
 
+extern void *murmur_overlay_material(void *);
 extern bool murmur_overlay_apply(void *, double, double, double, double,
     bool, bool, bool, bool, bool, double, double);
 
@@ -35,10 +36,10 @@ int main(void) {
         assert(!app.isActive);
         OverlayTestPanel *panel = [[OverlayTestPanel alloc]
             initWithContentRect:NSMakeRect(0, 0, 300, 60)
-            styleMask:NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel
+            styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskFullSizeContentView | NSWindowStyleMaskNonactivatingPanel
             backing:NSBackingStoreBuffered defer:NO];
         panel.releasedWhenClosed = NO;
-        Class original = object_getClass(panel);
+        Class original;
         // Equivalent to GPUI's show:false, focus:false popup creation.
         assert(!panel.isVisible && !panel.isKeyWindow && !panel.isMainWindow);
         void *view = (__bridge void *)panel.contentView;
@@ -46,8 +47,12 @@ int main(void) {
         panel.expectedFirstFrame = NSMakeRect(80, top-12-42, 220, 42);
         panel.frameWrites = panel.synchronousPaints = 0;
         assert(murmur_overlay_apply(view, 80, 12, 220, 42, false, true, false, false, true, 14, 42));
+        original = class_getSuperclass(object_getClass(panel));
         assert(!panel.isVisible && panel.frontOrders == 0);
         assert(panel.alphaValue == 0 && panel.ignoresMouseEvents);
+        // AppKit can resize while removing its titlebar, still ordered out.
+        // Subsequent presentation and identical applies must not repeat it.
+        panel.frameWrites = panel.synchronousPaints = 0;
 
         assert(murmur_overlay_apply(view, 80, 12, 220, 42, false, false, false, false, true, 14, 42));
         assert(panel.isVisible && panel.frontOrders == 1 && panel.alphaValue == 1);
@@ -59,6 +64,8 @@ int main(void) {
             NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorCanJoinAllApplications;
         assert(panel.collectionBehavior == expected);
         assert(panel.styleMask & NSWindowStyleMaskNonactivatingPanel);
+        assert(!(panel.styleMask & NSWindowStyleMaskTitled));
+        assert(panel.styleMask & NSWindowStyleMaskFullSizeContentView);
         assert(!panel.hidesOnDeactivate && !panel.ignoresMouseEvents);
         assert(NSEqualRects(panel.frame, NSMakeRect(80, top-12-42, 220, 42)));
 
@@ -66,7 +73,7 @@ int main(void) {
         // a persistent, transparent, click-through window rather than ordering out.
         assert(murmur_overlay_apply(view, 80, 12, 220, 42, false, false, false, false, true, 14, 42));
         assert(panel.frontOrders == 1);
-        assert(panel.frameWrites == 1 && panel.synchronousPaints == 0);
+        assert(panel.frameWrites == 0 && panel.synchronousPaints == 0);
         assert(murmur_overlay_apply(view, 80, 12, 220, 42, false, true, false, false, true, 14, 42));
         assert(panel.isVisible && panel.alphaValue == 0 && panel.ignoresMouseEvents);
         assert(panel.frontOrders == 1 && !app.isActive);
@@ -80,6 +87,14 @@ int main(void) {
         assert(murmur_overlay_apply(view, 80, 12, 220, 42, false, false, false, false, true, 14, 42));
         assert(panel.isVisible && panel.frontOrders == 2);
         assert(!panel.isKeyWindow && !panel.isMainWindow && !app.isActive);
+        // Idle floating panels must not retain an active backdrop pass.
+        assert(murmur_overlay_apply(view, 80, 12, 220, 42, true, true, false, false, true, 17, 34));
+        NSVisualEffectView *hud = (__bridge NSVisualEffectView *)murmur_overlay_material(view);
+        assert(hud.hidden && panel.ignoresMouseEvents && panel.alphaValue == 0);
+        assert(murmur_overlay_apply(view, 80, 12, 220, 42, true, false, false, false, true, 17, 34));
+        assert(!hud.hidden);
+        assert(murmur_overlay_apply(view, 80, 12, 220, 42, true, false, true, false, true, 17, 34));
+        assert(hud.hidden);
         [panel orderOut:nil];
         // The production companion lives until process exit. Restore the test
         // panel's AppKit/KVO class before explicitly destroying this fixture.

@@ -39,6 +39,9 @@ geometry and nonactivating policy are installed before ordering front. Screen
 and Space notifications replace geometry polling; native tracking events own
 hover. A parked inbox wakes only for published changes, and semantic deadlines
 use cancellable one-shot timers. Unchanged Dock limits do not publish or redraw.
+Hidden floating windows disable the backdrop effect. Active floating surfaces
+use the shipped 74% dark / 76% light tint; Reduce Transparency and Increase
+Contrast make the surface opaque.
 No transcript, audio content or pasteboard data is part of this presentation.
 
 Intentional differences: the extra **visible** disclosure caret is removed;

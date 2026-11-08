@@ -87,7 +87,7 @@ bool murmur_overlay_apply(void *raw, double x, double y, double width, double he
     assert([NSThread isMainThread]);
     NSView *view = (__bridge NSView *)raw;
     NSWindow *window = view.window;
-    if (!window || !murmur_overlay_never_key((__bridge void *)window)) return false;
+    if (!window) return false;
     // AppKit setup is instance-local and idempotent. Reinstalling style/opacity
     // during a presentation callback can reenter the platform's frame update.
     if (!objc_getAssociatedObject(window, &panel_setup_key)) {
@@ -100,9 +100,13 @@ bool murmur_overlay_apply(void *raw, double x, double y, double width, double he
             NSWindowCollectionBehaviorFullScreenAuxiliary | NSWindowCollectionBehaviorCanJoinAllApplications;
         if ([window isKindOfClass:NSPanel.class]) {
             NSPanel *panel = (NSPanel *)window;
-            if (!(panel.styleMask & NSWindowStyleMaskNonactivatingPanel)) {
-                panel.styleMask |= NSWindowStyleMaskNonactivatingPanel;
-            }
+            // GPUI's titlebar:None popup is still Titled|FullSizeContentView.
+            // AppKit then rounds/clips the TOP corners of the notch and can
+            // constrain a first frame below the menu bar. Normalize before the
+            // frame transaction/orderFront; only the painted surface has corners.
+            panel.styleMask = (panel.styleMask | NSWindowStyleMaskNonactivatingPanel |
+                NSWindowStyleMaskFullSizeContentView) & ~(NSWindowStyleMaskTitled |
+                NSWindowStyleMaskResizable | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable);
             panel.hidesOnDeactivate = NO;
             panel.becomesKeyOnlyIfNeeded = YES;
         }
@@ -113,6 +117,10 @@ bool murmur_overlay_apply(void *raw, double x, double y, double width, double he
         }
         objc_setAssociatedObject(window, &panel_setup_key, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
+    // Removing AppKit's titlebar tears down its KVO observers. Do this before
+    // installing our per-instance never-key subclass, preserving KVO's isa
+    // and observer bookkeeping throughout the style transaction.
+    if (!murmur_overlay_never_key((__bridge void *)window)) return false;
     window.ignoresMouseEvents = hidden || objc_getAssociatedObject(view, &preview_key) != nil;
     // Input uses global top-left coordinates; AppKit uses the primary screen's
     // bottom-left origin. Never derive this from the window's stale display.
@@ -142,7 +150,7 @@ bool murmur_overlay_apply(void *raw, double x, double y, double width, double he
     hud.appearance = [NSAppearance appearanceNamed:appearance];
     // GPUI owns the tint/foreground above the effect. Opaque accessibility
     // surfaces do not need a backdrop effect at all.
-    hud.hidden = reduced_transparency || high_contrast;
+    hud.hidden = hidden || reduced_transparency || high_contrast;
     refit_surface(view, view.bounds.size.width, surface_height, radius, floating);
     hud.layer.masksToBounds = YES;
     return true;
