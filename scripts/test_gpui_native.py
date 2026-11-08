@@ -1,7 +1,9 @@
-"""Exercise native glue and own-process AppKit policy with synthetic fixtures;
-never show windows."""
+"""Exercise native glue and own-process AppKit policy with synthetic fixtures.
+Only the overlay presentation regression shows a nonactivating test panel.
+"""
 from pathlib import Path
 import platform
+import plistlib
 import subprocess
 import tempfile
 import unittest
@@ -11,6 +13,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @unittest.skipUnless(platform.system() == 'Darwin', 'Objective-C runtime requires macOS')
 class FocusHookTests(unittest.TestCase):
+    def test_hidden_overlay_is_presented_without_activating(self):
+        with tempfile.TemporaryDirectory(prefix='murmur-overlay-appkit-') as directory:
+            bundle = Path(directory) / 'Overlay Test.app' / 'Contents'
+            binary = bundle / 'MacOS' / 'overlay-test'
+            binary.parent.mkdir(parents=True)
+            with (bundle / 'Info.plist').open('wb') as info:
+                plistlib.dump({'CFBundleExecutable': 'overlay-test',
+                              'CFBundleIdentifier': 'com.localdictation.overlay-regression',
+                              'CFBundlePackageType': 'APPL', 'LSUIElement': True}, info)
+            subprocess.run(['clang', '-fobjc-arc', '-Werror', '-framework', 'AppKit',
+                            '-framework', 'QuartzCore', str(ROOT / 'app/gpui/native/overlay.m'),
+                            str(ROOT / 'app/gpui/tests/overlay_appkit.m'),
+                            '-o', str(binary)], check=True)
+            subprocess.run([str(binary)], check=True, timeout=20)
+
     def test_preview_normalizes_a_default_resizable_panel_before_presentation(self):
         source = r'''
 #import <AppKit/AppKit.h>
@@ -382,12 +399,14 @@ int main(void) {
 @property(nonatomic) BOOL ignoresMouseEvents;
 @property(nonatomic) NSRect frame;
 @property(nonatomic) double alphaValue;
+@property(nonatomic, getter=isVisible) BOOL visible;
 @end
 @implementation SyntheticWindow
 - (BOOL)canBecomeKeyWindow { return YES; }
 - (BOOL)canBecomeMainWindow { return YES; }
 - (void)setOpaque:(BOOL)value { _opaque=value; self.opaqueWrites+=1; }
 - (void)setFrame:(NSRect)value display:(BOOL)display { (void)display; self.frame=value; }
+- (void)orderFrontRegardless { self.visible=YES; }
 @end
 @interface SyntheticView : NSObject
 @property(nonatomic,strong) SyntheticWindow *syntheticWindow;
