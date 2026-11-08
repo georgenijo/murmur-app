@@ -235,6 +235,9 @@ fn hardware(guidance: &Value) -> Option<String> {
 
 pub fn access(v: &Value) -> crate::onboarding::model::Access {
     use crate::onboarding::model::Access;
+    // RequestSystemAudio returns an access receipt; passive probes return its
+    // status string. Both carry the same authorization fact.
+    let v = v.get("permission").unwrap_or(v);
     match v.as_str() {
         Some("granted" | "authorized" | "allowed") => Access::Granted,
         Some("denied") => Access::Denied,
@@ -246,6 +249,7 @@ pub fn access(v: &Value) -> crate::onboarding::model::Access {
         _ => Access::Unknown,
     }
 }
+
 pub async fn permissions(b: &Backend) -> Result<[crate::onboarding::model::Access; 4], String> {
     Ok([
         access(
@@ -488,4 +492,29 @@ pub fn palette(b: Backend) -> Read<crate::palette::model::Snapshot> {
             commands: registry::commands(&state),
         })
     })
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+    use crate::onboarding::model::Access;
+
+    #[test]
+    fn permission_request_receipts_and_passive_statuses_share_one_projection() {
+        for (wire, expected) in [
+            ("granted", Access::Granted),
+            ("denied", Access::Denied),
+            ("unknown", Access::Unknown),
+            ("notDetermined", Access::NotDetermined),
+            ("restricted", Access::Restricted),
+            ("unsupported", Access::Unsupported),
+        ] {
+            assert_eq!(access(&json!(wire)), expected);
+            assert_eq!(
+                access(&json!({"permission":wire,"needsRelaunch":false})),
+                expected
+            );
+        }
+        assert_eq!(access(&Value::Null), Access::Unknown);
+    }
 }

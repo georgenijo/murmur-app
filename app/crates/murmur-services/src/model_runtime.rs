@@ -253,20 +253,7 @@ pub fn model_installed(model_name: &str) -> bool {
     if !model_supported(definition) {
         return false;
     }
-    match definition.install_kind {
-        InstallKind::Whisper => crate::transcriber::whisper::specific_model_exists(model_name),
-        InstallKind::Parakeet => crate::transcriber::parakeet::specific_model_exists(model_name),
-        InstallKind::Coreml => {
-            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            {
-                crate::transcriber::coreml::specific_model_exists(model_name)
-            }
-            #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-            {
-                false
-            }
-        }
-    }
+    crate::model_resolver::resolve(model_name).is_some()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -449,8 +436,18 @@ impl ModelRuntimeManager {
     pub fn catalog(&self) -> Vec<ModelRuntimeSnapshot> {
         self.definitions
             .iter()
-            .filter_map(|definition| self.snapshot(definition.model_name).ok())
+            .filter_map(|definition| self.resolved_snapshot(definition.model_name).ok())
             .collect()
+    }
+
+    /// Presentation reads must not retain a cached Installed/NotInstalled fact
+    /// after an external install, removal or repaired legacy cache. Only an
+    /// active transaction owns a transient state independently of the disk.
+    pub fn resolved_snapshot(&self, model_name: &str) -> Result<ModelRuntimeSnapshot, String> {
+        let mut snapshot = self.snapshot(model_name)?;
+        snapshot.install_state =
+            resolved_install_state(snapshot.install_state, model_installed(model_name));
+        Ok(snapshot)
     }
 
     /// Lifecycle-only view for hang diagnostics: no filesystem probes (unlike
@@ -888,9 +885,43 @@ impl ModelRuntimeManager {
     }
 }
 
+fn resolved_install_state(cached: InstallState, present: bool) -> InstallState {
+    match cached {
+        InstallState::Installing | InstallState::Validating => cached,
+        _ if present => InstallState::Installed,
+        InstallState::Invalid => InstallState::Invalid,
+        _ => InstallState::NotInstalled,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_presence_reconciles_external_changes_without_replacing_active_transactions() {
+        assert_eq!(
+            resolved_install_state(InstallState::NotInstalled, true),
+            InstallState::Installed
+        );
+        assert_eq!(
+            resolved_install_state(InstallState::Invalid, true),
+            InstallState::Installed
+        );
+        assert_eq!(
+            resolved_install_state(InstallState::Installed, false),
+            InstallState::NotInstalled
+        );
+        assert_eq!(
+            resolved_install_state(InstallState::Invalid, false),
+            InstallState::Invalid
+        );
+        for state in [InstallState::Installing, InstallState::Validating] {
+            for present in [false, true] {
+                assert_eq!(resolved_install_state(state, present), state);
+            }
+        }
+    }
     use std::collections::HashSet;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1475,6 +1506,45 @@ mod tests {
             manager.snapshot("fake-translation").unwrap().install_state,
             InstallState::Installed
         );
+    }
+
+    #[test]
+    fn a_resolved_legacy_model_bypasses_download_and_repairs_a_cached_missing_state() {
+        let home = tempfile::tempdir().unwrap();
+        let support = home.path().join("Library/Application Support");
+        let locations = crate::model_resolver::Locations::for_identity(
+            home.path(),
+            &support,
+            crate::identity::PRODUCTION,
+            None,
+        );
+        let manager = ModelRuntimeManager::default();
+        manager
+            .set_install_state(None, "base.en", InstallState::NotInstalled)
+            .unwrap();
+        let legacy = home.path().join(".cache/whisper/ggml-base.en.bin");
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        crate::model_validation::fixtures::whisper(&legacy, "base.en");
+        for _ in 0..2 {
+            // The download command returns at this admission branch, before
+            // storage preflight, HTTP client construction or VAD co-download.
+            let should_download = manager
+                .begin_install_with_presence(
+                    None,
+                    "base.en",
+                    locations.resolve("base.en").is_some(),
+                )
+                .unwrap();
+            assert!(
+                !should_download,
+                "an existing legacy file must never reach the network"
+            );
+            assert_eq!(
+                manager.snapshot("base.en").unwrap().install_state,
+                InstallState::Installed
+            );
+            assert!(!locations.download_root.exists());
+        }
     }
 
     #[test]

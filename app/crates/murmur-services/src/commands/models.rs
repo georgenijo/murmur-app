@@ -265,7 +265,7 @@ pub fn get_model_runtime_status(
     state: crate::host::StateRef<'_, State>,
     model_name: String,
 ) -> Result<model_runtime::ModelRuntimeSnapshot, String> {
-    state.app_state.model_runtime.snapshot(&model_name)
+    state.app_state.model_runtime.resolved_snapshot(&model_name)
 }
 
 pub fn get_model_hardware_guidance() -> crate::model_hardware_guidance::ModelHardwareGuidance {
@@ -285,7 +285,7 @@ pub fn check_specific_model_exists(
     state
         .app_state
         .model_runtime
-        .snapshot(&model_name)
+        .resolved_snapshot(&model_name)
         .is_ok_and(|snapshot| snapshot.install_state == InstallState::Installed)
 }
 
@@ -329,10 +329,7 @@ fn remove_whisper_artifact(
     // Refuse before deleting anything if another installed copy remains.
     for other in search_paths {
         if other != root
-            && crate::model_artifact::binary_model_is_valid(
-                &other.join(&filename),
-                crate::model_artifact::MIN_WHISPER_MODEL_BYTES,
-            )
+            && crate::model_validation::validate_whisper(&other.join(&filename), model_name).is_ok()
         {
             return Err("This model has a copy outside Murmur's model storage. Remove that copy manually before using Remove here.".to_string());
         }
@@ -349,11 +346,23 @@ fn remove_installed_artifact(model_name: &str) -> Result<(), String> {
             &transcriber::whisper::get_model_search_paths(),
         ),
         InstallKind::Parakeet => {
-            remove_catalog_artifact(&transcriber::parakeet::model_directory(model_name)?, true)
+            let owned = transcriber::parakeet::model_directory(model_name)?;
+            if crate::model_resolver::resolve(model_name).is_some_and(|path| path != owned) {
+                return Err(
+                    "This model is outside Murmur's model storage. Remove that copy manually."
+                        .into(),
+                );
+            }
+            remove_catalog_artifact(&owned, true)
         }
         InstallKind::Coreml => {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             {
+                if crate::identity::internal() {
+                    return Err(
+                        "The shared Core ML cache cannot be removed by an isolated preview.".into(),
+                    );
+                }
                 if !crate::coreml_installer::clear_quarantined_installer() {
                     return Err("Wait for the previous Core ML installer to exit before removing this model".to_string());
                 }
@@ -486,7 +495,7 @@ pub async fn download_model(
             .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
         let storage = if definition.install_kind == InstallKind::Coreml {
-            crate::identity::data_dir().ok_or("Could not locate Core ML storage")?.join("FluidAudio/Models")
+            crate::model_resolver::Locations::current().ok_or("Could not locate Core ML storage")?.coreml_root
         } else { models_dir.clone() };
         let retained = match definition.install_kind {
             InstallKind::Whisper => std::fs::metadata(models_dir.join(format!("ggml-{model_name}.bin.tmp"))).map(|m| m.len()).unwrap_or(0),
@@ -776,9 +785,7 @@ mod tests {
         let external = root.join("external");
         let filename = "ggml-tiny.en.bin";
         for directory in [&managed, &external] {
-            let file = fs::File::create(directory.join(filename)).unwrap();
-            file.set_len(crate::model_artifact::MIN_WHISPER_MODEL_BYTES)
-                .unwrap();
+            crate::model_validation::fixtures::whisper(&directory.join(filename), "tiny.en");
         }
         assert!(
             remove_whisper_artifact("tiny.en", &managed, std::slice::from_ref(&external))
@@ -824,17 +831,48 @@ mod tests {
         let source_root = archive_path.with_extension("source");
         let bundle = source_root.join(dir_name);
         fs::create_dir_all(&bundle).unwrap();
-        fs::write(bundle.join("encoder.fp16.onnx"), b"encoder").unwrap();
-        fs::write(bundle.join("decoder.fp16.onnx"), b"decoder").unwrap();
-        if complete {
-            fs::write(bundle.join("joiner.fp16.onnx"), b"joiner").unwrap();
+        crate::model_validation::fixtures::parakeet(&bundle);
+        if !complete {
+            fs::remove_file(bundle.join("joiner.fp16.onnx")).unwrap();
         }
-        fs::write(bundle.join("tokens.txt"), b"tokens").unwrap();
 
         let file = fs::File::create(archive_path).unwrap();
         let encoder = bzip2::write::BzEncoder::new(file, bzip2::Compression::best());
         let mut archive = tar::Builder::new(encoder);
-        archive.append_dir_all(dir_name, &bundle).unwrap();
+        // tar's automatic sparse discovery is unavailable on macOS. Encode the
+        // synthetic ONNX holes explicitly instead of compressing gigabytes of
+        // zeroes just to test atomic publication.
+        for name in ["encoder.fp16.onnx", "decoder.fp16.onnx", "joiner.fp16.onnx"] {
+            use std::io::{Read, Seek, SeekFrom};
+            let path = bundle.join(name);
+            if !path.exists() {
+                continue;
+            }
+            let mut file = fs::File::open(path).unwrap();
+            let bytes = file.metadata().unwrap().len();
+            let tail_start = (bytes - 1) / 512 * 512;
+            let tail_bytes = bytes - tail_start;
+            let mut data = vec![0; 512 + tail_bytes as usize];
+            file.read_exact(&mut data[..512]).unwrap();
+            file.seek(SeekFrom::Start(tail_start)).unwrap();
+            file.read_exact(&mut data[512..]).unwrap();
+            let mut header = tar::Header::new_gnu();
+            header.set_mode(0o600);
+            header.set_entry_type(tar::EntryType::GNUSparse);
+            header.set_size(data.len() as u64);
+            let sparse = header.as_gnu_mut().unwrap();
+            sparse.set_real_size(bytes);
+            sparse.sparse[0].set_offset(0);
+            sparse.sparse[0].set_length(512);
+            sparse.sparse[1].set_offset(tail_start);
+            sparse.sparse[1].set_length(tail_bytes);
+            archive
+                .append_data(&mut header, format!("{dir_name}/{name}"), data.as_slice())
+                .unwrap();
+        }
+        archive
+            .append_path_with_name(bundle.join("tokens.txt"), format!("{dir_name}/tokens.txt"))
+            .unwrap();
         let encoder = archive.into_inner().unwrap();
         encoder.finish().unwrap();
         fs::remove_dir_all(source_root).unwrap();
@@ -881,10 +919,10 @@ mod tests {
             model_name,
             &models_dir
         ));
-        assert_eq!(
-            fs::read(partial.join("encoder.fp16.onnx")).unwrap(),
-            b"encoder"
-        );
+        assert!(crate::model_validation::parakeet_component_is_valid(
+            &partial.join("encoder.fp16.onnx"),
+            "encoder.fp16.onnx"
+        ));
         assert!(!models_dir.join(format!(".{dir_name}.extracting")).exists());
         assert!(
             archive_path.exists(),
@@ -986,11 +1024,7 @@ async fn download_whisper_model(
     let temp_path = models_dir.join(format!("{}.tmp", filename));
 
     let received = stream_download(app_handle, &url, &temp_path, Some(progress_context), 0).await?;
-    if let Err(error) = crate::model_artifact::validate_binary_model(
-        &temp_path,
-        crate::model_artifact::MIN_WHISPER_MODEL_BYTES,
-        "Downloaded Whisper model",
-    ) {
+    if let Err(error) = crate::model_validation::validate_whisper(&temp_path, model_name) {
         let _ = tokio::fs::remove_file(&temp_path).await;
         return Err(error);
     }

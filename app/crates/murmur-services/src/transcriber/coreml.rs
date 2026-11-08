@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub use super::{is_coreml_model, COREML_MODEL_NAME};
-const CACHE_DIR_NAME: &str = "parakeet-tdt-0.6b-v3";
+pub(crate) const CACHE_DIR_NAME: &str = "parakeet-tdt-0.6b-v3";
 const REQUIRED_MODELS: &[&str] = &[
     "Preprocessor.mlmodelc",
     "Encoder.mlmodelc",
@@ -53,7 +53,7 @@ impl std::fmt::Display for ModelPreparationError {
 }
 
 fn cache_root() -> Option<PathBuf> {
-    crate::identity::data_dir().map(|path| path.join("FluidAudio").join("Models"))
+    crate::model_resolver::Locations::current().map(|p| p.coreml_root)
 }
 
 pub(crate) fn model_dir() -> Option<PathBuf> {
@@ -64,7 +64,7 @@ fn nonempty_file(path: &Path) -> bool {
     path.is_file() && path.metadata().is_ok_and(|metadata| metadata.len() > 0)
 }
 
-fn model_exists_at(path: &Path) -> bool {
+pub(crate) fn model_exists_at(path: &Path) -> bool {
     REQUIRED_MODELS.iter().all(|model| {
         let compiled = path.join(model);
         compiled.is_dir()
@@ -156,17 +156,11 @@ where
 }
 
 pub fn specific_model_exists(model_name: &str) -> bool {
-    #[cfg(debug_assertions)]
-    if std::env::var("MURMUR_COREML_FORCE_NOT_INSTALLED").as_deref() == Ok("1") {
-        return false;
-    }
-    is_coreml_model(model_name)
-        && cfg!(target_arch = "aarch64")
-        && model_dir().as_deref().is_some_and(model_exists_at)
+    is_coreml_model(model_name) && crate::model_resolver::resolve(model_name).is_some()
 }
 
 fn new_engine() -> Result<FluidAudio, String> {
-    if crate::identity::internal() {
+    if crate::identity::internal() && !specific_model_exists(COREML_MODEL_NAME) {
         return Err("Core ML SDK global cache is unavailable to isolated bundles; select a local Whisper or Parakeet model".into());
     }
     let engine = FluidAudio::new().map_err(|error| format!("FluidAudio setup failed: {error}"))?;
@@ -191,6 +185,15 @@ pub(crate) fn prepare_model_with_observer<F>(
 where
     F: FnMut(ModelPreparationPhase),
 {
+    // The SDK uses shared storage. Never repair/delete it from a preview.
+    // Complete shared installs are reusable without any installer or download.
+    if crate::identity::internal() {
+        return if specific_model_exists(model_name) {
+            Ok(())
+        } else {
+            Err(ModelPreparationError::CacheUnavailable)
+        };
+    }
     let model_path = model_dir().ok_or(ModelPreparationError::CacheUnavailable)?;
     let repair_marker = model_path
         .parent()
@@ -290,9 +293,11 @@ impl TranscriptionBackend for CoreMlBackend {
         }
 
         self.reset();
+        let path =
+            crate::model_resolver::resolve(model_name).ok_or("Core ML model is not downloaded")?;
         let engine = new_engine()?;
         engine
-            .init_asr()
+            .init_asr_from_cache(&path)
             .map_err(|error| format!("Failed to load Core ML model: {error}"))?;
         if !engine.is_asr_available() {
             return Err("FluidAudio initialized without an available ASR model".to_string());
@@ -491,6 +496,51 @@ mod tests {
             fs::write(compiled.join("weights/weight.bin"), b"weights").unwrap();
         }
         fs::write(path.join(VOCAB_FILE), b"{}").unwrap();
+    }
+
+    #[test]
+    fn a_corrupt_but_complete_cache_load_fails_without_changing_any_artifact() {
+        let root = tempfile::tempdir().unwrap();
+        let model = root.path().join(CACHE_DIR_NAME);
+        write_complete_model(&model);
+        fs::write(root.path().join("unrelated-model"), b"preserve").unwrap();
+        assert!(
+            model_exists_at(&model),
+            "reproduce the structurally complete cache admission"
+        );
+        fn contents(path: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+            fn visit(
+                root: &Path,
+                path: &Path,
+                files: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>,
+            ) {
+                for entry in fs::read_dir(path).unwrap() {
+                    let path = entry.unwrap().path();
+                    if path.is_dir() {
+                        visit(root, &path, files);
+                    } else {
+                        files.insert(
+                            path.strip_prefix(root).unwrap().to_owned(),
+                            fs::read(path).unwrap(),
+                        );
+                    }
+                }
+            }
+            let mut files = std::collections::BTreeMap::new();
+            visit(path, path, &mut files);
+            files
+        }
+        let before = contents(root.path());
+        let engine = FluidAudio::new().unwrap();
+        for _ in 0..2 {
+            assert!(engine.init_asr_from_cache(&model).is_err());
+            assert!(!engine.is_asr_available());
+            assert_eq!(
+                contents(root.path()),
+                before,
+                "load errors must not repair, delete or download"
+            );
+        }
     }
 
     #[test]
