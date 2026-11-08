@@ -10,6 +10,58 @@ use murmur_services::transcriber::{
 };
 
 #[test]
+#[ignore = "requires installed shared FluidAudio cache; read-only loading, no capture or download"]
+fn installed_coreml_cache_loads_in_a_preview_without_changing_model_files() {
+    use sha2::{Digest, Sha256};
+    use std::{collections::BTreeMap, io::Read, path::Path};
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+    murmur_services::native_services::initialize_identity(
+        "com.localdictation.onboarding28-coreml-review-test",
+        &home,
+    )
+    .unwrap();
+    let mut backend = CoreMlBackend::new();
+    let model = backend.models_dir().unwrap().join("parakeet-tdt-0.6b-v3");
+    fn artifacts(root: &Path) -> BTreeMap<std::path::PathBuf, [u8; 32]> {
+        fn visit(root: &Path, path: &Path, result: &mut BTreeMap<std::path::PathBuf, [u8; 32]>) {
+            for entry in std::fs::read_dir(path).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    visit(root, &path, result);
+                } else {
+                    let mut file = std::fs::File::open(&path).unwrap();
+                    let mut hash = Sha256::new();
+                    let mut bytes = [0u8; 65536];
+                    loop {
+                        let count = file.read(&mut bytes).unwrap();
+                        if count == 0 {
+                            break;
+                        }
+                        hash.update(&bytes[..count]);
+                    }
+                    result.insert(
+                        path.strip_prefix(root).unwrap().to_owned(),
+                        hash.finalize().into(),
+                    );
+                }
+            }
+        }
+        let mut result = BTreeMap::new();
+        visit(root, root, &mut result);
+        result
+    }
+    assert!(coreml::specific_model_exists(COREML_MODEL_NAME));
+    let before = artifacts(&model);
+    backend.load_model(COREML_MODEL_NAME).unwrap();
+    assert!(backend.is_model_loaded(COREML_MODEL_NAME));
+    assert_eq!(
+        artifacts(&model),
+        before,
+        "runtime load must not change the shared model cache"
+    );
+}
+
+#[test]
 #[ignore = "requires the optional FluidAudio model cache and MURMUR_COREML_TEST_WAV"]
 fn transcribes_with_installed_coreml_model() {
     let wav_path = std::env::var("MURMUR_COREML_TEST_WAV")

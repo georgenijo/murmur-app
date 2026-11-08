@@ -293,9 +293,11 @@ impl TranscriptionBackend for CoreMlBackend {
         }
 
         self.reset();
+        let path =
+            crate::model_resolver::resolve(model_name).ok_or("Core ML model is not downloaded")?;
         let engine = new_engine()?;
         engine
-            .init_asr()
+            .init_asr_from_cache(&path)
             .map_err(|error| format!("Failed to load Core ML model: {error}"))?;
         if !engine.is_asr_available() {
             return Err("FluidAudio initialized without an available ASR model".to_string());
@@ -494,6 +496,51 @@ mod tests {
             fs::write(compiled.join("weights/weight.bin"), b"weights").unwrap();
         }
         fs::write(path.join(VOCAB_FILE), b"{}").unwrap();
+    }
+
+    #[test]
+    fn a_corrupt_but_complete_cache_load_fails_without_changing_any_artifact() {
+        let root = tempfile::tempdir().unwrap();
+        let model = root.path().join(CACHE_DIR_NAME);
+        write_complete_model(&model);
+        fs::write(root.path().join("unrelated-model"), b"preserve").unwrap();
+        assert!(
+            model_exists_at(&model),
+            "reproduce the structurally complete cache admission"
+        );
+        fn contents(path: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+            fn visit(
+                root: &Path,
+                path: &Path,
+                files: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>,
+            ) {
+                for entry in fs::read_dir(path).unwrap() {
+                    let path = entry.unwrap().path();
+                    if path.is_dir() {
+                        visit(root, &path, files);
+                    } else {
+                        files.insert(
+                            path.strip_prefix(root).unwrap().to_owned(),
+                            fs::read(path).unwrap(),
+                        );
+                    }
+                }
+            }
+            let mut files = std::collections::BTreeMap::new();
+            visit(path, path, &mut files);
+            files
+        }
+        let before = contents(root.path());
+        let engine = FluidAudio::new().unwrap();
+        for _ in 0..2 {
+            assert!(engine.init_asr_from_cache(&model).is_err());
+            assert!(!engine.is_asr_available());
+            assert_eq!(
+                contents(root.path()),
+                before,
+                "load errors must not repair, delete or download"
+            );
+        }
     }
 
     #[test]

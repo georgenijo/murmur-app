@@ -2,11 +2,14 @@
 resolver = "2"
 members = ["gpui", "crates/*"]
 default-members = ["gpui", "crates/murmur-services", "crates/murmur-core", "crates/murmur-webkit", "crates/capture-helper-protocol"]
-exclude = ["sidecars/capture", "gpui/vendor/gpui", "gpui/vendor/accesskit_macos"]
+exclude = ["sidecars/capture", "gpui/vendor/gpui", "gpui/vendor/accesskit_macos", "vendor/fluidaudio-rs"]
 
 # Same pinned revision, plus the recorded production deferred-AX fix.
 [patch."https://github.com/zed-industries/zed"]
 gpui = { path = "gpui/vendor/gpui" }
+
+[patch."https://github.com/FluidInference/fluidaudio-rs"]
+fluidaudio-rs = { path = "vendor/fluidaudio-rs" }
 
 [patch.crates-io]
 accesskit_macos = { path = "gpui/vendor/accesskit_macos" }
