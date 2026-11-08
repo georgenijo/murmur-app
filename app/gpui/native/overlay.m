@@ -58,15 +58,19 @@ void *murmur_overlay_material(void *raw) {
 }
 
 static void refit_surface_rect(NSView *view, NSRect surface, double radius) {
-    objc_setAssociatedObject(view, &surface_key, [NSValue valueWithRect:surface], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSValue *previous = objc_getAssociatedObject(view, &surface_key);
+    if (!previous || !NSEqualRects(previous.rectValue, surface)) {
+        objc_setAssociatedObject(view, &surface_key, [NSValue valueWithRect:surface], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     MurmurOverlayMaterial *hud = objc_getAssociatedObject(view, &hud_key);
     if (!hud) return;
     if (hud.superview != view.superview) {
         [hud removeFromSuperview];
         [view.superview addSubview:hud positioned:NSWindowBelow relativeTo:view];
     }
-    hud.frame = [view convertRect:surface toView:view.superview];
-    hud.layer.cornerRadius = radius;
+    NSRect target = [view convertRect:surface toView:view.superview];
+    if (!NSEqualRects(hud.frame, target)) hud.frame = target;
+    if (hud.layer.cornerRadius != radius) hud.layer.cornerRadius = radius;
 }
 
 static void refit_surface(NSView *view, double width, double height, double radius, bool floating) {
@@ -115,8 +119,11 @@ bool murmur_overlay_apply(void *raw, double x, double y, double width, double he
     NSScreen *primary = NSScreen.screens.firstObject;
     double primary_top = NSMaxY(primary.frame);
     NSRect target = NSMakeRect(x, primary_top-y-height, width, height);
-    if (!NSEqualRects(window.frame,target)) [window setFrame:target display:YES];
-    window.alphaValue = hidden ? 0.0 : 1.0;
+    // Defer paint to GPUI's display-paced renderer. display:YES synchronously
+    // paints from inside a borrowed GPUI frame and stalls the main thread.
+    if (!NSEqualRects(window.frame,target)) [window setFrame:target display:NO];
+    double alpha = hidden ? 0.0 : 1.0;
+    if (window.alphaValue != alpha) window.alphaValue = alpha;
     // GPUI creates this companion with show:false. Present only after the
     // nonactivating policy and frame are installed, without keying the panel
     // or activating the app. Keep hidden surfaces persistent and click-through.
@@ -260,4 +267,49 @@ void murmur_overlay_pointer_position(double *out) {
     NSPoint point = NSEvent.mouseLocation;
     out[0] = point.x;
     out[1] = NSMaxY(NSScreen.screens.firstObject.frame) - point.y;
+}
+
+// Notification-driven geometry invalidation. No timer, display link, global
+// event monitor or AX client. The Rust inbox owns coalescing and main-turn work.
+@interface MurmurOverlayScreenWatch : NSObject
+@property(nonatomic) void (*callback)(void *);
+@property(nonatomic) void *context;
+@end
+@implementation MurmurOverlayScreenWatch
+- (void)changed:(NSNotification *)notification {
+    (void)notification;
+    self.callback(self.context);
+}
+@end
+void *murmur_overlay_watch_screen(void (*callback)(void *), void *context) {
+    assert([NSThread isMainThread]);
+    MurmurOverlayScreenWatch *watch = [MurmurOverlayScreenWatch new];
+    watch.callback = callback;
+    watch.context = context;
+    for (NSNotificationName name in @[NSApplicationDidChangeScreenParametersNotification,
+            NSWindowDidChangeScreenNotification]) {
+        [NSNotificationCenter.defaultCenter addObserver:watch selector:@selector(changed:) name:name object:nil];
+    }
+    [NSWorkspace.sharedWorkspace.notificationCenter addObserver:watch selector:@selector(changed:)
+        name:NSWorkspaceActiveSpaceDidChangeNotification object:nil];
+    return (__bridge_retained void *)watch;
+}
+void murmur_overlay_unwatch_screen(void *raw) {
+    assert([NSThread isMainThread]);
+    MurmurOverlayScreenWatch *watch = (__bridge_transfer MurmurOverlayScreenWatch *)raw;
+    [NSNotificationCenter.defaultCenter removeObserver:watch];
+    [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:watch];
+}
+
+void murmur_overlay_pointer_enabled(void *raw, bool enabled) {
+    assert([NSThread isMainThread]);
+    NSView *view = (__bridge NSView *)raw;
+    BOOL ignores = !enabled;
+    if (view.window.ignoresMouseEvents != ignores) view.window.ignoresMouseEvents = ignores;
+}
+void murmur_overlay_material_opacity(void *raw, double opacity) {
+    assert([NSThread isMainThread]);
+    NSView *view = (__bridge NSView *)raw;
+    MurmurOverlayMaterial *hud = objc_getAssociatedObject(view, &hud_key);
+    if (hud && hud.alphaValue != opacity) hud.alphaValue = opacity;
 }

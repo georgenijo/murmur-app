@@ -168,7 +168,7 @@ fn main() {
         let handle = cx
             .open_window(
                 WindowOptions {
-                    show: !headless,
+                    show: false,
                     focus: false,
                     kind: WindowKind::PopUp,
                     titlebar: None,

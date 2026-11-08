@@ -1,5 +1,56 @@
 # Dynamic Island Overlay
 
+## GPUI implementation parity
+
+The native counterpart lives in `app/gpui/src/overlay/` and
+`app/gpui/native/overlay.m`. The shipped `origin/main` React components remain
+the visual reference for this migration. Both use the shared Rust geometry:
+notch placement never falls back to a floating pill merely because a display
+has no measured notch. It uses the 185pt pretend notch. Floating placement is
+an explicit saved preference.
+
+| Lifecycle / cue | Notch | Floating pill | Lifetime / motion |
+| --- | --- | --- | --- |
+| Idle / disabled | Notch-width rest, mic dimmed behind the physical notch | Hidden and click-through | No frames or overlay timer |
+| Starting | Blue dot; amber after the host's stalled signal | Ring + Connecting | 1s pulse; host owns the 5s stall signal |
+| Recording | Red 10pt dot, seven 2pt bars in opposite wings | Red dot, 18 bars | 800ms pulse; levels sampled at display rate |
+| Recovering | Amber spinner | Spinner + Recovering | Until the host leaves recovery |
+| Processing | White spinner | Spinner + Transcribing… | 1s rotation; until completion |
+| Done | Mic on the retained active plate | Check + Done | 400ms, preempted by a new generation |
+| Cancelled | Red cross | Cross + Cancelled | 800ms, takes priority over levels |
+| Tap missed | Amber warning | Warning + Tap missed | 500ms, gated by saved feedback preference |
+| Microphone failure | Red mic-off or warning | Warning + No mic / Mic denied / Mic lost / Mic failed | 5s; stale generations rejected |
+| Meeting starting / recording / stopping | Cyan/violet dots | Dot + Meeting | Until meeting processing or idle |
+| Meeting processing | Cyan spinner | Spinner + Finishing | Until meeting idle |
+| Clipboard-only delivery | Confirmation and bounded retry action | Check + Paste | 5s; paused during retry interaction |
+| Delivery retry / result | Retry, Pasted or Nothing cue | Trying…, Pasted, Nothing or Try again | Single-flight; result shown for 5s |
+| Calibration | Vertical arrows | Arrows + Calibrating | Until calibration ends |
+| Meeting suggestion | Forced-open suggestion and actions | Same content above the capsule | Token-bound; cleared by activity, disable or calibration |
+
+Hover dwell is 150ms, leave delay 300ms, and both dimensions animate for 360ms.
+Notch motion uses `cubic-bezier(0.34,1.56,0.64,1)`; the floating pill uses
+`cubic-bezier(0.32,0.72,0,1)`. Native contraction waits an additional 20ms.
+The pill fades over 180ms and becomes click-through as soon as hiding begins.
+Reduce Motion snaps transitions and stops decorative loops; incoming level
+samples can still update a static recording indicator.
+
+GPUI resolves the screen before creating its hidden platform window. Native
+geometry and nonactivating policy are installed before ordering front. Screen
+and Space notifications replace geometry polling; native tracking events own
+hover. A parked inbox wakes only for published changes, and semantic deadlines
+use cancellable one-shot timers. Unchanged Dock limits do not publish or redraw.
+No transcript, audio content or pasteboard data is part of this presentation.
+
+Intentional differences: the extra **visible** disclosure caret is removed;
+a silent 20×24 accessibility/pointer target remains for opening quick settings
+without taking key focus. The waveform uses deterministic per-frame variation
+rather than React's random samples, and the GPUI dot pulses opacity without
+React's 0.85 scale at mid-pulse. Symbols use the existing native SVG asset set.
+These do not change placement, lifecycle ownership, bar counts or motion timing.
+The historical 76pt processing-field description below predates the shipped
+`origin/main` reference, whose `OverlayPill` renders a spinner; GPUI follows that
+shipped spinner rather than introducing a second processing rendition.
+
 ## Overview
 
 The overlay is an always-on-top transparent window anchored to the macOS notch area, styled as a "Dynamic Island" (or, by choice, a floating pill above the Dock). It shows recording status and a live waveform, and supports click interactions to start/stop recording. The overlay is a separate Tauri window (`label: "overlay"`) that loads its own HTML entry point (`overlay.html` → `src/overlay.tsx` → `OverlayWidget`) and has no shared React context with the main window.

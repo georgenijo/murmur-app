@@ -389,6 +389,13 @@ impl Host {
     }
     fn companions(self: &Rc<Self>, cx: &mut App) {
         let host = self.clone();
+        // Resolve the display before creating the hidden platform window. GPUI
+        // and the native writer start from the very same global logical frame.
+        let mut overlay_model = crate::overlay::model::Model::new(Default::default());
+        if let Some(screen) = crate::overlay::native::screen() {
+            overlay_model.screen = screen;
+        }
+        let frame = overlay_model.frame(false, 0);
         let overlay = cx
             .open_window(
                 WindowOptions {
@@ -400,21 +407,23 @@ impl Host {
                     is_movable: false,
                     window_background: WindowBackgroundAppearance::Transparent,
                     window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                        point(px(0.), px(0.)),
-                        size(px(300.), px(60.)),
+                        point(px(frame.x as f32), px(frame.y as f32)),
+                        size(px(frame.width as f32), px(frame.height as f32)),
                     ))),
                     ..Default::default()
                 },
                 move |w, cx| {
                     host.register("overlay", w);
                     let view = cx.new(|cx| {
-                        let view = crate::overlay::Overlay::new(
+                        let mut view = crate::overlay::Overlay::new(
                             Default::default(),
                             Rc::new(OverlayHost {
                                 backend: host.backend.clone(),
                                 ports: host.ports.clone(),
                             }),
                         );
+                        view.model = overlay_model;
+                        view.advance(w, cx);
                         view.follow(w, cx);
                         view
                     });
@@ -728,7 +737,14 @@ impl ApplicationHost for Rc<Host> {
                 });
             }
         }
-        if let Some(screen) = crate::overlay::native::screen() {
+        // The overlay's notification-driven owner resolves NSScreen. Do not
+        // instantiate/read Dock preferences at the service tick's 60 Hz.
+        if let Some(screen) = self
+            .overlay
+            .borrow()
+            .as_ref()
+            .map(|view| view.read(cx).model.screen.clone())
+        {
             let display = DockDisplay {
                 left: screen.bounds.0,
                 top: screen.bounds.1,
@@ -742,9 +758,10 @@ impl ApplicationHost for Rc<Host> {
                 .is_some_and(|p| p.snapshot().visible);
             *self.ports.dock.lock().unwrap_or_else(|p| p.into_inner()) = Some((display, visible));
             if let Some(inbox) = self.ports.overlay.get() {
-                let _ = inbox.publish(crate::overlay::model::Event::Dock(
-                    self.backend.services.dock_limit(display),
-                ));
+                let limit = self.backend.services.dock_limit(display);
+                if limit != screen.dock {
+                    let _ = inbox.publish(crate::overlay::model::Event::Dock(limit));
+                }
             }
         }
         if self.ports.refresh.swap(false, Ordering::AcqRel) {

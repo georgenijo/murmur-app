@@ -7,9 +7,22 @@
 
 @interface OverlayTestPanel : NSPanel
 @property(nonatomic) NSUInteger frontOrders;
+@property(nonatomic) NSRect expectedFirstFrame;
+@property(nonatomic) NSUInteger frameWrites;
+@property(nonatomic) NSUInteger synchronousPaints;
 @end
 @implementation OverlayTestPanel
-- (void)orderFrontRegardless { self.frontOrders++; [super orderFrontRegardless]; }
+- (void)orderFrontRegardless {
+    // Assert at presentation time, not merely after the apply has returned.
+    assert(NSEqualRects(self.frame, self.expectedFirstFrame));
+    self.frontOrders++;
+    [super orderFrontRegardless];
+}
+- (void)setFrame:(NSRect)frame display:(BOOL)display {
+    self.frameWrites++;
+    if (display) self.synchronousPaints++;
+    [super setFrame:frame display:display];
+}
 @end
 
 extern bool murmur_overlay_apply(void *, double, double, double, double,
@@ -30,6 +43,8 @@ int main(void) {
         assert(!panel.isVisible && !panel.isKeyWindow && !panel.isMainWindow);
         void *view = (__bridge void *)panel.contentView;
         double top = NSMaxY(NSScreen.screens.firstObject.frame);
+        panel.expectedFirstFrame = NSMakeRect(80, top-12-42, 220, 42);
+        panel.frameWrites = panel.synchronousPaints = 0;
         assert(murmur_overlay_apply(view, 80, 12, 220, 42, false, true, false, false, true, 14, 42));
         assert(!panel.isVisible && panel.frontOrders == 0);
         assert(panel.alphaValue == 0 && panel.ignoresMouseEvents);
@@ -51,6 +66,7 @@ int main(void) {
         // a persistent, transparent, click-through window rather than ordering out.
         assert(murmur_overlay_apply(view, 80, 12, 220, 42, false, false, false, false, true, 14, 42));
         assert(panel.frontOrders == 1);
+        assert(panel.frameWrites == 1 && panel.synchronousPaints == 0);
         assert(murmur_overlay_apply(view, 80, 12, 220, 42, false, true, false, false, true, 14, 42));
         assert(panel.isVisible && panel.alphaValue == 0 && panel.ignoresMouseEvents);
         assert(panel.frontOrders == 1 && !app.isActive);

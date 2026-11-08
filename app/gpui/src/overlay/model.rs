@@ -2,6 +2,12 @@
 //! with the host's existing owners. All clocks below are monotonic milliseconds.
 use murmur_core::{dictation::Status, overlay_geometry::*};
 
+pub const HOVER_OPEN_DWELL_MS: u64 = 150;
+pub const COLLAPSE_DELAY_MS: u64 = 300;
+pub const SIZE_ANIMATION_MS: u64 = 360;
+pub const SHRINK_GUARD_MS: u64 = 20;
+pub const SHRINK_DELAY_MS: u64 = SIZE_ANIMATION_MS + SHRINK_GUARD_MS;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Meeting {
     #[default]
@@ -196,6 +202,7 @@ pub enum Event {
     TapMissed,
     Screen(Screen),
     Dock(DockLimit),
+    RefreshScreen,
     Visible(bool),
     Calibration(bool),
     Suggestion(Option<Suggestion>),
@@ -477,7 +484,7 @@ impl Model {
                 && !self.hidden(now)
                 && matches!(self.phase, Phase::Collapsed | Phase::Closing)
             {
-                self.hover_due.get_or_insert(now + 150);
+                self.hover_due.get_or_insert(now + HOVER_OPEN_DWELL_MS);
             }
         } else {
             self.hover_closed = false;
@@ -486,7 +493,7 @@ impl Model {
                 self.collapse();
             }
             if self.phase == Phase::Open {
-                self.leave_due.get_or_insert(now + 300);
+                self.leave_due.get_or_insert(now + COLLAPSE_DELAY_MS);
             }
         }
     }
@@ -497,6 +504,30 @@ impl Model {
     /// never received its enter. It must not manufacture an AX-opened exit.
     pub(super) fn rearm_hover(&mut self) {
         self.hover_closed = false;
+    }
+    /// Only actual semantic deadlines arm a one-shot timer. Idle has none.
+    pub fn next_deadline(&self, now: u64) -> Option<u64> {
+        [
+            self.hover_due,
+            self.leave_due,
+            self.shrink_due,
+            self.click.map(|(due, _)| due),
+            Some(self.cancelled_until),
+            self.failure.map(|(_, due)| due),
+            Some(self.miss_until),
+            Some(self.done_until),
+            self.delivery.map(|(_, due)| due),
+            (self.phase == Phase::Open && self.snapshot.status == Status::Recording).then(|| {
+                now + 1000
+                    - (self.snapshot.elapsed_ms
+                        + now.saturating_sub(self.started_ms.unwrap_or(now)))
+                        % 1000
+            }),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|due| *due > now && *due != u64::MAX)
+        .min()
     }
     pub fn needs_tick(&self) -> bool {
         self.hover_due.is_some()
@@ -552,7 +583,7 @@ impl Model {
         if self.leave_due.is_some_and(|u| now >= u) && self.suggestion.is_none() {
             self.leave_due = None;
             self.phase = Phase::Closing;
-            self.shrink_due = Some(now + if reduced { 0 } else { 380 });
+            self.shrink_due = Some(now + if reduced { 0 } else { SHRINK_DELAY_MS });
         }
         if self.shrink_due.is_some_and(|u| now >= u) {
             if apply(self.frame(false, now), self.hidden(now)) {
@@ -736,6 +767,25 @@ impl Model {
         });
         format!("{}:{:02}", seconds / 60, seconds % 60)
     }
+    pub fn bars_at(&self, count: usize, now: u64) -> Vec<f32> {
+        if now == 0 {
+            return self.bars(count);
+        }
+        let level = (self.level * 16.).clamp(0., 1.);
+        (0..count)
+            .map(|i| {
+                let center = count.saturating_sub(1) as f32 / 2.;
+                let envelope = 1. - 0.5 * (i as f32 - center).abs() / center.max(1.);
+                // Reproducible per-frame variation, without a random source on main.
+                let hash = (now / 16)
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add((i as u64).wrapping_mul(1442695040888963407));
+                let variation = ((hash ^ (hash >> 32)) & 1023) as f32 / 1023.;
+                (0.08 + 0.07 * variation + level * envelope + level * level * 0.4 * variation)
+                    .clamp(0.14, 1.)
+            })
+            .collect()
+    }
     pub fn bars(&self, count: usize) -> Vec<f32> {
         if self.snapshot.placement == OverlayPlacement::FloatingPill {
             // React's VoiceIslandFixture freezes this per-bar profile. Apply it
@@ -789,6 +839,9 @@ pub struct SurfaceWriter {
     pending: Option<(u64, OverlayFrame)>,
 }
 impl SurfaceWriter {
+    pub fn deadline(&self) -> Option<u64> {
+        self.pending.map(|(due, _)| due)
+    }
     pub fn pending(&self) -> bool {
         self.pending.is_some()
     }
@@ -816,7 +869,7 @@ impl SurfaceWriter {
             return target;
         };
         if !self.pending.is_some_and(|(_, t)| t == target) {
-            self.pending = Some((now + 380, target));
+            self.pending = Some((now + SHRINK_DELAY_MS, target));
         }
         if self.pending.is_some_and(|(until, _)| now >= until) {
             self.pending = None;
@@ -840,5 +893,24 @@ impl SurfaceWriter {
             width: size.window_w,
             height: size.window_h,
         }
+    }
+}
+
+pub const PILL_FADE_MS: u64 = 180;
+/// Retained only for an actual visibility transition, never for steady idle.
+#[derive(Clone, Copy)]
+pub struct VisibilityMotion {
+    pub from: f32,
+    pub to: f32,
+    pub started: u64,
+}
+impl VisibilityMotion {
+    pub fn running(self, now: u64) -> bool {
+        now < self.started + PILL_FADE_MS
+    }
+    pub fn value(self, now: u64) -> f32 {
+        let t = (now.saturating_sub(self.started) as f32 / PILL_FADE_MS as f32).clamp(0., 1.);
+        let eased = gpui_base::Easing::EaseOut.sample(t);
+        self.from + (self.to - self.from) * eased
     }
 }

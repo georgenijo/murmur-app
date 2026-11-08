@@ -959,7 +959,8 @@ fn indicator_cues_are_single_line_and_inside_the_minimum_card(cx: &mut TestAppCo
                             Indicator::Processing
                                 | Indicator::Recovering
                                 | Indicator::MeetingProcessing
-                        ) && (expanded || indicator != Indicator::Idle),
+                        ) && (placement == OverlayPlacement::FloatingPill
+                            || !matches!(indicator, Indicator::Starting | Indicator::Slow)),
                         "{indicator:?} must expose its rendered symbol bounds"
                     );
                     if let Some(symbol) = cx.debug_bounds("overlay-state-symbol") {
@@ -967,14 +968,15 @@ fn indicator_cues_are_single_line_and_inside_the_minimum_card(cx: &mut TestAppCo
                         // 8 pt parent: nowrap must not conceal horizontal spill.
                         assert_eq!(
                             symbol.size.height,
-                            if indicator == Indicator::Recording {
-                                gpui::px(if placement == OverlayPlacement::FloatingPill {
-                                    10.
-                                } else {
-                                    6.
-                                })
+                            if indicator == Indicator::Recording
+                                || (indicator == Indicator::Meeting
+                                    && placement == OverlayPlacement::FloatingPill)
+                            {
+                                gpui::px(10.)
+                            } else if indicator == Indicator::Meeting {
+                                gpui::px(8.)
                             } else {
-                                crate::tokens::CAPTION_LEADING
+                                gpui::px(12.)
                             },
                             "{indicator:?}"
                         );
@@ -983,18 +985,9 @@ fn indicator_cues_are_single_line_and_inside_the_minimum_card(cx: &mut TestAppCo
                         let disclosure = cx
                             .debug_bounds("overlay-quick-settings-disclosure")
                             .unwrap();
-                        // The 8 pt chevron is centered in a 20 pt hit target.
-                        if placement == OverlayPlacement::FloatingPill
-                            && indicator == Indicator::Recording
-                            && !expanded
-                        {
-                            assert!(
-                                disclosure.right() <= symbol.left(),
-                                "quiet quick settings must not cover the recording dot: {indicator:?} {placement:?} physical={physical} expanded={expanded} disclosure={disclosure:?} symbol={symbol:?}"
-                            );
-                        } else {
-                            assert!(symbol.right() <= disclosure.left() + gpui::px(6.));
-                        }
+                        // The silent AX target no longer participates in wing
+                        // layout or adds a visible caret beside the status.
+                        assert_eq!(disclosure.size.width, gpui::px(20.));
                         if placement == OverlayPlacement::Notch
                             && indicator == Indicator::Delivery(Delivery::Clipboard)
                         {
@@ -1873,7 +1866,8 @@ fn disclosure_stays_hittable_and_precedes_controls_during_motion(cx: &mut TestAp
                         let height = f32::from(card.size.height) as f64;
                         if sample_ms > 0 && sample_ms < 360 {
                             assert!(
-                                height > g.collapsed_h && height < g.expanded_h,
+                                height > 0.
+                                    && height != if opening { g.collapsed_h } else { g.expanded_h },
                                 "must sample a real intermediate frame: {height}, sample={sample_ms}, opening={opening}, placement={placement:?}"
                             );
                         }
@@ -2087,4 +2081,185 @@ fn stationary_pointer_exit_notifications_cannot_undo_disclosure_close(
         });
         assert!(host.intents.borrow().is_empty());
     }
+}
+
+#[test]
+fn idle_has_no_deadline_and_motion_matches_the_shipped_tokens() {
+    let mut model = Model::new(Snapshot::default());
+    assert!(!model.needs_tick());
+    assert_eq!(model.next_deadline(0), None);
+    assert_eq!(HOVER_OPEN_DWELL_MS, 150);
+    assert_eq!(COLLAPSE_DELAY_MS, 300);
+    assert_eq!(SIZE_ANIMATION_MS, 360);
+    assert_eq!(SHRINK_GUARD_MS, 20);
+    assert_eq!(SHRINK_DELAY_MS, 380);
+    model.hover(true, 100);
+    assert_eq!(model.next_deadline(100), Some(250));
+    model.tick(250, false, |_, _| true);
+    assert_eq!(model.next_deadline(250), None);
+    model.hover(false, 300);
+    assert_eq!(model.next_deadline(300), Some(600));
+    model.tick(600, false, |_, _| true);
+    assert_eq!(model.next_deadline(600), Some(980));
+    model.tick(980, false, |_, _| true);
+    assert_eq!(model.next_deadline(980), None);
+    assert_eq!(model.phase, Phase::Collapsed);
+    model.expand(1000);
+    model.tick(1000, true, |_, _| true);
+    model.hover(false, 1100);
+    model.tick(1400, true, |_, _| true);
+    assert_eq!(model.phase, Phase::Collapsed);
+    assert_eq!(model.next_deadline(1400), None);
+}
+
+#[test]
+fn first_surface_uses_global_notch_geometry_on_either_side_of_primary() {
+    for bounds in [(-1728., -120., 0., 997.), (1440., 80., 3168., 1197.)] {
+        let mut model = active();
+        model.screen = Screen {
+            bounds,
+            work: (bounds.0, bounds.1 + 37., bounds.2, bounds.3),
+            scale_factor: 2.,
+            notch: Some(NotchInfo {
+                width: 185.,
+                height: 37.,
+                physical_notch: true,
+                menu_bar_visible: true,
+            }),
+            ..Screen::default()
+        };
+        let frame = model.frame(false, 0);
+        let mut writer = SurfaceWriter::default();
+        assert_eq!(writer.resolve(frame, None, 0, false, true), frame);
+        assert_eq!(frame.x + frame.width / 2., (bounds.0 + bounds.2) / 2.);
+        assert_eq!(frame.y, bounds.1);
+        assert_eq!((frame.width, frame.height), (241., 37.));
+        assert!(!writer.pending());
+        assert!(!model.geometry(false, 0).floating);
+        model.screen.notch = None;
+        assert!(
+            !model.geometry(false, 0).floating,
+            "unmeasured screens use a pretend notch, never a floating capsule"
+        );
+    }
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn settled_idle_parks_without_scheduling_frames_or_timers(test_cx: &mut TestAppContext) {
+    use std::time::Duration;
+    test_cx.update(crate::init);
+    super::native::TEST_POINTER_SAMPLE.set(Some(false));
+    struct ResetPointer;
+    impl Drop for ResetPointer {
+        fn drop(&mut self) {
+            super::native::TEST_POINTER_SAMPLE.set(None);
+        }
+    }
+    let _reset = ResetPointer;
+    let mut entity = None;
+    let (_, cx) = test_cx.add_window_view(|w, cx| {
+        let overlay = cx.new(|_| Overlay::new(Snapshot::default(), Rc::new(FakeHost::default())));
+        entity = Some(overlay.clone());
+        gpui_base::Root::new(overlay, w, cx)
+    });
+    let overlay = entity.unwrap();
+    cx.update(|w, cx| {
+        w.simulate_mouse_move(gpui::point(gpui::px(-100.), gpui::px(-100.)), cx);
+        overlay.update(cx, |s, cx| {
+            s.advance(w, cx);
+            s.follow(w, cx);
+        })
+    });
+    cx.run_until_parked();
+    cx.update(|w, cx| {
+        w.draw(cx).clear(cx);
+        // Finish startup layout callbacks, then idle must create no new demand.
+        w.simulate_next_frame(cx);
+        w.draw(cx).clear(cx);
+        assert_eq!(w.simulate_next_frame(cx), 0);
+    });
+    let before = overlay.read_with(cx, |s, _| {
+        assert!(
+            s.deadline.is_none(),
+            "deadline={:?}, now={}, phase={:?}, model={:?}",
+            s.deadline.as_ref().map(|d| d.0),
+            s.now,
+            s.model.phase,
+            s.model.next_deadline(s.now)
+        );
+        s.now
+    });
+    cx.executor().advance_clock(Duration::from_secs(120));
+    cx.run_until_parked();
+    overlay.read_with(cx, |s, _| {
+        assert_eq!(s.now, before, "no periodic watchdog is allowed to run");
+        assert!(
+            s.deadline.is_none(),
+            "deadline={:?}, now={}, phase={:?}, model={:?}",
+            s.deadline.as_ref().map(|d| d.0),
+            s.now,
+            s.model.phase,
+            s.model.next_deadline(s.now)
+        );
+    });
+    cx.update(|w, cx| assert_eq!(w.simulate_next_frame(cx), 0));
+    // A publisher must still wake the parked owner immediately.
+    let inbox = overlay.read_with(cx, |s, _| s.inbox.clone());
+    inbox
+        .publish(Event::Lifecycle {
+            generation: 1,
+            status: Status::Starting,
+            at_ms: 0,
+        })
+        .unwrap_or_else(|_| panic!("inbox"));
+    cx.run_until_parked();
+    assert_eq!(
+        overlay.read_with(cx, |s, _| s.model.indicator(s.now)),
+        Indicator::Starting
+    );
+}
+
+#[test]
+fn floating_visibility_eases_for_180ms_and_stops_at_the_endpoint() {
+    let fade = VisibilityMotion {
+        from: 0.,
+        to: 1.,
+        started: 100,
+    };
+    assert_eq!(PILL_FADE_MS, 180);
+    assert_eq!(fade.value(100), 0.);
+    assert!(fade.value(190) > 0.5 && fade.value(190) < 1.);
+    assert!(fade.running(279));
+    assert!(!fade.running(280));
+    assert_eq!(fade.value(280), 1.);
+    assert_eq!(fade.value(1000), 1.);
+}
+
+#[test]
+fn notch_uses_the_shipped_overshooting_curve_and_pill_settles_without_overshoot() {
+    let notch = super::size_easing(false);
+    let pill = super::size_easing(true);
+    // CSS easing solves the curve's x coordinate, rather than treating its
+    // parameter as elapsed time. The notch overshoots; the pill cannot bounce.
+    assert!(notch.sample(0.5) > 1.);
+    assert!(pill.sample(0.5) > 0.9 && pill.sample(0.5) < 1.);
+    for t in [0., 0.1, 0.25, 0.5, 0.75, 0.9, 1.] {
+        assert!((0. ..=1.).contains(&pill.sample(t)));
+    }
+    assert_eq!(notch.sample(0.), 0.);
+    assert_eq!(notch.sample(1.), 1.);
+    assert_eq!(
+        crate::motion::Motion::Overlay
+            .resolve(false)
+            .duration
+            .as_millis(),
+        SIZE_ANIMATION_MS as u128
+    );
+    assert!(
+        crate::motion::Motion::Overlay
+            .resolve(true)
+            .duration
+            .is_zero()
+    );
 }

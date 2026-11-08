@@ -10,6 +10,15 @@ use model::*;
 use murmur_core::overlay_geometry::OverlayFrame;
 use std::{rc::Rc, time::Instant};
 
+fn size_easing(floating: bool) -> gpui_base::Easing {
+    if floating {
+        gpui_base::Easing::cubic_bezier(0.32, 0.72, 0., 1.)
+    } else {
+        gpui_base::Easing::cubic_bezier(0.34, 1.56, 0.64, 1.)
+    }
+    .expect("CSS overlay curve")
+}
+
 /// Nonblocking intents go to the existing service owners. Implementations must
 /// recheck generation/admission and use the established owned-field settings API.
 /// A UI must never run capture, completion publication or shutdown itself.
@@ -26,13 +35,17 @@ pub trait Host {
 pub struct Overlay {
     pub model: Model,
     pub inbox: inbox::Inbox,
-    screen_poll: u64,
+    deadline: Option<(u64, Task<()>)>,
+    follower: Option<Task<()>>,
+    screen_watch: Option<native::ScreenWatch>,
     surface_writer: SurfaceWriter,
     host: Rc<dyn Host>,
     epoch: Instant,
     now: u64,
     applied: Option<native::Surface>,
     last_indicator: Option<Indicator>,
+    last_hidden: Option<bool>,
+    visibility: Option<VisibilityMotion>,
     interested: bool,
     pointer: PointerPresence,
     closed_pointer: Option<Point<Pixels>>,
@@ -42,13 +55,17 @@ impl Overlay {
         Self {
             model: Model::new(snapshot),
             inbox: inbox::Inbox::default(),
-            screen_poll: 0,
+            deadline: None,
+            follower: None,
+            screen_watch: None,
             surface_writer: SurfaceWriter::default(),
             host,
             epoch: Instant::now(),
             now: 0,
             applied: None,
             last_indicator: None,
+            last_hidden: None,
+            visibility: None,
             interested: false,
             pointer: PointerPresence::default(),
             closed_pointer: None,
@@ -135,6 +152,26 @@ impl Overlay {
                 WindowAppearance::Dark | WindowAppearance::VibrantDark
             );
         let floating = self.model.geometry(false, self.now).floating;
+        let hidden = self.model.hidden(self.now);
+        if !floating || prefs.reduce_motion {
+            self.visibility = None;
+        } else if self.last_hidden != Some(hidden) {
+            let from = self.visibility.map(|fade| fade.value(self.now)).unwrap_or(
+                if self.last_hidden.unwrap_or(true) {
+                    0.
+                } else {
+                    1.
+                },
+            );
+            let to = if hidden { 0. } else { 1. };
+            self.visibility = (from != to).then_some(VisibilityMotion {
+                from,
+                to,
+                started: self.now,
+            });
+        }
+        self.last_hidden = Some(hidden);
+        let fading = self.visibility.is_some_and(|fade| fade.running(self.now));
         let was_closing = self.model.phase == Phase::Closing;
         let intent = self
             .model
@@ -167,7 +204,7 @@ impl Overlay {
         let surface = native::Surface {
             frame,
             floating,
-            hidden: self.model.hidden(self.now),
+            hidden: hidden && !fading,
             reduce_transparency: prefs.reduce_transparency,
             increase_contrast: prefs.increase_contrast,
             dark,
@@ -190,6 +227,8 @@ impl Overlay {
                 },
             );
         }
+        // Fading-out pixels remain for 180 ms, but input stops immediately.
+        native::pointer_enabled(window, !hidden);
         let interest = self.model.waveform(self.now);
         if interest != self.interested {
             self.interested = interest;
@@ -201,76 +240,87 @@ impl Overlay {
             native::announce(window, indicator.label());
         }
         self.last_indicator = Some(indicator);
+        self.schedule(window, cx);
         cx.notify();
     }
-    /// Start only in the real host. Deterministic tests drive advance/events
-    /// explicitly. The idle watchdog does no rendering unless state changes.
-    pub fn follow(&self, window: &Window, cx: &mut Context<Self>) {
+    fn schedule(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let deadline = self
+            .model
+            .next_deadline(self.now)
+            .into_iter()
+            .chain(self.surface_writer.deadline())
+            .chain(
+                self.visibility
+                    .filter(|fade| fade.running(self.now))
+                    .map(|fade| fade.started + PILL_FADE_MS),
+            )
+            .min();
+        if self.deadline.as_ref().map(|(at, _)| *at) == deadline {
+            return;
+        }
+        self.deadline = deadline.map(|at| {
+            let handle = window.window_handle();
+            let delay = std::time::Duration::from_millis(at.saturating_sub(self.now));
+            let task = cx.spawn(async move |weak, cx| {
+                cx.background_executor().timer(delay).await;
+                let _ = cx.update_window(handle, |_, w, cx| {
+                    let _ = weak.update(cx, |s, cx| {
+                        s.deadline = None;
+                        s.advance(w, cx);
+                    });
+                });
+            });
+            (at, task)
+        });
+    }
+    /// Publishers wake a parked task. Neither an idle watchdog nor a pointer
+    /// poller is necessary: tracking events own hover; AppKit owns topology
+    /// notifications; semantic deadlines get a cancellable one-shot timer.
+    pub fn follow(&mut self, window: &Window, cx: &mut Context<Self>) {
+        if cx
+            .background_executor()
+            .scheduler_executor()
+            .scheduler()
+            .as_test()
+            .is_none()
+        {
+            self.screen_watch = native::watch_screen(self.inbox.clone());
+        }
+        let inbox = self.inbox.clone();
         let handle = window.window_handle();
-        cx.spawn(async move |weak, cx| {
+        self.follower = Some(cx.spawn(async move |weak, cx| {
             loop {
-                cx.background_executor()
-                    .timer(std::time::Duration::from_millis(33))
-                    .await;
+                inbox.ready().await;
                 if !cx
                     .update_window(handle, |_, w, cx| {
                         weak.update(cx, |s, cx| {
-                            let before = (
-                                s.model.indicator(s.now),
-                                s.model.phase,
-                                s.model.elapsed(s.now),
-                            );
-                            s.now = s.epoch.elapsed().as_millis() as u64;
                             let (events, level) = s.inbox.drain();
-                            let prefs = preferences::current(cx);
-                            let dark = s.model.snapshot.placement
-                                != murmur_core::overlay_geometry::OverlayPlacement::FloatingPill
-                                || matches!(
-                                    w.appearance(),
-                                    WindowAppearance::Dark | WindowAppearance::VibrantDark
-                                );
-                            let mut changed = s.applied.is_none()
-                                || !events.is_empty()
-                                || level.is_some()
-                                || s.applied.is_some_and(|a| {
-                                    a.reduce_transparency != prefs.reduce_transparency
-                                        || a.increase_contrast != prefs.increase_contrast
-                                        || a.dark != dark
-                                });
+                            let mut changed = false;
                             for event in events {
-                                s.model.event(event, s.now);
+                                match event {
+                                    Event::Dock(limit) if limit == s.model.screen.dock => continue,
+                                    Event::RefreshScreen => {
+                                        if let Some(mut screen) = native::screen() {
+                                            if screen.bounds == s.model.screen.bounds
+                                                && screen.scale_factor
+                                                    == s.model.screen.scale_factor
+                                            {
+                                                screen.dock = s.model.screen.dock;
+                                            }
+                                            s.model.event(Event::Screen(screen), s.now);
+                                        }
+                                    }
+                                    event => {
+                                        s.model.event(event, s.epoch.elapsed().as_millis() as u64)
+                                    }
+                                }
+                                changed = true;
                             }
                             if let Some((generation, level)) = level {
                                 s.model.sample(generation, level, s.now);
+                                changed |= s.model.waveform(s.now);
                             }
-                            if let Some(inside) = native::pointer_inside(w)
-                                && s.observe_pointer_at(inside, s.pointer_position(w), s.now)
-                            {
-                                changed = true;
-                            }
-                            if s.now >= s.screen_poll {
-                                s.screen_poll = s.now + 500;
-                                if let Some(mut screen) = native::screen() {
-                                    if screen.bounds == s.model.screen.bounds
-                                        && screen.scale_factor == s.model.screen.scale_factor
-                                    {
-                                        screen.dock = s.model.screen.dock;
-                                    }
-                                    if screen != s.model.screen {
-                                        s.model.event(Event::Screen(screen), s.now);
-                                        changed = true;
-                                    }
-                                }
-                            }
-                            let due = changed || s.model.needs_tick() || s.surface_writer.pending();
-                            if before
-                                != (
-                                    s.model.indicator(s.now),
-                                    s.model.phase,
-                                    s.model.elapsed(s.now),
-                                )
-                                || due
-                            {
+                            if changed {
                                 s.advance(w, cx);
                             }
                         })
@@ -280,8 +330,13 @@ impl Overlay {
                     break;
                 }
             }
+        }));
+        cx.observe_global::<preferences::DisplayPreferences>(|s, cx| {
+            let _ = s.inbox.publish(Event::RefreshScreen);
+            cx.notify();
         })
         .detach();
+        self.schedule(window, cx);
     }
 }
 impl Drop for Overlay {
@@ -295,6 +350,16 @@ impl Drop for Overlay {
 impl Render for Overlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = self.now;
+        let fading = self.visibility.is_some_and(|fade| fade.running(now));
+        if (self.model.waveform(now) || fading) && !cx.reduce_motion() {
+            let weak = cx.entity().downgrade();
+            window.on_next_frame(move |_, cx| {
+                let _ = weak.update(cx, |s, cx| {
+                    s.now = s.epoch.elapsed().as_millis() as u64;
+                    cx.notify();
+                });
+            });
+        }
         let indicator = self.model.indicator(now);
         let expanded = self.model.phase == Phase::Open;
         let g = self.model.geometry(expanded, now);
@@ -324,14 +389,15 @@ impl Render for Overlay {
             .items_center()
             .when(g.floating, |s| s.justify_end())
             .when(!g.floating, |s| s.justify_start());
-        if self.model.hidden(now) {
+        if self.model.hidden(now) && !fading {
             return root.into_any_element();
         }
         let policy = crate::motion::Motion::Overlay.resolve(cx.reduce_motion());
+        let timing = gpui_base::Transition::new(policy.duration).easing(size_easing(g.floating));
         let width = gpui_base::transition(
             "overlay-width",
             px(g.window_w as f32),
-            gpui_base::Transition::new(policy.duration),
+            timing.clone(),
             window,
             cx,
         );
@@ -342,7 +408,7 @@ impl Render for Overlay {
             } else {
                 g.collapsed_h as f32
             }),
-            gpui_base::Transition::new(policy.duration),
+            timing.clone(),
             window,
             cx,
         );
@@ -354,8 +420,12 @@ impl Render for Overlay {
             12.
         };
         native::refit_material(window, width, height, radius, g.floating);
+        let opacity = self.visibility.map_or(1., |fade| fade.value(now));
+        native::material_opacity(window, opacity);
         let mut card = div()
             .id("overlay-surface")
+            .opacity(opacity)
+            .flex_shrink_0()
             .debug_selector(|| "overlay-surface".into())
             .relative()
             .flex()
@@ -363,7 +433,8 @@ impl Render for Overlay {
             .items_center()
             .w(width)
             .h(height)
-            .rounded(px(radius))
+            .when(g.floating, |s| s.rounded(px(radius)))
+            .when(!g.floating, |s| s.rounded_b(px(radius)))
             .overflow_hidden()
             .text_size(tokens::MICRO_SIZE)
             .line_height(tokens::CAPTION_LEADING)
@@ -422,10 +493,6 @@ impl Render for Overlay {
                 "Quick settings, collapsed"
             })
             .w(px(20.))
-            .when(
-                g.floating && indicator == Indicator::Recording && !expanded,
-                |s| s.absolute().left_0().top(px(5.)),
-            )
             .h(px(24.))
             .flex_shrink_0()
             .flex()
@@ -433,15 +500,12 @@ impl Render for Overlay {
             .justify_center()
             .cursor_pointer()
             .text_size(px(8.))
-            .child(
-                if g.floating && indicator == Indicator::Recording && !expanded {
-                    ""
-                } else if expanded {
-                    "⌃"
-                } else {
-                    "⌄"
-                },
-            )
+            .absolute()
+            .left_0()
+            .when(g.floating, |s| s.bottom(px(5.)))
+            .when(!g.floating, |s| {
+                s.top(px((g.collapsed_h as f32 - 24.) / 2.))
+            })
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|s, _, w, cx| {
                 cx.stop_propagation();
@@ -481,8 +545,8 @@ impl Render for Overlay {
             .when(g.floating, |s| {
                 let plain_recording = indicator == Indicator::Recording && !expanded;
                 s.justify_center()
-                    .gap(px(if plain_recording { 8. } else { 2. }))
-                    .px(px(if plain_recording { 12. } else { 4. }))
+                    .gap(px(if plain_recording { 8. } else { 6. }))
+                    .px(px(12.))
             })
             .on_click(cx.listener(|s, e: &ClickEvent, w, cx| {
                 let action = if matches!(e, ClickEvent::Keyboard(_)) {
@@ -493,20 +557,35 @@ impl Render for Overlay {
                 s.send(action);
                 s.advance(w, cx);
             }));
-        let glyph = match indicator {
-            Indicator::Recording => "●",
-            Indicator::Done | Indicator::Delivery(Delivery::Pasted) => "✓",
-            Indicator::Cancelled => "×",
-            Indicator::TapMissed | Indicator::Failure(_) => "⚠",
-            Indicator::Starting | Indicator::Slow => "◯",
-            Indicator::Processing | Indicator::Recovering | Indicator::MeetingProcessing => "◌",
-            // The notch leaves 8 pt beside its 20 pt disclosure. Use the
-            // single copy symbol there; the pill has room for the shortcut.
-            Indicator::Delivery(Delivery::Clipboard) if !g.floating => "⎘",
-            Indicator::Delivery(Delivery::Clipboard) => "⌘V",
-            Indicator::Delivery(Delivery::Retry | Delivery::Retrying) => "↻",
-            Indicator::Delivery(Delivery::Nothing) => "−",
-            _ => "·",
+        let glyph: &[u8] = match indicator {
+            Indicator::Done if g.floating => {
+                include_bytes!("../../vendor/gpui-component/crates/assets/assets/icons/check.svg")
+            }
+            Indicator::Delivery(Delivery::Pasted | Delivery::Clipboard) => {
+                include_bytes!("../../vendor/gpui-component/crates/assets/assets/icons/check.svg")
+            }
+            Indicator::Cancelled | Indicator::Delivery(Delivery::Nothing) => {
+                include_bytes!("../../vendor/gpui-component/crates/assets/assets/icons/x.svg")
+            }
+            Indicator::Failure(Failure::Permission | Failure::ChooseInput) if !g.floating => {
+                include_bytes!("../../vendor/gpui-component/crates/assets/assets/icons/mic-off.svg")
+            }
+            Indicator::TapMissed | Indicator::Failure(_) if !g.floating => include_bytes!(
+                "../../vendor/gpui-component/crates/assets/assets/icons/circle-alert.svg"
+            ),
+            Indicator::TapMissed | Indicator::Failure(_) => include_bytes!(
+                "../../vendor/gpui-component/crates/assets/assets/icons/triangle-alert.svg"
+            ),
+            Indicator::Starting | Indicator::Slow => {
+                include_bytes!("../../vendor/gpui-component/crates/assets/assets/icons/circle.svg")
+            }
+            Indicator::Calibrating => include_bytes!(
+                "../../vendor/gpui-component/crates/assets/assets/icons/arrow-up-down.svg"
+            ),
+            Indicator::Delivery(Delivery::Retry | Delivery::Retrying) => include_bytes!(
+                "../../vendor/gpui-component/crates/assets/assets/icons/rotate-cw.svg"
+            ),
+            _ => include_bytes!("../../vendor/gpui-component/crates/assets/assets/icons/mic.svg"),
         };
         let mut leading = div()
             .id("overlay-leading")
@@ -529,97 +608,154 @@ impl Render for Overlay {
             .debug_selector(|| "overlay-state-glyph".into())
             .flex()
             .whitespace_nowrap()
-            .when(!g.floating, |s| s.w(px(8.)).flex_shrink_0())
-            .text_color(if indicator == Indicator::Recording {
-                p.danger
-            } else {
-                p.text
+            .flex_shrink_0()
+            .text_color(match indicator {
+                Indicator::Recording => p.danger,
+                Indicator::Starting if !g.floating => rgb(0x38bdf8).into(),
+                Indicator::Slow | Indicator::Recovering | Indicator::TapMissed if !g.floating => {
+                    rgb(0xfbbf24).into()
+                }
+                Indicator::Cancelled | Indicator::Failure(_) if !g.floating => rgb(0xef4444).into(),
+                _ => p.text,
             })
-            .when(indicator == Indicator::Idle, |s| {
-                s.opacity(if self.model.snapshot.disabled {
-                    0.15
-                } else {
-                    0.4
-                })
-            })
+            .when(
+                indicator == Indicator::Idle || (indicator == Indicator::Done && !g.floating),
+                |s| {
+                    s.opacity(if self.model.snapshot.disabled {
+                        0.15
+                    } else {
+                        0.4
+                    })
+                },
+            )
             .when(indicator == Indicator::Recording, |s| {
-                s.size(px(if g.floating { 10. } else { 6. }))
-                    .rounded_full()
-                    .bg(p.danger)
+                s.size(px(10.)).rounded_full().bg(p.danger)
             })
             .when(indicator == Indicator::Recording, |s| {
                 s.child(
                     div()
                         .debug_selector(|| "overlay-state-symbol".into())
-                        .size(px(if g.floating { 10. } else { 6. }))
+                        .size(px(10.))
                         .rounded_full()
                         .bg(p.danger),
                 )
             })
-            .when(indicator != Indicator::Recording, |s| {
+            .when(
+                matches!(indicator, Indicator::Starting | Indicator::Slow) && !g.floating,
+                |s| {
+                    s.size(px(10.))
+                        .rounded_full()
+                        .bg(if indicator == Indicator::Slow {
+                            rgb(0xfbbf24)
+                        } else {
+                            rgb(0x38bdf8)
+                        })
+                },
+            )
+            .when(indicator == Indicator::Meeting, |s| {
                 s.child(
                     div()
                         .debug_selector(|| "overlay-state-symbol".into())
-                        .flex_shrink_0()
-                        .child(glyph),
+                        .flex()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .size(px(if g.floating { 10. } else { 8. }))
+                                .rounded_full()
+                                .bg(if g.floating {
+                                    p.danger
+                                } else {
+                                    rgb(0x67e8f9).into()
+                                }),
+                        )
+                        .when(!g.floating, |s| {
+                            s.child(div().size(px(8.)).rounded_full().bg(rgb(0xc4b5fd)))
+                        }),
                 )
-            });
-        let show_status = g.floating || expanded || indicator != Indicator::Idle;
-        if show_status {
-            if matches!(
-                indicator,
-                Indicator::Processing | Indicator::Recovering | Indicator::MeetingProcessing
-            ) {
-                leading = leading.child(
-                    gpui_component::Icon::default()
-                        .data(include_bytes!(
-                            "../../vendor/gpui-component/crates/assets/assets/icons/loader.svg"
-                        ))
-                        .size(px(if g.floating { 14. } else { 8. }))
-                        .text_color(p.text)
-                        .with_animation(
-                            "processing-spinner",
-                            Animation::new(std::time::Duration::from_millis(900))
-                                .repeat()
-                                .with_max_fps(30.),
-                            |s, delta| s.transform(Transformation::rotate(percentage(delta))),
-                        ),
-                );
-            } else if matches!(
-                indicator,
-                Indicator::Starting | Indicator::Slow | Indicator::Recording
-            ) {
-                leading = leading.child(
-                    state_glyph.with_animation(
-                        "recording-pulse",
-                        Animation::new(std::time::Duration::from_millis(1200))
-                            .repeat()
-                            .with_max_fps(30.),
-                        |s, delta| {
-                            s.opacity(0.65 + 0.35 * (delta * std::f32::consts::TAU).cos().abs())
-                        },
+            })
+            .when(
+                !matches!(indicator, Indicator::Recording | Indicator::Meeting)
+                    && (g.floating || !matches!(indicator, Indicator::Starting | Indicator::Slow)),
+                |s| {
+                    s.child(
+                        div()
+                            .debug_selector(|| "overlay-state-symbol".into())
+                            .flex_shrink_0()
+                            .child(gpui_component::Icon::default().data(glyph).size(px(12.))),
+                    )
+                },
+            );
+        if matches!(
+            indicator,
+            Indicator::Processing | Indicator::Recovering | Indicator::MeetingProcessing
+        ) {
+            leading = leading.child(
+                gpui_component::Icon::default()
+                    .data(include_bytes!(
+                        "../../vendor/gpui-component/crates/assets/assets/icons/loader.svg"
+                    ))
+                    .size(px(12.))
+                    .text_color(if !g.floating && indicator == Indicator::Recovering {
+                        rgb(0xfcd34d).into()
+                    } else if !g.floating && indicator == Indicator::MeetingProcessing {
+                        rgb(0x67e8f9).into()
+                    } else {
+                        p.text
+                    })
+                    .with_animation(
+                        "processing-spinner",
+                        Animation::new(std::time::Duration::from_millis(1000)).repeat(),
+                        |s, delta| s.transform(Transformation::rotate(percentage(delta))),
                     ),
-                );
-            } else {
-                leading = leading.child(state_glyph);
-            }
-        }
-        if g.floating && indicator == Indicator::Recording && !expanded {
-            status = status.child(disclosure);
+            );
+        } else if matches!(
+            indicator,
+            Indicator::Starting | Indicator::Slow | Indicator::Recording | Indicator::Meeting
+        ) {
+            leading = leading.child(
+                state_glyph.with_animation(
+                    "recording-pulse",
+                    Animation::new(std::time::Duration::from_millis(
+                        if indicator == Indicator::Recording {
+                            800
+                        } else if indicator == Indicator::Meeting {
+                            2000
+                        } else {
+                            1000
+                        },
+                    ))
+                    .repeat(),
+                    |s, delta| {
+                        let half = if delta <= 0.5 {
+                            delta * 2.
+                        } else {
+                            (1. - delta) * 2.
+                        };
+                        let eased = gpui_base::Easing::EaseInOut.sample(half);
+                        s.opacity(1. - 0.5 * eased)
+                    },
+                ),
+            );
         } else {
-            leading = leading.child(disclosure);
+            leading = leading.child(state_glyph);
         }
+        status = status.child(disclosure);
         if g.floating
             && !matches!(indicator, Indicator::Recording)
             && !matches!(indicator, Indicator::Delivery(d) if d.retryable())
         {
             let word = match indicator {
-                Indicator::Failure(_) => "Error",
+                Indicator::Failure(Failure::Retry) => "Mic failed",
+                Indicator::Failure(Failure::Permission) => "Mic denied",
+                Indicator::Failure(Failure::ChooseInput) => "No mic",
+                Indicator::Failure(Failure::Partial) => "Mic lost",
+                Indicator::Starting | Indicator::Slow => "Connecting",
+                Indicator::Processing => "Transcribing…",
                 Indicator::Recovering => "Recovering",
-                Indicator::Calibrating => "Position",
+                Indicator::Calibrating => "Calibrating",
                 Indicator::Meeting => "Meeting",
                 Indicator::MeetingProcessing => "Finishing",
-                Indicator::Delivery(Delivery::Retrying) => "Trying",
+                Indicator::Delivery(Delivery::Retrying) => "Trying…",
                 Indicator::Delivery(Delivery::Nothing) => "Nothing",
                 Indicator::Delivery(Delivery::Pasted) => "Pasted",
                 _ => indicator.label(),
@@ -637,7 +773,10 @@ impl Render for Overlay {
                     .gap(px(1.5))
                     .children(
                         self.model
-                            .bars(if g.floating { 18 } else { 7 })
+                            .bars_at(
+                                if g.floating { 18 } else { 7 },
+                                if cx.reduce_motion() { 0 } else { now },
+                            )
                             .into_iter()
                             .map(|height| {
                                 div()
@@ -656,16 +795,29 @@ impl Render for Overlay {
                     .debug_selector(|| "delivery-action".into())
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|s, _, _, _| s.model.pause_delivery(s.now)),
+                        cx.listener(|s, _, w, cx| {
+                            s.model.pause_delivery(s.now);
+                            s.advance(w, cx);
+                        }),
                     )
-                    .on_hover(cx.listener(|s, inside: &bool, _, _| {
+                    .on_hover(cx.listener(|s, inside: &bool, w, cx| {
                         if !inside {
-                            s.model.resume_delivery(s.now)
+                            s.model
+                                .resume_delivery(s.epoch.elapsed().as_millis() as u64);
+                            s.advance(w, cx);
                         }
                     }))
                     .child(
                         Button::new("retry-delivery", "Try again")
-                            .caption(if g.floating { "Retry" } else { "↻" })
+                            .caption(if g.floating {
+                                if matches!(indicator, Indicator::Delivery(Delivery::Clipboard)) {
+                                    "Paste"
+                                } else {
+                                    "Try again"
+                                }
+                            } else {
+                                "↻"
+                            })
                             .palette(p)
                             .size(ButtonSize::ExtraSmall)
                             .on_click(cx.listener(|s, _, w, cx| {
@@ -683,7 +835,7 @@ impl Render for Overlay {
         status = status
             .child(leading)
             .when(!g.floating, |s| s.child(div().flex_1()))
-            .when(show_status, |s| s.child(trailing));
+            .child(trailing);
         let controls = if expanded {
             let mut group = div()
                 .id("overlay-quick-settings")

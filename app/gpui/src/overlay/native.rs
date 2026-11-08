@@ -310,3 +310,68 @@ unsafe extern "C" {
     fn murmur_webkit_start() -> bool;
     fn murmur_webkit_inventory(prefix: *const std::ffi::c_char) -> bool;
 }
+
+/// Main-thread AppKit subscription; the owned inbox outlives every callback.
+pub struct ScreenWatch {
+    raw: *mut std::ffi::c_void,
+    _inbox: Box<super::inbox::Inbox>,
+}
+pub fn watch_screen(inbox: super::inbox::Inbox) -> Option<ScreenWatch> {
+    #[cfg(target_os = "macos")]
+    {
+        extern "C" fn changed(context: *mut std::ffi::c_void) {
+            // SAFETY: ScreenWatch keeps the Box alive until observers detach.
+            let inbox = unsafe { &*context.cast::<super::inbox::Inbox>() };
+            let _ = inbox.publish(super::model::Event::RefreshScreen);
+        }
+        let mut inbox = Box::new(inbox);
+        // SAFETY: called only by the main-thread native host; owned until Drop.
+        let raw = unsafe {
+            murmur_overlay_watch_screen(changed, (&mut *inbox as *mut super::inbox::Inbox).cast())
+        };
+        Some(ScreenWatch { raw, _inbox: inbox })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = inbox;
+        None
+    }
+}
+impl Drop for ScreenWatch {
+    fn drop(&mut self) {
+        #[cfg(target_os = "macos")]
+        // SAFETY: GPUI drops the overlay on main, before releasing the inbox.
+        unsafe {
+            murmur_overlay_unwatch_screen(self.raw)
+        };
+    }
+}
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn murmur_overlay_watch_screen(
+        callback: extern "C" fn(*mut std::ffi::c_void),
+        context: *mut std::ffi::c_void,
+    ) -> *mut std::ffi::c_void;
+    fn murmur_overlay_unwatch_screen(watch: *mut std::ffi::c_void);
+}
+
+/// Input and backdrop opacity follow the Metal foreground's visibility curve.
+pub fn pointer_enabled(window: &Window, enabled: bool) {
+    #[cfg(target_os = "macos")]
+    if let Some(raw) = raw(window) {
+        // SAFETY: own retained view, synchronous main-thread property update.
+        unsafe { murmur_overlay_pointer_enabled(raw, enabled) };
+    }
+}
+pub fn material_opacity(window: &Window, opacity: f32) {
+    #[cfg(target_os = "macos")]
+    if let Some(raw) = raw(window) {
+        // SAFETY: own retained HUD, synchronous main-thread property update.
+        unsafe { murmur_overlay_material_opacity(raw, opacity as f64) };
+    }
+}
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    fn murmur_overlay_pointer_enabled(view: *mut std::ffi::c_void, enabled: bool);
+    fn murmur_overlay_material_opacity(view: *mut std::ffi::c_void, opacity: f64);
+}
