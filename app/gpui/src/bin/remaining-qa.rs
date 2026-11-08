@@ -145,7 +145,16 @@ fn main() {
                 });
                 let mut appearance = murmur_ui::themes::fixtures::snapshot().appearance;
                 appearance["mode"] = serde_json::json!(if dark { "dark" } else { "light" });
-                let library = murmur_ui::themes::fixtures::snapshot().library;
+                let mut library = murmur_ui::themes::fixtures::snapshot().library;
+                if let Ok(url) = std::env::var("MURMUR_THEME_SOURCE_URL") {
+                    let entry = library["themes"]
+                        .as_array_mut()
+                        .unwrap()
+                        .iter_mut()
+                        .find(|entry| entry["id"] == "synthetic-orchid")
+                        .unwrap();
+                    entry["source"] = serde_json::json!({"kind":"open-vsx","sourceUrl":url});
+                }
                 if std::env::var_os("MURMUR_MIDNIGHT").is_some() {
                     appearance = murmur_ui::themes::library::selection(
                         &appearance,
@@ -168,6 +177,7 @@ fn main() {
                     entity.read(cx).themes.clone().update(cx, |s, _| {
                         if let Some(snapshot) = s.controller.model.snapshot.as_mut() {
                             snapshot.appearance = appearance.clone();
+                            snapshot.library = library.clone();
                         }
                     });
                 }

@@ -122,7 +122,11 @@ fn main() {
             physical_notch: std::env::var_os("MURMUR_PRETEND_NOTCH").is_none(),
             menu_bar_visible: true,
         });
-        model.level = if floating { 1. } else { 0.04 };
+        model.level = std::env::var("MURMUR_OVERLAY_LEVEL")
+            .ok()
+            .and_then(|level| level.parse::<f32>().ok())
+            .map(|level| level.clamp(0., 1.))
+            .unwrap_or(if floating { 1. } else { 0.04 });
         if expanded {
             model.phase = Phase::Open;
         }
