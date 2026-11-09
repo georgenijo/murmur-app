@@ -159,6 +159,8 @@ pub struct Backend {
     pub booted: Arc<AtomicBool>,
     pub startup_stage: Arc<AtomicU64>,
     pub scan: Arc<Mutex<Option<(String, Value)>>>,
+    /// Presents a chosen folder's scan from the snapshot read before the picker.
+    pub scan_feed: Arc<Mutex<Option<(String, ScanFeed)>>>,
     pub theme_snapshot: Arc<Mutex<Option<(crate::themes::model::Snapshot, Value)>>>,
     pub calendar_access: Arc<Mutex<crate::onboarding::model::Access>>,
     pub consumer: Consumer,
@@ -176,6 +178,7 @@ pub struct Backend {
     pub diagnostics: Arc<super::diagnostics::Clocks>,
     pub levels: Arc<Mutex<Option<(u64, f32)>>>,
 }
+pub type ScanFeed = Box<dyn Fn(crate::customize::model::Snapshot) + Send + Sync>;
 pub type ReadFuture<S> = Pin<Box<dyn Future<Output = Result<S, String>> + Send>>;
 pub type Read<S> = fn(Backend) -> ReadFuture<S>;
 impl Backend {

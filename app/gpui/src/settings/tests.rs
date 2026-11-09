@@ -421,6 +421,57 @@ mod ax {
         );
         draw(cx);
     }
+    /// A reveal queued behind a reload must survive that reload failing: the
+    /// error and Reload stay, no Disclosure request clears them, and the
+    /// reveal applies only after a retry produces a snapshot.
+    #[gpui::test]
+    fn queued_reveal_waits_for_a_successful_reload(cx: &mut TestAppContext) {
+        use super::super::host::Host;
+        let (e, host, cx) = harness(cx);
+        host.delay_read.set(true);
+        e.update(cx, |s, cx| s.request(RequestKind::Read, cx));
+        assert_eq!(host.delayed.borrow().len(), 1, "the reload is held");
+        cx.update(|w, cx| e.update(cx, |s, cx| s.reveal_setting("voiceCommandsEnabled", w, cx)));
+        draw(cx);
+        // The held reload now fails; the old snapshot stays.
+        host.delay_read.set(false);
+        host.fail.set(Some(Problem::Unavailable));
+        let (request, inbox) = host.delayed.borrow_mut().pop().unwrap();
+        host.request(request, inbox);
+        draw(cx);
+        draw(cx);
+        let t = tree(cx);
+        let message = Problem::Unavailable.message();
+        assert!(
+            t.nodes.iter().any(|(_, n)| n.label() == Some(message)),
+            "the read error stays visible"
+        );
+        let reload = named(&t, "Reload settings");
+        assert!(
+            !t.nodes
+                .iter()
+                .find(|(id, _)| *id == reload)
+                .unwrap()
+                .1
+                .is_disabled(),
+            "Reload stays available"
+        );
+        assert_eq!(host.disclosures.get(), 0, "no Disclosure was sent");
+        assert!(!e.read_with(cx, |s, _| s.model_advanced()));
+        // Retry succeeds: the error clears and the queued reveal applies.
+        click(cx, reload);
+        draw(cx);
+        draw(cx);
+        let t = tree(cx);
+        assert!(!t.nodes.iter().any(|(_, n)| n.label() == Some(message)));
+        assert!(e.read_with(cx, |s, _| s.model_advanced()), "reveal applied");
+        assert_eq!(host.disclosures.get(), 1);
+        assert_eq!(
+            e.read_with(cx, |s, _| s.revealed()),
+            Some("voiceCommandsEnabled")
+        );
+    }
+
     #[gpui::test]
     fn shared_pane_prose_is_static_text(cx: &mut TestAppContext) {
         let (_, _, cx) = harness(cx);

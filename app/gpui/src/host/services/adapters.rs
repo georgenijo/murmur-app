@@ -1113,37 +1113,21 @@ mod customize_action {
                 *b.scan.lock().unwrap_or_else(|p| p.into_inner()) = Some((id.clone(), Value::Null));
                 id.clone()
             }
-            // The scan registers as soon as the picker returns a folder;
-            // progress is only published while this ID owns the scan.
-            crate::customize::host::Action::ChooseProject { id } => id.clone(),
+            // The scan registers as soon as the picker returns a folder and is
+            // presented from the snapshot `run` already read, so Cancel never
+            // waits on a read of its own. Later progress needs the owner ID.
+            crate::customize::host::Action::ChooseProject { id } => {
+                *b.scan_feed.lock().unwrap_or_else(|p| p.into_inner()) = Some((
+                    id.clone(),
+                    scan_feed(id, ticket, current.clone(), inbox.clone()),
+                ));
+                id.clone()
+            }
             _ => return stop,
         };
-        let choose = matches!(action, crate::customize::host::Action::ChooseProject { .. });
         let finished = stop.0.clone();
         let backend = b.clone();
         b.spawn(async move {
-            if choose {
-                // Read before the picker returns, then present the chosen scan
-                // from that snapshot the instant it registers (no await), so
-                // Cancel never waits on a settings read.
-                let ready = read::customize(backend.clone()).await.ok();
-                while !finished.load(std::sync::atomic::Ordering::Acquire)
-                    && current()
-                    && !inbox.is_closed()
-                    && !scan_owned_by(&backend, &id)
-                {
-                    tokio::time::sleep(std::time::Duration::from_millis(15)).await;
-                }
-                if let Some(mut snapshot) = ready
-                    && !finished.load(std::sync::atomic::Ordering::Acquire)
-                    && current()
-                    && scan_owned_by(&backend, &id)
-                {
-                    snapshot.revision = ticket.revision;
-                    snapshot.scan = crate::customize::projection::running(&id, &Value::Null);
-                    let _ = inbox.publish(Event::Progress { ticket, snapshot });
-                }
-            }
             while !finished.load(std::sync::atomic::Ordering::Acquire)
                 && current()
                 && !inbox.is_closed()
@@ -1164,8 +1148,31 @@ mod customize_action {
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             }
+            // A picker that never returned a folder leaves its feed unused.
+            let mut feed = backend.scan_feed.lock().unwrap_or_else(|p| p.into_inner());
+            if feed.as_ref().is_some_and(|(owner, _)| *owner == id) {
+                feed.take();
+            }
         });
         stop
+    }
+    /// Presents the chosen scan from an already-read snapshot, so the view
+    /// shows Cancel at once. Nothing here awaits.
+    pub(super) fn scan_feed(
+        id: &str,
+        ticket: crate::workspace::Ticket,
+        current: Live,
+        inbox: Inbox<crate::customize::model::Snapshot>,
+    ) -> super::super::backend::ScanFeed {
+        let id = id.to_owned();
+        Box::new(move |mut snapshot| {
+            if !current() || inbox.is_closed() {
+                return;
+            }
+            snapshot.revision = ticket.revision;
+            snapshot.scan = crate::customize::projection::running(&id, &Value::Null);
+            let _ = inbox.publish(Event::Progress { ticket, snapshot });
+        })
     }
     use crate::customize::{host::Action, model::Snapshot, vocabulary};
     pub fn admit(b: &Backend, a: &Action, r: u64) -> Accepted {
@@ -1178,9 +1185,6 @@ mod customize_action {
             ),
             _ => None,
         }
-    }
-    fn scan_owned_by(b: &Backend, id: &str) -> bool {
-        scan_owner(b).as_deref() == Some(id)
     }
     fn scan_owner(b: &Backend) -> Option<String> {
         b.scan
@@ -1205,6 +1209,9 @@ mod customize_action {
     /// tests drive `scan_folder` with a scripted fake.
     pub(super) trait ScanPorts: Sync {
         fn begin(&self, id: &str);
+        /// Show scan `id` from `shown` (the snapshot read before the picker),
+        /// without awaiting.
+        fn present(&self, id: &str, shown: Snapshot);
         fn release(&self, id: &str);
         /// Whether `id` still owns the scan registry (no Cancel, Clear, or newer scan).
         fn owns(&self, id: &str) -> bool;
@@ -1219,6 +1226,19 @@ mod customize_action {
         fn begin(&self, id: &str) {
             *self.scan.lock().unwrap_or_else(|p| p.into_inner()) =
                 Some((id.to_owned(), Value::Null));
+        }
+        fn present(&self, id: &str, shown: Snapshot) {
+            let feed = {
+                let mut slot = self.scan_feed.lock().unwrap_or_else(|p| p.into_inner());
+                if slot.as_ref().is_some_and(|(owner, _)| owner == id) {
+                    slot.take()
+                } else {
+                    None
+                }
+            };
+            if let Some((_, feed)) = feed {
+                feed(shown);
+            }
         }
         fn release(&self, id: &str) {
             release_scan(self, id)
@@ -1316,9 +1336,9 @@ mod customize_action {
         snapshot.scan = crate::customize::projection::finished(Some(id), summary);
         Ok(snapshot)
     }
-    /// Store a chosen folder, then scan it. The scan is registered before the
-    /// first await so the progress feed can present it (and its Cancel) the
-    /// moment the selection returns. The settings read can outlive the
+    /// Store a chosen folder, then scan it. The scan is registered and
+    /// presented (from `shown`, read before the picker) before the first await,
+    /// so its Cancel is available the moment the selection returns. The settings read can outlive the
     /// presentation, so nothing is written until the lease and ownership are
     /// confirmed again.
     pub(super) async fn adopt_folder<P: ScanPorts>(
@@ -1326,11 +1346,13 @@ mod customize_action {
         path: String,
         id: String,
         current: Live,
+        shown: Snapshot,
     ) -> Result<Snapshot, String> {
         if !current() {
             return Err(STALE.into());
         }
         ports.begin(&id);
+        ports.present(&id, shown);
         let out = adopt_registered(ports, path, &id, current).await;
         ports.release(&id);
         out
@@ -1424,7 +1446,7 @@ mod customize_action {
                     .await?
                     && current()
                 {
-                    return adopt_folder(b, path, id, current).await.map(Some);
+                    return adopt_folder(b, path, id, current, s).await.map(Some);
                 }
             }
             Action::ClearProject => clear_folder(b, current).await?,
@@ -1545,6 +1567,7 @@ mod customize_action {
             owner: Mutex<Option<String>>,
             walks: Mutex<u32>,
             cancelled: Mutex<Vec<String>>,
+            presented: Mutex<Vec<String>>,
             /// Runs while the settings read is in flight, like a Cancel or a
             /// newer scan landing during the await.
             during_settings: Option<SettingsHook>,
@@ -1559,6 +1582,7 @@ mod customize_action {
                     owner: Default::default(),
                     walks: Default::default(),
                     cancelled: Default::default(),
+                    presented: Default::default(),
                     during_settings: None,
                 }
             }
@@ -1566,6 +1590,9 @@ mod customize_action {
         impl ScanPorts for Fake {
             fn begin(&self, id: &str) {
                 *self.owner.lock().unwrap() = Some(id.to_owned());
+            }
+            fn present(&self, id: &str, _: Snapshot) {
+                self.presented.lock().unwrap().push(id.to_owned());
             }
             fn release(&self, id: &str) {
                 let mut owner = self.owner.lock().unwrap();
@@ -1714,6 +1741,7 @@ mod customize_action {
                 "/synthetic/project".into(),
                 "scan-1".into(),
                 lease,
+                crate::customize::fixtures::snapshot(),
             ));
             assert!(result.is_err());
             assert!(fake.saved.lock().unwrap().is_empty(), "no folder write");
@@ -1722,28 +1750,64 @@ mod customize_action {
         }
 
         #[test]
-        fn choose_project_registers_the_scan_before_its_first_await() {
+        fn choose_project_presents_the_scan_before_its_first_await() {
             // Hold the first production read: the scan must already be owned
-            // so the progress feed can show it and Cancel can address it.
+            // and presented (from the pre-picker snapshot) so Cancel exists.
             let mut fake = Fake::new(Ok(summary(true, 2)));
             let seen = Arc::new(Mutex::new(None));
             let record = seen.clone();
             fake.during_settings = Some(Box::new(move |f| {
-                *record.lock().unwrap() = Some(f.owner.lock().unwrap().clone());
+                *record.lock().unwrap() = Some((
+                    f.owner.lock().unwrap().clone(),
+                    f.presented.lock().unwrap().clone(),
+                ));
             }));
             futures::executor::block_on(adopt_folder(
                 &fake,
                 "/synthetic/project".into(),
                 "scan-1".into(),
                 live(true),
+                crate::customize::fixtures::snapshot(),
             ))
             .unwrap();
             assert_eq!(
                 seen.lock().unwrap().clone(),
-                Some(Some("scan-1".to_owned())),
-                "owned while the first read is in flight"
+                Some((Some("scan-1".to_owned()), vec!["scan-1".to_owned()])),
+                "owned and presented while the first read is in flight"
             );
             assert!(fake.owner.lock().unwrap().is_none(), "released afterwards");
+        }
+
+        #[test]
+        fn the_scan_feed_publishes_running_progress_without_any_read() {
+            // No service, read, or runtime: the pre-picker snapshot alone
+            // yields the running scan the view needs for Cancel.
+            let inbox = Inbox::default();
+            let ticket = crate::workspace::Ticket {
+                attachment: 1,
+                generation: 2,
+                revision: 7,
+            };
+            let feed = scan_feed("scan-1", ticket, live(true), inbox.clone());
+            feed(crate::customize::fixtures::snapshot());
+            let events = inbox.drain();
+            assert_eq!(events.len(), 1);
+            match &events[0] {
+                Event::Progress {
+                    ticket: t,
+                    snapshot,
+                } => {
+                    assert_eq!(*t, ticket);
+                    assert_eq!(snapshot.revision, 7);
+                    assert!(crate::customize::projection::is_scanning(&snapshot.scan));
+                    assert_eq!(snapshot.scan["id"], "scan-1");
+                }
+                _ => panic!("expected a progress event"),
+            }
+            // A revoked presentation publishes nothing.
+            let revoked = scan_feed("scan-1", ticket, live(false), inbox.clone());
+            revoked(crate::customize::fixtures::snapshot());
+            assert!(inbox.drain().is_empty());
         }
 
         #[test]
@@ -1758,6 +1822,7 @@ mod customize_action {
                 "/synthetic/project".into(),
                 "scan-1".into(),
                 live(true),
+                crate::customize::fixtures::snapshot(),
             ));
             assert!(result.is_err());
             assert!(fake.saved.lock().unwrap().is_empty());
@@ -1777,6 +1842,7 @@ mod customize_action {
                 "/synthetic/project".into(),
                 "scan-1".into(),
                 live(true),
+                crate::customize::fixtures::snapshot(),
             ))
             .unwrap();
             assert_eq!(snapshot.scan["state"], "done");

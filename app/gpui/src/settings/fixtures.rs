@@ -53,6 +53,8 @@ pub struct FixtureHost {
     pub delay_preview: Cell<bool>,
     /// Hold Read requests in `delayed`, like a slow first load.
     pub delay_read: Cell<bool>,
+    /// Disclosure requests received, to prove a held-back reveal sent none.
+    pub disclosures: Cell<usize>,
     pub fail_preview: Cell<bool>,
     pub fail_shortcut: Cell<bool>,
     pub delayed: RefCell<Vec<(Request, Inbox)>>,
@@ -70,6 +72,7 @@ impl Default for FixtureHost {
             root: None,
             delay_preview: Cell::new(false),
             delay_read: Cell::new(false),
+            disclosures: Cell::new(0),
             fail_preview: Cell::new(false),
             fail_shortcut: Cell::new(false),
             delayed: RefCell::new(vec![]),
@@ -99,6 +102,9 @@ impl Host for FixtureHost {
     fn request(&self, r: Request, inbox: Inbox) {
         if !r.lease.is_current() || inbox.is_closed() {
             return;
+        }
+        if matches!(r.kind, RequestKind::Disclosure { .. }) {
+            self.disclosures.set(self.disclosures.get() + 1);
         }
         if self.delay_read.get() && matches!(r.kind, RequestKind::Read) {
             self.delayed.borrow_mut().push((r, inbox));

@@ -657,13 +657,15 @@ impl Settings {
     }
     /// Open the page owning `key`, expand its Advanced disclosure when the row
     /// is hidden there, scroll to it, and focus the control. Before the first
-    /// snapshot arrives (or while another request is pending) the disclosure
-    /// request would be rejected, so the page opens now and the rest waits.
+    /// snapshot arrives, while another request is pending, or while a failed
+    /// read is on screen, the disclosure request would be rejected or would
+    /// clear that error, so the page opens now and the rest waits for a
+    /// successful snapshot.
     pub fn reveal_setting(&mut self, key: &str, w: &mut Window, cx: &mut Context<Self>) {
         let Some(row) = ROWS.iter().find(|r| r.key == key) else {
             return;
         };
-        if self.model.snapshot.is_none() || self.model.pending {
+        if self.model.snapshot.is_none() || self.model.pending || self.model.problem.is_some() {
             self.navigate(row.page, None, w, cx);
             self.pending_reveal = Some(row.key);
             return;
@@ -680,6 +682,7 @@ impl Settings {
         if let Some(key) = self.pending_reveal
             && self.model.snapshot.is_some()
             && !self.model.pending
+            && self.model.problem.is_none()
         {
             self.pending_reveal = None;
             self.reveal_setting(key, w, cx);
