@@ -180,14 +180,16 @@ impl Home {
                 .flex()
                 .items_center()
                 .child(
-                    Button::new("update-indicator", update.summary())
-                        .icon_only(glyph)
-                        .content(content)
-                        .padding_y(px(0.))
-                        .intent(intent)
-                        .size(ButtonSize::Compact)
-                        .track_focus(&self.focus_for("update-indicator", cx))
-                        .on_click(move |_, _, cx| e.update(cx, |s, cx| s.update_clicked(cx))),
+                    div().debug_selector(|| "update-indicator".into()).child(
+                        Button::new("update-indicator", update.summary())
+                            .icon_only(glyph)
+                            .content(content)
+                            .padding_y(px(0.))
+                            .intent(intent)
+                            .size(ButtonSize::Compact)
+                            .track_focus(&self.focus_for("update-indicator", cx))
+                            .on_click(move |_, _, cx| e.update(cx, |s, cx| s.update_clicked(cx))),
+                    ),
                 )
                 .when(!announcement.is_empty(), |d| {
                     d.child(
