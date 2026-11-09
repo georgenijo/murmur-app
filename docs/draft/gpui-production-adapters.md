@@ -37,6 +37,11 @@ required policy, stage-specific retry and notifications share that owner. Notes
 use bounded native Markdown, suppress image/HTML resource loading and open only
 explicit allowed web links. Correct & Teach uses the existing proposal and
 scope validation, ordered history mutation, knowledge publication and counters.
+Its review flow (`host/services/teaching.rs`) only proposes: History changes on
+an explicit Save correction only, or after Remember correction commits the rule.
+Back discards the pending proposal; a failed commit leaves History untouched, and
+a committed rule with a failed edit is reported and retries only the edit. A
+specific-term form proposes an exact heard term and replacement for review.
 No transcript, audio, clipboard, selection or private capture payload is logged.
 
 ## Implementation checks

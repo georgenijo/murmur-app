@@ -1,8 +1,9 @@
 //! Main window composition. Only the active section holds a presentation lease.
 use super::backend::{Backend, Route};
+use super::teaching::{self, Review, Settled, Step, Teaching};
 use crate::{Button, TextField, field::TextFieldState, settings::schema::Page, tokens::Palette};
 use gpui::{prelude::*, *};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::{
     rc::Rc,
     sync::{
@@ -35,12 +36,6 @@ impl Section {
         }
     }
 }
-struct Teaching {
-    entry: murmur_core::history::Entry,
-    epoch: u64,
-    result: Value,
-    busy: bool,
-}
 pub struct Main {
     backend: Backend,
     section: Section,
@@ -65,6 +60,9 @@ pub struct Main {
     notes_page: usize,
     teaching: Option<Teaching>,
     corrected: Entity<TextFieldState>,
+    heard: Entity<TextFieldState>,
+    specific_source: Entity<TextFieldState>,
+    specific_replacement: Entity<TextFieldState>,
     teaching_epoch: Arc<AtomicU64>,
     return_section: Option<Section>,
     error: Option<&'static str>,
@@ -97,6 +95,9 @@ impl Main {
         meetings.update(cx, |s, _| s.embedded = true);
         let palette = cx.new(|cx| crate::palette::CommandPalette::new(host, w, cx));
         let corrected = cx.new(|cx| TextFieldState::new(w, cx));
+        let heard = cx.new(|cx| TextFieldState::new(w, cx));
+        let specific_source = cx.new(|cx| TextFieldState::new(w, cx));
+        let specific_replacement = cx.new(|cx| TextFieldState::new(w, cx));
         let mut s = Self {
             backend,
             section: Section::Home,
@@ -121,6 +122,9 @@ impl Main {
             notes_page: 0,
             teaching: None,
             corrected,
+            heard,
+            specific_source,
+            specific_replacement,
             teaching_epoch: Default::default(),
             return_section: None,
             error: None,
@@ -143,6 +147,16 @@ impl Main {
                 cx.notify();
             }),
         );
+        // Review buttons follow the typed text and the heard-term selection.
+        for field in [
+            s.corrected.clone(),
+            s.heard.clone(),
+            s.specific_source.clone(),
+            s.specific_replacement.clone(),
+        ] {
+            s.subscriptions
+                .push(cx.observe(&field, |_, _, cx| cx.notify()));
+        }
         s.show(w, cx);
         s
     }
@@ -495,20 +509,36 @@ impl Main {
                 self.close_teaching();
                 self.return_section = Some(self.section);
                 let epoch = self.teaching_epoch.fetch_add(1, Ordering::SeqCst) + 1;
-                self.corrected
-                    .update(cx, |s, cx| s.set_value(entry.text.clone(), w, cx));
-                self.teaching = Some(Teaching {
-                    entry,
-                    epoch,
-                    result: Value::Null,
-                    busy: false,
-                });
+                for (field, text) in [
+                    (&self.corrected, entry.text.clone()),
+                    (&self.heard, entry.text.clone()),
+                    (&self.specific_source, String::new()),
+                    (&self.specific_replacement, String::new()),
+                ] {
+                    field.update(cx, |s, cx| s.set_value(text, w, cx));
+                }
+                self.teaching = Some(Teaching::new(entry, epoch));
                 w.focus(&self.corrected.read(cx).focus_handle(cx), cx);
             }
             Route::TeachingResult { epoch, result } => {
+                let mut close = false;
+                let mut pending = None;
                 if let Some(teaching) = self.teaching.as_mut().filter(|t| t.epoch == epoch) {
-                    teaching.busy = false;
-                    teaching.result = result;
+                    // The rule is saved but History is not: keep the reviewed
+                    // text so "Save correction only" retries exactly that edit.
+                    if matches!(result, Settled::RuleSaved(_)) {
+                        pending = teaching.proposal().map(|p| p.after.clone());
+                    }
+                    close = teaching.settle(result);
+                }
+                if let Some(text) = pending {
+                    self.corrected.update(cx, |s, cx| s.set_value(text, w, cx));
+                }
+                if close {
+                    self.close_teaching();
+                    self.home.update(cx, |h, cx| h.destination_closed(w, cx));
+                } else {
+                    self.focus_teaching(w, cx);
                 }
             }
             Route::HistoryAction(action) => {
@@ -521,44 +551,150 @@ impl Main {
     }
     fn close_teaching(&mut self) {
         self.teaching_epoch.fetch_add(1, Ordering::SeqCst);
-        if let Some(teaching) = self.teaching.take()
-            && let Some(id) = teaching.result["proposalId"].as_u64()
-        {
+        if let Some(id) = self.teaching.take().and_then(|t| t.proposal_id()) {
             let b = self.backend.clone();
-            self.backend.spawn(async move {
-                let _ = b
-                    .call(
-                        "discard_learned_correction_proposal",
-                        json!({"proposalId":id}),
-                    )
-                    .await;
-            });
+            self.backend
+                .spawn(async move { teaching::discard(&b, id).await });
         }
     }
-    fn review_teaching(&mut self, cx: &mut Context<Self>) {
+    fn focus_teaching(&self, w: &mut Window, cx: &mut Context<Self>) {
+        let field = match self.teaching.as_ref().map(|t| t.step) {
+            Some(Step::Edit) => &self.corrected,
+            Some(Step::SpecificEdit) => &self.specific_source,
+            _ => return,
+        };
+        w.focus(&field.read(cx).focus_handle(cx), cx);
+    }
+    /// Run one service operation for the open dialog. The result returns through
+    /// the route queue and is ignored if the dialog was closed or replaced.
+    fn run_teaching<Fut>(
+        &mut self,
+        cx: &mut Context<Self>,
+        work: impl FnOnce(Backend, super::os::Live, murmur_core::history::Entry) -> Fut,
+    ) where
+        Fut: std::future::Future<Output = Settled> + Send + 'static,
+    {
         let Some(teaching) = self.teaching.as_mut().filter(|t| !t.busy) else {
             return;
         };
         teaching.busy = true;
-        let entry = teaching.entry.clone();
+        teaching.error = None;
         let epoch = teaching.epoch;
-        let corrected = self.corrected.read(cx).value().to_string();
+        let entry = teaching.entry.clone();
         let state = self.teaching_epoch.clone();
+        let live: super::os::Live = Arc::new(move || state.load(Ordering::SeqCst) == epoch);
         let b = self.backend.clone();
-        self.backend.spawn(async move{
-            let current=||state.load(Ordering::SeqCst)==epoch;
-            if !current(){return;}
-            let result=async {
-                let (revision,snapshot)=b.services.history_snapshot().await?;
-                if !current()||!snapshot.history.contains(&entry.target()){return Err("History changed".to_owned());}
-                b.services.mutate_history(revision,murmur_core::completion::Command::History(murmur_core::completion::HistoryMutation::Edit{target:entry.target(),text:corrected.clone()}))?;
-                if !current(){return Err("Presentation changed".into());}
-                b.call("propose_learned_correction",json!({"request":{"originalText":entry.text,"correctedText":corrected,"teachingContext":entry.target().get("teachingContext")}})).await
-            }.await;
-            let result=result.unwrap_or_else(|_|json!({"kind":"unsafe","reason":"The correction could not be reviewed. Reopen the current History entry and retry."}));
-            if current(){b.navigate(Route::TeachingResult{epoch,result});}
-            else if let Some(id)=result["proposalId"].as_u64(){let _=b.call("discard_learned_correction_proposal",json!({"proposalId":id})).await;}
+        let job = work(b.clone(), live, entry);
+        self.backend.spawn(async move {
+            let result = job.await;
+            b.navigate(Route::TeachingResult { epoch, result });
         });
+        cx.notify();
+    }
+    /// The exact text a save writes: the reviewed result when there is one,
+    /// otherwise the typed correction. Blank or unchanged text never saves.
+    fn teaching_text(&self, cx: &App) -> Option<String> {
+        let teaching = self.teaching.as_ref()?;
+        let text = match teaching.proposal() {
+            Some(proposal) => proposal.after.clone(),
+            None => self.corrected.read(cx).value().to_string(),
+        };
+        (!text.trim().is_empty() && text != teaching.entry.text).then_some(text)
+    }
+    fn review_automatic(&mut self, cx: &mut Context<Self>) {
+        let corrected = self.corrected.read(cx).value().to_string();
+        if !self
+            .teaching
+            .as_ref()
+            .is_some_and(|t| t.can_review(&corrected))
+        {
+            return;
+        }
+        self.run_teaching(cx, move |b, live, entry| async move {
+            teaching::review(&b, &live, &entry, Review::Automatic { corrected }).await
+        });
+    }
+    fn review_specific(&mut self, cx: &mut Context<Self>) {
+        let source = self.specific_source.read(cx).value().to_string();
+        let replacement = self.specific_replacement.read(cx).value().to_string();
+        if !self
+            .teaching
+            .as_ref()
+            .is_some_and(|t| t.can_review_specific(&source, &replacement))
+        {
+            return;
+        }
+        self.run_teaching(cx, move |b, live, entry| async move {
+            let review = Review::Specific {
+                source,
+                replacement,
+            };
+            teaching::review(&b, &live, &entry, review).await
+        });
+    }
+    fn save_teaching_only(&mut self, cx: &mut Context<Self>) {
+        let Some(text) = self.teaching_text(cx) else {
+            return;
+        };
+        let proposal = self.teaching.as_ref().and_then(|t| t.proposal_id());
+        self.run_teaching(cx, move |b, live, entry| async move {
+            teaching::save_only(&b, &live, &entry, text, proposal).await
+        });
+    }
+    fn remember_teaching(&mut self, cx: &mut Context<Self>) {
+        let Some(text) = self.teaching_text(cx) else {
+            return;
+        };
+        let Some((proposal, scope)) = self
+            .teaching
+            .as_ref()
+            .and_then(|t| Some((t.proposal_id()?, t.selected_scope()?.scope.clone())))
+        else {
+            return;
+        };
+        self.run_teaching(cx, move |b, live, entry| async move {
+            teaching::remember(&b, &live, &entry, text, proposal, scope).await
+        });
+    }
+    fn teaching_back(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        let Some(teaching) = self.teaching.as_mut().filter(|t| !t.busy) else {
+            return;
+        };
+        if let Some(id) = teaching.back() {
+            let b = self.backend.clone();
+            self.backend
+                .spawn(async move { teaching::discard(&b, id).await });
+        }
+        self.focus_teaching(w, cx);
+        cx.notify();
+    }
+    fn teach_specific(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        let Some(teaching) = self.teaching.as_mut().filter(|t| !t.busy) else {
+            return;
+        };
+        let (source, replacement, discard) = teaching.open_specific();
+        if let Some(id) = discard {
+            let b = self.backend.clone();
+            self.backend
+                .spawn(async move { teaching::discard(&b, id).await });
+        }
+        for (field, text) in [
+            (&self.specific_source, source),
+            (&self.specific_replacement, replacement),
+        ] {
+            field.update(cx, |s, cx| s.set_value(text, w, cx));
+        }
+        self.focus_teaching(w, cx);
+        cx.notify();
+    }
+    fn use_heard_selection(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        let selected = self.heard.read(cx).selected_value().trim().to_owned();
+        if selected.is_empty() {
+            return;
+        }
+        self.specific_source
+            .update(cx, |s, cx| s.set_value(selected, w, cx));
+        cx.notify();
     }
     fn update_action(&self, kind: &'static str) {
         let b = self.backend.clone();
@@ -921,74 +1057,8 @@ impl Render for Main {
             modal = modal.child(footer);
             root = root.child(crate::update_dialog::scrim().child(modal));
         }
-        if let Some(teaching) = &self.teaching {
-            let proposal_id = teaching.result["proposalId"].as_u64();
-            let mut modal = div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .p_5()
-                .w(px(600.))
-                .bg(p.raised)
-                .border_1()
-                .border_color(p.border)
-                .child(
-                    div()
-                        .text_size(px(20.))
-                        .child(gpui::text!("Correct & Teach")),
-                )
-                .child(
-                    TextField::new(&self.corrected, "Corrected dictation")
-                        .readonly(teaching.busy || proposal_id.is_some()),
-                );
-            if let Some(id) = proposal_id {
-                let label = format!(
-                    "Remember “{}” as “{}”",
-                    teaching.result["source"].as_str().unwrap_or_default(),
-                    teaching.result["replacement"].as_str().unwrap_or_default()
-                );
-                modal = modal.child(gpui::text!(label));
-                for (index, option) in teaching.result["scopeOptions"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .take(3)
-                    .enumerate()
-                {
-                    let scope = option["scope"].clone();
-                    let label = option["label"]
-                        .as_str()
-                        .unwrap_or("Save correction")
-                        .to_owned();
-                    modal=modal.child(Button::new(format!("teach-confirm-{index}"),label).disabled(teaching.busy).on_click(cx.listener(move|s,_,_,cx|{
-                        let Some(teaching)=s.teaching.as_mut().filter(|t|!t.busy) else{return;};
-                        let epoch=teaching.epoch;
-                        let accepted=s.backend.services.accept_correction(id,scope.clone());
-                        teaching.busy=true;
-                        let b=s.backend.clone();
-                        s.backend.spawn(async move{
-                            let success=match accepted {Ok(job)=>job.await.is_ok_and(|r|r.is_ok()),Err(_)=>false};
-                            b.navigate(Route::TeachingResult{epoch,result:if success{json!({"kind":"saved","reason":"The correction is saved."})}else{json!({"kind":"unsafe","reason":"The correction could not be saved. Review it again and retry."})}});
-                        });cx.notify();
-                    })));
-                }
-            } else {
-                modal = modal.child(
-                    Button::new("teach-review", "Save correction and review rule")
-                        .disabled(teaching.busy)
-                        .on_click(cx.listener(|s, _, _, cx| s.review_teaching(cx))),
-                );
-            }
-            if let Some(reason) = teaching.result["reason"].as_str() {
-                modal = modal.child(gpui::text!(reason.to_owned()));
-            }
-            modal = modal.child(Button::new("teach-cancel", "Close").on_click(cx.listener(
-                |s, _, w, cx| {
-                    s.close_teaching();
-                    s.home.update(cx, |h, cx| h.destination_closed(w, cx));
-                    cx.notify();
-                },
-            )));
+        if self.teaching.is_some() {
+            let modal = self.teaching_modal(p, cx);
             root = root.child(
                 div()
                     .absolute()
@@ -1001,6 +1071,277 @@ impl Render for Main {
             );
         }
         root.into_any_element()
+    }
+}
+
+fn teach_text(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Text {
+    Text::new(id.into(), text.into())
+}
+
+fn teach_example(p: Palette, id: &'static str, label: &'static str, text: String) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .p_3()
+        .border_1()
+        .border_color(p.border)
+        .child(
+            div()
+                .text_size(px(12.))
+                .text_color(p.muted)
+                .child(teach_text(format!("{id}-label"), label)),
+        )
+        .child(div().child(teach_text(id, text)))
+}
+
+impl Main {
+    /// Step-based Correct & Teach dialog. Rendering reads state only; every
+    /// button forwards to a method that goes through `teaching::*`.
+    fn teaching_modal(&self, p: Palette, cx: &mut Context<Self>) -> Div {
+        let Some(t) = self.teaching.as_ref() else {
+            return div();
+        };
+        let busy = t.busy;
+        let corrected = self.corrected.read(cx).value().to_string();
+        let source = self.specific_source.read(cx).value().to_string();
+        let replacement = self.specific_replacement.read(cx).value().to_string();
+        let selection = !self.heard.read(cx).selected_value().trim().is_empty();
+        let can_save = !busy && self.teaching_text(cx).is_some();
+        let primary = crate::ButtonIntent::Primary;
+        let mut modal = div()
+            .id("teach-dialog")
+            .key_context("CorrectAndTeach")
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_5()
+            .w(px(600.))
+            .bg(p.raised)
+            .border_1()
+            .border_color(p.border)
+            .child(
+                div()
+                    .text_size(px(20.))
+                    .child(teach_text("teach-title", "Correct & Teach")),
+            );
+        let mut buttons = div().flex().flex_row().justify_end().gap_2();
+        match t.step {
+            Step::Edit => {
+                modal = modal
+                    .child(teach_text(
+                        "teach-intro",
+                        "Edit this local history entry. Murmur will not remember a rule unless you review it and press Remember correction.",
+                    ))
+                    .child(TextField::new(&self.corrected, "Corrected dictation").disabled(busy));
+                buttons = buttons
+                    .child(Button::new("teach-cancel", "Cancel").on_click(cx.listener(
+                        |s, _, w, cx| {
+                            s.close_teaching();
+                            s.home.update(cx, |h, cx| h.destination_closed(w, cx));
+                            cx.notify();
+                        },
+                    )))
+                    .child(
+                        Button::new("teach-specific", "Teach specific term")
+                            .disabled(busy)
+                            .on_click(cx.listener(|s, _, w, cx| s.teach_specific(w, cx))),
+                    )
+                    .child(
+                        Button::new(
+                            "teach-review",
+                            if busy {
+                                "Reviewing…"
+                            } else {
+                                "Review correction"
+                            },
+                        )
+                        .intent(primary)
+                        .disabled(!t.can_review(&corrected))
+                        .on_click(cx.listener(|s, _, _, cx| s.review_automatic(cx))),
+                    );
+            }
+            Step::AutomaticReview | Step::SpecificReview => {
+                let specific = t.step == Step::SpecificReview;
+                if let Some(proposal) = t.proposal() {
+                    modal = modal
+                        .child(teach_text(
+                            "teach-review-title",
+                            "Review learned correction",
+                        ))
+                        .child(teach_text(
+                            "teach-rule",
+                            format!(
+                                "Remember “{}” as “{}” ({} in this example)",
+                                proposal.source, proposal.replacement, proposal.occurrences
+                            ),
+                        ))
+                        .child(teach_example(
+                            p,
+                            "teach-before",
+                            "Before",
+                            proposal.before.clone(),
+                        ))
+                        .child(teach_example(
+                            p,
+                            "teach-after",
+                            "After",
+                            proposal.after.clone(),
+                        ))
+                        .child(teach_text("teach-scope-label", "Where should this apply?"));
+                    let mut scopes = div().flex().flex_col().gap_1();
+                    for (index, option) in proposal.scopes.iter().enumerate() {
+                        scopes = scopes.child(
+                            Button::new(format!("teach-scope-{index}"), option.caption())
+                                .toggled(index == t.scope)
+                                .disabled(busy)
+                                .on_click(cx.listener(move |s, _, _, cx| {
+                                    if let Some(t) = s.teaching.as_mut().filter(|t| !t.busy) {
+                                        t.select_scope(index);
+                                    }
+                                    cx.notify();
+                                })),
+                        );
+                    }
+                    modal = modal.child(scopes);
+                } else {
+                    let reason = match &t.outcome {
+                        Some(teaching::Outcome::Unsafe(reason)) => reason.clone(),
+                        _ => teaching::REVIEW_FAILED.to_owned(),
+                    };
+                    modal = modal
+                        .child(teach_text("teach-review-title", "No rule can be learned"))
+                        .child(teach_text("teach-unsafe", reason))
+                        .child(teach_example(
+                            p,
+                            "teach-before",
+                            "Before",
+                            t.entry.text.clone(),
+                        ))
+                        .child(teach_example(p, "teach-after", "After", corrected.clone()));
+                }
+                buttons = buttons
+                    .child(
+                        Button::new("teach-back", "Back")
+                            .disabled(busy)
+                            .on_click(cx.listener(|s, _, w, cx| s.teaching_back(w, cx))),
+                    )
+                    .when(!specific, |b| {
+                        b.child(
+                            Button::new("teach-specific", "Teach specific term")
+                                .disabled(busy)
+                                .on_click(cx.listener(|s, _, w, cx| s.teach_specific(w, cx))),
+                        )
+                    })
+                    .child(
+                        Button::new("teach-save-only", "Save correction only")
+                            .disabled(!can_save)
+                            .on_click(cx.listener(|s, _, _, cx| s.save_teaching_only(cx))),
+                    );
+                if t.proposal().is_some() {
+                    buttons = buttons.child(
+                        Button::new(
+                            "teach-remember",
+                            if busy {
+                                "Saving…"
+                            } else {
+                                "Remember correction"
+                            },
+                        )
+                        .intent(primary)
+                        .disabled(!can_save)
+                        .on_click(cx.listener(|s, _, _, cx| s.remember_teaching(cx))),
+                    );
+                }
+            }
+            Step::SpecificEdit => {
+                modal = modal
+                    .child(teach_text("teach-review-title", "Teach specific term"))
+                    .child(
+                        TextField::new(&self.heard, "Heard transcript for term selection")
+                            .readonly(true),
+                    )
+                    .child(
+                        Button::new("teach-use-selection", "Use selected text")
+                            .disabled(busy || !selection)
+                            .on_click(cx.listener(|s, _, w, cx| s.use_heard_selection(w, cx))),
+                    )
+                    .child(TextField::new(&self.specific_source, "Exact heard term").disabled(busy))
+                    .child(
+                        TextField::new(&self.specific_replacement, "Exact written replacement")
+                            .disabled(busy),
+                    )
+                    .child(teach_text(
+                        "teach-hint",
+                        "Each side is limited to eight tokens and 256 characters. Heard text must match a whole term in this example.",
+                    ));
+                buttons = buttons
+                    .child(
+                        Button::new("teach-back", "Back")
+                            .disabled(busy)
+                            .on_click(cx.listener(|s, _, w, cx| s.teaching_back(w, cx))),
+                    )
+                    .child(
+                        Button::new("teach-save-only", "Save correction only")
+                            .disabled(!can_save)
+                            .on_click(cx.listener(|s, _, _, cx| s.save_teaching_only(cx))),
+                    )
+                    .child(
+                        Button::new(
+                            "teach-review-specific",
+                            if busy {
+                                "Reviewing…"
+                            } else {
+                                "Review specific term"
+                            },
+                        )
+                        .intent(primary)
+                        .disabled(!t.can_review_specific(&source, &replacement))
+                        .on_click(cx.listener(|s, _, _, cx| s.review_specific(cx))),
+                    );
+            }
+            Step::HistoryRetry => {
+                modal = modal
+                    .child(teach_example(
+                        p,
+                        "teach-before",
+                        "Before",
+                        t.entry.text.clone(),
+                    ))
+                    .child(teach_example(p, "teach-after", "After", corrected.clone()));
+                buttons = buttons
+                    .child(Button::new("teach-cancel", "Close").on_click(cx.listener(
+                        |s, _, w, cx| {
+                            s.close_teaching();
+                            s.home.update(cx, |h, cx| h.destination_closed(w, cx));
+                            cx.notify();
+                        },
+                    )))
+                    .child(
+                        Button::new("teach-save-only", "Save correction only")
+                            .intent(primary)
+                            .disabled(!can_save)
+                            .on_click(cx.listener(|s, _, _, cx| s.save_teaching_only(cx))),
+                    );
+            }
+        }
+        if let Some(error) = &t.error {
+            modal = modal.child(
+                div()
+                    .text_color(p.danger)
+                    .child(teach_text("teach-error", error.clone())),
+            );
+        }
+        if !matches!(t.step, Step::Edit | Step::HistoryRetry) {
+            buttons = buttons.child(Button::new("teach-cancel", "Cancel").on_click(cx.listener(
+                |s, _, w, cx| {
+                    s.close_teaching();
+                    s.home.update(cx, |h, cx| h.destination_closed(w, cx));
+                    cx.notify();
+                },
+            )));
+        }
+        modal.child(buttons)
     }
 }
 

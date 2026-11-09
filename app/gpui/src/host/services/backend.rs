@@ -288,7 +288,10 @@ pub enum Route {
     HistoryAction(String),
     Sources(Value),
     Update(murmur_core::updater::Snapshot),
-    TeachingResult { epoch: u64, result: Value },
+    TeachingResult {
+        epoch: u64,
+        result: super::teaching::Settled,
+    },
     Calibration { offset: Option<i64>, finish: bool },
 }
 impl Backend {
