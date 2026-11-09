@@ -30,24 +30,32 @@ python3 scripts/build_capture_helpers.py
 On Apple Silicon macOS, build the bundled helpers before the first Rust check
 or Tauri build. Helper binaries are gitignored. See Development for packaging.
 
+## Reproduce visible bugs first
+
+For a bug in something the user sees, reproduce it in the running native app
+before changing code, and record what you saw. A report such as "status is not
+working" can be a layout, data, or timing problem; looking at the affected screen
+decides which. If you cannot reproduce it, say so before proposing a fix.
+
 ## Verify the actual change
 
 Run required CI checks and the narrowest relevant local checks. Frontend changes
 need both TypeScript checks and Vitest. Documentation and script changes use
 file or CLI checks; they do not require launching the app.
 
-For all manual app verification, Codex uses Computer Use against the running
-native macOS app, including settings and other frontend work. Build the changed
-revision and confirm that the running app contains it. Click through the affected
-flow, enter input, exercise shortcuts where relevant, and inspect the result.
-Screenshots support that interaction; a browser preview does not establish native
-app behavior.
+For all manual app verification, use Computer Use or another allowed native UI
+control tool against the running native macOS app, including settings and other
+frontend work. Build the changed revision and confirm that the running app
+contains it. Click through the affected flow, enter input, exercise shortcuts
+where relevant, and inspect the result. Screenshots support that interaction; a
+browser preview does not establish native app behavior.
 
-If Computer Use is unavailable or prohibited, discover and obtain an allowed
-native UI control tool, then exercise the same flow. Use Fleet to locate and
-operate the Mac when working remotely. Respect tool and OS permission boundaries.
-If no allowed native tool works, report the missing verification without claiming
-a pass. Automated tests supplement native interaction.
+Native UI work runs on a Mac. On a host that cannot build or run the app, use
+Fleet to locate a Mac and do the reproduction and verification there. Respect
+tool and OS permission boundaries. If no allowed native tool works, report the
+missing verification without claiming a pass, and open a user-visible UI change
+as a draft PR: it is not ready to merge until it has been exercised in the
+native app. Automated tests supplement native interaction.
 
 ## Optional performance work
 
