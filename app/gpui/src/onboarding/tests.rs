@@ -588,6 +588,74 @@ mod ax {
         named(&tree(cx), "Retry download");
     }
     #[gpui::test]
+    fn first_launch_download_failure_survives_the_catalog_refresh_that_follows_it(
+        cx: &mut TestAppContext,
+    ) {
+        let (e, h, cx) = failed_first_download(cx);
+        // The service's terminal model-status event queues a refresh, delivered
+        // as a higher-revision `Changed` after the error reply.
+        let mut refreshed = h.state.borrow().clone();
+        refreshed.revision = e.read_with(cx, |s, _| s.model.revision) + 1;
+        h.state.borrow_mut().revision = refreshed.revision;
+        e.update(cx, |s, cx| {
+            assert!(
+                s.inbox
+                    .publish(Event::Changed {
+                        attachment: s.model.attachment,
+                        snapshot: refreshed
+                    })
+                    .is_ok()
+            );
+            s.drain(cx);
+        });
+        draw(cx);
+        assert!(
+            e.read_with(cx, |s, _| s.model.problem.is_none()),
+            "the refresh clears the section problem"
+        );
+        let t = tree(cx);
+        named(&t, EXPLAINED);
+        named(&t, "Use Whisper base");
+        named(&t, "Use CPU Parakeet");
+        let retry = named(&t, "Retry download");
+        assert!(
+            !t.nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Download model"))
+        );
+        // Still retryable, and a new attempt dismisses the failure.
+        h.actions.borrow_mut().clear();
+        h.hold.set(true);
+        click(cx, retry);
+        assert_eq!(
+            *h.actions.borrow(),
+            vec![Action::Download(CURATED[0].into())]
+        );
+        assert!(
+            !tree(cx)
+                .nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some(EXPLAINED))
+        );
+        // Choosing a model also dismisses a failure that survived a refresh.
+        let (r, inbox) = h.held.borrow_mut().pop().unwrap();
+        super::inbox::reply(&inbox, r.ticket, Err(Problem::Operation(EXPLAINED)));
+        draw(cx);
+        let mut refreshed = h.state.borrow().clone();
+        refreshed.revision = e.read_with(cx, |s, _| s.model.revision) + 1;
+        e.update(cx, |s, cx| {
+            let _ = s.inbox.publish(Event::Changed {
+                attachment: s.model.attachment,
+                snapshot: refreshed,
+            });
+            s.drain(cx);
+        });
+        click(cx, named(&tree(cx), "Use Whisper base"));
+        let t = tree(cx);
+        assert!(!t.nodes.iter().any(|(_, n)| n.label() == Some(EXPLAINED)));
+        named(&t, "Continue");
+    }
+    #[gpui::test]
     fn first_launch_download_failure_fallbacks_continue_or_download(cx: &mut TestAppContext) {
         let (e, h, cx) = failed_first_download(cx);
         // Installed fallback: selected, the failure is dismissed, setup continues.

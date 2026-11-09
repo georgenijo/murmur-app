@@ -53,9 +53,11 @@ pub struct Onboarding {
     verified_model: Option<String>,
     cancelling: bool,
     read_started: Option<Instant>,
-    /// The model whose download last failed; its explanation is the section
-    /// problem. The primary action becomes "Retry download" for it.
-    download_failed: Option<String>,
+    /// The model whose download last failed and its explanation. Held apart
+    /// from `model.problem`, which any later catalog refresh clears; only a new
+    /// download attempt, a download success or choosing a model dismisses it.
+    /// The primary action becomes "Retry download" for that model.
+    download_failed: Option<(String, Problem)>,
 }
 impl Onboarding {
     pub fn new(host: Rc<dyn Host>, w: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -255,6 +257,7 @@ impl Onboarding {
                             self.finished = true
                         }
                         Some(Action::Download(id)) if !self.cancelling => {
+                            self.download_failed = None;
                             if self
                                 .model
                                 .snapshot
@@ -283,8 +286,9 @@ impl Onboarding {
                     }
                 } else if !self.cancelling
                     && let Some(Action::Download(id)) = action
+                    && let Some(problem) = self.model.problem
                 {
-                    self.download_failed = Some(id);
+                    self.download_failed = Some((id, problem));
                 }
                 self.cancelling = false;
             }
@@ -472,6 +476,15 @@ impl Onboarding {
             self.request(Action::Probe(p), cx);
         }
     }
+    /// The section problem, or on the Model step the failed download's
+    /// explanation that a catalog refresh must not dismiss.
+    fn shown_problem(&self) -> Option<Problem> {
+        self.model.problem.or_else(|| {
+            (self.step == Step::Model)
+                .then(|| self.download_failed.as_ref().map(|(_, problem)| *problem))
+                .flatten()
+        })
+    }
     fn primary_label(&self) -> String {
         if self.finished {
             return "Setup complete".into();
@@ -509,8 +522,10 @@ impl Onboarding {
             }
             return if s.installed(&self.selected_model) {
                 "Continue"
-            } else if self.download_failed.as_deref() == Some(self.selected_model.as_str())
-                && self.model.problem.is_some()
+            } else if self
+                .download_failed
+                .as_ref()
+                .is_some_and(|(id, _)| *id == self.selected_model)
             {
                 "Retry download"
             } else {
@@ -745,7 +760,7 @@ impl Render for Onboarding {
         if self.model.snapshot.is_none() && self.model.problem.is_none() {
             body = body.child(text!("Loading setup…"));
         }
-        if let Some(problem) = self.model.problem {
+        if let Some(problem) = self.shown_problem() {
             let message = problem.message();
             body = body.child(
                 div()
@@ -1004,7 +1019,7 @@ impl Render for Onboarding {
                 let e = cx.entity();
                 body=body.child(Progress::new("Model installation in progress",snapshot.download_percent.map(|v|f64::from(v)/100.))).child(self.body_button("cancel-download",if self.cancelling{"Cancelling…"}else{"Cancel download"}).disabled(self.cancelling).on_click(move|_,_,cx|e.update(cx,|s,cx|s.cancel_download(cx)))).child(text!("Cancel to go back or choose another model. Retry resumes supported downloads."));
             }
-            if self.model.problem.is_some() && self.selected_model == CURATED[0] {
+            if self.shown_problem().is_some() && self.selected_model == CURATED[0] {
                 for (id, label) in [
                     ("base.en", "Use Whisper base"),
                     ("parakeet-tdt-0.6b-v2-fp16", "Use CPU Parakeet"),
