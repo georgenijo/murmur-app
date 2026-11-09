@@ -123,6 +123,40 @@ fn retry_is_single_flight_and_uses_a_fresh_bounded_result() {
     assert_eq!(m.indicator(11001), Indicator::Idle);
 }
 #[test]
+fn each_retry_result_kind_keeps_its_own_cue_and_only_failures_stay_retryable() {
+    // The kinds are the `retry_last_delivery` service results.
+    for (kind, cue, retryable) in [
+        (Some("auto_pasted"), Delivery::Pasted, false),
+        (Some("clipboard_only"), Delivery::Clipboard, true),
+        (Some("empty"), Delivery::Nothing, false),
+        (Some("busy"), Delivery::Busy, true),
+        (Some("failed"), Delivery::Retry, true),
+        (None, Delivery::Retry, true),
+    ] {
+        assert_eq!(Delivery::from_retry_kind(kind), cue, "{kind:?}");
+        let mut m = Model::new(Snapshot {
+            generation: 1,
+            ..Snapshot::default()
+        });
+        m.event(Event::Delivery(1, Delivery::Clipboard), 0);
+        m.retry(1).unwrap();
+        m.event(
+            Event::RetryResult {
+                generation: 1,
+                attempt: m.retry_attempt,
+                result: cue,
+            },
+            2,
+        );
+        assert_eq!(m.indicator(3), Indicator::Delivery(cue), "{kind:?}");
+        assert_eq!(m.retry(4).is_some(), retryable, "{kind:?}");
+    }
+    assert_ne!(
+        Indicator::Delivery(Delivery::Busy).label(),
+        Indicator::Delivery(Delivery::Retry).label()
+    );
+}
+#[test]
 fn click_delay_double_click_and_generation_ownership() {
     let mut m = active();
     assert!(m.click(1, 0).is_none());
@@ -846,6 +880,7 @@ fn indicator_cues_are_single_line_and_inside_the_minimum_card(cx: &mut TestAppCo
         Indicator::Delivery(Delivery::Pasted),
         Indicator::Delivery(Delivery::Nothing),
         Indicator::Delivery(Delivery::Retry),
+        Indicator::Delivery(Delivery::Busy),
     ];
     for placement in [OverlayPlacement::Notch, OverlayPlacement::FloatingPill] {
         for physical in [true, false] {

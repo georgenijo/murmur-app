@@ -17,6 +17,7 @@ type Listener = Arc<dyn Fn(&str, &str) + Send + Sync>;
 #[derive(Default)]
 pub struct Events {
     pub feedback: Mutex<super::dictation_feedback::Feedback>,
+    pub delivery: Mutex<super::delivery_feedback::DeliveryFeedback>,
     next: AtomicU64,
     revision: AtomicU64,
     listeners: Mutex<BTreeMap<u64, (&'static str, Listener)>>,
@@ -31,6 +32,10 @@ impl Events {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .event(event, payload);
+            self.delivery
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .event(event, payload, std::time::Instant::now());
         }
         if !matches!(
             event,

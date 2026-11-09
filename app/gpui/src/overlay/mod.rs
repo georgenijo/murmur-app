@@ -505,6 +505,7 @@ impl Render for Overlay {
             Indicator::Delivery(Delivery::Clipboard) if !g.floating => "⎘",
             Indicator::Delivery(Delivery::Clipboard) => "⌘V",
             Indicator::Delivery(Delivery::Retry | Delivery::Retrying) => "↻",
+            Indicator::Delivery(Delivery::Busy) => "…",
             Indicator::Delivery(Delivery::Nothing) => "−",
             _ => "·",
         };

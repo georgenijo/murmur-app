@@ -64,3 +64,7 @@ pub use application::run;
 mod notes;
 
 pub mod dictation_feedback;
+
+pub mod delivery_feedback;
+
+mod smart_auto_summary;

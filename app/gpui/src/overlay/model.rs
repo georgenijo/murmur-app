@@ -31,10 +31,24 @@ pub enum Delivery {
     Pasted,
     Nothing,
     Retry,
+    /// Another delivery or a recording is in progress; Try again stays available.
+    Busy,
 }
 impl Delivery {
     pub fn retryable(self) -> bool {
-        matches!(self, Self::Clipboard | Self::Retry)
+        matches!(self, Self::Clipboard | Self::Retry | Self::Busy)
+    }
+    /// Cue for a `retry_last_delivery` result, using the shipped kinds:
+    /// pasted and nothing-to-paste end the offer, while clipboard-only, busy
+    /// and failed (or a command that returned no result) keep it.
+    pub fn from_retry_kind(kind: Option<&str>) -> Self {
+        match kind {
+            Some("auto_pasted") => Self::Pasted,
+            Some("clipboard_only") => Self::Clipboard,
+            Some("empty") => Self::Nothing,
+            Some("busy") => Self::Busy,
+            _ => Self::Retry,
+        }
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +92,7 @@ impl Indicator {
             Self::Delivery(Delivery::Pasted) => "Pasted",
             Self::Delivery(Delivery::Nothing) => "Nothing to paste",
             Self::Delivery(Delivery::Retry) => "Try delivery again",
+            Self::Delivery(Delivery::Busy) => "Delivery busy. Try again",
         }
     }
 }

@@ -70,6 +70,8 @@ pub struct Main {
     error: Option<&'static str>,
     dictation_notice: Option<super::dictation_feedback::Notice>,
     feedback_revision: u64,
+    delivery_notice: Option<super::delivery_feedback::Notice>,
+    delivery_revision: u64,
     subscriptions: Vec<Subscription>,
     pending_history: Option<String>,
     pending_meeting: Option<Option<String>>,
@@ -126,6 +128,8 @@ impl Main {
             error: None,
             dictation_notice: None,
             feedback_revision: 0,
+            delivery_notice: None,
+            delivery_revision: 0,
             subscriptions: vec![],
             pending_history: None,
             pending_meeting: None,
@@ -249,6 +253,32 @@ impl Main {
             });
         }
     }
+    /// Banner Try again: one in-flight `retry_last_delivery`. The service also
+    /// publishes its result, so both paths present the same bounded message.
+    fn retry_delivery(&mut self) {
+        let b = self.backend.clone();
+        {
+            let mut delivery = b.events.delivery.lock().unwrap_or_else(|p| p.into_inner());
+            if !delivery.begin_retry(std::time::Instant::now()) {
+                return;
+            }
+            self.delivery_revision = delivery.revision;
+            self.delivery_notice = delivery.notice.clone();
+        }
+        self.backend.spawn(async move {
+            let result = b.call("retry_last_delivery", json!({})).await;
+            let mut delivery = b.events.delivery.lock().unwrap_or_else(|p| p.into_inner());
+            let now = std::time::Instant::now();
+            match result
+                .as_ref()
+                .ok()
+                .and_then(|v| Some((v["kind"].as_str()?, v["message"].as_str()?)))
+            {
+                Some((kind, message)) => delivery.retry_result(kind, message, now),
+                None => delivery.retry_unfinished(now),
+            }
+        });
+    }
     pub fn tick(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         let terminal = self.backend.services.recording_terminal();
         let changed = {
@@ -275,6 +305,25 @@ impl Main {
                 }
                 self.show(w, cx);
             }
+            cx.notify();
+        }
+        let delivery_changed = {
+            let mut delivery = self
+                .backend
+                .events
+                .delivery
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            delivery.expire(std::time::Instant::now());
+            if self.delivery_revision == delivery.revision {
+                false
+            } else {
+                self.delivery_revision = delivery.revision;
+                self.delivery_notice = delivery.notice.clone();
+                true
+            }
+        };
+        if delivery_changed {
             cx.notify();
         }
         if self.section == Section::Home
@@ -689,6 +738,57 @@ impl Render for Main {
                     s.dictation_notice = None;
                     cx.notify();
                 }))));
+        }
+        if let Some(notice) = self
+            .delivery_notice
+            .clone()
+            .filter(|_| self.dictation_notice.is_none())
+        {
+            let (retryable, busy) = (notice.retryable, notice.busy);
+            root = root.child(
+                div()
+                    .id("delivery-notice-banner")
+                    .role(Role::Alert)
+                    .aria_label("Text delivery needs attention")
+                    .absolute()
+                    .bottom_4()
+                    .left_4()
+                    .right_4()
+                    .rounded_lg()
+                    .p_4()
+                    .bg(p.surface)
+                    .border_1()
+                    .border_color(p.border)
+                    .flex()
+                    .flex_wrap()
+                    .gap_3()
+                    .child(gpui::text!(notice.message))
+                    .when(retryable, |d| {
+                        d.child(
+                            Button::new(
+                                "delivery-retry",
+                                if busy { "Trying…" } else { "Try again" },
+                            )
+                            .disabled(busy)
+                            .on_click(cx.listener(|s, _, _, cx| {
+                                s.retry_delivery();
+                                cx.notify();
+                            })),
+                        )
+                    })
+                    .child(Button::new("dismiss-delivery-notice", "Dismiss").on_click(
+                        cx.listener(|s, _, _, cx| {
+                            s.backend
+                                .events
+                                .delivery
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .dismiss();
+                            s.delivery_notice = None;
+                            cx.notify();
+                        }),
+                    )),
+            );
         }
         if let Some(error) = self.error {
             root = root.child(gpui::text!(error));

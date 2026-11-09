@@ -235,6 +235,18 @@ impl NativePorts for Ports {
                 self.lifecycle.fetch_add(1, Ordering::SeqCst);
                 self.refresh.store(true, Ordering::Release);
             }
+            // The overlay's Smart Auto line is read from the service, so any
+            // change to its inputs rereads it.
+            if label == "overlay"
+                && matches!(
+                    event,
+                    "smart-auto-microphone-changed"
+                        | "audio-input-inventory-changed"
+                        | "recording-initialization-failed"
+                )
+            {
+                self.refresh.store(true, Ordering::Release);
+            }
             let revision = self.revision.fetch_add(1, Ordering::SeqCst) + 1;
             if label == "overlay"
                 && let Some(inbox) = self.overlay.get()
@@ -474,6 +486,7 @@ impl Host {
                 let (settings_revision, settings) = b.services.settings_snapshot().await?;
                 let state = b.call("get_status", json!({})).await?;
                 let meeting = b.call("get_meeting_status", json!({})).await?;
+                let smart_auto = smart_auto_line(&b, &settings).await;
                 let generation = state["recordingId"].as_u64().unwrap_or(0);
                 if ports.lifecycle.load(Ordering::Acquire) != epoch
                     || b.services.recording_generation() != generation
@@ -528,6 +541,7 @@ impl Host {
                                 Some("failed") => crate::overlay::model::Meeting::Failed,
                                 _ => crate::overlay::model::Meeting::Idle,
                             },
+                            smart_auto,
                             ..Default::default()
                         },
                     });
@@ -848,12 +862,9 @@ impl crate::overlay::Host for OverlayHost {
                             && let Some(inbox) = ports.overlay.get()
                         {
                             use crate::overlay::model::{Delivery, Event};
-                            let result = match result.as_ref().ok().and_then(|v| v["kind"].as_str())
-                            {
-                                Some("auto_pasted") => Delivery::Pasted,
-                                Some("clipboard_only") => Delivery::Clipboard,
-                                _ => Delivery::Retry,
-                            };
+                            let result = Delivery::from_retry_kind(
+                                result.as_ref().ok().and_then(|v| v["kind"].as_str()),
+                            );
                             let _ = inbox.publish(Event::RetryResult {
                                 generation,
                                 attempt,
@@ -1063,18 +1074,6 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
                     if !background {
                         b.navigate(Route::Updates);
                     }
-                }
-                if event == "delivery-retry-feedback"
-                    && let Ok(value) = serde_json::from_str::<Value>(payload)
-                {
-                    let message = match value["kind"].as_str() {
-                        Some("auto_pasted") => "Pasted the latest dictation.",
-                        Some("clipboard_only") => "Copied the latest dictation.",
-                        Some("empty") => "There is no dictation to paste yet.",
-                        Some("busy") => "Finish the current recording before retrying delivery.",
-                        _ => "Delivery could not finish. Retry when the destination is available.",
-                    };
-                    b.navigate(Route::Notice(message));
                 }
                 if event == "audio-input-inventory-changed" && b.booted.load(Ordering::Acquire) {
                     let pending = b.clone();
@@ -1312,6 +1311,25 @@ async fn contract(b: &Backend) {
     b.services.shutdown(murmur_core::shutdown::Request::Quit);
 }
 
+/// Production Smart Auto overlay line, or `None` when Smart Auto is off.
+async fn smart_auto_line(b: &Backend, settings: &Value) -> Option<String> {
+    use super::smart_auto_summary as summary;
+    let request = summary::request(settings)?;
+    let status = b
+        .call(
+            "get_smart_auto_microphone_status",
+            json!({"smartAuto": request}),
+        )
+        .await
+        .ok();
+    let devices = if summary::needs_inventory(status.as_ref()) {
+        b.call("get_audio_input_inventory", json!({})).await.ok()
+    } else {
+        None
+    };
+    Some(summary::summary(status.as_ref(), devices.as_ref()))
+}
+
 async fn migrate_microphone(b: &Backend) -> Result<Value, String> {
     let (revision, mut settings) = b.services.settings_snapshot().await?;
     if settings["microphoneIdMigrationComplete"] != true {
@@ -1356,9 +1374,8 @@ mod overlay_ingress_tests {
 
     // Exercise the real NativePorts ingress and bounded inbox on the model's
     // clock. No live Services, OS operations, capture, or profiles are opened.
-    fn ingress(model: &mut Model, event: &str, payload: Value, now: u64) {
-        let inbox = Inbox::default();
-        let ports = Ports {
+    fn test_ports(inbox: Inbox) -> Ports {
+        Ports {
             registry: Default::default(),
             events: Default::default(),
             os: Default::default(),
@@ -1370,17 +1387,84 @@ mod overlay_ingress_tests {
             revision: Default::default(),
             overlay_clock: Default::default(),
             refresh: Default::default(),
-            overlay: std::sync::OnceLock::from(inbox.clone()),
+            overlay: std::sync::OnceLock::from(inbox),
             preview: Default::default(),
             downloads: Default::default(),
             microphone: Default::default(),
             playback: Default::default(),
             scan: Default::default(),
             levels: Default::default(),
-        };
+        }
+    }
+    fn ingress(model: &mut Model, event: &str, payload: Value, now: u64) {
+        let inbox = Inbox::default();
+        let ports = test_ports(inbox.clone());
         assert!(ports.send("overlay", event, &payload.to_string()).is_ok());
         for event in inbox.drain().0 {
             model.event(event, now);
+        }
+    }
+    #[test]
+    fn delivery_and_file_output_failures_reach_the_main_banner_through_real_ingress() {
+        use std::sync::atomic::Ordering;
+        let paste = "Text delivery timed out. Check the clipboard before pasting.";
+        let file = "Couldn't save dictation to file. Text is still in your clipboard.";
+        let ports = test_ports(Inbox::default());
+        let notice = || ports.events.delivery.lock().unwrap().notice.clone();
+        ports
+            .send("main", "auto-paste-failed", &json!(paste).to_string())
+            .unwrap();
+        let shown = notice().unwrap();
+        assert_eq!(shown.message, paste);
+        assert!(!shown.retryable);
+        ports
+            .send(
+                "main",
+                "dictation-delivery-outcome",
+                &json!({"recordingId":7,"outcome":"clipboardOnly"}).to_string(),
+            )
+            .unwrap();
+        assert!(
+            notice().unwrap().retryable,
+            "clipboard-only offers Try again"
+        );
+        ports
+            .send("main", "file-output-failed", &json!(file).to_string())
+            .unwrap();
+        let shown = notice().unwrap();
+        assert_eq!(shown.message, file);
+        assert!(!shown.retryable, "a file failure has no delivery retry");
+        ports
+            .send(
+                "main",
+                "delivery-retry-feedback",
+                &json!({"kind":"busy","message":"Finish the current recording before retrying delivery."}).to_string(),
+            )
+            .unwrap();
+        let shown = notice().unwrap();
+        assert!(shown.retryable && !shown.busy);
+        // Only the main window's events feed the main banner, and the overlay
+        // retry never requests a rehydration of it.
+        let other = test_ports(Inbox::default());
+        other
+            .send("overlay", "file-output-failed", &json!(file).to_string())
+            .unwrap();
+        assert!(other.events.delivery.lock().unwrap().notice.is_none());
+        assert!(!other.refresh.load(Ordering::Acquire));
+    }
+    #[test]
+    fn smart_auto_inputs_request_an_overlay_rehydration() {
+        use std::sync::atomic::Ordering;
+        for event in [
+            "smart-auto-microphone-changed",
+            "audio-input-inventory-changed",
+            "recording-initialization-failed",
+        ] {
+            let ports = test_ports(Inbox::default());
+            ports.send("main", event, "{}").unwrap();
+            assert!(!ports.refresh.load(Ordering::Acquire), "{event} on main");
+            ports.send("overlay", event, "{}").unwrap();
+            assert!(ports.refresh.load(Ordering::Acquire), "{event}");
         }
     }
     fn model() -> Model {
