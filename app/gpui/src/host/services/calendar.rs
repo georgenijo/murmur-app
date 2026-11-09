@@ -19,6 +19,11 @@ const UNREADABLE: &str =
 const CHANGED: &str =
     "The event may have changed. Look it up again, or name this meeting manually.";
 const NAMED: &str = "Meeting named from calendar.";
+const RESET_DONE: &str =
+    "Calendar access reset. Choose Name from calendar to request access again.";
+const RESET_FAILED: &str =
+    "Calendar access could not be reset. Check System Settings, or keep naming meetings manually.";
+const SETTINGS_FAILED: &str = "Calendar settings could not be opened. Open System Settings, then Privacy & Security, then Calendars.";
 pub(super) const SUGGESTIONS_ACCESS: &str = "Meeting suggestions need Calendar access. Enable Murmur under Privacy & Security → Calendars, or keep naming meetings manually.";
 pub(super) const SUGGESTIONS_CHECK: &str = "Calendar access could not be checked. Keep naming meetings manually, or review Calendar access in System Settings.";
 pub(super) const SUGGESTIONS_CONFIG: &str =
@@ -171,6 +176,28 @@ pub(super) fn apply_outcome(applied: bool) -> (Calendar, Option<String>) {
             None,
         )
     }
+}
+
+/// A reset closes the picker with guidance to ask again; a failed reset keeps
+/// the denied explanation with its own message. Neither opens manual naming.
+pub(super) fn reset_outcome(reset: bool) -> (Calendar, Option<String>) {
+    if reset {
+        (Calendar::Closed, Some(RESET_DONE.into()))
+    } else {
+        (
+            Calendar::Unavailable {
+                message: RESET_FAILED,
+                denied: true,
+                unsupported: false,
+            },
+            None,
+        )
+    }
+}
+
+/// Opening System Settings only reports a failure, with where to go by hand.
+pub(super) fn settings_notice(opened: bool) -> Option<String> {
+    (!opened).then(|| SETTINGS_FAILED.into())
 }
 
 /// Same request `Action::StartSuggested` builds in `meetings.rs`; only the
@@ -434,6 +461,24 @@ mod tests {
         let (calendar, notice) = apply_outcome(false);
         assert_eq!(parts(calendar), (CHANGED, false, false));
         assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn a_reset_closes_with_guidance_and_a_failed_reset_keeps_the_denied_state() {
+        let (calendar, notice) = reset_outcome(true);
+        assert!(matches!(calendar, Calendar::Closed));
+        assert_eq!(
+            notice.as_deref(),
+            Some("Calendar access reset. Choose Name from calendar to request access again.")
+        );
+        let (calendar, notice) = reset_outcome(false);
+        assert_eq!(parts(calendar), (RESET_FAILED, true, false));
+        assert_eq!(notice, None);
+    }
+    #[test]
+    fn a_settings_failure_explains_where_to_go_by_hand() {
+        assert_eq!(settings_notice(true), None);
+        assert_eq!(settings_notice(false).as_deref(), Some(SETTINGS_FAILED));
     }
 
     #[test]

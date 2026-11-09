@@ -50,6 +50,8 @@ pub struct Meetings {
     pub naming: bool,
     pub speakers: bool,
     calendar_selection: Option<String>,
+    /// A lookup or apply is in flight; an unavailable answer opens manual naming.
+    calendar_fallback: bool,
     confirmation: Option<(String, Instant)>,
     focus: BTreeMap<String, FocusHandle>,
     row_reveal: BTreeMap<String, Rc<std::cell::Cell<bool>>>,
@@ -126,6 +128,7 @@ impl Meetings {
             naming: false,
             speakers: false,
             calendar_selection: None,
+            calendar_fallback: false,
             confirmation: None,
             focus: BTreeMap::new(),
             row_reveal: BTreeMap::new(),
@@ -223,6 +226,7 @@ impl Meetings {
         self.clear_fields();
         self.detail_id = None;
         self.calendar_selection = None;
+        self.calendar_fallback = false;
         self.confirmation = None;
         self.naming = false;
         self.speakers = false;
@@ -303,6 +307,19 @@ impl Meetings {
                         self.clear_fields();
                     }
                 }
+                // Shipped Murmur opens manual naming whenever calendar naming
+                // cannot proceed, so the user is never left without a way forward.
+                if self.calendar_fallback && !self.model.pending {
+                    self.calendar_fallback = false;
+                    if self.model.problem.is_none()
+                        && matches!(
+                            self.model.snapshot.as_ref().map(|s| &s.calendar),
+                            Some(Calendar::Unavailable { .. })
+                        )
+                    {
+                        self.naming = true;
+                    }
+                }
                 cx.notify();
             }
         }
@@ -323,9 +340,14 @@ impl Meetings {
             self.host.pause_playback();
             self.model.invalidate();
         }
+        let calendar_naming = matches!(
+            action,
+            Action::CalendarLookup(_) | Action::CalendarApply { .. }
+        );
         let Some(ticket) = self.model.begin() else {
             return;
         };
+        self.calendar_fallback = calendar_naming;
         self.authority.sync(&self.model);
         self.host.request(
             Request {
@@ -448,6 +470,7 @@ impl Meetings {
     fn cancel_transient(&mut self) {
         self.host.discard_calendar();
         self.calendar_selection = None;
+        self.calendar_fallback = false;
         self.naming = false;
         self.speakers = false;
         self.confirmation = None;

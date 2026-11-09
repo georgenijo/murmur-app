@@ -78,6 +78,87 @@ fn subscribe_precedes_passive_read_and_no_capture_or_calendar(cx: &mut TestAppCo
     assert!(e.read_with(cx, |s, _| s.model.snapshot.as_ref().unwrap().valid()));
 }
 #[gpui::test]
+fn an_unavailable_lookup_opens_manual_naming_and_a_usable_one_does_not(cx: &mut TestAppContext) {
+    let (e, h, cx) = harness(cx);
+    e.update(cx, |s, cx| {
+        s.request(Action::CalendarLookup("fixture-1".into()), cx)
+    });
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| {
+        matches!(
+            s.model.snapshot.as_ref().unwrap().calendar,
+            Calendar::Choosing(_)
+        ) && !s.naming
+    }));
+    h.calendar_unavailable.set(true);
+    e.update(cx, |s, cx| {
+        s.request(Action::CalendarLookup("fixture-1".into()), cx)
+    });
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| {
+        matches!(
+            s.model.snapshot.as_ref().unwrap().calendar,
+            Calendar::Unavailable { .. }
+        ) && s.naming
+    }));
+}
+#[gpui::test]
+fn a_refused_apply_opens_manual_naming(cx: &mut TestAppContext) {
+    let (e, h, cx) = harness(cx);
+    e.update(cx, |s, cx| {
+        s.request(Action::CalendarLookup("fixture-1".into()), cx)
+    });
+    draw(cx);
+    h.calendar_unavailable.set(true);
+    e.update(cx, |s, cx| {
+        s.request(
+            Action::CalendarApply {
+                id: "fixture-1".into(),
+                token: "synthetic-selection-token".into(),
+            },
+            cx,
+        )
+    });
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| {
+        matches!(
+            s.model.snapshot.as_ref().unwrap().calendar,
+            Calendar::Unavailable { .. }
+        ) && s.naming
+    }));
+}
+#[gpui::test]
+fn a_reset_never_opens_manual_naming(cx: &mut TestAppContext) {
+    let (e, h, cx) = harness(cx);
+    h.calendar_unavailable.set(true);
+    e.update(cx, |s, cx| {
+        s.request(Action::CalendarLookup("fixture-1".into()), cx)
+    });
+    draw(cx);
+    e.update(cx, |s, cx| {
+        s.naming = false;
+        s.request(Action::CalendarReset, cx)
+    });
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| {
+        let snapshot = s.model.snapshot.as_ref().unwrap();
+        matches!(snapshot.calendar, Calendar::Closed)
+            && snapshot.notice.as_deref()
+                == Some("Calendar access reset. Choose Name from calendar to request access again.")
+            && !s.naming
+    }));
+}
+#[gpui::test]
+fn a_failed_calendar_request_does_not_open_manual_naming(cx: &mut TestAppContext) {
+    let (e, h, cx) = harness(cx);
+    h.fail.set(true);
+    e.update(cx, |s, cx| {
+        s.request(Action::CalendarLookup("fixture-1".into()), cx)
+    });
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| !s.naming && s.model.problem.is_some()));
+}
+#[gpui::test]
 fn generation_stop_and_processing_exclusion(cx: &mut TestAppContext) {
     let (e, h, cx) = harness(cx);
     e.update(cx, |s, cx| s.record(cx));

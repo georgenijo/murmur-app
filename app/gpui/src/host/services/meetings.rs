@@ -1,7 +1,7 @@
 //! Meeting presentation and playback adapt the shared recording/store owners.
 use super::{
     backend::Backend,
-    calendar::{apply_outcome, lookup_calendar},
+    calendar::{apply_outcome, lookup_calendar, reset_outcome, settings_notice},
     os::Live,
 };
 use crate::{
@@ -600,6 +600,19 @@ impl Host for Backend {
                             selection.calendar=calendar;
                             selection.notice=notice;
                         }
+                    },
+                    Action::CalendarReset=>{
+                        let reset=b.effect("reset_calendar_permission",json!({}),current.clone()).await;
+                        if current(){
+                            let (calendar,notice)=reset_outcome(reset.is_ok());
+                            let mut selection=b.meetings.selection.lock().unwrap_or_else(|p|p.into_inner());
+                            selection.calendar=calendar;
+                            selection.notice=notice;
+                        }
+                    },
+                    Action::CalendarSettings=>{
+                        let opened=b.effect("open_calendar_preferences",json!({}),current.clone()).await;
+                        if current(){b.meetings.selection.lock().unwrap_or_else(|p|p.into_inner()).notice=settings_notice(opened.is_ok());}
                     },
                     Action::Copy{id,format}=>{let text=b.effect("get_meeting_review_export",json!({"id":id,"format":format.wire()}),current.clone()).await?;if current(){b.services.copy_text(text.as_str().ok_or("Meeting export unavailable")?)?;}},
                     Action::Export{id,format}|Action::BundleExport{id,format}=>{

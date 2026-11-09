@@ -149,6 +149,8 @@ pub struct FixtureHost {
     pub stops: Rc<Cell<usize>>,
     pub pauses: Cell<usize>,
     pub fail: Cell<bool>,
+    /// Calendar lookup and apply answer with the unavailable explanation.
+    pub calendar_unavailable: Cell<bool>,
     pub native_audio: Cell<bool>,
     pub held: RefCell<Vec<(Request, Inbox)>>,
     pub hold: Cell<bool>,
@@ -177,6 +179,7 @@ impl FixtureHost {
             stops: Default::default(),
             pauses: Cell::new(0),
             fail: Cell::new(false),
+            calendar_unavailable: Cell::new(false),
             native_audio: Cell::new(false),
             held: Default::default(),
             hold: Cell::new(false),
@@ -375,6 +378,15 @@ impl Host for FixtureHost {
                         .ok_or(Problem::Invalid)?
                         .label = label;
                     s.notice = Some("Speaker name saved for this meeting.".into());
+                }
+                Action::CalendarLookup(_) | Action::CalendarApply { .. }
+                    if self.calendar_unavailable.get() =>
+                {
+                    s.calendar = Calendar::Unavailable {
+                        message: "Calendar access is not allowed. Enable it in System Settings, or name this meeting manually.",
+                        denied: true,
+                        unsupported: false,
+                    }
                 }
                 Action::CalendarLookup(_) => {
                     s.calendar = Calendar::Choosing(vec![Candidate {
