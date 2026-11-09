@@ -632,6 +632,193 @@ mod ax {
             json!(["synthetic.microphone", "synthetic.phone"])
         );
     }
+    fn has_text(t: &TreeUpdate, text: &str) -> bool {
+        t.nodes
+            .iter()
+            .any(|(_, n)| n.role() == gpui::accesskit::Role::Label && n.value() == Some(text))
+    }
+    fn open(e: &Entity<Settings>, cx: &mut VisualTestContext, page: Page, bottom: bool) {
+        cx.update(|w, cx| e.update(cx, |s, cx| s.navigate(page, None, w, cx)));
+        if bottom {
+            e.update(cx, |s, cx| {
+                s.scroll.scroll_to_bottom();
+                cx.notify();
+            });
+        }
+    }
+    #[gpui::test]
+    fn microphone_test_failure_is_explained_with_a_retry_only_when_safe(cx: &mut TestAppContext) {
+        use super::super::model::MicTest;
+        let (e, host, cx) = harness(cx);
+        let message =
+            "The microphone stopped unexpectedly. Check the selected input and try again.";
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.runtime.mic = MicTest {
+                error: Some(message.into()),
+                retry: true,
+                ..Default::default()
+            }
+        });
+        open(&e, cx, Page::Recording, false);
+        let t = tree(cx);
+        assert!(has_text(&t, message));
+        click(cx, named(&t, "Retry microphone preview"));
+        assert_eq!(host.actions.borrow().last(), Some(&Action::RetryMicrophone));
+        // While the service still owns a stopping capture, a retry could not claim it.
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.runtime.mic = MicTest {
+                error: Some(message.into()),
+                retry: false,
+                ..Default::default()
+            }
+        });
+        let t = tree(cx);
+        assert!(has_text(&t, message));
+        assert!(
+            !t.nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Retry microphone preview"))
+        );
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.runtime.mic = MicTest {
+                connecting: Some(true),
+                vad_unavailable: true,
+                ..Default::default()
+            }
+        });
+        let t = tree(cx);
+        assert!(has_text(
+            &t,
+            "Still connecting. Check macOS microphone access if this continues."
+        ));
+        assert!(has_text(&t, "Voice detection is unavailable."));
+    }
+    #[gpui::test]
+    fn smart_auto_feedback_shows_probe_cooldown_and_retries_background_checks(
+        cx: &mut TestAppContext,
+    ) {
+        use super::super::model::SmartAuto;
+        let (e, host, cx) = harness(cx);
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.settings["smartAutoMicrophoneEnabled"] = json!(true);
+            snapshot.runtime.smart_auto = SmartAuto::Probing {
+                device: "Synthetic microphone".into(),
+                phase: "checking signal",
+            }
+        });
+        open(&e, cx, Page::Recording, false);
+        assert!(has_text(
+            &tree(cx),
+            "Checking Synthetic microphone: checking signal. Audio is not transcribed or saved."
+        ));
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.runtime.smart_auto = SmartAuto::Blocked {
+                message: "No included microphone produced a signal.".into(),
+                cooldown_secs: Some(3),
+                retry: true,
+                retry_failed: true,
+            }
+        });
+        let t = tree(cx);
+        assert!(has_text(
+            &t,
+            "Smart Auto is not ready. No included microphone produced a signal."
+        ));
+        assert!(has_text(
+            &t,
+            "Another check can start in about 3 seconds while Murmur is idle."
+        ));
+        assert!(has_text(
+            &t,
+            "Could not request another background check. Try again after the current cooldown."
+        ));
+        click(cx, named(&t, "Retry background checks"));
+        assert_eq!(
+            host.actions.borrow().last(),
+            Some(&Action::RetrySmartAutoProbe)
+        );
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.runtime.smart_auto = SmartAuto::Blocked {
+                message: "None of the included microphones are available right now.".into(),
+                cooldown_secs: None,
+                retry: false,
+                retry_failed: false,
+            }
+        });
+        assert!(
+            !tree(cx)
+                .nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Retry background checks"))
+        );
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.runtime.smart_auto = SmartAuto::Unavailable
+        });
+        assert!(has_text(
+            &tree(cx),
+            "Murmur could not confirm an included microphone. Smart Auto will wait instead of recording from another input."
+        ));
+    }
+    #[gpui::test]
+    fn microphone_startup_test_shows_progress_cancels_and_keeps_its_report(
+        cx: &mut TestAppContext,
+    ) {
+        use super::super::model::Startup;
+        let (e, host, cx) = harness(cx);
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.runtime.startup_running = true;
+            snapshot.runtime.startup = Startup {
+                progress: Some(("Cycle 2 of 5 · AUHAL".into(), 20)),
+                ..Default::default()
+            }
+        });
+        open(&e, cx, Page::Performance, true);
+        let t = tree(cx);
+        assert!(has_text(&t, "Cycle 2 of 5 · AUHAL · 20%"));
+        click(cx, named(&t, "Cancel microphone test"));
+        assert_eq!(
+            host.actions.borrow().last(),
+            Some(&Action::CancelMicrophoneStartup)
+        );
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.runtime.startup_running = true;
+            snapshot.runtime.startup = Startup {
+                progress: Some(("Cycle 2 of 5 · AUHAL".into(), 20)),
+                cancelling: true,
+                ..Default::default()
+            }
+        });
+        let t = tree(cx);
+        assert!(has_text(&t, "Stopping safely…"));
+        let cancel = t
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("Cancel microphone test"))
+            .unwrap();
+        assert!(cancel.1.is_disabled());
+        // The run ended: its error and report stay visible instead of vanishing.
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.runtime.startup_running = false;
+            snapshot.runtime.startup = Startup {
+                error: Some("The microphone benchmark had already stopped.".into()),
+                summary: vec![
+                    "Startup results · 3/5 cycles · cancelled early · macOS · Murmur v1.2.3".into(),
+                    "Median 150 ms · P95 200 ms · Ready 2/3 · Fallbacks 1".into(),
+                ],
+                ..Default::default()
+            }
+        });
+        let t = tree(cx);
+        assert!(has_text(
+            &t,
+            "The microphone benchmark had already stopped."
+        ));
+        assert!(has_text(
+            &t,
+            "Median 150 ms · P95 200 ms · Ready 2/3 · Fallbacks 1"
+        ));
+        named(&t, "Test microphone startup…");
+    }
     #[gpui::test]
     fn regression_calibration_preview_failure_then_save_keeps_acknowledged_requested_offset(
         cx: &mut TestAppContext,

@@ -2,7 +2,7 @@
 //! they never request permissions, enumerate calendars, download or start capture.
 use super::backend::Backend;
 use serde_json::{Value, json};
-use std::{future::Future, pin::Pin};
+use std::{future::Future, pin::Pin, sync::atomic::Ordering};
 type Read<S> = Pin<Box<dyn Future<Output = Result<S, String>> + Send>>;
 fn text(v: &Value, key: &str) -> String {
     v[key].as_str().unwrap_or_default().to_owned()
@@ -370,12 +370,19 @@ pub fn preferences(b: Backend) -> Read<crate::settings::model::Snapshot> {
         let smart_turn = b.call("smart_turn_model_status", json!({})).await?;
         let activity = b.call("get_benchmark_activity", json!({})).await?;
         let preview = b.call("get_microphone_preview_status", json!({})).await?;
-        let startup_running = b
-            .preview
-            .check
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .is_some();
+        let smart_status = if settings["smartAutoMicrophoneEnabled"] == true {
+            Some(
+                b.call(
+                    "get_smart_auto_microphone_status",
+                    json!({"smartAuto":super::microphone::config(&settings).smart}),
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+        let startup = super::microphone::startup(&super::microphone::lock(&b.preview.check));
+        let startup_running = startup.progress.is_some();
         let login = b.os.login_status().await?;
         let login_requires_approval = login == super::autostart::Registration::RequiresApproval;
         let login_enabled = match login {
@@ -447,6 +454,29 @@ pub fn preferences(b: Backend) -> Read<crate::settings::model::Snapshot> {
             notchpill: b.call("is_notchpill_installed", json!({})).await?.as_bool(),
             ..Default::default()
         };
+        runtime.startup = startup;
+        runtime.mic = super::microphone::mic_test(
+            &preview,
+            super::microphone::lock(&b.preview.failure).as_deref(),
+            *super::microphone::lock(&b.preview.vad),
+            super::microphone::vad(&settings),
+        );
+        let retry_failed = b.preview.probe_retry_failed.load(Ordering::Acquire);
+        let (smart_auto, refresh_in) = match smart_status {
+            Some(status) => {
+                super::microphone::smart_auto(&settings, &runtime.devices, status, retry_failed)
+            }
+            None => (crate::settings::model::SmartAuto::Inactive, None),
+        };
+        if !matches!(
+            smart_auto,
+            crate::settings::model::SmartAuto::Blocked { .. }
+        ) {
+            b.preview.probe_retry_failed.store(false, Ordering::Release);
+        }
+        runtime.smart_auto = smart_auto;
+        *super::microphone::lock(&b.preview.smart_deadline) =
+            refresh_in.map(|after| std::time::Instant::now() + after);
         runtime.update = match update["updateStatus"]["phase"].as_str() {
             Some("checking") => Update::Checking,
             Some("up-to-date") => Update::Current,

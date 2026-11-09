@@ -88,6 +88,47 @@ pub struct Calibration {
     pub min: i64,
     pub max: i64,
 }
+/// Live microphone test feedback owned by the preview service.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct MicTest {
+    /// `Some(slow)` while the input is being claimed; `slow` once it exceeds
+    /// the service's still-connecting threshold.
+    pub connecting: Option<bool>,
+    pub live: bool,
+    /// Failure explanation. `retry` is true when no capture is owned, so a new
+    /// test may safely claim the input.
+    pub error: Option<String>,
+    pub retry: bool,
+    pub vad_unavailable: bool,
+}
+/// Smart Auto selection status. Inactive covers off and ready: like the
+/// shipped pane, a ready selection needs no feedback.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub enum SmartAuto {
+    #[default]
+    Inactive,
+    Probing {
+        device: String,
+        phase: &'static str,
+    },
+    Blocked {
+        message: String,
+        cooldown_secs: Option<u32>,
+        /// A background check may be requested now.
+        retry: bool,
+        /// The last request for one was refused.
+        retry_failed: bool,
+    },
+    Unavailable,
+}
+/// Microphone startup diagnostic: progress while running, then its report.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Startup {
+    pub progress: Option<(String, u8)>,
+    pub cancelling: bool,
+    pub error: Option<String>,
+    pub summary: Vec<String>,
+}
 #[derive(Clone, Default)]
 pub struct Runtime {
     pub calibration: Option<Calibration>,
@@ -104,6 +145,9 @@ pub struct Runtime {
     pub inventory_stale: bool,
     pub meter: Option<(f32, f32)>,
     pub monitor_paused: bool,
+    pub mic: MicTest,
+    pub smart_auto: SmartAuto,
+    pub startup: Startup,
     pub smart_turn: Install,
     pub speakers: Install,
     pub model_install: Install,
@@ -172,6 +216,25 @@ pub fn valid(s: &Snapshot) -> bool {
         })
         && r.update_percent.is_none_or(|p| p <= 100)
         && r.lab_progress.is_none_or(|p| p <= 100)
+        && r.mic
+            .error
+            .as_ref()
+            .is_none_or(|s| s.chars().count() <= 512)
+        && match &r.smart_auto {
+            SmartAuto::Blocked { message, .. } => message.chars().count() <= 1024,
+            SmartAuto::Probing { device, .. } => device.chars().count() <= 256,
+            _ => true,
+        }
+        && r.startup
+            .progress
+            .as_ref()
+            .is_none_or(|(label, percent)| label.chars().count() <= 256 && *percent <= 100)
+        && r.startup
+            .error
+            .as_ref()
+            .is_none_or(|s| s.chars().count() <= 512)
+        && r.startup.summary.len() <= 32
+        && r.startup.summary.iter().all(|s| s.chars().count() <= 512)
         && r.reports.len() <= 10
         && r.reports.iter().all(|s| s.chars().count() <= 128)
         && r.version.len() <= 64

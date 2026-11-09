@@ -225,6 +225,8 @@ impl Backend {
                         | "updater-state-changed"
                         | "benchmark-progress"
                         | "microphone-startup-benchmark-progress"
+                        | "microphone-preview-status"
+                        | super::microphone::CHANGED
                 ) {
                     let _ = send.try_send(());
                 }

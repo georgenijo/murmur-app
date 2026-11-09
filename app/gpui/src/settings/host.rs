@@ -47,6 +47,8 @@ pub enum Action {
     ClearReports,
     MicrophoneStartup,
     CancelMicrophoneStartup,
+    RetryMicrophone,
+    RetrySmartAutoProbe,
     Calibration { offset: i64, finish: bool },
     CancelCalibration,
 }

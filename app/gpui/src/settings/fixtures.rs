@@ -165,8 +165,15 @@ impl Host for FixtureHost {
                             next.settings[*key] = json!("/synthetic/chosen-folder");
                             source = Some("dictation-settings");
                         }
-                        Action::MicrophoneStartup => next.runtime.startup_running = true,
-                        Action::CancelMicrophoneStartup => next.runtime.startup_running = false,
+                        Action::MicrophoneStartup => {
+                            next.runtime.startup_running = true;
+                            next.runtime.startup.progress =
+                                Some(("Preparing production capture path…".into(), 0));
+                        }
+                        Action::CancelMicrophoneStartup => {
+                            next.runtime.startup_running = false;
+                            next.runtime.startup.progress = None;
+                        }
                         Action::InstallSmartTurn => next.runtime.smart_turn = Install::Installed,
                         Action::RemoveSmartTurn => next.runtime.smart_turn = Install::Missing,
                         Action::InstallSpeakers => next.runtime.speakers = Install::Installed,

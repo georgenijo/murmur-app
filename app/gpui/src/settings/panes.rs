@@ -396,11 +396,68 @@ impl Settings {
             Page::Recording => {
                 text!(if r.inventory_stale {
                     "Microphone list is stale. A saved device is not proven available."
-                } else if r.recording || r.monitor_paused {
+                } else if r.recording {
                     "Microphone test paused during capture"
+                } else if r.monitor_paused {
+                    "Waiting for the microphone worker to close…"
+                } else if r.mic.connecting == Some(true) {
+                    "Still connecting. Check macOS microphone access if this continues."
+                } else if r.mic.connecting.is_some() {
+                    "Connecting to the selected microphone…"
                 } else {
                     "Local microphone test · no audio retained"
                 });
+                if let Some(error) = &r.mic.error {
+                    text!(error.clone());
+                    if r.mic.retry {
+                        action!(
+                            "retry-microphone",
+                            "Retry microphone preview",
+                            Action::RetryMicrophone,
+                            false,
+                            r.recording
+                        );
+                    }
+                }
+                if r.mic.vad_unavailable {
+                    text!("Voice detection is unavailable.");
+                }
+                match &r.smart_auto {
+                    SmartAuto::Inactive => {}
+                    SmartAuto::Probing { device, phase } => text!(format!(
+                        "Checking {device}: {phase}. Audio is not transcribed or saved."
+                    )),
+                    SmartAuto::Blocked {
+                        message,
+                        cooldown_secs,
+                        retry,
+                        retry_failed,
+                    } => {
+                        text!(format!("Smart Auto is not ready. {message}"));
+                        if let Some(seconds) = cooldown_secs {
+                            text!(format!(
+                                "Another check can start in about {seconds} seconds while Murmur is idle."
+                            ));
+                        }
+                        if *retry {
+                            action!(
+                                "retry-smart-auto-probe",
+                                "Retry background checks",
+                                Action::RetrySmartAutoProbe,
+                                false,
+                                false
+                            );
+                        }
+                        if *retry_failed {
+                            text!(
+                                "Could not request another background check. Try again after the current cooldown."
+                            );
+                        }
+                    }
+                    SmartAuto::Unavailable => text!(
+                        "Murmur could not confirm an included microphone. Smart Auto will wait instead of recording from another input."
+                    ),
+                }
                 if let Some((rms, peak)) = r.meter {
                     text!(format!(
                         "Input level: {:.0}% · Peak: {:.0}% · {}",
@@ -679,13 +736,19 @@ impl Settings {
                     );
                 }
                 if r.startup_running {
-                    text!("Microphone startup test in progress…");
+                    match &r.startup.progress {
+                        Some((label, percent)) => text!(format!("{label} · {percent}%")),
+                        None => text!("Microphone startup test in progress…"),
+                    }
+                    if r.startup.cancelling {
+                        text!("Stopping safely…");
+                    }
                     action!(
                         "cancel-microphone-startup",
-                        "Cancel microphone startup test",
+                        "Cancel microphone test",
                         Action::CancelMicrophoneStartup,
                         false,
-                        false
+                        r.startup.cancelling
                     );
                 } else {
                     action!(
@@ -695,6 +758,12 @@ impl Settings {
                         false,
                         r.recording || r.lab_running
                     );
+                }
+                if let Some(error) = &r.startup.error {
+                    text!(error.clone());
+                }
+                for line in &r.startup.summary {
+                    text!(line.clone());
                 }
             }
         }

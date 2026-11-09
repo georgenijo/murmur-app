@@ -378,12 +378,31 @@ async fn settings_action(
             "clear_completion_destination",
             json!({"destination":"reports"}),
         ),
+        // The diagnostic outlives this request: it returns at once so Settings
+        // keeps showing progress and Cancel stays available.
         Action::MicrophoneStartup => {
-            b.start_microphone_check(current).await?;
+            b.start_microphone_check().await?;
+            b.changed();
             return Ok(());
         }
         Action::CancelMicrophoneStartup => {
             b.cancel_microphone_check().await?;
+            b.changed();
+            return Ok(());
+        }
+        Action::RetryMicrophone => {
+            b.preview
+                .retry
+                .store(true, std::sync::atomic::Ordering::Release);
+            b.changed();
+            return Ok(());
+        }
+        Action::RetrySmartAutoProbe => {
+            let failed = b.call("retry_smart_auto_probe", json!({})).await.is_err();
+            b.preview
+                .probe_retry_failed
+                .store(failed, std::sync::atomic::Ordering::Release);
+            b.changed();
             return Ok(());
         }
         Action::Calibration { offset, finish } => {
