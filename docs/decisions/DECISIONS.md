@@ -1,5 +1,39 @@
 # Decisions Log
 
+## 2026-11-09: Archive and discontinue the GPUI rewrite
+
+**Decision:** Close the rewrite PRs and tracking issues without merging their
+implementation, preserve all code and uncommitted work in a verified permanent
+archive, and remove the disposable rewrite worktrees and branches. Continue
+maintaining the existing Tauri/React app. Resume the rewrite only with George's
+explicit authorization.
+
+**Rationale:** George confirmed that the remaining parity work does not justify
+further investment and authorized archiving and cleanup. The implementation
+stayed off `main`; only the planning document merged there. Preserve the latest
+public release (`v0.62.1` at archival time), all release tags, assets, updater
+files, production data, and credentials.
+
+**Status:** active
+
+**References:** [Recovery archive](https://george-ubuntu.tail1fdfb0.ts.net:8844/a/art_20261109T160833Z_64b040d2f1/),
+[discontinued plan](../draft/gpui-rewrite-plan.md), epic #1012, parity epic #1063,
+George's 2026-11-09 archive instruction
+
+---
+
+## 2026-11-09: Pause the GPUI rewrite
+
+**Decision:** Stop active GPUI rewrite implementation, parity fixes, and review work. Retain the existing Tauri/React application as the maintained product. Preserve rewrite branches, draft PRs, and evidence; resume only after George explicitly authorizes it.
+
+**Rationale:** George judged the remaining functionality and parity work too large for the expected benefit. Prior time and token expenditure do not justify further investment.
+
+**Status:** superseded by 2026-11-09 archive decision
+
+**References:** GPUI parity epic #1063, PR #1076, George's 2026-11-09 stop instruction
+
+---
+
 ## 2026-11-04: Keep strict branch protection; skip verified pushes and use merge trains (#924)
 
 **Decision:** `main` keeps `strict` up-to-date protection with `ci-pass` as the
