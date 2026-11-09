@@ -76,6 +76,7 @@ mod shutdown;
 mod startup;
 use murmur_core::{model_artifact, model_digest};
 mod model_download;
+pub mod model_failure;
 mod model_hardware_guidance;
 mod model_resolver;
 mod model_runtime;

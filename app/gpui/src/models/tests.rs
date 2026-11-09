@@ -57,3 +57,38 @@ fn selection_uses_settings_revision_even_after_runtime_events() {
         }
     );
 }
+
+#[test]
+fn failed_download_leaves_the_model_retryable_with_its_explanation() {
+    use crate::workspace::Projection;
+    let mut s = fixtures::snapshot();
+    let id = "parakeet-tdt-0.6b-v3-coreml".to_string();
+    // The service marks a failed install Invalid and the attempt is over.
+    s.catalog.iter_mut().find(|m| m.id == id).unwrap().install = Install::Invalid;
+    s.failure = Some(Failure {
+        model: id.clone(),
+        operation: Operation::Download,
+        message: "Core ML setup did not finish. Retry Core ML, or choose Whisper Base or the CPU Parakeet fallback.",
+        fallbacks: true,
+    });
+    assert!(s.valid());
+    assert!(s.can_download(s.model(&id).unwrap()));
+    // An unknown model is never accepted.
+    s.failure.as_mut().unwrap().model = "bogus".into();
+    assert!(!s.valid());
+}
+
+#[test]
+fn english_only_without_a_runtime_row_matches_shipped() {
+    let mut s = fixtures::snapshot();
+    s.catalog.clear();
+    assert!(s.english_only());
+    let mut s = fixtures::snapshot();
+    let selected = s.selected.clone();
+    s.catalog
+        .iter_mut()
+        .find(|m| m.id == selected)
+        .unwrap()
+        .capabilities = vec!["multilingual".into()];
+    assert!(!s.english_only());
+}

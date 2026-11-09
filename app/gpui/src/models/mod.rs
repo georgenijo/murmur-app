@@ -13,6 +13,12 @@ use gpui::{prelude::*, *};
 use host::Action;
 use model::*;
 use std::rc::Rc;
+/// Explicit fallback downloads offered after a Core ML install fails, as the
+/// shipped downloader does. Choosing one is a deliberate download request.
+const FALLBACKS: [(&str, &str); 2] = [
+    ("base.en", "Download Whisper base"),
+    ("parakeet-tdt-0.6b-v2-fp16", "Download CPU Parakeet"),
+];
 pub struct Models {
     pub controller: Controller<Snapshot, Action>,
     confirm: Option<(String, u64, std::time::Instant)>,
@@ -111,6 +117,57 @@ impl Render for Models {
         if let Some(snapshot) = self.controller.model.snapshot.clone() {
             if let Some(h) = &snapshot.hardware {
                 body = body.child(gpui::text!(h.clone()));
+            }
+            if let Some(failure) = &snapshot.failure {
+                let label = snapshot
+                    .model(&failure.model)
+                    .map_or(failure.model.as_str(), |m| m.label.as_str())
+                    .to_owned();
+                let mut recovery = div().flex().flex_wrap().gap(px(8.));
+                if failure.operation == Operation::Download
+                    && snapshot
+                        .model(&failure.model)
+                        .is_some_and(|m| snapshot.can_download(m))
+                {
+                    let e = cx.entity();
+                    let id = failure.model.clone();
+                    recovery = recovery.child(
+                        Button::new("models-retry-download", "Retry download")
+                            .with_scroll_parent(Some(&self.scroll))
+                            .disabled(self.controller.model.pending)
+                            .on_click(move |_, _, cx| {
+                                e.update(cx, |s, cx| s.act(Action::Download(id.clone()), cx))
+                            }),
+                    );
+                }
+                if failure.fallbacks {
+                    for (id, caption) in FALLBACKS.iter() {
+                        if !snapshot.model(id).is_some_and(|m| snapshot.can_download(m)) {
+                            continue;
+                        }
+                        let e = cx.entity();
+                        recovery = recovery.child(
+                            Button::new(SharedString::from(format!("fallback-{id}")), *caption)
+                                .with_scroll_parent(Some(&self.scroll))
+                                .disabled(self.controller.model.pending)
+                                .on_click(move |_, _, cx| {
+                                    e.update(cx, |s, cx| {
+                                        s.act(Action::Download((*id).to_owned()), cx)
+                                    })
+                                }),
+                        );
+                    }
+                }
+                body = body.child(
+                    div()
+                        .id("model-failure")
+                        .role(Role::Alert)
+                        .flex()
+                        .flex_col()
+                        .gap(px(8.))
+                        .child(gpui::text!(format!("{label}: {}", failure.message)))
+                        .child(recovery),
+                );
             }
             for m in &snapshot.catalog {
                 let active = m.id == snapshot.selected

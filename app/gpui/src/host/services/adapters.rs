@@ -764,7 +764,7 @@ mod model_action {
         stop
     }
 
-    use crate::models::host::Action;
+    use crate::models::{host::Action, model::Operation};
     pub fn admit(b: &Backend, a: &Action, _r: u64) -> Accepted {
         if let Action::Select {
             id,
@@ -786,8 +786,13 @@ mod model_action {
         current: Live,
     ) -> Result<Option<crate::models::model::Snapshot>, String> {
         match a {
-            Action::Read | Action::Select { .. } => {}
-            Action::Download(id) => b.download("models".into(), id).await?,
+            Action::Select { .. } => {}
+            Action::Read => b.downloads.set_failure(None),
+            Action::Download(id) => {
+                b.downloads.set_failure(None);
+                let result = b.download("models".into(), id.clone()).await;
+                return settle(&b.downloads, Operation::Download, &id, result, &current);
+            }
             Action::Cancel { model, request_id } => {
                 b.effect(
                     "cancel_model_download",
@@ -797,10 +802,35 @@ mod model_action {
                 .await?;
             }
             Action::Remove(id) => {
-                b.effect("remove_model", json!({"modelName":id}), current)
-                    .await?;
+                b.downloads.set_failure(None);
+                let result = b
+                    .effect("remove_model", json!({"modelName":id}), current.clone())
+                    .await
+                    .map(|_| ());
+                return settle(&b.downloads, Operation::Remove, &id, result, &current);
             }
         }
+        Ok(None)
+    }
+    /// A failed download or removal is part of the model projection, not a
+    /// generic section problem: it names the model and operation and keeps the
+    /// service's remediation, while the reply still carries the fresh catalog.
+    pub fn settle(
+        downloads: &super::super::downloads::Downloads,
+        operation: Operation,
+        model: &str,
+        result: Result<(), String>,
+        current: &Live,
+    ) -> Result<Option<crate::models::model::Snapshot>, String> {
+        let Err(error) = result else {
+            return Ok(None);
+        };
+        if !current() {
+            return Err("Presentation changed".into());
+        }
+        downloads.set_failure(super::super::downloads::explain_failure(
+            operation, model, &error,
+        ));
         Ok(None)
     }
 }
@@ -1707,5 +1737,100 @@ mod setup_error_tests {
             setup_problem("private model path or setting".into()),
             Problem::Unavailable
         );
+    }
+}
+
+#[cfg(test)]
+mod model_failure_tests {
+    use super::model_action::settle;
+    use super::*;
+    use crate::models::model::Operation;
+
+    fn downloads() -> super::super::downloads::Downloads {
+        Default::default()
+    }
+    fn live(value: bool) -> Live {
+        Arc::new(move || value)
+    }
+
+    #[test]
+    fn download_failure_is_recorded_with_static_retry_and_fallback_guidance() {
+        let d = downloads();
+        let result = settle(
+            &d,
+            Operation::Download,
+            "parakeet-tdt-0.6b-v3-coreml",
+            Err("Core ML model setup failed. Retry Core ML, or choose Whisper Base or the CPU Parakeet fallback.".into()),
+            &live(true),
+        );
+        assert!(matches!(result, Ok(None)));
+        let failure = d.failure().unwrap();
+        assert_eq!(failure.operation, Operation::Download);
+        assert_eq!(failure.model, "parakeet-tdt-0.6b-v3-coreml");
+        assert!(failure.fallbacks);
+        assert!(failure.message.contains("Whisper Base"));
+    }
+
+    #[test]
+    fn removal_failure_keeps_remove_manually_remediation_without_native_text() {
+        let d = downloads();
+        for (error, needle) in [
+            (
+                "This model has a copy outside Murmur's model storage. Remove that copy manually before using Remove here.",
+                "Remove that copy manually",
+            ),
+            (
+                "Could not remove model: /Users/synthetic/private (os error 13)",
+                "manually",
+            ),
+        ] {
+            assert!(matches!(
+                settle(
+                    &d,
+                    Operation::Remove,
+                    "base.en",
+                    Err(error.into()),
+                    &live(true)
+                ),
+                Ok(None)
+            ));
+            let failure = d.failure().unwrap();
+            assert_eq!(failure.operation, Operation::Remove);
+            assert!(!failure.fallbacks);
+            assert!(failure.message.contains(needle), "{error}");
+            assert!(!failure.message.contains("/Users"));
+        }
+    }
+
+    #[test]
+    fn cancellation_stale_presentations_and_success_record_no_failure() {
+        let d = downloads();
+        assert!(matches!(
+            settle(
+                &d,
+                Operation::Download,
+                "base.en",
+                Err("Model installation cancelled".into()),
+                &live(true)
+            ),
+            Ok(None)
+        ));
+        assert!(d.failure().is_none());
+        assert!(
+            settle(
+                &d,
+                Operation::Download,
+                "base.en",
+                Err("Download stalled: no data received. Retry to resume.".into()),
+                &live(false)
+            )
+            .is_err()
+        );
+        assert!(d.failure().is_none());
+        assert!(matches!(
+            settle(&d, Operation::Download, "base.en", Ok(()), &live(true)),
+            Ok(None)
+        ));
+        assert!(d.failure().is_none());
     }
 }

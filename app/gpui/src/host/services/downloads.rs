@@ -32,8 +32,46 @@ impl Attempt {
             .map(String::from);
     }
 }
+/// Attempts by owner, plus the last failed model operation. The failure is
+/// owned here, beside the attempt, so every projection of the model catalog
+/// carries the same explanation until the next operation starts.
 #[derive(Default)]
-pub struct Downloads(pub Mutex<BTreeMap<String, Attempt>>);
+pub struct Downloads(
+    pub Mutex<BTreeMap<String, Attempt>>,
+    Mutex<Option<crate::models::model::Failure>>,
+);
+impl Downloads {
+    pub fn failure(&self) -> Option<crate::models::model::Failure> {
+        self.1.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+    pub fn set_failure(&self, failure: Option<crate::models::model::Failure>) {
+        *self.1.lock().unwrap_or_else(|p| p.into_inner()) = failure;
+    }
+}
+/// Static explanation of a native install/removal error. Native text can carry
+/// OS or path details, so only the service owner's fixed wording survives.
+/// Cancellation is not a failure.
+pub fn explain_failure(
+    operation: crate::models::model::Operation,
+    model: &str,
+    error: &str,
+) -> Option<crate::models::model::Failure> {
+    use crate::models::model::Operation;
+    use murmur_services::model_failure as service;
+    let message = service::explain(
+        match operation {
+            Operation::Download => service::Operation::Download,
+            Operation::Remove => service::Operation::Remove,
+        },
+        error,
+    )?;
+    Some(crate::models::model::Failure {
+        model: model.to_owned(),
+        operation,
+        message,
+        fallbacks: operation == Operation::Download && service::offers_fallbacks(model),
+    })
+}
 impl Backend {
     pub fn download(
         &self,
@@ -90,6 +128,45 @@ impl Backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::model::Operation;
+    #[test]
+    fn failures_are_explained_statically_and_cancellation_is_not_one() {
+        let failure = explain_failure(
+            Operation::Download,
+            "parakeet-tdt-0.6b-v3-coreml",
+            "Core ML model setup failed. Retry Core ML, or choose Whisper Base or the CPU Parakeet fallback.",
+        )
+        .unwrap();
+        assert!(failure.fallbacks);
+        assert!(failure.message.contains("Whisper Base"));
+        let private = explain_failure(
+            Operation::Remove,
+            "base.en",
+            "Could not remove model: /Users/synthetic/private (os error 13)",
+        )
+        .unwrap();
+        assert!(!private.fallbacks);
+        assert!(!private.message.contains("/Users"));
+        assert!(private.message.contains("manually"));
+        assert!(
+            explain_failure(
+                Operation::Download,
+                "base.en",
+                "Model installation cancelled"
+            )
+            .is_none()
+        );
+    }
+    #[test]
+    fn failure_survives_until_replaced() {
+        let downloads = Downloads::default();
+        assert!(downloads.failure().is_none());
+        let failure = explain_failure(Operation::Download, "base.en", "Download stalled").unwrap();
+        downloads.set_failure(Some(failure.clone()));
+        assert_eq!(downloads.failure(), Some(failure));
+        downloads.set_failure(None);
+        assert!(downloads.failure().is_none());
+    }
     #[test]
     fn retry_progress_cannot_regress_or_cross_request_ownership() {
         let mut a = Attempt {

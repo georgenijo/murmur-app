@@ -1104,6 +1104,22 @@ mod tests {
     }
 
     #[test]
+    fn language_choice_wire_key_tracks_multilingual_capability_not_the_model_name() {
+        // The GPUI language picker reads this serialized key from the catalog.
+        // English-only models are not all named `*.en`: CPU Parakeet is not.
+        let multilingual = |name: &str| {
+            serde_json::to_value(model_definition(name).unwrap().capabilities).unwrap()
+                ["multilingual"]
+                .as_bool()
+        };
+        assert_eq!(multilingual(PARAKEET_CPU_MODEL), Some(false));
+        assert!(!PARAKEET_CPU_MODEL.ends_with(".en"));
+        assert_eq!(multilingual("base.en"), Some(false));
+        assert_eq!(multilingual("large-v3-turbo"), Some(true));
+        assert_eq!(multilingual(COREML_MODEL_NAME), Some(true));
+    }
+
+    #[test]
     fn partial_capabilities_match_enabled_producers() {
         for model in MODEL_DEFINITIONS {
             assert_eq!(

@@ -31,6 +31,21 @@ pub struct ModelInfo {
     pub failure: bool,
     pub capabilities: Vec<String>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Operation {
+    Download,
+    Remove,
+}
+/// The last failed download or removal, explained by the service owner with a
+/// static, content-free message. It stays until the next operation starts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Failure {
+    pub model: String,
+    pub operation: Operation,
+    pub message: &'static str,
+    /// Core ML failures offer the explicit Whisper Base / CPU Parakeet choices.
+    pub fallbacks: bool,
+}
 #[derive(Clone)]
 pub struct Snapshot {
     pub revision: u64,
@@ -46,8 +61,15 @@ pub struct Snapshot {
     pub recommended: Option<String>,
     pub warned: Vec<String>,
     pub hardware: Option<String>,
+    pub failure: Option<Failure>,
 }
 impl Snapshot {
+    /// The language choice depends on the selected model's capability, never
+    /// on its name. An unknown model is treated as English-only.
+    pub fn english_only(&self) -> bool {
+        self.model(&self.selected)
+            .is_none_or(|m| !m.capabilities.iter().any(|c| c == "multilingual"))
+    }
     pub fn select(&self, id: String) -> super::host::Action {
         super::host::Action::Select {
             id,
@@ -120,6 +142,10 @@ impl Projection for Snapshot {
             && self.attempt.as_ref().is_none_or(|s| section::text(s, 128))
             && self.hardware.as_ref().is_none_or(|s| section::text(s, 512))
             && self.recommended.as_ref().is_none_or(|id| known(id))
+            && self
+                .failure
+                .as_ref()
+                .is_none_or(|f| known(&f.model) && section::text(f.message, 512))
             && self.warned.len() <= 7
             && self.warned.iter().all(|id| known(id))
     }

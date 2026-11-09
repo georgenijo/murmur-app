@@ -338,6 +338,10 @@ fn remove_whisper_artifact(
 }
 
 fn remove_installed_artifact(model_name: &str) -> Result<(), String> {
+    #[cfg(feature = "native-host-qa")]
+    if let Some(error) = crate::model_failure::injected(crate::model_failure::Operation::Remove) {
+        return Err(error);
+    }
     let definition = model_runtime::model_definition(model_name)?;
     match definition.install_kind {
         InstallKind::Whisper => remove_whisper_artifact(
@@ -484,6 +488,12 @@ pub async fn download_model(
     let mut terminal_evidence = InstallTerminalEvidence::default();
 
     let install_result: Result<(), String> = async {
+        #[cfg(feature = "native-host-qa")]
+        if let Some(error) =
+            crate::model_failure::injected(crate::model_failure::Operation::Download)
+        {
+            return Err(error);
+        }
         // Whisper and sherpa share Murmur's models directory. FluidAudio owns a
         // separate Application Support cache, but VAD must still land here.
         // Keep setup inside this result boundary so every failure after the

@@ -49,6 +49,7 @@ pub fn snapshot() -> Snapshot {
         recommended: Some("parakeet-tdt-0.6b-v3-coreml".into()),
         warned: vec![],
         hardware: Some("Synthetic Apple Silicon · 16 GB".into()),
+        failure: None,
     }
 }
 pub struct FixtureHost {

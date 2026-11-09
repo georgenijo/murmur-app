@@ -88,3 +88,12 @@ model lifecycle, knowledge CRUD/bulk, app overrides/IDE/explicit vocabulary scan
 Calendar suggestions, settings meter/cues and Diagnostics events/runs/recovery/
 latency/private review. Explicit Lab/microphone/corpus tool execution requires
 its separately authorized validation; no tool starts during subscription/read.
+
+## Model failure fault injection (native-host-qa only)
+
+Models download and removal failures are explained by
+`murmur_services::model_failure` with static, content-free messages. For native
+acceptance, a `native-host-qa` build reads `MURMUR_QA_MODEL_FAULT=<operation>:<kind>`
+and fails the next matching operation once, then stays inert. Operations and
+kinds: `download:network|disk|validation|coreml` and `remove:outside-copy|io`.
+Production builds do not compile the hook.

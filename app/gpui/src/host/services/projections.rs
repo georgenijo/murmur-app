@@ -150,9 +150,47 @@ pub fn customize(b: Backend) -> Read<crate::customize::model::Snapshot> {
         })
     })
 }
+/// One runtime-catalog row exactly as the service publishes it. Capabilities
+/// keep the service's own flag names (for example `multilingual`).
+fn model_info(m: &Value) -> crate::models::model::ModelInfo {
+    use crate::models::model::{Install, Lifecycle, ModelInfo};
+    ModelInfo {
+        id: text(m, "modelName"),
+        label: text(m, "label"),
+        size: text(m, "size"),
+        backend: text(m, "backend"),
+        accelerator: text(m, "accelerator"),
+        generation: m["generation"].as_u64().unwrap_or_default(),
+        supported: m["supported"].as_bool().unwrap_or(false),
+        failure: m["failurePresent"].as_bool().unwrap_or(false),
+        capabilities: m["capabilities"]
+            .as_object()
+            .into_iter()
+            .flat_map(|m| m.iter())
+            .filter(|(_, v)| **v == true)
+            .map(|(k, _)| k.clone())
+            .collect(),
+        install: match m["installState"].as_str() {
+            Some("installed") => Install::Installed,
+            Some("installing") => Install::Installing,
+            Some("validating") => Install::Validating,
+            Some("invalid") => Install::Invalid,
+            _ => Install::Missing,
+        },
+        lifecycle: match m["lifecycleState"].as_str() {
+            Some("loading") => Lifecycle::Loading,
+            Some("warming") => Lifecycle::Warming,
+            Some("ready") => Lifecycle::Ready,
+            Some("unloading") => Lifecycle::Unloading,
+            Some("failed") => Lifecycle::Failed,
+            _ => Lifecycle::Unloaded,
+        },
+    }
+}
+
 pub fn models(b: Backend) -> Read<crate::models::model::Snapshot> {
     Box::pin(async move {
-        use crate::models::model::{Install, Lifecycle, ModelInfo, Snapshot};
+        use crate::models::model::Snapshot;
         let (settings_revision, settings) = b.services.settings_snapshot().await?;
         let rows = b.call("get_model_runtime_catalog", json!({})).await?;
         let guidance = b.call("get_model_hardware_guidance", json!({})).await?;
@@ -161,38 +199,7 @@ pub fn models(b: Backend) -> Read<crate::models::model::Snapshot> {
             .as_array()
             .ok_or("Model catalog unavailable")?
             .iter()
-            .map(|m| ModelInfo {
-                id: text(m, "modelName"),
-                label: text(m, "label"),
-                size: text(m, "size"),
-                backend: text(m, "backend"),
-                accelerator: text(m, "accelerator"),
-                generation: m["generation"].as_u64().unwrap_or_default(),
-                supported: m["supported"].as_bool().unwrap_or(false),
-                failure: m["failurePresent"].as_bool().unwrap_or(false),
-                capabilities: m["capabilities"]
-                    .as_object()
-                    .into_iter()
-                    .flat_map(|m| m.iter())
-                    .filter(|(_, v)| **v == true)
-                    .map(|(k, _)| k.clone())
-                    .collect(),
-                install: match m["installState"].as_str() {
-                    Some("installed") => Install::Installed,
-                    Some("installing") => Install::Installing,
-                    Some("validating") => Install::Validating,
-                    Some("invalid") => Install::Invalid,
-                    _ => Install::Missing,
-                },
-                lifecycle: match m["lifecycleState"].as_str() {
-                    Some("loading") => Lifecycle::Loading,
-                    Some("warming") => Lifecycle::Warming,
-                    Some("ready") => Lifecycle::Ready,
-                    Some("unloading") => Lifecycle::Unloading,
-                    Some("failed") => Lifecycle::Failed,
-                    _ => Lifecycle::Unloaded,
-                },
-            })
+            .map(model_info)
             .collect();
         let attempt = b
             .downloads
@@ -221,6 +228,7 @@ pub fn models(b: Backend) -> Read<crate::models::model::Snapshot> {
                 .map(String::from)
                 .collect(),
             hardware: hardware(&guidance),
+            failure: b.downloads.failure(),
         })
     })
 }
@@ -405,9 +413,7 @@ pub fn preferences(b: Backend) -> Read<crate::settings::model::Snapshot> {
             monitor_paused: preview["state"] == "stopping",
 
             recording: models.busy,
-            english_only: settings["model"]
-                .as_str()
-                .is_some_and(|s| s.ends_with(".en")),
+            english_only: models.english_only(),
             devices: inventory["devices"]
                 .as_array()
                 .into_iter()
@@ -530,5 +536,64 @@ mod permission_tests {
             );
         }
         assert_eq!(access(&Value::Null), Access::Unknown);
+    }
+}
+
+#[cfg(test)]
+mod language_capability_tests {
+    use super::*;
+
+    /// A catalog row in the service's serialized shape (`ModelRuntimeSnapshot`).
+    fn row(name: &str, multilingual: bool) -> Value {
+        json!({
+            "generation": 1,
+            "modelName": name,
+            "label": "Synthetic",
+            "size": "1 MB",
+            "backend": "parakeet",
+            "accelerator": "CPU",
+            "capabilities": {
+                "partialResults": false,
+                "initialPrompts": false,
+                "multilingual": multilingual,
+                "translation": false,
+                "timestamps": false,
+                "confidence": false,
+                "punctuationControl": true,
+            },
+            "supported": true,
+            "installState": "installed",
+            "lifecycleState": "unloaded",
+            "failurePresent": false,
+        })
+    }
+
+    fn english_only(selected: &str, rows: &[Value]) -> bool {
+        let mut snapshot = crate::models::fixtures::snapshot();
+        snapshot.catalog = rows.iter().map(model_info).collect();
+        snapshot.selected = selected.into();
+        snapshot.english_only()
+    }
+
+    #[test]
+    fn language_picker_follows_capability_not_the_en_suffix() {
+        let rows = [
+            row("parakeet-tdt-0.6b-v2-fp16", false),
+            row("parakeet-tdt-0.6b-v3-coreml", true),
+            row("base.en", false),
+            row("large-v3-turbo", true),
+        ];
+        // English-only without an ".en" name: the picker must stay disabled.
+        assert!(english_only("parakeet-tdt-0.6b-v2-fp16", &rows));
+        assert!(english_only("base.en", &rows));
+        assert!(!english_only("parakeet-tdt-0.6b-v3-coreml", &rows));
+        assert!(!english_only("large-v3-turbo", &rows));
+        // A ".en" name does not decide it either: the service's flag does.
+        assert!(!english_only("base.en", &[row("base.en", true)]));
+    }
+
+    #[test]
+    fn unknown_selected_model_is_english_only_like_shipped() {
+        assert!(english_only("large-v3-turbo", &[]));
     }
 }
