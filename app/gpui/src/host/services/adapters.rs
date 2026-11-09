@@ -1607,6 +1607,21 @@ mod palette_action {
     pub fn admit(_: &Backend, _: &Action, _: u64) -> Accepted {
         None
     }
+    /// A selected id only runs while the registry read at dispatch still offers it.
+    pub(super) fn offered(registry: &Snapshot, id: &str) -> bool {
+        registry.commands.iter().any(|c| c.id == id)
+    }
+    /// Meeting entries route by the intent their id carries. Progress only opens
+    /// Meetings, so a phase change after selection can never start a recording.
+    pub(super) fn meeting_route(id: &str) -> Option<Route> {
+        use crate::meetings::host::Intent;
+        Some(match id {
+            "meeting-progress" => Route::Meetings,
+            "meeting-start" => Route::MeetingIntent(Intent::Start),
+            "meeting-stop" => Route::MeetingIntent(Intent::Stop),
+            _ => return None,
+        })
+    }
     pub async fn run(
         b: &Backend,
         a: Action,
@@ -1617,7 +1632,7 @@ mod palette_action {
             return Ok(None);
         };
         let registry = read::palette(b.clone()).await?;
-        if !registry.commands.iter().any(|c| c.id == id) || !current() {
+        if !offered(&registry, &id) || !current() {
             return Err("Command changed".into());
         }
         match id.as_str() {
@@ -1641,12 +1656,9 @@ mod palette_action {
                 b.navigate(Route::HistoryAction(id))
             }
             "show-meetings" => b.navigate(Route::Meetings),
-            // Progress only navigates; start and stop carry the intent the user saw.
-            "meeting-progress" => b.navigate(Route::Meetings),
-            "meeting-start" => {
-                b.navigate(Route::MeetingIntent(crate::meetings::host::Intent::Start))
+            "meeting-progress" | "meeting-start" | "meeting-stop" => {
+                b.navigate(meeting_route(&id).ok_or("Command changed")?)
             }
-            "meeting-stop" => b.navigate(Route::MeetingIntent(crate::meetings::host::Intent::Stop)),
             "check-updates" => {
                 b.effect(
                     "updater_action",
@@ -1712,5 +1724,84 @@ mod setup_error_tests {
             setup_problem("private model path or setting".into()),
             Problem::Unavailable
         );
+    }
+}
+
+#[cfg(test)]
+mod palette_meeting_dispatch_tests {
+    use super::*;
+    use crate::{
+        meetings::host::Intent,
+        palette::{
+            model::Snapshot,
+            registry::{Meeting, State, commands},
+        },
+    };
+    use palette_action::{meeting_route, offered};
+
+    const PHASES: [Meeting; 6] = [
+        Meeting::Idle,
+        Meeting::Starting,
+        Meeting::Recording,
+        Meeting::Stopping,
+        Meeting::Processing,
+        Meeting::Failed,
+    ];
+    fn registry(meeting: Meeting) -> Snapshot {
+        Snapshot {
+            revision: 1,
+            commands: commands(&State {
+                meeting,
+                ..Default::default()
+            }),
+        }
+    }
+    fn meeting_choice(registry: &Snapshot) -> String {
+        registry
+            .commands
+            .iter()
+            .find(|c| c.id.starts_with("meeting-"))
+            .map(|c| c.id.clone())
+            .expect("every phase offers one meeting entry")
+    }
+
+    #[test]
+    fn progress_chosen_while_processing_cannot_start_after_the_meeting_goes_idle() {
+        let processing = registry(Meeting::Processing);
+        let progress = processing
+            .commands
+            .iter()
+            .find(|c| c.title == "Show meeting transcript progress")
+            .expect("processing offers progress")
+            .id
+            .clone();
+        // The meeting went idle between selection and dispatch: the production
+        // dispatch re-reads the registry, no longer offers the id and refuses.
+        assert!(offered(&processing, &progress));
+        assert!(!offered(&registry(Meeting::Idle), &progress));
+        // Had the id still been offered, progress only opens Meetings.
+        assert!(matches!(meeting_route(&progress), Some(Route::Meetings)));
+    }
+
+    #[test]
+    fn a_meeting_start_or_stop_only_follows_that_explicit_choice() {
+        for selected in PHASES {
+            let id = meeting_choice(&registry(selected));
+            for dispatched in PHASES {
+                if !offered(&registry(dispatched), &id) {
+                    continue;
+                }
+                let route = meeting_route(&id).expect("meeting ids have a route");
+                assert_eq!(
+                    matches!(route, Route::MeetingIntent(Intent::Start)),
+                    id == "meeting-start"
+                );
+                assert_eq!(
+                    matches!(route, Route::MeetingIntent(Intent::Stop)),
+                    id == "meeting-stop"
+                );
+            }
+        }
+        assert!(meeting_route("recording-toggle").is_none());
     }
 }

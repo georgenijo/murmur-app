@@ -253,12 +253,24 @@ pub fn read(b: Backend) -> super::backend::ReadFuture<Snapshot> {
         if b.meetings.epoch.load(Ordering::Acquire) != epoch {
             return Err("Meeting selection changed".into());
         }
+        // `status` is older than the awaits above. Before it may clear the access
+        // advice, confirm the same generation still has a live tap right now.
+        let held = b
+            .system_audio_access
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .has_receipt();
+        let confirm = if held && status["systemAudioActive"] == true {
+            b.call("get_meeting_status", json!({})).await.ok()
+        } else {
+            None
+        };
         let live = {
             let mut access = b
                 .system_audio_access
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
-            access.supersede(seen_receipt, &status);
+            access.supersede_confirmed(seen_receipt, &status, confirm.as_ref());
             runtime(&status, &permission, &access)
         };
         if busy {
@@ -793,6 +805,36 @@ mod runtime_tests {
             &memory("granted", false),
         );
         assert!(r.permission == Permission::Granted);
+    }
+
+    #[test]
+    fn unknown_receipt_stays_unknown_over_a_granted_passive_probe() {
+        let mut access = memory("unknown", false);
+        let idle = status("idle", Value::Null, json!({"state":"off"}));
+        let r = runtime(&idle, &json!("granted"), &access);
+        assert!(r.permission == Permission::Unknown);
+        assert!(!r.needs_relaunch);
+        // A live tap on the current generation is what makes it ready.
+        let seen = access.sequence();
+        let live = live_status(true);
+        access.supersede_confirmed(seen, &live, Some(&live));
+        let r = runtime(&live, &json!("granted"), &access);
+        assert!(r.permission == Permission::Granted);
+    }
+
+    #[test]
+    fn live_tap_from_a_superseded_generation_keeps_the_relaunch_advice() {
+        let mut access = memory("denied", true);
+        let seen = access.sequence();
+        let observed = live_status(true);
+        // By the time the read clears, a different generation owns the meeting.
+        let mut newer = live_status(true);
+        newer["generation"] = json!(8);
+        newer["sessionId"] = json!("synthetic-next");
+        access.supersede_confirmed(seen, &observed, Some(&newer));
+        let r = runtime(&newer, &json!("granted"), &access);
+        assert!(r.needs_relaunch);
+        assert!(r.permission == Permission::Denied);
     }
 
     #[test]

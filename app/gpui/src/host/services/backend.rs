@@ -378,12 +378,20 @@ impl AccessMemory {
     pub fn needs_relaunch(&self) -> bool {
         self.receipt.as_ref().is_some_and(|r| r.needs_relaunch)
     }
-    /// macOS can authorize Murmur while Core Audio still refuses the tap, and
-    /// the passive status then reports `granted`. A refused receipt wins over
-    /// that, so the app never shows System Audio as ready when the tap is not.
+    /// Whether a receipt is still held, so a reader can skip confirming a live tap.
+    pub fn has_receipt(&self) -> bool {
+        self.receipt.is_some()
+    }
+    /// macOS can authorize Murmur while Core Audio has not accepted the tap, and
+    /// the passive status then reports `granted`. Until a live tap or a newer
+    /// receipt supersedes it, a receipt that is not `granted` (denied, or unknown
+    /// after an unresolved prompt) wins over that, so the app never shows System
+    /// Audio as ready when the tap has not proven it.
     pub fn permission(&self, passive: &Value) -> Value {
         match &self.receipt {
-            Some(r) if r.permission == "denied" && passive == "granted" => json!("denied"),
+            Some(r) if r.permission != "granted" && passive == "granted" => {
+                json!(r.permission)
+            }
             _ => passive.clone(),
         }
     }
@@ -393,6 +401,26 @@ impl AccessMemory {
     pub fn supersede(&mut self, seen: u64, status: &Value) {
         if seen == self.sequence && status["systemAudioActive"] == true {
             self.receipt = None;
+        }
+    }
+    /// `observed` was read earlier in a multi-step read and may be stale. Clear
+    /// only when `current`, read immediately before this call, shows the same
+    /// meeting generation and session with a live tap. A read that lost its
+    /// current status, or whose generation moved on, keeps the receipt.
+    pub fn supersede_confirmed(&mut self, seen: u64, observed: &Value, current: Option<&Value>) {
+        let Some(current) = current else { return };
+        let same_generation = match (
+            observed["generation"].as_u64(),
+            current["generation"].as_u64(),
+        ) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        };
+        if same_generation
+            && observed["sessionId"] == current["sessionId"]
+            && observed["systemAudioActive"] == true
+        {
+            self.supersede(seen, current);
         }
     }
 }
@@ -467,6 +495,60 @@ mod tests {
         assert!(memory.needs_relaunch());
         memory.supersede(memory.sequence(), &status(true));
         assert!(!memory.needs_relaunch());
+        assert_eq!(memory.permission(&json!("granted")), json!("granted"));
+    }
+    #[test]
+    fn a_generation_change_between_status_fetch_and_clear_keeps_the_advice() {
+        let live = |generation: u64, session: &str| json!({"generation":generation,"sessionId":session,"phase":"recording","systemAudioActive":true});
+        let mut memory = AccessMemory::default();
+        memory.record("request_system_audio_permission", &receipt("denied", true));
+        let seen = memory.sequence();
+        let observed = live(4, "synthetic-a");
+        // Another generation took over, or the meeting is no longer live, by the clear.
+        memory.supersede_confirmed(seen, &observed, Some(&live(5, "synthetic-b")));
+        memory.supersede_confirmed(seen, &observed, Some(&status(false)));
+        memory.supersede_confirmed(seen, &observed, None);
+        // A stale observation never clears on behalf of a newer, live generation.
+        memory.supersede_confirmed(seen, &status(false), Some(&live(4, "synthetic-a")));
+        assert!(memory.needs_relaunch());
+        assert_eq!(memory.permission(&json!("granted")), json!("denied"));
+        // The same generation, still live at the clear, supersedes the receipt.
+        memory.supersede_confirmed(seen, &observed, Some(&live(4, "synthetic-a")));
+        assert!(!memory.needs_relaunch());
+    }
+    #[test]
+    fn confirmed_clear_still_honours_the_receipt_sequence() {
+        let live = json!({"generation":4,"sessionId":"synthetic-a","systemAudioActive":true});
+        let mut memory = AccessMemory::default();
+        memory.record("request_system_audio_permission", &receipt("denied", true));
+        let seen = memory.sequence();
+        memory.record("request_system_audio_permission", &receipt("denied", true));
+        memory.supersede_confirmed(seen, &live, Some(&live));
+        assert!(memory.needs_relaunch());
+    }
+    #[test]
+    fn an_unknown_receipt_is_not_projected_as_granted() {
+        let mut memory = AccessMemory::default();
+        // An unresolved authorization prompt answers unknown; passive TCC then allows.
+        memory.record(
+            "request_system_audio_permission",
+            &receipt("unknown", false),
+        );
+        assert_eq!(memory.permission(&json!("granted")), json!("unknown"));
+        assert_eq!(memory.permission(&json!("denied")), json!("denied"));
+        // Only a live tap, or a replacement receipt, makes it ready.
+        memory.supersede(memory.sequence(), &status(false));
+        assert_eq!(memory.permission(&json!("granted")), json!("unknown"));
+        memory.supersede(memory.sequence(), &status(true));
+        assert_eq!(memory.permission(&json!("granted")), json!("granted"));
+        memory.record(
+            "request_system_audio_permission",
+            &receipt("unknown", false),
+        );
+        memory.record(
+            "request_system_audio_permission",
+            &receipt("granted", false),
+        );
         assert_eq!(memory.permission(&json!("granted")), json!("granted"));
     }
     #[derive(Clone)]

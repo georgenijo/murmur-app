@@ -632,7 +632,10 @@ mod meeting_state_tests {
             let items = commands(&state);
             let title = |id: &str| items.iter().find(|c| c.id == id).map(|c| c.title.as_str());
             assert_eq!(title(id), Some(meeting_title), "{phase}");
-            let meeting_entries = items.iter().filter(|c| c.id.starts_with("meeting-")).count();
+            let meeting_entries = items
+                .iter()
+                .filter(|c| c.id.starts_with("meeting-"))
+                .count();
             assert_eq!(meeting_entries, 1, "{phase}");
             assert_eq!(title("recording-toggle").is_some(), dictation, "{phase}");
         }
@@ -662,6 +665,34 @@ mod meeting_state_tests {
         );
         // A live system-audio tap is the authoritative readiness that supersedes it.
         memory.supersede(memory.sequence(), &json!({"systemAudioActive":true}));
+        assert_eq!(
+            system_audio_access(&memory, &json!("granted")),
+            Access::Granted
+        );
+    }
+
+    #[test]
+    fn onboarding_does_not_advance_on_an_unknown_receipt_when_macos_authorizes() {
+        use crate::onboarding::model::Access;
+        let mut memory = super::super::backend::AccessMemory::default();
+        // An unresolved prompt answers unknown; passive TCC then reports granted.
+        memory.record(
+            "request_system_audio_permission",
+            &json!({"permission":"unknown","captureReady":false,"audioFlowing":false,"needsRelaunch":false}),
+        );
+        assert_eq!(
+            system_audio_access(&memory, &json!("granted")),
+            Access::Unknown
+        );
+        assert_ne!(
+            system_audio_access(&memory, &json!("granted")),
+            Access::Granted
+        );
+        // A replacement receipt that the tap accepted is what makes it granted.
+        memory.record(
+            "request_system_audio_permission",
+            &json!({"permission":"granted","captureReady":true,"audioFlowing":false,"needsRelaunch":false}),
+        );
         assert_eq!(
             system_audio_access(&memory, &json!("granted")),
             Access::Granted
