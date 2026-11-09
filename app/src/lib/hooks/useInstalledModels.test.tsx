@@ -58,6 +58,17 @@ function Harness({ initialModel }: { initialModel: ModelOption }) {
   return <ModelDownloadPanel initialModel={initialModel} installStates={installStates} onComplete={() => {}} />;
 }
 
+function CatalogHarness({ enabled = true }: { enabled?: boolean }) {
+  const { installStates, error, retry } = useInstalledModels(enabled);
+  return (
+    <div>
+      <button type="button" onClick={retry}>Refresh</button>
+      <span data-testid="base-en-state">{installStates?.['base.en'] ?? 'loading'}</span>
+      {error && <span role="alert">Could not check installed models.</span>}
+    </div>
+  );
+}
+
 describe('useInstalledModels live install state', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -157,5 +168,74 @@ describe('useInstalledModels live install state', () => {
     await settle();
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(container.querySelector('[id="download-model-base.en"]')?.textContent).toContain('Needs repair');
+  });
+
+  const baseEnState = () => container.querySelector('[data-testid="base-en-state"]')?.textContent;
+
+  it('replaces an equal-generation snapshot when the catalog is refetched', async () => {
+    let state: ModelInstallState = 'notInstalled';
+    mocks.invoke.mockImplementation((command: string) => command === 'get_model_runtime_catalog'
+      ? Promise.resolve([snapshot('base.en', state, 0)])
+      : Promise.resolve(null));
+
+    await act(async () => root.render(<CatalogHarness />));
+    await settle();
+    expect(baseEnState()).toBe('notInstalled');
+
+    state = 'installed';
+    await act(async () => button('Refresh').click());
+    await settle();
+    expect(baseEnState()).toBe('installed');
+  });
+
+  it('refreshes an equal-generation snapshot when the subscription re-enters', async () => {
+    let state: ModelInstallState = 'notInstalled';
+    mocks.invoke.mockImplementation((command: string) => command === 'get_model_runtime_catalog'
+      ? Promise.resolve([snapshot('base.en', state, 0)])
+      : Promise.resolve(null));
+
+    await act(async () => root.render(<CatalogHarness enabled />));
+    await settle();
+    expect(baseEnState()).toBe('notInstalled');
+
+    await act(async () => root.render(<CatalogHarness enabled={false} />));
+    await settle();
+    state = 'installed';
+    await act(async () => root.render(<CatalogHarness enabled />));
+    await settle();
+    expect(baseEnState()).toBe('installed');
+  });
+
+  it('keeps a higher-generation event received before the catalog response', async () => {
+    let resolveCatalog!: (catalog: ModelRuntimeSnapshot[]) => void;
+    const catalog = new Promise<ModelRuntimeSnapshot[]>((resolve) => {
+      resolveCatalog = resolve;
+    });
+    mocks.invoke.mockImplementation((command: string) => command === 'get_model_runtime_catalog'
+      ? catalog
+      : Promise.resolve(null));
+
+    await act(async () => root.render(<CatalogHarness />));
+    await settle();
+
+    await emit(snapshot('base.en', 'installed', 5));
+    expect(baseEnState()).toBe('loading');
+
+    await act(async () => resolveCatalog([snapshot('base.en', 'notInstalled', 0)]));
+    await settle();
+    expect(baseEnState()).toBe('installed');
+  });
+
+  it('still ignores a stale lower-generation event after load', async () => {
+    mocks.invoke.mockImplementation((command: string) => command === 'get_model_runtime_catalog'
+      ? Promise.resolve([snapshot('base.en', 'installed', 5)])
+      : Promise.resolve(null));
+
+    await act(async () => root.render(<CatalogHarness />));
+    await settle();
+    expect(baseEnState()).toBe('installed');
+
+    await emit(snapshot('base.en', 'notInstalled', 4));
+    expect(baseEnState()).toBe('installed');
   });
 });

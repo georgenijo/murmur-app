@@ -70,6 +70,8 @@ export function useModelRuntimeCatalog(enabled = true, revision = 0) {
     if (!enabled) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    let catalogLoaded = false;
+    let bufferedEvents: ModelRuntimeSnapshot[] = [];
     setLoaded(false);
     setError(null);
     void (async () => {
@@ -77,7 +79,15 @@ export function useModelRuntimeCatalog(enabled = true, revision = 0) {
         const dispose = await listen<ModelRuntimeSnapshot>(
           'model-runtime-status-changed',
           (event) => {
-            if (!disposed) setModels((catalog) => applyRuntimeUpdate(catalog, event.payload));
+            if (disposed) return;
+            // Events can arrive while the catalog request is in flight. Hold
+            // them so the fresh catalog baseline cannot overwrite a newer
+            // transition; replay them once the baseline is established.
+            if (!catalogLoaded) {
+              bufferedEvents.push(event.payload);
+              return;
+            }
+            setModels((catalog) => applyRuntimeUpdate(catalog, event.payload));
           },
         );
         if (disposed) dispose();
@@ -89,9 +99,14 @@ export function useModelRuntimeCatalog(enabled = true, revision = 0) {
       try {
         const catalog = await getModelRuntimeCatalog();
         if (!disposed) {
-          // Merge by generation so a transition received after listener setup
-          // cannot be overwritten by an older catalog response.
-          setModels((current) => catalog.reduce(applyRuntimeUpdate, current));
+          // Every subscription/revision starts from the freshly fetched
+          // catalog. Native reads can reflect on-disk changes without bumping
+          // generation, so the previous subscription's equal-generation state
+          // must not block this baseline.
+          catalogLoaded = true;
+          const baseline = bufferedEvents.reduce(applyRuntimeUpdate, catalog);
+          bufferedEvents = [];
+          setModels(baseline);
           setLoaded(true);
         }
       } catch (reason: unknown) {

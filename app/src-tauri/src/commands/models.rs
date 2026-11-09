@@ -596,8 +596,9 @@ pub async fn download_model(
         // This transfer must not publish `download-progress` events: they carry
         // the transcription model's name and request ID, so a listener would
         // mistake the VAD bytes for a second attempt at the requested model.
-        // The caller still settles from the `download_model` result.
-        if let Err(error) = ensure_vad_model(&app_handle).await
+        // The caller still settles from the `download_model` result. Cancellation
+        // still belongs to this request, so Cancel aborts the co-download too.
+        if let Err(error) = ensure_vad_model_with_progress(&app_handle, cancel.as_ref(), None).await
         {
             tracing::warn!(target: "system", "VAD model co-download failed (non-fatal): {}", error);
         }
@@ -992,7 +993,15 @@ async fn download_whisper_model(
     let dest_path = models_dir.join(&filename);
     let temp_path = models_dir.join(format!("{}.tmp", filename));
 
-    let received = stream_download(app_handle, &url, &temp_path, Some(progress_context), 0).await?;
+    let received = stream_download(
+        app_handle,
+        &url,
+        &temp_path,
+        progress_context.cancel,
+        Some(progress_context),
+        0,
+    )
+    .await?;
     if let Err(error) = crate::model_artifact::validate_binary_model(
         &temp_path,
         crate::model_artifact::MIN_WHISPER_MODEL_BYTES,
@@ -1068,6 +1077,7 @@ async fn download_parakeet_model(
                 app_handle,
                 &url,
                 &download_path,
+                progress_context.cancel,
                 Some(progress_context),
                 model_download::PARAKEET_STAGING,
             )
@@ -1305,17 +1315,15 @@ fn classify_archive_unpack_error(error: std::io::Error) -> ParakeetInstallError 
 /// This is the fallback for users who have a transcription model but not the
 /// VAD model (e.g. upgrade from a pre-VAD version or manual model install).
 pub(crate) async fn ensure_vad_model(app_handle: &tauri::AppHandle) -> Result<(), String> {
-    ensure_vad_model_with_progress(app_handle, None).await
+    let cancel = Cancellation::default();
+    ensure_vad_model_with_progress(app_handle, &cancel, None).await
 }
 
 async fn ensure_vad_model_with_progress(
     app_handle: &tauri::AppHandle,
+    cancel: &Cancellation,
     progress_context: Option<DownloadProgressContext<'_>>,
 ) -> Result<(), String> {
-    let fallback = Cancellation::default();
-    let cancel = progress_context
-        .map(|context| context.cancel)
-        .unwrap_or(&fallback);
     let _install_guard = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(model_download::CANCELLED.to_string()),
@@ -1343,6 +1351,7 @@ async fn ensure_vad_model_with_progress(
         app_handle,
         vad::VAD_MODEL_URL,
         &temp_path,
+        cancel,
         progress_context,
         0,
     )
@@ -1374,13 +1383,10 @@ async fn stream_download(
     app_handle: &tauri::AppHandle,
     url: &str,
     dest: &std::path::Path,
+    cancel: &Cancellation,
     progress_context: Option<DownloadProgressContext<'_>>,
     staging_bytes: u64,
 ) -> Result<u64, String> {
-    let fallback = Cancellation::default();
-    let cancel = progress_context
-        .map(|context| context.cancel)
-        .unwrap_or(&fallback);
     model_download::transfer(
         url,
         dest,
