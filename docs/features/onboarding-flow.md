@@ -40,6 +40,9 @@ active, because leaving the step cannot cancel the underlying download safely:
    shared runtime catalog and shows "already installed" on re-runs. Core ML
    setup reports bounded phases from a killable worker; terminal failure
    restores Back, Retry, and one-click Whisper Base / CPU Parakeet fallbacks.
+   Download/install status, Cancel, memory notices, and terminal errors render
+   in a fixed footer above the navigation row, so they stay visible while the
+   model list scrolls inside the wizard's fixed-height frame.
 7. **Hotkey** — chooses Hold / Double-tap / Both and a trigger key. The grouped
    picker contains Left Shift, Left Option, Right Control, and F1 through F20.
    Selecting a function key explains the macOS Fn and standard-function-key
@@ -95,7 +98,9 @@ text alongside Lucide icons.
 
 The fixed 520×560 frame uses a centered setup-assistant hero (64 px accent-tinted
 icon tile and 24 px title), full-width permission/model/shortcut cards, and a pinned
-navigation row. Step content scrolls, with its scrollbar hidden, without moving progress or navigation. Forward
+navigation row. Step content scrolls, with its scrollbar hidden, without moving progress or navigation. The model
+step portals its download status into that fixed area instead of leaving it
+below the scrolling model cards. Forward
 and Back entry transitions fade and slide 12 px in opposite directions over 220 ms;
 progress dots transition over 200 ms, fresh checks over 160 ms. All colors use
 semantic appearance tokens, and new recurring geometry uses `--ui-*` tokens.
