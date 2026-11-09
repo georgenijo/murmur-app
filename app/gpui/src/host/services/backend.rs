@@ -17,6 +17,7 @@ type Listener = Arc<dyn Fn(&str, &str) + Send + Sync>;
 #[derive(Default)]
 pub struct Events {
     pub feedback: Mutex<super::dictation_feedback::Feedback>,
+    pub destination: Mutex<super::destination::Destination>,
     next: AtomicU64,
     revision: AtomicU64,
     listeners: Mutex<BTreeMap<u64, (&'static str, Listener)>>,
@@ -28,6 +29,14 @@ impl Events {
     pub fn publish(&self, label: &str, event: &str, payload: &str) {
         if label == "main" {
             self.feedback
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .event(event, payload);
+        }
+        if matches!(label, "main" | "overlay") {
+            // Idempotent, so both consumers of one event may apply it; the
+            // overlay hydrate can never read before its own event is folded in.
+            self.destination
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .event(event, payload);
@@ -175,6 +184,9 @@ pub struct Backend {
     pub meetings: Arc<super::meetings::Presentation>,
     pub diagnostics: Arc<super::diagnostics::Clocks>,
     pub levels: Arc<Mutex<Option<(u64, f32)>>>,
+    /// Unsaved overlay calibration request, owned with the service read so the
+    /// settings projection reports the bounds the overlay actually resolves.
+    pub calibration: Arc<Mutex<Option<i64>>>,
 }
 pub type ReadFuture<S> = Pin<Box<dyn Future<Output = Result<S, String>> + Send>>;
 pub type Read<S> = fn(Backend) -> ReadFuture<S>;
@@ -208,6 +220,8 @@ impl Backend {
                         | "dictation-settings-changed"
                         | "recording-status-changed"
                         | "dictation-generation-started"
+                        | "smart-destination-selected"
+                        | "recording-cancelled"
                         | "history-changed"
                         | "statistics-changed"
                         | "model-runtime-status-changed"

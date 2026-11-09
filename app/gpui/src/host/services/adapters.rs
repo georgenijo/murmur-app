@@ -388,6 +388,8 @@ async fn settings_action(
         }
         Action::Calibration { offset, finish } => {
             if current() {
+                *b.calibration.lock().unwrap_or_else(|p| p.into_inner()) =
+                    (!finish).then_some(offset);
                 b.navigate(Route::Calibration {
                     offset: Some(offset),
                     finish,
@@ -400,6 +402,7 @@ async fn settings_action(
             return Ok(());
         }
         Action::CancelCalibration => {
+            *b.calibration.lock().unwrap_or_else(|p| p.into_inner()) = None;
             b.navigate(Route::Calibration {
                 offset: None,
                 finish: true,

@@ -932,6 +932,17 @@ impl Render for Overlay {
                     || self.model.snapshot.mode.clone(),
                     |s| format!("Next: {s}"),
                 );
+                // Shipped: only the resolved (not "next recording") Mode names
+                // its source in the accessible name and the title.
+                let (mode_name, mode_title) = if self.model.snapshot.next_mode.is_some() {
+                    (format!("Mode: {mode}. Click to cycle"), mode.clone())
+                } else {
+                    let source = self.model.snapshot.mode_source;
+                    (
+                        format!("Mode: {mode}. Click to cycle{}", source.accessible_suffix()),
+                        format!("{mode}{}", source.tray_suffix()),
+                    )
+                };
                 let paste_label = if self.model.snapshot.file_output {
                     "Auto-paste paused while saving files"
                 } else {
@@ -943,8 +954,9 @@ impl Render for Overlay {
                         .items_center()
                         .gap(px(6.))
                         .child(
-                            Button::new("cycle-mode", format!("Mode: {mode}. Click to cycle"))
+                            Button::new("cycle-mode", mode_name)
                                 .caption(mode.chars().take(14).collect::<String>())
+                                .tooltip(mode_title)
                                 .palette(p)
                                 .size(ButtonSize::ExtraSmall)
                                 .on_click(
@@ -989,14 +1001,23 @@ impl Render for Overlay {
                                 ),
                         ),
                 );
-                let mut detail =
-                    if self.model.snapshot.status == murmur_core::dictation::Status::Recording {
-                        self.model.elapsed(now)
+                use murmur_core::dictation::Status;
+                let phase = self.model.snapshot.status;
+                let mut detail = if phase == Status::Recording {
+                    self.model.elapsed(now)
+                } else {
+                    indicator.label().into()
+                };
+                // Shipped: the destination shows only while recording or
+                // processing; processing replaces the label with it.
+                if matches!(phase, Status::Recording | Status::Processing)
+                    && let Some(destination) = &self.model.snapshot.destination
+                {
+                    if phase == Status::Processing {
+                        detail.clear();
                     } else {
-                        indicator.label().into()
-                    };
-                if let Some(destination) = &self.model.snapshot.destination {
-                    detail.push_str(" · ");
+                        detail.push_str(" · ");
+                    }
                     detail.push_str(destination);
                 }
                 if let Some(summary) = &self.model.snapshot.smart_auto {

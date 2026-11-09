@@ -38,6 +38,7 @@ impl Intent {
 pub struct TrayState {
     pub revision: u64,
     pub mode: String,
+    pub mode_source: crate::overlay::model::ModeSource,
     pub available_modes: Vec<(String, String)>,
     pub pending_mode: Option<String>,
     pub disabled: bool,
@@ -53,7 +54,7 @@ impl TrayState {
             {"id":"show","title":"Show Murmur"},
             {"id":"updates","title":self.update.as_ref().map(|v|format!("Update Murmur to v{v}…")).unwrap_or_else(||"Check for Updates…".into())},
             {"id":"paste-last","title":"Paste Last / Retry Delivery"},
-            {"id":"cycle-mode","title":format!("Mode: {}",self.mode)},
+            {"id":"cycle-mode","title":format!("Mode: {}{}",self.mode,self.mode_source.tray_suffix())},
             {"title":"Next recording","items":modes},
             {"separator":true},
             {"id":"disabled","title":"Disable Murmur","checked":self.disabled},

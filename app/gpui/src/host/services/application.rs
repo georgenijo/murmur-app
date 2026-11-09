@@ -225,6 +225,7 @@ impl NativePorts for Ports {
                 "recording-status-changed"
                     | "dictation-generation-started"
                     | "recording-cancelled"
+                    | "smart-destination-selected"
                     | "dictation-lock-changed"
                     | "app-disabled-changed"
                     | "mode-runtime-changed"
@@ -330,6 +331,8 @@ impl NativePorts for Ports {
         let mut tray = self.tray.lock().unwrap_or_else(|p| p.into_inner());
         tray.revision = value["pendingRevision"].as_u64().unwrap_or(0);
         tray.mode = value["name"].as_str().unwrap_or("Everyday").into();
+        tray.mode_source =
+            crate::overlay::model::ModeSource::from_wire(value["source"].as_str().unwrap_or(""));
         tray.pending_mode = value["pending"]["id"].as_str().map(String::from);
         tray.available_modes = value["available"]
             .as_array()
@@ -498,47 +501,23 @@ impl Host {
                 let revision = ports.revision.fetch_add(1, Ordering::SeqCst) + 1;
                 if let Some(inbox) = ports.overlay.get() {
                     let tray = ports.tray.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                    let destination = b
+                        .events
+                        .destination
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .label();
                     let _ = inbox.publish(crate::overlay::model::Event::Hydrate {
                         observed_epoch: observed_overlay,
-                        snapshot: crate::overlay::model::Snapshot {
+                        snapshot: overlay_snapshot(
                             revision,
                             generation,
-                            elapsed_ms: state["recordingStartedAtMs"].as_i64().map_or(0, |start| {
-                                chrono::Utc::now()
-                                    .timestamp_millis()
-                                    .saturating_sub(start)
-                                    .max(0) as u64
-                            }),
-                            status: status(&state["state"]),
-                            locked: state["locked"] == true,
-                            disabled: settings["disabled"] == true,
-                            auto_paste: settings["autoPaste"] == true,
-                            file_output: settings["saveAudio"] == true
-                                || settings["saveTranscript"] == true,
-                            hotkey_feedback: settings["hotkeyMissFeedback"] == true,
-                            placement: if settings["overlayPlacement"] == "floating_pill" {
-                                OverlayPlacement::FloatingPill
-                            } else {
-                                OverlayPlacement::Notch
-                            },
-                            offset: settings["overlayVerticalOffset"].as_f64().unwrap_or(0.),
-                            mode: tray.mode,
-                            next_mode: tray.pending_mode.as_ref().and_then(|id| {
-                                tray.available_modes
-                                    .iter()
-                                    .find(|(key, _)| key == id)
-                                    .map(|(_, name)| name.clone())
-                            }),
-                            meeting: match meeting["phase"].as_str() {
-                                Some("starting") => crate::overlay::model::Meeting::Starting,
-                                Some("recording") => crate::overlay::model::Meeting::Recording,
-                                Some("stopping") => crate::overlay::model::Meeting::Stopping,
-                                Some("processing") => crate::overlay::model::Meeting::Processing,
-                                Some("failed") => crate::overlay::model::Meeting::Failed,
-                                _ => crate::overlay::model::Meeting::Idle,
-                            },
-                            ..Default::default()
-                        },
+                            &state,
+                            &settings,
+                            &meeting,
+                            tray,
+                            destination,
+                        ),
                     });
                 }
                 if let Some(inbox) = ports.preview.get() {
@@ -562,6 +541,58 @@ impl Host {
                 ports.refresh.store(true, Ordering::Release);
             }
         });
+    }
+}
+/// Production overlay projection: every field comes from the service reads and
+/// the tray/destination owners, never from a presentation default.
+pub(super) fn overlay_snapshot(
+    revision: u64,
+    generation: u64,
+    state: &Value,
+    settings: &Value,
+    meeting: &Value,
+    tray: TrayState,
+    destination: Option<String>,
+) -> crate::overlay::model::Snapshot {
+    crate::overlay::model::Snapshot {
+        revision,
+        generation,
+        elapsed_ms: state["recordingStartedAtMs"].as_i64().map_or(0, |start| {
+            chrono::Utc::now()
+                .timestamp_millis()
+                .saturating_sub(start)
+                .max(0) as u64
+        }),
+        status: status(&state["state"]),
+        locked: state["locked"] == true,
+        disabled: settings["disabled"] == true,
+        auto_paste: settings["autoPaste"] == true,
+        file_output: settings["saveAudio"] == true || settings["saveTranscript"] == true,
+        hotkey_feedback: settings["hotkeyMissFeedback"] == true,
+        placement: if settings["overlayPlacement"] == "floating_pill" {
+            OverlayPlacement::FloatingPill
+        } else {
+            OverlayPlacement::Notch
+        },
+        offset: settings["overlayVerticalOffset"].as_f64().unwrap_or(0.),
+        mode: tray.mode,
+        mode_source: tray.mode_source,
+        next_mode: tray.pending_mode.as_ref().and_then(|id| {
+            tray.available_modes
+                .iter()
+                .find(|(key, _)| key == id)
+                .map(|(_, name)| name.clone())
+        }),
+        destination,
+        meeting: match meeting["phase"].as_str() {
+            Some("starting") => crate::overlay::model::Meeting::Starting,
+            Some("recording") => crate::overlay::model::Meeting::Recording,
+            Some("stopping") => crate::overlay::model::Meeting::Stopping,
+            Some("processing") => crate::overlay::model::Meeting::Processing,
+            Some("failed") => crate::overlay::model::Meeting::Failed,
+            _ => crate::overlay::model::Meeting::Idle,
+        },
+        ..Default::default()
     }
 }
 impl ApplicationHost for Rc<Host> {
@@ -1040,6 +1071,7 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
             knowledge_reviews: Default::default(),
             meetings: playback,
             diagnostics: Default::default(),
+            calibration: Default::default(),
         };
         let _ = NOTIFICATION_ROUTE.set(backend.routes.clone());
         let _ = os.notifications(notification);
@@ -1731,5 +1763,142 @@ mod startup_tests {
         );
         assert_eq!(legacy_microphone("Repeated", &devices), None);
         assert_eq!(legacy_microphone("Missing", &devices), None);
+    }
+}
+#[cfg(test)]
+mod parity_projection_tests {
+    use super::{NativePorts, Ports, overlay_snapshot};
+    use crate::overlay::model::ModeSource;
+    use serde_json::{Value, json};
+
+    fn ports() -> Ports {
+        Ports {
+            registry: Default::default(),
+            events: Default::default(),
+            os: Default::default(),
+            terminal: std::sync::mpsc::channel().0,
+            services: Default::default(),
+            tray: Default::default(),
+            dock: Default::default(),
+            lifecycle: Default::default(),
+            revision: Default::default(),
+            overlay_clock: Default::default(),
+            refresh: Default::default(),
+            overlay: Default::default(),
+            preview: Default::default(),
+            downloads: Default::default(),
+            microphone: Default::default(),
+            playback: Default::default(),
+            scan: Default::default(),
+            levels: Default::default(),
+        }
+    }
+    // Production ingress: both consumers of one service event are delivered.
+    fn deliver(p: &Ports, event: &str, payload: Value) {
+        for label in ["main", "overlay"] {
+            assert!(p.send(label, event, &payload.to_string()).is_ok());
+        }
+    }
+    fn projected(p: &Ports) -> crate::overlay::model::Snapshot {
+        let destination = p
+            .events
+            .destination
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .label();
+        let tray = p.tray.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        overlay_snapshot(
+            1,
+            7,
+            &json!({"state":"recording","recordingId":7}),
+            &murmur_core::state::settings_defaults(),
+            &Value::Null,
+            tray,
+            destination,
+        )
+    }
+    fn menu_title(p: &Ports) -> String {
+        let menu = p.tray.lock().unwrap_or_else(|e| e.into_inner()).menu();
+        menu.as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == "cycle-mode")
+            .unwrap()["title"]
+            .as_str()
+            .unwrap()
+            .into()
+    }
+
+    #[test]
+    fn service_destination_reaches_the_overlay_projection_and_requests_hydration() {
+        let p = ports();
+        deliver(&p, "dictation-generation-started", json!({"recordingId":7}));
+        assert_eq!(projected(&p).destination, None);
+        p.refresh.store(false, std::sync::atomic::Ordering::SeqCst);
+        deliver(
+            &p,
+            "smart-destination-selected",
+            json!({"recordingId":7,"status":"current","appName":"Notes"}),
+        );
+        assert!(p.refresh.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(projected(&p).destination.as_deref(), Some("To Notes"));
+    }
+    #[test]
+    fn stale_cancelled_and_malformed_destinations_never_project() {
+        let p = ports();
+        deliver(&p, "dictation-generation-started", json!({"recordingId":7}));
+        deliver(
+            &p,
+            "smart-destination-selected",
+            json!({"recordingId":6,"status":"current","appName":"Old"}),
+        );
+        deliver(
+            &p,
+            "smart-destination-selected",
+            json!({"recordingId":7,"status":"unknown","appName":"Notes"}),
+        );
+        assert_eq!(projected(&p).destination, None);
+        deliver(
+            &p,
+            "smart-destination-selected",
+            json!({"recordingId":7,"status":"unavailable","appName":"Notes"}),
+        );
+        assert_eq!(projected(&p).destination.as_deref(), Some("Clipboard only"));
+        deliver(&p, "recording-cancelled", json!({"recordingId":7}));
+        assert_eq!(projected(&p).destination, None);
+        deliver(
+            &p,
+            "smart-destination-selected",
+            json!({"recordingId":7,"status":"current","appName":"Late"}),
+        );
+        assert_eq!(projected(&p).destination, None);
+    }
+    #[test]
+    fn mode_source_flows_from_the_service_status_to_tray_and_overlay() {
+        let p = ports();
+        for (wire, source, title) in [
+            ("manual", ModeSource::Manual, "Mode: Coding"),
+            ("app_binding", ModeSource::AppBinding, "Mode: Coding · App"),
+            (
+                "site_binding",
+                ModeSource::SiteBinding,
+                "Mode: Coding · Site",
+            ),
+            (
+                "temporary",
+                ModeSource::Temporary,
+                "Mode: Coding · Temporary",
+            ),
+            ("unrecognized", ModeSource::Manual, "Mode: Coding"),
+        ] {
+            p.mode_status(json!({"name":"Coding","source":wire,"pendingRevision":3}));
+            assert_eq!(projected(&p).mode_source, source, "{wire}");
+            assert_eq!(menu_title(&p), title, "{wire}");
+        }
+        // A status without a source never keeps the previous binding.
+        p.mode_status(json!({"name":"Everyday","source":"temporary"}));
+        p.mode_status(json!({"name":"Everyday"}));
+        assert_eq!(projected(&p).mode_source, ModeSource::Manual);
+        assert_eq!(menu_title(&p), "Mode: Everyday");
     }
 }

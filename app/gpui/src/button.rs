@@ -54,6 +54,7 @@ pub struct Button {
     nav: bool,
     full_width: bool,
     description: Option<SharedString>,
+    tooltip: Option<SharedString>,
     destructive_text: bool,
     trailing: Option<crate::icons::Glyph>,
     content: Option<AnyElement>,
@@ -89,6 +90,7 @@ impl Button {
             nav: false,
             full_width: false,
             description: None,
+            tooltip: None,
             destructive_text: false,
             trailing: None,
             content: None,
@@ -159,6 +161,14 @@ impl Button {
         let value = value.into();
         self.base = self.base.aria_description(value.clone());
         self.description = Some(value);
+        self
+    }
+    /// Hover title and accessibility description for a control whose visible
+    /// caption is abbreviated. It never changes layout or the accessible name.
+    pub fn tooltip(mut self, value: impl Into<SharedString>) -> Self {
+        let value = value.into();
+        self.base = self.base.aria_description(value.clone());
+        self.tooltip = Some(value);
         self
     }
     pub fn trailing_icon(mut self, glyph: crate::icons::Glyph) -> Self {
@@ -234,7 +244,7 @@ impl RenderOnce for Button {
         } else {
             None
         };
-        let tooltip_label = self.label.clone();
+        let tooltip_label = self.tooltip.clone().unwrap_or_else(|| self.label.clone());
         let p = self.palette.unwrap_or_else(|| Palette::get(cx));
         let (bg, fg) = match self.intent {
             ButtonIntent::Primary => (p.accent, p.on_accent),
@@ -266,7 +276,7 @@ impl RenderOnce for Button {
             self.default_confirm && self.intent != ButtonIntent::Danger && !self.disabled;
         self.base
             .relative()
-            .when(self.icon_only, |s| {
+            .when(self.icon_only || self.tooltip.is_some(), |s| {
                 s.tooltip(move |w, cx| {
                     gpui_component::tooltip::Tooltip::new(tooltip_label.clone()).build(w, cx)
                 })

@@ -43,6 +43,7 @@ pub fn install_clipboard(services: murmur_services::native_services::Services, c
 }
 
 pub mod backend;
+pub mod destination;
 pub mod projections;
 
 pub mod adapters;

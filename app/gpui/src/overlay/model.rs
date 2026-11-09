@@ -23,6 +23,44 @@ impl Meeting {
         !matches!(self, Self::Idle | Self::Failed)
     }
 }
+/// Why the resolved Mode is in effect, mirroring the shared service's
+/// `ModeRuntimeStatus.source` wire values.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ModeSource {
+    #[default]
+    Manual,
+    AppBinding,
+    SiteBinding,
+    Temporary,
+}
+impl ModeSource {
+    /// Unknown values fall back to Manual, as the shipped presentation does.
+    pub fn from_wire(value: &str) -> Self {
+        match value {
+            "app_binding" => Self::AppBinding,
+            "site_binding" => Self::SiteBinding,
+            "temporary" => Self::Temporary,
+            _ => Self::Manual,
+        }
+    }
+    /// Shipped tray and chip-title wording: `Name · Site`.
+    pub fn tray_suffix(self) -> &'static str {
+        match self {
+            Self::Manual => "",
+            Self::AppBinding => " · App",
+            Self::SiteBinding => " · Site",
+            Self::Temporary => " · Temporary",
+        }
+    }
+    /// Shipped overlay accessible-name tail (App bindings add none).
+    pub fn accessible_suffix(self) -> &'static str {
+        match self {
+            Self::Temporary => "; temporary override",
+            Self::SiteBinding => "; site binding",
+            Self::Manual | Self::AppBinding => "",
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
     Retry,
@@ -133,6 +171,7 @@ pub struct Snapshot {
     pub placement: OverlayPlacement,
     pub offset: f64,
     pub mode: String,
+    pub mode_source: ModeSource,
     pub next_mode: Option<String>,
     pub destination: Option<String>,
     pub smart_auto: Option<String>,
@@ -154,6 +193,7 @@ impl Default for Snapshot {
             placement: OverlayPlacement::Notch,
             offset: 0.,
             mode: "Everyday".into(),
+            mode_source: ModeSource::Manual,
             next_mode: None,
             destination: None,
             smart_auto: None,

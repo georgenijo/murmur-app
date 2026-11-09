@@ -354,9 +354,32 @@ pub fn home(b: Backend) -> Read<crate::home::model::Snapshot> {
             recordings_this_month: recordings,
             permissions: permissions(&b).await?,
             permissions_checked: true,
-            destination: None,
+            destination: b
+                .events
+                .destination
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .label(),
         })
     })
+}
+/// Placement bounds come from the shared geometry owner: notch travel is
+/// (-12, 12) and the floating pill has none, exactly as the shipped
+/// `set_overlay_vertical_offset` reply reported them.
+pub fn calibration(settings: &Value, draft: Option<i64>) -> crate::settings::model::Calibration {
+    let requested = draft
+        .or_else(|| settings["overlayVerticalOffset"].as_i64())
+        .unwrap_or(0);
+    let position = murmur_core::overlay_geometry::applied_overlay_position(
+        requested as f64,
+        settings["overlayPlacement"] == "floating_pill",
+    );
+    crate::settings::model::Calibration {
+        requested: position.requested_offset as i64,
+        applied: position.applied_offset as i64,
+        min: position.min_offset as i64,
+        max: position.max_offset as i64,
+    }
 }
 pub fn preferences(b: Backend) -> Read<crate::settings::model::Snapshot> {
     Box::pin(async move {
@@ -445,6 +468,10 @@ pub fn preferences(b: Backend) -> Read<crate::settings::model::Snapshot> {
             ),
             delivery_isolated: !murmur_services::native_services::external_delivery_allowed(),
             notchpill: b.call("is_notchpill_installed", json!({})).await?.as_bool(),
+            calibration: Some(calibration(
+                &settings,
+                *b.calibration.lock().unwrap_or_else(|p| p.into_inner()),
+            )),
             ..Default::default()
         };
         runtime.update = match update["updateStatus"]["phase"].as_str() {
@@ -530,5 +557,56 @@ mod permission_tests {
             );
         }
         assert_eq!(access(&Value::Null), Access::Unknown);
+    }
+}
+
+#[cfg(test)]
+mod calibration_tests {
+    use super::*;
+    use crate::settings::model::{Runtime, Snapshot, valid};
+
+    fn settings(placement: &str, offset: i64) -> Value {
+        let mut value =
+            murmur_core::state::settings(murmur_core::state::settings_defaults()).unwrap();
+        value["overlayPlacement"] = json!(placement);
+        value["overlayVerticalOffset"] = json!(offset);
+        murmur_core::state::settings(value).unwrap()
+    }
+    fn accepted(settings: Value, c: crate::settings::model::Calibration) -> bool {
+        valid(&Snapshot {
+            revision: 1,
+            settings,
+            disclosure: json!({"version":1,"panes":{}}),
+            runtime: Runtime {
+                calibration: Some(c),
+                ..Default::default()
+            },
+        })
+    }
+
+    #[test]
+    fn notch_reports_service_travel_not_a_presentation_fallback() {
+        let s = settings("notch", 4);
+        let c = calibration(&s, None);
+        assert_eq!((c.requested, c.applied, c.min, c.max), (4, 4, -12, 12));
+        assert!(accepted(s.clone(), c));
+        // An unsaved draft wins over the saved value and is clamped.
+        let c = calibration(&s, Some(40));
+        assert_eq!((c.requested, c.applied), (12, 12));
+        assert!(accepted(s, c));
+    }
+    #[test]
+    fn floating_pill_has_no_travel_and_keeps_the_requested_value() {
+        let s = settings("floating_pill", -7);
+        let c = calibration(&s, Some(-7));
+        assert_eq!((c.requested, c.applied, c.min, c.max), (-7, 0, 0, 0));
+        assert!(accepted(s, c));
+    }
+    #[test]
+    fn missing_or_wrong_typed_offsets_resolve_to_the_default_position() {
+        let mut s = settings("notch", 0);
+        s["overlayVerticalOffset"] = json!("high");
+        let c = calibration(&s, None);
+        assert_eq!((c.requested, c.applied, c.min, c.max), (0, 0, -12, 12));
     }
 }
