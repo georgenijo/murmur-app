@@ -12,6 +12,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 
 type Hook = Arc<dyn Fn(&Preview) + Send + Sync>;
+type Answers = HashMap<String, VecDeque<Result<Value, String>>>;
 type Responder = Arc<dyn Fn(&Value) -> Result<Value, String> + Send + Sync>;
 
 const RUN: &str = "run_microphone_startup_benchmark";
@@ -25,7 +26,7 @@ struct Fake {
     preview: Arc<Preview>,
     settings: Mutex<Value>,
     settings_hook: Mutex<Option<Hook>>,
-    answers: Mutex<HashMap<String, VecDeque<Result<Value, String>>>>,
+    answers: Mutex<Answers>,
     responders: Mutex<HashMap<String, Responder>>,
     claim: Mutex<HashMap<String, Hook>>,
     during: Mutex<HashMap<String, Hook>>,
@@ -83,7 +84,7 @@ impl Fake {
         lock(&self.log).push((command.into(), args.clone()));
         let hook = lock(&self.during).get(command).cloned();
         if let Some(hook) = hook {
-            hook(&*self.preview);
+            hook(&self.preview);
         }
         let responder = lock(&self.responders).get(command).cloned();
         if let Some(responder) = responder {
@@ -102,7 +103,7 @@ impl Port for Fake {
     fn settings(&self) -> impl Future<Output = Result<Value, String>> + Send {
         let hook = lock(&self.settings_hook).clone();
         if let Some(hook) = hook {
-            hook(&*self.preview);
+            hook(&self.preview);
         }
         let settings = Ok(lock(&self.settings).clone());
         async move { settings }
@@ -128,7 +129,7 @@ impl Port for Fake {
         } else {
             let claim = lock(&self.claim).get(command).cloned();
             if let Some(claim) = claim {
-                claim(&*self.preview);
+                claim(&self.preview);
             }
             if live() {
                 self.run(command, args)
@@ -498,7 +499,7 @@ fn partial_runs_are_shown_for_this_launch_but_never_persisted_or_auto_saved() {
     assert!(s.error.is_none() && s.progress.is_none());
     assert!(fake.calls(SAVE).is_empty());
     assert!(!dir.join("microphone-startup-reports.json").exists());
-    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -535,7 +536,7 @@ fn full_runs_are_kept_selectable_persisted_and_cleared() {
     assert!(s.runs.is_empty() && s.summary.is_empty() && s.error.is_none());
     assert!(!file.exists());
     assert!(shown(&Preview::persisted(&dir)).runs.is_empty());
-    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -552,7 +553,7 @@ fn a_history_that_cannot_be_written_is_reported_but_the_run_is_kept() {
         Some("Could not save this run to the history on this Mac.")
     );
     assert_eq!(s.runs.len(), 1);
-    std::fs::remove_dir_all(&dir).unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -791,4 +792,37 @@ fn smart_auto_retry_follows_continuity_permission_and_the_lid() {
         feedback(&["built-in"], false, "open"),
         SmartAuto::Blocked { retry: true, .. }
     ));
+}
+
+// A refused sensitivity update stays explained until a decision at the
+// requested sensitivity says otherwise.
+
+#[test]
+fn a_refused_sensitivity_update_is_not_cleared_by_a_stale_sensitivity_event() {
+    let fake = Fake::new();
+    let live = recording(&fake);
+    lock(&fake.settings)["vadSensitivity"] = json!(80);
+    let mut state = Loop::default();
+    state.started(7, config(&base()), 50);
+    fake.preview.id.store(7, Ordering::SeqCst);
+    fake.answer(PERMISSION, Ok(json!("granted")));
+    fake.answer(STATUS, Ok(running(7, "active")));
+    fake.answer(
+        "update_microphone_preview_vad_sensitivity",
+        Err("Unavailable".into()),
+    );
+    block_on(tick(&fake, &live, &mut state));
+    assert_eq!(*lock(&fake.preview.vad), Some((7, 80, true)));
+    let explained =
+        |preview: &Arc<Preview>| mic_test(&running(7, "active"), None, *lock(&preview.vad), 80);
+    assert!(explained(&fake.preview).vad_unavailable);
+    // The service's next decision still reports the old sensitivity.
+    let stale = json!({"previewId":7,"sensitivity":50,"decision":"speech_detected"});
+    assert!(!fake.preview.observe("microphone-preview-vad", &stale));
+    assert_eq!(*lock(&fake.preview.vad), Some((7, 80, true)));
+    assert!(explained(&fake.preview).vad_unavailable);
+    // A decision at the requested sensitivity is authoritative again.
+    let current = json!({"previewId":7,"sensitivity":80,"decision":"speech_detected"});
+    assert!(fake.preview.observe("microphone-preview-vad", &current));
+    assert!(!explained(&fake.preview).vad_unavailable);
 }

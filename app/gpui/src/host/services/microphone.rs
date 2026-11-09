@@ -87,6 +87,9 @@ pub struct Preview {
     pub meter: Mutex<Option<(u64, f32, f32)>>,
     /// Latest voice-detection decision: (preview id, sensitivity, unavailable).
     pub vad: Mutex<Option<(u64, u32, bool)>>,
+    /// Sensitivity last requested for a preview: (preview id, sensitivity).
+    /// Decisions made at another sensitivity are stale and describe nothing.
+    vad_target: Mutex<Option<(u64, u32)>>,
     /// A start or stop the service refused. Automatic starts stay suspended
     /// until the configuration changes or the user retries.
     pub failure: Mutex<Option<String>>,
@@ -150,11 +153,15 @@ impl Preview {
                 else {
                     return false;
                 };
-                let next = Some((
-                    id,
-                    sensitivity.min(100) as u32,
-                    value["decision"] == "unavailable",
-                ));
+                let sensitivity = sensitivity.min(100) as u32;
+                // A decision made before the latest request reached the service
+                // must not replace what that request reported, as shipped.
+                if lock(&self.vad_target)
+                    .is_some_and(|(target, wanted)| target == id && wanted != sensitivity)
+                {
+                    return false;
+                }
+                let next = Some((id, sensitivity, value["decision"] == "unavailable"));
                 let mut vad = lock(&self.vad);
                 let changed = *vad != next;
                 *vad = next;
@@ -428,6 +435,7 @@ pub async fn tick<P: Port>(p: &P, live: &Live, state: &mut Loop) {
                     if let Some(id) = started["previewId"].as_u64() {
                         if live() {
                             preview.id.store(id, Ordering::SeqCst);
+                            *lock(&preview.vad_target) = Some((id, sensitivity));
                             state.started(id, want, sensitivity);
                         } else {
                             let _ = p
@@ -468,6 +476,7 @@ pub async fn tick<P: Port>(p: &P, live: &Live, state: &mut Loop) {
             }
         }
         Step::Vad(id, value) => {
+            *lock(&preview.vad_target) = Some((id, value));
             let updated = p
                 .call(
                     "update_microphone_preview_vad_sensitivity",

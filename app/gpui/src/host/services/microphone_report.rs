@@ -306,8 +306,8 @@ impl Reports {
             .map_err(|_| "Could not save this run to the history on this Mac.".to_string())?;
         let temporary = dir.join(format!("{FILE}.tmp"));
         std::fs::create_dir_all(dir)
-            .and_then(|()| std::fs::write(&temporary, bytes))
-            .and_then(|()| std::fs::rename(&temporary, dir.join(FILE)))
+            .and_then(|()| std::fs::write(temporary.as_path(), bytes))
+            .and_then(|()| std::fs::rename(temporary.as_path(), dir.join(FILE)))
             .map_err(|_| "Could not save this run to the history on this Mac.".to_string())
     }
     /// Selector entries: when the run started and how far it got.
