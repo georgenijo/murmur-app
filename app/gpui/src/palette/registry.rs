@@ -75,13 +75,19 @@ pub fn commands(s: &State) -> Vec<Command> {
             &["mode", "cancel", "pending"],
         ));
     }
+    // The shipped single toggle id is split by intent. Dispatch re-reads this
+    // registry, so a meeting that changed phase after selection refuses the entry
+    // instead of turning "show progress" or "stop" into a new recording.
+    let (id, title) = match s.meeting {
+        Meeting::Stopping | Meeting::Processing => {
+            ("meeting-progress", "Show meeting transcript progress")
+        }
+        Meeting::Starting | Meeting::Recording => ("meeting-stop", "Stop meeting capture"),
+        Meeting::Idle | Meeting::Failed => ("meeting-start", "Start meeting capture"),
+    };
     out.push(command(
-        "meeting-toggle",
-        match s.meeting {
-            Meeting::Stopping | Meeting::Processing => "Show meeting transcript progress",
-            Meeting::Starting | Meeting::Recording => "Stop meeting capture",
-            _ => "Start meeting capture",
-        },
+        id,
+        title,
         "Meeting",
         &["system audio", "call", "me", "them", "record"],
     ));

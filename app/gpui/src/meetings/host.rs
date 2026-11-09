@@ -61,6 +61,23 @@ pub enum Action {
     },
     Back,
 }
+/// What the user chose, independent of the phase the choice is delivered in.
+/// A start never stops a meeting and a stop never starts one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Intent {
+    Start,
+    Stop,
+}
+impl Intent {
+    pub fn action(self, s: &Snapshot) -> Option<Action> {
+        match self {
+            Self::Start => (!s.phase.busy()).then_some(Action::Start),
+            Self::Stop => s.phase.active().then_some(Action::Stop {
+                generation: s.recording_generation,
+            }),
+        }
+    }
+}
 #[derive(Clone, Copy)]
 pub enum PlaybackAction {
     Play,

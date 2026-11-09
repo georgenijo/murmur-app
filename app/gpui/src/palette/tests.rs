@@ -54,9 +54,17 @@ fn registry_tracks_runtime_and_has_no_empty_history_actions() {
     s.meeting = Meeting::Recording;
     assert!(find(commands(&s), "recording-toggle").is_none());
     assert_eq!(
-        find(commands(&s), "meeting-toggle").unwrap().title,
+        find(commands(&s), "meeting-stop").unwrap().title,
         "Stop meeting capture"
     );
+    assert!(find(commands(&s), "meeting-start").is_none());
+    s.meeting = Meeting::Processing;
+    assert_eq!(
+        find(commands(&s), "meeting-progress").unwrap().title,
+        "Show meeting transcript progress"
+    );
+    assert!(find(commands(&s), "meeting-start").is_none());
+    s.meeting = Meeting::Recording;
     s.disabled = true;
     assert_eq!(
         find(commands(&s), "app-disable-toggle").unwrap().title,

@@ -1,6 +1,6 @@
 use super::{
     Meetings, fixtures,
-    host::{Action, PlaybackAction},
+    host::{Action, Intent, PlaybackAction},
     model::*,
 };
 use crate::workspace::Projection;
@@ -69,6 +69,46 @@ fn command_contracts_preserve_existing_review_revision_and_calendar_token() {
         .1["selectionToken"],
         "opaque"
     );
+}
+#[test]
+fn palette_intent_never_turns_into_the_opposite_action_when_the_phase_changes() {
+    let at = |phase| {
+        let mut s = fixtures::snapshot();
+        s.phase = phase;
+        s.recording_generation = 9;
+        s
+    };
+    // "Show meeting transcript progress" was chosen while processing and the
+    // meeting went idle before dispatch: only an explicit start intent may start.
+    // Progress carries no intent, so nothing here can reach Action::Start.
+    for phase in [
+        Phase::Starting,
+        Phase::Recording,
+        Phase::Stopping,
+        Phase::Processing,
+    ] {
+        assert!(
+            Intent::Start.action(&at(phase)).is_none(),
+            "a start must not begin a second meeting while busy"
+        );
+    }
+    for phase in [Phase::Idle, Phase::Failed] {
+        assert!(matches!(
+            Intent::Start.action(&at(phase)),
+            Some(Action::Start)
+        ));
+        assert!(
+            Intent::Stop.action(&at(phase)).is_none(),
+            "a stop must not act on a meeting that is not capturing"
+        );
+    }
+    for phase in [Phase::Starting, Phase::Recording, Phase::Stopping] {
+        assert!(matches!(
+            Intent::Stop.action(&at(phase)),
+            Some(Action::Stop { generation: 9 })
+        ));
+    }
+    assert!(Intent::Stop.action(&at(Phase::Processing)).is_none());
 }
 #[gpui::test]
 fn subscribe_precedes_passive_read_and_no_capture_or_calendar(cx: &mut TestAppContext) {

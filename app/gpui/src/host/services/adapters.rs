@@ -1641,7 +1641,12 @@ mod palette_action {
                 b.navigate(Route::HistoryAction(id))
             }
             "show-meetings" => b.navigate(Route::Meetings),
-            "meeting-toggle" => b.navigate(Route::MeetingToggle),
+            // Progress only navigates; start and stop carry the intent the user saw.
+            "meeting-progress" => b.navigate(Route::Meetings),
+            "meeting-start" => {
+                b.navigate(Route::MeetingIntent(crate::meetings::host::Intent::Start))
+            }
+            "meeting-stop" => b.navigate(Route::MeetingIntent(crate::meetings::host::Intent::Stop)),
             "check-updates" => {
                 b.effect(
                     "updater_action",

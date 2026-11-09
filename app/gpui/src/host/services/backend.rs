@@ -161,10 +161,10 @@ pub struct Backend {
     pub scan: Arc<Mutex<Option<(String, Value)>>>,
     pub theme_snapshot: Arc<Mutex<Option<(crate::themes::model::Snapshot, Value)>>>,
     pub calendar_access: Arc<Mutex<crate::onboarding::model::Access>>,
-    /// Last System Audio access receipt said macOS lists Murmur as allowed but
-    /// Core Audio still refuses the tap. Only a relaunch clears it, so it is
-    /// never derived from the passive status string.
-    pub system_audio_relaunch: Arc<AtomicBool>,
+    /// The last System Audio access receipt. It stays authoritative over the
+    /// passive status until a request replaces it or a live capture proves the
+    /// tap works.
+    pub system_audio_access: Arc<Mutex<AccessMemory>>,
     pub consumer: Consumer,
     pub runtime: tokio::runtime::Handle,
     pub events: Arc<Events>,
@@ -270,7 +270,7 @@ pub enum Route {
     BootstrapReady(bool),
     BootstrapFailed,
     Meetings,
-    MeetingToggle,
+    MeetingIntent(crate::meetings::host::Intent),
     MeetingSuggested(String),
     Insights,
     Settings(crate::settings::schema::Page),
@@ -339,15 +339,61 @@ impl Backend {
             .services
             .request_guarded(self.consumer, command, args, live)
             .await?;
-        record_system_audio_receipt(&self.system_audio_relaunch, command, &result);
+        self.system_audio_access
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .record(command, &result);
         Ok(result)
     }
 }
-/// `request_system_audio_permission` is the only command whose receipt carries
-/// `needsRelaunch`; each new request replaces the previous answer.
-pub fn record_system_audio_receipt(relaunch: &AtomicBool, command: &str, receipt: &Value) {
-    if command == "request_system_audio_permission" {
-        relaunch.store(receipt["needsRelaunch"] == true, Ordering::Release);
+/// The tap result of the last `request_system_audio_permission`. Unlike the
+/// passive status, which only reports macOS authorization, it knows whether
+/// Core Audio actually accepted the tap and whether a relaunch is needed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccessReceipt {
+    pub permission: String,
+    pub needs_relaunch: bool,
+}
+#[derive(Default, Debug)]
+pub struct AccessMemory {
+    sequence: u64,
+    receipt: Option<AccessReceipt>,
+}
+impl AccessMemory {
+    /// `request_system_audio_permission` is the only command that returns the
+    /// receipt; each request replaces the previous answer.
+    pub fn record(&mut self, command: &str, receipt: &Value) {
+        if command == "request_system_audio_permission" {
+            self.sequence += 1;
+            self.receipt = Some(AccessReceipt {
+                permission: receipt["permission"].as_str().unwrap_or("unknown").into(),
+                needs_relaunch: receipt["needsRelaunch"] == true,
+            });
+        }
+    }
+    /// Identifies the receipt a later status read may supersede.
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+    pub fn needs_relaunch(&self) -> bool {
+        self.receipt.as_ref().is_some_and(|r| r.needs_relaunch)
+    }
+    /// macOS can authorize Murmur while Core Audio still refuses the tap, and
+    /// the passive status then reports `granted`. A refused receipt wins over
+    /// that, so the app never shows System Audio as ready when the tap is not.
+    pub fn permission(&self, passive: &Value) -> Value {
+        match &self.receipt {
+            Some(r) if r.permission == "denied" && passive == "granted" => json!("denied"),
+            _ => passive.clone(),
+        }
+    }
+    /// Only a live system-audio tap proves readiness. `seen` is the receipt
+    /// sequence observed before `status` was read, so a receipt recorded while
+    /// that read was in flight is never cleared by it.
+    pub fn supersede(&mut self, seen: u64, status: &Value) {
+        if seen == self.sequence && status["systemAudioActive"] == true {
+            self.receipt = None;
+        }
     }
 }
 
@@ -355,23 +401,73 @@ pub fn record_system_audio_receipt(relaunch: &AtomicBool, command: &str, receipt
 mod tests {
     use super::*;
     use crate::workspace::{Authority, Event, Inbox, Projection, Session};
+    // `SystemAudioAccess` wire shape, synthetic values only.
+    fn receipt(permission: &str, relaunch: bool) -> Value {
+        json!({"permission":permission,"captureReady":permission == "granted","audioFlowing":false,"needsRelaunch":relaunch})
+    }
+    fn status(active: bool) -> Value {
+        json!({"generation":4,"sessionId":"synthetic-session","phase":if active {"recording"} else {"failed"},"systemAudioActive":active})
+    }
     #[test]
-    fn only_system_audio_access_receipts_set_and_clear_the_relaunch_fact() {
-        let flag = AtomicBool::new(false);
-        let refused = json!({"permission":"denied","captureReady":false,"audioFlowing":false,"needsRelaunch":true});
-        record_system_audio_receipt(&flag, "get_system_audio_permission_status", &refused);
-        assert!(!flag.load(Ordering::Acquire));
-        record_system_audio_receipt(&flag, "request_system_audio_permission", &refused);
-        assert!(flag.load(Ordering::Acquire));
-        record_system_audio_receipt(
-            &flag,
-            "get_system_audio_permission_status",
-            &json!("granted"),
+    fn only_system_audio_access_receipts_set_and_replace_the_access_fact() {
+        let mut memory = AccessMemory::default();
+        let refused = receipt("denied", true);
+        memory.record("get_system_audio_permission_status", &refused);
+        assert!(!memory.needs_relaunch());
+        assert_eq!(memory.permission(&json!("granted")), json!("granted"));
+        memory.record("request_system_audio_permission", &refused);
+        assert!(memory.needs_relaunch());
+        memory.record("get_system_audio_permission_status", &json!("granted"));
+        assert!(memory.needs_relaunch());
+        memory.record(
+            "request_system_audio_permission",
+            &receipt("granted", false),
         );
-        assert!(flag.load(Ordering::Acquire));
-        let granted = json!({"permission":"granted","captureReady":true,"audioFlowing":false,"needsRelaunch":false});
-        record_system_audio_receipt(&flag, "request_system_audio_permission", &granted);
-        assert!(!flag.load(Ordering::Acquire));
+        assert!(!memory.needs_relaunch());
+    }
+    #[test]
+    fn refused_tap_receipt_overrides_the_passive_authorization_probe() {
+        let mut memory = AccessMemory::default();
+        // TCC allows access, so the passive probe says granted, but the tap was refused.
+        memory.record("request_system_audio_permission", &receipt("denied", true));
+        assert_eq!(memory.permission(&json!("granted")), json!("denied"));
+        // A denial or revocation the passive probe already reports is unchanged.
+        assert_eq!(memory.permission(&json!("denied")), json!("denied"));
+        assert_eq!(memory.permission(&json!("unknown")), json!("unknown"));
+        // An accepted receipt never hides a later revocation seen by the passive probe.
+        memory.record(
+            "request_system_audio_permission",
+            &receipt("granted", false),
+        );
+        assert_eq!(memory.permission(&json!("denied")), json!("denied"));
+        assert_eq!(memory.permission(&json!("granted")), json!("granted"));
+    }
+    #[test]
+    fn accepted_start_that_then_loses_the_tap_keeps_the_access_advice() {
+        let mut memory = AccessMemory::default();
+        memory.record("request_system_audio_permission", &receipt("denied", true));
+        let seen = memory.sequence();
+        // start_meeting only accepts startup; the meeting then fails on the refused tap.
+        memory.supersede(
+            seen,
+            &json!({"generation":5,"phase":"starting","systemAudioActive":false}),
+        );
+        memory.supersede(seen, &status(false));
+        assert!(memory.needs_relaunch());
+        assert_eq!(memory.permission(&json!("granted")), json!("denied"));
+    }
+    #[test]
+    fn only_a_live_tap_from_the_current_read_supersedes_the_receipt() {
+        let mut memory = AccessMemory::default();
+        memory.record("request_system_audio_permission", &receipt("denied", true));
+        let stale = memory.sequence();
+        memory.record("request_system_audio_permission", &receipt("denied", true));
+        // A status read before the newer receipt must not clear it.
+        memory.supersede(stale, &status(true));
+        assert!(memory.needs_relaunch());
+        memory.supersede(memory.sequence(), &status(true));
+        assert!(!memory.needs_relaunch());
+        assert_eq!(memory.permission(&json!("granted")), json!("granted"));
     }
     #[derive(Clone)]
     struct State(u64);

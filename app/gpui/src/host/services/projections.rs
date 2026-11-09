@@ -2,7 +2,7 @@
 //! they never request permissions, enumerate calendars, download or start capture.
 use super::backend::Backend;
 use serde_json::{Value, json};
-use std::{future::Future, pin::Pin, sync::atomic::Ordering};
+use std::{future::Future, pin::Pin};
 type Read<S> = Pin<Box<dyn Future<Output = Result<S, String>> + Send>>;
 fn text(v: &Value, key: &str) -> String {
     v[key].as_str().unwrap_or_default().to_owned()
@@ -250,23 +250,40 @@ pub fn access(v: &Value) -> crate::onboarding::model::Access {
     }
 }
 
+/// Onboarding's System Audio fact. The passive probe only reports macOS
+/// authorization; the last access receipt knows whether the tap was refused.
+fn system_audio_access(
+    memory: &super::backend::AccessMemory,
+    passive: &Value,
+) -> crate::onboarding::model::Access {
+    access(&memory.permission(passive))
+}
+
 pub async fn permissions(b: &Backend) -> Result<[crate::onboarding::model::Access; 4], String> {
+    let microphone = access(
+        &b.call("check_microphone_permission_status", json!({}))
+            .await
+            .map_err(|_| "Setup microphone unavailable")?,
+    );
+    let accessibility = access(
+        &b.call("check_accessibility_permission", json!({}))
+            .await
+            .map_err(|_| "Setup accessibility unavailable")?,
+    );
+    let passive = b
+        .call("get_system_audio_permission_status", json!({}))
+        .await
+        .map_err(|_| "Setup system audio unavailable")?;
+    let system_audio = system_audio_access(
+        &b.system_audio_access
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()),
+        &passive,
+    );
     Ok([
-        access(
-            &b.call("check_microphone_permission_status", json!({}))
-                .await
-                .map_err(|_| "Setup microphone unavailable")?,
-        ),
-        access(
-            &b.call("check_accessibility_permission", json!({}))
-                .await
-                .map_err(|_| "Setup accessibility unavailable")?,
-        ),
-        access(
-            &b.call("get_system_audio_permission_status", json!({}))
-                .await
-                .map_err(|_| "Setup system audio unavailable")?,
-        ),
+        microphone,
+        accessibility,
+        system_audio,
         *b.calendar_access.lock().unwrap_or_else(|p| p.into_inner()), // Only explicit Calendar visits populate this cache.
     ])
 }
@@ -282,7 +299,11 @@ pub fn onboarding(b: Backend) -> Read<crate::onboarding::model::Snapshot> {
             .sources()
             .await
             .map_err(|_| "Setup settings unavailable")?;
-        let needs_relaunch = b.system_audio_relaunch.load(Ordering::Acquire);
+        let needs_relaunch = b
+            .system_audio_access
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .needs_relaunch();
         Ok(crate::onboarding::model::Snapshot {
             revision: b.events.revision(),
             settings,
@@ -584,13 +605,25 @@ mod meeting_state_tests {
 
     #[test]
     fn palette_offers_the_shipped_entry_for_every_meeting_phase() {
-        for (phase, meeting_title, dictation) in [
-            ("idle", "Start meeting capture", true),
-            ("starting", "Stop meeting capture", false),
-            ("recording", "Stop meeting capture", false),
-            ("stopping", "Show meeting transcript progress", false),
-            ("processing", "Show meeting transcript progress", false),
-            ("failed", "Start meeting capture", true),
+        // Each phase offers exactly one meeting entry; its id carries the intent,
+        // so the choice stays what the user saw whichever phase dispatch finds.
+        for (phase, id, meeting_title, dictation) in [
+            ("idle", "meeting-start", "Start meeting capture", true),
+            ("starting", "meeting-stop", "Stop meeting capture", false),
+            ("recording", "meeting-stop", "Stop meeting capture", false),
+            (
+                "stopping",
+                "meeting-progress",
+                "Show meeting transcript progress",
+                false,
+            ),
+            (
+                "processing",
+                "meeting-progress",
+                "Show meeting transcript progress",
+                false,
+            ),
+            ("failed", "meeting-start", "Start meeting capture", true),
         ] {
             let state = State {
                 meeting: palette_meeting(&status(phase)),
@@ -598,9 +631,40 @@ mod meeting_state_tests {
             };
             let items = commands(&state);
             let title = |id: &str| items.iter().find(|c| c.id == id).map(|c| c.title.as_str());
-            assert_eq!(title("meeting-toggle"), Some(meeting_title), "{phase}");
+            assert_eq!(title(id), Some(meeting_title), "{phase}");
+            let meeting_entries = items.iter().filter(|c| c.id.starts_with("meeting-")).count();
+            assert_eq!(meeting_entries, 1, "{phase}");
             assert_eq!(title("recording-toggle").is_some(), dictation, "{phase}");
         }
         assert!(matches!(palette_meeting(&Value::Null), Meeting::Idle));
+    }
+
+    #[test]
+    fn onboarding_shows_a_refused_tap_even_when_macos_authorizes_it() {
+        use crate::onboarding::model::Access;
+        let mut memory = super::super::backend::AccessMemory::default();
+        assert_eq!(
+            system_audio_access(&memory, &json!("granted")),
+            Access::Granted
+        );
+        // macOS lists Murmur as allowed, so the passive probe says granted.
+        memory.record(
+            "request_system_audio_permission",
+            &json!({"permission":"denied","captureReady":false,"audioFlowing":false,"needsRelaunch":true}),
+        );
+        assert_eq!(
+            system_audio_access(&memory, &json!("granted")),
+            Access::Denied
+        );
+        assert_eq!(
+            system_audio_access(&memory, &json!("denied")),
+            Access::Denied
+        );
+        // A live system-audio tap is the authoritative readiness that supersedes it.
+        memory.supersede(memory.sequence(), &json!({"systemAudioActive":true}));
+        assert_eq!(
+            system_audio_access(&memory, &json!("granted")),
+            Access::Granted
+        );
     }
 }

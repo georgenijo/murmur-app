@@ -28,6 +28,8 @@ use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
+mod qa;
+
 const CAPTURE_WORKER_IDENTIFIER: &str = "com.localdictation.capture-worker";
 const HELPER_STOP_DEADLINE: Duration = Duration::from_secs(2);
 const MEETING_STOP_ACK_DEADLINE: Duration = Duration::from_secs(2);
@@ -405,6 +407,7 @@ impl MeetingCoordinator {
             );
             return Err("The meeting capture supervisor could not start.".to_string());
         }
+        qa::inject_echo(self, &app, &config);
         Ok(())
     }
 
@@ -801,6 +804,10 @@ fn tcc_request() -> bool {
 }
 
 fn probe_permission() -> Result<SystemAudioAccess, String> {
+    // QA bundle only: macOS lists the app as authorized, Core Audio refuses the tap.
+    if qa::tap_refused() {
+        return Ok(resolve_access(true, qa::refused_tap()));
+    }
     let authorized_before = tcc_preflight();
     tracing::info!(
         target: "meeting",
@@ -1254,6 +1261,13 @@ fn run_capture_session(
     command_receiver: Receiver<MeetingCommand>,
     coordinator: &MeetingCoordinator,
 ) -> Result<Option<crate::diarization_audio::RemoteAudio>, MeetingError> {
+    // QA bundle only: an accepted start whose System Audio tap is then refused.
+    if qa::tap_refused() {
+        return Err(meeting_error_for_failure(
+            FailureCode::PermissionDenied,
+            Some(CaptureChannel::System),
+        ));
+    }
     let (capture_id, nonce, nonce_hex) = capture_identity();
     let (mut child, mut input, output) = spawn_worker(capture_id, &nonce_hex)?;
     let receiver = spawn_reader(output, capture_id, nonce);

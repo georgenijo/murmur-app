@@ -10,6 +10,11 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
+/// A meeting choice waiting for the Meetings view to hold a snapshot.
+enum PendingMeeting {
+    Intent(crate::meetings::host::Intent),
+    Suggested(String),
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
     Home,
@@ -72,7 +77,7 @@ pub struct Main {
     feedback_revision: u64,
     subscriptions: Vec<Subscription>,
     pending_history: Option<String>,
-    pending_meeting: Option<Option<String>>,
+    pending_meeting: Option<PendingMeeting>,
 }
 impl Main {
     pub fn new(backend: Backend, w: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -291,12 +296,9 @@ impl Main {
         {
             let _ = view;
             if let Some(action) = self.pending_meeting.take() {
-                self.meetings.update(cx, |view, cx| {
-                    if let Some(token) = action {
-                        view.accept_suggestion(token, cx)
-                    } else {
-                        view.record(cx)
-                    }
+                self.meetings.update(cx, |view, cx| match action {
+                    PendingMeeting::Suggested(token) => view.accept_suggestion(token, cx),
+                    PendingMeeting::Intent(intent) => view.record_intent(intent, cx),
                 });
             }
         }
@@ -397,13 +399,13 @@ impl Main {
 
             Route::Home => self.select(Section::Home, w, cx),
             Route::Meetings => self.select(Section::Meetings, w, cx),
-            Route::MeetingToggle => {
+            Route::MeetingIntent(intent) => {
                 self.select(Section::Meetings, w, cx);
-                self.pending_meeting = Some(None);
+                self.pending_meeting = Some(PendingMeeting::Intent(intent));
             }
             Route::MeetingSuggested(token) => {
                 self.select(Section::Meetings, w, cx);
-                self.pending_meeting = Some(Some(token));
+                self.pending_meeting = Some(PendingMeeting::Suggested(token));
             }
             Route::Insights => self.select(Section::Insights, w, cx),
             Route::Models => self.select(Section::Models, w, cx),

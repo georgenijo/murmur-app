@@ -703,7 +703,7 @@ impl ApplicationHost for Rc<Host> {
                     | Route::Teach(_)
                     | Route::Settings(_)
                     | Route::Meetings
-                    | Route::MeetingToggle
+                    | Route::MeetingIntent(_)
                     | Route::MeetingSuggested(_)
                     | Route::Setup
                     | Route::SetupReplay
@@ -1010,7 +1010,7 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
             theme_snapshot: Default::default(),
             scan: scan.clone(),
             calendar_access: Arc::new(Mutex::new(crate::onboarding::model::Access::Unknown)),
-            system_audio_relaunch: Default::default(),
+            system_audio_access: Default::default(),
             consumer: Consumer::Main,
             runtime: handle,
             events,

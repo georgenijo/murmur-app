@@ -1,5 +1,8 @@
 //! Meeting presentation and playback adapt the shared recording/store owners.
-use super::{backend::Backend, os::Live};
+use super::{
+    backend::{AccessMemory, Backend},
+    os::Live,
+};
 use crate::{
     meetings::{host::*, model::*, playback as p},
     workspace::{Event, Problem},
@@ -131,7 +134,9 @@ struct Runtime {
     failure: Option<&'static str>,
     echo_notice: Option<String>,
 }
-fn runtime(status: &Value, permission: &Value, needs_relaunch: bool) -> Runtime {
+fn runtime(status: &Value, passive: &Value, access: &AccessMemory) -> Runtime {
+    // A refused-tap receipt outranks the passive authorization probe.
+    let permission = access.permission(passive);
     Runtime {
         phase: match status["phase"].as_str() {
             Some("starting") => Phase::Starting,
@@ -147,7 +152,7 @@ fn runtime(status: &Value, permission: &Value, needs_relaunch: bool) -> Runtime 
             Some("unsupported") => Permission::Unsupported,
             _ => Permission::Unknown,
         },
-        needs_relaunch,
+        needs_relaunch: access.needs_relaunch(),
         failure: status["errorCode"].as_str().map(error_message),
         echo_notice: echo_notice(&status["echoCancellation"]),
     }
@@ -179,6 +184,12 @@ pub fn read(b: Backend) -> super::backend::ReadFuture<Snapshot> {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .clone();
+        // Taken before the status read, so a receipt recorded meanwhile survives it.
+        let seen_receipt = b
+            .system_audio_access
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .sequence();
         let status = b.call("get_meeting_status", json!({})).await?;
         let permission = b
             .call("get_system_audio_permission_status", json!({}))
@@ -242,11 +253,14 @@ pub fn read(b: Backend) -> super::backend::ReadFuture<Snapshot> {
         if b.meetings.epoch.load(Ordering::Acquire) != epoch {
             return Err("Meeting selection changed".into());
         }
-        let live = runtime(
-            &status,
-            &permission,
-            b.system_audio_relaunch.load(Ordering::Acquire),
-        );
+        let live = {
+            let mut access = b
+                .system_audio_access
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            access.supersede(seen_receipt, &status);
+            runtime(&status, &permission, &access)
+        };
         if busy {
             b.pause_player();
         }
@@ -596,9 +610,9 @@ impl Host for Backend {
                     Action::Start|Action::StartSuggested(_)=>{
                         let settings=super::projections::settings(&b).await?;
                         let request=json!({"deviceName":settings["microphone"].as_str().filter(|s|!s.is_empty()&&*s!="system_default"),"smartAuto":if settings["smartAutoMicrophoneEnabled"]==true{json!({"approvedDeviceIds":settings["smartAutoApprovedDeviceIds"],"preferredDeviceIds":settings["smartAutoPreferredDeviceIds"],"allowContinuity":settings["smartAutoAllowContinuity"],"requireRecentSignal":settings["smartAutoProbeEnabled"]})}else{Value::Null},"retainAudio":settings["meetingRetainAudio"],"retentionDays":settings["meetingRetentionDays"].as_u64().filter(|n|*n>0),"maxSessions":settings["meetingMaxSessions"],"echoCancellation":settings["meetingEchoCancellationEnabled"],"diarization":settings["meetingDiarization"],"suggestionToken":if let Action::StartSuggested(token)=&r.action{Some(token)}else{None}});
+                        // start_meeting only accepts startup. The tap opens afterwards and can still be
+                        // refused, so relaunch advice is cleared only by a live capture in `read`.
                         let session=b.effect("start_meeting",json!({"request":request}),current.clone()).await?;
-                        // A started meeting proves the tap works, so any earlier relaunch advice is stale.
-                        b.system_audio_relaunch.store(false,Ordering::Release);
                         if current(){b.meetings.selection.lock().unwrap_or_else(|p|p.into_inner()).id=session["id"].as_str().map(String::from);}
                     },
                     Action::Stop{generation}=>b.services.stop_meeting(*generation).await?,
@@ -659,6 +673,21 @@ mod runtime_tests {
             "errorCode": error,
         })
     }
+    fn live_status(active: bool) -> Value {
+        let mut status = status("recording", Value::Null, json!({"state":"off"}));
+        status["microphoneActive"] = json!(true);
+        status["systemAudioActive"] = json!(active);
+        status
+    }
+    // `request_system_audio_permission` receipt, as the service serializes it.
+    fn memory(permission: &str, relaunch: bool) -> AccessMemory {
+        let mut memory = AccessMemory::default();
+        memory.record(
+            "request_system_audio_permission",
+            &json!({"permission":permission,"captureReady":permission == "granted","audioFlowing":false,"needsRelaunch":relaunch}),
+        );
+        memory
+    }
 
     #[test]
     fn failed_meeting_carries_the_service_error_and_does_not_look_busy() {
@@ -683,7 +712,7 @@ mod runtime_tests {
             let r = runtime(
                 &status("failed", json!(code), json!({"state":"off"})),
                 &json!("denied"),
-                false,
+                &AccessMemory::default(),
             );
             assert!(r.phase == Phase::Failed);
             assert!(!r.phase.busy(), "a failed meeting has released capture");
@@ -703,7 +732,7 @@ mod runtime_tests {
             let r = runtime(
                 &status(phase, Value::Null, json!({"state":"active"})),
                 &json!("granted"),
-                false,
+                &AccessMemory::default(),
             );
             assert!(r.phase == expected);
             assert!(r.failure.is_none());
@@ -719,7 +748,7 @@ mod runtime_tests {
             runtime(
                 &status("recording", Value::Null, echo),
                 &json!("granted"),
-                false,
+                &AccessMemory::default(),
             )
             .echo_notice
         };
@@ -739,15 +768,58 @@ mod runtime_tests {
     }
 
     #[test]
-    fn relaunch_fact_is_independent_of_the_passive_permission_string() {
+    fn refused_tap_receipt_shows_denied_and_relaunch_over_a_granted_passive_probe() {
         // macOS lists the app as authorized, so the passive probe reports granted
         // while the tap refusal still needs a relaunch.
         let r = runtime(
             &status("idle", Value::Null, json!({"state":"off"})),
             &json!("granted"),
-            true,
+            &memory("denied", true),
         );
         assert!(r.needs_relaunch);
+        assert!(r.permission == Permission::Denied);
+        // A refusal without a relaunch fact still shows denied, not granted.
+        let r = runtime(
+            &status("idle", Value::Null, json!({"state":"off"})),
+            &json!("granted"),
+            &memory("denied", false),
+        );
+        assert!(!r.needs_relaunch);
+        assert!(r.permission == Permission::Denied);
+        // An accepted tap leaves the passive answer alone.
+        let r = runtime(
+            &status("idle", Value::Null, json!({"state":"off"})),
+            &json!("granted"),
+            &memory("granted", false),
+        );
+        assert!(r.permission == Permission::Granted);
+    }
+
+    #[test]
+    fn accepted_start_then_tap_denied_keeps_the_relaunch_advice_until_a_live_tap() {
+        let mut access = memory("denied", true);
+        let seen = access.sequence();
+        // start_meeting accepted: the meeting is starting, then fails on the refused tap.
+        for status in [
+            status("starting", Value::Null, json!({"state":"off"})),
+            status(
+                "failed",
+                json!("system_audio_permission_denied"),
+                json!({"state":"off"}),
+            ),
+        ] {
+            access.supersede(seen, &status);
+            let r = runtime(&status, &json!("granted"), &access);
+            assert!(r.needs_relaunch, "{}", status["phase"]);
+            assert!(r.permission == Permission::Denied);
+        }
+        // Recording without a system tap proves nothing about System Audio.
+        access.supersede(seen, &live_status(false));
+        assert!(access.needs_relaunch());
+        // Only a live system-audio tap supersedes the receipt.
+        access.supersede(seen, &live_status(true));
+        let r = runtime(&live_status(true), &json!("granted"), &access);
+        assert!(!r.needs_relaunch);
         assert!(r.permission == Permission::Granted);
     }
 }

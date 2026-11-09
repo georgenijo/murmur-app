@@ -15,7 +15,7 @@ use crate::{
     workspace::Authority,
 };
 use gpui::{prelude::*, *};
-use host::{Action, Host, PlaybackAction, Request};
+use host::{Action, Host, Intent, PlaybackAction, Request};
 use inbox::Inbox;
 use model::*;
 use std::{
@@ -407,6 +407,19 @@ impl Meetings {
     pub fn accept_suggestion(&mut self, token: String, cx: &mut Context<Self>) {
         if !token.is_empty() && token.len() <= 4096 {
             self.request(Action::StartSuggested(token), cx);
+        }
+    }
+    /// Delivers a start or stop chosen elsewhere, such as the command palette.
+    /// If the meeting no longer allows that choice, nothing happens.
+    pub fn record_intent(&mut self, intent: Intent, cx: &mut Context<Self>) {
+        if let Some(action) = self
+            .model
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| intent.action(snapshot))
+        {
+            self.host.pause_playback();
+            self.request(action, cx);
         }
     }
     pub fn record(&mut self, cx: &mut Context<Self>) {
