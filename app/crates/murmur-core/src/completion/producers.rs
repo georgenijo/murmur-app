@@ -297,31 +297,51 @@ impl Producers {
     /// The client accepts only after its cancellation check. A late cancellation
     /// before acceptance still wins, including after native transcription ends.
     pub fn accept_file(&self, operation: &str) -> Result<Option<Snapshot>> {
+        self.admit_file(operation, false)
+    }
+    /// `accept_file` for a host that must tell a raced cancellation apart from
+    /// a publication. When a cancellation lands and the admission then fails,
+    /// the outcome is unknown (the write may have landed). This retries the
+    /// admission once under the same identity so storage reports it: `Some`
+    /// means the transcript is in History, `None` means non-publication is
+    /// confirmed, and `Err` means the outcome could not be confirmed.
+    pub fn accept_file_settled(&self, operation: &str) -> Result<Option<Snapshot>> {
+        self.admit_file(operation, true)
+    }
+    fn admit_file(&self, operation: &str, settle: bool) -> Result<Option<Snapshot>> {
         let mut files = self.lock_files();
         if !matches!(files.get(operation), Some(FileState::Ready(_))) {
             return Ok(None);
         }
         let intent = self.intent(operation);
-        let result = match files.get(operation) {
-            Some(FileState::Ready(Some(entry))) => self
-                .service
-                .execute(Command::AcceptFile {
-                    entry: entry.clone(),
-                    intent: intent.clone(),
-                    active: files
-                        .values()
-                        .filter_map(|state| match state {
-                            FileState::Ready(Some(v)) => {
-                                v["completionUuid"].as_str().map(str::to_owned)
-                            }
-                            _ => None,
-                        })
-                        .collect(),
-                })
-                .map(Some),
-            Some(FileState::Ready(None)) => Ok(None),
+        let command = match files.get(operation) {
+            Some(FileState::Ready(Some(entry))) => Some(Command::AcceptFile {
+                entry: entry.clone(),
+                intent: intent.clone(),
+                active: files
+                    .values()
+                    .filter_map(|state| match state {
+                        FileState::Ready(Some(v)) => {
+                            v["completionUuid"].as_str().map(str::to_owned)
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+            }),
+            Some(FileState::Ready(None)) => None,
             _ => return Ok(None),
         };
+        let mut result = match &command {
+            Some(command) => self.service.execute(command.clone()).map(Some),
+            None => Ok(None),
+        };
+        if settle && result.is_err() && intent.cancelled_before_admission() {
+            if let Some(command) = command {
+                if let Ok(snapshot) = self.service.execute(command) {
+                    result = Ok(Some(snapshot));
+                }
+            }
+        }
         if result.is_ok() || intent.cancelled_before_admission() {
             files.remove(operation);
             self.retire(operation);
@@ -801,6 +821,64 @@ mod tests {
                     snapshot.history.len(),
                     usize::from(fail != Some(super::super::storage::Boundary::BeforeRename))
                 );
+                assert_no_statistics(&snapshot);
+            }
+        }
+    }
+
+    #[test]
+    fn settled_file_acceptance_reports_the_publication_outcome_of_a_raced_cancel() {
+        for webkit in [false, true] {
+            for fail in [
+                None,
+                Some(super::super::storage::Boundary::BeforeRename),
+                Some(super::super::storage::Boundary::AfterRename),
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let service = CompletionService::start(dir.path().into(), webkit).unwrap();
+                let p = staged_file(&service);
+                let (paused, reached) = std::sync::mpsc::channel();
+                let (resume, release) = std::sync::mpsc::channel();
+                storage(&service, move |s| {
+                    let file = if webkit {
+                        super::super::HOLD
+                    } else {
+                        "history.json"
+                    };
+                    s.pause = Some((
+                        file.into(),
+                        super::super::storage::Boundary::BeforeRename,
+                        paused,
+                        release,
+                    ));
+                    s.fail = fail.map(|at| (file.into(), at));
+                });
+                let (cancelled, observed) = std::sync::mpsc::channel();
+                *p.cancel_recorded.lock().unwrap() = Some(cancelled);
+                let outcome = std::thread::scope(|scope| {
+                    let accept = scope.spawn(|| p.accept_file_settled("operation"));
+                    reached
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap();
+                    let cancel = scope.spawn(|| p.cancel_file("operation"));
+                    observed
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap();
+                    resume.send(()).unwrap();
+                    cancel.join().unwrap();
+                    accept.join().unwrap()
+                });
+                // The caller never sees an error for a settled outcome: it is
+                // published (History has it) or confirmed not published.
+                let published = fail != Some(super::super::storage::Boundary::BeforeRename);
+                assert_eq!(
+                    outcome.unwrap().is_some(),
+                    published,
+                    "webkit={webkit} fail={fail:?}"
+                );
+                let snapshot = service.execute(Command::Snapshot).unwrap();
+                assert_eq!(snapshot.history.len(), usize::from(published));
+                assert!(p.accept_file("operation").unwrap().is_none());
                 assert_no_statistics(&snapshot);
             }
         }

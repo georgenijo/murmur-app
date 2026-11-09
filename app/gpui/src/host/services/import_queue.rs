@@ -162,9 +162,10 @@ impl Queue {
             return false;
         };
         item.status = Status::Error;
-        item.message = if item.cancel_requested {
-            CANCELED.into()
-        } else if message.is_empty() {
+        // Never "Canceled" here: an error means the outcome could not be
+        // confirmed (the engine settles a cancel race before it reports one),
+        // so the toast must not claim the file stayed out of History.
+        item.message = if message.is_empty() {
             "Transcription failed".into()
         } else {
             message
@@ -250,7 +251,10 @@ pub trait Engine: Send + Sync {
     fn transcribe(&self, path: String, operation: String) -> Fut<'_, Result<(), String>>;
     /// Publish the staged transcript. `Ok(true)` means it is in History;
     /// `Ok(false)` means nothing was published (a cancellation won, or there
-    /// was nothing to retain). An `Err` leaves the staged text pending.
+    /// was nothing to retain). When a cancel raced the admission, the engine
+    /// settles whether the write landed before answering, so `Ok` is always the
+    /// true outcome. An `Err` means the outcome is unconfirmed and leaves the
+    /// staged text pending.
     fn admit(&self, operation: String) -> Fut<'_, Result<bool, String>>;
     /// Record cancellation intent and release the staged text. Synchronous and
     /// never waits, so a click is ordered before any admission that has not
@@ -340,6 +344,8 @@ mod tests {
         fail_accept: Vec<&'static str>,
         /// Cancel this file's toast while its transcription is in flight.
         cancel_while_running: Vec<&'static str>,
+        /// Click Cancel on this file's toast while its admission is in flight.
+        cancel_while_admitting: Vec<&'static str>,
         log: Mutex<Vec<String>>,
     }
     impl Fake {
@@ -382,6 +388,15 @@ mod tests {
             Box::pin(async move {
                 let name = self.path_of(&operation);
                 self.log(format!("accept {name}"));
+                if self.cancel_while_admitting.contains(&name.as_str()) {
+                    let id = lock(&self.queue)
+                        .items
+                        .iter()
+                        .find(|i| i.name == name)
+                        .map(|i| i.id)
+                        .unwrap();
+                    cancel_import(&self.queue, self, id);
+                }
                 if self.fail_accept.contains(&name.as_str()) {
                     return Err("Storage unavailable".into());
                 }
@@ -437,6 +452,30 @@ mod tests {
         assert_eq!(count(&fake, "cancel d.wav"), 1);
         // The runner role is released only after the last item.
         assert!(lock(&fake.queue).claim());
+    }
+
+    #[test]
+    fn an_unconfirmed_admission_after_cancel_is_an_error_never_canceled() {
+        // The admission fails after Cancel was requested, so whether the write
+        // landed is unknown. The toast must show the failure, not "Canceled".
+        // (A failure that settles to a publication is Done: see
+        // `settled_file_acceptance_reports_the_publication_outcome_of_a_raced_cancel`
+        // in murmur-core, which uses the real producers' fault boundaries.)
+        let fake = Fake {
+            cancel_while_admitting: vec!["a.wav"],
+            fail_accept: vec!["a.wav"],
+            ..Default::default()
+        };
+        lock(&fake.queue).enqueue(&paths(&["a.wav", "b.wav"]));
+        run(&fake);
+        assert_eq!(
+            snapshot(&fake.queue),
+            vec![
+                ("a.wav".into(), Status::Error, "Storage unavailable".into()),
+                ("b.wav".into(), Status::Done, String::new()),
+            ]
+        );
+        assert_eq!(count(&fake, "cancel a.wav"), 2, "click, then release");
     }
 
     #[test]
@@ -664,7 +703,7 @@ mod tests {
                 Self::fire(&self.before_accept, self);
                 let published = self
                     .producers
-                    .accept_file(&operation)
+                    .accept_file_settled(&operation)
                     .map(|snapshot| snapshot.is_some())
                     .map_err(|e| e.to_string());
                 Self::fire(&self.after_accept, self);

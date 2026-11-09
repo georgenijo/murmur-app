@@ -237,16 +237,20 @@ pub(crate) async fn accept_file_transcription<R: crate::host::Runtime>(
     operation_id: String,
 ) -> Result<(), String> {
     main_only(&window)?;
-    accept_file_outcome(app, operation_id).await.map(|_| ())
+    accept_file_outcome(app, operation_id, false)
+        .await
+        .map(|_| ())
 }
 
 /// Native hosts need the admission outcome: a cancellation that wins before
-/// publication returns `Ok(false)`, a published transcript `Ok(true)`.
+/// publication returns `Ok(false)`, a published transcript `Ok(true)`. A failure
+/// raced by a cancellation is settled by storage first, so `Err` always means
+/// the outcome is unknown and never hides a transcript that reached History.
 pub(crate) async fn native_accept_file(
     app: crate::host::Context,
     operation_id: String,
 ) -> Result<bool, String> {
-    accept_file_outcome(app, operation_id).await
+    accept_file_outcome(app, operation_id, true).await
 }
 
 /// Records cancellation intent without waiting for the owner or any file lock,
@@ -262,16 +266,21 @@ pub(crate) fn native_cancel_file(
 async fn accept_file_outcome<R: crate::host::Runtime>(
     app: crate::host::Context<R>,
     operation_id: String,
+    settle: bool,
 ) -> Result<bool, String> {
     let permit = crate::shutdown::WriterPermit::acquire()?;
     let worker_app = app.clone();
     let published = crate::host::runtime::spawn_blocking(move || {
         let _permit = permit;
         let _settings_observer = SourcePublicationObserver(&worker_app);
-        ready(&worker_app)?
-            .producers
-            .accept_file(&operation_id)
-            .map_err(|e| e.to_string())
+        let completion = ready(&worker_app)?;
+        let producers = &completion.producers;
+        let accepted = if settle {
+            producers.accept_file_settled(&operation_id)
+        } else {
+            producers.accept_file(&operation_id)
+        };
+        accepted.map_err(|e| e.to_string())
     })
     .await
     .map_err(|_| {
