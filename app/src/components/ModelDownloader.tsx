@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { listen } from '@tauri-apps/api/event';
 import { cn } from '../lib/sona-utils';
 import { cancelModelDownload, downloadModel } from '../lib/dictation';
@@ -56,6 +57,12 @@ interface Props {
     onActivate: () => void;
     isNavigation: boolean;
   }) => ReactNode;
+  /**
+   * Fixed host for progress, cancel, error, and memory notices. Embedders whose
+   * model list scrolls (the setup wizard's fixed-height frame) pass a footer
+   * element so download status stays visible instead of resting below the fold.
+   */
+  statusPortalTarget?: HTMLElement | null;
 }
 
 interface DownloadOperation {
@@ -82,6 +89,7 @@ export function ModelDownloadPanel({
   onDownloadingChange,
   installedModels,
   renderPrimaryAction,
+  statusPortalTarget,
 }: Props) {
   const hardwareGuidance = useModelHardwareGuidance();
   const offeredModels = [
@@ -226,6 +234,84 @@ export function ModelDownloadPanel({
     void handleDownload();
   };
 
+  const statusContent = (
+    <>
+      {selectedMemoryWarning && (
+        <div role="status" className="dialog-toast mb-4 border-warning/30 bg-warning/10 px-4 py-3 text-[length:var(--ui-font-caption)] text-on-surface">
+          {selectedMemoryWarning}
+        </div>
+      )}
+
+      {isDownloading && (
+        <div className="mb-4" aria-live="polite" aria-busy="true">
+          <div className="flex justify-between text-[length:var(--ui-font-caption)] text-on-surface-variant mb-1">
+            <span>{cancelling ? 'Cancelling…' : progress ? modelDownloadLabel(progress) : 'Starting…'}</span>
+            {progressPercent !== null ? (
+              <span>{progressPercent}%</span>
+            ) : (
+              <span>Working…</span>
+            )}
+          </div>
+          <div className="w-full h-2 overflow-hidden rounded-full bg-[var(--ui-tint-sunken)]">
+            <div
+              role="progressbar"
+              aria-valuenow={progressPercent ?? undefined}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuetext={progressPercent === null ? 'Model installation in progress' : undefined}
+              className={cn(
+                'h-full rounded-full bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))]',
+                progressPercent === null ? 'model-download-indeterminate' : 'transition-all duration-200',
+              )}
+              style={progressPercent === null ? undefined : { width: `${progressPercent}%` }}
+            />
+          </div>
+          {progress && progress.total > 0 && progress.phase !== 'installing' && (
+            <p className="text-[length:var(--ui-font-caption)] text-on-surface-variant mt-1 text-right">
+              {(progress.received / 1024 / 1024).toFixed(1)} /{' '}
+              {(progress.total / 1024 / 1024).toFixed(1)} MB
+            </p>
+          )}
+        </div>
+      )}
+
+      {isDownloading && (
+        <div className="mb-4">
+          <button type="button" onClick={() => void handleCancel()} disabled={cancelling}
+            className="dialog-pill-btn px-4 py-2 text-[length:var(--ui-font-body)] text-on-surface disabled:opacity-50">
+            {cancelling ? 'Cancelling…' : 'Cancel download'}
+          </button>
+          <p className="mt-2 text-[length:var(--ui-font-caption)] text-on-surface-variant">Cancel to go back or choose another model. Retry resumes supported downloads.</p>
+          {cancelError && <p role="alert" className="mt-2 text-[length:var(--ui-font-body)] text-error">{cancelError}</p>}
+        </div>
+      )}
+
+      {downloadState.phase === 'error' && (
+        <div role="alert" className="dialog-toast mb-4 border-error/30 bg-error/10 px-4 py-3">
+          <p className="text-[length:var(--ui-font-body)] text-error">{downloadState.message}</p>
+          {selected === 'parakeet-tdt-0.6b-v3-coreml' && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => chooseFallback('base.en')}
+                className="dialog-pill-btn px-2.5 py-1.5 text-[length:var(--ui-font-caption)] text-on-surface hover:bg-surface-container"
+              >
+                Use Whisper base
+              </button>
+              <button
+                type="button"
+                onClick={() => chooseFallback('parakeet-tdt-0.6b-v2-fp16')}
+                className="dialog-pill-btn px-2.5 py-1.5 text-[length:var(--ui-font-caption)] text-on-surface hover:bg-surface-container"
+              >
+                Use CPU Parakeet
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+
   return (
     <div>
       {hardwareGuidance && (
@@ -283,79 +369,9 @@ export function ModelDownloadPanel({
           ))}
         </div>
 
-        {selectedMemoryWarning && (
-          <div role="status" className="dialog-toast mb-4 border-warning/30 bg-warning/10 px-4 py-3 text-xs text-on-surface">
-            {selectedMemoryWarning}
-          </div>
-        )}
-
-        {isDownloading && (
-          <div className="mb-4" aria-live="polite" aria-busy="true">
-            <div className="flex justify-between text-xs text-on-surface-variant mb-1">
-              <span>{cancelling ? 'Cancelling…' : progress ? modelDownloadLabel(progress) : 'Starting…'}</span>
-              {progressPercent !== null ? (
-                <span>{progressPercent}%</span>
-              ) : (
-                <span>Working…</span>
-              )}
-            </div>
-            <div className="w-full h-2 overflow-hidden rounded-full bg-[var(--ui-tint-sunken)]">
-              <div
-                role="progressbar"
-                aria-valuenow={progressPercent ?? undefined}
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuetext={progressPercent === null ? 'Model installation in progress' : undefined}
-                className={cn(
-                  'h-full rounded-full bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))]',
-                  progressPercent === null ? 'model-download-indeterminate' : 'transition-all duration-200',
-                )}
-                style={progressPercent === null ? undefined : { width: `${progressPercent}%` }}
-              />
-            </div>
-            {progress && progress.total > 0 && progress.phase !== 'installing' && (
-              <p className="text-xs text-on-surface-variant mt-1 text-right">
-                {(progress.received / 1024 / 1024).toFixed(1)} /{' '}
-                {(progress.total / 1024 / 1024).toFixed(1)} MB
-              </p>
-            )}
-          </div>
-        )}
-
-        {isDownloading && (
-          <div className="mb-4">
-            <button type="button" onClick={() => void handleCancel()} disabled={cancelling}
-              className="dialog-pill-btn px-4 py-2 text-[length:var(--ui-font-body)] text-on-surface disabled:opacity-50">
-              {cancelling ? 'Cancelling…' : 'Cancel download'}
-            </button>
-            <p className="mt-2 text-[length:var(--ui-font-caption)] text-on-surface-variant">Cancel to go back or choose another model. Retry resumes supported downloads.</p>
-            {cancelError && <p role="alert" className="mt-2 text-[length:var(--ui-font-body)] text-error">{cancelError}</p>}
-          </div>
-        )}
-
-        {downloadState.phase === 'error' && (
-          <div role="alert" className="dialog-toast mb-4 border-error/30 bg-error/10 px-4 py-3">
-            <p className="text-sm text-error">{downloadState.message}</p>
-            {selected === 'parakeet-tdt-0.6b-v3-coreml' && (
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => chooseFallback('base.en')}
-                  className="dialog-pill-btn px-2.5 py-1.5 text-xs text-on-surface hover:bg-surface-container"
-                >
-                  Use Whisper base
-                </button>
-                <button
-                  type="button"
-                  onClick={() => chooseFallback('parakeet-tdt-0.6b-v2-fp16')}
-                  className="dialog-pill-btn px-2.5 py-1.5 text-xs text-on-surface hover:bg-surface-container"
-                >
-                  Use CPU Parakeet
-                </button>
-              </div>
-            )}
-          </div>
-        )}
+        {statusPortalTarget
+          ? createPortal(statusContent, statusPortalTarget)
+          : statusContent}
 
         {/* An installed selection completes immediately — same path a finished
             download takes — so nothing on disk is ever re-downloaded. */}

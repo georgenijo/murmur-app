@@ -8,7 +8,12 @@ import { DEFAULT_SETTINGS, type ModelOption } from '../../lib/settings';
 import { isOnboardingComplete, markOnboardingComplete } from '../../lib/onboarding';
 import { buildConfigureOptions, configure } from '../../lib/dictation';
 
-const native = vi.hoisted(() => ({ invoke: vi.fn(), listen: vi.fn(async () => () => {}), emit: vi.fn(async () => {}) }));
+const native = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  listen: vi.fn(async (_event: string, _listener: (event: { payload: unknown }) => void) => () => {}),
+  emit: vi.fn(async () => {}),
+  progressListener: null as null | ((event: { payload: unknown }) => void),
+}));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: native.invoke, isTauri: () => false }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: native.listen, emit: native.emit }));
 vi.mock('@tauri-apps/plugin-autostart', () => ({
@@ -75,6 +80,11 @@ describe('onboarding model state with native IPC boundaries', () => {
     localStorage.clear();
     vi.clearAllMocks();
     completed = vi.fn();
+    native.progressListener = null;
+    native.listen.mockImplementation(async (event: string, listener: (event: { payload: unknown }) => void) => {
+      if (event === 'download-progress') native.progressListener = listener;
+      return () => {};
+    });
     catalog = [{ modelName: COREML, installState: 'installed' }, { modelName: 'base.en', installState: 'installed' }];
     native.invoke.mockImplementation(async (command: string, args?: { modelName?: ModelOption }) => {
       if (command === 'get_model_runtime_catalog') return catalog;
@@ -163,6 +173,37 @@ describe('onboarding model state with native IPC boundaries', () => {
     expectSelected('base.en');
     await done();
     expect(completed).toHaveBeenCalledWith('base.en', 'double_tap', 'f12');
+  });
+
+  it('keeps download status and Cancel outside the scrolling model list', async () => {
+    const pending = deferred<void>();
+    const implementation = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((command, ...args) => command === 'download_model'
+      ? pending.promise : implementation(command, ...args));
+    await mount();
+    await select('large-v3-turbo');
+    await click('Download');
+
+    expect(container.querySelector('.onboarding-content')?.textContent).not.toContain('Cancel download');
+    const status = container.querySelector<HTMLElement>('.onboarding-model-status');
+    expect(status).not.toBeNull();
+    expect(status!.textContent).toContain('Cancel download');
+    expect(status!.querySelector('[role="progressbar"]')).not.toBeNull();
+
+    const requestId = native.invoke.mock.calls.find(([command]) => command === 'download_model')![1].requestId;
+    await act(async () => native.progressListener?.({
+      payload: {
+        modelName: 'large-v3-turbo',
+        requestId,
+        attemptId: 1,
+        received: 20,
+        total: 100,
+        phase: 'downloading',
+      },
+    }));
+    expect(status!.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('20');
+    expect(status!.textContent).toContain('20%');
+    await act(async () => pending.resolve());
   });
 
   it('waits for acknowledgment before persisting the combined choices or completion (#951)', async () => {

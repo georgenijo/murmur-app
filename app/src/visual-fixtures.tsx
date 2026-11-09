@@ -5,6 +5,7 @@ import ReactDOM from 'react-dom/client';
 import { Channel } from '@tauri-apps/api/core';
 import { useAutoUpdater } from './lib/hooks/useAutoUpdater';
 import { mockIPC } from '@tauri-apps/api/mocks';
+import { emit } from '@tauri-apps/api/event';
 import { MainHeader } from './components/MainHeader';
 import { ModelDownloader } from './components/ModelDownloader';
 import { DictationDiagnosticsView } from './components/log-viewer/DictationDiagnosticsView';
@@ -248,6 +249,17 @@ mockIPC((command, payload) => {
       document.documentElement.setAttribute('data-copy-deleted-capture', String((payload as { captureId: string }).captureId));
       return;
     }
+  }
+  if ((requestedState === 'copy-onboarding' || requestedState === 'first-run-model')
+    && command === 'download_model' && query.get('downloading') === 'true') {
+    const { modelName, requestId } = (payload ?? {}) as { modelName: string; requestId?: string };
+    const total = 470_000_000;
+    let received = 0;
+    window.setInterval(() => {
+      received = Math.min(total, received + 23_500_000);
+      void emit('download-progress', { modelName, requestId, attemptId: 1, received, total, phase: 'downloading', repeatedRepair: false });
+    }, 120);
+    return new Promise(() => {});
   }
   if (requestedState === 'copy-onboarding') {
     const permission = query.get('permission') ?? 'unknown';

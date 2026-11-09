@@ -102,6 +102,36 @@ describe('ModelDownloadPanel', () => {
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
+  it('moves download status into a fixed host when the list scrolls', async () => {
+    const statusHost = document.createElement('div');
+    document.body.appendChild(statusHost);
+    const pending = deferred<void>();
+    mocks.invoke.mockReturnValue(pending.promise);
+    try {
+      await renderPanel({ initialModel: 'base.en', statusPortalTarget: statusHost });
+      await click('Download');
+
+      expect(container.textContent).not.toContain('Cancel download');
+      expect(statusHost.textContent).toContain('Cancel download');
+      expect(statusHost.querySelector('[role="progressbar"]')).not.toBeNull();
+
+      await act(async () => mocks.listener?.({
+        payload: {
+          requestId: mocks.invoke.mock.calls[0][1].requestId,
+          modelName: 'base.en',
+          attemptId: 1,
+          received: 50,
+          total: 100,
+          phase: 'downloading',
+        },
+      }));
+      expect(statusHost.querySelector('[role="progressbar"]')?.getAttribute('aria-valuenow')).toBe('50');
+    } finally {
+      await act(async () => pending.resolve());
+      statusHost.remove();
+    }
+  });
+
   it('accepts progress only for the requested model and first correlated attempt', async () => {
     const pending = deferred<void>();
     const onComplete = vi.fn();

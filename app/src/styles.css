@@ -1642,6 +1642,11 @@ body.overlay-window {
 .onboarding-error { margin-top: 12px; font-size: var(--ui-font-body); }
 .onboarding-link { display: block; margin-left: auto; margin-right: auto; margin-top: 12px; color: var(--murmur-on-surface-variant); text-decoration: underline; font-size: var(--ui-font-caption); }
 .onboarding-link:hover { color: var(--murmur-on-surface); }
+/* Download/install status lives outside the scrolling model list so it stays
+   visible in the wizard's fixed-height frame. */
+.onboarding-model-status { flex: none; display: flex; flex-direction: column; gap: 8px; padding-top: 8px; }
+.onboarding-model-status:empty { display: none; }
+.onboarding-model-status > * { margin: 0; }
 .onboarding-actions { flex: none; padding-top: 12px; }
 .onboarding-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .onboarding-nav-end { margin-left: auto; display: flex; align-items: center; gap: 8px; }

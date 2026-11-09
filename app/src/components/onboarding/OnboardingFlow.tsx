@@ -167,6 +167,9 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const completionPending = useRef(false);
   // Cancel in the model panel confirms native termination before releasing Back.
   const [modelDownloading, setModelDownloading] = useState(false);
+  // Fixed footer host so download/install status stays visible while the model
+  // list scrolls inside the wizard's fixed-height frame.
+  const [modelStatusTarget, setModelStatusTarget] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
     // Focus Welcome once (also under StrictMode), then each new step heading.
@@ -563,7 +566,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             </>}
             {step === 'model' && <>
               <StepHeading icon={Cpu} title="Transcription model" subtitle="Download a local model once, then transcribe offline." />
-              {modelCatalogError ? <><ErrorMessage message="Could not check installed models. Retry to continue setup." /><WizardNavigationRow onBack={goBack} onNext={retryModelCatalog} nextEnabled nextLabel="Retry" /></> : installedModels === null ? <WizardNavigationRow onBack={goBack} onNext={() => {}} nextEnabled={false} nextLabel="Loading…" /> : <ModelDownloadPanel initialModel={preferredModel} installedModels={installedModels} onDownloadingChange={setModelDownloading} renderPrimaryAction={({ label, disabled, onActivate, isNavigation }) => <WizardNavigationRow onBack={goBack} backDisabled={modelDownloading || disabled} onNext={onActivate} nextEnabled={!disabled} defaultAction={isNavigation} nextLabel={label} />} onComplete={(model) => { setInstalledModel(model); setModelInstalled(true); setModelDownloading(false); goNext(); }} />}
+              {modelCatalogError ? <><ErrorMessage message="Could not check installed models. Retry to continue setup." /><WizardNavigationRow onBack={goBack} onNext={retryModelCatalog} nextEnabled nextLabel="Retry" /></> : installedModels === null ? <WizardNavigationRow onBack={goBack} onNext={() => {}} nextEnabled={false} nextLabel="Loading…" /> : <ModelDownloadPanel initialModel={preferredModel} installedModels={installedModels} statusPortalTarget={modelStatusTarget} onDownloadingChange={setModelDownloading} renderPrimaryAction={({ label, disabled, onActivate, isNavigation }) => <WizardNavigationRow onBack={goBack} backDisabled={modelDownloading || disabled} onNext={onActivate} nextEnabled={!disabled} defaultAction={isNavigation} nextLabel={label} />} onComplete={(model) => { setInstalledModel(model); setModelInstalled(true); setModelDownloading(false); goNext(); }} />}
             </>}
             {step === 'hotkey' && <>
               <StepHeading icon={Keyboard} title="Recording shortcut" subtitle="Choose how Murmur listens. You can change both options later in Recording settings." />
@@ -593,6 +596,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             </>}
           </div>
           </ActionTarget.Provider>
+          <div className="onboarding-model-status" ref={setModelStatusTarget} />
           <div className="onboarding-actions" ref={setActionTarget} />
         </div>
       </div>
