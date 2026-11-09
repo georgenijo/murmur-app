@@ -648,7 +648,7 @@ mod correction_tests {
         let services = services();
         // The synthetic context has no initialized knowledge store, so every
         // commit fails after the capability was admitted.
-        let id = propose(&services, "George Neo", "George Nijo");
+        let id = propose(&services, "Ask George Neo today", "Ask George Nijo today");
         for _ in 0..2 {
             let error = commit(&services, id).expect_err("store is unavailable");
             assert!(error.ends_with('.'), "{error}");
@@ -669,12 +669,12 @@ mod correction_tests {
             .knowledge
             .create_learned_replacement("neo".into(), "Neo".into(), KnowledgeScope::Global)
             .unwrap();
-        let first = propose(&services, "George neo", "George Nijo");
+        let first = propose(&services, "Ask George neo today", "Ask George Nijo today");
         let error = commit(&services, first).expect_err("same-scope rule already exists");
         assert!(error.contains("Review or edit it in Knowledge"), "{error}");
         assert!(confirmable(&services, first));
 
-        let second = propose(&services, "Ask neo", "Ask Nijo");
+        let second = propose(&services, "Call George neo now", "Call George Nijo now");
         assert!(commit(&services, first).is_err());
         assert!(!confirmable(&services, first));
         assert!(confirmable(&services, second));

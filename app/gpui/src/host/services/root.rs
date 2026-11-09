@@ -1370,7 +1370,8 @@ fn teach_dialog(
         .child(buttons.flex_shrink_0())
 }
 
-#[cfg(test)]
+// Reads painted bounds through the accessibility test transport.
+#[cfg(all(test, feature = "a11y-tests"))]
 mod tests {
     use super::*;
 

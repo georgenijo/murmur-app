@@ -1068,7 +1068,7 @@ mod tests {
         // The store is not initialized yet, so the first write fails.
         let store = crate::knowledge_store::KnowledgeStore::default();
         let state = CorrectAndTeachState::default();
-        let id = propose_neo(&state, "George Neo", "George Nijo");
+        let id = propose_neo(&state, "Ask George Neo today", "Ask George Nijo today");
 
         let taken = state.take_confirmed(id, &KnowledgeScope::Global).unwrap();
         assert!(state.confirmed(id, &KnowledgeScope::Global).is_err());
@@ -1102,7 +1102,7 @@ mod tests {
             .create_learned_replacement("neo".into(), "Neo".into(), KnowledgeScope::Global)
             .unwrap();
         let state = CorrectAndTeachState::default();
-        let id = propose_neo(&state, "George neo", "George Nijo");
+        let id = propose_neo(&state, "Ask George neo today", "Ask George Nijo today");
 
         let taken = state.take_confirmed(id, &KnowledgeScope::Global).unwrap();
         let error = state
@@ -1118,11 +1118,11 @@ mod tests {
         let state = CorrectAndTeachState::default();
 
         // A newer proposal wins over the failed commit of the older one.
-        let first = propose_neo(&state, "George Neo", "George Nijo");
+        let first = propose_neo(&state, "Ask George Neo today", "Ask George Nijo today");
         let taken = state
             .take_confirmed(first, &KnowledgeScope::Global)
             .unwrap();
-        let second = propose_neo(&state, "Ask Neo", "Ask Nijo");
+        let second = propose_neo(&state, "Call George Neo now", "Call George Nijo now");
         assert!(
             state
                 .persist(&store, first, taken, KnowledgeScope::Global)
@@ -1132,7 +1132,7 @@ mod tests {
         assert!(state.confirmed(second, &KnowledgeScope::Global).is_ok());
 
         // An unsafe newer review also revokes it.
-        let third = propose_neo(&state, "Neo Neo", "Neo Nijo");
+        let third = propose_neo(&state, "See George Neo soon", "See George Nijo soon");
         let taken = state
             .take_confirmed(third, &KnowledgeScope::Global)
             .unwrap();
@@ -1157,7 +1157,7 @@ mod tests {
         assert!(state.confirmed(third, &KnowledgeScope::Global).is_err());
 
         // A discard (dialog closed) does too.
-        let fourth = propose_neo(&state, "George Neo", "George Nijo");
+        let fourth = propose_neo(&state, "Ask George Neo today", "Ask George Nijo today");
         let taken = state
             .take_confirmed(fourth, &KnowledgeScope::Global)
             .unwrap();

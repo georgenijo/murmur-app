@@ -5,7 +5,7 @@
 //! renders this state and forwards clicks.
 use super::os::Live;
 use crate::field::TextFieldState;
-use gpui::{App, Context, Entity, Window};
+use gpui::{App, AppContext as _, Context, Entity, Window};
 use gpui_component::input::TextareaState;
 use murmur_core::history::Entry;
 use serde_json::{Value, json};
