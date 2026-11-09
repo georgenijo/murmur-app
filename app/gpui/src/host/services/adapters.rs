@@ -2,6 +2,7 @@
 //! runtime; views retain no capture, store, transcript pipeline or drain owner.
 use super::{
     backend::{Backend, Route},
+    discovery,
     os::Live,
     projections as read,
 };
@@ -9,6 +10,7 @@ use crate::{
     section,
     workspace::{Event, Inbox, Problem},
 };
+use murmur_core::discovery as discovery_core;
 use serde_json::{Value, json};
 use std::sync::Arc;
 fn live(lease: crate::workspace::Lease) -> Live {
@@ -17,8 +19,14 @@ fn live(lease: crate::workspace::Lease) -> Live {
 fn problem<T>(r: Result<T, String>) -> Result<T, Problem> {
     r.map_err(|_| Problem::Unavailable)
 }
-fn discovery(value: Option<&Value>) -> Value {
-    value.cloned().unwrap_or_else(||json!({"version":1,"checklistDismissed":false,"completed":[],"baseline":{"transforms":0,"meetings":0,"correctionsTaught":0,"modeBindings":[]},"pendingHints":[],"dismissedHints":[]}))
+/// Where a contextual hint leads. Teaching opens the latest dictation.
+fn hint_route(id: &str) -> Route {
+    match id {
+        "double_tap_timing" => Route::Settings(crate::settings::schema::Page::Recording),
+        "browser_modes" => Route::Modes,
+        "correct_and_teach" => home_route(crate::home::model::Destination::TeachLatest),
+        _ => Route::Home,
+    }
 }
 fn home_route(d: crate::home::model::Destination) -> Route {
     use crate::{home::model::Destination as D, settings::schema::Page};
@@ -31,6 +39,7 @@ fn home_route(d: crate::home::model::Destination) -> Route {
         D::Modes => Route::Modes,
         D::TeachLatest => Route::HistoryAction("teach-latest".into()),
         D::Shortcuts => Route::Settings(Page::Shortcuts),
+        D::Performance => Route::Settings(Page::Performance),
         D::Setup => Route::SetupReplay,
     }
 }
@@ -109,48 +118,19 @@ impl crate::home::host::Host for Backend {
                         )
                         .await?;
                     }
-                    action => {
-                        let sources = b.sources().await?;
-                        let old = sources
-                            .get("murmur_discovery_v1")
-                            .cloned()
-                            .unwrap_or(Value::Null);
-                        let mut next = discovery(sources.get("murmur_discovery_v1"));
-                        match action {
-                            Action::DismissChecklist => next["checklistDismissed"] = json!(true),
-                            Action::Checklist(id) => {
-                                if matches!(id, "command_palette" | "shortcuts")
-                                    && let Some(rows) = next["completed"].as_array_mut()
-                                    && !rows.iter().any(|v| v == id)
-                                {
-                                    rows.push(json!(id));
-                                }
-                                if let Some(d) = crate::home::model::checklist_destination(id) {
-                                    b.navigate(home_route(d));
-                                }
-                            }
-                            Action::Hint { id, open } => {
-                                if let Some(rows) = next["pendingHints"].as_array_mut() {
-                                    rows.retain(|v| v != id);
-                                }
-                                if let Some(rows) = next["dismissedHints"].as_array_mut()
-                                    && !rows.iter().any(|v| v == id)
-                                {
-                                    rows.push(json!(id));
-                                }
-                                if open {
-                                    b.navigate(match id {
-                                        "double_tap_timing" => Route::Settings(
-                                            crate::settings::schema::Page::Recording,
-                                        ),
-                                        "browser_modes" => Route::Modes,
-                                        _ => Route::Home,
-                                    });
-                                }
-                            }
-                            _ => {}
+                    Action::DismissChecklist => {
+                        discovery::mutate(&b, discovery_core::dismiss_checklist).await?
+                    }
+                    Action::Checklist(id) => {
+                        if let Some(d) = crate::home::model::checklist_destination(id) {
+                            b.navigate(home_route(d));
                         }
-                        b.source("murmur_discovery_v1", old, next).await?;
+                    }
+                    Action::Hint { id, open } => {
+                        discovery::mutate(&b, |s| discovery_core::dismiss_hint(s, id)).await?;
+                        if open {
+                            b.navigate(hint_route(id));
+                        }
                     }
                 }
                 read::home(b.clone()).await
@@ -305,6 +285,10 @@ async fn settings_action(
     use crate::settings::host::Action;
     let (command, args) = match action {
         Action::Open(d) => {
+            // The checklist is hidden by dismissal; opening it again shows it.
+            if d == crate::settings::host::Destination::Checklist {
+                discovery::mutate(b, discovery_core::reopen_checklist).await?;
+            }
             b.navigate(settings_route(d));
             return Ok(());
         }
@@ -619,34 +603,12 @@ async fn finish_setup(b: &Backend, grandfather: bool) -> Result<(), String> {
             .get("murmur_discovery_v1")
             .is_none_or(Value::is_null)
     {
-        let (_, completion) = b.services.history_snapshot().await?;
-        let stats =
-            serde_json::to_value(&completion.statistics).map_err(|_| "Discovery unavailable")?;
-        let settings = read::settings(b).await?;
-        let bindings: std::collections::BTreeSet<String> = settings["appProfiles"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|p| {
-                let id = p["modeId"].as_str().filter(|s| !s.is_empty())?;
-                Some(format!("{}:{id}", p["bundleId"].as_str()?))
-            })
-            .collect();
-        let mut next = discovery(None);
-        next["baseline"] = json!({"transforms":stats["activity"]["transforms"]["runs"].as_u64().unwrap_or(0),"meetings":stats["activity"]["meetings"]["count"].as_u64().unwrap_or(0),"correctionsTaught":stats["activity"]["corrections"]["taught"].as_u64().unwrap_or(0),"modeBindings":bindings});
-        if grandfather {
-            let mut completed = vec![];
-            if next["baseline"]["meetings"].as_u64().unwrap_or(0) > 0 {
-                completed.push("meeting");
-            }
-            if next["baseline"]["correctionsTaught"].as_u64().unwrap_or(0) > 0 {
-                completed.push("correction");
-            }
-            if !bindings.is_empty() {
-                completed.push("mode_binding");
-            }
-            next["completed"] = json!(completed);
-        }
+        let evidence = discovery::evidence(b).await?;
+        let next = if grandfather {
+            discovery_core::grandfathered(&evidence)
+        } else {
+            discovery_core::after_setup(&evidence)
+        };
         b.source(
             "murmur_discovery_v1",
             sources
@@ -1707,5 +1669,48 @@ mod setup_error_tests {
             setup_problem("private model path or setting".into()),
             Problem::Unavailable
         );
+    }
+}
+#[cfg(test)]
+mod discovery_route_tests {
+    use super::*;
+    use crate::{home::model::Destination as D, settings::schema::Page};
+    #[test]
+    fn hints_open_the_screen_that_teaches_them() {
+        assert!(matches!(
+            hint_route("double_tap_timing"),
+            Route::Settings(Page::Recording)
+        ));
+        assert!(matches!(hint_route("browser_modes"), Route::Modes));
+        // Teaching opens the latest dictation instead of falling back to Home.
+        assert!(
+            matches!(hint_route("correct_and_teach"), Route::HistoryAction(a) if a == "teach-latest")
+        );
+    }
+    #[test]
+    fn checklist_items_open_their_destination_and_performance_is_reachable() {
+        assert!(matches!(
+            home_route(D::Performance),
+            Route::Settings(Page::Performance)
+        ));
+        for (id, expected) in [
+            ("command_palette", D::Palette),
+            ("mode_binding", D::Modes),
+            ("meeting", D::Meetings),
+            ("correction", D::TeachLatest),
+            ("shortcuts", D::Shortcuts),
+        ] {
+            assert_eq!(
+                crate::home::model::checklist_destination(id),
+                Some(expected)
+            );
+        }
+    }
+    #[test]
+    fn the_settings_checklist_row_leads_home_where_the_checklist_shows() {
+        assert!(matches!(
+            settings_route(crate::settings::host::Destination::Checklist),
+            Route::Home
+        ));
     }
 }

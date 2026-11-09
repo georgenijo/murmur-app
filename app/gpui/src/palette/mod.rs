@@ -15,6 +15,24 @@ use gpui::{prelude::*, *};
 use host::Action;
 use model::*;
 use std::rc::Rc;
+/// The main-window shortcut a key press names. Editability comes from the
+/// focused element's key contexts (every text field sets `Input`), so an
+/// editable field accepts only the Command form, as the shipped app does.
+pub fn main_shortcut(e: &KeyDownEvent, w: &Window) -> Option<Shortcut> {
+    if e.is_held || e.prefer_character_input {
+        return None;
+    }
+    let m = &e.keystroke.modifiers;
+    let editable = w.context_stack().iter().any(|c| c.contains("Input"));
+    shortcut(
+        &e.keystroke.key,
+        m.platform,
+        m.control,
+        m.alt,
+        m.shift,
+        editable,
+    )
+}
 pub struct CommandPalette {
     pub controller: Controller<Snapshot, Action>,
     pub search: Entity<TextFieldState>,

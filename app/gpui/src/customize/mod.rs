@@ -36,6 +36,8 @@ pub struct Customize {
     notice: Option<&'static str>,
     return_focus: Option<FocusHandle>,
     pub return_to: Option<FocusHandle>,
+    /// Names where Back leads; the production host sets it from the opener.
+    pub back_label: &'static str,
     _subscriptions: Vec<Subscription>,
     editor_subscription: Subscription,
     #[cfg(feature = "production-host")]
@@ -194,6 +196,7 @@ impl Customize {
             notice: None,
             return_focus: None,
             return_to: None,
+            back_label: "Back to Knowledge",
             _subscriptions: subscriptions,
             editor_subscription,
             #[cfg(feature = "production-host")]
@@ -517,7 +520,7 @@ impl Render for Customize {
             .flex_col()
             .gap(px(12.))
             .child(
-                Button::new("customize-back", "Back to Knowledge")
+                Button::new("customize-back", self.back_label)
                     .with_scroll_parent(Some(&self.scroll))
                     .on_click(move |_, w, cx| {
                         e.update(cx, |s, cx| {

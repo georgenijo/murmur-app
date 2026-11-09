@@ -1024,6 +1024,7 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
             knowledge_reviews: Default::default(),
             meetings: playback,
             diagnostics: Default::default(),
+            newest_entry: Default::default(),
         };
         let _ = NOTIFICATION_ROUTE.set(backend.routes.clone());
         let _ = os.notifications(notification);
@@ -1046,6 +1047,7 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
         let stop = backend.events.listen(
             Consumer::Main,
             Arc::new(move |event, payload| {
+                super::discovery::observe(&b, event, payload);
                 if matches!(
                     event,
                     "updater-background-check-requested" | "check-for-updates-requested"
@@ -1186,6 +1188,7 @@ pub(super) fn bootstrap(b: Backend) {
                 // Close the inventory-event race between the initial passive
                 // read and publishing readiness. Later updates retry via listener.
                 let _ = migrate_microphone(&b).await;
+                super::discovery::prime(&b).await;
                 b.navigate(Route::BootstrapReady(setup));
             }
             Err(_) => b.navigate(Route::BootstrapFailed),

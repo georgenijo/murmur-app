@@ -24,6 +24,7 @@ pub enum Destination {
     Modes,
     TeachLatest,
     Shortcuts,
+    Performance,
     Setup,
 }
 pub const ITEMS: [(&str, &str, &str, &str); 5] = [

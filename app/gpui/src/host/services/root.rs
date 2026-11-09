@@ -35,6 +35,59 @@ impl Section {
         }
     }
 }
+/// Editors opened from the Customize hub return to it; from any other page
+/// they simply close, matching the shipped labels.
+fn back_label(origin: Option<Page>) -> &'static str {
+    match origin {
+        None | Some(Page::Customize) => "Back to Customize",
+        Some(_) => "Close editor",
+    }
+}
+/// What a main-window shortcut does, decided from the visible state alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Open {
+    Nothing,
+    Palette,
+    Search,
+    Settings(Page),
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Plan {
+    close_palette: bool,
+    open: Open,
+}
+fn plan(shortcut: crate::palette::model::Shortcut, palette_open: bool, in_settings: bool) -> Plan {
+    use crate::palette::model::Shortcut;
+    match shortcut {
+        // Command-K toggles the palette.
+        Shortcut::Palette => Plan {
+            close_palette: palette_open,
+            open: if palette_open {
+                Open::Nothing
+            } else {
+                Open::Palette
+            },
+        },
+        Shortcut::Search => Plan {
+            close_palette: palette_open,
+            open: Open::Search,
+        },
+        // Opening Settings while Settings is showing changes nothing.
+        Shortcut::Settings => Plan {
+            close_palette: palette_open,
+            open: if in_settings {
+                Open::Nothing
+            } else {
+                Open::Settings(Page::General)
+            },
+        },
+        // Command-L leaves an open palette alone.
+        Shortcut::Logs => Plan {
+            close_palette: false,
+            open: Open::Settings(Page::Performance),
+        },
+    }
+}
 struct Teaching {
     entry: murmur_core::history::Entry,
     epoch: u64,
@@ -73,6 +126,8 @@ pub struct Main {
     subscriptions: Vec<Subscription>,
     pending_history: Option<String>,
     pending_meeting: Option<Option<String>>,
+    /// The Settings page and opener control an editor was opened from.
+    customize_return: Option<(Page, Option<String>)>,
 }
 impl Main {
     pub fn new(backend: Backend, w: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -129,6 +184,7 @@ impl Main {
             subscriptions: vec![],
             pending_history: None,
             pending_meeting: None,
+            customize_return: None,
         };
         s.subscriptions.push(
             cx.subscribe(&s.settings, |s, _, _: &crate::settings::Done, cx| {
@@ -136,13 +192,18 @@ impl Main {
                 cx.notify();
             }),
         );
-        s.subscriptions.push(
-            cx.subscribe(&s.customize, |s, _, _: &crate::customize::Back, cx| {
-                let backend = s.backend.clone();
-                backend.navigate(Route::Modes);
-                cx.notify();
-            }),
-        );
+        s.subscriptions.push(cx.subscribe_in(
+            &s.customize,
+            w,
+            |s, _, _: &crate::customize::Back, w, cx| {
+                // Back returns to the Settings page the editor was opened from
+                // and focuses the control that opened it.
+                let (page, opener) = s.customize_return.take().unwrap_or((Page::Customize, None));
+                s.route(Route::Settings(page), w, cx);
+                s.settings
+                    .update(cx, |settings, cx| settings.return_from_editor(opener, cx));
+            },
+        ));
         s.show(w, cx);
         s
     }
@@ -223,7 +284,21 @@ impl Main {
         self.backend.services.main_hidden();
         cx.notify();
     }
+    /// Records where a full-page editor was opened from, so Back can return
+    /// there. Opening one editor from another keeps the first origin.
+    fn remember_editor_origin(&mut self, cx: &mut Context<Self>) {
+        if self.section == Section::Settings {
+            let page = self.settings.read(cx).model.page;
+            let opener = self.settings.update(cx, |s, _| s.take_editor_return());
+            self.customize_return = Some((page, opener));
+        }
+        let label = back_label(self.customize_return.as_ref().map(|(page, _)| *page));
+        self.customize.update(cx, |s, _| s.back_label = label);
+    }
     fn select(&mut self, section: Section, w: &mut Window, cx: &mut Context<Self>) {
+        if self.section == Section::Customize && section != Section::Customize {
+            self.customize_return = None;
+        }
         if self.section != section {
             let started = std::time::Instant::now();
             let from = self.section.name();
@@ -354,6 +429,34 @@ impl Main {
             });
         }
     }
+    /// Main-window shortcuts. Pages that own a key handle it first and stop it;
+    /// everything else reaches here, wherever the focus is inside the window.
+    fn key(&mut self, e: &KeyDownEvent, w: &mut Window, cx: &mut Context<Self>) {
+        if !self.ready
+            || self.section == Section::Setup
+            || self.teaching.is_some()
+            || self.update_open
+        {
+            return;
+        }
+        let Some(shortcut) = crate::palette::main_shortcut(e, w) else {
+            return;
+        };
+        let palette_open = self.palette.read(cx).open;
+        let plan = plan(shortcut, palette_open, self.section == Section::Settings);
+        if plan.close_palette {
+            self.palette.update(cx, |p, cx| p.hide(w, cx));
+        }
+        match plan.open {
+            Open::Nothing => {}
+            Open::Palette => self.route(Route::Palette, w, cx),
+            Open::Search => self.route(Route::HistoryAction("history-search".into()), w, cx),
+            Open::Settings(page) => self.route(Route::Settings(page), w, cx),
+        }
+        w.prevent_default();
+        cx.stop_propagation();
+        cx.notify();
+    }
     pub fn route(&mut self, route: Route, w: &mut Window, cx: &mut Context<Self>) {
         if !self.ready
             && !matches!(
@@ -424,10 +527,12 @@ impl Main {
                     .update(cx, |s, cx| s.navigate(Page::Customize, None, w, cx));
             }
             Route::CustomizePage(page) => {
+                self.remember_editor_origin(cx);
                 self.select(Section::Customize, w, cx);
                 self.customize.update(cx, |s, cx| s.set_page(page, w, cx));
             }
             Route::BindApp(mode) => {
+                self.remember_editor_origin(cx);
                 self.select(Section::Customize, w, cx);
                 self.customize.update(cx, |s, cx| s.bind_app(mode, w, cx));
             }
@@ -450,6 +555,7 @@ impl Main {
                     s.follow(cx);
                     s.show(w, cx);
                 });
+                super::discovery::complete(&self.backend, "command_palette");
             }
             Route::Notice(message) => {
                 self.error = Some(message);
@@ -624,6 +730,7 @@ impl Render for Main {
                 });
                 cx.notify();
             }))
+            .on_key_down(cx.listener(Self::key))
             .on_action(cx.listener(|s, _: &CommandPalette, w, cx| s.route(Route::Palette, w, cx)))
             .on_action(cx.listener(|s, _: &HomePage, w, cx| s.select(Section::Home, w, cx)))
             .on_action(cx.listener(|s, _: &MeetingsPage, w, cx| s.select(Section::Meetings, w, cx)))
@@ -1021,4 +1128,40 @@ fn update_required(status: &murmur_core::updater::Status) -> bool {
             | Status::Downloading { .. }
             | Status::Restarting { .. }
     )
+}
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+    use crate::palette::model::Shortcut;
+    #[test]
+    fn command_k_toggles_and_the_others_close_the_palette_first() {
+        let closed = plan(Shortcut::Palette, false, false);
+        assert_eq!((closed.close_palette, closed.open), (false, Open::Palette));
+        let open = plan(Shortcut::Palette, true, false);
+        assert_eq!((open.close_palette, open.open), (true, Open::Nothing));
+        let search = plan(Shortcut::Search, true, true);
+        assert_eq!((search.close_palette, search.open), (true, Open::Search));
+        let settings = plan(Shortcut::Settings, true, false);
+        assert_eq!(
+            (settings.close_palette, settings.open),
+            (true, Open::Settings(Page::General))
+        );
+    }
+    #[test]
+    fn settings_is_a_no_op_while_showing_and_performance_keeps_the_palette() {
+        assert_eq!(plan(Shortcut::Settings, false, true).open, Open::Nothing);
+        let logs = plan(Shortcut::Logs, true, false);
+        assert_eq!(
+            (logs.close_palette, logs.open),
+            (false, Open::Settings(Page::Performance))
+        );
+    }
+    #[test]
+    fn editors_name_where_back_leads() {
+        assert_eq!(back_label(None), "Back to Customize");
+        assert_eq!(back_label(Some(Page::Customize)), "Back to Customize");
+        for page in [Page::Text, Page::Modes, Page::General] {
+            assert_eq!(back_label(Some(page)), "Close editor");
+        }
+    }
 }

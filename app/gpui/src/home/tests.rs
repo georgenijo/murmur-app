@@ -152,6 +152,38 @@ fn keyboard_shortcuts_and_editor_return_focus(cx: &mut TestAppContext) {
     }));
 }
 #[gpui::test]
+fn main_window_shortcuts_follow_editability_and_include_performance(cx: &mut TestAppContext) {
+    let (e, h, cx) = harness(cx);
+    cx.update(|w, cx| w.focus(&e.read(cx).focus["settings"].clone(), cx));
+    // Outside a text field the Control form works like the Command form.
+    keys(cx, "ctrl-l");
+    assert_eq!(
+        h.actions.borrow().last(),
+        Some(&Action::Open(Destination::Performance))
+    );
+    keys(cx, "ctrl-,");
+    assert_eq!(
+        h.actions.borrow().last(),
+        Some(&Action::Open(Destination::General))
+    );
+    // Option and Shift combinations pass through.
+    let before = h.actions.borrow().len();
+    keys(cx, "alt-k cmd-shift-k");
+    assert_eq!(h.actions.borrow().len(), before);
+    // In the search field only Command shortcuts apply: Control keeps editing.
+    cx.update(|w, cx| {
+        let search = e.read(cx).history.read(cx).search.read(cx).focus_handle(cx);
+        w.focus(&search, cx)
+    });
+    keys(cx, "ctrl-k ctrl-l ctrl-,");
+    assert_eq!(h.actions.borrow().len(), before);
+    keys(cx, "cmd-l");
+    assert_eq!(
+        h.actions.borrow().last(),
+        Some(&Action::Open(Destination::Performance))
+    );
+}
+#[gpui::test]
 fn separator_arrows_clamp_and_toggle_restores_focus(cx: &mut TestAppContext) {
     let (e, _, cx) = harness(cx);
     cx.update(|w, cx| w.focus(&e.read(cx).focus["sidebar-width"].clone(), cx));

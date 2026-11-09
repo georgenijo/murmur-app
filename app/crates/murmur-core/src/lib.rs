@@ -3,6 +3,7 @@ pub mod audio_level;
 pub mod completion;
 pub mod context;
 pub mod dictation;
+pub mod discovery;
 pub mod events;
 pub mod history;
 pub mod hold_promotion;

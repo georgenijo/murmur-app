@@ -175,6 +175,8 @@ pub struct Backend {
     pub meetings: Arc<super::meetings::Presentation>,
     pub diagnostics: Arc<super::diagnostics::Clocks>,
     pub levels: Arc<Mutex<Option<(u64, f32)>>>,
+    /// Newest history id already seen by discovery, so only a new entry teaches.
+    pub newest_entry: Arc<Mutex<Value>>,
 }
 pub type ReadFuture<S> = Pin<Box<dyn Future<Output = Result<S, String>> + Send>>;
 pub type Read<S> = fn(Backend) -> ReadFuture<S>;

@@ -38,6 +38,25 @@ fn editing_shortcuts_are_preserved() {
         Some(Shortcut::Search)
     );
     assert_eq!(shortcut("k", true, false, false, true, false), None);
+    // Every shortcut works with Command anywhere and with Control outside fields.
+    for (key, expected) in [
+        ("k", Shortcut::Palette),
+        ("f", Shortcut::Search),
+        (",", Shortcut::Settings),
+        ("l", Shortcut::Logs),
+    ] {
+        assert_eq!(
+            shortcut(key, true, false, false, false, true),
+            Some(expected)
+        );
+        assert_eq!(
+            shortcut(key, false, true, false, false, false),
+            Some(expected)
+        );
+        assert_eq!(shortcut(key, false, true, false, false, true), None);
+        assert_eq!(shortcut(key, true, false, true, false, false), None);
+    }
+    assert_eq!(shortcut("j", true, false, false, false, false), None);
 }
 
 #[test]

@@ -46,6 +46,7 @@ pub mod backend;
 pub mod projections;
 
 pub mod adapters;
+pub mod discovery;
 pub mod downloads;
 pub mod microphone;
 

@@ -232,28 +232,25 @@ impl Home {
         if e.prefer_character_input || e.is_held {
             return;
         }
-        let k = &e.keystroke;
-        if k.modifiers.platform && k.modifiers.number_of_modifiers() == 1 && k.key == "," {
+        use crate::palette::model::Shortcut;
+        let shortcut = crate::palette::main_shortcut(e, w);
+        let destination = match shortcut {
+            Some(Shortcut::Settings) => Some((Destination::General, "settings")),
+            Some(Shortcut::Palette) => Some((Destination::Palette, "palette")),
+            Some(Shortcut::Logs) => Some((Destination::Performance, "settings")),
+            _ => None,
+        };
+        if let Some((destination, id)) = destination {
             let focus = w.focused(cx);
-            self.open(Destination::General, "settings", cx);
+            self.open(destination, id, cx);
             self.keyboard_return = focus;
             w.prevent_default();
             cx.stop_propagation();
-        } else if k.modifiers.platform && k.modifiers.number_of_modifiers() == 1 && k.key == "k" {
-            let focus = w.focused(cx);
-            self.open(Destination::Palette, "palette", cx);
-            self.keyboard_return = focus;
-            w.prevent_default();
-            cx.stop_propagation();
-        } else if self.workspace.is_none()
-            && k.modifiers.platform
-            && k.modifiers.number_of_modifiers() == 1
-            && k.key == "f"
-        {
+        } else if shortcut == Some(Shortcut::Search) && self.workspace.is_none() {
             self.history.update(cx, |h, cx| h.focus_search(w, cx));
             w.prevent_default();
             cx.stop_propagation();
-        } else if k.key == "escape" {
+        } else if e.keystroke.key == "escape" {
             if self.drag.is_some() {
                 self.cancel_drag();
             } else if self.more {

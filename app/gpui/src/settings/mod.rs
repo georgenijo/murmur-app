@@ -66,6 +66,7 @@ pub struct Settings {
     compact_search: bool,
     operation: Option<(Action, Ticket)>,
     restore_focus: Option<&'static str>,
+    returned_opener: Option<String>,
     reveal_anchor: ScrollAnchor,
     reveal_scroll: bool,
     was_compact: Option<bool>,
@@ -132,6 +133,7 @@ impl Settings {
             compact_search: false,
             operation: None,
             restore_focus: None,
+            returned_opener: None,
         };
         s.subscriptions
             .push(cx.subscribe(&search, |s, _, e: &InputEvent, cx| {
@@ -256,6 +258,7 @@ impl Settings {
         self.synced_values.clear();
         self.operation = None;
         self.restore_focus = None;
+        self.returned_opener = None;
     }
     pub fn hide(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         self.flush_ranges(w, cx);
@@ -598,6 +601,16 @@ impl Settings {
         self.editor_return = Some(id.into());
         self.request(RequestKind::Action(Action::Open(destination)), cx);
     }
+    /// The control that opened the editor now on screen. Main takes it before
+    /// the editor replaces this page so Back can return the user to it.
+    pub fn take_editor_return(&mut self) -> Option<String> {
+        self.editor_return.take()
+    }
+    /// Focuses the opener once this page has its snapshot again after Back.
+    pub fn return_from_editor(&mut self, opener: Option<String>, cx: &mut Context<Self>) {
+        self.returned_opener = opener;
+        cx.notify();
+    }
     /// Owning 3.5e sheet calls this only when it closes; Settings never steals
     /// focus from an active editor on its request acknowledgment.
     pub fn editor_closed(&mut self, w: &mut Window, cx: &mut Context<Self>) {
@@ -716,15 +729,15 @@ impl Settings {
             cx.stop_propagation();
             return;
         }
+        use crate::palette::model::Shortcut;
         let k = &e.keystroke;
-        if k.modifiers.platform && !k.modifiers.alt && !k.modifiers.shift {
-            match k.key.as_str() {
-                "f" => {
-                    w.focus(&self.search.read(cx).focus_handle(cx), cx);
-                }
-                "," => self.navigate(Page::General, None, w, cx),
-                "l" => self.navigate(Page::Performance, None, w, cx),
-                _ => return,
+        if let Some(shortcut) = crate::palette::main_shortcut(e, w) {
+            // The palette and transcript search belong to the main window,
+            // which handles them after this page declines the key.
+            match shortcut {
+                Shortcut::Settings => self.navigate(Page::General, None, w, cx),
+                Shortcut::Logs => self.navigate(Page::Performance, None, w, cx),
+                Shortcut::Palette | Shortcut::Search => return,
             }
             w.prevent_default();
             cx.stop_propagation();
@@ -1009,6 +1022,11 @@ impl Render for Settings {
         self.drain(cx);
         self.synchronize(w, cx);
         if let Some(id) = self.restore_focus.take() {
+            w.focus(&self.focus_for(id, cx), cx);
+        }
+        if self.model.snapshot.is_some()
+            && let Some(id) = self.returned_opener.take()
+        {
             w.focus(&self.focus_for(id, cx), cx);
         }
         let p = Palette::get(cx);

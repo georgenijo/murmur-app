@@ -324,6 +324,68 @@ fn nested_owner_back_and_editor_close_restore_actual_callers(cx: &mut TestAppCon
     assert!(cx.update(|w, cx| e.read(cx).focus["customize-commands"].is_focused(w)));
 }
 #[gpui::test]
+fn back_from_a_full_page_editor_refocuses_the_opener_on_its_page(cx: &mut TestAppContext) {
+    let (e, _, cx) = harness(cx);
+    cx.update(|w, cx| {
+        e.update(cx, |s, cx| {
+            s.navigate(Page::Text, None, w, cx);
+            s.open_editor(Destination::Vocabulary, "vocabulary", cx);
+        })
+    });
+    draw(cx);
+    // Main takes the opener before the editor replaces the page ...
+    let opener = e.update(cx, |s, _| s.take_editor_return());
+    assert_eq!(opener.as_deref(), Some("vocabulary"));
+    assert_eq!(e.update(cx, |s, _| s.take_editor_return()), None);
+    // ... and hands it back once the page it came from is showing again.
+    cx.update(|w, cx| {
+        e.update(cx, |s, cx| {
+            s.hide(w, cx);
+            s.attach(cx);
+            s.navigate(Page::Text, None, w, cx);
+            s.return_from_editor(opener, cx);
+        })
+    });
+    draw(cx);
+    assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::Text);
+    assert!(cx.update(|w, cx| e.read(cx).focus["vocabulary"].is_focused(w)));
+}
+#[gpui::test]
+fn settings_keys_follow_editability_and_leave_search_to_the_main_window(cx: &mut TestAppContext) {
+    let (e, _, cx) = harness(cx);
+    cx.update(|w, cx| {
+        e.update(cx, |s, cx| {
+            let handle = s.focus_for("shortcuts", cx);
+            w.focus(&handle, cx);
+        })
+    });
+    draw(cx);
+    keys(cx, "ctrl-l");
+    assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::Performance);
+    keys(cx, "ctrl-,");
+    assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::General);
+    // The palette and transcript search belong to the main window: Settings
+    // neither navigates nor steals Command-F for its own search box.
+    cx.update(|w, cx| {
+        e.update(cx, |s, cx| {
+            let handle = s.focus_for("shortcuts", cx);
+            w.focus(&handle, cx);
+        })
+    });
+    keys(cx, "cmd-f");
+    assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::General);
+    assert!(!cx.update(|w, cx| e.read(cx).search.read(cx).focus_handle(cx).is_focused(w)));
+    // Inside the search field Control keeps editing; Command still navigates.
+    cx.update(|w, cx| {
+        let search = e.read(cx).search.read(cx).focus_handle(cx);
+        w.focus(&search, cx)
+    });
+    keys(cx, "ctrl-l");
+    assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::General);
+    keys(cx, "cmd-l");
+    assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::Performance);
+}
+#[gpui::test]
 fn file_delivery_pause_capture_lock_and_explicit_actions(cx: &mut TestAppContext) {
     let (e, host, cx) = harness(cx);
     let mut next = host.state.borrow().clone();

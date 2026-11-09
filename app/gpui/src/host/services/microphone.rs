@@ -24,6 +24,10 @@ impl Backend {
                 finish: true,
             });
         }
+        if page == Some(crate::settings::schema::Page::Shortcuts) {
+            // Viewing the shortcuts page completes its checklist item.
+            super::discovery::complete(self, "shortcuts");
+        }
         if page != Some(crate::settings::schema::Page::Recording) {
             return;
         }
