@@ -30,6 +30,7 @@ jobs:
           python3 -m unittest discover -s scripts -p 'test_check_targeted_events.py'
           python3 scripts/check_restart_policy.py
           python3 -m unittest discover -s scripts -p 'test_check_restart_policy.py'
+          python3 -m unittest discover -s scripts -p 'test_updater_fixture_identity.py'
           python3 scripts/validate_capture_boundary.py
           python3 scripts/validate_workflow_policy.py
           python3 scripts/validate_reference_docs.py

@@ -153,6 +153,23 @@ impl Update {
     pub fn failed(&self) -> bool {
         matches!(self, Self::Failed { .. })
     }
+    /// Phases with indefinite activity that rotate their glyph, as the shipped
+    /// indicator spins for checking, preparing and restarting.
+    pub fn spins(&self) -> bool {
+        matches!(self, Self::Checking | Self::Preparing | Self::Restarting)
+    }
+    /// Download bar fill, 0..=1; None for any other phase and for a download
+    /// whose total is not yet known (see `indeterminate`).
+    pub fn progress(&self) -> Option<f32> {
+        match self {
+            Self::Downloading(Some(p)) => Some(f32::from((*p).min(100)) / 100.),
+            _ => None,
+        }
+    }
+    /// A download without a known percentage shows a travelling segment.
+    pub fn indeterminate(&self) -> bool {
+        matches!(self, Self::Downloading(None))
+    }
     pub fn label(&self) -> String {
         match self {
             Self::Available(_) => "View update".into(),

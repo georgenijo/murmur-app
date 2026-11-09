@@ -24,6 +24,39 @@ use std::{collections::BTreeMap, rc::Rc, time::Duration};
 /// the Home ticket and block recording.
 pub struct UpdateRequested(pub UpdateIntent);
 impl EventEmitter<UpdateRequested> for Home {}
+/// Thin track along the bottom edge of the update indicator. `travelling` shows a
+/// segment sliding along the track for a download of unknown size; reduced motion
+/// leaves it at the start.
+fn update_progress_bar(fraction: f32, travelling: bool, reduce_motion: bool, p: Palette) -> Div {
+    let fill = div()
+        .debug_selector(|| "update-indicator-progress".into())
+        .h_full()
+        .w(relative(fraction.clamp(0., 1.)))
+        .rounded(px(1.))
+        .bg(p.accent);
+    let fill = if travelling && !reduce_motion {
+        let slack = 1. - fraction;
+        fill.with_animation(
+            "update-indicator-travel",
+            Animation::new(Duration::from_millis(1200)).repeat(),
+            move |f, delta| f.ml(relative(delta * slack)),
+        )
+        .into_any_element()
+    } else {
+        fill.into_any_element()
+    };
+    div()
+        .debug_selector(|| "update-indicator-track".into())
+        .absolute()
+        .left(px(6.))
+        .right(px(6.))
+        .bottom(px(3.))
+        .h(px(2.))
+        .rounded(px(1.))
+        .overflow_hidden()
+        .bg(p.hairline_strong)
+        .child(fill)
+}
 pub struct Home {
     pub workspace: Option<(Destination, AnyView)>,
     pub model: Session<Snapshot>,
@@ -106,6 +139,42 @@ impl Home {
         };
         let e = cx.entity();
         let announcement = update.announcement();
+        let reduce_motion = crate::preferences::current(cx).reduce_motion;
+        let p = Palette::get(cx);
+        let fg = match intent {
+            ButtonIntent::Primary | ButtonIntent::Danger => p.on_accent,
+            _ => p.text,
+        };
+        let glyph_view = icon(glyph).text_color(fg);
+        let glyph_view = if update.spins() && !reduce_motion {
+            glyph_view
+                .with_animation(
+                    "update-indicator-spin",
+                    Animation::new(Duration::from_millis(900)).repeat(),
+                    |i, delta| i.transform(Transformation::rotate(percentage(delta))),
+                )
+                .into_any_element()
+        } else {
+            glyph_view.into_any_element()
+        };
+        // Download progress: determinate fill when the percentage is known, a
+        // travelling segment (still when motion is reduced) when it is not.
+        let bar = if let Some(fraction) = update.progress() {
+            Some(update_progress_bar(fraction, false, reduce_motion, p))
+        } else if update.indeterminate() {
+            Some(update_progress_bar(0.3, true, reduce_motion, p))
+        } else {
+            None
+        };
+        let content = div()
+            .relative()
+            .w_full()
+            .h(ButtonSize::Compact.height())
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(glyph_view)
+            .children(bar);
         Some(
             div()
                 .flex()
@@ -113,6 +182,8 @@ impl Home {
                 .child(
                     Button::new("update-indicator", update.summary())
                         .icon_only(glyph)
+                        .content(content)
+                        .padding_y(px(0.))
                         .intent(intent)
                         .size(ButtonSize::Compact)
                         .track_focus(&self.focus_for("update-indicator", cx))

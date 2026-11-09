@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Serve an isolated signed OTA fixture. Never launches an app or reads any
 production key. Requires minisign on PATH; generates a throwaway key per run.
-Use only a synthetic com.localdictation.shutdown-test bundle built by the QA
-operator. Output and private throwaway key remain under the requested cache dir.
+Use only a synthetic QA bundle built by the QA operator: the Tauri-era
+com.localdictation.shutdown-test identity or the GPUI native host's
+com.localdictation.gpui-host-qa110. The served bundle's identity must equal the
+identity of the old bundle that installs it (the installer rejects any other), and
+those are the only two identities that accept a fixture. Output and private
+throwaway key remain under the requested cache dir.
 """
 import argparse
 import base64
@@ -15,15 +19,30 @@ import shutil
 import subprocess
 import tarfile
 
-IDENTIFIER = 'com.localdictation.shutdown-test'
+IDENTIFIERS = frozenset({
+    'com.localdictation.shutdown-test',
+    # Keep equal to the identity gated in murmur-services commands/updater.rs
+    # `fixture::enabled` and murmur-core updater `isolated_fixture`.
+    'com.localdictation.gpui-host-qa110',
+})
+# Every executable the installer requires (murmur-core updater install.rs).
+EXECUTABLES = ('ui', 'murmur-capture-agent', 'murmur-capture-helper', 'murmur-capture-worker')
+
+
+def bundle_version(bundle: Path) -> str:
+    """Validate a servable QA bundle and return its version."""
+    info = plistlib.loads((bundle / 'Contents/Info.plist').read_bytes())
+    if info.get('CFBundleIdentifier') not in IDENTIFIERS or info.get('CFBundleExecutable') != 'ui':
+        raise ValueError('Only a shutdown-test or gpui-host-qa110 ui bundle can be served')
+    for name in EXECUTABLES:
+        if not (bundle / 'Contents/MacOS' / name).is_file():
+            raise ValueError(f'QA bundle lacks required executable {name}')
+    return info['CFBundleShortVersionString']
 
 
 def prepare(bundle: Path, directory: Path, port: int, failure: str = 'none') -> dict:
     bundle = bundle.resolve(strict=True)
-    info = plistlib.loads((bundle / 'Contents/Info.plist').read_bytes())
-    if info.get('CFBundleIdentifier') != IDENTIFIER or info.get('CFBundleExecutable') != 'ui':
-        raise ValueError('Only a shutdown-test ui bundle can be served')
-    version = info['CFBundleShortVersionString']
+    version = bundle_version(bundle)
     # Require an operator-owned cache scratch directory, never /tmp or a daily app.
     directory = directory.expanduser().resolve()
     cache = (Path.home() / '.cache').resolve()

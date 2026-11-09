@@ -101,6 +101,25 @@ can affect a production bundle. Requires the public minisign CLI on PATH. Genera
 with minisign 0.12 for normal, tampered-signature and signed-invalid-archive
 fixtures, and rejection of production identity; no app executable was run.
 
+### GPUI host QA: serving a qa110 update
+
+`updater_test_fixture.py` serves a bundle whose `CFBundleIdentifier` is either
+`com.localdictation.shutdown-test` or `com.localdictation.gpui-host-qa110`, with
+executable `ui` and all four packaged executables. The installer
+(`install.rs` `validate`) requires the new bundle's identity to equal the
+installed app's, so the old and new QA bundles must both carry the same
+identity. Production identities are rejected. `scripts/test_updater_fixture_identity.py`
+keeps the generator's identities equal to the app gates in
+`commands/updater.rs` and the core `isolated_fixture`.
+
+To make two qa110 bundles (versions 0.62.1 old, 0.62.2 new), run
+`python3 scripts/bundle_gpui.py --binary <native-host-qa ui> --output
+~/.cache/qa110/old/Murmur.app`, then for each bundle
+`plutil -replace CFBundleIdentifier -string com.localdictation.gpui-host-qa110
+<app>/Contents/Info.plist`, set `CFBundleShortVersionString` and `CFBundleVersion`
+the same way, and `codesign --force --deep --sign - <app>`. Serve the new one with
+`updater_test_fixture.py --bundle <new.app> --directory ~/.cache/qa110/feed`.
+
 ### GPUI host QA: due-gate interval
 
 For the GPUI native host (`native-host-qa`, identity
@@ -116,7 +135,11 @@ without waiting six hours. Production builds neither compile nor read it.
 - Home shows a passive header indicator (available, downloading, ready, restarting,
   failed, up to date) projected from `updater_snapshot`. Unlike the shipped
   indicator it is hidden while the updater is idle; manual checks remain in
-  Settings and the application menu.
+  Settings and the application menu. A download draws a determinate bar along the
+  button's bottom edge (a travelling segment when the size is unknown), and
+  checking, preparing and restarting rotate the glyph; reduced motion stops the
+  rotation and the travel but keeps the determinate fill. Deviation: a linear
+  bar replaces the shipped circular ring.
 - A reinstall (App Translocation) error always offers Quit, with Later when the
   update is optional.
 - Escape, the close button and Later on a finished update's release notes send

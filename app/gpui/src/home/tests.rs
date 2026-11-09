@@ -617,6 +617,26 @@ fn update_indicator_projects_every_updater_phase_from_the_wire() {
         assert!(busy.busy() && busy.intent().is_none());
         assert_eq!(busy.announcement(), busy.label());
     }
+    // Progress and activity come from the same projection the render reads.
+    assert_eq!(downloading.progress(), Some(0.42));
+    assert_eq!(Update::Downloading(Some(250)).progress(), Some(1.));
+    assert_eq!(Update::Downloading(None).progress(), None);
+    assert!(Update::Downloading(None).indeterminate());
+    assert!(!downloading.indeterminate());
+    for spinning in [Update::Checking, Update::Preparing, Update::Restarting] {
+        assert!(spinning.spins() && spinning.progress().is_none());
+    }
+    for still in [
+        Update::Idle,
+        Update::UpToDate,
+        Update::Downloading(Some(5)),
+        Update::Downloading(None),
+        Update::Available("1".into()),
+        Update::Ready("1".into()),
+        Update::Failed { check: true },
+    ] {
+        assert!(!still.spins());
+    }
     assert_eq!(Update::UpToDate.announcement(), "You’re up to date.");
     assert_eq!(Update::UpToDate.intent(), Some(UpdateIntent::Check));
     assert_eq!(Update::from_wire(&serde_json::Value::Null), Update::Idle);
@@ -637,6 +657,67 @@ fn set_update(home: &Entity<Home>, cx: &mut VisualTestContext, update: Update) {
         s.drain(cx);
     });
     draw(cx);
+}
+#[gpui::test]
+fn header_update_indicator_renders_download_progress_and_activity(cx: &mut TestAppContext) {
+    let (home, _, cx) = harness(cx);
+    let ratio = |cx: &mut VisualTestContext| {
+        let track = cx.debug_bounds("update-indicator-track")?;
+        let fill = cx
+            .debug_bounds("update-indicator-progress")
+            .expect("a bar always has a fill");
+        Some(f32::from(fill.size.width) / f32::from(track.size.width))
+    };
+    // Only a download draws the bar; other phases and Idle do not.
+    for update in [
+        Update::Available("1.2.0".into()),
+        Update::Checking,
+        Update::Preparing,
+        Update::Ready("1.2.0".into()),
+        Update::Restarting,
+        Update::Failed { check: false },
+    ] {
+        set_update(&home, cx, update);
+        assert!(cx.debug_bounds("update-indicator").is_some());
+        assert!(ratio(cx).is_none(), "no bar outside a download");
+    }
+    // The fill follows the percentage from the projected snapshot.
+    for (percent, expected) in [(25u8, 0.25f32), (60, 0.6), (100, 1.)] {
+        set_update(&home, cx, Update::Downloading(Some(percent)));
+        let drawn = ratio(cx).expect("downloading draws a bar");
+        assert!(
+            (drawn - expected).abs() < 0.02,
+            "{percent}% drew {drawn}, expected {expected}"
+        );
+    }
+    // Unknown size shows the travelling segment, still when motion is reduced.
+    for reduce_motion in [false, true] {
+        cx.update(|_, cx| {
+            crate::preferences::apply(
+                crate::preferences::DisplayPreferences {
+                    reduce_motion,
+                    ..Default::default()
+                },
+                cx,
+            )
+        });
+        for update in [
+            Update::Downloading(None),
+            Update::Checking,
+            Update::Restarting,
+        ] {
+            set_update(&home, cx, update.clone());
+            let shown = ratio(cx);
+            if update.indeterminate() {
+                let segment = shown.expect("unknown size draws a segment");
+                assert!(segment > 0.25 && segment < 0.35, "segment {segment}");
+            } else {
+                assert!(shown.is_none());
+            }
+        }
+    }
+    set_update(&home, cx, Update::Idle);
+    assert!(cx.debug_bounds("update-indicator").is_none());
 }
 #[gpui::test]
 fn header_update_indicator_is_passive_and_routes_clicks_to_the_updater(cx: &mut TestAppContext) {
