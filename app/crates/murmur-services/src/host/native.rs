@@ -59,6 +59,53 @@ pub struct NativeConfig {
 pub struct PackageInfo {
     pub version: String,
 }
+/// Isolated QA identity, the only one that may report an overridden version.
+const QA_IDENTIFIER: &str = "com.localdictation.gpui-host-qa110";
+/// Build-time version for a QA binary (`MURMUR_QA_PACKAGE_VERSION=0.62.2 cargo
+/// build --features native-host-qa`). The updater compares the running version
+/// with the bundle's plist, so an update fixture needs a binary whose reported
+/// version equals its plist version. Compiled out of every other build.
+#[cfg(feature = "native-host-qa")]
+const QA_PACKAGE_VERSION: Option<&str> = option_env!("MURMUR_QA_PACKAGE_VERSION");
+#[cfg(not(feature = "native-host-qa"))]
+const QA_PACKAGE_VERSION: Option<&str> = None;
+/// The version the updater treats as running. The override applies only to a
+/// `native-host-qa` build running as the QA identity; every other identity, and
+/// every build without the feature, reports the package version.
+fn reported_version(identifier: &str, qa_override: Option<&str>) -> String {
+    match qa_override {
+        Some(version) if cfg!(feature = "native-host-qa") && identifier == QA_IDENTIFIER => {
+            version.into()
+        }
+        _ => env!("CARGO_PKG_VERSION").into(),
+    }
+}
+#[cfg(test)]
+mod reported_version_tests {
+    use super::{reported_version, QA_IDENTIFIER};
+    #[test]
+    fn production_and_other_identities_ignore_the_qa_override() {
+        let package = env!("CARGO_PKG_VERSION");
+        for identifier in ["com.localdictation", "com.localdictation.shutdown-test", ""] {
+            assert_eq!(reported_version(identifier, Some("9.9.9")), package);
+        }
+        assert_eq!(reported_version(QA_IDENTIFIER, None), package);
+    }
+    #[cfg(feature = "native-host-qa")]
+    #[test]
+    fn the_qa_identity_reports_the_override() {
+        assert_eq!(reported_version(QA_IDENTIFIER, Some("9.9.9")), "9.9.9");
+    }
+    #[cfg(not(feature = "native-host-qa"))]
+    #[test]
+    fn a_build_without_the_qa_feature_ignores_the_override_even_for_the_qa_identity() {
+        assert_eq!(
+            reported_version(QA_IDENTIFIER, Some("9.9.9")),
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(super::QA_PACKAGE_VERSION.is_none());
+    }
+}
 #[derive(Clone)]
 pub struct NativePaths {
     pub home: PathBuf,
@@ -335,7 +382,7 @@ impl<R: Runtime> Context<R> {
     }
     pub fn package_info(&self) -> PackageInfo {
         PackageInfo {
-            version: env!("CARGO_PKG_VERSION").into(),
+            version: reported_version(&self.inner.config.identifier, QA_PACKAGE_VERSION),
         }
     }
     pub fn get_window(&self, label: &str) -> Option<Window<R>> {

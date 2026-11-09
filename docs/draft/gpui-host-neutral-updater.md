@@ -112,13 +112,40 @@ identity. Production identities are rejected. `scripts/test_updater_fixture_iden
 keeps the generator's identities equal to the app gates in
 `commands/updater.rs` and the core `isolated_fixture`.
 
-To make two qa110 bundles (versions 0.62.1 old, 0.62.2 new), run
-`python3 scripts/bundle_gpui.py --binary <native-host-qa ui> --output
-~/.cache/qa110/old/Murmur.app`, then for each bundle
+The updater trusts the version the running binary was compiled with
+(`package_info().version`, `host/native.rs` `reported_version`), and recovery
+(`install.rs`) rejects a bundle whose plist version differs from it. Editing only
+the plist around one binary is therefore not enough: the old and new QA bundles
+need two separate binaries, each compiled with a version equal to its plist.
+
+A `native-host-qa` build reads the build-time variable
+`MURMUR_QA_PACKAGE_VERSION` and reports it, but only when running as
+`com.localdictation.gpui-host-qa110`. Builds without `native-host-qa` do not
+compile the override, and every other identity ignores it (unit tests in
+`host/native.rs` cover production, other identities and a feature-less build).
+Build each binary separately (the variable is tracked by cargo, so the second
+build recompiles the dependent crates):
+
+```
+python3 scripts/build_capture_helpers.py
+for v in 0.62.1 0.62.2; do
+  MURMUR_QA_PACKAGE_VERSION=$v cargo build --release --manifest-path app/Cargo.toml \
+    -p murmur-ui --bin ui --features native-host-qa
+  cp app/target/release/ui ~/.cache/qa110/ui-$v
+done
+```
+
+Then bundle each binary (old = 0.62.1, new = 0.62.2) and make the plist match it:
+`python3 scripts/bundle_gpui.py --binary ~/.cache/qa110/ui-<v> --output
+~/.cache/qa110/<old|new>/Murmur.app`, then
 `plutil -replace CFBundleIdentifier -string com.localdictation.gpui-host-qa110
-<app>/Contents/Info.plist`, set `CFBundleShortVersionString` and `CFBundleVersion`
-the same way, and `codesign --force --deep --sign - <app>`. Serve the new one with
+<app>/Contents/Info.plist`, `plutil -replace CFBundleShortVersionString -string <v>`,
+`plutil -replace CFBundleVersion -string <v>`, and
+`codesign --force --deep --sign - <app>`. Serve the new one with
 `updater_test_fixture.py --bundle <new.app> --directory ~/.cache/qa110/feed`.
+Settings > About may keep showing the manifest version; the signal is the Home
+indicator offering 0.62.2 from the old bundle and no longer offering it after the
+relaunch.
 
 ### GPUI host QA: due-gate interval
 

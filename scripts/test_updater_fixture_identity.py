@@ -62,6 +62,20 @@ class FixtureIdentity(unittest.TestCase):
         self.assertEqual(set(fixture.IDENTIFIERS), accepted)
         self.assertLessEqual(enabled, set(fixture.IDENTIFIERS))
 
+    def test_qa_version_override_is_feature_and_identity_gated(self):
+        # A fixture update needs a binary whose reported version equals its plist
+        # version; production must never read the build-time override.
+        native = re.sub(r'\s+', ' ', (ROOT / 'app/crates/murmur-services/src/host/native.rs').read_text())
+        self.assertIn(f'const QA_IDENTIFIER: &str = "{QA}";', native)
+        self.assertIn('#[cfg(feature = "native-host-qa")] const QA_PACKAGE_VERSION: Option<&str> = option_env!("MURMUR_QA_PACKAGE_VERSION");', native)
+        self.assertIn('#[cfg(not(feature = "native-host-qa"))] const QA_PACKAGE_VERSION: Option<&str> = None;', native)
+        self.assertIn('Some(version) if cfg!(feature = "native-host-qa") && identifier == QA_IDENTIFIER', native)
+        self.assertEqual(native.count('MURMUR_QA_PACKAGE_VERSION"'), 1)
+        for path in (ROOT / 'app').rglob('*.rs'):
+            if 'target' in path.parts or path.name == 'native.rs':
+                continue
+            self.assertNotIn('MURMUR_QA_PACKAGE_VERSION', path.read_text(errors='ignore'), path)
+
     def test_executables_match_the_installer_requirement(self):
         install = (ROOT / 'app/crates/murmur-core/src/updater/install.rs').read_text()
         required = re.search(r'const EXECUTABLES:.*?= &\[(.*?)\];', install, re.S)
