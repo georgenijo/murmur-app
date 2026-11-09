@@ -3,6 +3,7 @@
 pub mod inbox;
 pub mod model;
 pub mod native;
+pub mod smart_auto;
 
 use crate::{Button, ButtonSize, Toggle, preferences, tokens};
 use gpui::{prelude::*, *};
@@ -33,6 +34,8 @@ pub struct Overlay {
     now: u64,
     applied: Option<native::Surface>,
     last_indicator: Option<Indicator>,
+    /// The Smart Auto cue last announced; the outer `None` is "not yet seen".
+    last_cue: Option<Option<smart_auto::Cue>>,
     interested: bool,
     pointer: PointerPresence,
     closed_pointer: Option<Point<Pixels>>,
@@ -49,6 +52,7 @@ impl Overlay {
             now: 0,
             applied: None,
             last_indicator: None,
+            last_cue: None,
             interested: false,
             pointer: PointerPresence::default(),
             closed_pointer: None,
@@ -198,9 +202,22 @@ impl Overlay {
         }
         let indicator = self.model.indicator(self.now);
         if self.last_indicator != Some(indicator) && self.model.visible {
-            native::announce(window, indicator.label());
+            native::announce(window, &self.model.announcement(self.now));
         }
         self.last_indicator = Some(indicator);
+        // A Smart Auto change while the overlay is idle is announced politely;
+        // its first sight at startup and its expiry are not.
+        let cue = self.model.smart_auto_cue(self.now);
+        if self.last_cue.is_some_and(|last| last != cue)
+            && self.model.visible
+            && let Some(description) = self
+                .model
+                .smart_auto(self.now)
+                .and_then(|s| s.description(self.now))
+        {
+            native::announce(window, &description);
+        }
+        self.last_cue = Some(cue);
         cx.notify();
     }
     /// Start only in the real host. Deterministic tests drive advance/events
@@ -219,6 +236,7 @@ impl Overlay {
                                 s.model.indicator(s.now),
                                 s.model.phase,
                                 s.model.elapsed(s.now),
+                                s.model.smart_auto_cue(s.now),
                             );
                             s.now = s.epoch.elapsed().as_millis() as u64;
                             let (events, level) = s.inbox.drain();
@@ -268,6 +286,9 @@ impl Overlay {
                                     s.model.indicator(s.now),
                                     s.model.phase,
                                     s.model.elapsed(s.now),
+                                    // A Smart Auto state that reaches its deadline
+                                    // stops being shown without any host event.
+                                    s.model.smart_auto_cue(s.now),
                                 )
                                 || due
                             {
@@ -455,7 +476,8 @@ impl Render for Overlay {
             .id("overlay-status")
             .debug_selector(|| "overlay-status".into())
             .role(Role::Status)
-            .aria_label(indicator.label())
+            // A retry result carries the service's own explanation.
+            .aria_label(self.model.announcement(now))
             .aria_description("Start locked dictation, or stop the current recording")
             .on_a11y_action(AccessibleAction::Click, move |_, w, cx| {
                 let _ = accessible.update(cx, |s, cx| {
@@ -565,8 +587,48 @@ impl Render for Overlay {
                         .child(glyph),
                 )
             });
-        let show_status = g.floating || expanded || indicator != Indicator::Idle;
-        if show_status {
+        // Smart Auto's idle cue is visible when collapsed, in the notch's own
+        // wing, and carries its explanation for assistive technology and hover.
+        let auto = self.model.smart_auto(now);
+        let cue = auto.and_then(|s| s.cue(now));
+        let show_status = g.floating || expanded || indicator != Indicator::Idle || cue.is_some();
+        if let Some((cue, auto)) = cue.zip(auto) {
+            let sky = Hsla::from(rgb(0x38bdf8));
+            let amber = Hsla::from(rgb(0xfbbf24));
+            let shape = div()
+                .debug_selector(|| "overlay-smart-auto-cue".into())
+                .flex_shrink_0();
+            let shape = match cue {
+                smart_auto::Cue::Ready => shape.size(px(6.)).rounded_full().bg(p.success),
+                smart_auto::Cue::Probing => shape
+                    .size(px(6.))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(sky),
+                smart_auto::Cue::Blocked => shape.text_size(px(9.)).text_color(amber).child("!"),
+            };
+            let title = SharedString::from(auto.title(now).unwrap_or_default());
+            leading = leading.child(
+                div()
+                    .id("overlay-smart-auto")
+                    .debug_selector(|| "overlay-smart-auto".into())
+                    .role(Role::Status)
+                    .aria_label(auto.description(now).unwrap_or_default())
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(!g.floating, |s| s.w(px(8.)).flex_shrink_0())
+                    .opacity(if self.model.snapshot.disabled {
+                        0.15
+                    } else {
+                        1.
+                    })
+                    .tooltip(move |w, cx| {
+                        gpui_component::tooltip::Tooltip::new(title.clone()).build(w, cx)
+                    })
+                    .child(shape),
+            );
+        } else if show_status {
             if matches!(
                 indicator,
                 Indicator::Processing | Indicator::Recovering | Indicator::MeetingProcessing
@@ -809,9 +871,15 @@ impl Render for Overlay {
                     detail.push_str(" · ");
                     detail.push_str(destination);
                 }
-                if let Some(summary) = &self.model.snapshot.smart_auto {
+                if let Some(title) = self
+                    .model
+                    .snapshot
+                    .smart_auto
+                    .as_ref()
+                    .and_then(|s| s.title(now))
+                {
                     detail.push_str(" · ");
-                    detail.push_str(summary);
+                    detail.push_str(&title);
                 }
                 group = group.child(div().overflow_hidden().child(detail));
             }

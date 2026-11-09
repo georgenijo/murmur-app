@@ -45,6 +45,7 @@ impl Host for Synthetic {
                     generation,
                     attempt,
                     result: Delivery::Nothing,
+                    message: None,
                 });
             }
             Intent::AcceptSuggestion(_) | Intent::DismissSuggestion(_) => {

@@ -5,6 +5,12 @@
 //! offers Try again, and every `retry_last_delivery` result replaces the banner
 //! with its bounded service message. Messages are fixed service strings; no
 //! transcript, clipboard or destination text ever reaches this module.
+//!
+//! A banner is owned by the recording generation that produced it, and a Try
+//! again by a retry identity kept apart from the visible notice. The command's
+//! completion, and the identity-less service event, only apply while that
+//! ownership still holds: a newer recording, a dismissal or a newer retry makes
+//! a late result inert instead of overwriting newer feedback.
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
@@ -14,6 +20,14 @@ pub const TRYING: &str = "Trying delivery again…";
 /// Shown when the retry command itself fails before returning a result.
 pub const RETRY_UNFINISHED: &str = "Paste Last did not finish. Try again.";
 const MAX_MESSAGE: usize = 240;
+
+/// Identity of one banner Try again: the recording generation it began under and
+/// a process-unique attempt number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RetryToken {
+    generation: u64,
+    id: u64,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Notice {
@@ -36,9 +50,18 @@ pub struct DeliveryFeedback {
     from_retry: bool,
     /// A dismissed capture-time message stays dismissed until the next recording.
     dismissed: Option<String>,
+    /// Latest recording generation announced by `dictation-generation-started`.
+    generation: u64,
+    retry_seq: u64,
+    /// The one banner retry whose command completion may still be applied.
+    retry: Option<RetryToken>,
+    /// A dismissed or superseded retry's identity-less service event must not
+    /// bring its notice back. Cleared by the next retry or recording.
+    suppress_retry_events: bool,
 }
 
-fn bounded(message: &str) -> Option<String> {
+/// Trim and bound a service message for display.
+pub fn bounded(message: &str) -> Option<String> {
     let message = message.trim();
     (!message.is_empty()).then(|| message.chars().take(MAX_MESSAGE).collect())
 }
@@ -88,6 +111,23 @@ impl DeliveryFeedback {
             false,
         );
     }
+    fn show_result(&mut self, kind: &str, message: &str, now: Instant) -> bool {
+        let (Some(retryable), Some(message)) = (retryable_kind(kind), bounded(message)) else {
+            return false;
+        };
+        self.present(
+            Some(Notice {
+                message,
+                retryable,
+                busy: false,
+            }),
+            now,
+            true,
+            false,
+            true,
+        );
+        true
+    }
     /// Feed a main-window event. Unrelated or malformed events are ignored.
     pub fn event(&mut self, event: &str, payload: &str, now: Instant) {
         if !matches!(
@@ -104,11 +144,20 @@ impl DeliveryFeedback {
             return;
         };
         match event {
-            // A new recording starts a new producer: capture-time failures and
-            // their dismissal are over. A retry notice is owned by its attempt.
+            // A new recording starts a new producer. Every banner, dismissal and
+            // retry from an older generation is over, and a retry that was still
+            // running can no longer report into the new recording's feedback.
             "dictation-generation-started" => {
+                let Some(id) = v["recordingId"].as_u64().filter(|id| *id > 0) else {
+                    return;
+                };
+                if id < self.generation {
+                    return;
+                }
+                self.generation = id;
                 self.dismissed = None;
-                if self.notice.is_some() && !self.from_retry {
+                self.suppress_retry_events = self.retry.take().is_some();
+                if self.notice.is_some() {
                     self.present(None, now, false, false, false);
                 }
             }
@@ -139,36 +188,32 @@ impl DeliveryFeedback {
                 }
             }
             "delivery-retry-feedback" => {
-                if let (Some(kind), Some(message)) = (v["kind"].as_str(), v["message"].as_str()) {
-                    self.retry_result(kind, message, now);
+                if self.suppress_retry_events {
+                    return;
+                }
+                if let (Some(kind), Some(message)) = (v["kind"].as_str(), v["message"].as_str())
+                    && self.show_result(kind, message, now)
+                {
+                    // The service reported the running retry's result first.
+                    self.retry = None;
                 }
             }
             _ => {}
         }
     }
-    /// Present one `retry_last_delivery` result. The service event and the
-    /// command's own return value both land here and are idempotent.
-    pub fn retry_result(&mut self, kind: &str, message: &str, now: Instant) {
-        let (Some(retryable), Some(message)) = (retryable_kind(kind), bounded(message)) else {
-            return;
-        };
-        self.present(
-            Some(Notice {
-                message,
-                retryable,
-                busy: false,
-            }),
-            now,
-            true,
-            false,
-            true,
-        );
-    }
-    /// The banner's Try again was pressed. False when one is already running.
-    pub fn begin_retry(&mut self, now: Instant) -> bool {
+    /// The banner's Try again was pressed. None when one is already running.
+    pub fn begin_retry(&mut self, now: Instant) -> Option<RetryToken> {
         if self.busy() {
-            return false;
+            return None;
         }
+        self.retry_seq = self.retry_seq.wrapping_add(1);
+        let token = RetryToken {
+            generation: self.generation,
+            id: self.retry_seq,
+        };
+        self.retry = Some(token);
+        self.dismissed = None;
+        self.suppress_retry_events = false;
         self.present(
             Some(Notice {
                 message: TRYING.into(),
@@ -180,17 +225,36 @@ impl DeliveryFeedback {
             false,
             true,
         );
-        true
+        Some(token)
     }
-    /// The retry command failed without a result.
-    pub fn retry_unfinished(&mut self, now: Instant) {
-        if self.busy() {
-            self.retry_result("failed", RETRY_UNFINISHED, now);
+    /// The retry command finished: `Some((kind, message))` is its result, None
+    /// means it failed without one. Applied only while `token` still owns the
+    /// banner; returns whether it was.
+    pub fn finish_retry(
+        &mut self,
+        token: RetryToken,
+        result: Option<(&str, &str)>,
+        now: Instant,
+    ) -> bool {
+        if self.retry != Some(token) || token.generation != self.generation {
+            return false;
         }
+        self.retry = None;
+        let (kind, message) = result.unwrap_or(("failed", RETRY_UNFINISHED));
+        if !self.show_result(kind, message, now) {
+            self.show_result("failed", RETRY_UNFINISHED, now);
+        }
+        true
     }
     pub fn dismiss(&mut self) {
         if let Some(notice) = self.notice.as_ref().filter(|_| !self.from_retry) {
             self.dismissed = Some(notice.message.clone());
+        }
+        if self.from_retry {
+            // The dismissed attempt's late result, in either of its two forms,
+            // must not bring the notice back.
+            self.retry = None;
+            self.suppress_retry_events = true;
         }
         self.present(None, Instant::now(), false, false, false);
     }
@@ -217,6 +281,18 @@ mod tests {
     }
     fn outcome(kind: &str) -> String {
         format!(r#"{{"recordingId":4,"outcome":"{kind}"}}"#)
+    }
+    fn started(f: &mut DeliveryFeedback, id: u64, now: Instant) {
+        at(
+            f,
+            "dictation-generation-started",
+            &format!(r#"{{"recordingId":{id}}}"#),
+            now,
+        );
+    }
+    fn retry_event(f: &mut DeliveryFeedback, kind: &str, message: &str, now: Instant) {
+        let payload = serde_json::json!({"kind": kind, "message": message}).to_string();
+        at(f, "delivery-retry-feedback", &payload, now);
     }
 
     #[test]
@@ -315,36 +391,30 @@ mod tests {
         at(&mut f, "auto-paste-failed", &text(FILE), t0);
         assert_eq!(f.notice.as_ref().unwrap().message, FILE);
         f.dismiss();
-        at(
-            &mut f,
-            "dictation-generation-started",
-            r#"{"recordingId":5}"#,
-            t0,
-        );
+        started(&mut f, 5, t0);
         at(&mut f, "auto-paste-failed", &text(FILE), t0);
         assert_eq!(f.notice.as_ref().unwrap().message, FILE);
     }
 
     #[test]
-    fn a_new_recording_clears_capture_failures_but_not_a_retry_result() {
+    fn a_new_recording_clears_every_banner_including_a_retry_result() {
         let t0 = Instant::now();
         let mut f = DeliveryFeedback::default();
         at(&mut f, "file-output-failed", &text(FILE), t0);
-        at(
-            &mut f,
-            "dictation-generation-started",
-            r#"{"recordingId":5}"#,
-            t0,
-        );
+        started(&mut f, 5, t0);
         assert!(f.notice.is_none());
-        f.retry_result("clipboard_only", "Copied; paste manually.", t0);
-        at(
-            &mut f,
-            "dictation-generation-started",
-            r#"{"recordingId":6}"#,
-            t0,
-        );
+        retry_event(&mut f, "clipboard_only", "Copied; paste manually.", t0);
         assert!(f.notice.is_some());
+        started(&mut f, 6, t0);
+        assert!(
+            f.notice.is_none(),
+            "a retry result is owned by its generation"
+        );
+        // An older or malformed generation announcement changes nothing.
+        retry_event(&mut f, "busy", "Busy.", t0);
+        started(&mut f, 3, t0);
+        at(&mut f, "dictation-generation-started", "{}", t0);
+        assert_eq!(f.notice.as_ref().unwrap().message, "Busy.");
     }
 
     #[test]
@@ -358,8 +428,7 @@ mod tests {
             ("failed", true),
         ] {
             let mut f = DeliveryFeedback::default();
-            let payload = format!(r#"{{"kind":"{kind}","message":"Synthetic {kind} message."}}"#);
-            at(&mut f, "delivery-retry-feedback", &payload, t0);
+            retry_event(&mut f, kind, &format!("Synthetic {kind} message."), t0);
             let n = f.notice.clone().unwrap();
             assert_eq!(n.message, format!("Synthetic {kind} message."));
             assert_eq!(n.retryable, retryable, "{kind}");
@@ -368,12 +437,7 @@ mod tests {
             assert!(f.notice.is_none(), "{kind} clears after five seconds");
         }
         let mut f = DeliveryFeedback::default();
-        at(
-            &mut f,
-            "delivery-retry-feedback",
-            r#"{"kind":"bogus","message":"x"}"#,
-            t0,
-        );
+        retry_event(&mut f, "bogus", "x", t0);
         at(&mut f, "delivery-retry-feedback", r#"{"kind":"busy"}"#, t0);
         assert!(f.notice.is_none(), "malformed results are ignored");
     }
@@ -389,32 +453,121 @@ mod tests {
             &outcome("clipboardOnly"),
             t0,
         );
-        assert!(f.begin_retry(t0));
+        let token = f.begin_retry(t0).unwrap();
         let n = f.notice.clone().unwrap();
         assert_eq!(n.message, TRYING);
         assert!(n.busy && n.retryable);
-        assert!(!f.begin_retry(t0), "a retry in flight cannot start another");
+        assert!(
+            f.begin_retry(t0).is_none(),
+            "a retry in flight cannot start another"
+        );
         // The Trying state does not expire; the result does.
         f.expire(t0 + TTL * 3);
         assert!(f.notice.as_ref().unwrap().busy);
         // A stale capture failure cannot replace the running retry.
         at(&mut f, "auto-paste-failed", &text(PASTE), t0);
         assert!(f.notice.as_ref().unwrap().busy);
-        f.retry_result("auto_pasted", "Pasted the latest dictation.", t0);
+        assert!(f.finish_retry(
+            token,
+            Some(("auto_pasted", "Pasted the latest dictation.")),
+            t0
+        ));
         let done = f.notice.clone().unwrap();
         assert_eq!(done.message, "Pasted the latest dictation.");
         assert!(!done.retryable && !done.busy);
+        assert!(
+            !f.finish_retry(token, None, t0),
+            "a completion applies once"
+        );
 
         let mut f = DeliveryFeedback::default();
-        assert!(f.begin_retry(t0));
-        f.retry_unfinished(t0);
+        let token = f.begin_retry(t0).unwrap();
+        assert!(f.finish_retry(token, None, t0));
         let n = f.notice.clone().unwrap();
         assert_eq!(n.message, RETRY_UNFINISHED);
         assert!(n.retryable && !n.busy);
         // Once a result is on screen, a late failure cannot overwrite it.
-        f.retry_result("empty", "Nothing to paste yet.", t0);
-        f.retry_unfinished(t0);
+        retry_event(&mut f, "empty", "Nothing to paste yet.", t0);
+        assert!(!f.finish_retry(token, None, t0));
         assert_eq!(f.notice.unwrap().message, "Nothing to paste yet.");
+    }
+
+    #[test]
+    fn the_service_event_finishes_the_running_retry_and_the_late_command_result_is_inert() {
+        let t0 = Instant::now();
+        let mut f = DeliveryFeedback::default();
+        let token = f.begin_retry(t0).unwrap();
+        retry_event(&mut f, "auto_pasted", "Pasted the latest dictation.", t0);
+        let shown = f.revision;
+        assert!(!f.finish_retry(token, Some(("failed", "Late.")), t0));
+        assert_eq!(f.revision, shown);
+        assert_eq!(
+            f.notice.unwrap().message,
+            "Pasted the latest dictation.",
+            "the already-shown result is not replaced"
+        );
+    }
+
+    #[test]
+    fn a_newer_recording_supersedes_a_running_retry() {
+        let t0 = Instant::now();
+        let mut f = DeliveryFeedback::default();
+        started(&mut f, 4, t0);
+        let token = f.begin_retry(t0).unwrap();
+        started(&mut f, 5, t0);
+        assert!(f.notice.is_none(), "the running retry's banner is gone");
+        at(&mut f, "file-output-failed", &text(FILE), t0);
+        let shown = (f.revision, f.notice.clone());
+        // The late command result, in both forms, cannot replace newer feedback.
+        assert!(!f.finish_retry(token, Some(("auto_pasted", "Pasted.")), t0));
+        assert!(!f.finish_retry(token, None, t0));
+        assert_eq!((f.revision, f.notice.clone()), shown);
+        assert_eq!(f.notice.as_ref().unwrap().message, FILE);
+        // Nor can the old retry's service event.
+        retry_event(&mut f, "auto_pasted", "Pasted.", t0);
+        assert_eq!(f.notice.as_ref().unwrap().message, FILE);
+        // A retry started under the new recording works normally.
+        f.expire(t0 + TTL);
+        let next = f.begin_retry(t0).unwrap();
+        assert_ne!(next, token);
+        retry_event(&mut f, "busy", "Busy.", t0);
+        assert_eq!(f.notice.as_ref().unwrap().message, "Busy.");
+        assert!(!f.finish_retry(token, None, t0));
+    }
+
+    #[test]
+    fn dismissing_a_running_retry_keeps_its_late_result_dismissed() {
+        let t0 = Instant::now();
+        let mut f = DeliveryFeedback::default();
+        let token = f.begin_retry(t0).unwrap();
+        f.dismiss();
+        assert!(f.notice.is_none());
+        let shown = f.revision;
+        assert!(!f.finish_retry(token, Some(("failed", PASTE)), t0));
+        retry_event(&mut f, "failed", PASTE, t0);
+        assert!(f.notice.is_none());
+        assert_eq!(f.revision, shown);
+        // A new Try again is a new owner and may report.
+        let next = f.begin_retry(t0).unwrap();
+        assert!(f.finish_retry(next, Some(("empty", "Nothing to paste yet.")), t0));
+        assert_eq!(f.notice.as_ref().unwrap().message, "Nothing to paste yet.");
+    }
+
+    #[test]
+    fn dismissing_a_finished_retry_keeps_its_duplicate_service_event_dismissed() {
+        let t0 = Instant::now();
+        let mut f = DeliveryFeedback::default();
+        let token = f.begin_retry(t0).unwrap();
+        assert!(f.finish_retry(token, Some(("failed", PASTE)), t0));
+        f.dismiss();
+        retry_event(&mut f, "failed", PASTE, t0);
+        assert!(f.notice.is_none());
+        started(&mut f, 9, t0);
+        retry_event(&mut f, "failed", PASTE, t0);
+        assert!(
+            f.notice.is_some(),
+            "the next recording starts with a clean slate"
+        );
     }
 
     #[test]
@@ -423,12 +576,9 @@ mod tests {
         let mut f = DeliveryFeedback::default();
         at(&mut f, "auto-paste-failed", &text(PASTE), t0);
         f.dismiss();
-        f.retry_result("failed", PASTE, t0);
+        let token = f.begin_retry(t0).unwrap();
+        assert!(f.finish_retry(token, Some(("failed", PASTE)), t0));
         assert_eq!(f.notice.as_ref().unwrap().message, PASTE);
-        // Dismissing a retry result does not suppress the same message later.
-        f.dismiss();
-        f.retry_result("failed", PASTE, t0);
-        assert!(f.notice.is_some());
     }
 
     #[test]

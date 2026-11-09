@@ -59,6 +59,7 @@ fn lifecycle_generation_rejects_stale_cues_clicks_and_retry_answers() {
             generation: 7,
             attempt,
             result: Delivery::Pasted,
+            message: None,
         },
         3,
     );
@@ -116,6 +117,7 @@ fn retry_is_single_flight_and_uses_a_fresh_bounded_result() {
             generation: 1,
             attempt: m.retry_attempt,
             result: Delivery::Retry,
+            message: None,
         },
         6000,
     );
@@ -145,6 +147,7 @@ fn each_retry_result_kind_keeps_its_own_cue_and_only_failures_stay_retryable() {
                 generation: 1,
                 attempt: m.retry_attempt,
                 result: cue,
+                message: None,
             },
             2,
         );
@@ -952,6 +955,7 @@ fn indicator_cues_are_single_line_and_inside_the_minimum_card(cx: &mut TestAppCo
                                                     generation: 7,
                                                     attempt: s.model.retry_attempt,
                                                     result: d,
+                                                    message: None,
                                                 },
                                                 0,
                                             );
@@ -1060,6 +1064,196 @@ fn indicator_cues_are_single_line_and_inside_the_minimum_card(cx: &mut TestAppCo
             }
         }
     }
+}
+
+fn smart_auto(state: super::smart_auto::SmartAutoState, until_ms: Option<u64>) -> Snapshot {
+    Snapshot {
+        generation: 7,
+        smart_auto: Some(super::smart_auto::SmartAuto { state, until_ms }),
+        ..Snapshot::default()
+    }
+}
+fn ready_state() -> super::smart_auto::SmartAutoState {
+    super::smart_auto::SmartAutoState::Ready {
+        device: "Synthetic Microphone".into(),
+        reason: "your preferred included microphone",
+    }
+}
+#[test]
+fn smart_auto_cue_is_idle_only_and_expires_at_its_deadline_without_a_host_event() {
+    use super::smart_auto::{Cue, SmartAutoState};
+    let mut m = Model::new(smart_auto(ready_state(), Some(30_000)));
+    assert_eq!(m.smart_auto_cue(0), Some(Cue::Ready));
+    assert_eq!(m.smart_auto_cue(29_999), Some(Cue::Ready));
+    assert_eq!(
+        m.smart_auto_cue(30_000),
+        None,
+        "stops being shown at validForMs"
+    );
+    assert!(m.smart_auto(30_000).is_none());
+    // Blocked and probing are distinct cues; a recording hides the cue.
+    let blocked = Model::new(smart_auto(SmartAutoState::Blocked, None));
+    assert_eq!(blocked.smart_auto_cue(u64::MAX - 1), Some(Cue::Blocked));
+    m.event(
+        Event::Lifecycle {
+            generation: 7,
+            status: Status::Recording,
+            at_ms: 1,
+        },
+        1,
+    );
+    assert_eq!(m.smart_auto_cue(2), None);
+    // Smart Auto off shows nothing.
+    assert_eq!(Model::new(Snapshot::default()).smart_auto_cue(0), None);
+}
+#[test]
+fn a_newer_smart_auto_snapshot_replaces_the_state_and_its_deadline() {
+    use super::smart_auto::{Cue, SmartAutoState};
+    let mut m = Model::new(Snapshot {
+        revision: 1,
+        ..smart_auto(ready_state(), Some(30_000))
+    });
+    m.event(
+        Event::Snapshot(Snapshot {
+            revision: 2,
+            ..smart_auto(SmartAutoState::Blocked, Some(50_000))
+        }),
+        10,
+    );
+    assert_eq!(m.smart_auto_cue(10), Some(Cue::Blocked));
+    assert_eq!(
+        m.smart_auto_cue(40_000),
+        Some(Cue::Blocked),
+        "its own deadline"
+    );
+    // An older read that arrives late is rejected by revision.
+    m.event(
+        Event::Snapshot(Snapshot {
+            revision: 1,
+            ..smart_auto(ready_state(), None)
+        }),
+        11,
+    );
+    assert_eq!(m.smart_auto_cue(11), Some(Cue::Blocked));
+}
+#[test]
+fn a_retry_message_is_announced_only_while_its_own_result_is_on_screen() {
+    let mut m = Model::new(Snapshot {
+        generation: 7,
+        ..Snapshot::default()
+    });
+    assert_eq!(m.announcement(0), "Ready");
+    m.event(Event::Delivery(7, Delivery::Clipboard), 0);
+    assert_eq!(m.announcement(1), "Copied. Paste manually or try again");
+    m.retry(1).unwrap();
+    m.event(
+        Event::RetryResult {
+            generation: 7,
+            attempt: m.retry_attempt,
+            result: Delivery::Nothing,
+            message: Some("Nothing to paste yet.".into()),
+        },
+        2,
+    );
+    assert_eq!(m.indicator(3), Indicator::Delivery(Delivery::Nothing));
+    assert_eq!(m.delivery_message(3), Some("Nothing to paste yet."));
+    assert_eq!(m.announcement(3), "Nothing to paste yet.");
+    // Its expiry returns to the plain label, and a result without a message
+    // never reuses an older attempt's text.
+    assert_eq!(m.announcement(5_002), "Ready");
+    m.event(Event::Delivery(8, Delivery::Clipboard), 6_000);
+    m.event(
+        Event::Lifecycle {
+            generation: 8,
+            status: Status::Idle,
+            at_ms: 6_000,
+        },
+        6_000,
+    );
+    m.event(Event::Delivery(8, Delivery::Clipboard), 6_001);
+    assert!(m.delivery_message(6_002).is_none());
+    m.retry(6_002).unwrap();
+    m.event(
+        Event::RetryResult {
+            generation: 8,
+            attempt: m.retry_attempt,
+            result: Delivery::Retry,
+            message: None,
+        },
+        6_003,
+    );
+    assert_eq!(m.announcement(6_004), "Try delivery again");
+}
+
+#[cfg(feature = "a11y-tests")]
+#[gpui::test]
+fn collapsed_notch_shows_and_describes_the_smart_auto_cue_until_it_expires(
+    cx: &mut TestAppContext,
+) {
+    use super::smart_auto::SmartAutoState;
+    cx.update(crate::init);
+    cx.update(|cx| {
+        crate::preferences::apply(
+            crate::preferences::DisplayPreferences {
+                reduce_motion: true,
+                ..Default::default()
+            },
+            cx,
+        )
+    });
+    let mut entity = None;
+    let (_, cx) = cx.add_window_view(|w, cx| {
+        let overlay = cx.new(|_| Overlay::new(Snapshot::default(), Rc::new(FakeHost::default())));
+        entity = Some(overlay.clone());
+        gpui_base::Root::new(overlay, w, cx)
+    });
+    let overlay = entity.unwrap();
+    let window = cx.update(|w, _| w.window_handle());
+    cx.activate_accessibility(window);
+    let show = |cx: &mut gpui::VisualTestContext, snapshot: Snapshot, now: u64| {
+        cx.update(|w, cx| {
+            overlay.update(cx, |s, cx| {
+                s.now = now;
+                s.model = Model::new(snapshot);
+                s.model.phase = Phase::Collapsed;
+                cx.notify();
+            });
+            w.draw(cx).clear(cx);
+        });
+    };
+    let described = |cx: &mut gpui::VisualTestContext, text: &str| {
+        cx.accessibility_tree(window)
+            .nodes
+            .iter()
+            .any(|(_, n)| n.role() == Role::Status && n.label() == Some(text))
+    };
+    // Ready: the collapsed notch grows an 8 pt wing cue that explains itself.
+    show(cx, smart_auto(ready_state(), Some(30_000)), 0);
+    let card = cx.debug_bounds("overlay-surface").unwrap();
+    let cue = cx
+        .debug_bounds("overlay-smart-auto-cue")
+        .expect("collapsed cue");
+    assert!(
+        cue.left() >= card.left() && cue.right() <= card.right() && cue.bottom() <= card.bottom()
+    );
+    assert!(described(
+        cx,
+        "Smart Auto next capture ready with Synthetic Microphone. your preferred included microphone."
+    ));
+    // Blocked with a cooldown: the cooldown seconds are spoken.
+    show(cx, smart_auto(SmartAutoState::Blocked, Some(45_000)), 1_000);
+    assert!(cx.debug_bounds("overlay-smart-auto-cue").is_some());
+    assert!(described(
+        cx,
+        "Smart Auto next capture blocked. Open settings to retry, verify signal, or pin an input. Cooldown: about 44 seconds remaining."
+    ));
+    // Past its deadline the cue is gone and the notch is plain again.
+    show(cx, smart_auto(ready_state(), Some(30_000)), 30_000);
+    assert!(cx.debug_bounds("overlay-smart-auto-cue").is_none());
+    assert!(cx.debug_bounds("overlay-smart-auto").is_none());
+    // Smart Auto off draws nothing extra.
+    show(cx, Snapshot::default(), 0);
+    assert!(cx.debug_bounds("overlay-smart-auto-cue").is_none());
 }
 
 #[cfg(feature = "a11y-tests")]

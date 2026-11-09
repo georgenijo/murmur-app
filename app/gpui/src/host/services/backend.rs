@@ -58,6 +58,23 @@ impl Events {
             listener(event, payload);
         }
     }
+    /// Complete the banner retry owned by `token` with the command's outcome.
+    /// A result for a retry that a newer recording, a dismissal or another
+    /// retry has since replaced is dropped, not shown.
+    pub fn finish_delivery_retry(
+        &self,
+        token: super::delivery_feedback::RetryToken,
+        result: &Result<Value, String>,
+    ) -> bool {
+        let result = result
+            .as_ref()
+            .ok()
+            .and_then(|v| Some((v["kind"].as_str()?, v["message"].as_str()?)));
+        self.delivery
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .finish_retry(token, result, std::time::Instant::now())
+    }
     pub fn listen(self: &Arc<Self>, consumer: Consumer, listener: Listener) -> Stop {
         let Some(label) = consumer.window_label() else {
             return Stop::default();

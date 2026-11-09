@@ -1,5 +1,6 @@
 //! Presentation only. Capture, delivery, settings, completion and shutdown stay
 //! with the host's existing owners. All clocks below are monotonic milliseconds.
+use super::smart_auto::{Cue, SmartAuto};
 use murmur_core::{dictation::Status, overlay_geometry::*};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -144,7 +145,9 @@ pub struct Snapshot {
     pub mode: String,
     pub next_mode: Option<String>,
     pub destination: Option<String>,
-    pub smart_auto: Option<String>,
+    /// Smart Auto's state and the deadline after which it stops being true.
+    /// `None` when Smart Auto is off.
+    pub smart_auto: Option<SmartAuto>,
     pub meeting: Meeting,
     pub processing_style: ProcessingStyle,
 }
@@ -206,6 +209,9 @@ pub enum Event {
         generation: u64,
         attempt: u64,
         result: Delivery,
+        /// The service's bounded explanation, kept for the accessible
+        /// description of the cue. No transcript or destination text.
+        message: Option<String>,
     },
     Stalled(u64),
     TapMissed,
@@ -265,6 +271,8 @@ pub struct Model {
     miss_until: u64,
     done_until: u64,
     delivery: Option<(Delivery, u64)>,
+    /// A retry result's own explanation, owned by the attempt that produced it.
+    delivery_message: Option<(u64, String)>,
     delivered: u64,
     slow: bool,
     hover_due: Option<u64>,
@@ -342,11 +350,13 @@ impl Model {
                 generation,
                 attempt,
                 result,
+                message,
             } if generation == self.snapshot.generation
                 && attempt == self.retry_attempt
                 && self.delivery.is_some_and(|(d, _)| d == Delivery::Retrying) =>
             {
-                self.delivery = Some((result, now + 5000))
+                self.delivery = Some((result, now + 5000));
+                self.delivery_message = message.map(|m| (attempt, m));
             }
             Event::Stalled(g)
                 if g == self.snapshot.generation && self.snapshot.status == Status::Starting =>
@@ -466,6 +476,31 @@ impl Model {
                 }
             }
         }
+    }
+    /// The service's explanation of the retry result on screen, while it is.
+    /// It belongs to one attempt, so any newer attempt, recording or
+    /// cancellation, each of which advances `retry_attempt`, retires it.
+    pub fn delivery_message(&self, now: u64) -> Option<&str> {
+        let (attempt, message) = self.delivery_message.as_ref()?;
+        (*attempt == self.retry_attempt && matches!(self.indicator(now), Indicator::Delivery(_)))
+            .then_some(message.as_str())
+    }
+    /// What assistive technology hears for the current indicator: the retry's
+    /// own message when the service gave one, else the indicator's label.
+    pub fn announcement(&self, now: u64) -> String {
+        self.delivery_message(now)
+            .map_or_else(|| self.indicator(now).label().to_owned(), str::to_owned)
+    }
+    /// The Smart Auto state that is still true, shown only while the overlay is
+    /// otherwise idle (the shipped cue sits in the idle state).
+    pub fn smart_auto(&self, now: u64) -> Option<&SmartAuto> {
+        self.snapshot
+            .smart_auto
+            .as_ref()
+            .filter(|s| s.current(now) && self.indicator(now) == Indicator::Idle)
+    }
+    pub fn smart_auto_cue(&self, now: u64) -> Option<Cue> {
+        self.smart_auto(now).and_then(|s| s.cue(now))
     }
     pub fn hidden(&self, now: u64) -> bool {
         !self.visible

@@ -257,26 +257,18 @@ impl Main {
     /// publishes its result, so both paths present the same bounded message.
     fn retry_delivery(&mut self) {
         let b = self.backend.clone();
-        {
+        let token = {
             let mut delivery = b.events.delivery.lock().unwrap_or_else(|p| p.into_inner());
-            if !delivery.begin_retry(std::time::Instant::now()) {
+            let Some(token) = delivery.begin_retry(std::time::Instant::now()) else {
                 return;
-            }
+            };
             self.delivery_revision = delivery.revision;
             self.delivery_notice = delivery.notice.clone();
-        }
+            token
+        };
         self.backend.spawn(async move {
             let result = b.call("retry_last_delivery", json!({})).await;
-            let mut delivery = b.events.delivery.lock().unwrap_or_else(|p| p.into_inner());
-            let now = std::time::Instant::now();
-            match result
-                .as_ref()
-                .ok()
-                .and_then(|v| Some((v["kind"].as_str()?, v["message"].as_str()?)))
-            {
-                Some((kind, message)) => delivery.retry_result(kind, message, now),
-                None => delivery.retry_unfinished(now),
-            }
+            b.events.finish_delivery_retry(token, &result);
         });
     }
     pub fn tick(&mut self, w: &mut Window, cx: &mut Context<Self>) {

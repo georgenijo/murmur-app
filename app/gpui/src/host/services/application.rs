@@ -3,6 +3,8 @@
 use super::{
     backend::{Backend, Events, Route, Stop},
     os::{self, OsServices},
+    overlay_feed::{Hydrations, overlay_retry, read_smart_auto, refresh_after, retry_result_event},
+    qa_faults::{Fault, Faults},
     root,
     windows::{Command, Registry},
 };
@@ -66,6 +68,11 @@ struct Ports {
     revision: AtomicU64,
     overlay_clock: OnceLock<std::time::Instant>,
     refresh: AtomicBool,
+    /// Newest companion hydration requested. Reads finish in any order, so only
+    /// the newest may publish; an older read never overwrites newer state.
+    hydration: Hydrations,
+    /// Armed only by an isolated `native-host-qa` launch; empty otherwise.
+    faults: Faults,
     overlay: OnceLock<crate::overlay::inbox::Inbox>,
     preview: OnceLock<crate::preview::inbox::Inbox>,
     downloads: Arc<super::downloads::Downloads>,
@@ -480,93 +487,134 @@ impl Host {
             .map_or(0, |v| v.read(cx).model.lifecycle_epoch());
         let b = self.backend.clone();
         let ports = self.ports.clone();
+        // Numbered on the main thread, before the reads start, so a later
+        // request is always the newer one.
+        let request = ports.hydration.begin();
         self.backend.spawn(async move {
             let epoch = ports.lifecycle.load(Ordering::Acquire);
             let result = async {
                 let (settings_revision, settings) = b.services.settings_snapshot().await?;
                 let state = b.call("get_status", json!({})).await?;
                 let meeting = b.call("get_meeting_status", json!({})).await?;
-                let smart_auto = smart_auto_line(&b, &settings).await;
+                let smart_auto = read_smart_auto(
+                    &settings,
+                    || ports.overlay_ms(),
+                    || ports.faults.take(Fault::SmartAutoStatusError),
+                    |command, args| b.call(command, args),
+                )
+                .await;
+                let deadline = smart_auto.as_ref().and_then(|s| s.until_ms);
                 let generation = state["recordingId"].as_u64().unwrap_or(0);
+                if !ports.hydration.is_current(request) {
+                    // A newer hydration owns the presentation and rereads.
+                    return Ok(());
+                }
                 if ports.lifecycle.load(Ordering::Acquire) != epoch
                     || b.services.recording_generation() != generation
                     || b.services.settings_revision() != settings_revision
                 {
                     return Err("Presentation superseded".to_owned());
                 }
-                ports
-                    .tray
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .disabled = settings["disabled"] == true;
-                let revision = ports.revision.fetch_add(1, Ordering::SeqCst) + 1;
-                if let Some(inbox) = ports.overlay.get() {
-                    let tray = ports.tray.lock().unwrap_or_else(|p| p.into_inner()).clone();
-                    let _ = inbox.publish(crate::overlay::model::Event::Hydrate {
-                        observed_epoch: observed_overlay,
-                        snapshot: crate::overlay::model::Snapshot {
-                            revision,
-                            generation,
-                            elapsed_ms: state["recordingStartedAtMs"].as_i64().map_or(0, |start| {
-                                chrono::Utc::now()
-                                    .timestamp_millis()
-                                    .saturating_sub(start)
-                                    .max(0) as u64
-                            }),
-                            status: status(&state["state"]),
-                            locked: state["locked"] == true,
-                            disabled: settings["disabled"] == true,
-                            auto_paste: settings["autoPaste"] == true,
-                            file_output: settings["saveAudio"] == true
-                                || settings["saveTranscript"] == true,
-                            hotkey_feedback: settings["hotkeyMissFeedback"] == true,
-                            placement: if settings["overlayPlacement"] == "floating_pill" {
-                                OverlayPlacement::FloatingPill
-                            } else {
-                                OverlayPlacement::Notch
+                let published = ports.hydration.publish(request, || {
+                    ports
+                        .tray
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .disabled = settings["disabled"] == true;
+                    let revision = ports.revision.fetch_add(1, Ordering::SeqCst) + 1;
+                    if let Some(inbox) = ports.overlay.get() {
+                        let tray = ports.tray.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                        let _ = inbox.publish(crate::overlay::model::Event::Hydrate {
+                            observed_epoch: observed_overlay,
+                            snapshot: crate::overlay::model::Snapshot {
+                                revision,
+                                generation,
+                                elapsed_ms: state["recordingStartedAtMs"].as_i64().map_or(
+                                    0,
+                                    |start| {
+                                        chrono::Utc::now()
+                                            .timestamp_millis()
+                                            .saturating_sub(start)
+                                            .max(0) as u64
+                                    },
+                                ),
+                                status: status(&state["state"]),
+                                locked: state["locked"] == true,
+                                disabled: settings["disabled"] == true,
+                                auto_paste: settings["autoPaste"] == true,
+                                file_output: settings["saveAudio"] == true
+                                    || settings["saveTranscript"] == true,
+                                hotkey_feedback: settings["hotkeyMissFeedback"] == true,
+                                placement: if settings["overlayPlacement"] == "floating_pill" {
+                                    OverlayPlacement::FloatingPill
+                                } else {
+                                    OverlayPlacement::Notch
+                                },
+                                offset: settings["overlayVerticalOffset"].as_f64().unwrap_or(0.),
+                                mode: tray.mode,
+                                next_mode: tray.pending_mode.as_ref().and_then(|id| {
+                                    tray.available_modes
+                                        .iter()
+                                        .find(|(key, _)| key == id)
+                                        .map(|(_, name)| name.clone())
+                                }),
+                                meeting: match meeting["phase"].as_str() {
+                                    Some("starting") => crate::overlay::model::Meeting::Starting,
+                                    Some("recording") => crate::overlay::model::Meeting::Recording,
+                                    Some("stopping") => crate::overlay::model::Meeting::Stopping,
+                                    Some("processing") => {
+                                        crate::overlay::model::Meeting::Processing
+                                    }
+                                    Some("failed") => crate::overlay::model::Meeting::Failed,
+                                    _ => crate::overlay::model::Meeting::Idle,
+                                },
+                                smart_auto,
+                                ..Default::default()
                             },
-                            offset: settings["overlayVerticalOffset"].as_f64().unwrap_or(0.),
-                            mode: tray.mode,
-                            next_mode: tray.pending_mode.as_ref().and_then(|id| {
-                                tray.available_modes
-                                    .iter()
-                                    .find(|(key, _)| key == id)
-                                    .map(|(_, name)| name.clone())
-                            }),
-                            meeting: match meeting["phase"].as_str() {
-                                Some("starting") => crate::overlay::model::Meeting::Starting,
-                                Some("recording") => crate::overlay::model::Meeting::Recording,
-                                Some("stopping") => crate::overlay::model::Meeting::Stopping,
-                                Some("processing") => crate::overlay::model::Meeting::Processing,
-                                Some("failed") => crate::overlay::model::Meeting::Failed,
-                                _ => crate::overlay::model::Meeting::Idle,
+                        });
+                    }
+                    if let Some(inbox) = ports.preview.get() {
+                        let _ = inbox.publish(crate::preview::model::Event::HydrateLifecycle {
+                            observed_epoch: observed_lifecycle,
+                            snapshot: crate::preview::model::LifecycleSnapshot {
+                                revision,
+                                generation,
+                                status: status(&state["state"]),
                             },
-                            smart_auto,
-                            ..Default::default()
-                        },
-                    });
-                }
-                if let Some(inbox) = ports.preview.get() {
-                    let _ = inbox.publish(crate::preview::model::Event::HydrateLifecycle {
-                        observed_epoch: observed_lifecycle,
-                        snapshot: crate::preview::model::LifecycleSnapshot {
-                            revision,
-                            generation,
-                            status: status(&state["state"]),
-                        },
-                    });
-                    let _ = inbox.publish(crate::preview::model::Event::ConsentRead {
-                        epoch: observed_consent,
-                        enabled: settings["overlayLiveWords"] == true,
+                        });
+                        let _ = inbox.publish(crate::preview::model::Event::ConsentRead {
+                            epoch: observed_consent,
+                            enabled: settings["overlayLiveWords"] == true,
+                        });
+                    }
+                });
+                if published && let Some(at_ms) = deadline {
+                    // Smart Auto state is only true until its deadline: reread
+                    // then, unless a newer hydration has taken over.
+                    let ports = ports.clone();
+                    tokio::spawn(async move {
+                        let wait = at_ms.saturating_sub(ports.overlay_ms());
+                        refresh_after(&ports.hydration, request, wait, || {
+                            ports.refresh.store(true, Ordering::Release)
+                        })
+                        .await;
                     });
                 }
                 Ok::<(), String>(())
             }
             .await;
-            if result.is_err() {
+            if result.is_err() && ports.hydration.is_current(request) {
                 ports.refresh.store(true, Ordering::Release);
             }
         });
+    }
+}
+impl Ports {
+    /// Milliseconds on the overlay's presentation clock.
+    fn overlay_ms(&self) -> u64 {
+        self.overlay_clock
+            .get()
+            .map_or(0, |start| start.elapsed().as_millis() as u64)
     }
 }
 impl ApplicationHost for Rc<Host> {
@@ -857,19 +905,13 @@ impl crate::overlay::Host for OverlayHost {
                     attempt,
                 } => {
                     if b.services.recording_generation() == generation {
-                        let result = b.call("retry_last_delivery", json!({})).await;
+                        let result =
+                            overlay_retry(&ports.faults, b.call("retry_last_delivery", json!({})))
+                                .await;
                         if b.services.recording_generation() == generation
                             && let Some(inbox) = ports.overlay.get()
                         {
-                            use crate::overlay::model::{Delivery, Event};
-                            let result = Delivery::from_retry_kind(
-                                result.as_ref().ok().and_then(|v| v["kind"].as_str()),
-                            );
-                            let _ = inbox.publish(Event::RetryResult {
-                                generation,
-                                attempt,
-                                result,
-                            });
+                            let _ = inbox.publish(retry_result_event(generation, attempt, &result));
                         }
                     }
                 }
@@ -974,6 +1016,8 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
             revision: AtomicU64::new(0),
             overlay_clock: OnceLock::new(),
             refresh: AtomicBool::new(false),
+            hydration: Hydrations::default(),
+            faults: qa_faults(&identifier, &home),
             overlay: OnceLock::new(),
             preview: OnceLock::new(),
             downloads: downloads.clone(),
@@ -1311,23 +1355,27 @@ async fn contract(b: &Backend) {
     b.services.shutdown(murmur_core::shutdown::Request::Quit);
 }
 
-/// Production Smart Auto overlay line, or `None` when Smart Auto is off.
-async fn smart_auto_line(b: &Backend, settings: &Value) -> Option<String> {
-    use super::smart_auto_summary as summary;
-    let request = summary::request(settings)?;
-    let status = b
-        .call(
-            "get_smart_auto_microphone_status",
-            json!({"smartAuto": request}),
-        )
-        .await
-        .ok();
-    let devices = if summary::needs_inventory(status.as_ref()) {
-        b.call("get_audio_input_inventory", json!({})).await.ok()
-    } else {
-        None
-    };
-    Some(summary::summary(status.as_ref(), devices.as_ref()))
+/// Synthetic faults are armed only by a `native-host-qa` build under the
+/// isolated QA identity and test home, the same gate as the other QA fixtures.
+fn qa_faults(identifier: &str, home: &std::path::Path) -> Faults {
+    if !cfg!(feature = "native-host-qa") {
+        return Faults::default();
+    }
+    let args: Vec<_> = std::env::args_os().collect();
+    let requested = args
+        .iter()
+        .position(|a| a == "--native-host-fault")
+        .and_then(|index| args.get(index + 1))
+        .and_then(|value| value.to_str());
+    let isolated = identifier == "com.localdictation.gpui-host-qa110"
+        && std::env::var_os("MURMUR_NATIVE_TEST_HOME")
+            .map(PathBuf::from)
+            .as_deref()
+            == Some(home)
+        && home
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("murmur-gpui-test-"));
+    Faults::arm(requested, isolated)
 }
 
 async fn migrate_microphone(b: &Backend) -> Result<Value, String> {
@@ -1387,6 +1435,8 @@ mod overlay_ingress_tests {
             revision: Default::default(),
             overlay_clock: Default::default(),
             refresh: Default::default(),
+            hydration: Default::default(),
+            faults: Default::default(),
             overlay: std::sync::OnceLock::from(inbox),
             preview: Default::default(),
             downloads: Default::default(),
@@ -1466,6 +1516,108 @@ mod overlay_ingress_tests {
             ports.send("overlay", event, "{}").unwrap();
             assert!(ports.refresh.load(Ordering::Acquire), "{event}");
         }
+    }
+    fn main_notice(ports: &Ports) -> Option<(String, bool)> {
+        ports
+            .events
+            .delivery
+            .lock()
+            .unwrap()
+            .notice
+            .as_ref()
+            .map(|n| (n.message.clone(), n.busy))
+    }
+    fn retry_ok(kind: &str, message: &str) -> Result<Value, String> {
+        Ok(json!({"kind":kind,"message":message}))
+    }
+    fn start_main_retry(ports: &Ports) -> super::super::delivery_feedback::RetryToken {
+        ports
+            .send(
+                "main",
+                "dictation-generation-started",
+                &json!({"recordingId":7}).to_string(),
+            )
+            .unwrap();
+        ports
+            .send(
+                "main",
+                "dictation-delivery-outcome",
+                &json!({"recordingId":7,"outcome":"clipboardOnly"}).to_string(),
+            )
+            .unwrap();
+        ports
+            .events
+            .delivery
+            .lock()
+            .unwrap()
+            .begin_retry(std::time::Instant::now())
+            .unwrap()
+    }
+    #[test]
+    fn a_late_main_window_retry_result_cannot_replace_a_newer_recordings_banner() {
+        let ports = test_ports(Inbox::default());
+        let token = start_main_retry(&ports);
+        assert_eq!(main_notice(&ports).unwrap().1, true, "retry is running");
+        // The next recording starts, and its own delivery fails.
+        ports
+            .send(
+                "main",
+                "dictation-generation-started",
+                &json!({"recordingId":8}).to_string(),
+            )
+            .unwrap();
+        let newer = "Text delivery timed out. Check the clipboard before pasting.";
+        ports
+            .send("main", "auto-paste-failed", &json!(newer).to_string())
+            .unwrap();
+        // The old retry's command result and its service event both arrive late.
+        assert!(
+            !ports
+                .events
+                .finish_delivery_retry(token, &retry_ok("auto_pasted", "Pasted."))
+        );
+        ports
+            .send(
+                "main",
+                "delivery-retry-feedback",
+                &json!({"kind":"auto_pasted","message":"Pasted."}).to_string(),
+            )
+            .unwrap();
+        assert_eq!(main_notice(&ports).unwrap().0, newer);
+    }
+    #[test]
+    fn a_dismissed_main_window_retry_stays_dismissed_when_its_result_arrives() {
+        let ports = test_ports(Inbox::default());
+        let token = start_main_retry(&ports);
+        ports.events.delivery.lock().unwrap().dismiss();
+        assert!(main_notice(&ports).is_none());
+        assert!(
+            !ports
+                .events
+                .finish_delivery_retry(token, &retry_ok("clipboard_only", "Copied."))
+        );
+        ports
+            .send(
+                "main",
+                "delivery-retry-feedback",
+                &json!({"kind":"clipboard_only","message":"Copied."}).to_string(),
+            )
+            .unwrap();
+        assert!(main_notice(&ports).is_none(), "neither form revives it");
+        // A fresh retry works normally afterwards.
+        let next = ports
+            .events
+            .delivery
+            .lock()
+            .unwrap()
+            .begin_retry(std::time::Instant::now())
+            .unwrap();
+        assert!(
+            ports
+                .events
+                .finish_delivery_retry(next, &retry_ok("auto_pasted", "Pasted."))
+        );
+        assert_eq!(main_notice(&ports).unwrap().0, "Pasted.");
     }
     fn model() -> Model {
         Model::new(Snapshot {

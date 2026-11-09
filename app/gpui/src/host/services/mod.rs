@@ -67,4 +67,8 @@ pub mod dictation_feedback;
 
 pub mod delivery_feedback;
 
+mod overlay_feed;
+
+mod qa_faults;
+
 mod smart_auto_summary;

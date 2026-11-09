@@ -112,14 +112,21 @@ pub fn pointer_inside(window: &Window) -> Option<bool> {
     }
     None
 }
-pub fn announce(window: &Window, label: &'static str) {
+/// State announcements are fixed labels, a bounded service message such as a
+/// delivery retry result, or the Smart Auto explanation, which names only a
+/// microphone from the user's own inventory. No transcript, clipboard or
+/// destination text reaches this call.
+pub fn announce(window: &Window, label: &str) {
     #[cfg(target_os = "macos")]
-    if let Some(raw) = raw(window) {
-        let message = std::ffi::CString::new(label).expect("static state label");
+    if let Some(raw) = raw(window)
+        && let Ok(message) = std::ffi::CString::new(label)
+    {
         // SAFETY: same main-thread/lifetime rule as apply; string is borrowed
         // only for this synchronous call and contains no private content.
         unsafe { murmur_overlay_announce(raw, message.as_ptr()) };
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (window, label);
 }
 /// Live Words already announces transcript text through React's polite live
 /// region. Only its consent/generation-checked presentation owner may call
