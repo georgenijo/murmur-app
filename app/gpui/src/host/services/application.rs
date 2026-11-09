@@ -1484,14 +1484,31 @@ mod overlay_ingress_tests {
         let shown = notice().unwrap();
         assert_eq!(shown.message, file);
         assert!(!shown.retryable, "a file failure has no delivery retry");
+        // The identity-less service event never writes the banner.
+        let busy = "Finish the current recording before retrying delivery.";
         ports
             .send(
                 "main",
                 "delivery-retry-feedback",
-                &json!({"kind":"busy","message":"Finish the current recording before retrying delivery."}).to_string(),
+                &json!({"kind":"busy","message":busy}).to_string(),
             )
             .unwrap();
+        assert_eq!(notice().unwrap(), shown, "the service event is ignored");
+        // The banner's own retry reports through its token-owned completion.
+        let token = ports
+            .events
+            .delivery
+            .lock()
+            .unwrap()
+            .begin_retry(std::time::Instant::now())
+            .unwrap();
+        assert!(
+            ports
+                .events
+                .finish_delivery_retry(token, &Ok(json!({"kind":"busy","message":busy})))
+        );
         let shown = notice().unwrap();
+        assert_eq!(shown.message, busy);
         assert!(shown.retryable && !shown.busy);
         // Only the main window's events feed the main banner, and the overlay
         // retry never requests a rehydration of it.
