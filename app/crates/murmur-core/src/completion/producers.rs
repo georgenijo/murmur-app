@@ -335,7 +335,7 @@ impl Producers {
             Some(command) => self.service.execute(command.clone()).map(Some),
             None => Ok(None),
         };
-        if settle && result.is_err() && intent.cancelled_before_admission() {
+        if settle && result.is_err() && intent.cancelled() {
             if let Some(command) = command {
                 if let Ok(snapshot) = self.service.execute(command) {
                     result = Ok(Some(snapshot));
@@ -878,6 +878,55 @@ mod tests {
                 );
                 let snapshot = service.execute(Command::Snapshot).unwrap();
                 assert_eq!(snapshot.history.len(), usize::from(published));
+                assert!(p.accept_file("operation").unwrap().is_none());
+                assert_no_statistics(&snapshot);
+            }
+        }
+    }
+
+    #[test]
+    fn settled_file_acceptance_reports_publication_when_only_bookkeeping_fails() {
+        use super::super::{storage::Boundary::*, HOLD, STATE};
+        for webkit in [false, true] {
+            for boundary in [BeforeRename, AfterRename, DirectorySync] {
+                let dir = tempfile::tempdir().unwrap();
+                let service = CompletionService::start(dir.path().into(), webkit).unwrap();
+                let p = staged_file(&service);
+                let (paused, reached) = std::sync::mpsc::channel();
+                let (resume, release) = std::sync::mpsc::channel();
+                storage(&service, move |s| {
+                    let content = if webkit { HOLD } else { "history.json" };
+                    s.pause = Some((content.into(), BeforeRename, paused, release));
+                    // The content write lands; the final admission bookkeeping
+                    // write (the second STATE write) then fails.
+                    s.faults.push_back((STATE.into(), boundary, 1));
+                });
+                let (cancelled, observed) = std::sync::mpsc::channel();
+                *p.cancel_recorded.lock().unwrap() = Some(cancelled);
+                let outcome = std::thread::scope(|scope| {
+                    let accept = scope.spawn(|| p.accept_file_settled("operation"));
+                    reached
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap();
+                    let cancel = scope.spawn(|| p.cancel_file("operation"));
+                    observed
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap();
+                    resume.send(()).unwrap();
+                    cancel.join().unwrap();
+                    accept.join().unwrap()
+                });
+                storage(&service, |s| {
+                    assert!(s.faults.is_empty(), "fault must hit the bookkeeping write")
+                });
+                // Publication won the race, so the caller must hear "published"
+                // even though the bookkeeping write failed.
+                assert!(
+                    outcome.unwrap().is_some(),
+                    "webkit={webkit} boundary={boundary:?}"
+                );
+                let snapshot = service.execute(Command::Snapshot).unwrap();
+                assert_eq!(snapshot.history.len(), 1);
                 assert!(p.accept_file("operation").unwrap().is_none());
                 assert_no_statistics(&snapshot);
             }
