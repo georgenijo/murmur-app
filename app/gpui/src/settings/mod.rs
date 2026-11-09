@@ -50,6 +50,9 @@ pub struct Settings {
     back: Vec<(Page, String)>,
     editor_return: Option<String>,
     reveal: Option<&'static str>,
+    /// A reveal requested before the first snapshot (or while another request
+    /// is pending); applied once the model can expand Advanced.
+    pending_reveal: Option<&'static str>,
     confirmation: Option<(Action, Ticket, Instant)>,
     calibration: Option<i64>,
     lab_selection: BTreeSet<String>,
@@ -116,6 +119,7 @@ impl Settings {
             back: vec![],
             editor_return: None,
             reveal: None,
+            pending_reveal: None,
             confirmation: None,
             calibration: None,
             lab_selection: BTreeSet::new(),
@@ -244,6 +248,7 @@ impl Settings {
         self.back.clear();
         self.editor_return = None;
         self.reveal = None;
+        self.pending_reveal = None;
         self.confirmation = None;
         self.calibration = None;
         #[cfg(any(test, feature = "gallery"))]
@@ -557,6 +562,7 @@ impl Settings {
         self.confirmation = None;
         self.calibration = None;
         self.reveal = None;
+        self.pending_reveal = None;
         self.reveal_scroll = false;
         self.back = back.into_iter().collect();
         self.editor_return = None;
@@ -645,17 +651,38 @@ impl Settings {
     pub(crate) fn row_focused(&self, key: &str, w: &Window) -> bool {
         self.focus.get(key).is_some_and(|f| f.is_focused(w))
     }
+    #[cfg(test)]
+    pub(crate) fn loaded(&self) -> bool {
+        self.model.snapshot.is_some() && !self.model.pending
+    }
     /// Open the page owning `key`, expand its Advanced disclosure when the row
-    /// is hidden there, scroll to it, and focus the control.
+    /// is hidden there, scroll to it, and focus the control. Before the first
+    /// snapshot arrives (or while another request is pending) the disclosure
+    /// request would be rejected, so the page opens now and the rest waits.
     pub fn reveal_setting(&mut self, key: &str, w: &mut Window, cx: &mut Context<Self>) {
-        if let Some(row) = ROWS.iter().find(|r| r.key == key) {
-            self.search_result(*row, w, cx);
-            // The row has not rendered yet when its Advanced disclosure was
-            // closed, so create the focus target the render will track.
-            let focus = self
-                .control_focus(*row, cx)
-                .unwrap_or_else(|| self.focus_for(row.key, cx));
-            w.focus(&focus, cx);
+        let Some(row) = ROWS.iter().find(|r| r.key == key) else {
+            return;
+        };
+        if self.model.snapshot.is_none() || self.model.pending {
+            self.navigate(row.page, None, w, cx);
+            self.pending_reveal = Some(row.key);
+            return;
+        }
+        self.search_result(*row, w, cx);
+        // The row has not rendered yet when its Advanced disclosure was
+        // closed, so create the focus target the render will track.
+        let focus = self
+            .control_focus(*row, cx)
+            .unwrap_or_else(|| self.focus_for(row.key, cx));
+        w.focus(&focus, cx);
+    }
+    fn apply_pending_reveal(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        if let Some(key) = self.pending_reveal
+            && self.model.snapshot.is_some()
+            && !self.model.pending
+        {
+            self.pending_reveal = None;
+            self.reveal_setting(key, w, cx);
         }
     }
     fn search_link(&mut self, link: SearchLink, w: &mut Window, cx: &mut Context<Self>) {
@@ -1036,6 +1063,7 @@ impl Drop for Settings {
 impl Render for Settings {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.drain(cx);
+        self.apply_pending_reveal(w, cx);
         self.synchronize(w, cx);
         if let Some(id) = self.restore_focus.take() {
             w.focus(&self.focus_for(id, cx), cx);

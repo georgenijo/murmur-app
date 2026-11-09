@@ -61,8 +61,23 @@ impl SectionHost<Snapshot, Action> for FixtureHost {
         if !r.lease.is_current() {
             return;
         }
-        if self.scenario == Scenario::HeldScan && matches!(r.action, Action::Scan { .. }) {
-            return;
+        if self.scenario == Scenario::HeldScan {
+            match &r.action {
+                Action::Scan { .. } => return,
+                // The picker returned a folder: the host registers the scan and
+                // presents it at once, then the first read never resolves.
+                Action::ChooseProject { id } => {
+                    let mut snapshot = self.state.borrow().clone();
+                    snapshot.revision = r.ticket.revision;
+                    snapshot.scan = super::projection::running(id, &json!(null));
+                    let _ = i.publish(crate::workspace::Event::Progress {
+                        ticket: r.ticket,
+                        snapshot,
+                    });
+                    return;
+                }
+                _ => {}
+            }
         }
         let mut s = self.state.borrow_mut();
         let mut problem = None;

@@ -757,6 +757,41 @@ mod ax {
         );
     }
     #[gpui::test]
+    fn choose_project_cancel_works_once_the_selection_returns_with_the_first_read_held(
+        cx: &mut TestAppContext,
+    ) {
+        let options = crate::remaining::QaOptions {
+            spellings: crate::remaining::Scenario::HeldScan,
+            ..Default::default()
+        };
+        let (e, cx) = harness_options(cx, 1, options);
+        cx.update(|w, cx| {
+            e.update(cx, |s, cx| {
+                s.select_customize(crate::customize::model::Page::Scan, w, cx)
+            })
+        });
+        let custom = e.read_with(cx, |s, _| s.customize.clone());
+        draw(cx);
+        let t = tree(cx);
+        assert!(
+            !t.nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Cancel scan")),
+            "nothing scans while the picker has not returned"
+        );
+        // The host answers the choice with the scan it registered, then holds
+        // its first read: no reply ever arrives.
+        click(cx, named(&t, "Choose project folder…"));
+        draw(cx);
+        assert!(custom.read_with(cx, |s, _| s.controller.model.pending));
+        let t = tree(cx);
+        assert!(disabled(&t, "Scanning…"));
+        assert!(!disabled(&t, "Cancel scan"), "Cancel must work at once");
+        let before = custom.read_with(cx, |s, _| s.controller.model.generation);
+        click(cx, named(&t, "Cancel scan"));
+        assert!(custom.read_with(cx, |s, _| s.controller.model.generation) > before);
+    }
+    #[gpui::test]
     fn vocabulary_scan_view_shows_result_numbers_and_both_empty_cases(cx: &mut TestAppContext) {
         use serde_json::json;
         let (e, cx) = harness(cx, 1);

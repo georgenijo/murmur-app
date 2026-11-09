@@ -1113,14 +1113,37 @@ mod customize_action {
                 *b.scan.lock().unwrap_or_else(|p| p.into_inner()) = Some((id.clone(), Value::Null));
                 id.clone()
             }
-            // The scan registers itself once the folder is saved; progress is
-            // only published while this ID owns the scan.
+            // The scan registers as soon as the picker returns a folder;
+            // progress is only published while this ID owns the scan.
             crate::customize::host::Action::ChooseProject { id } => id.clone(),
             _ => return stop,
         };
+        let choose = matches!(action, crate::customize::host::Action::ChooseProject { .. });
         let finished = stop.0.clone();
         let backend = b.clone();
         b.spawn(async move {
+            if choose {
+                // Read before the picker returns, then present the chosen scan
+                // from that snapshot the instant it registers (no await), so
+                // Cancel never waits on a settings read.
+                let ready = read::customize(backend.clone()).await.ok();
+                while !finished.load(std::sync::atomic::Ordering::Acquire)
+                    && current()
+                    && !inbox.is_closed()
+                    && !scan_owned_by(&backend, &id)
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+                }
+                if let Some(mut snapshot) = ready
+                    && !finished.load(std::sync::atomic::Ordering::Acquire)
+                    && current()
+                    && scan_owned_by(&backend, &id)
+                {
+                    snapshot.revision = ticket.revision;
+                    snapshot.scan = crate::customize::projection::running(&id, &Value::Null);
+                    let _ = inbox.publish(Event::Progress { ticket, snapshot });
+                }
+            }
             while !finished.load(std::sync::atomic::Ordering::Acquire)
                 && current()
                 && !inbox.is_closed()
@@ -1155,6 +1178,9 @@ mod customize_action {
             ),
             _ => None,
         }
+    }
+    fn scan_owned_by(b: &Backend, id: &str) -> bool {
+        scan_owner(b).as_deref() == Some(id)
     }
     fn scan_owner(b: &Backend) -> Option<String> {
         b.scan
@@ -1290,18 +1316,35 @@ mod customize_action {
         snapshot.scan = crate::customize::projection::finished(Some(id), summary);
         Ok(snapshot)
     }
-    /// Store a chosen folder, then scan it. The panel and the settings read can
-    /// both outlive the presentation, so nothing is written or registered
-    /// until the lease is confirmed again.
+    /// Store a chosen folder, then scan it. The scan is registered before the
+    /// first await so the progress feed can present it (and its Cancel) the
+    /// moment the selection returns. The settings read can outlive the
+    /// presentation, so nothing is written until the lease and ownership are
+    /// confirmed again.
     pub(super) async fn adopt_folder<P: ScanPorts>(
         ports: &P,
         path: String,
         id: String,
         current: Live,
     ) -> Result<Snapshot, String> {
+        if !current() {
+            return Err(STALE.into());
+        }
+        ports.begin(&id);
+        let out = adopt_registered(ports, path, &id, current).await;
+        ports.release(&id);
+        out
+    }
+    async fn adopt_registered<P: ScanPorts>(
+        ports: &P,
+        path: String,
+        id: &str,
+        current: Live,
+    ) -> Result<Snapshot, String> {
+        let live = || current() && ports.owns(id);
         // The panel can stay open a long time; patch against the live revision.
         let (revision, _) = ports.settings().await?;
-        if !current() {
+        if !live() {
             return Err(STALE.into());
         }
         ports
@@ -1310,7 +1353,10 @@ mod customize_action {
                 revision,
             )
             .await?;
-        scan_folder(ports, path, id, current).await
+        if !live() {
+            return Err(STALE.into());
+        }
+        scan_registered(ports, &path, id, current).await
     }
     /// Cancel any active scan and clear the stored folder.
     pub(super) async fn clear_folder<P: ScanPorts>(ports: &P, current: Live) -> Result<(), String> {
@@ -1673,6 +1719,54 @@ mod customize_action {
             assert!(fake.saved.lock().unwrap().is_empty(), "no folder write");
             assert_eq!(*fake.walks.lock().unwrap(), 0, "no scan started");
             assert!(fake.owner.lock().unwrap().is_none(), "no scan registered");
+        }
+
+        #[test]
+        fn choose_project_registers_the_scan_before_its_first_await() {
+            // Hold the first production read: the scan must already be owned
+            // so the progress feed can show it and Cancel can address it.
+            let mut fake = Fake::new(Ok(summary(true, 2)));
+            let seen = Arc::new(Mutex::new(None));
+            let record = seen.clone();
+            fake.during_settings = Some(Box::new(move |f| {
+                *record.lock().unwrap() = Some(f.owner.lock().unwrap().clone());
+            }));
+            futures::executor::block_on(adopt_folder(
+                &fake,
+                "/synthetic/project".into(),
+                "scan-1".into(),
+                live(true),
+            ))
+            .unwrap();
+            assert_eq!(
+                seen.lock().unwrap().clone(),
+                Some(Some("scan-1".to_owned())),
+                "owned while the first read is in flight"
+            );
+            assert!(fake.owner.lock().unwrap().is_none(), "released afterwards");
+        }
+
+        #[test]
+        fn choose_project_losing_ownership_during_the_read_stores_nothing() {
+            let mut fake = Fake::new(Ok(summary(true, 2)));
+            fake.during_settings = Some(Box::new(|f| {
+                // A Cancel or newer scan took the registry during the read.
+                *f.owner.lock().unwrap() = Some("scan-2".to_owned());
+            }));
+            let result = futures::executor::block_on(adopt_folder(
+                &fake,
+                "/synthetic/project".into(),
+                "scan-1".into(),
+                live(true),
+            ));
+            assert!(result.is_err());
+            assert!(fake.saved.lock().unwrap().is_empty());
+            assert_eq!(*fake.walks.lock().unwrap(), 0);
+            assert_eq!(
+                fake.owner.lock().unwrap().as_deref(),
+                Some("scan-2"),
+                "the newer scan keeps its entry"
+            );
         }
 
         #[test]
