@@ -22,7 +22,10 @@ fn problem<T>(r: Result<T, String>) -> Result<T, Problem> {
 /// Where a contextual hint leads. Teaching opens the latest dictation.
 fn hint_route(id: &str) -> Route {
     match id {
-        "double_tap_timing" => Route::Settings(crate::settings::schema::Page::Recording),
+        // The control is Advanced: Settings reveals and focuses it.
+        "double_tap_timing" => {
+            Route::SettingsTarget(crate::settings::schema::Page::Recording, "hotkey-feedback")
+        }
         "browser_modes" => Route::Modes,
         "correct_and_teach" => home_route(crate::home::model::Destination::TeachLatest),
         _ => Route::Home,
@@ -598,27 +601,15 @@ async fn finish_setup(b: &Backend, grandfather: bool) -> Result<(), String> {
         b.source("murmur_onboarding_complete", old, json!(true))
             .await?;
     }
-    if !grandfather
-        || sources
-            .get("murmur_discovery_v1")
-            .is_none_or(Value::is_null)
-    {
-        let evidence = discovery::evidence(b).await?;
-        let next = if grandfather {
-            discovery_core::grandfathered(&evidence)
+    discovery::ensure(
+        b,
+        if grandfather {
+            discovery::Start::Grandfather
         } else {
-            discovery_core::after_setup(&evidence)
-        };
-        b.source(
-            "murmur_discovery_v1",
-            sources
-                .get("murmur_discovery_v1")
-                .cloned()
-                .unwrap_or(Value::Null),
-            next,
-        )
-        .await?;
-    }
+            discovery::Start::AfterSetup
+        },
+    )
+    .await?;
     b.navigate(Route::Home);
     Ok(())
 }
@@ -1679,7 +1670,7 @@ mod discovery_route_tests {
     fn hints_open_the_screen_that_teaches_them() {
         assert!(matches!(
             hint_route("double_tap_timing"),
-            Route::Settings(Page::Recording)
+            Route::SettingsTarget(Page::Recording, "hotkey-feedback")
         ));
         assert!(matches!(hint_route("browser_modes"), Route::Modes));
         // Teaching opens the latest dictation instead of falling back to Home.

@@ -175,8 +175,8 @@ pub struct Backend {
     pub meetings: Arc<super::meetings::Presentation>,
     pub diagnostics: Arc<super::diagnostics::Clocks>,
     pub levels: Arc<Mutex<Option<(u64, f32)>>>,
-    /// Newest history id already seen by discovery, so only a new entry teaches.
-    pub newest_entry: Arc<Mutex<Value>>,
+    /// What the discovery observer has seen, and its native-QA faults.
+    pub discovery: Arc<super::discovery::State>,
 }
 pub type ReadFuture<S> = Pin<Box<dyn Future<Output = Result<S, String>> + Send>>;
 pub type Read<S> = fn(Backend) -> ReadFuture<S>;
@@ -272,6 +272,11 @@ pub enum Route {
     MeetingSuggested(String),
     Insights,
     Settings(crate::settings::schema::Page),
+    /// Settings from the app menu or Command-, : General, or nothing when
+    /// Settings is already showing.
+    OpenSettings,
+    /// A Settings page and the control a hint points at.
+    SettingsTarget(crate::settings::schema::Page, &'static str),
     Models,
     Knowledge,
     Modes,

@@ -47,6 +47,7 @@ pub mod projections;
 
 pub mod adapters;
 pub mod discovery;
+mod discovery_owner;
 pub mod downloads;
 pub mod microphone;
 

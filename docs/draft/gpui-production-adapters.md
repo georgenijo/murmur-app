@@ -88,3 +88,47 @@ model lifecycle, knowledge CRUD/bulk, app overrides/IDE/explicit vocabulary scan
 Calendar suggestions, settings meter/cues and Diagnostics events/runs/recovery/
 latency/private review. Explicit Lab/microphone/corpus tool execution requires
 its separately authorized validation; no tool starts during subscription/read.
+
+## Main-window shortcuts, Customize Back and discovery (#1057)
+
+GPUI runs a bound action before any key listener, and an action stops the key.
+Command-K and Command-, are bound actions (`root::bindings()`, `shell.rs`), so
+they reach the shared shortcut policy (`root::plan`) through `Main::shortcut`
+and `Route::OpenSettings`; the Control forms, Command-F and Command-L reach it
+through `Main::key`. Composed `Main` and `Backend` need a running host and cannot
+be built in a unit test; the policy, the binding precedence and the discovery
+writer (`host/services/discovery.rs`, generic over an `Owner`, with an in-memory
+owner in its tests) are tested separately, and the native rows below cover the
+composition.
+
+Native acceptance (synthetic data, isolated profile):
+
+1. Command-K opens the palette, Command-K again closes it. Command-L from Home
+   opens Settings Performance with the palette still open, the query kept and
+   the cursor in the search field. Command-, with the palette open closes it;
+   from a Settings page it stays on that page; elsewhere it opens General.
+   Escape closes an open palette before anything else.
+2. Customize, Text, Vocabulary, Close editor: Text is showing with its Back
+   control still returning to Customize, and the opener control is focused.
+3. Upgraded profile: start with a completed profile whose
+   `murmur_discovery_v1` is absent. Launch; Home shows the checklist with items
+   its local history already proves ticked. A profile that already has state is
+   left alone.
+4. Bind an app to a mode in Modes and check it; the "Bind an app to a mode"
+   item ticks even when that bundle and mode were bound before. Unchecking does
+   not tick it.
+5. The "Double-tap timing" hint opens Settings Recording with Advanced open,
+   the Hotkey feedback control scrolled into view and focused.
+6. Discovery failures (a `native-host-qa` build only). Launch the exact QA
+   bundle (`com.localdictation.gpui-host-qa110`) with an isolated
+   `murmur-gpui-test-*` home, `MURMUR_NATIVE_TEST_HOME` equal to that home and
+   `--native-host-discovery-qa <scenario>`. Any other build, identity or home
+   ignores the flag. It replaces the test profile's discovery state with a fresh
+   one that has the timing hint waiting, then arms one failure for the first
+   discovery write: `read-fails-once` (the source read fails; nothing changes,
+   Home shows "Something went wrong. Your choices are kept. Retry when the
+   service is available." and the next try works), `write-conflict-once` (a
+   lost compare-and-set race; the write retries and succeeds, the hint is
+   gone), `write-conflict-exhausts` (every attempt loses; the same Home message
+   shows and the state is unchanged), or `clean` (no failure, for the
+   baseline). Verify each through Dismiss on the hint and the checklist.

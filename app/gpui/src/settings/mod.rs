@@ -67,6 +67,10 @@ pub struct Settings {
     operation: Option<(Action, Ticket)>,
     restore_focus: Option<&'static str>,
     returned_opener: Option<String>,
+    /// A control another screen asked to reveal once this page has its snapshot.
+    pending_target: Option<(Page, &'static str)>,
+    /// A revealed control to focus as soon as its row has been drawn.
+    reveal_focus: Option<Row>,
     reveal_anchor: ScrollAnchor,
     reveal_scroll: bool,
     was_compact: Option<bool>,
@@ -134,6 +138,8 @@ impl Settings {
             operation: None,
             restore_focus: None,
             returned_opener: None,
+            pending_target: None,
+            reveal_focus: None,
         };
         s.subscriptions
             .push(cx.subscribe(&search, |s, _, e: &InputEvent, cx| {
@@ -259,6 +265,8 @@ impl Settings {
         self.operation = None;
         self.restore_focus = None;
         self.returned_opener = None;
+        self.pending_target = None;
+        self.reveal_focus = None;
     }
     pub fn hide(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         self.flush_ranges(w, cx);
@@ -561,6 +569,8 @@ impl Settings {
         self.calibration = None;
         self.reveal = None;
         self.reveal_scroll = false;
+        self.pending_target = None;
+        self.reveal_focus = None;
         self.back = back.into_iter().collect();
         self.editor_return = None;
         #[cfg(any(test, feature = "gallery"))]
@@ -601,14 +611,35 @@ impl Settings {
         self.editor_return = Some(id.into());
         self.request(RequestKind::Action(Action::Open(destination)), cx);
     }
-    /// The control that opened the editor now on screen. Main takes it before
-    /// the editor replaces this page so Back can return the user to it.
-    pub fn take_editor_return(&mut self) -> Option<String> {
-        self.editor_return.take()
+    /// The control that opened the editor now on screen, and the Back stack of
+    /// the page it was opened from. Main takes both before the editor replaces
+    /// this page, which clears them, so Back can return to exactly that page.
+    pub fn take_editor_return(&mut self) -> (Option<String>, Vec<(Page, String)>) {
+        (self.editor_return.take(), std::mem::take(&mut self.back))
     }
-    /// Focuses the opener once this page has its snapshot again after Back.
-    pub fn return_from_editor(&mut self, opener: Option<String>, cx: &mut Context<Self>) {
+    /// Puts the page's Back stack back and focuses the opener once this page
+    /// has its snapshot again after the editor closes.
+    pub fn return_from_editor(
+        &mut self,
+        opener: Option<String>,
+        back: Vec<(Page, String)>,
+        cx: &mut Context<Self>,
+    ) {
+        self.back = back;
         self.returned_opener = opener;
+        cx.notify();
+    }
+    /// Opens `page` and reveals the control named `target` once the page has
+    /// its snapshot, opening Advanced when the control lives there.
+    pub fn navigate_to_control(
+        &mut self,
+        page: Page,
+        target: &'static str,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.navigate(page, None, w, cx);
+        self.pending_target = Some((page, target));
         cx.notify();
     }
     /// Owning 3.5e sheet calls this only when it closes; Settings never steals
@@ -620,6 +651,10 @@ impl Settings {
     }
     fn search_result(&mut self, row: Row, w: &mut Window, cx: &mut Context<Self>) {
         self.navigate(row.page, None, w, cx);
+        self.reveal_row(row, w, cx);
+    }
+    /// Scrolls to a row, opens Advanced when it lives there, and focuses it.
+    fn reveal_row(&mut self, row: Row, w: &mut Window, cx: &mut Context<Self>) {
         self.reveal = Some(row.reveal(self.model.settings()));
         self.reveal_scroll = true;
         if row.advanced && !self.model.advanced() {
@@ -635,10 +670,12 @@ impl Settings {
             );
         }
         let key = row.reveal(self.model.settings());
-        if let Some(target) = ROWS.iter().find(|r| r.key == key)
-            && let Some(f) = self.control_focus(*target, cx)
-        {
-            w.focus(&f, cx);
+        if let Some(target) = ROWS.iter().find(|r| r.key == key) {
+            match self.control_focus(*target, cx) {
+                Some(f) => w.focus(&f, cx),
+                // An Advanced row exists only after the next draw.
+                None => self.reveal_focus = Some(*target),
+            }
         }
         cx.notify();
     }
@@ -732,12 +769,12 @@ impl Settings {
         use crate::palette::model::Shortcut;
         let k = &e.keystroke;
         if let Some(shortcut) = crate::palette::main_shortcut(e, w) {
-            // The palette and transcript search belong to the main window,
-            // which handles them after this page declines the key.
+            // The palette, transcript search and opening Settings belong to
+            // the main window, which handles them after this page declines
+            // the key. Opening Settings from Settings stays on this page.
             match shortcut {
-                Shortcut::Settings => self.navigate(Page::General, None, w, cx),
                 Shortcut::Logs => self.navigate(Page::Performance, None, w, cx),
-                Shortcut::Palette | Shortcut::Search => return,
+                Shortcut::Settings | Shortcut::Palette | Shortcut::Search => return,
             }
             w.prevent_default();
             cx.stop_propagation();
@@ -1028,6 +1065,14 @@ impl Render for Settings {
             && let Some(id) = self.returned_opener.take()
         {
             w.focus(&self.focus_for(id, cx), cx);
+        }
+        if self.model.snapshot.is_some()
+            && !self.model.pending
+            && let Some((page, target)) = self.pending_target.take()
+            && self.model.page == page
+            && let Some(&row) = ROWS.iter().find(|r| r.page == page && r.target == target)
+        {
+            self.reveal_row(row, w, cx);
         }
         let p = Palette::get(cx);
         let compact = w.viewport_size().width < px(768.);
@@ -1333,6 +1378,12 @@ impl Render for Settings {
         if self.reveal_scroll {
             self.reveal_anchor.scroll_to(w, cx);
             self.reveal_scroll = false;
+        }
+        if let Some(row) = self.reveal_focus
+            && let Some(f) = self.control_focus(row, cx)
+        {
+            w.focus(&f, cx);
+            self.reveal_focus = None;
         }
         div()
             .id("settings")

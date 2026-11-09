@@ -334,21 +334,78 @@ fn back_from_a_full_page_editor_refocuses_the_opener_on_its_page(cx: &mut TestAp
     });
     draw(cx);
     // Main takes the opener before the editor replaces the page ...
-    let opener = e.update(cx, |s, _| s.take_editor_return());
+    let (opener, back) = e.update(cx, |s, _| s.take_editor_return());
     assert_eq!(opener.as_deref(), Some("vocabulary"));
-    assert_eq!(e.update(cx, |s, _| s.take_editor_return()), None);
+    assert!(back.is_empty());
+    assert_eq!(e.update(cx, |s, _| s.take_editor_return()), (None, vec![]));
     // ... and hands it back once the page it came from is showing again.
     cx.update(|w, cx| {
         e.update(cx, |s, cx| {
             s.hide(w, cx);
             s.attach(cx);
             s.navigate(Page::Text, None, w, cx);
-            s.return_from_editor(opener, cx);
+            s.return_from_editor(opener, back, cx);
         })
     });
     draw(cx);
     assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::Text);
     assert!(cx.update(|w, cx| e.read(cx).focus["vocabulary"].is_focused(w)));
+}
+#[gpui::test]
+fn closing_an_editor_opened_from_a_nested_page_keeps_that_pages_back_route(
+    cx: &mut TestAppContext,
+) {
+    // Customize -> Text -> Vocabulary editor -> close editor.
+    let (e, _, cx) = harness(cx);
+    cx.update(|w, cx| {
+        e.update(cx, |s, cx| {
+            s.navigate(Page::Customize, None, w, cx);
+            s.open_detail(Page::Text, "customize-text", w, cx);
+        })
+    });
+    draw(cx);
+    cx.update(|_, cx| {
+        e.update(cx, |s, cx| {
+            s.open_editor(Destination::Vocabulary, "vocabulary", cx)
+        })
+    });
+    draw(cx);
+    // Main takes the page's route before the editor replaces it ...
+    let (opener, back) = e.update(cx, |s, _| s.take_editor_return());
+    assert_eq!(back, vec![(Page::Customize, "customize-text".to_string())]);
+    // ... the editor closes, Settings is shown again and gets it back.
+    cx.update(|w, cx| {
+        e.update(cx, |s, cx| {
+            s.hide(w, cx);
+            s.attach(cx);
+            s.navigate(Page::Text, None, w, cx);
+            s.return_from_editor(opener, back, cx);
+        })
+    });
+    draw(cx);
+    assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::Text);
+    assert!(cx.update(|w, cx| e.read(cx).focus["vocabulary"].is_focused(w)));
+    // Back from Text still leads to Customize and refocuses its opener.
+    keys(cx, "escape");
+    assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::Customize);
+    assert!(cx.update(|w, cx| e.read(cx).focus["customize-text"].is_focused(w)));
+}
+#[gpui::test]
+fn a_hint_target_opens_advanced_scrolls_and_focuses_the_control(cx: &mut TestAppContext) {
+    let (e, _, cx) = harness(cx);
+    assert!(!e.read_with(cx, |s, _| s.model.advanced()));
+    cx.update(|w, cx| {
+        e.update(cx, |s, cx| {
+            s.navigate_to_control(Page::Recording, "hotkey-feedback", w, cx)
+        })
+    });
+    draw(cx);
+    draw(cx);
+    assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::Recording);
+    // The row is Advanced: it is revealed, drawn and focused.
+    assert!(e.read_with(cx, |s, _| s.model.advanced()));
+    assert!(cx.update(|w, cx| e.read(cx).focus["hotkeyMissFeedback"].is_focused(w)));
+    assert_eq!(e.read_with(cx, |s, _| s.pending_target), None);
 }
 #[gpui::test]
 fn settings_keys_follow_editability_and_leave_search_to_the_main_window(cx: &mut TestAppContext) {
@@ -362,18 +419,22 @@ fn settings_keys_follow_editability_and_leave_search_to_the_main_window(cx: &mut
     draw(cx);
     keys(cx, "ctrl-l");
     assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::Performance);
+    // Opening Settings while a Settings page is showing leaves it where it is.
     keys(cx, "ctrl-,");
-    assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::General);
-    // The palette and transcript search belong to the main window: Settings
-    // neither navigates nor steals Command-F for its own search box.
+    assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::Performance);
     cx.update(|w, cx| {
         e.update(cx, |s, cx| {
+            s.navigate(Page::Text, None, w, cx);
             let handle = s.focus_for("shortcuts", cx);
             w.focus(&handle, cx);
         })
     });
+    keys(cx, "ctrl-,");
+    assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::Text);
+    // The palette and transcript search belong to the main window: Settings
+    // neither navigates nor steals Command-F for its own search box.
     keys(cx, "cmd-f");
-    assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::General);
+    assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::Text);
     assert!(!cx.update(|w, cx| e.read(cx).search.read(cx).focus_handle(cx).is_focused(w)));
     // Inside the search field Control keeps editing; Command still navigates.
     cx.update(|w, cx| {
@@ -381,7 +442,7 @@ fn settings_keys_follow_editability_and_leave_search_to_the_main_window(cx: &mut
         w.focus(&search, cx)
     });
     keys(cx, "ctrl-l");
-    assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::General);
+    assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::Text);
     keys(cx, "cmd-l");
     assert_eq!(e.read_with(cx, |s, _| s.model.page), Page::Performance);
 }

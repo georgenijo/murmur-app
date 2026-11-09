@@ -126,8 +126,15 @@ pub struct Main {
     subscriptions: Vec<Subscription>,
     pending_history: Option<String>,
     pending_meeting: Option<Option<String>>,
-    /// The Settings page and opener control an editor was opened from.
-    customize_return: Option<(Page, Option<String>)>,
+    /// Where a full-page editor was opened from.
+    customize_return: Option<Origin>,
+}
+/// The Settings page an editor was opened from, the control that opened it and
+/// that page's own Back stack, so closing the editor restores all three.
+struct Origin {
+    page: Page,
+    opener: Option<String>,
+    back: Vec<(Page, String)>,
 }
 impl Main {
     pub fn new(backend: Backend, w: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -196,12 +203,18 @@ impl Main {
             &s.customize,
             w,
             |s, _, _: &crate::customize::Back, w, cx| {
-                // Back returns to the Settings page the editor was opened from
-                // and focuses the control that opened it.
-                let (page, opener) = s.customize_return.take().unwrap_or((Page::Customize, None));
+                // Back returns to the Settings page the editor was opened from,
+                // with that page's own Back route, and focuses the control that
+                // opened it.
+                let Origin { page, opener, back } = s.customize_return.take().unwrap_or(Origin {
+                    page: Page::Customize,
+                    opener: None,
+                    back: vec![],
+                });
                 s.route(Route::Settings(page), w, cx);
-                s.settings
-                    .update(cx, |settings, cx| settings.return_from_editor(opener, cx));
+                s.settings.update(cx, |settings, cx| {
+                    settings.return_from_editor(opener, back, cx)
+                });
             },
         ));
         s.show(w, cx);
@@ -261,7 +274,18 @@ impl Main {
         }
         cx.notify();
     }
+    /// Hides the window's content: sections lose their leases and the palette
+    /// closes with them.
     pub fn hide(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        if !self.visible {
+            return;
+        }
+        self.release(w, cx);
+        self.palette.update(cx, |s, cx| s.hide(w, cx));
+    }
+    /// Section teardown alone. Switching sections must not dismiss the command
+    /// palette, which belongs to the window rather than to a section.
+    fn release(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         if !self.visible {
             return;
         }
@@ -279,7 +303,6 @@ impl Main {
         self.modes.update(cx, |s, cx| s.hide(cx));
         self.themes.update(cx, |s, cx| s.hide(cx));
         self.customize.update(cx, |s, cx| s.hide(cx));
-        self.palette.update(cx, |s, cx| s.hide(w, cx));
         self.close_teaching();
         self.backend.services.main_hidden();
         cx.notify();
@@ -289,13 +312,24 @@ impl Main {
     fn remember_editor_origin(&mut self, cx: &mut Context<Self>) {
         if self.section == Section::Settings {
             let page = self.settings.read(cx).model.page;
-            let opener = self.settings.update(cx, |s, _| s.take_editor_return());
-            self.customize_return = Some((page, opener));
+            let (opener, back) = self.settings.update(cx, |s, _| s.take_editor_return());
+            self.customize_return = Some(Origin { page, opener, back });
         }
-        let label = back_label(self.customize_return.as_ref().map(|(page, _)| *page));
+        let label = back_label(self.customize_return.as_ref().map(|origin| origin.page));
         self.customize.update(cx, |s, _| s.back_label = label);
     }
+    /// Switches the section and closes the command palette, as every
+    /// navigation except the shortcut that keeps it open does.
     fn select(&mut self, section: Section, w: &mut Window, cx: &mut Context<Self>) {
+        self.switch(section, false, w, cx);
+    }
+    fn switch(
+        &mut self,
+        section: Section,
+        keep_palette: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.section == Section::Customize && section != Section::Customize {
             self.customize_return = None;
         }
@@ -305,7 +339,10 @@ impl Main {
             let to = section.name();
             let clocks = self.backend.diagnostics.clone();
             let epoch = clocks.epoch(crate::diagnostics::model::Lane::Latency);
-            self.hide(w, cx);
+            self.release(w, cx);
+            if !keep_palette {
+                self.palette.update(cx, |s, cx| s.hide(w, cx));
+            }
             self.section = section;
             self.show(w, cx);
             let commit = started.elapsed().as_secs_f64() * 1000.;
@@ -429,19 +466,44 @@ impl Main {
             });
         }
     }
-    /// Main-window shortcuts. Pages that own a key handle it first and stop it;
+    /// Main-window shortcuts that are not bound actions (Control forms, Command-F
+    /// and Command-L). Pages that own a key handle it first and stop it;
     /// everything else reaches here, wherever the focus is inside the window.
     fn key(&mut self, e: &KeyDownEvent, w: &mut Window, cx: &mut Context<Self>) {
-        if !self.ready
-            || self.section == Section::Setup
-            || self.teaching.is_some()
-            || self.update_open
-        {
+        if !self.shortcuts_active() {
             return;
         }
         let Some(shortcut) = crate::palette::main_shortcut(e, w) else {
             return;
         };
+        self.apply(shortcut, w, cx);
+        w.prevent_default();
+        cx.stop_propagation();
+    }
+    /// The shipped shortcuts are inactive during setup, while a dialog is open
+    /// and before the profile is ready.
+    fn shortcuts_active(&self) -> bool {
+        self.ready && self.section != Section::Setup && self.teaching.is_none() && !self.update_open
+    }
+    /// A bound shortcut action. GPUI runs bound actions before key listeners and
+    /// an action stops the key, so Command-K and Command-, reach the policy here.
+    fn shortcut(
+        &mut self,
+        shortcut: crate::palette::model::Shortcut,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.shortcuts_active() {
+            self.apply(shortcut, w, cx);
+        }
+    }
+    /// Carries out the shortcut policy against the visible state.
+    fn apply(
+        &mut self,
+        shortcut: crate::palette::model::Shortcut,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let palette_open = self.palette.read(cx).open;
         let plan = plan(shortcut, palette_open, self.section == Section::Settings);
         if plan.close_palette {
@@ -451,11 +513,28 @@ impl Main {
             Open::Nothing => {}
             Open::Palette => self.route(Route::Palette, w, cx),
             Open::Search => self.route(Route::HistoryAction("history-search".into()), w, cx),
-            Open::Settings(page) => self.route(Route::Settings(page), w, cx),
+            Open::Settings(page) => self.open_settings(page, !plan.close_palette, w, cx),
         }
-        w.prevent_default();
-        cx.stop_propagation();
         cx.notify();
+    }
+    /// Shows a Settings page. An open palette stays open, with its query, when
+    /// asked to.
+    fn open_settings(
+        &mut self,
+        page: Page,
+        keep_palette: bool,
+        w: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.switch(Section::Settings, keep_palette, w, cx);
+        self.settings
+            .update(cx, |s, cx| s.navigate(page, None, w, cx));
+        self.keep_palette_focus(w, cx);
+    }
+    fn keep_palette_focus(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        if self.palette.read(cx).open {
+            self.palette.update(cx, |p, cx| p.refocus(w, cx));
+        }
     }
     pub fn route(&mut self, route: Route, w: &mut Window, cx: &mut Context<Self>) {
         if !self.ready
@@ -538,12 +617,18 @@ impl Main {
             }
             Route::Settings(page) => match page {
                 Page::Diagnostics => self.backend.navigate(Route::Diagnostics),
-                _ => {
-                    self.select(Section::Settings, w, cx);
-                    self.settings
-                        .update(cx, |s, cx| s.navigate(page, None, w, cx));
-                }
+                _ => self.open_settings(page, false, w, cx),
             },
+            // Settings from the app menu or Command-, : a no-op while Settings is
+            // showing, General otherwise, and an open palette closes first.
+            Route::OpenSettings => self.apply(crate::palette::model::Shortcut::Settings, w, cx),
+            // A control named by a hint: reuse Settings' disclosure, reveal and
+            // focus once the page has its snapshot.
+            Route::SettingsTarget(page, target) => {
+                self.switch(Section::Settings, false, w, cx);
+                self.settings
+                    .update(cx, |s, cx| s.navigate_to_control(page, target, w, cx));
+            }
             Route::Setup | Route::SetupReplay => {
                 let replay = matches!(route, Route::SetupReplay);
                 self.onboarding.update(cx, |s, _| s.replay = replay);
@@ -693,6 +778,15 @@ actions!(
     native_workspace,
     [CommandPalette, HomePage, MeetingsPage, Back]
 );
+/// The main window's key bindings. The host binds exactly these.
+pub fn bindings() -> [KeyBinding; 4] {
+    [
+        KeyBinding::new("cmd-k", CommandPalette, Some("MurmurWorkspace")),
+        KeyBinding::new("cmd-1", HomePage, Some("MurmurWorkspace")),
+        KeyBinding::new("cmd-2", MeetingsPage, Some("MurmurWorkspace")),
+        KeyBinding::new("escape", Back, Some("MurmurWorkspace")),
+    ]
+}
 impl Render for Main {
     fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.ready {
@@ -731,11 +825,16 @@ impl Render for Main {
                 cx.notify();
             }))
             .on_key_down(cx.listener(Self::key))
-            .on_action(cx.listener(|s, _: &CommandPalette, w, cx| s.route(Route::Palette, w, cx)))
+            .on_action(cx.listener(|s, _: &CommandPalette, w, cx| {
+                s.shortcut(crate::palette::model::Shortcut::Palette, w, cx)
+            }))
             .on_action(cx.listener(|s, _: &HomePage, w, cx| s.select(Section::Home, w, cx)))
             .on_action(cx.listener(|s, _: &MeetingsPage, w, cx| s.select(Section::Meetings, w, cx)))
             .on_action(cx.listener(|s, _: &Back, w, cx| {
-                if s.teaching.is_some() {
+                if s.palette.read(cx).open {
+                    // Escape closes the palette first and goes nowhere else.
+                    s.palette.update(cx, |p, cx| p.hide(w, cx));
+                } else if s.teaching.is_some() {
                     s.close_teaching();
                     s.home.update(cx, |s, cx| s.destination_closed(w, cx));
                 } else if s.update_open {
@@ -1133,6 +1232,9 @@ fn update_required(status: &murmur_core::updater::Status) -> bool {
 mod shortcut_tests {
     use super::*;
     use crate::palette::model::Shortcut;
+    // `use super::*` also brings in `gpui::test`, which would shadow the
+    // built-in `#[test]` and recurse forever when it expands.
+    use std::prelude::v1::test;
     #[test]
     fn command_k_toggles_and_the_others_close_the_palette_first() {
         let closed = plan(Shortcut::Palette, false, false);
@@ -1155,6 +1257,55 @@ mod shortcut_tests {
             (logs.close_palette, logs.open),
             (false, Open::Settings(Page::Performance))
         );
+    }
+    #[test]
+    fn settings_shortcut_closes_the_palette_and_stays_on_settings() {
+        let plan = plan(Shortcut::Settings, true, true);
+        assert_eq!((plan.close_palette, plan.open), (true, Open::Nothing));
+    }
+    /// Stands in for the composed window, which needs a running host. It
+    /// carries the production bindings and the production policy.
+    struct Keys {
+        focus: FocusHandle,
+        palette_open: bool,
+        listener_runs: u32,
+    }
+    impl Render for Keys {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .key_context("MurmurWorkspace")
+                .track_focus(&self.focus)
+                .size_full()
+                .on_key_down(cx.listener(|s, _: &KeyDownEvent, _, _| s.listener_runs += 1))
+                .on_action(cx.listener(|s, _: &CommandPalette, _, _| {
+                    s.palette_open =
+                        plan(Shortcut::Palette, s.palette_open, false).open == Open::Palette;
+                }))
+        }
+    }
+    #[gpui::test]
+    fn the_bound_command_k_action_carries_the_toggle_and_the_listener_never_sees_it(
+        cx: &mut TestAppContext,
+    ) {
+        cx.update(|cx| cx.bind_keys(bindings()));
+        let (view, cx) = cx.add_window_view(|_, cx| Keys {
+            focus: cx.focus_handle(),
+            palette_open: false,
+            listener_runs: 0,
+        });
+        let focus = view.update(cx, |v, _| v.focus.clone());
+        cx.update(|w, cx| w.focus(&focus, cx));
+        cx.run_until_parked();
+        cx.update(|w, cx| w.draw(cx).clear(cx));
+        let state =
+            |cx: &mut VisualTestContext| view.update(cx, |v, _| (v.palette_open, v.listener_runs));
+        cx.simulate_keystrokes("cmd-k");
+        assert_eq!(state(cx), (true, 0));
+        cx.simulate_keystrokes("cmd-k");
+        assert_eq!(state(cx), (false, 0));
+        // Unbound shortcuts such as Command-F reach the key listener instead.
+        cx.simulate_keystrokes("cmd-f");
+        assert_eq!(state(cx), (false, 1));
     }
     #[test]
     fn editors_name_where_back_leads() {

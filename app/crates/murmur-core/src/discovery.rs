@@ -59,6 +59,12 @@ impl Evidence {
     }
 }
 
+/// True when `current` holds a binding that `previous` did not, such as one the
+/// user just checked in Modes. Unbinding, or any unrelated change, is false.
+pub fn newly_bound(previous: &[String], current: &[String]) -> bool {
+    current.iter().any(|binding| !previous.contains(binding))
+}
+
 fn state(completed: Vec<&str>, evidence: &Evidence) -> Value {
     json!({
         "version": 1,
@@ -258,6 +264,16 @@ mod tests {
         );
         assert!(sync(&used, &evidence(3, 2, &["z.app:m"])).is_none());
         assert_eq!(normalize(SOURCE, used.clone()).unwrap(), used);
+    }
+    #[test]
+    fn a_binding_is_new_only_when_the_set_gains_one() {
+        let bound = |items: &[&str]| items.iter().map(|b| b.to_string()).collect::<Vec<_>>();
+        assert!(newly_bound(&bound(&[]), &bound(&["a:m"])));
+        assert!(newly_bound(&bound(&["a:m"]), &bound(&["a:m", "b:m"])));
+        assert!(newly_bound(&bound(&["a:m"]), &bound(&["a:n"])));
+        assert!(!newly_bound(&bound(&["a:m"]), &bound(&["a:m"])));
+        assert!(!newly_bound(&bound(&["a:m", "b:m"]), &bound(&["a:m"])));
+        assert!(!newly_bound(&bound(&[]), &bound(&[])));
     }
     #[test]
     fn a_statistics_reset_lowers_the_baseline_without_completing() {

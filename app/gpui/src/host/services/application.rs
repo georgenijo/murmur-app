@@ -562,12 +562,7 @@ impl ApplicationHost for Rc<Host> {
         self.main.replace(Some(view.clone()));
         let host = self.clone();
         cx.defer(move |cx| host.companions(cx));
-        cx.bind_keys([
-            KeyBinding::new("cmd-k", root::CommandPalette, Some("MurmurWorkspace")),
-            KeyBinding::new("cmd-1", root::HomePage, Some("MurmurWorkspace")),
-            KeyBinding::new("cmd-2", root::MeetingsPage, Some("MurmurWorkspace")),
-            KeyBinding::new("escape", root::Back, Some("MurmurWorkspace")),
-        ]);
+        cx.bind_keys(root::bindings());
         view.into()
     }
     fn diagnostics_view(&self, w: &mut Window, cx: &mut App) -> AnyView {
@@ -702,6 +697,8 @@ impl ApplicationHost for Rc<Host> {
                     | Route::About
                     | Route::Teach(_)
                     | Route::Settings(_)
+                    | Route::OpenSettings
+                    | Route::SettingsTarget(..)
                     | Route::Meetings
                     | Route::MeetingToggle
                     | Route::MeetingSuggested(_)
@@ -759,7 +756,7 @@ impl ApplicationHost for Rc<Host> {
         }
         let b = self.backend.clone();
         match intent {
-            Intent::Settings => b.navigate(Route::Settings(crate::settings::schema::Page::General)),
+            Intent::Settings => b.navigate(Route::OpenSettings),
             Intent::About => b.navigate(Route::About),
             Intent::CheckUpdates => {
                 b.navigate(Route::Updates);
@@ -865,9 +862,7 @@ impl crate::overlay::Host for OverlayHost {
                 Intent::CycleMode => {
                     let _ = b.call("cycle_mode", json!({})).await;
                 }
-                Intent::OpenSettings => {
-                    b.navigate(Route::Settings(crate::settings::schema::Page::General))
-                }
+                Intent::OpenSettings => b.navigate(Route::OpenSettings),
                 Intent::AcceptSuggestion(token) => b.navigate(Route::MeetingSuggested(token)),
                 Intent::DismissSuggestion(token) => {
                     let _ = b
@@ -1024,7 +1019,7 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
             knowledge_reviews: Default::default(),
             meetings: playback,
             diagnostics: Default::default(),
-            newest_entry: Default::default(),
+            discovery: Default::default(),
         };
         let _ = NOTIFICATION_ROUTE.set(backend.routes.clone());
         let _ = os.notifications(notification);
@@ -1188,7 +1183,15 @@ pub(super) fn bootstrap(b: Backend) {
                 // Close the inventory-event race between the initial passive
                 // read and publishing readiness. Later updates retry via listener.
                 let _ = migrate_microphone(&b).await;
-                super::discovery::prime(&b).await;
+                // A finished profile that predates discovery gets its
+                // grandfathered state now, as the shipped app does at launch.
+                super::discovery::prime(
+                    &b,
+                    (!setup).then_some(super::discovery::Start::Grandfather),
+                )
+                .await;
+                #[cfg(feature = "native-host-qa")]
+                super::discovery_owner::qa(&b).await;
                 b.navigate(Route::BootstrapReady(setup));
             }
             Err(_) => b.navigate(Route::BootstrapFailed),

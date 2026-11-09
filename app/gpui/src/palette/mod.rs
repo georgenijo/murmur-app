@@ -85,6 +85,14 @@ impl CommandPalette {
         w.focus(&self.search.read(cx).focus_handle(cx), cx);
         cx.notify();
     }
+    /// Puts the cursor back in the search field after a page switched under an
+    /// open palette. The query stays.
+    pub fn refocus(&mut self, w: &mut Window, cx: &mut Context<Self>) {
+        if self.open {
+            w.focus(&self.search.read(cx).focus_handle(cx), cx);
+            cx.notify();
+        }
+    }
     pub fn close(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         self.open = false;
         self.controller.invalidate();
