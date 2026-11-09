@@ -1,9 +1,11 @@
 //! A revocable Settings-page meter. Capture admission and PCM disposal belong
 //! to the existing preview owner; no monitor is started by a subscription.
 use super::backend::Backend;
+use super::microphone_report::{self as report, Marks, Reports, Save};
 use super::os::Live;
 use crate::settings::model::{Device, MicTest, SmartAuto, Startup};
 use serde_json::{Value, json};
+use std::future::Future;
 use std::sync::{
     Arc, Mutex, MutexGuard,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -15,6 +17,8 @@ use std::time::{Duration, Instant};
 pub const CHANGED: &str = "microphone-test-changed";
 /// Contention that resolves by itself; every other refusal suspends the test.
 const DICTATION_BUSY: &str = "Finish the current dictation before testing the microphone";
+/// What a revoked lease answers, before and after the service admits a request.
+const PRESENTATION: &str = "Presentation changed";
 const CYCLES: u8 = 5;
 
 pub fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -24,9 +28,61 @@ fn clip(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
+/// The service and OS operations the microphone feedback needs. `Backend` is
+/// the production implementation; tests drive the same logic through a double.
+pub trait Port: Send + Sync {
+    fn preview(&self) -> &Arc<Preview>;
+    fn settings(&self) -> impl Future<Output = Result<Value, String>> + Send;
+    fn call(
+        &self,
+        command: &str,
+        args: Value,
+    ) -> impl Future<Output = Result<Value, String>> + Send;
+    fn effect(
+        &self,
+        command: &str,
+        args: Value,
+        live: Live,
+    ) -> impl Future<Output = Result<Value, String>> + Send;
+    /// The application's clipboard path.
+    fn copy_text(&self, text: &str) -> Result<(), String>;
+    fn changed(&self);
+}
+impl Port for Backend {
+    fn preview(&self) -> &Arc<Preview> {
+        &self.preview
+    }
+    fn settings(&self) -> impl Future<Output = Result<Value, String>> + Send {
+        super::projections::settings(self)
+    }
+    fn call(
+        &self,
+        command: &str,
+        args: Value,
+    ) -> impl Future<Output = Result<Value, String>> + Send {
+        Backend::call(self, command, args)
+    }
+    fn effect(
+        &self,
+        command: &str,
+        args: Value,
+        live: Live,
+    ) -> impl Future<Output = Result<Value, String>> + Send {
+        Backend::effect(self, command, args, live)
+    }
+    fn copy_text(&self, text: &str) -> Result<(), String> {
+        self.services.copy_text(text)
+    }
+    fn changed(&self) {
+        self.events.publish("main", CHANGED, "{}");
+    }
+}
+
 #[derive(Default)]
 pub struct Preview {
     epoch: AtomicU64,
+    /// Epoch of the current visit to the Performance page, 0 anywhere else.
+    performance: AtomicU64,
     pub id: AtomicU64,
     pub meter: Mutex<Option<(u64, f32, f32)>>,
     /// Latest voice-detection decision: (preview id, sensitivity, unavailable).
@@ -34,13 +90,55 @@ pub struct Preview {
     /// A start or stop the service refused. Automatic starts stay suspended
     /// until the configuration changes or the user retries.
     pub failure: Mutex<Option<String>>,
+    /// The failure above is the microphone-access explanation.
+    permission: AtomicBool,
     pub retry: AtomicBool,
     pub probe_retry_failed: AtomicBool,
     /// When the Smart Auto status last projected stops being current.
     pub smart_deadline: Mutex<Option<Instant>>,
     pub check: Mutex<Check>,
+    /// Finished startup runs, newest first.
+    pub reports: Mutex<Reports>,
+    pub marks: Mutex<Marks>,
 }
 impl Preview {
+    /// A preview whose finished full runs persist under the data directory.
+    pub fn persisted(dir: &std::path::Path) -> Self {
+        Self {
+            reports: Mutex::new(Reports::load(dir)),
+            ..Default::default()
+        }
+    }
+    /// Starts a visit to a Settings page (None: Settings closed) and returns its
+    /// epoch. Staying on Performance keeps the same visit, so a run survives it.
+    pub fn visit(&self, page: Option<crate::settings::schema::Page>) -> u64 {
+        use crate::settings::schema::Page;
+        let epoch = self.epoch.fetch_add(1, Ordering::SeqCst) + 1;
+        if page == Some(Page::Performance) {
+            let _ = self
+                .performance
+                .compare_exchange(0, epoch, Ordering::SeqCst, Ordering::SeqCst);
+        } else {
+            self.performance.store(0, Ordering::SeqCst);
+        }
+        self.id.store(0, Ordering::SeqCst);
+        epoch
+    }
+    /// Revokes a run that belongs to a visit that ended, and names it so the
+    /// service can be told. The flag is set here, synchronously, so a run that
+    /// has not reached the service yet is refused when it asks for admission.
+    pub fn leave(&self) -> Option<String> {
+        let performance = self.performance.load(Ordering::SeqCst);
+        let check = lock(&self.check);
+        let run = check.run.clone()?;
+        if check.visit == performance {
+            return None;
+        }
+        if let Some(abort) = &check.abort {
+            abort.store(true, Ordering::SeqCst);
+        }
+        Some(run)
+    }
     /// Records a Main event that Settings reads back through the projection.
     /// True when the projection must be refreshed for an event the shared
     /// watch list deliberately does not follow.
@@ -73,17 +171,22 @@ impl Preview {
         }
     }
 }
-/// One microphone startup diagnostic and its outcome. The report outlives the
-/// run so Settings can show it after the request that started it returned.
+/// One microphone startup diagnostic and its outcome. The finished report
+/// lives in `Preview::reports`, so it outlives the request that started it.
 #[derive(Default)]
 pub struct Check {
     pub run: Option<String>,
     pub progress: Option<Value>,
     pub cancelling: bool,
-    pub report: Option<Value>,
     pub error: Option<String>,
+    /// The Performance visit that started the run and its revocation switch.
+    visit: u64,
+    abort: Option<Arc<AtomicBool>>,
 }
 
+#[cfg(test)]
+#[path = "microphone_flow_tests.rs"]
+mod flow_tests;
 #[cfg(test)]
 #[path = "microphone_tests.rs"]
 mod tests;
@@ -201,12 +304,11 @@ impl Loop {
 
 impl Backend {
     pub fn changed(&self) {
-        self.events.publish("main", CHANGED, "{}");
+        Port::changed(self);
     }
     pub fn preview_page(&self, page: Option<crate::settings::schema::Page>, _attachment: u64) {
         use crate::settings::schema::Page;
-        let epoch = self.preview.epoch.fetch_add(1, Ordering::SeqCst) + 1;
-        self.preview.id.store(0, Ordering::SeqCst);
+        let epoch = self.preview.visit(page);
         self.services.main_hidden();
         if page.is_none() {
             self.navigate(super::backend::Route::Calibration {
@@ -214,18 +316,15 @@ impl Backend {
                 finish: true,
             });
         }
-        if page != Some(Page::Performance) {
-            // Leaving the diagnostic's page stops its run, as the shipped
-            // component does on unmount.
-            let run = lock(&self.preview.check).run.clone();
-            if let Some(run) = run {
-                let b = self.clone();
-                self.spawn(async move {
-                    let _ = b
-                        .call("cancel_microphone_startup_benchmark", json!({"runId":run}))
-                        .await;
-                });
-            }
+        // Leaving the diagnostic's page stops its run, as the shipped
+        // component does on unmount. The run is revoked before this returns.
+        if let Some(run) = self.preview.leave() {
+            let b = self.clone();
+            self.spawn(async move {
+                let _ = b
+                    .call("cancel_microphone_startup_benchmark", json!({"runId":run}))
+                    .await;
+            });
         }
         if page != Some(Page::Recording) {
             return;
@@ -255,38 +354,69 @@ impl Backend {
         });
     }
 }
-async fn tick(b: &Backend, live: &Live, state: &mut Loop) {
-    let Ok(settings) = super::projections::settings(b).await else {
+
+/// The microphone-access explanation, or None when capture may be attempted.
+/// Granted and not-yet-determined proceed: like the shipped pane, opening the
+/// input is what asks macOS for access, and the service reports a refusal.
+fn permission_block(status: &Result<Value, String>) -> Option<&'static str> {
+    use super::dictation_feedback::Notice;
+    match status.as_ref().map(Value::as_str) {
+        Ok(Some("granted" | "notDetermined")) => None,
+        Ok(Some("denied")) => Some(Notice::from_code("microphone_denied").message),
+        _ => Some(Notice::from_code("microphone_unknown").message),
+    }
+}
+pub async fn tick<P: Port>(p: &P, live: &Live, state: &mut Loop) {
+    let Ok(settings) = p.settings().await else {
         return;
     };
-    if !live()
-        || !b
-            .call("check_microphone_permission_status", json!({}))
-            .await
-            .is_ok_and(|v| v == "granted")
-        || !live()
-    {
+    if !live() {
         return;
     }
-    let Ok(status) = b.call("get_microphone_preview_status", json!({})).await else {
+    let permission = p
+        .call("check_microphone_permission_status", json!({}))
+        .await;
+    if !live() {
+        return;
+    }
+    let preview = p.preview();
+    if let Some(message) = permission_block(&permission) {
+        // Say why nothing starts: denied or unconfirmed access is not a
+        // silent preview, and the explanation names where to restore it.
+        let changed = {
+            let mut failure = lock(&preview.failure);
+            let changed = failure.as_deref() != Some(message);
+            *failure = Some(message.into());
+            changed
+        };
+        preview.permission.store(true, Ordering::SeqCst);
+        if changed {
+            p.changed();
+        }
+        return;
+    }
+    if preview.permission.swap(false, Ordering::SeqCst) && lock(&preview.failure).take().is_some() {
+        p.changed();
+    }
+    let Ok(status) = p.call("get_microphone_preview_status", json!({})).await else {
         return;
     };
     if !live() {
         return;
     }
     let (want, sensitivity) = (config(&settings), vad(&settings));
-    let retry = b.preview.retry.swap(false, Ordering::SeqCst);
+    let retry = preview.retry.swap(false, Ordering::SeqCst);
     let step = state.step(&want, sensitivity, &status, retry);
-    if (retry || state.suspended.is_none()) && lock(&b.preview.failure).take().is_some() {
-        b.changed();
+    if (retry || state.suspended.is_none()) && lock(&preview.failure).take().is_some() {
+        p.changed();
     }
     if status["previewId"].is_null() {
-        b.preview.id.store(0, Ordering::SeqCst);
+        preview.id.store(0, Ordering::SeqCst);
     }
     match step {
         Step::Wait => {}
         Step::Start => {
-            match b
+            match p
                 .effect(
                     "start_microphone_preview",
                     start_args(&want, sensitivity),
@@ -297,10 +427,10 @@ async fn tick(b: &Backend, live: &Live, state: &mut Loop) {
                 Ok(started) => {
                     if let Some(id) = started["previewId"].as_u64() {
                         if live() {
-                            b.preview.id.store(id, Ordering::SeqCst);
+                            preview.id.store(id, Ordering::SeqCst);
                             state.started(id, want, sensitivity);
                         } else {
-                            let _ = b
+                            let _ = p
                                 .call("cancel_microphone_preview", json!({"previewId":id}))
                                 .await;
                         }
@@ -308,31 +438,37 @@ async fn tick(b: &Backend, live: &Live, state: &mut Loop) {
                 }
                 Err(error) if live() && !error.contains(DICTATION_BUSY) => {
                     state.suspended = Some(want);
-                    *lock(&b.preview.failure) = Some(clip(&error, 512));
-                    b.changed();
+                    *lock(&preview.failure) = Some(clip(&error, 512));
+                    p.changed();
                 }
                 Err(_) => {}
             }
         }
         Step::Stop(id) => {
-            match b
+            let stopped = p
                 .call("stop_microphone_preview", json!({"previewId":id}))
-                .await
-            {
+                .await;
+            // A newer visit may have opened its own preview while this stop was
+            // in flight. Its id and failure are not this loop's to change.
+            if !live() {
+                return;
+            }
+            match stopped {
                 Ok(_) => {
                     state.stopped();
-                    b.preview.id.store(0, Ordering::SeqCst);
+                    let _ = preview
+                        .id
+                        .compare_exchange(id, 0, Ordering::SeqCst, Ordering::SeqCst);
                 }
-                Err(error) if live() => {
+                Err(error) => {
                     state.suspended = Some(want);
-                    *lock(&b.preview.failure) = Some(clip(&error, 512));
-                    b.changed();
+                    *lock(&preview.failure) = Some(clip(&error, 512));
+                    p.changed();
                 }
-                Err(_) => {}
             }
         }
         Step::Vad(id, value) => {
-            let updated = b
+            let updated = p
                 .call(
                     "update_microphone_preview_vad_sensitivity",
                     json!({"previewId":id,"vadSensitivity":value}),
@@ -340,13 +476,13 @@ async fn tick(b: &Backend, live: &Live, state: &mut Loop) {
                 .await;
             // Reassert nothing on failure: the shipped pane reports it once.
             state.sent(value);
-            let mut vad = lock(&b.preview.vad);
+            let mut vad = lock(&preview.vad);
             *vad = match updated {
                 Ok(_) => None,
                 Err(_) => Some((id, value, true)),
             };
             drop(vad);
-            b.changed();
+            p.changed();
         }
     }
 }
@@ -382,10 +518,13 @@ pub fn mic_test(
     test
 }
 
-/// Smart Auto feedback and the instant it stops being current.
+/// Smart Auto feedback and the instant it stops being current. `selectable`
+/// is the shared selector's verdict on the current inventory: it accounts for
+/// Continuity permission, the built-in microphone and a closed lid.
 pub fn smart_auto(
     settings: &Value,
     devices: &[Device],
+    selectable: bool,
     status: Result<Value, String>,
     retry_failed: bool,
 ) -> (SmartAuto, Option<Duration>) {
@@ -395,15 +534,9 @@ pub fn smart_auto(
     let Ok(status) = status else {
         return (SmartAuto::Unavailable, None);
     };
-    let approved: Vec<&str> = settings["smartAutoApprovedDeviceIds"]
+    let included = settings["smartAutoApprovedDeviceIds"]
         .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect();
-    let available = devices
-        .iter()
-        .any(|d| d.available && approved.contains(&d.id.as_str()));
+        .is_some_and(|ids| !ids.is_empty());
     let after = |ms: &Value| ms.as_u64().map(Duration::from_millis);
     match status["state"].as_str() {
         Some("ready") => (SmartAuto::Inactive, after(&status["validForMs"])),
@@ -427,9 +560,9 @@ pub fn smart_auto(
             )
         }
         Some("blocked") => {
-            let message = if approved.is_empty() {
+            let message = if !included {
                 "Include at least one microphone before Smart Auto can record."
-            } else if !available {
+            } else if !selectable {
                 "None of the included microphones are available right now."
             } else {
                 status["message"].as_str().unwrap_or_default()
@@ -439,44 +572,13 @@ pub fn smart_auto(
                 SmartAuto::Blocked {
                     message: clip(message, 1024),
                     cooldown_secs: cooldown.map(|ms| ms.div_ceil(1000).max(1) as u32),
-                    retry: settings["smartAutoProbeEnabled"] == true && available,
+                    retry: settings["smartAutoProbeEnabled"] == true && selectable,
                     retry_failed,
                 },
                 cooldown.map(Duration::from_millis),
             )
         }
         _ => (SmartAuto::Unavailable, None),
-    }
-}
-
-fn label(value: &str) -> String {
-    let words = value.replace('_', " ");
-    let mut chars = words.chars();
-    chars
-        .next()
-        .map(|c| c.to_uppercase().chain(chars).collect())
-        .unwrap_or_default()
-}
-fn backend(value: &Value) -> &'static str {
-    match value.as_str() {
-        Some("auhal") => "AUHAL",
-        Some(_) => "IOProc",
-        None => "—",
-    }
-}
-fn ms(value: Option<f64>) -> String {
-    value.map_or("—".into(), |v| format!("{} ms", v.round() as i64))
-}
-fn step(value: &Value) -> String {
-    match value["lastSetupStep"].as_str() {
-        Some(step) => format!(
-            "{} {}",
-            label(step),
-            value["lastSetupTransition"].as_str().unwrap_or_default()
-        )
-        .trim_end()
-        .into(),
-        None => String::new(),
     }
 }
 
@@ -492,16 +594,16 @@ pub fn progress(progress: Option<&Value>) -> (String, u8) {
     let text = if phase == "complete" {
         "Finishing report…".into()
     } else if current == 0 {
-        format!("{} for exclusive microphone access…", label(phase))
+        format!("{} for exclusive microphone access…", report::label(phase))
     } else {
         let mut text = format!("Cycle {current} of {total}");
         if !p["backend"].is_null() {
-            text += &format!(" · {}", backend(&p["backend"]));
+            text += &format!(" · {}", report::backend(&p["backend"]));
         }
         if p["fallbackOccurred"] == true {
             text += " · fallback";
         }
-        let setup = step(p);
+        let setup = report::step(p);
         if !setup.is_empty() {
             text += &format!(" · {setup}");
         }
@@ -510,131 +612,264 @@ pub fn progress(progress: Option<&Value>) -> (String, u8) {
     (clip(&text, 256), percent)
 }
 
-/// The benchmark report as bounded display lines: totals first, then cycles.
-pub fn summary(report: &Value) -> Vec<String> {
-    let cycles = report["cycles"].as_array().map_or(&[][..], Vec::as_slice);
-    let ready: Vec<&Value> = cycles.iter().filter(|c| c["outcome"] == "ready").collect();
-    let mut latencies: Vec<f64> = ready
-        .iter()
-        .filter_map(|c| c["cycleStartToFirstPcmMs"].as_f64())
-        .collect();
-    latencies.sort_by(f64::total_cmp);
-    let n = latencies.len();
-    let median = match n {
-        0 => None,
-        n if n % 2 == 0 => Some((latencies[n / 2 - 1] + latencies[n / 2]) / 2.),
-        n => Some(latencies[n / 2]),
-    };
-    let p95 = (n > 0).then(|| {
-        latencies[((n as f64 * 0.95).ceil() as usize)
-            .saturating_sub(1)
-            .min(n - 1)]
-    });
-    let wins = |auhal: bool| {
-        ready
-            .iter()
-            .filter(|c| (c["backend"] == "auhal") == auhal && !c["backend"].is_null())
-            .count()
-    };
-    let mut lines = vec![
-        clip(
-            &format!(
-                "Startup results · {}/{} cycles{} · macOS · Murmur v{}",
-                report["completedCycles"],
-                report["requestedCycles"],
-                if report["cancelled"] == true {
-                    " · cancelled early"
-                } else {
-                    ""
-                },
-                report["appVersion"].as_str().unwrap_or_default()
-            ),
-            512,
-        ),
-        format!(
-            "Median {} · P95 {} · Ready {}/{} · Fallbacks {}",
-            ms(median),
-            ms(p95),
-            ready.len(),
-            report["completedCycles"],
-            cycles
-                .iter()
-                .filter(|c| c["fallbackOccurred"] == true)
-                .count()
-        ),
-        format!(
-            "AUHAL won {}; IOProc won {}. Range {}–{}.",
-            wins(true),
-            wins(false),
-            ms(latencies.first().copied()),
-            ms(latencies.last().copied())
-        ),
-    ];
-    if cycles.is_empty() {
-        lines.push("The run was cancelled before its first cycle completed.".into());
-    }
-    for c in cycles.iter().take(24) {
-        let mut line = format!(
-            "Cycle {}: {}{} · {} · {}",
-            c["cycle"],
-            match c["outcome"].as_str() {
-                Some("ready") => "Ready",
-                Some("failed") => "Failed",
-                _ => "Cancelled",
-            },
-            if c["fallbackOccurred"] == true {
-                " · fallback"
-            } else {
-                ""
-            },
-            backend(&c["backend"]),
-            ms(c["cycleStartToFirstPcmMs"].as_f64())
-        );
-        if let Some(kind) = c["failureKind"].as_str() {
-            line += &format!(" · {}", label(kind));
-        }
-        let setup = step(c);
-        line += &format!(
-            " · {}",
-            if setup.is_empty() {
-                "No native setup step reported".into()
-            } else {
-                setup
-            }
-        );
-        lines.push(clip(&line, 512));
-    }
-    lines
-}
-
-pub fn startup(check: &Check) -> Startup {
+/// The diagnostic as Settings shows it: progress while a run is active, else the
+/// selected saved run with its history and Copy/Save confirmations.
+pub fn startup(check: &Check, reports: &Reports, marks: &Marks) -> Startup {
     let running = check.run.is_some();
+    let shown = if running { None } else { reports.current() };
     Startup {
         progress: running.then(|| progress(check.progress.as_ref())),
         cancelling: running && check.cancelling,
         error: check.error.as_deref().map(|e| clip(e, 512)),
-        summary: match (&check.report, running) {
-            (Some(report), false) => summary(report),
-            _ => vec![],
-        },
+        summary: shown.map(report::summary).unwrap_or_default(),
+        runs: if running { vec![] } else { reports.labels() },
+        selected: reports.selected,
+        copied: marks.is_copied(),
+        saving: marks.save() == Some(Save::Saving),
+        saved: marks.save() == Some(Save::Saved),
     }
 }
-/// Records one run's outcome. A report must answer the run that was asked for.
-pub fn finish_check(check: &Mutex<Check>, id: &str, result: Result<Value, String>) {
+/// Records one run's outcome and returns the report to keep. A report must
+/// answer the run that was asked for. A run whose page was left is discarded.
+pub fn finish_check(
+    check: &Mutex<Check>,
+    id: &str,
+    result: Result<Value, String>,
+    presented: bool,
+) -> Option<Value> {
     let mut check = lock(check);
     if check.run.as_deref() != Some(id) {
-        return;
+        return None;
     }
     check.run = None;
     check.progress = None;
     check.cancelling = false;
+    check.abort = None;
+    check.visit = 0;
+    if !presented {
+        check.error = None;
+        return None;
+    }
     match result {
         Ok(report) if report["runId"] == id => {
             check.error = None;
-            check.report = Some(report);
+            Some(report)
         }
-        Ok(_) => check.error = Some("Murmur returned an invalid microphone startup report.".into()),
-        Err(error) => check.error = Some(error),
+        Ok(_) => {
+            check.error = Some("Murmur returned an invalid microphone startup report.".into());
+            None
+        }
+        Err(error) => {
+            check.error = Some(error);
+            None
+        }
+    }
+}
+
+/// A registered diagnostic that has not been handed to the service yet.
+pub struct Run {
+    id: String,
+    device: String,
+    visit: u64,
+    abort: Arc<AtomicBool>,
+    /// The folder to save a full run into, when auto-save is on.
+    auto_save: Option<String>,
+}
+impl Run {
+    /// Valid while the Performance visit that started the run is current and
+    /// nobody cancelled it.
+    fn live(&self, preview: &Arc<Preview>) -> Live {
+        let (preview, abort, visit) = (preview.clone(), self.abort.clone(), self.visit);
+        Arc::new(move || {
+            preview.performance.load(Ordering::SeqCst) == visit && !abort.load(Ordering::SeqCst)
+        })
+    }
+}
+fn forget(preview: &Preview, id: &str) {
+    let mut check = lock(&preview.check);
+    if check.run.as_deref() == Some(id) {
+        *check = Check::default();
+    }
+}
+/// Registers the run synchronously, so leaving the page or Cancel can revoke it
+/// while its settings are read. `None`: it was revoked and nothing is shown.
+pub async fn prepare_check<P: Port>(p: &P) -> Result<Option<Run>, String> {
+    let preview = p.preview().clone();
+    let visit = preview.performance.load(Ordering::SeqCst);
+    if visit == 0 {
+        return Err("Open Performance settings to test microphone startup".into());
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let abort = Arc::new(AtomicBool::new(false));
+    {
+        let mut check = lock(&preview.check);
+        if check.run.is_some() {
+            return Err("A microphone startup benchmark is already running".into());
+        }
+        *check = Check {
+            run: Some(id.clone()),
+            visit,
+            abort: Some(abort.clone()),
+            ..Default::default()
+        };
+    }
+    let mut run = Run {
+        id,
+        device: String::new(),
+        visit,
+        abort,
+        auto_save: None,
+    };
+    let live = run.live(&preview);
+    let settings = match p.settings().await {
+        Ok(settings) => settings,
+        Err(error) => {
+            forget(&preview, &run.id);
+            return Err(error);
+        }
+    };
+    if !live() {
+        forget(&preview, &run.id);
+        return Ok(None);
+    }
+    run.device = settings["microphone"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("system_default")
+        .to_owned();
+    run.auto_save = (settings["benchmarkAutoSave"] == true).then(|| {
+        settings["benchmarkOutputDir"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    });
+    Ok(Some(run))
+}
+/// Runs the diagnostic to its outcome and records it. The request that started
+/// it has returned by now; Settings reads progress and the report back.
+pub async fn run_check<P: Port>(p: &P, run: Run) {
+    let preview = p.preview().clone();
+    let live = run.live(&preview);
+    let result = p
+        .effect(
+            "run_microphone_startup_benchmark",
+            json!({"request":{"runId":run.id,"deviceId":run.device,"cycles":CYCLES}}),
+            live.clone(),
+        )
+        .await;
+    // Leaving the page discards the outcome, as unmounting the shipped
+    // component does. A start refused because the run was cancelled before
+    // the service admitted it is that cancellation, not a failure.
+    let left = preview.performance.load(Ordering::SeqCst) != run.visit;
+    let cancelled = !live() && matches!(&result, Err(error) if error == PRESENTATION);
+    let accepted = finish_check(&preview.check, &run.id, result, !left && !cancelled);
+    if let Some(finished) = accepted {
+        let mut error = lock(&preview.reports).add(finished.clone()).err();
+        if report::full(&finished)
+            && let Some(dir) = &run.auto_save
+            && let Err(reason) = p
+                .call(
+                    "save_microphone_startup_benchmark_report",
+                    json!({"report":finished,"outputDir":dir}),
+                )
+                .await
+        {
+            error = Some(format!(
+                "Run completed, but the report could not be auto-saved: {reason}"
+            ));
+        }
+        if let Some(error) = error {
+            lock(&preview.check).error = Some(clip(&error, 512));
+        }
+    }
+    p.changed();
+}
+pub async fn cancel_check<P: Port>(p: &P) {
+    let preview = p.preview();
+    let id = {
+        let mut check = lock(&preview.check);
+        check.error = None;
+        let id = check.run.clone();
+        check.cancelling = id.is_some();
+        // Revokes a run the service has not admitted yet. Once admitted, the
+        // service's own cancellation stops it.
+        if let Some(abort) = &check.abort {
+            abort.store(true, Ordering::SeqCst);
+        }
+        id
+    };
+    let Some(id) = id else {
+        lock(&preview.check).error = Some("The microphone benchmark had already stopped.".into());
+        return;
+    };
+    let result = p
+        .call("cancel_microphone_startup_benchmark", json!({"runId":id}))
+        .await;
+    let mut check = lock(&preview.check);
+    let running = check.run.as_deref() == Some(id.as_str());
+    // Not accepted means the run ended on its own or has not been claimed yet.
+    // The first shows its own outcome; the second is refused at admission.
+    if let Err(error) = result {
+        check.cancelling &= !running;
+        check.error = Some(format!(
+            "Could not cancel the microphone benchmark: {error}"
+        ));
+    }
+}
+/// Puts the selected run on the clipboard. The token ends its confirmation.
+pub fn copy_report<P: Port>(p: &P) -> Option<u64> {
+    let preview = p.preview();
+    let selected = lock(&preview.reports).current().cloned()?;
+    let text = serde_json::to_string_pretty(&selected).unwrap_or_default();
+    match p.copy_text(&text) {
+        Ok(()) => Some(lock(&preview.marks).copied()),
+        Err(error) => {
+            lock(&preview.check).error =
+                Some(clip(&format!("Could not copy report: {error}"), 512));
+            None
+        }
+    }
+}
+/// Saves the selected run through the typed command and its output rules.
+pub async fn save_report<P: Port>(p: &P, live: Live) -> Option<u64> {
+    let preview = p.preview();
+    let selected = lock(&preview.reports).current().cloned()?;
+    if lock(&preview.marks).save() == Some(Save::Saving) {
+        return None;
+    }
+    lock(&preview.check).error = None;
+    lock(&preview.marks).saving(Save::Saving);
+    p.changed();
+    let saved = match p.settings().await {
+        Ok(settings) => {
+            let dir = settings["benchmarkOutputDir"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            p.effect(
+                "save_microphone_startup_benchmark_report",
+                json!({"report":selected,"outputDir":dir}),
+                live,
+            )
+            .await
+        }
+        Err(error) => Err(error),
+    };
+    match saved {
+        Ok(_) => Some(lock(&preview.marks).saving(Save::Saved)),
+        Err(error) => {
+            lock(&preview.marks).idle_save();
+            lock(&preview.check).error =
+                Some(clip(&format!("Could not save report: {error}"), 512));
+            None
+        }
+    }
+}
+pub fn clear_reports<P: Port>(p: &P) {
+    let preview = p.preview();
+    let cleared = lock(&preview.reports).clear();
+    if let Err(error) = cleared {
+        lock(&preview.check).error = Some(error);
     }
 }
 
@@ -642,70 +877,41 @@ impl Backend {
     /// Starts the diagnostic and returns at once: the run outlives the request,
     /// so Settings neither blocks on it nor loses its progress and report.
     pub async fn start_microphone_check(&self) -> Result<(), String> {
-        let settings = super::projections::settings(self).await?;
-        let id = uuid::Uuid::new_v4().to_string();
-        {
-            let mut check = lock(&self.preview.check);
-            if check.run.is_some() {
-                return Err("A microphone startup benchmark is already running".into());
-            }
-            *check = Check {
-                run: Some(id.clone()),
-                ..Default::default()
-            };
-        }
-        let device = settings["microphone"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .unwrap_or("system_default")
-            .to_owned();
+        let Some(run) = prepare_check(self).await? else {
+            return Ok(());
+        };
         let b = self.clone();
-        self.spawn(async move {
-            let result = b
-                .effect(
-                    "run_microphone_startup_benchmark",
-                    json!({"request":{"runId":id,"deviceId":device,"cycles":CYCLES}}),
-                    Arc::new(|| true),
-                )
-                .await;
-            finish_check(&b.preview.check, &id, result);
-            b.changed();
-        });
+        self.spawn(async move { run_check(&b, run).await });
         Ok(())
     }
     pub async fn cancel_microphone_check(&self) -> Result<(), String> {
-        let id = {
-            let mut check = lock(&self.preview.check);
-            check.error = None;
-            let id = check.run.clone();
-            check.cancelling = id.is_some();
-            id
-        };
-        let Some(id) = id else {
-            lock(&self.preview.check).error =
-                Some("The microphone benchmark had already stopped.".into());
-            return Ok(());
-        };
-        let result = self
-            .call("cancel_microphone_startup_benchmark", json!({"runId":id}))
-            .await;
-        let mut check = lock(&self.preview.check);
-        let running = check.run.as_deref() == Some(id.as_str());
-        match result {
-            Ok(accepted) if accepted == true => {}
-            // The run ended by itself first; its own outcome is already shown.
-            Ok(_) if !running => {}
-            Ok(_) => {
-                check.cancelling = false;
-                check.error = Some("The microphone benchmark had already stopped.".into());
-            }
-            Err(error) => {
-                check.cancelling &= !running;
-                check.error = Some(format!(
-                    "Could not cancel the microphone benchmark: {error}"
-                ));
-            }
-        }
+        cancel_check(self).await;
         Ok(())
+    }
+    pub fn copy_microphone_report(&self) {
+        if let Some(token) = copy_report(self) {
+            self.expire_mark(token);
+        }
+    }
+    pub async fn save_microphone_report(&self, live: Live) {
+        if let Some(token) = save_report(self, live).await {
+            self.expire_mark(token);
+        }
+    }
+    pub fn select_microphone_report(&self, index: usize) {
+        lock(&self.preview.reports).select(index);
+    }
+    pub fn clear_microphone_reports(&self) {
+        clear_reports(self);
+    }
+    /// Ends a Copied or Saved confirmation after the shipped 1.6 seconds.
+    fn expire_mark(&self, token: u64) {
+        let b = self.clone();
+        self.spawn(async move {
+            tokio::time::sleep(Duration::from_millis(report::FEEDBACK_MS)).await;
+            if lock(&b.preview.marks).expire(token) {
+                b.changed();
+            }
+        });
     }
 }

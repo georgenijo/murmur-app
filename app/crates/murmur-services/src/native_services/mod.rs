@@ -32,6 +32,21 @@ pub fn initialize_identity(identifier: &str, home: &std::path::Path) -> Result<(
 pub fn external_delivery_allowed() -> bool {
     crate::identity::external_input_allowed()
 }
+/// Whether Smart Auto could choose an input from an inventory snapshot, by the
+/// same rules the recording path applies.
+pub fn smart_auto_selection_available(
+    approved_device_ids: &[String],
+    preferred_device_ids: &[String],
+    allow_continuity: bool,
+    inventory: &Value,
+) -> bool {
+    crate::microphone_auto::selection_available(
+        approved_device_ids,
+        preferred_device_ids,
+        allow_continuity,
+        inventory,
+    )
+}
 pub fn install_runtime(runtime: tokio::runtime::Handle) -> Result<(), String> {
     host::runtime::install(runtime).map_err(|_| "Host runtime already installed".into())
 }
@@ -398,6 +413,13 @@ static OPEN_PORTS: std::sync::OnceLock<Arc<dyn NativePorts>> = std::sync::OnceLo
 pub(crate) fn install_ports(ports: Arc<dyn NativePorts>) {
     let _ = OPEN_PORTS.set(ports);
 }
+/// Whether the presentation that issued the current guarded request still
+/// wants its effect. A command asks again at the point it commits to an
+/// irreversible claim, so a revocation that arrived while it was admitting
+/// cannot be lost. Requests outside a guarded scope are always admitted.
+pub(crate) fn effect_admitted() -> bool {
+    EFFECT_LEASE.try_with(|lease| lease()).unwrap_or(true)
+}
 pub(crate) fn open_system_url(value: String) -> Result<(), String> {
     let lease = EFFECT_LEASE
         .try_with(Clone::clone)
@@ -600,5 +622,29 @@ impl Services {
             )?;
             serde_json::to_value(entry).map_err(|_| "Correction result unavailable".into())
         }))
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[tokio::test]
+    async fn a_command_sees_a_lease_revoked_after_it_was_admitted() {
+        let live = Arc::new(AtomicBool::new(true));
+        let lease: EffectLease = {
+            let live = live.clone();
+            Arc::new(move || live.load(Ordering::SeqCst))
+        };
+        // Outside a guarded request nothing can revoke the effect.
+        assert!(effect_admitted());
+        EFFECT_LEASE
+            .scope(lease, async {
+                assert!(effect_admitted());
+                live.store(false, Ordering::SeqCst);
+                assert!(!effect_admitted());
+            })
+            .await;
     }
 }

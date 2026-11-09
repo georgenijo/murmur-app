@@ -63,7 +63,9 @@ impl SmartAutoBlock {
     pub(crate) fn message(self) -> &'static str {
         match self {
             Self::Unavailable(message) => message,
-            Self::Cooldown(_) => "Smart Auto is waiting ten seconds between microphone changes. Try again shortly or pin a microphone manually.",
+            Self::Cooldown(_) => {
+                "Smart Auto is waiting ten seconds between microphone changes. Try again shortly or pin a microphone manually."
+            }
         }
     }
 
@@ -194,7 +196,9 @@ impl SmartAutoHealth {
             return Ok(current);
         }
         if verified.is_empty() {
-            return Err(SmartAutoBlock::Unavailable("Smart Auto is waiting for recent signal from an included microphone. Turn on Background signal checks in Settings, or pin a microphone manually."));
+            return Err(SmartAutoBlock::Unavailable(
+                "Smart Auto is waiting for recent signal from an included microphone. Turn on Background signal checks in Settings, or pin a microphone manually.",
+            ));
         }
         // A failed replacement may return immediately to the last verified
         // choice. Other changes wait out the switch cooldown, without capture.
@@ -343,6 +347,47 @@ pub(crate) fn select(
         });
     }
     Err("No approved, usable microphone is available for Smart Auto.")
+}
+
+/// Whether the shared selector could pick an input from an inventory snapshot
+/// (the `get_audio_input_inventory` payload). Settings uses this to decide
+/// whether a Smart Auto retry has anything to retry, so it must agree with the
+/// recording path on Continuity permission and built-in/lid eligibility.
+pub(crate) fn selection_available(
+    approved_device_ids: &[String],
+    preferred_device_ids: &[String],
+    allow_continuity: bool,
+    inventory: &serde_json::Value,
+) -> bool {
+    let devices: Vec<AudioDeviceDescriptor> = inventory["devices"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|device| {
+            Some(AudioDeviceDescriptor {
+                id: device["id"].as_str()?.to_owned(),
+                name: device["name"].as_str().unwrap_or_default().to_owned(),
+                kind: serde_json::from_value(device["kind"].clone()).ok()?,
+                connected: device["connected"].as_bool()?,
+                has_input: device["hasInput"].as_bool()?,
+            })
+        })
+        .collect();
+    let lid_state = serde_json::from_value(inventory["lidState"].clone())
+        .unwrap_or(ProductionLidState::Unknown);
+    let request = SmartAutoRequest {
+        approved_device_ids: approved_device_ids.to_vec(),
+        preferred_device_ids: preferred_device_ids.to_vec(),
+        allow_continuity,
+        require_recent_signal: false,
+    };
+    select(
+        &request,
+        &devices,
+        inventory["defaultInputId"].as_str(),
+        lid_state,
+    )
+    .is_ok()
 }
 
 /// A lid transition does not necessarily change Core Audio topology or the
@@ -858,5 +903,50 @@ mod tests {
                 .reason,
             SmartAutoReason::ApprovedMacosDefault,
         );
+    }
+
+    fn inventory(lid: &str) -> serde_json::Value {
+        serde_json::json!({
+            "status": "ready",
+            "defaultInputId": "built-in",
+            "lidState": lid,
+            "devices": [
+                {"id":"built-in","name":"Built-in","kind":"builtIn","connected":true,"hasInput":true},
+                {"id":"iphone","name":"Phone","kind":"continuity","connected":true,"hasInput":true},
+            ],
+        })
+    }
+    fn ids(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn retry_eligibility_follows_continuity_permission() {
+        let phone = ids(&["iphone"]);
+        assert!(!selection_available(&phone, &[], false, &inventory("open")));
+        assert!(selection_available(&phone, &[], true, &inventory("open")));
+    }
+
+    #[test]
+    fn retry_eligibility_follows_the_lid() {
+        let built_in = ids(&["built-in"]);
+        assert!(selection_available(
+            &built_in,
+            &[],
+            false,
+            &inventory("open")
+        ));
+        for lid in ["closed", "unknown", "unrecognized"] {
+            assert!(!selection_available(&built_in, &[], false, &inventory(lid)));
+        }
+        // An allowed iPhone is still usable with the lid closed.
+        assert!(selection_available(
+            &ids(&["built-in", "iphone"]),
+            &[],
+            true,
+            &inventory("closed")
+        ));
+        // Nothing included means nothing to retry.
+        assert!(!selection_available(&[], &[], true, &inventory("open")));
     }
 }

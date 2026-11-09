@@ -174,6 +174,14 @@ impl Host for FixtureHost {
                             next.runtime.startup_running = false;
                             next.runtime.startup.progress = None;
                         }
+                        Action::SelectMicrophoneReport(index) => {
+                            next.runtime.startup.selected = *index;
+                        }
+                        Action::ClearMicrophoneReports => {
+                            next.runtime.startup.runs.clear();
+                            next.runtime.startup.summary.clear();
+                            next.runtime.startup.selected = 0;
+                        }
                         Action::InstallSmartTurn => next.runtime.smart_turn = Install::Installed,
                         Action::RemoveSmartTurn => next.runtime.smart_turn = Install::Missing,
                         Action::InstallSpeakers => next.runtime.speakers = Install::Installed,

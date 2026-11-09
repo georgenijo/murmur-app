@@ -960,7 +960,7 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
         let (routes, route_receive) = mpsc::sync_channel(64);
         let (commands, command_receive) = mpsc::sync_channel(512);
         let downloads = Arc::new(super::downloads::Downloads::default());
-        let microphone = Arc::new(super::microphone::Preview::default());
+        let microphone = Arc::new(super::microphone::Preview::persisted(&paths.app));
         let levels = Arc::new(Mutex::new(None));
         let playback = Arc::new(super::meetings::Presentation::default());
         let scan = Arc::new(Mutex::new(None));
@@ -1432,7 +1432,11 @@ mod microphone_ingress_tests {
         assert!(main.send("main", event, &progress("older-run")).is_ok());
         assert!(lock(&preview.check).progress.is_none());
         assert!(main.send("main", event, &progress("run-1")).is_ok());
-        let shown = startup(&lock(&preview.check));
+        let shown = startup(
+            &lock(&preview.check),
+            &lock(&preview.reports),
+            &lock(&preview.marks),
+        );
         assert_eq!(shown.progress, Some(("Cycle 3 of 5".to_string(), 40)));
     }
 }

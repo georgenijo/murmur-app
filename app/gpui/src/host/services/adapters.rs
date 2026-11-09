@@ -390,6 +390,32 @@ async fn settings_action(
             b.changed();
             return Ok(());
         }
+        Action::SelectMicrophoneReport(index) => {
+            if current() {
+                b.select_microphone_report(index);
+                b.changed();
+            }
+            return Ok(());
+        }
+        Action::CopyMicrophoneReport => {
+            if current() {
+                b.copy_microphone_report();
+                b.changed();
+            }
+            return Ok(());
+        }
+        Action::SaveMicrophoneReport => {
+            b.save_microphone_report(current).await;
+            b.changed();
+            return Ok(());
+        }
+        Action::ClearMicrophoneReports => {
+            if current() {
+                b.clear_microphone_reports();
+                b.changed();
+            }
+            return Ok(());
+        }
         Action::RetryMicrophone => {
             b.preview
                 .retry

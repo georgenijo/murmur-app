@@ -187,7 +187,7 @@ fn smart_auto_reports_probing_blocked_and_unreadable_status() {
     let probing =
         json!({"state":"probing","deviceId":"synthetic.a","phase":"verifying","remainingMs":1500});
     assert_eq!(
-        smart_auto(&smart, &devices, Ok(probing), false),
+        smart_auto(&smart, &devices, true, Ok(probing), false),
         (
             SmartAuto::Probing {
                 device: "Synthetic synthetic.a".into(),
@@ -198,7 +198,7 @@ fn smart_auto_reports_probing_blocked_and_unreadable_status() {
     );
     let unknown = json!({"state":"probing","deviceId":"synthetic.gone","phase":"connecting","remainingMs":10});
     assert_eq!(
-        smart_auto(&smart, &devices, Ok(unknown), false).0,
+        smart_auto(&smart, &devices, true, Ok(unknown), false).0,
         SmartAuto::Probing {
             device: "included microphone".into(),
             phase: "connecting"
@@ -206,7 +206,7 @@ fn smart_auto_reports_probing_blocked_and_unreadable_status() {
     );
     let blocked = json!({"state":"blocked","message":"No included microphone produced a signal.","retryAfterMs":2300});
     assert_eq!(
-        smart_auto(&smart, &devices, Ok(blocked.clone()), true),
+        smart_auto(&smart, &devices, true, Ok(blocked.clone()), true),
         (
             SmartAuto::Blocked {
                 message: "No included microphone produced a signal.".into(),
@@ -221,6 +221,7 @@ fn smart_auto_reports_probing_blocked_and_unreadable_status() {
         smart_auto(
             &smart,
             &devices,
+            true,
             Err("Native view is unavailable".into()),
             false
         )
@@ -228,17 +229,24 @@ fn smart_auto_reports_probing_blocked_and_unreadable_status() {
         SmartAuto::Unavailable
     );
     assert_eq!(
-        smart_auto(&smart, &devices, Ok(json!({"state":"mystery"})), false).0,
+        smart_auto(
+            &smart,
+            &devices,
+            true,
+            Ok(json!({"state":"mystery"})),
+            false
+        )
+        .0,
         SmartAuto::Unavailable
     );
     // A ready selection, or Smart Auto being off, needs no feedback.
     let ready = json!({"state":"ready","deviceId":"synthetic.a","reason":"recent_signal","validForMs":null});
     assert_eq!(
-        smart_auto(&smart, &devices, Ok(ready), false).0,
+        smart_auto(&smart, &devices, true, Ok(ready), false).0,
         SmartAuto::Inactive
     );
     assert_eq!(
-        smart_auto(&settings(), &devices, Ok(blocked), false).0,
+        smart_auto(&settings(), &devices, true, Ok(blocked), false).0,
         SmartAuto::Inactive
     );
 }
@@ -249,7 +257,8 @@ fn smart_auto_blocked_explains_missing_microphones_and_hides_retry() {
     smart["smartAutoMicrophoneEnabled"] = json!(true);
     let blocked = json!({"state":"blocked","message":"Service wording.","retryAfterMs":null});
     let none_available = [device("synthetic.a", false), device("synthetic.b", false)];
-    let (feedback, deadline) = smart_auto(&smart, &none_available, Ok(blocked.clone()), false);
+    let (feedback, deadline) =
+        smart_auto(&smart, &none_available, false, Ok(blocked.clone()), false);
     assert_eq!(
         feedback,
         SmartAuto::Blocked {
@@ -261,7 +270,7 @@ fn smart_auto_blocked_explains_missing_microphones_and_hides_retry() {
     );
     assert_eq!(deadline, None);
     smart["smartAutoApprovedDeviceIds"] = json!([]);
-    let (feedback, _) = smart_auto(&smart, &none_available, Ok(blocked.clone()), false);
+    let (feedback, _) = smart_auto(&smart, &none_available, false, Ok(blocked.clone()), false);
     assert!(
         matches!(feedback, SmartAuto::Blocked { message, retry: false, .. }
         if message == "Include at least one microphone before Smart Auto can record.")
@@ -271,129 +280,7 @@ fn smart_auto_blocked_explains_missing_microphones_and_hides_retry() {
     smart["smartAutoProbeEnabled"] = json!(false);
     let ready_device = [device("synthetic.a", true)];
     assert!(matches!(
-        smart_auto(&smart, &ready_device, Ok(blocked), false).0,
+        smart_auto(&smart, &ready_device, true, Ok(blocked), false).0,
         SmartAuto::Blocked { retry: false, .. }
     ));
-}
-
-fn report() -> Value {
-    json!({
-        "runId":"run-1","completedCycles":3,"requestedCycles":5,"cancelled":true,"appVersion":"1.2.3",
-        "cycles":[
-            {"cycle":1,"outcome":"ready","cycleStartToFirstPcmMs":100.0,"backend":"auhal","fallbackOccurred":false,"failureKind":null,"lastSetupStep":null,"lastSetupTransition":null},
-            {"cycle":2,"outcome":"ready","cycleStartToFirstPcmMs":200.0,"backend":"ioprocstart","fallbackOccurred":true,"failureKind":null,"lastSetupStep":"stream_start","lastSetupTransition":"completed"},
-            {"cycle":3,"outcome":"failed","cycleStartToFirstPcmMs":null,"backend":null,"fallbackOccurred":false,"failureKind":"device_busy","lastSetupStep":null,"lastSetupTransition":null}
-        ]
-    })
-}
-
-#[test]
-fn startup_summary_reports_totals_and_each_cycle() {
-    let lines = summary(&report());
-    assert_eq!(
-        lines[0],
-        "Startup results · 3/5 cycles · cancelled early · macOS · Murmur v1.2.3"
-    );
-    assert_eq!(
-        lines[1],
-        "Median 150 ms · P95 200 ms · Ready 2/3 · Fallbacks 1"
-    );
-    assert_eq!(lines[2], "AUHAL won 1; IOProc won 1. Range 100 ms–200 ms.");
-    assert_eq!(
-        lines[3],
-        "Cycle 1: Ready · AUHAL · 100 ms · No native setup step reported"
-    );
-    assert_eq!(
-        lines[4],
-        "Cycle 2: Ready · fallback · IOProc · 200 ms · Stream start completed"
-    );
-    assert_eq!(
-        lines[5],
-        "Cycle 3: Failed · — · — · Device busy · No native setup step reported"
-    );
-    assert_eq!(lines.len(), 6);
-    let empty = summary(
-        &json!({"runId":"r","completedCycles":0,"requestedCycles":5,"cancelled":true,"appVersion":"1","cycles":[]}),
-    );
-    assert!(empty.contains(&"The run was cancelled before its first cycle completed.".to_string()));
-    assert_eq!(empty[1], "Median — · P95 — · Ready 0/0 · Fallbacks 0");
-    let many = json!({"runId":"r","completedCycles":99,"requestedCycles":99,"cancelled":false,"appVersion":"1",
-        "cycles":(0..99).map(|n| json!({"cycle":n,"outcome":"ready","cycleStartToFirstPcmMs":1.0,"backend":"auhal"})).collect::<Vec<_>>()});
-    assert!(summary(&many).len() <= 32);
-}
-
-#[test]
-fn startup_progress_uses_shipped_wording() {
-    assert_eq!(
-        progress(None),
-        ("Preparing production capture path…".into(), 0)
-    );
-    let running = json!({"runId":"run-1","completedCycles":1,"totalCycles":5,"currentCycle":2,"phase":"capturing","backend":"auhal","fallbackOccurred":true,"lastSetupStep":"stream_start","lastSetupTransition":"started"});
-    assert_eq!(
-        progress(Some(&running)),
-        (
-            "Cycle 2 of 5 · AUHAL · fallback · Stream start started".into(),
-            20
-        )
-    );
-    let waiting = json!({"completedCycles":0,"totalCycles":5,"currentCycle":0,"phase":"waiting"});
-    assert_eq!(
-        progress(Some(&waiting)).0,
-        "Waiting for exclusive microphone access…"
-    );
-    let done = json!({"completedCycles":5,"totalCycles":5,"currentCycle":5,"phase":"complete"});
-    assert_eq!(progress(Some(&done)), ("Finishing report…".into(), 100));
-}
-
-#[test]
-fn startup_outcome_is_kept_after_the_run_and_rejects_mismatched_reports() {
-    let check = Mutex::new(Check {
-        run: Some("run-1".into()),
-        progress: Some(json!({"currentCycle":1})),
-        cancelling: true,
-        ..Default::default()
-    });
-    // Another run's report is not this run's result.
-    finish_check(&check, "run-1", Ok(json!({"runId":"other"})));
-    let shown = startup(&lock(&check));
-    assert_eq!(
-        shown.error.as_deref(),
-        Some("Murmur returned an invalid microphone startup report.")
-    );
-    assert!(shown.progress.is_none() && !shown.cancelling && shown.summary.is_empty());
-
-    *lock(&check) = Check {
-        run: Some("run-2".into()),
-        ..Default::default()
-    };
-    assert!(startup(&lock(&check)).progress.is_some());
-    // A finished older run cannot overwrite the current one.
-    finish_check(&check, "run-1", Err("stale".into()));
-    assert_eq!(lock(&check).run.as_deref(), Some("run-2"));
-    finish_check(&check, "run-2", Err("The microphone is busy.".into()));
-    let shown = startup(&lock(&check));
-    assert_eq!(shown.error.as_deref(), Some("The microphone is busy."));
-    assert!(shown.progress.is_none());
-
-    *lock(&check) = Check {
-        run: Some("run-1".into()),
-        ..Default::default()
-    };
-    finish_check(&check, "run-1", Ok(report()));
-    let shown = startup(&lock(&check));
-    assert!(shown.error.is_none());
-    assert_eq!(shown.summary.len(), 6);
-}
-
-#[test]
-fn startup_progress_is_recorded_only_for_the_running_run() {
-    let preview = Preview::default();
-    let event = |run: &str| json!({"runId":run,"completedCycles":1,"totalCycles":5,"currentCycle":2,"phase":"capturing"});
-    preview.observe("microphone-startup-benchmark-progress", &event("run-1"));
-    assert!(lock(&preview.check).progress.is_none());
-    lock(&preview.check).run = Some("run-1".into());
-    preview.observe("microphone-startup-benchmark-progress", &event("stale"));
-    assert!(lock(&preview.check).progress.is_none());
-    preview.observe("microphone-startup-benchmark-progress", &event("run-1"));
-    assert_eq!(startup(&lock(&preview.check)).progress.unwrap().1, 20);
 }

@@ -1078,6 +1078,11 @@ pub async fn run_microphone_startup_benchmark(
             });
         }
     }
+    // Native QA: stall where a cancel can still arrive before the claim.
+    #[cfg(feature = "native-host-qa")]
+    if super::microphone_qa::selected() == Some(super::microphone_qa::Fault::StartupDelay) {
+        tokio::time::sleep(Duration::from_secs(8)).await;
+    }
     let benchmark_run_id = match state.microphone_startup_benchmark.claim(run_id.clone()) {
         Ok(id) => id,
         Err(error) => {
@@ -1085,6 +1090,24 @@ pub async fn run_microphone_startup_benchmark(
             return Err(error);
         }
     };
+    // A cancel that arrived before this claim found no run to stop. The caller
+    // revokes its lease before it cancels, so asking now cannot miss it.
+    if !crate::native_services::effect_admitted() {
+        state.microphone_startup_benchmark.finish(benchmark_run_id);
+        coordinator.finish();
+        return Err("Presentation changed".to_string());
+    }
+    // Native QA: a fallback or total-failure report through the real claim,
+    // release and result path, without needing a failing microphone.
+    #[cfg(feature = "native-host-qa")]
+    if let Some(report) = qa_report(super::microphone_qa::selected(), &run_id, benchmark_run_id) {
+        let _guard = RunGuard {
+            app: app_handle.clone(),
+            benchmark_run_id,
+            coordinator,
+        };
+        return Ok(report);
+    }
     let backend_plan = crate::audio::microphone_startup_backend_plan(device_id.as_deref());
     drop(transition);
     crate::meeting_suggestions::busy_changed(&app_handle);
@@ -1384,9 +1407,131 @@ fn write_report(
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// Native QA reports with synthetic timings only. Cycle 1 either falls back
+/// from AUHAL to CPAL or, for the failure fault, loses both backends.
+#[cfg(any(test, feature = "native-host-qa"))]
+fn qa_report(
+    fault: Option<super::microphone_qa::Fault>,
+    run_id: &str,
+    benchmark_run_id: u64,
+) -> Option<MicrophoneStartupBenchmarkReport> {
+    use super::microphone_qa::Fault;
+    let failing = match fault? {
+        Fault::StartupFallback => false,
+        Fault::StartupFailure => true,
+        _ => return None,
+    };
+    let attempt = |pass: u8, index: u8, backend: &str, failed: bool, step: &str| {
+        serde_json::json!({
+            "resolutionPass": pass,
+            "attemptIndex": index,
+            "backend": backend,
+            "outcome": if failed { "failed" } else { "ready" },
+            "attemptStartToFirstPcmMs": if failed { None } else { Some(140) },
+            "activeElapsedMs": if failed { 900 } else { 140 },
+            "failureKind": if failed { Some("device_unavailable") } else { None },
+            "failurePhase": if failed { Some("stream_build") } else { None },
+            "lastSetupStep": step,
+            "lastSetupTransition": if failed { "entered" } else { "completed" },
+            "attemptBudgetMs": 5000,
+        })
+    };
+    let first = if failing {
+        serde_json::json!({
+            "cycle": 1,
+            "outcome": "failed",
+            "cycleStartToFirstPcmMs": null,
+            "backend": null,
+            "fallbackOccurred": true,
+            "failureKind": "device_unavailable",
+            "lastSetupStep": "stream_build",
+            "lastSetupTransition": "entered",
+            "backendOrder": ["auhal", "cpal"],
+            "backendOrderSource": "default",
+            "attempts": [
+                attempt(1, 1, "auhal", true, "set_current_device"),
+                attempt(1, 2, "cpal", true, "stream_build"),
+            ],
+        })
+    } else {
+        serde_json::json!({
+            "cycle": 1,
+            "outcome": "ready",
+            "cycleStartToFirstPcmMs": 1100,
+            "backend": "cpal",
+            "fallbackOccurred": true,
+            "failureKind": null,
+            "lastSetupStep": "stream_start",
+            "lastSetupTransition": "completed",
+            "backendOrder": ["auhal", "cpal"],
+            "backendOrderSource": "default",
+            "attempts": [
+                attempt(1, 1, "auhal", true, "set_current_device"),
+                attempt(1, 2, "cpal", false, "stream_start"),
+            ],
+        })
+    };
+    let steady = |cycle: u8| {
+        serde_json::json!({
+            "cycle": cycle,
+            "outcome": "ready",
+            "cycleStartToFirstPcmMs": 130,
+            "backend": "auhal",
+            "fallbackOccurred": false,
+            "failureKind": null,
+            "lastSetupStep": null,
+            "lastSetupTransition": null,
+            "backendOrder": ["auhal", "cpal"],
+            "backendOrderSource": "default",
+            "attempts": [{
+                "resolutionPass": 1,
+                "attemptIndex": 1,
+                "backend": "auhal",
+                "outcome": "ready",
+                "attemptStartToFirstPcmMs": 120,
+                "activeElapsedMs": 120,
+                "failureKind": null,
+                "failurePhase": null,
+                "lastSetupStep": null,
+                "lastSetupTransition": null,
+                "attemptBudgetMs": 5000,
+            }],
+        })
+    };
+    let started = chrono::Utc::now();
+    serde_json::from_value(serde_json::json!({
+        "schemaVersion": REPORT_SCHEMA_VERSION,
+        "runId": run_id,
+        "benchmarkRunId": benchmark_run_id,
+        "appVersion": env!("CARGO_PKG_VERSION"),
+        "platform": std::env::consts::OS,
+        "deviceSelection": "system_default",
+        "requestedCycles": 5,
+        "completedCycles": 5,
+        "cancelled": false,
+        "startedAt": started.to_rfc3339(),
+        "finishedAt": (started + chrono::Duration::seconds(3)).to_rfc3339(),
+        "cycles": [first, steady(2), steady(3), steady(4), steady(5)],
+    }))
+    .ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qa_reports_pass_the_production_report_validation() {
+        use super::super::microphone_qa::Fault;
+        let run_id = uuid::Uuid::new_v4().to_string();
+        for fault in [Fault::StartupFallback, Fault::StartupFailure] {
+            let report = qa_report(Some(fault), &run_id, 7).expect("a report for the fault");
+            validate_report(&report).expect("valid report");
+            assert_eq!(report.run_id, run_id);
+        }
+        assert!(qa_report(Some(Fault::StartupDelay), &run_id, 7).is_none());
+        assert!(qa_report(None, &run_id, 7).is_none());
+    }
 
     fn valid_report() -> MicrophoneStartupBenchmarkReport {
         MicrophoneStartupBenchmarkReport {

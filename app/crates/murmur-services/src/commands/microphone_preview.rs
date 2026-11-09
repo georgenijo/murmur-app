@@ -227,6 +227,7 @@ pub fn update_microphone_preview_vad_sensitivity(
     vad_sensitivity: u32,
 ) -> Result<bool, String> {
     require_main_window(&window)?;
+    super::microphone_qa::refuse(super::microphone_qa::Fault::VadUnavailable)?;
     Ok(state
         .app_state
         .microphone_preview

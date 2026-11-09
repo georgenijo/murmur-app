@@ -77,6 +77,40 @@ Copy JSON or Save to file; only full runs may use the Lab's existing auto-save
 folder. The dedicated typed save command revalidates schema/cross-fields and
 writes a Rust-owned filename.
 
+### GPUI Settings behavior
+
+The GPUI Performance pane runs the same diagnostic through the production host
+adapters. The run is registered when Test microphone startup is pressed and is
+revoked synchronously when the user leaves Performance or presses Cancel, so a
+run that has not reached the service yet is refused at admission and no capture
+starts behind the page. Leaving the page discards the result, as unmounting the
+shipped component does; Cancel keeps the partial report. Full runs persist
+(latest ten) in `microphone-startup-reports.json` in the app data directory,
+with a Saved run selector and a confirmed Clear reports action. Copy JSON uses
+the application clipboard path and Save to file the typed save command; both show
+the shipped Copied/Saving…/Saved confirmation for 1.6 seconds and the shipped
+"Could not copy report" / "Could not save report" explanations.
+
+### Native QA faults
+
+States a Mac cannot reach on demand are produced by a selector at the service
+boundary. It is compiled out unless the crate is built with the `native-host-qa`
+feature, and even then only the isolated QA identity
+`com.localdictation.gpui-host-qa110` honours it. The host adapters, projections
+and native views that follow the fault are the production ones. Set
+`MURMUR_QA_MICROPHONE_FAULT` to exactly one of:
+
+| Value | Effect |
+| --- | --- |
+| `vad-unavailable` | Voice-detection sensitivity updates are refused. |
+| `smart-auto-unavailable` | The Smart Auto status service cannot answer. |
+| `startup-delay` | The diagnostic stalls 8 seconds before the service claims the run, so Cancel or leaving the page can arrive first. |
+| `startup-fallback` | The diagnostic returns a synthetic report whose cycle 1 falls back from AUHAL to CPAL. |
+| `startup-failure` | The diagnostic returns a synthetic report whose cycle 1 loses both backends. |
+
+Reports from `startup-fallback` and `startup-failure` contain synthetic timings
+only and travel through the real claim, release and result path.
+
 ## Internal personal corpus recorder
 
 The private **Murmur Bench** flavor includes a guided recorder for building a repeatable

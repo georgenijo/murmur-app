@@ -820,6 +820,78 @@ mod ax {
         named(&t, "Test microphone startup…");
     }
     #[gpui::test]
+    fn microphone_startup_report_can_be_copied_saved_selected_and_cleared(cx: &mut TestAppContext) {
+        use super::super::model::Startup;
+        let (e, host, cx) = harness(cx);
+        let runs = vec![
+            "2026-01-03 00:00:00 UTC · 5/5 cycles".to_string(),
+            "2026-01-02 03:04:05 UTC · 5/5 cycles".to_string(),
+        ];
+        let shown = |copied, saving, saved, selected| Startup {
+            summary: vec!["Startup results · 5/5 cycles · macOS · Murmur v1.2.3".into()],
+            runs: runs.clone(),
+            selected,
+            copied,
+            saving,
+            saved,
+            ..Default::default()
+        };
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.runtime.startup = shown(false, false, false, 0)
+        });
+        open(&e, cx, Page::Performance, true);
+        let t = tree(cx);
+        click(cx, named(&t, "Copy JSON"));
+        assert_eq!(
+            host.actions.borrow().last(),
+            Some(&Action::CopyMicrophoneReport)
+        );
+        click(cx, named(&tree(cx), "Save to file"));
+        assert_eq!(
+            host.actions.borrow().last(),
+            Some(&Action::SaveMicrophoneReport)
+        );
+        // The older saved run is selectable; the current one is not offered again.
+        let t = tree(cx);
+        assert!(has_text(&t, "Saved run"));
+        let current = t
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("2026-01-03 00:00:00 UTC · 5/5 cycles"))
+            .unwrap();
+        assert!(current.1.is_disabled());
+        click(cx, named(&t, "2026-01-02 03:04:05 UTC · 5/5 cycles"));
+        assert_eq!(
+            host.actions.borrow().last(),
+            Some(&Action::SelectMicrophoneReport(1))
+        );
+        // Confirmations replace the labels and Save cannot be repeated meanwhile.
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.runtime.startup = shown(true, true, false, 1)
+        });
+        let t = tree(cx);
+        named(&t, "Copied");
+        let saving = t
+            .nodes
+            .iter()
+            .find(|(_, n)| n.label() == Some("Saving…"))
+            .unwrap();
+        assert!(saving.1.is_disabled());
+        publish(&e, &host, cx, |snapshot| {
+            snapshot.runtime.startup = shown(false, false, true, 1)
+        });
+        named(&tree(cx), "Saved");
+        // Clearing the history asks for confirmation first.
+        let before = host.actions.borrow().len();
+        click(cx, named(&tree(cx), "Clear reports…"));
+        assert_eq!(host.actions.borrow().len(), before);
+        click(cx, named(&tree(cx), "Confirm Clear reports…"));
+        assert_eq!(
+            host.actions.borrow().last(),
+            Some(&Action::ClearMicrophoneReports)
+        );
+    }
+    #[gpui::test]
     fn regression_calibration_preview_failure_then_save_keeps_acknowledged_requested_offset(
         cx: &mut TestAppContext,
     ) {

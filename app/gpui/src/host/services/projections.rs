@@ -381,7 +381,14 @@ pub fn preferences(b: Backend) -> Read<crate::settings::model::Snapshot> {
         } else {
             None
         };
-        let startup = super::microphone::startup(&super::microphone::lock(&b.preview.check));
+        let startup = {
+            use super::microphone::lock;
+            super::microphone::startup(
+                &lock(&b.preview.check),
+                &lock(&b.preview.reports),
+                &lock(&b.preview.marks),
+            )
+        };
         let startup_running = startup.progress.is_some();
         let login = b.os.login_status().await?;
         let login_requires_approval = login == super::autostart::Registration::RequiresApproval;
@@ -464,7 +471,31 @@ pub fn preferences(b: Backend) -> Read<crate::settings::model::Snapshot> {
         let retry_failed = b.preview.probe_retry_failed.load(Ordering::Acquire);
         let (smart_auto, refresh_in) = match smart_status {
             Some(status) => {
-                super::microphone::smart_auto(&settings, &runtime.devices, status, retry_failed)
+                // The same selector the recording path applies, so Retry and
+                // the "none available" explanation follow Continuity permission
+                // and the lid, not only whether an approved device is connected.
+                let ids = |key: &str| -> Vec<String> {
+                    settings[key]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(Value::as_str)
+                        .map(String::from)
+                        .collect()
+                };
+                let selectable = murmur_services::native_services::smart_auto_selection_available(
+                    &ids("smartAutoApprovedDeviceIds"),
+                    &ids("smartAutoPreferredDeviceIds"),
+                    settings["smartAutoAllowContinuity"] == true,
+                    &inventory,
+                );
+                super::microphone::smart_auto(
+                    &settings,
+                    &runtime.devices,
+                    selectable,
+                    status,
+                    retry_failed,
+                )
             }
             None => (crate::settings::model::SmartAuto::Inactive, None),
         };

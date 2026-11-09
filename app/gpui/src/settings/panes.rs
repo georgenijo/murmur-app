@@ -762,6 +762,48 @@ impl Settings {
                 if let Some(error) = &r.startup.error {
                     text!(error.clone());
                 }
+                if !r.startup.summary.is_empty() {
+                    let s = &r.startup;
+                    action!(
+                        "copy-microphone-report",
+                        if s.copied { "Copied" } else { "Copy JSON" },
+                        Action::CopyMicrophoneReport,
+                        false,
+                        false
+                    );
+                    action!(
+                        "save-microphone-report",
+                        if s.saved {
+                            "Saved"
+                        } else if s.saving {
+                            "Saving…"
+                        } else {
+                            "Save to file"
+                        },
+                        Action::SaveMicrophoneReport,
+                        false,
+                        s.saving
+                    );
+                    if s.runs.len() > 1 {
+                        text!("Saved run");
+                        for (i, run) in s.runs.iter().enumerate() {
+                            action!(
+                                &format!("microphone-report-run-{i}"),
+                                run,
+                                Action::SelectMicrophoneReport(i),
+                                false,
+                                i == s.selected
+                            );
+                        }
+                        action!(
+                            "clear-microphone-reports",
+                            "Clear reports…",
+                            Action::ClearMicrophoneReports,
+                            true,
+                            false
+                        );
+                    }
+                }
                 for line in &r.startup.summary {
                     text!(line.clone());
                 }

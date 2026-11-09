@@ -48,6 +48,7 @@ pub mod projections;
 pub mod adapters;
 pub mod downloads;
 pub mod microphone;
+pub mod microphone_report;
 
 pub mod history;
 

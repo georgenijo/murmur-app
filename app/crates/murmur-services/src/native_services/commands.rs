@@ -98,7 +98,7 @@ impl Services {
 "get_performance_run"=>serialize(crate::commands::performance::get_performance_run(argument(&args,"runId")?,self.context.services())?),
 "get_performance_store_health"=>serialize(crate::commands::performance::get_performance_store_health(self.context.get_window(label).ok_or("Native view is unavailable")?,self.context.services())?),
 "get_resource_usage"=>serialize(crate::resource_monitor::get_resource_usage()),
-"get_smart_auto_microphone_status"=>serialize(crate::commands::microphone_preview::get_smart_auto_microphone_status(argument(&args,"smartAuto")?)),
+"get_smart_auto_microphone_status"=>{crate::commands::microphone_qa::refuse(crate::commands::microphone_qa::Fault::SmartAutoUnavailable)?;serialize(crate::commands::microphone_preview::get_smart_auto_microphone_status(argument(&args,"smartAuto")?))},
 "get_status"=>serialize(crate::commands::recording::get_status(self.context.clone(),self.context.services()).await?),
 "get_system_audio_permission_status"=>serialize(crate::commands::meeting::get_system_audio_permission_status(self.context.services())),
 "get_update_install_environment"=>serialize(crate::commands::updater::get_update_install_environment()?),

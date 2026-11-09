@@ -127,7 +127,15 @@ pub struct Startup {
     pub progress: Option<(String, u8)>,
     pub cancelling: bool,
     pub error: Option<String>,
+    /// The selected run's report as display lines.
     pub summary: Vec<String>,
+    /// Saved runs, newest first, and the one `summary` describes.
+    pub runs: Vec<String>,
+    pub selected: usize,
+    /// Transient confirmations of Copy JSON and Save to file.
+    pub copied: bool,
+    pub saving: bool,
+    pub saved: bool,
 }
 #[derive(Clone, Default)]
 pub struct Runtime {
@@ -233,8 +241,12 @@ pub fn valid(s: &Snapshot) -> bool {
             .error
             .as_ref()
             .is_none_or(|s| s.chars().count() <= 512)
-        && r.startup.summary.len() <= 32
+        // Totals, backend statistics, then each cycle with its attempts.
+        && r.startup.summary.len() <= 192
         && r.startup.summary.iter().all(|s| s.chars().count() <= 512)
+        && r.startup.runs.len() <= 10
+        && r.startup.runs.iter().all(|s| s.chars().count() <= 128)
+        && (r.startup.runs.is_empty() || r.startup.selected < r.startup.runs.len())
         && r.reports.len() <= 10
         && r.reports.iter().all(|s| s.chars().count() <= 128)
         && r.version.len() <= 64

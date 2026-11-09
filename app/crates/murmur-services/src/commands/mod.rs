@@ -12,6 +12,7 @@ pub mod logging;
 pub mod meeting;
 pub mod meeting_calendar;
 pub mod microphone_preview;
+pub(crate) mod microphone_qa;
 pub mod microphone_startup_benchmark;
 pub mod mode_exchange;
 pub mod mode_runtime;
