@@ -54,7 +54,10 @@ impl FixtureHost {
         let mut failures = vec![];
         for (_, command) in commands {
             if self.scenario == Scenario::PartialBulk && command["id"] == "synthetic-1" {
-                failures.push("synthetic-1");
+                failures.push(format!(
+                    "\n{} · synthetic-1: This knowledge record changed in another window. Refresh and try again.",
+                    title(&entry(1))
+                ));
                 continue;
             }
             if action == BulkAction::Delete {
@@ -69,17 +72,25 @@ impl FixtureHost {
         if succeeded > 0 {
             s.store_revision += 1;
         }
+        let past = if action == BulkAction::Enable {
+            "enabled"
+        } else {
+            "disabled"
+        };
         s.notice = Some(format!(
-            "{succeeded} succeeded · {unchanged} unchanged · {} failed{}",
+            "{succeeded} records {}; {} failed.{}{}",
+            if action == BulkAction::Delete {
+                "removed"
+            } else {
+                past
+            },
             failures.len(),
-            if failures.is_empty() {
+            if action == BulkAction::Delete {
                 String::new()
             } else {
-                format!(
-                    " · Failed IDs: {}. Review these records before retrying.",
-                    failures.join(", ")
-                )
-            }
+                format!(" {unchanged} already {past}.")
+            },
+            failures.concat()
         ));
         Ok(())
     }
@@ -180,7 +191,7 @@ impl SectionHost<Snapshot, Action> for FixtureHost {
             Action::InspectImport => {
                 *self.import_baseline.borrow_mut() = Some(s.store_revision);
                 s.import_preview = Some(
-                    json!({"token":"synthetic-import","new":2,"duplicates":1,"conflicts":usize::from(self.scenario == Scenario::ConflictingImport)}),
+                    json!({"token":"synthetic-import","total":3,"new":2,"duplicates":1,"conflicts":usize::from(self.scenario == Scenario::ConflictingImport)}),
                 );
                 if self.scenario == Scenario::StaleImport {
                     // Owner changes after inspection, before the user confirms.
@@ -188,18 +199,19 @@ impl SectionHost<Snapshot, Action> for FixtureHost {
                 }
             }
             Action::Import { preview } => {
-                if preview["token"] != "synthetic-import"
-                    || preview["conflicts"] != 0
-                    || *self.import_baseline.borrow() != Some(s.store_revision)
-                {
+                // Trigger conflicts are only reported; the owner rejects an import
+                // whose review went stale, and keeps the review open.
+                if preview["token"] != "synthetic-import" {
                     problem = Some(Problem::Conflict);
+                } else if *self.import_baseline.borrow() != Some(s.store_revision) {
+                    problem = Some(Problem::Operation("Knowledge changed after import review"));
                 } else {
-                    s.notice = Some("Knowledge imported.".into());
+                    s.notice = Some("Imported 2; skipped 1 duplicate.".into());
                     *self.import_baseline.borrow_mut() = None;
                 }
             }
             Action::Retry => s.availability = "ready".into(),
-            Action::Export => s.notice = Some("Knowledge exported.".into()),
+            Action::Export => s.notice = Some("Exported 3 records.".into()),
             _ => (),
         };
         s.revision += 1;

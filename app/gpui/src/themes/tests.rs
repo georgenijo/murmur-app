@@ -375,3 +375,188 @@ fn vscode_canvas_uses_opaque_channels_before_semantic_repair() {
         import::vscode(&json!({"colors":{"editor.background":"#80402080"}})).unwrap();
     assert_eq!(theme["background"], "#804020");
 }
+const V1_DARK: &str = r##"{"version":1,"mode":"dark","theme":{"version":1,"presetId":"custom","accent":"#336699","secret":"synthetic-unknown-field"}}"##;
+const V2_DUSK: &str = r##"{"version":2,"name":"  Synthetic Dusk  ","modes":["dark","bogus"],"theme":{"version":1,"presetId":"custom","accent":"#774499"}}"##;
+fn imported_entry(text: &str) -> Value {
+    let (label, modes, theme) = import::local(text).unwrap();
+    json!({"version":1,"id":"local-synthetic","label":label,"modes":modes,"theme":theme,"source":{"kind":"local"}})
+}
+#[test]
+fn a_v2_theme_file_keeps_its_name_and_modes_and_a_v1_file_is_a_plain_import() {
+    let (label, modes, theme) = import::local(V2_DUSK).unwrap();
+    assert_eq!(label, "Synthetic Dusk");
+    assert_eq!(modes, ["dark"]);
+    assert_eq!(theme["accent"], "#774499");
+    let both = V2_DUSK.replace(r#"["dark","bogus"]"#, r#"["dark","light"]"#);
+    assert_eq!(import::local(&both).unwrap().1, ["light", "dark"]);
+    let (label, modes, theme) = import::local(V1_DARK).unwrap();
+    assert_eq!(label, "Imported theme");
+    assert_eq!(modes, ["light", "dark"]);
+    assert_eq!(theme["accent"], "#336699");
+    assert!(theme.get("secret").is_none(), "unknown fields are not kept");
+}
+#[test]
+fn theme_files_the_shipped_importer_refuses_give_its_reasons() {
+    use import::reason::*;
+    let long_name = "n".repeat(65);
+    let oversize = format!("{{\"version\":1,\"pad\":\"{}\"}}", "x".repeat(256 * 1024));
+    let cases = [
+        (oversize.as_str(), TOO_LARGE),
+        ("{not json", NOT_JSON),
+        ("[1, 2]", BAD_VERSION),
+        (r#"{"version":3}"#, BAD_VERSION),
+        (r#"{"colors":{}}"#, BAD_VERSION),
+        (r##"{"colors":{"synthetic.key":"#fff"}}"##, NO_CANVAS),
+        (r#"{"version":1,"theme":{"version":1}}"#, BAD_MODE),
+        (r#"{"version":1,"presetId":"sonic"}"#, BAD_MODE),
+        (
+            r#"{"version":1,"mode":"sepia","theme":{"version":1}}"#,
+            BAD_MODE,
+        ),
+        (
+            r#"{"version":1,"mode":"dark","theme":{"version":2}}"#,
+            BAD_THEME,
+        ),
+        (r#"{"version":1,"mode":"dark"}"#, BAD_THEME),
+        (
+            r#"{"version":2,"name":"","modes":["dark"],"theme":{"version":1}}"#,
+            BAD_LIBRARY_SHAPE,
+        ),
+        (
+            r#"{"version":2,"name":"Synthetic","modes":"dark","theme":{"version":1}}"#,
+            BAD_LIBRARY_SHAPE,
+        ),
+        (
+            r#"{"version":2,"name":"Synthetic","modes":["dark"],"theme":{"version":2}}"#,
+            BAD_LIBRARY_SHAPE,
+        ),
+        (
+            r#"{"version":2,"name":"Synthetic","modes":["sepia"],"theme":{"version":1}}"#,
+            NO_APPEARANCE,
+        ),
+    ];
+    for (text, reason) in cases {
+        assert_eq!(import::local(text).err(), Some(reason), "{reason}");
+    }
+    let named =
+        format!(r#"{{"version":2,"name":"{long_name}","modes":["dark"],"theme":{{"version":1}}}}"#);
+    assert_eq!(import::local(&named).err(), Some(BAD_LIBRARY_SHAPE));
+}
+#[test]
+fn failures_are_shown_with_the_shipped_prefix_and_never_carry_the_file() {
+    use import::reason::*;
+    for (reason, line) in [
+        (
+            NOT_JSON,
+            "Failed to import theme: Theme file is not valid JSON.",
+        ),
+        (
+            UNREADABLE,
+            "Failed to import theme: Murmur could not read the theme file.",
+        ),
+        (
+            FILE_TOO_LARGE,
+            "Failed to import theme: Theme files must be 256 KiB or smaller.",
+        ),
+    ] {
+        assert_eq!(import::import_failure(reason), line);
+    }
+    assert_eq!(
+        import::import_failure("/Users/synthetic/private.json: permission denied"),
+        "Failed to import theme: Murmur could not read the theme file."
+    );
+    assert_eq!(
+        import::export_failure(BAD_DESTINATION),
+        "Failed to export theme: Choose a valid theme export destination."
+    );
+    assert_eq!(
+        import::export_failure("os error 13 at /Users/synthetic"),
+        "Failed to export theme: Murmur could not write the theme export."
+    );
+}
+#[test]
+fn a_single_theme_imported_from_a_file_is_applied_and_a_collection_is_not() {
+    let s = fixtures::snapshot();
+    let entry = imported_entry(V2_DUSK);
+    let library = library::install(&s.library, std::slice::from_ref(&entry), None).unwrap();
+    let applied =
+        library::imported_selection(&s.appearance, &library, std::slice::from_ref(&entry))
+            .unwrap()
+            .expect("a local import is applied");
+    assert_eq!(applied["mode"], "dark");
+    assert_eq!(applied["selection"]["dark"], "local-synthetic");
+    assert_eq!(applied["selection"]["light"], "sonic");
+    assert_eq!(applied["theme"]["presetId"], "custom");
+    assert_eq!(applied["revision"], library::next_revision(1));
+    // A theme that supports both appearances applies to both.
+    let both = imported_entry(V1_DARK);
+    let library = library::install(&s.library, std::slice::from_ref(&both), None).unwrap();
+    let applied = library::imported_selection(&s.appearance, &library, std::slice::from_ref(&both))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        applied["selection"],
+        json!({"light":"local-synthetic","dark":"local-synthetic"})
+    );
+    // Community additions and multi-entry previews only join the library.
+    let mut community = entry.clone();
+    community["source"] =
+        json!({"kind":"open-vsx","extensionId":"synthetic.colors","version":"1","license":"MIT"});
+    assert_eq!(
+        library::imported_selection(&s.appearance, &library, &[community]).unwrap(),
+        None
+    );
+    assert_eq!(
+        library::imported_selection(&s.appearance, &library, &[entry, both]).unwrap(),
+        None
+    );
+    assert_eq!(
+        library::imported_selection(&s.appearance, &library, &[]).unwrap(),
+        None
+    );
+}
+#[test]
+fn exports_are_the_portable_files_the_importer_reads_back() {
+    let s = fixtures::snapshot();
+    let entry = imported_entry(V2_DUSK);
+    let library = library::install(&s.library, &[entry], None).unwrap();
+    // The host exports from the allow-listed library, then formats the entry.
+    let exported = murmur_core::state::appearance_export("murmur-theme-library", library).unwrap();
+    let entry = library::entries(&exported)
+        .into_iter()
+        .find(|e| e["id"] == "local-synthetic")
+        .unwrap();
+    let text = import::entry_file(&entry);
+    assert!(
+        text.starts_with("{\n  \"") && text.ends_with("}\n"),
+        "{text}"
+    );
+    let file: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(file["version"], 2);
+    assert_eq!(file["name"], "Synthetic Dusk");
+    assert_eq!(file["modes"], json!(["dark"]));
+    assert_eq!(file["theme"], entry["theme"]);
+    assert!(file.get("id").is_none() && file.get("source").is_none());
+    let (label, modes, theme) = import::local(&text).unwrap();
+    assert_eq!(label, "Synthetic Dusk");
+    assert_eq!(modes, ["dark"]);
+    assert_eq!(theme, entry["theme"]);
+
+    let mut document = s.appearance.clone();
+    document["mode"] = json!("light");
+    document["theme"] = json!({"version":1,"presetId":"custom","accent":"#336699"});
+    let exported = murmur_core::state::appearance_export("murmur-appearance", document).unwrap();
+    let text = import::current_file(&exported);
+    assert!(text.ends_with("}\n"));
+    let file: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(
+        file.as_object().unwrap().len(),
+        3,
+        "only version, mode and theme: {text}"
+    );
+    assert_eq!(
+        (&file["version"], &file["mode"]),
+        (&json!(1), &json!("light"))
+    );
+    assert_eq!(import::local(&text).unwrap().2, file["theme"]);
+}

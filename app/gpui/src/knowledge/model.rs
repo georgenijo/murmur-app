@@ -23,6 +23,33 @@ pub struct Filter {
     pub scope: Option<String>,
 }
 impl Filter {
+    /// The shipped description of which records a bulk change covers.
+    pub fn label(&self) -> String {
+        let kind = match self.kind.as_deref() {
+            None => "All types",
+            Some("replacement_rule") => "Replacement",
+            Some("vocabulary_term") => "Vocabulary",
+            Some("snippet") => "Snippet",
+            Some(_) => "Transform",
+        };
+        let enabled = match self.enabled {
+            None => "any state",
+            Some(true) => "enabled",
+            Some(false) => "disabled",
+        };
+        let mut parts = vec![
+            kind.to_owned(),
+            enabled.to_owned(),
+            self.scope
+                .clone()
+                .unwrap_or_else(|| "any visibility".into()),
+        ];
+        let query = self.query.trim();
+        if !query.is_empty() {
+            parts.push(format!("search: “{query}”"));
+        }
+        parts.join(" · ")
+    }
     pub fn wire(&self, offset: usize) -> Value {
         let mut v = json!({"limit":50,"offset":offset});
         if !self.query.is_empty() {
@@ -223,6 +250,7 @@ impl Projection for Snapshot {
                     .as_ref()
                     .map_or(0, |b| section::bytes(&json!(&b.entries))),
             )
+            .saturating_add(self.notice.as_ref().map_or(0, String::len))
             .saturating_add(4096)
     }
     fn valid(&self) -> bool {

@@ -442,14 +442,23 @@ impl History {
         self.prepare(cx);
     }
     fn accept(&mut self, e: Event, cx: &mut Context<Self>) -> bool {
+        // Only an action reply starts a receipt; a snapshot that follows it keeps
+        // the receipt without restarting its timer or announcing it twice.
+        let action = matches!(e, Event::Action { .. });
         let accepted = self.model.event(e);
         self.authority.sync(&self.model);
-        if accepted && self.model.notice.is_some() {
+        if accepted && action && self.model.notice.is_some() {
             self.notice_epoch += 1;
             let epoch = self.notice_epoch;
+            // The shipped panel keeps count receipts for four seconds.
+            let hold = if self.model.notice.as_deref() == Some("Copied") {
+                2
+            } else {
+                4
+            };
             cx.spawn(async move |weak, cx| {
                 cx.background_executor()
-                    .timer(std::time::Duration::from_secs(2))
+                    .timer(std::time::Duration::from_secs(hold))
                     .await;
                 let _ = weak.update(cx, |s, cx| {
                     if s.notice_epoch == epoch {
@@ -588,6 +597,7 @@ impl History {
                 .collect();
             self.request(RequestKind::Delete {
                 entries,
+                row: matches!(scope, DeleteScope::Row(_)),
                 clear_all: scope == DeleteScope::All,
             });
             w.focus(&self.focus, cx);
@@ -898,7 +908,8 @@ impl History {
                         .date_parts(self.model.entries[self.model.matches[position + 1]].timestamp)
                         .0
                         != day;
-                let copied = self.copied_key == Some(key) && self.model.notice == Some("Copied");
+                let copied =
+                    self.copied_key == Some(key) && self.model.notice.as_deref() == Some("Copied");
                 let time = self.date_parts(entry.timestamp).1;
                 let day_label = self.day_label(entry.timestamp);
                 // Copy and detail are siblings. GPUI's automatic keyboard click
@@ -1332,9 +1343,9 @@ impl Render for History {
             .text_size(tokens::BODY_SIZE)
             .line_height(tokens::BODY_LEADING)
             .capture_key_down(cx.listener(Self::key));
-        if let Some(notice) = self.model.notice {
+        if let Some(notice) = self.model.notice.as_ref().map(|n| n.to_string()) {
             if !self.fixture && self.announced_epoch != self.notice_epoch {
-                crate::overlay::native::announce(w, notice);
+                crate::overlay::native::announce(w, &notice);
                 self.announced_epoch = self.notice_epoch;
             }
             root = root.child(
@@ -1344,7 +1355,7 @@ impl Render for History {
                     })
                     .id("notice")
                     .role(Role::Status)
-                    .aria_label(notice)
+                    .aria_label(notice.clone())
                     .child(notice),
             );
         }

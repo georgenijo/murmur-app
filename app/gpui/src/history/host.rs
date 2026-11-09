@@ -38,6 +38,8 @@ pub enum RequestKind {
     },
     Delete {
         entries: Vec<Entry>,
+        /// One row deleted from its own action, not a bulk selection.
+        row: bool,
         clear_all: bool,
     },
     CorrectAndTeach {

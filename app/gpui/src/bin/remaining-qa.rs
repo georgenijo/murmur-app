@@ -3,9 +3,11 @@
 //! QA-only parameters (all data and export sinks stay in memory):
 //! - MURMUR_SECTION=knowledge + MURMUR_KNOWLEDGE_SCENARIO=partial-bulk:
 //!   recovery-backup banner, then Disable/Delete matches yields a partial
-//!   write with failed IDs and counts. Failed records retain their revision.
+//!   write: the shipped "N records disabled; M failed." summary lists each
+//!   failed record with the owner's reason. Failed records retain their revision.
 //! - MURMUR_KNOWLEDGE_SCENARIO=stale-import|conflicting-import: Import… opens
-//!   a preview; Confirm refuses the stale token or conflicting synthetic record.
+//!   a preview; Import explains the stale review, or imports despite reported
+//!   trigger conflicts (only a same-ID conflict refuses an import).
 //! - MURMUR_SECTION=spellings + MURMUR_SPELLINGS_SCENARIO=stale-import|conflicting-import:
 //!   Import saved spellings… reviews the import, disables unsafe confirmation.
 //! - MURMUR_SECTION=modes + MURMUR_MODE_FILES=1: Import modes… parses a synthetic

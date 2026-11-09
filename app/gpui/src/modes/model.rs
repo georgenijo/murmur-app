@@ -126,11 +126,10 @@ impl Projection for Snapshot {
     }
     fn bytes(&self) -> usize {
         section::bytes(&self.settings)
-            .saturating_add(
-                self.import_preview
-                    .as_ref()
-                    .map_or(0, |p| section::bytes(&p.next)),
-            )
+            .saturating_add(self.import_preview.as_ref().map_or(0, |p| {
+                section::bytes(&p.next)
+                    .saturating_add(p.lines.iter().map(String::len).sum::<usize>())
+            }))
             .saturating_add(8192)
     }
     fn valid(&self) -> bool {

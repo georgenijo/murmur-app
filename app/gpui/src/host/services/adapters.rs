@@ -15,7 +15,7 @@ fn live(lease: crate::workspace::Lease) -> Live {
     Arc::new(move || lease.is_current())
 }
 fn problem<T>(r: Result<T, String>) -> Result<T, Problem> {
-    r.map_err(|_| Problem::Unavailable)
+    r.map_err(|e| super::explain::problem(&e))
 }
 fn discovery(value: Option<&Value>) -> Value {
     value.cloned().unwrap_or_else(||json!({"version":1,"checklistDismissed":false,"completed":[],"baseline":{"transforms":0,"meetings":0,"correctionsTaught":0,"modeBindings":[]},"pendingHints":[],"dismissedHints":[]}))
@@ -663,6 +663,11 @@ async fn finish_setup(b: &Backend, grandfather: bool) -> Result<(), String> {
 
 macro_rules! section_host {
     ($module:ident,$read:ident,$action:ident) => {
+        section_host!($module, $read, $action, |_| None);
+    };
+    // `$receipt` may name a snapshot edit applied after an accepted write succeeds,
+    // so the success explanation comes from the same reply as the new state.
+    ($module:ident,$read:ident,$action:ident,$receipt:expr) => {
         impl section::Host<crate::$module::model::Snapshot, crate::$module::host::Action>
             for Backend
         {
@@ -702,12 +707,19 @@ macro_rules! section_host {
                 let progress = $action::progress(&b, &r.action, r.ticket, current.clone(), inbox.clone());
                 // Capture durable field intent before leaving the main turn.
                 let accepted = $action::admit(&b, &r.action, r.ticket.revision);
+                let receipt: fn(&crate::$module::host::Action) -> Option<fn(&mut crate::$module::model::Snapshot)> = $receipt;
+                let receipt = receipt(&r.action);
                 self.spawn(async move {
                     let _active = active;
                     let _progress = progress;
                     let result = async {
                         if let Some(accepted) = accepted {
                             accepted?.await.map_err(|_| "Source owner unavailable")??;
+                            let mut snapshot = read::$read(b.clone()).await?;
+                            if let Some(receipt) = receipt {
+                                receipt(&mut snapshot);
+                            }
+                            return Ok(snapshot);
                         } else {
                             if !current() {
                                 return Err("Presentation changed".into());
@@ -848,13 +860,53 @@ mod mode_action {
     pub fn admit(b: &Backend, a: &Action, r: u64) -> Accepted {
         match a {
             Action::Patch(p) => Some(b.services.accept_settings(p.clone(), r)),
-            Action::Import(preview) => Some(
-                exchange::commit(preview, &preview.baseline)
-                    .map_err(|_| "Modes changed".to_owned())
-                    .and_then(|patch| b.services.accept_settings(patch, r)),
-            ),
+            Action::Import(preview) => Some(import_admit(b, preview, r)),
             _ => None,
         }
+    }
+    /// The settings owner rejects a write made from an outdated revision; the
+    /// presentation shows the shipped stale-preview explanation for it.
+    pub fn import_failure(error: String) -> String {
+        if error == "Settings changed elsewhere" {
+            exchange::reason::STALE.into()
+        } else {
+            error
+        }
+    }
+    fn import_admit(
+        b: &Backend,
+        preview: &exchange::Preview,
+        revision: u64,
+    ) -> Result<tokio::sync::oneshot::Receiver<Result<Value, String>>, String> {
+        let patch = exchange::commit_reason(preview, &preview.baseline).map_err(String::from)?;
+        let accepted = b.services.accept_settings(patch, revision)?;
+        let (reply, out) = tokio::sync::oneshot::channel();
+        b.spawn(async move {
+            let _ = reply.send(match accepted.await {
+                Ok(result) => result.map_err(import_failure),
+                Err(_) => Err("Source owner unavailable".into()),
+            });
+        });
+        Ok(out)
+    }
+    fn applied(snapshot: &mut Snapshot) {
+        snapshot.notice = Some(exchange::reason::APPLIED.into());
+    }
+    pub fn receipt(a: &Action) -> Option<fn(&mut Snapshot)> {
+        matches!(a, Action::Import(_)).then_some(applied as fn(&mut Snapshot))
+    }
+    /// A chosen file becomes a reviewable preview or the shipped rejection reason.
+    /// Read failures never disclose the service's path-bearing detail.
+    pub fn inspect(
+        file: Result<String, String>,
+        settings: &Value,
+    ) -> Result<exchange::Preview, String> {
+        let contents = file.map_err(|_| exchange::reason::READ.to_owned())?;
+        let file = exchange::parse_reason(&contents).map_err(String::from)?;
+        exchange::preview(&file, settings).map_err(|_| exchange::reason::READ.to_owned())
+    }
+    pub fn export(settings: &Value) -> Result<String, String> {
+        exchange::export(settings).map_err(|_| exchange::reason::EXPORT.to_owned())
     }
     pub async fn run(
         b: &Backend,
@@ -875,62 +927,76 @@ mod mode_action {
             }
             Action::AddApp { mode_id } => b.navigate(Route::BindApp(mode_id)),
             Action::InspectImport => {
-                if let Some(path) = b
+                let chosen = b
                     .panel(
                         json!({"kind":"open","extensions":["json"]}),
                         current.clone(),
                     )
-                    .await?
-                {
+                    .await
+                    .map_err(|_| exchange::reason::READ.to_owned())?;
+                if let Some(path) = chosen {
                     let contents = b
                         .effect("read_modes_file", json!({"path":path}), current.clone())
-                        .await?;
+                        .await
+                        .and_then(|v| v.as_str().map(String::from).ok_or_else(String::new));
                     if !current() {
                         return Err("Presentation changed".into());
                     }
-                    let file = exchange::parse(contents.as_str().ok_or("Invalid Modes file")?)
-                        .map_err(|_| "Invalid Modes file")?;
-                    snapshot.import_preview = Some(
-                        exchange::preview(&file, &snapshot.settings)
-                            .map_err(|_| "Modes changed")?,
-                    );
+                    snapshot.import_preview = Some(inspect(contents, &snapshot.settings)?);
                 }
                 return Ok(Some(snapshot));
             }
             Action::Import(preview) => {
                 if snapshot.revision != revision {
-                    return Err("Modes changed".into());
+                    return Err(exchange::reason::STALE.into());
                 }
                 let patch =
-                    exchange::commit(&preview, &snapshot.settings).map_err(|_| "Modes changed")?;
+                    exchange::commit_reason(&preview, &snapshot.settings).map_err(String::from)?;
                 if !current() {
                     return Err("Presentation changed".into());
                 }
-                b.patch(patch, snapshot.revision).await?;
+                b.patch(patch, snapshot.revision)
+                    .await
+                    .map_err(import_failure)?;
             }
             Action::Export => {
-                let contents =
-                    exchange::export(&snapshot.settings).map_err(|_| "Modes export unavailable")?;
-                save_text(b, "murmur-modes.json", contents, current).await?;
+                let contents = export(&snapshot.settings)?;
+                let saved = save_text_saved(b, "murmur-modes.json", contents, current)
+                    .await
+                    .map_err(|_| exchange::reason::EXPORT.to_owned())?;
+                if saved {
+                    snapshot.notice = Some(exchange::reason::EXPORTED.into());
+                    return Ok(Some(snapshot));
+                }
             }
         }
         Ok(None)
     }
 }
-section_host!(modes, modes, mode_action);
+section_host!(modes, modes, mode_action, mode_action::receipt);
 async fn save_text(b: &Backend, name: &str, contents: String, current: Live) -> Result<(), String> {
-    if let Some(path) = b
+    save_text_saved(b, name, contents, current).await.map(drop)
+}
+/// `false` means the person cancelled the save panel and nothing was written.
+async fn save_text_saved(
+    b: &Backend,
+    name: &str,
+    contents: String,
+    current: Live,
+) -> Result<bool, String> {
+    let Some(path) = b
         .panel(json!({"kind":"save","name":name}), current.clone())
         .await?
-    {
-        b.effect(
-            "save_text_export",
-            json!({"path":path,"contents":contents}),
-            current,
-        )
-        .await?;
-    }
-    Ok(())
+    else {
+        return Ok(false);
+    };
+    b.effect(
+        "save_text_export",
+        json!({"path":path,"contents":contents}),
+        current,
+    )
+    .await?;
+    Ok(true)
 }
 mod knowledge_action {
     use super::*;
@@ -974,25 +1040,11 @@ mod knowledge_action {
                     let result = b
                         .call("list_knowledge", json!({"request":filter.wire(offset)}))
                         .await?;
-                    let revision = result["storeRevision"]
-                        .as_u64()
-                        .ok_or("Knowledge unavailable")?;
-                    let total = result["total"].as_u64().ok_or("Knowledge unavailable")? as usize;
-                    let bulk = bulk.get_or_insert(
-                        Bulk::new(filter.clone(), revision, total)
-                            .map_err(|_| "Knowledge exceeds supported size")?,
-                    );
-                    let entries = result["entries"]
-                        .as_array()
-                        .ok_or("Knowledge unavailable")?
-                        .clone();
-                    let next = result["nextOffset"].as_u64().map(|n| n as usize);
-                    bulk.append(revision, total, entries, next)
-                        .map_err(|_| "Knowledge changed")?;
-                    if let Some(next) = next {
-                        offset = next;
-                    } else {
-                        break;
+                    match super::super::knowledge::collect_page(
+                        &mut bulk, &filter, offset, &result,
+                    )? {
+                        Some(next) => offset = next,
+                        None => break,
                     }
                 }
                 let bulk = bulk.ok_or("Knowledge unavailable")?;
@@ -1024,21 +1076,32 @@ mod knowledge_action {
                 if !current() {
                     return Err("Presentation changed".into());
                 }
-                b.import_knowledge(preview).await?;
+                let (imported, duplicates) = b.import_knowledge(preview).await?;
+                let mut snapshot = read::knowledge(b.clone()).await?;
+                snapshot.notice = Some(super::super::knowledge::import_notice(
+                    imported, duplicates,
+                ));
+                return Ok(Some(snapshot));
             }
             Action::Export => {
                 if let Some(path) = b
                     .panel(
-                        json!({"kind":"save","name":"murmur-knowledge.json","extensions":["json"]}),
+                        json!({"kind":"save","name":super::super::knowledge::EXPORT_NAME,"extensions":["json"]}),
                         current.clone(),
                     )
                     .await?
                 {
-                    b.effect("export_knowledge_to_file", json!({"path":path}), current)
+                    let count = b
+                        .effect("export_knowledge_to_file", json!({"path":path}), current)
                         .await?;
+                    let mut snapshot = read::knowledge(b.clone()).await?;
+                    snapshot.notice = Some(super::super::knowledge::export_notice(
+                        count.as_u64().unwrap_or_default(),
+                    ));
+                    return Ok(Some(snapshot));
                 }
             }
-            Action::Cancel => {}
+            Action::Cancel => b.discard_knowledge_review(),
             action => {
                 if let Some((command, args)) = action.command() {
                     b.effect(command, args, current).await?;
@@ -1047,46 +1110,66 @@ mod knowledge_action {
         }
         Ok(None)
     }
+    /// Test-only fault: makes the first record's expected revision outdated,
+    /// so the real store rejects it as changed elsewhere. Inert unless this is
+    /// a native QA build, run as the QA identity, with the variable set.
+    #[cfg(feature = "native-host-qa")]
+    fn qa_stale_first(mut commands: Vec<(&'static str, Value)>) -> Vec<(&'static str, Value)> {
+        if std::env::var_os("MURMUR_QA_KNOWLEDGE_BULK_STALE_FIRST").is_some()
+            && super::super::os::identity() == "com.localdictation.gpui-host-qa110"
+            && let Some((_, args)) = commands.first_mut()
+            && let Some(revision) = args["expectedRevision"].as_u64()
+        {
+            args["expectedRevision"] = json!(revision + 1000);
+        }
+        commands
+    }
+    #[cfg(not(feature = "native-host-qa"))]
+    fn qa_stale_first(commands: Vec<(&'static str, Value)>) -> Vec<(&'static str, Value)> {
+        commands
+    }
     async fn apply(
         b: &Backend,
         bulk: Bulk,
         action: BulkAction,
         current: Live,
     ) -> Result<Snapshot, String> {
-        let commands = bulk
-            .commands(action)
-            .map_err(|_| "Knowledge review is incomplete")?;
+        let commands = qa_stale_first(
+            bulk.commands(action)
+                .map_err(|_| "Knowledge review is incomplete")?,
+        );
         let unchanged = bulk.entries.len().saturating_sub(commands.len());
+        let titles: std::collections::HashMap<String, String> = bulk
+            .entries
+            .iter()
+            .filter_map(|v| {
+                Some((
+                    v["id"].as_str()?.to_owned(),
+                    crate::knowledge::model::title(v).to_owned(),
+                ))
+            })
+            .collect();
         let mut succeeded = 0;
-        let mut failed = Vec::new();
+        let mut failed: Vec<super::super::knowledge::Failure> = Vec::new();
         for (command, args) in commands {
             if !current() {
                 break;
             }
             let id = args["id"].as_str().unwrap_or_default().to_owned();
-            if b.effect(command, args, current.clone()).await.is_ok() {
-                succeeded += 1;
-            } else {
-                failed.push(id);
+            match b.effect(command, args, current.clone()).await {
+                Ok(_) => succeeded += 1,
+                Err(e) => failed.push((
+                    titles.get(&id).cloned().unwrap_or_default(),
+                    id,
+                    super::super::explain::operation(&e)
+                        .unwrap_or(super::super::knowledge::RECORD_FAILED)
+                        .to_owned(),
+                )),
             }
         }
         let mut snapshot = read::knowledge(b.clone()).await?;
-        snapshot.notice = Some(format!(
-            "{succeeded} changed · {unchanged} unchanged · {} failed{}",
-            failed.len(),
-            if failed.is_empty() {
-                String::new()
-            } else {
-                format!(
-                    " · {}",
-                    failed
-                        .iter()
-                        .take(3)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            }
+        snapshot.notice = Some(super::super::knowledge::bulk_notice(
+            action, succeeded, unchanged, &failed,
         ));
         Ok(snapshot)
     }
@@ -1403,7 +1486,22 @@ mod theme_action {
                 _ => return Err("Invalid theme intent".into()),
             }
             .map_err(|_| "Theme library changed".to_owned())?;
+            // A theme imported from a file is applied once it is saved, as
+            // the shipped import does; community additions only join the library.
+            let applied = match action {
+                Action::ConfirmImport(entries) => {
+                    library::imported_selection(&s.appearance, &value, entries)
+                        .map_err(|_| "Theme library changed".to_owned())?
+                }
+                _ => None,
+            };
             let library = b.services.accept_theme_library(s.library, value)?;
+            if let Some(appearance) = applied {
+                let appearance =
+                    b.services
+                        .accept_source("murmur-appearance".into(), raw, appearance)?;
+                return Ok(both(b, library, appearance));
+            }
             if let Action::Remove(ids) = action {
                 let mut appearance = s.appearance.clone();
                 for mode in ["light", "dark"] {
@@ -1418,25 +1516,54 @@ mod theme_action {
                     let appearance =
                         b.services
                             .accept_source("murmur-appearance".into(), raw, appearance)?;
-                    let (send, receive) = tokio::sync::oneshot::channel();
-                    let events = b.events.clone();
-                    b.spawn(async move {
-                        let result = async {
-                            library.await.map_err(|_| "Theme owner unavailable")??;
-                            appearance
-                                .await
-                                .map_err(|_| "Appearance owner unavailable")??;
-                            Ok(Value::Null)
-                        }
-                        .await;
-                        events.publish("main", "native-sources-changed", "null");
-                        let _ = send.send(result);
-                    });
-                    return Ok(receive);
+                    return Ok(both(b, library, appearance));
                 }
             }
             map(b, Ok(library))
         })())
+    }
+    /// The library and appearance writes finish together, then the change is published.
+    fn both(
+        b: &Backend,
+        library: tokio::sync::oneshot::Receiver<Result<(), String>>,
+        appearance: tokio::sync::oneshot::Receiver<Result<(), String>>,
+    ) -> tokio::sync::oneshot::Receiver<Result<Value, String>> {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        let events = b.events.clone();
+        b.spawn(async move {
+            let result = async {
+                library.await.map_err(|_| "Theme owner unavailable")??;
+                appearance
+                    .await
+                    .map_err(|_| "Appearance owner unavailable")??;
+                Ok(Value::Null)
+            }
+            .await;
+            events.publish("main", "native-sources-changed", "null");
+            let _ = send.send(result);
+        });
+        receive
+    }
+    /// Writes a theme file through the shipped writer, whose refusals are
+    /// reported with the shipped failure line. Cancelling the panel writes nothing.
+    async fn save_theme(b: &Backend, contents: String, current: Live) -> Result<(), String> {
+        let Some(path) = b
+            .panel(
+                json!({"kind":"save","name":"murmur-theme.json"}),
+                current.clone(),
+            )
+            .await?
+        else {
+            return Ok(());
+        };
+        b.effect(
+            "write_theme_file",
+            json!({"path":path,"contents":contents}),
+            current,
+        )
+        .await
+        .map_err(|e| import::export_failure(&e))?;
+        Ok(())
     }
     async fn library_save(b: &Backend, expected: Value, value: Value) -> Result<(), String> {
         b.services
@@ -1528,10 +1655,14 @@ mod theme_action {
                 {
                     let contents = b
                         .effect("read_theme_file", json!({"path":path}), current.clone())
-                        .await?;
-                    let (label, modes, theme) =
-                        import::local(contents.as_str().ok_or("Invalid theme file")?)
-                            .map_err(|_| "Invalid theme file")?;
+                        .await
+                        .map_err(|e| import::import_failure(&e))?;
+                    let (label, modes, theme) = import::local(
+                        contents
+                            .as_str()
+                            .ok_or(import::import_failure(import::reason::NOT_UTF8))?,
+                    )
+                    .map_err(import::import_failure)?;
                     s.import_preview = Some(vec![
                         json!({"version":1,"id":format!("local-{}",uuid::Uuid::new_v4()),"label":label,"modes":modes,"theme":theme,"source":{"kind":"local"}}),
                     ]);
@@ -1542,7 +1673,7 @@ mod theme_action {
                 let value =
                     murmur_core::state::appearance_export("murmur-appearance", s.appearance)
                         .map_err(|_| "Theme export unavailable")?;
-                save_text(b, "murmur-theme.json", value.to_string(), current).await?
+                save_theme(b, import::current_file(&value), current).await?
             }
             Action::ExportEntry(id) => {
                 let value =
@@ -1552,7 +1683,7 @@ mod theme_action {
                     .into_iter()
                     .find(|e| e["id"] == id)
                     .ok_or("Theme removed")?;
-                save_text(b, "murmur-theme.json", entry.to_string(), current).await?;
+                save_theme(b, import::entry_file(&entry), current).await?;
             }
             Action::OpenSource(url) => b.os.open(url, false, current).await?,
             Action::Search { query, sort } => {
@@ -1706,6 +1837,152 @@ mod setup_error_tests {
         assert_eq!(
             setup_problem("private model path or setting".into()),
             Problem::Unavailable
+        );
+    }
+}
+
+#[cfg(test)]
+mod mode_exchange_tests {
+    use super::mode_action::{export, import_failure, inspect, receipt};
+    use crate::modes::{exchange, exchange::reason, fixtures, host::Action, model::blank};
+    use serde_json::json;
+
+    fn file_with(edit: impl FnOnce(&mut serde_json::Value)) -> String {
+        let mut settings = fixtures::snapshot().settings;
+        settings["modes"] = json!([blank("mode.import", "Imported")]);
+        let mut file: serde_json::Value =
+            serde_json::from_str(&exchange::export(&settings).unwrap()).unwrap();
+        edit(&mut file);
+        file.to_string()
+    }
+    /// What a person sees: the service failure goes through the real adapter
+    /// mapping and the production `problem()` projection.
+    fn shown(error: String) -> &'static str {
+        super::problem::<()>(Err(error)).unwrap_err().message()
+    }
+
+    #[test]
+    fn rejected_files_report_their_real_reason() {
+        let settings = fixtures::snapshot().settings;
+        let deep = format!("{}1{}", "[".repeat(10), "]".repeat(10));
+        let cases = [
+            ("x".repeat(300 * 1024), reason::SIZE),
+            ("{".into(), reason::SYNTAX),
+            (r#"{"a":1,"a":2}"#.into(), reason::DUPLICATE_KEYS),
+            (deep, reason::DEPTH),
+            (r#"{"format":"murmur-modes"}"#.into(), reason::FIELDS),
+            (file_with(|f| f["version"] = json!(2)), reason::FORMAT),
+            (
+                file_with(|f| f["modes"][0]["id"] = json!("builtin.dictation")),
+                reason::BUILTIN,
+            ),
+            (
+                file_with(|f| f["modes"][0]["name"] = json!(" padded ")),
+                reason::STRING,
+            ),
+            (
+                file_with(|f| f["modes"][0]["vocabularyPolicy"] = json!("everything")),
+                reason::CHOICE,
+            ),
+            (
+                file_with(|f| {
+                    f["appBindings"] = json!([{"bundleId":"nodots","modeId":"mode.import"}])
+                }),
+                reason::BUNDLE,
+            ),
+            (
+                file_with(|f| f["appBindings"] = json!([{"bundleId":"a.b","modeId":"mode.other"}])),
+                reason::REFERENCE,
+            ),
+            (
+                file_with(
+                    |f| f["browserSiteRules"] = json!([{"id":"s","browserBundleId":"com.apple.Safari","host":"HTTPS://X","modeId":"mode.import","enabled":true}]),
+                ),
+                reason::HOST,
+            ),
+        ];
+        for (contents, expected) in cases {
+            let error = inspect(Ok(contents), &settings).err().unwrap();
+            assert_eq!(error, expected);
+            assert_eq!(shown(error), expected);
+        }
+    }
+
+    #[test]
+    fn unreadable_files_never_disclose_the_service_detail() {
+        let settings = fixtures::snapshot().settings;
+        for service in [
+            "Mode files must be 256 KiB or smaller.",
+            "Mode files must be valid UTF-8.",
+            "Choose a regular JSON Mode file with an absolute path.",
+            "Murmur could not read the Mode file.",
+            "Failed: /Users/someone/private/modes.json",
+        ] {
+            let error = inspect(Err(service.into()), &settings).err().unwrap();
+            assert_eq!(shown(error), reason::READ);
+        }
+    }
+
+    #[test]
+    fn preview_lists_conflicts_and_stale_or_conflicted_commits_name_why() {
+        let mut settings = fixtures::snapshot().settings;
+        let mut clash = blank("mode.import", "Different name");
+        clash["enabled"] = json!(false);
+        settings["modes"] = json!([clash]);
+        let contents = file_with(|f| {
+            f["appBindings"] = json!([{"bundleId":"example.synthetic","modeId":"mode.import"}])
+        });
+        let preview = inspect(Ok(contents), &settings).unwrap();
+        assert_eq!(preview.conflicts, 1);
+        assert_eq!(preview.lines, ["Mode ID conflict: mode.import"]);
+        assert_eq!(
+            exchange::commit_reason(&preview, &settings),
+            Err(reason::CONFLICTED)
+        );
+        let mut changed = settings.clone();
+        changed["siteModeLookupEnabled"] = json!(true);
+        assert_eq!(
+            exchange::commit_reason(&preview, &changed),
+            Err(reason::STALE)
+        );
+        assert_eq!(shown(reason::STALE.into()), reason::STALE);
+        assert_eq!(shown(reason::CONFLICTED.into()), reason::CONFLICTED);
+    }
+
+    #[test]
+    fn settings_owner_rejection_of_an_outdated_preview_shows_the_stale_line() {
+        assert_eq!(
+            shown(import_failure("Settings changed elsewhere".into())),
+            reason::STALE
+        );
+        let other = import_failure("Source writer unavailable".into());
+        assert_eq!(other, "Source writer unavailable");
+        assert_eq!(
+            shown(other),
+            crate::workspace::Problem::Unavailable.message()
+        );
+    }
+
+    #[test]
+    fn only_an_accepted_import_sets_the_applied_receipt() {
+        let settings = fixtures::snapshot().settings;
+        let preview = inspect(Ok(file_with(|_| {})), &settings).unwrap();
+        let mut snapshot = fixtures::snapshot();
+        assert!(receipt(&Action::Export).is_none());
+        receipt(&Action::Import(preview)).unwrap()(&mut snapshot);
+        assert_eq!(
+            snapshot.notice.as_deref(),
+            Some("Import applied. Browser-site activation preference was preserved.")
+        );
+    }
+
+    #[test]
+    fn export_failure_uses_the_shipped_message() {
+        assert!(export(&fixtures::snapshot().settings).is_ok());
+        let error = export(&json!("not settings")).unwrap_err();
+        assert_eq!(
+            shown(error),
+            "Murmur could not export custom modes. Check the destination and that modes and bindings are valid."
         );
     }
 }

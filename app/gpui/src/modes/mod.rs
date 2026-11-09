@@ -386,6 +386,12 @@ impl Modes {
                 })
             })
     }
+    /// Dismiss the reviewed file; nothing was written to settings.
+    fn cancel_import(&mut self) {
+        if let Some(snapshot) = self.controller.model.snapshot.as_mut() {
+            snapshot.import_preview = None;
+        }
+    }
     fn save_site_row(&mut self, id: &str, field: &str, cx: &mut Context<Self>) {
         let Some(form) = self.site_rows.get(id) else {
             return;
@@ -606,29 +612,86 @@ impl Render for Modes {
             body = body.child(group("Library", library));
             if let Some(preview) = s.import_preview.clone() {
                 let stale = preview.baseline != exchange::subset(&s.settings);
+                let lookup = if s.settings["siteModeLookupEnabled"] == true {
+                    "on"
+                } else {
+                    "off"
+                };
+                let owner = cx.entity();
+                let mut review = div()
+                    .id("modes-import-preview")
+                    .role(Role::Group)
+                    .aria_label("Mode import preview")
+                    .flex()
+                    .flex_col()
+                    .gap(px(8.))
+                    .child(gpui::text!(format!(
+                        "{} new modes, {} app bindings, {} site rules.",
+                        preview.additions, preview.bindings, preview.sites
+                    )))
+                    .child(gpui::text!(format!(
+                        "{} exact duplicates skipped. {} bindings skipped because the app has no local profile.",
+                        preview.duplicates, preview.missing_apps
+                    )))
+                    .child(gpui::text!(format!(
+                        "Existing app profiles keep their fine-tuning and project roots. Browser-site activation stays {lookup}."
+                    )));
+                if preview.conflicts > 0 {
+                    review =
+                        review.child(div().id("modes-import-conflicts").role(Role::Alert).child(
+                            gpui::text!(format!(
+                                "{} conflicts. Nothing will be imported.",
+                                preview.conflicts
+                            )),
+                        ));
+                    for line in &preview.lines {
+                        review = review.child(gpui::text!(format!("• {line}")));
+                    }
+                    if preview.conflicts > preview.lines.len() {
+                        review = review.child(gpui::text!(format!(
+                            "…and {} more conflicts.",
+                            preview.conflicts - preview.lines.len()
+                        )));
+                    }
+                }
+                if stale {
+                    review = review.child(
+                        div()
+                            .id("modes-import-stale")
+                            .role(Role::Alert)
+                            .child(gpui::text!(exchange::reason::STALE)),
+                    );
+                }
                 body = body.child(
-                    div()
-                        .id("modes-import-preview")
-                        .role(Role::Group)
-                        .aria_label("Mode import preview")
-                        .child(gpui::text!(format!(
-                            "{} new modes · {} exact duplicates · {} missing apps · {} conflicts",
-                            preview.additions,
-                            preview.duplicates,
-                            preview.missing_apps,
-                            preview.conflicts
-                        )))
-                        .child(
-                            self.button(
-                                "modes-confirm-import",
-                                "Confirm import",
-                                Action::Import(preview.clone()),
-                                cx,
+                    review.child(
+                        div()
+                            .flex()
+                            .gap(px(8.))
+                            .child(
+                                self.button(
+                                    "modes-confirm-import",
+                                    "Confirm import",
+                                    Action::Import(preview.clone()),
+                                    cx,
+                                )
+                                .disabled(
+                                    stale || preview.conflicts > 0 || self.controller.model.pending,
+                                ),
                             )
-                            .disabled(
-                                stale || preview.conflicts > 0 || self.controller.model.pending,
+                            .child(
+                                Button::new(
+                                    SharedString::from("modes-cancel-import"),
+                                    "Cancel import",
+                                )
+                                .with_scroll_parent(Some(&self.scroll))
+                                .on_click(move |_, _, cx| {
+                                    owner.update(cx, |s, cx| {
+                                        s.cancel_import();
+                                        cx.notify()
+                                    })
+                                }),
                             ),
-                        ),
+                    ),
                 );
             }
             let mut parts = vec![

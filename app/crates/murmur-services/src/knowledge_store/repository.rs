@@ -1376,6 +1376,89 @@ mod tests {
         assert_eq!(busy_timeout, 2000);
     }
 
+    fn synthetic_draft(source: &str) -> KnowledgeDraft {
+        KnowledgeDraft {
+            id: None,
+            expected_revision: None,
+            payload: KnowledgePayload::ReplacementRule {
+                source: source.into(),
+                replacement: "Synthetic replacement".into(),
+            },
+            enabled: true,
+            scope: KnowledgeScope::Global,
+            voice_command: None,
+        }
+    }
+
+    /// The counts and reasons the presentation reports for an import and an
+    /// export are exactly what the owner returns, so they are asserted here
+    /// against the real store rather than a stand-in.
+    #[test]
+    fn import_export_counts_and_failure_reasons_come_from_the_store() {
+        let (temp, source) = repository();
+        source
+            .upsert_manual(synthetic_draft("synthetic one"))
+            .unwrap();
+        source
+            .upsert_manual(synthetic_draft("synthetic two"))
+            .unwrap();
+        let file = temp.path().join("synthetic-export.json");
+        assert_eq!(source.export_to_file(&file).unwrap(), 2);
+        let bytes = fs::read(&file).unwrap();
+
+        let target_root = temp.path().join("target");
+        let (target, _) = KnowledgeRepository::initialize(target_root).unwrap();
+        target
+            .upsert_manual(synthetic_draft("synthetic one"))
+            .unwrap();
+        let (summary, revision) = target.inspect_bytes(&bytes).unwrap();
+        assert_eq!((summary.total, summary.new, summary.duplicates), (2, 1, 1));
+        // A review gone stale is refused with the shipped reason and writes nothing.
+        let stale = target.import_bytes(&bytes, revision + 1).unwrap_err();
+        assert_eq!(stale, "Knowledge changed after import review");
+        let result = target.import_bytes(&bytes, revision).unwrap();
+        assert_eq!((result.imported, result.duplicates), (1, 1));
+        assert_eq!(target.all_entries().unwrap().len(), 2);
+        let again = target
+            .import_bytes(
+                &bytes,
+                store_revision(&target.open_checked().unwrap()).unwrap(),
+            )
+            .unwrap();
+        assert_eq!((again.imported, again.duplicates), (0, 2));
+        // The same IDs carrying different content are refused, not overwritten.
+        let changed = String::from_utf8(bytes.clone())
+            .unwrap()
+            .replace("Synthetic replacement", "Synthetic other");
+        assert_eq!(
+            target.inspect_bytes(changed.as_bytes()).unwrap_err(),
+            "The import contains an ID that conflicts with different local knowledge."
+        );
+
+        for (bytes, reason) in [
+            (
+                &b"not json"[..],
+                "The selected file is not a valid Murmur knowledge export.",
+            ),
+            (
+                &br#"{"format":"synthetic.other","version":1,"exportedAtMs":0,"entries":[]}"#[..],
+                "The selected knowledge export format is not supported by this Murmur build.",
+            ),
+        ] {
+            assert_eq!(target.inspect_bytes(bytes).unwrap_err(), reason);
+        }
+        let missing = temp.path().join("absent").join("synthetic.json");
+        assert_eq!(
+            target.inspect_import(&missing).unwrap_err(),
+            "Murmur could not read the selected knowledge import."
+        );
+        let blocked = temp.path().join("no-such-directory").join("export.json");
+        assert_eq!(
+            source.export_to_file(&blocked).unwrap_err(),
+            "Murmur could not write the knowledge export."
+        );
+    }
+
     #[test]
     fn quarantine_preserves_main_and_sidecar_evidence() {
         let temp = tempfile::tempdir().unwrap();

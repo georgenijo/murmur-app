@@ -81,6 +81,24 @@ pub fn selection(
     out["revision"] = json!(next_revision(current["revision"].as_u64().unwrap_or(0)));
     Ok(out)
 }
+/// The appearance that applies a theme just imported from a file. Only a single
+/// locally sourced theme is applied, matching the shipped import; entries that
+/// belong to a community collection are added to the library without being applied.
+/// `library` is the library already holding the imported entry.
+pub fn imported_selection(
+    appearance: &Value,
+    library: &Value,
+    entries: &[Value],
+) -> Result<Option<Value>, Problem> {
+    let [entry] = entries else {
+        return Ok(None);
+    };
+    if entry["source"]["kind"] != "local" {
+        return Ok(None);
+    }
+    let id = entry["id"].as_str().ok_or(Problem::Invalid)?;
+    selection(appearance, library, id, None).map(Some)
+}
 pub fn next_revision(revision: u64) -> u64 {
     if revision >= 2147483646 {
         1

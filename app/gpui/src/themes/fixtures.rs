@@ -50,11 +50,19 @@ impl SectionHost<Snapshot, Action> for FixtureHost {
         }
         let mut s = self.state.borrow_mut();
         let mut error = None;
+        let confirming = matches!(r.action, Action::ConfirmImport(_));
         match r.action {
             Action::Appearance(doc) => s.appearance = doc,
             Action::Install(entries) | Action::ConfirmImport(entries) => {
                 match library::install(&s.library, &entries, None) {
                     Ok(v) => {
+                        // Like the host, a theme imported from a file is applied.
+                        if confirming
+                            && let Ok(Some(applied)) =
+                                library::imported_selection(&s.appearance, &v, &entries)
+                        {
+                            s.appearance = applied;
+                        }
                         s.library = v;
                         s.import_preview = None
                     }

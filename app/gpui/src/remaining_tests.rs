@@ -281,28 +281,51 @@ mod ax {
         let (_, cx) = harness_options(cx, 3, options);
         static_text(&tree(cx), "Recovered from a local backup.");
         activate(cx, "Disable matches");
-        static_text(
-            &tree(cx),
-            "2 succeeded · 0 unchanged · 1 failed · Failed IDs: synthetic-1. Review these records before retrying.",
-        );
+        let t = tree(cx);
+        let notice = t
+            .nodes
+            .iter()
+            .filter_map(|(_, n)| n.value())
+            .find(|v| v.starts_with("2 records disabled; 1 failed. 0 already disabled."))
+            .expect("shipped bulk summary");
+        assert!(notice.contains(
+            "Synthetic phrase 1 · synthetic-1: This knowledge record changed in another window. Refresh and try again."
+        ));
     }
     #[gpui::test]
-    fn knowledge_import_fixtures_present_conflict_without_success(cx: &mut TestAppContext) {
-        for parameter in ["stale-import", "conflicting-import"] {
-            let options = crate::remaining::QaOptions::parse(parameter, "", "", "").unwrap();
-            let (_, cx) = harness_options(cx, 3, options);
-            activate(cx, "Import…");
-            let t = tree(cx);
-            named(&t, "Import knowledge preview");
-            activate(cx, "Confirm");
-            static_text(&tree(cx), crate::workspace::Problem::Conflict.message());
-            assert!(
-                !tree(cx)
-                    .nodes
-                    .iter()
-                    .any(|(_, n)| n.value() == Some("Knowledge imported."))
-            );
-        }
+    fn knowledge_import_fixtures_explain_a_stale_review_and_do_not_block_on_trigger_conflicts(
+        cx: &mut TestAppContext,
+    ) {
+        let options = crate::remaining::QaOptions::parse("stale-import", "", "", "").unwrap();
+        let (_, cx) = harness_options(cx, 3, options);
+        activate(cx, "Import…");
+        let t = tree(cx);
+        named(&t, "Import knowledge preview");
+        static_text(
+            &t,
+            "3 records inspected: 2 new, 1 duplicates, and 0 trigger conflicts.",
+        );
+        static_text(
+            &t,
+            "Existing records are never overwritten. Same-ID conflicts reject the import.",
+        );
+        activate(cx, "Import");
+        static_text(&tree(cx), "Knowledge changed after import review");
+        assert!(
+            !tree(cx)
+                .nodes
+                .iter()
+                .any(|(_, n)| n.value() == Some("Imported 2; skipped 1 duplicate."))
+        );
+        let options = crate::remaining::QaOptions::parse("conflicting-import", "", "", "").unwrap();
+        let (_, cx) = harness_options(cx, 3, options);
+        activate(cx, "Import…");
+        static_text(
+            &tree(cx),
+            "3 records inspected: 2 new, 1 duplicates, and 1 trigger conflicts.",
+        );
+        activate(cx, "Import");
+        static_text(&tree(cx), "Imported 2; skipped 1 duplicate.");
     }
     #[gpui::test]
     fn spelling_import_fixtures_disable_unsafe_confirmation(cx: &mut TestAppContext) {
@@ -332,14 +355,18 @@ mod ax {
         let options = crate::remaining::QaOptions::parse("", "", "1", "").unwrap();
         let (_, cx) = harness_options(cx, 4, options);
         activate(cx, "Import modes…");
+        static_text(&tree(cx), "1 new modes, 1 app bindings, 1 site rules.");
         static_text(
             &tree(cx),
-            "1 new modes · 0 exact duplicates · 0 missing apps · 0 conflicts",
+            "0 exact duplicates skipped. 0 bindings skipped because the app has no local profile.",
         );
         activate(cx, "Confirm import");
-        static_text(&tree(cx), "Modes imported from the synthetic file.");
+        static_text(
+            &tree(cx),
+            "Import applied. Browser-site activation preference was preserved.",
+        );
         activate(cx, "Export custom modes…");
-        static_text(&tree(cx), "Modes exported to synthetic sink · 1 saved");
+        static_text(&tree(cx), "Custom modes exported.");
     }
     #[gpui::test]
     fn regression_palette_active_descendant_tracks_search_selection(cx: &mut TestAppContext) {
@@ -1013,7 +1040,7 @@ mod fixture_parameters {
             s.notice
                 .as_ref()
                 .unwrap()
-                .contains("2 succeeded · 0 unchanged · 1 failed")
+                .contains("2 records disabled; 1 failed. 0 already disabled.")
         );
         assert!(s.notice.as_ref().unwrap().contains("synthetic-1"));
         drop(s);
@@ -1067,16 +1094,28 @@ mod fixture_parameters {
         let before = host.state.borrow().records.clone();
         controller.request(Action::Import { preview });
         controller.drain();
-        assert_eq!(controller.model.problem, Some(Problem::Conflict));
         assert_eq!(host.state.borrow().records, before);
-        assert!(host.state.borrow().notice.is_none());
+        if options.knowledge == Scenario::StaleImport {
+            assert_eq!(
+                controller.model.problem,
+                Some(Problem::Operation("Knowledge changed after import review"))
+            );
+            assert!(host.state.borrow().notice.is_none());
+        } else {
+            // Trigger conflicts are reported in the review but do not refuse it.
+            assert_eq!(controller.model.problem, None);
+            assert_eq!(
+                host.state.borrow().notice.as_deref(),
+                Some("Imported 2; skipped 1 duplicate.")
+            );
+        }
     }
     #[test]
     fn knowledge_stale_import_parameter_refuses_write() {
         knowledge_import("stale-import");
     }
     #[test]
-    fn knowledge_conflicting_import_parameter_refuses_write() {
+    fn knowledge_conflicting_import_parameter_reports_conflicts_and_imports() {
         knowledge_import("conflicting-import");
     }
 
@@ -1155,7 +1194,7 @@ mod fixture_parameters {
         assert_eq!(host.exports.borrow().len(), 1);
         assert_eq!(
             host.state.borrow().notice.as_deref(),
-            Some("Modes exported to synthetic sink · 1 saved")
+            Some("Custom modes exported.")
         );
     }
     #[test]

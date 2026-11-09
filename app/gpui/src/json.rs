@@ -59,13 +59,32 @@ impl<'de> Deserialize<'de> for Strict {
         d.deserialize_any(V)
     }
 }
+/// Why a document was refused, so file importers can report the real reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fault {
+    Size,
+    Syntax,
+    Duplicate,
+    Depth,
+}
 pub fn parse(text: &str, max: usize, depth: usize) -> Result<Value, Problem> {
+    parse_fault(text, max, depth).map_err(|_| Problem::Invalid)
+}
+pub fn parse_fault(text: &str, max: usize, depth: usize) -> Result<Value, Fault> {
     if text.len() > max {
-        return Err(Problem::Invalid);
+        return Err(Fault::Size);
     }
     let mut d = serde_json::Deserializer::from_str(text);
-    let value = Strict::deserialize(&mut d).map_err(|_| Problem::Invalid)?.0;
-    d.end().map_err(|_| Problem::Invalid)?;
+    let value = Strict::deserialize(&mut d)
+        .map_err(|e| {
+            if e.to_string().contains("duplicate JSON key") {
+                Fault::Duplicate
+            } else {
+                Fault::Syntax
+            }
+        })?
+        .0;
+    d.end().map_err(|_| Fault::Syntax)?;
     fn valid(v: &Value, depth: usize) -> bool {
         if depth == 0 {
             return false;
@@ -77,7 +96,7 @@ pub fn parse(text: &str, max: usize, depth: usize) -> Result<Value, Problem> {
         }
     }
     if !valid(&value, depth) {
-        return Err(Problem::Invalid);
+        return Err(Fault::Depth);
     }
     Ok(value)
 }

@@ -80,7 +80,7 @@ impl SectionHost<Snapshot, Action> for FixtureHost {
                         s.settings[k] = v.clone()
                     }
                     s.import_preview = None;
-                    s.notice = Some("Modes imported from the synthetic file.".into());
+                    s.notice = Some(super::exchange::reason::APPLIED.into());
                 }
                 Err(p) => error = Some(p),
             },
@@ -101,10 +101,7 @@ impl SectionHost<Snapshot, Action> for FixtureHost {
             Action::Export if self.files => match super::exchange::export(&s.settings) {
                 Ok(bytes) => {
                     self.exports.borrow_mut().push(bytes);
-                    s.notice = Some(format!(
-                        "Modes exported to synthetic sink · {} saved",
-                        self.exports.borrow().len()
-                    ));
+                    s.notice = Some(super::exchange::reason::EXPORTED.into());
                 }
                 Err(p) => error = Some(p),
             },

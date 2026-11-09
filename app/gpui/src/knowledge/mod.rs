@@ -368,48 +368,53 @@ impl Render for Knowledge {
                 Dialog::Delete(v) => form = form.child(gpui::text!(title(v).to_string())),
                 Dialog::Bulk(b, _) => {
                     form = form
-                        .child(gpui::text!(format!("{} captured matches · {}", b.total, b.filter.query)))
+                        .child(gpui::text!(format!("Permanently remove these {} matching records, including unloaded pages.", b.entries.len())))
+                        .child(gpui::text!(b.filter.label()))
+                        .child(gpui::text!("Only the collected records will be deleted. Records changed since collection will be kept and reported as failures."))
                         .child(self.phrase.clone())
                 }
                 Dialog::DeleteAll(_) => form = form
                     .child(gpui::text!("This permanently deletes all knowledge plus local recovery backups. Export first if you may need it later."))
                     .child(self.phrase.clone()),
                 Dialog::Import(v) => {
-                    form = form.child(gpui::text!(format!(
-                        "{} new · {} duplicates · {} conflicts",
-                        v["new"], v["duplicates"], v["conflicts"]
-                    )))
+                    form = form
+                        .child(gpui::text!(format!(
+                            "{} records inspected: {} new, {} duplicates, and {} trigger conflicts.",
+                            v["total"], v["new"], v["duplicates"], v["conflicts"]
+                        )))
+                        .child(gpui::text!("Existing records are never overwritten. Same-ID conflicts reject the import."))
                 }
             };
             let e = cx.entity();
             let cancel = e.clone();
+            let confirm_label = match dialog {
+                Dialog::Edit(_) => "Save".to_string(),
+                Dialog::Import(_) => "Import".to_string(),
+                Dialog::Bulk(b, BulkAction::Delete) => {
+                    format!("Delete {} matching records…", b.entries.len())
+                }
+                _ => "Confirm".to_string(),
+            };
             form = form
                 .child(
-                    Button::new(
-                        "knowledge-confirm",
-                        if matches!(dialog, Dialog::Edit(_)) {
-                            "Save"
-                        } else {
-                            "Confirm"
-                        },
-                    )
-                    .intent(
-                        if matches!(
-                            dialog,
-                            Dialog::Delete(_)
-                                | Dialog::DeleteAll(_)
-                                | Dialog::Bulk(_, BulkAction::Delete)
-                        ) {
-                            ButtonIntent::Danger
-                        } else {
-                            ButtonIntent::Primary
-                        },
-                    )
-                    .disabled(self.controller.model.pending)
-                    .track_focus(&self.save_focus)
-                    .default_confirm(matches!(dialog, Dialog::Edit(_)))
-                    .with_scroll_parent(Some(&self.scroll))
-                    .on_click(move |_, w, cx| e.update(cx, |s, cx| s.confirm(w, cx))),
+                    Button::new("knowledge-confirm", confirm_label)
+                        .intent(
+                            if matches!(
+                                dialog,
+                                Dialog::Delete(_)
+                                    | Dialog::DeleteAll(_)
+                                    | Dialog::Bulk(_, BulkAction::Delete)
+                            ) {
+                                ButtonIntent::Danger
+                            } else {
+                                ButtonIntent::Primary
+                            },
+                        )
+                        .disabled(self.controller.model.pending)
+                        .track_focus(&self.save_focus)
+                        .default_confirm(matches!(dialog, Dialog::Edit(_)))
+                        .with_scroll_parent(Some(&self.scroll))
+                        .on_click(move |_, w, cx| e.update(cx, |s, cx| s.confirm(w, cx))),
                 )
                 .child(
                     Button::new("knowledge-cancel", "Cancel")

@@ -207,34 +207,151 @@ pub fn vscode(v: &Value) -> Result<(String, bool, Value), Problem> {
         .collect();
     Ok((label, dark, theme))
 }
-pub fn local(text: &str) -> Result<(String, Vec<String>, Value), Problem> {
-    let v = crate::json::jsonc(text, 256 * 1024)?;
-    if v.get("colors").is_some() || v["tokenColors"].is_array() {
-        let (label, dark, t) = vscode(&v)?;
-        Ok((label, vec![if dark { "dark" } else { "light" }.into()], t))
-    } else {
-        let theme = if v["theme"].is_object() {
-            v["theme"].clone()
-        } else {
-            v.clone()
-        };
-        if theme["version"] != 1 {
-            return Err(Problem::Invalid);
-        }
-        let doc = murmur_core::state::normalize(
-            "murmur-appearance",
-            json!({"version":1,"revision":0,"mode":"system","theme":theme}),
-        )
-        .map_err(|_| Problem::Invalid)?;
-        Ok((
-            v["label"]
-                .as_str()
-                .unwrap_or("Imported theme")
-                .chars()
-                .take(64)
-                .collect(),
-            vec!["light".into(), "dark".into()],
-            doc["theme"].clone(),
-        ))
+/// The shipped explanations for a theme file exchange. `$wrapped` lists each
+/// reason as the person sees it, with the shipped failure prefix, so the
+/// service-failure allow list can show it verbatim.
+macro_rules! reasons {
+    ($wrapped:ident, $prefix:literal; $($name:ident = $text:literal),+ $(,)?) => {
+        $(pub const $name: &str = $text;)+
+        pub const $wrapped: &[&str] = &[$(concat!($prefix, $text)),+];
+    };
+}
+pub mod reason {
+    pub const IMPORT_PREFIX: &str = "Failed to import theme: ";
+    pub const EXPORT_PREFIX: &str = "Failed to export theme: ";
+    // What the shipped theme parser reports about the chosen file.
+    reasons! { IMPORT_PARSE, "Failed to import theme: ";
+        TOO_LARGE = "Theme file exceeds the 256 KiB limit.",
+        NOT_JSON = "Theme file is not valid JSON.",
+        NO_CANVAS = "That VS Code theme has no \"editor.background\" color.",
+        BAD_LIBRARY_SHAPE = "Theme file has an invalid library-theme shape.",
+        NO_APPEARANCE = "Theme file has no supported appearance.",
+        BAD_VERSION = "Theme file has an unsupported version.",
+        BAD_MODE = "Theme file has an invalid appearance mode.",
+        BAD_THEME = "Theme file has an unsupported theme version.",
     }
+    // What reading the chosen file can report (the shipped read_theme_file command).
+    reasons! { IMPORT_READ, "Failed to import theme: ";
+        UNREADABLE = "Murmur could not read the theme file.",
+        NOT_A_FILE = "Choose a valid theme file.",
+        FILE_TOO_LARGE = "Theme files must be 256 KiB or smaller.",
+        NOT_UTF8 = "Theme files must be valid UTF-8.",
+    }
+    // What writing the export can report (the shipped write_theme_file command).
+    reasons! { EXPORT_WRITE, "Failed to export theme: ";
+        BAD_DESTINATION = "Choose a valid theme export destination.",
+        WRITE_FAILED = "Murmur could not write the theme export.",
+        PUBLISH_FAILED = "Murmur could not publish the theme export.",
+        EXPORT_TOO_LARGE = "Theme exports must be 64 KiB or smaller.",
+        SYNC_FAILED = "Theme export was written, but Murmur could not finish syncing its folder.",
+    }
+}
+/// The shipped line for a failed import, from a file-read or parse reason.
+/// Anything the person has no shipped line for reads as an unreadable file.
+pub fn import_failure(reason: &str) -> &'static str {
+    [reason::IMPORT_PARSE, reason::IMPORT_READ]
+        .into_iter()
+        .flatten()
+        .copied()
+        .find(|line| line.strip_prefix(reason::IMPORT_PREFIX) == Some(reason))
+        .unwrap_or(concat!(
+            "Failed to import theme: ",
+            "Murmur could not read the theme file."
+        ))
+}
+/// The shipped line for a failed export.
+pub fn export_failure(reason: &str) -> &'static str {
+    reason::EXPORT_WRITE
+        .iter()
+        .copied()
+        .find(|line| line.strip_prefix(reason::EXPORT_PREFIX) == Some(reason))
+        .unwrap_or(concat!(
+            "Failed to export theme: ",
+            "Murmur could not write the theme export."
+        ))
+}
+fn is_vscode(v: &Value) -> bool {
+    v["colors"]
+        .as_object()
+        .is_some_and(|colors| colors.keys().any(|k| k.contains('.')))
+        || v["tokenColors"].is_array()
+}
+/// The theme with only the fields the shipped importer keeps; whatever else
+/// the file carried is not stored or shared again.
+fn plain_theme(theme: &Value) -> Option<Value> {
+    let doc = murmur_core::state::appearance_export(
+        "murmur-appearance",
+        json!({"version":1,"revision":0,"mode":"system","theme":theme}),
+    )
+    .ok()?;
+    Some(doc["theme"].clone())
+}
+/// A theme file as the shipped importer reads it: the label, the appearances it
+/// supports and the theme. A failure is the shipped reason, not the file.
+pub fn local(text: &str) -> Result<(String, Vec<String>, Value), &'static str> {
+    use reason::*;
+    if text.len() > 256 * 1024 {
+        return Err(TOO_LARGE);
+    }
+    let v = crate::json::jsonc(text, 256 * 1024).map_err(|_| NOT_JSON)?;
+    if is_vscode(&v) {
+        let (label, dark, t) = vscode(&v).map_err(|_| NO_CANVAS)?;
+        return Ok((label, vec![if dark { "dark" } else { "light" }.into()], t));
+    }
+    if v["version"] == 2 {
+        let name = v["name"]
+            .as_str()
+            .map(str::trim)
+            .filter(|n| !n.is_empty() && n.chars().count() <= 64);
+        let (Some(name), Some(listed), true) = (
+            name,
+            v["modes"].as_array(),
+            v["theme"].is_object() && v["theme"]["version"] == 1,
+        ) else {
+            return Err(BAD_LIBRARY_SHAPE);
+        };
+        let modes: Vec<String> = ["light", "dark"]
+            .into_iter()
+            .filter(|mode| listed.iter().any(|m| m == mode))
+            .map(String::from)
+            .collect();
+        if modes.is_empty() {
+            return Err(NO_APPEARANCE);
+        }
+        let theme = plain_theme(&v["theme"]).ok_or(BAD_LIBRARY_SHAPE)?;
+        return Ok((name.into(), modes, theme));
+    }
+    if v["version"] != 1 {
+        return Err(BAD_VERSION);
+    }
+    if !["system", "light", "dark"]
+        .iter()
+        .any(|mode| v["mode"] == *mode)
+    {
+        return Err(BAD_MODE);
+    }
+    if !v["theme"].is_object() || v["theme"]["version"] != 1 {
+        return Err(BAD_THEME);
+    }
+    let theme = plain_theme(&v["theme"]).ok_or(BAD_THEME)?;
+    Ok((
+        "Imported theme".into(),
+        vec!["light".into(), "dark".into()],
+        theme,
+    ))
+}
+fn pretty(file: Value) -> String {
+    format!(
+        "{}\n",
+        serde_json::to_string_pretty(&file).unwrap_or_default()
+    )
+}
+/// The portable v1 file for the current appearance (`appearance` is the
+/// allow-listed export of the appearance document).
+pub fn current_file(appearance: &Value) -> String {
+    pretty(json!({"version":1,"mode":appearance["mode"],"theme":appearance["theme"]}))
+}
+/// The portable v2 file for one library theme (`entry` is from the allow-listed export).
+pub fn entry_file(entry: &Value) -> String {
+    pretty(json!({"version":2,"name":entry["label"],"modes":entry["modes"],"theme":entry["theme"]}))
 }

@@ -1036,11 +1036,17 @@ fn gallery_follow_delivers_pin_copy_save_delete_import_and_reopen(cx: &mut TestA
     e.update(cx, |s, _| s.copy(200, false));
     tick(cx);
     assert_eq!(*host.clipboard.borrow(), entry(200).text);
-    assert_eq!(e.read_with(cx, |s, _| s.model.notice), Some("Copied"));
+    assert_eq!(
+        e.read_with(cx, |s, _| s.model.notice.clone()).as_deref(),
+        Some("Copied")
+    );
     for format in 0..3 {
         cx.update(|w, cx| e.update(cx, |s, cx| s.action(&format!("save-{format}"), w, cx)));
         tick(cx);
-        assert_eq!(e.read_with(cx, |s, _| s.model.notice), Some("Export saved"));
+        assert_eq!(
+            e.read_with(cx, |s, _| s.model.notice.clone()).as_deref(),
+            Some("Saved 200 entries.")
+        );
     }
     assert_eq!(host.saved.borrow().len(), 3);
     let exported: serde_json::Value = serde_json::from_str(&host.saved.borrow()[2].1).unwrap();
@@ -1049,7 +1055,7 @@ fn gallery_follow_delivers_pin_copy_save_delete_import_and_reopen(cx: &mut TestA
     cx.update(|w, cx| e.update(cx, |s, cx| s.action("save-2", w, cx)));
     tick(cx);
     assert_eq!(host.saved.borrow().len(), 3);
-    assert_eq!(e.read_with(cx, |s, _| s.model.notice), None);
+    assert_eq!(e.read_with(cx, |s, _| s.model.notice.clone()), None);
     cx.update(|w, cx| {
         e.update(cx, |s, cx| {
             s.delete(DeleteScope::Row(200), w, cx);
@@ -1058,6 +1064,12 @@ fn gallery_follow_delivers_pin_copy_save_delete_import_and_reopen(cx: &mut TestA
     });
     tick(cx);
     assert_eq!(e.read_with(cx, |s, _| s.model.entries.len()), 199);
+    // The owner's changed snapshot arrives behind the action reply and must
+    // not erase the receipt.
+    assert_eq!(
+        e.read_with(cx, |s, _| s.model.notice.clone()).as_deref(),
+        Some("Deleted transcript.")
+    );
     e.update(cx, |s, _| s.request(super::RequestKind::RetryImport));
     tick(cx);
     assert!(!e.read_with(cx, |s, _| s.model.retry_import));
@@ -1066,7 +1078,10 @@ fn gallery_follow_delivers_pin_copy_save_delete_import_and_reopen(cx: &mut TestA
     e.update(cx, super::fixtures::attach);
     e.update(cx, |s, _| s.copy(201, false));
     tick(cx);
-    assert_eq!(e.read_with(cx, |s, _| s.model.notice), Some("Copied"));
+    assert_eq!(
+        e.read_with(cx, |s, _| s.model.notice.clone()).as_deref(),
+        Some("Copied")
+    );
     assert_eq!(host.stops.get(), 2);
     e.update(cx, |s, cx| {
         s.query(
@@ -1200,7 +1215,7 @@ fn row_copy_click_writes_exact_text_and_presents_bounded_success_feedback(cx: &m
     cx.run_until_parked();
     let t = ax::tree(cx);
     ax::named(&t, "Copy transcript 1");
-    assert_eq!(e.read_with(cx, |s, _| s.model.notice), None);
+    assert_eq!(e.read_with(cx, |s, _| s.model.notice.clone()), None);
 }
 
 #[gpui::test]
@@ -1251,4 +1266,74 @@ fn initial_empty_history_epoch_zero_finishes_loading() {
         clear_epoch: 0,
         result: Err(Problem::Unavailable),
     }));
+}
+
+#[test]
+fn bulk_receipts_use_shipped_wording_and_survive_the_changed_snapshot() {
+    let said = |o: Outcome| o.message().map(|m| m.into_owned());
+    assert_eq!(
+        said(Outcome::exported(false, 1)).as_deref(),
+        Some("Copied 1 entry to the clipboard.")
+    );
+    assert_eq!(
+        said(Outcome::exported(false, 12)).as_deref(),
+        Some("Copied 12 entries to the clipboard.")
+    );
+    assert_eq!(
+        said(Outcome::exported(true, 1)).as_deref(),
+        Some("Saved 1 entry.")
+    );
+    assert_eq!(
+        said(Outcome::exported(true, 200)).as_deref(),
+        Some("Saved 200 entries.")
+    );
+    assert_eq!(
+        said(Outcome::deleted(true, false, 1)).as_deref(),
+        Some("Deleted transcript.")
+    );
+    assert_eq!(
+        said(Outcome::deleted(false, false, 1)).as_deref(),
+        Some("Deleted 1 entry.")
+    );
+    assert_eq!(
+        said(Outcome::deleted(false, false, 3)).as_deref(),
+        Some("Deleted 3 entries.")
+    );
+    assert_eq!(
+        said(Outcome::deleted(false, true, 200)),
+        None,
+        "Clear history stays silent"
+    );
+    assert_eq!(said(Outcome::Cancelled), None);
+    assert_eq!(
+        said(Outcome::ExportCopyFailed).as_deref(),
+        Some("Export to clipboard failed.")
+    );
+    assert_eq!(
+        said(Outcome::SaveFailed).as_deref(),
+        Some("Could not save the export.")
+    );
+
+    let mut m = active();
+    let t = m.ticket();
+    assert!(m.event(Event::Action {
+        ticket: t,
+        outcome: Outcome::Deleted(3)
+    }));
+    assert_eq!(m.notice.as_deref(), Some("Deleted 3 entries."));
+    let mut next = snapshot();
+    next.entries.truncate(197);
+    assert!(m.event(Event::Changed {
+        attachment: 1,
+        revision: 2,
+        clear_epoch: 0,
+        snapshot: next
+    }));
+    assert_eq!(m.notice.as_deref(), Some("Deleted 3 entries."));
+    // Any other change of the view still clears it.
+    m.set_query(Query {
+        text: "x".into(),
+        ..Default::default()
+    });
+    assert_eq!(m.notice, None);
 }

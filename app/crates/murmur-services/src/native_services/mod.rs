@@ -451,13 +451,16 @@ impl Services {
             revision,
         ))
     }
-    pub fn import_knowledge(&self, bytes: &[u8], expected: u64) -> Result<(), String> {
+    /// Returns the imported and duplicate-skipped counts the shipped app reports.
+    pub fn import_knowledge(&self, bytes: &[u8], expected: u64) -> Result<(u64, u64), String> {
         let _permit = crate::shutdown::WriterPermit::acquire()?;
-        self.context
+        let result = self
+            .context
             .services()
             .knowledge
             .import_bytes(bytes, expected)?;
-        crate::commands::knowledge::refresh_correction_rules(&self.context.services())
+        crate::commands::knowledge::refresh_correction_rules(&self.context.services())?;
+        Ok((result.imported, result.duplicates))
     }
 }
 impl Services {

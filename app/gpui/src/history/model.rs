@@ -1,6 +1,7 @@
 //! Private-text state. Deliberately no Debug or serialization implementations.
 pub use murmur_core::history::*;
 use std::{
+    borrow::Cow,
     collections::BTreeSet,
     time::{Duration, Instant},
 };
@@ -43,19 +44,64 @@ pub enum Problem {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Copied,
-    Saved,
+    /// Copied this many exported entries to the clipboard.
+    CopiedExport(usize),
+    /// Saved this many exported entries to a file.
+    Saved(usize),
     Cancelled,
     Opened,
+    /// One row was deleted from its own action.
+    DeletedRow,
+    /// Delete shown removed this many entries.
+    Deleted(usize),
+    /// The clipboard export could not be written.
+    ExportCopyFailed,
+    /// The export file could not be saved.
+    SaveFailed,
     Failed,
 }
+fn entries(count: usize) -> &'static str {
+    if count == 1 { "entry" } else { "entries" }
+}
 impl Outcome {
-    pub fn message(self) -> Option<&'static str> {
+    /// Shipped wording: `Copied N entries to the clipboard.`, `Saved N entries.`,
+    /// `Deleted transcript.`, `Deleted N entries.`, `Export to clipboard failed.`
+    /// and a save failure. Clear history stays silent, as it does in the shipped
+    /// panel. The save failure omits the shipped raw error text on purpose: a
+    /// path or OS string is not content-free enough for an AX announcement.
+    pub fn message(self) -> Option<Cow<'static, str>> {
         match self {
-            Self::Copied => Some("Copied"),
-            Self::Saved => Some("Export saved"),
-            Self::Cancelled => None,
-            Self::Opened => None,
-            Self::Failed => Some("History action failed. Try again."),
+            Self::Copied => Some("Copied".into()),
+            Self::CopiedExport(n) => {
+                Some(format!("Copied {n} {} to the clipboard.", entries(n)).into())
+            }
+            Self::Saved(n) => Some(format!("Saved {n} {}.", entries(n)).into()),
+            Self::Cancelled | Self::Opened => None,
+            Self::DeletedRow => Some("Deleted transcript.".into()),
+            Self::Deleted(n) => Some(format!("Deleted {n} {}.", entries(n)).into()),
+            Self::ExportCopyFailed => Some("Export to clipboard failed.".into()),
+            Self::SaveFailed => Some("Could not save the export.".into()),
+            Self::Failed => Some("History action failed. Try again.".into()),
+        }
+    }
+}
+impl Outcome {
+    /// Receipt for a finished export of `count` entries.
+    pub fn exported(save: bool, count: usize) -> Self {
+        if save {
+            Self::Saved(count)
+        } else {
+            Self::CopiedExport(count)
+        }
+    }
+    /// Receipt for a finished delete. Only Clear history is silent.
+    pub fn deleted(row: bool, clear_all: bool, count: usize) -> Self {
+        if clear_all {
+            Self::Opened
+        } else if row {
+            Self::DeletedRow
+        } else {
+            Self::Deleted(count)
         }
     }
 }
@@ -83,7 +129,7 @@ pub struct Model {
     pub retry_import: bool,
     pub loading: bool,
     pub problem: Option<Problem>,
-    pub notice: Option<&'static str>,
+    pub notice: Option<Cow<'static, str>>,
     pub confirmation: Option<Confirmation>,
     attachment: u64,
     epoch: u64,
@@ -240,7 +286,11 @@ impl Model {
             self.clear_epoch = clear_epoch;
             return true;
         }
+        // A delete publishes its changed snapshot after its own action reply.
+        // That refresh must not erase the receipt the reply just produced.
+        let notice = self.notice.take();
         self.invalidate();
+        self.notice = notice;
         self.revision = revision;
         self.clear_epoch = clear_epoch;
         self.entries = snapshot.entries;

@@ -46,6 +46,38 @@ fn mode_import_is_strict_and_preserves_activation() {
 }
 
 #[test]
+fn preview_counts_bindings_sites_duplicates_and_repeated_entries_like_shipped() {
+    let mut source = fixtures::snapshot().settings;
+    source["modes"] = json!([blank("mode.a", "A")]);
+    let profile = |mode: serde_json::Value| {
+        let mut p = crate::customize::model::profile("example.synthetic", "Synthetic editor");
+        p["modeId"] = mode;
+        json!([p])
+    };
+    source["appProfiles"] = profile(json!("mode.a"));
+    source["browserSiteRules"] = json!([{"id":"site.a","browserBundleId":BROWSERS[0].0,"host":"example.com","modeId":"mode.a","enabled":true}]);
+    let mut file = exchange::parse(&exchange::export(&source).unwrap()).unwrap();
+    let mut local = fixtures::snapshot().settings;
+    local["appProfiles"] = profile(json!(null));
+    let p = exchange::preview(&file, &local).unwrap();
+    assert_eq!(
+        (p.additions, p.bindings, p.sites, p.duplicates, p.conflicts),
+        (1, 1, 1, 0, 0)
+    );
+    // A repeated entry is reviewed, not rejected: exact repeats are duplicates.
+    file["modes"] = json!([file["modes"][0].clone(), file["modes"][0].clone()]);
+    file["appBindings"] =
+        json!([file["appBindings"][0].clone(), {"bundleId":"example.synthetic","modeId":"mode.a"}]);
+    let p = exchange::preview(&file, &local).unwrap();
+    assert_eq!((p.additions, p.bindings, p.duplicates), (1, 1, 2));
+    // Another binding for a bundle already bound to a different mode conflicts.
+    local["appProfiles"] = profile(json!("builtin.technical"));
+    let p = exchange::preview(&file, &local).unwrap();
+    assert!(p.conflicts >= 1 && p.lines[0] == "App binding conflict: example.synthetic");
+    assert!(exchange::export(&source).unwrap().ends_with("}\n"));
+}
+
+#[test]
 fn mode_and_spelling_exports_exclude_retained_opaque_fields() {
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../crates/murmur-core/src/state/gpui-downgrade-fixtures.json"

@@ -106,13 +106,16 @@ impl Host for FixtureHost {
                     }) {
                         if save {
                             self.saved.borrow_mut().push((format, text));
-                            outcome = Outcome::Saved;
                         } else {
                             *self.clipboard.borrow_mut() = text;
-                            outcome = Outcome::Copied;
                         }
+                        outcome = Outcome::exported(save, entries.len());
                     } else {
-                        outcome = Outcome::Failed;
+                        outcome = if save {
+                            Outcome::SaveFailed
+                        } else {
+                            Outcome::ExportCopyFailed
+                        };
                     }
                 }
             }
@@ -129,7 +132,12 @@ impl Host for FixtureHost {
                     changed = true;
                 }
             }
-            RequestKind::Delete { entries, clear_all } => {
+            RequestKind::Delete {
+                entries,
+                row,
+                clear_all,
+            } => {
+                outcome = Outcome::deleted(row, clear_all, entries.len());
                 if clear_all {
                     self.rows.borrow_mut().clear();
                     self.epoch.set(self.epoch.get() + 1);
@@ -152,6 +160,18 @@ impl Host for FixtureHost {
             RequestKind::CorrectAndTeach { .. } | RequestKind::TranscribeFile => (),
         }
         self.revision.set(self.revision.get() + 1);
+        if changed && outcome.message().is_some() {
+            // The service replies to the action first; the owner's changed
+            // snapshot follows it, exactly as the production adapter orders them.
+            assert!(
+                inbox
+                    .publish(Event::Action {
+                        ticket: r.ticket,
+                        outcome,
+                    })
+                    .is_ok()
+            );
+        }
         let event = if changed {
             Event::Changed {
                 attachment: r.ticket.attachment,
