@@ -237,9 +237,35 @@ pub(crate) async fn accept_file_transcription<R: crate::host::Runtime>(
     operation_id: String,
 ) -> Result<(), String> {
     main_only(&window)?;
+    accept_file_outcome(app, operation_id).await.map(|_| ())
+}
+
+/// Native hosts need the admission outcome: a cancellation that wins before
+/// publication returns `Ok(false)`, a published transcript `Ok(true)`.
+pub(crate) async fn native_accept_file(
+    app: crate::host::Context,
+    operation_id: String,
+) -> Result<bool, String> {
+    accept_file_outcome(app, operation_id).await
+}
+
+/// Records cancellation intent without waiting for the owner or any file lock,
+/// so a click is ordered before any admission that has not yet begun.
+pub(crate) fn native_cancel_file(
+    app: &crate::host::Context,
+    operation_id: &str,
+) -> Result<(), String> {
+    ready(app)?.producers.cancel_file(operation_id);
+    Ok(())
+}
+
+async fn accept_file_outcome<R: crate::host::Runtime>(
+    app: crate::host::Context<R>,
+    operation_id: String,
+) -> Result<bool, String> {
     let permit = crate::shutdown::WriterPermit::acquire()?;
     let worker_app = app.clone();
-    if crate::host::runtime::spawn_blocking(move || {
+    let published = crate::host::runtime::spawn_blocking(move || {
         let _permit = permit;
         let _settings_observer = SourcePublicationObserver(&worker_app);
         ready(&worker_app)?
@@ -256,11 +282,11 @@ pub(crate) async fn accept_file_transcription<R: crate::host::Runtime>(
         storage_error(&app);
         e.to_string()
     })?
-    .is_some()
-    {
+    .is_some();
+    if published {
         let _ = app.events().publish(EventKind::HistoryChanged, ());
     }
-    Ok(())
+    Ok(published)
 }
 pub(crate) fn retain(app: &crate::host::Context) -> bool {
     app.control()

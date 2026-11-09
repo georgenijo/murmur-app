@@ -39,12 +39,17 @@ pub struct Item {
     pub message: String,
     operation: Option<String>,
     done_at: Option<Instant>,
+    /// Admission into History has begun; a Cancel now can only be a request
+    /// that the admission outcome decides.
+    admitting: bool,
+    cancel_requested: bool,
 }
 impl Item {
     /// Shipped `statusText`.
     pub fn status_text(&self) -> String {
         match self.status {
             Status::Queued => "Queued".into(),
+            Status::Transcribing if self.cancel_requested => "Canceling…".into(),
             Status::Transcribing => "Transcribing…".into(),
             Status::Done => "Done".into(),
             Status::Error if self.message.is_empty() => "Could not transcribe".into(),
@@ -110,6 +115,8 @@ impl Queue {
                 message: String::new(),
                 operation: None,
                 done_at: None,
+                admitting: false,
+                cancel_requested: false,
             });
             added += 1;
         }
@@ -120,56 +127,87 @@ impl Queue {
     pub fn claim(&mut self) -> bool {
         !std::mem::replace(&mut self.running, true)
     }
-    /// The next queued item becomes active. With nothing left the runner role
-    /// is released in the same critical section, so a concurrent `enqueue`
-    /// either is seen here or claims a fresh runner.
-    fn advance(&mut self) -> Option<(u64, String)> {
+    /// The next queued item becomes active and gets its backend operation id in
+    /// the same critical section, so a Cancel always has an operation to hit.
+    /// With nothing left the runner role is released here too, so a concurrent
+    /// `enqueue` either is seen or claims a fresh runner.
+    fn advance(&mut self, new_operation: fn() -> String) -> Option<(u64, String, String)> {
         let Some(item) = self.items.iter_mut().find(|i| i.status == Status::Queued) else {
             self.running = false;
             return None;
         };
         item.status = Status::Transcribing;
-        let next = (item.id, item.path.clone());
+        let operation = new_operation();
+        item.operation = Some(operation.clone());
+        let next = (item.id, item.path.clone(), operation);
         self.touch();
         Some(next)
     }
-    fn set_operation(&mut self, id: u64, operation: &str) {
-        if let Some(item) = self.item(id) {
-            item.operation = Some(operation.to_owned());
-        }
+    /// The text is ready and admission into History is about to start. False
+    /// when the item was canceled while transcribing, so nothing is admitted.
+    fn begin_admission(&mut self, id: u64) -> bool {
+        let Some(item) = self
+            .item(id)
+            .filter(|i| i.status == Status::Transcribing && !i.admitting)
+        else {
+            return false;
+        };
+        item.admitting = true;
+        true
     }
-    /// Record the outcome of the active item. Returns false when the item was
+    /// Record a failure of the active item. Returns false when the item was
     /// canceled meanwhile, so a late result never revives it.
-    fn finish(&mut self, id: u64, result: Result<(), String>) -> bool {
+    fn fail(&mut self, id: u64, message: String) -> bool {
         let Some(item) = self.item(id).filter(|i| i.status == Status::Transcribing) else {
             return false;
         };
-        match result {
-            Ok(()) => {
-                item.status = Status::Done;
-                item.done_at = Some(Instant::now());
-            }
-            Err(message) => {
-                item.status = Status::Error;
-                item.message = if message.is_empty() {
-                    "Transcription failed".into()
-                } else {
-                    message
-                };
-            }
+        item.status = Status::Error;
+        item.message = if item.cancel_requested {
+            CANCELED.into()
+        } else if message.is_empty() {
+            "Transcription failed".into()
+        } else {
+            message
+        };
+        self.touch();
+        true
+    }
+    /// Record the admission outcome. `published` means the transcript is in
+    /// History, so it is Done even if Cancel was clicked first. Not published
+    /// after a Cancel click means the cancellation won; not published without
+    /// one means there was nothing to keep (History retention is off).
+    fn settle(&mut self, id: u64, published: bool) -> bool {
+        let Some(item) = self.item(id).filter(|i| i.status == Status::Transcribing) else {
+            return false;
+        };
+        if published || !item.cancel_requested {
+            item.status = Status::Done;
+            item.done_at = Some(Instant::now());
+        } else {
+            item.status = Status::Error;
+            item.message = CANCELED.into();
         }
         self.touch();
         true
     }
     /// Cancel a queued or active item. Returns the backend operation to
-    /// cancel (when one was started), or `None` if the item is not cancelable.
+    /// cancel (when one was started), or `None` if there is nothing to cancel.
+    /// Once admission has begun the toast stays `Transcribing` until the
+    /// admission outcome decides between Done and Canceled.
     pub fn cancel(&mut self, id: u64) -> Option<Option<String>> {
         let item = self
             .item(id)
             .filter(|i| matches!(i.status, Status::Queued | Status::Transcribing))?;
-        item.status = Status::Error;
-        item.message = CANCELED.into();
         let operation = item.operation.clone();
+        if item.admitting {
+            if item.cancel_requested {
+                return None;
+            }
+            item.cancel_requested = true;
+        } else {
+            item.status = Status::Error;
+            item.message = CANCELED.into();
+        }
         self.touch();
         Some(operation)
     }
@@ -206,53 +244,71 @@ impl Queue {
 
 pub type Fut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// The service boundary the drain loop drives: production maps these onto the
-/// shared `transcribe_file`, `accept_file_transcription` and
-/// `cancel_file_transcription` commands.
+/// shared `transcribe_file` command, the native `Services::accept_file` and
+/// `Services::cancel_file`.
 pub trait Engine: Send + Sync {
     fn transcribe(&self, path: String, operation: String) -> Fut<'_, Result<(), String>>;
-    fn accept(&self, operation: String) -> Fut<'_, Result<(), String>>;
-    fn cancel(&self, operation: String) -> Fut<'_, ()>;
+    /// Publish the staged transcript. `Ok(true)` means it is in History;
+    /// `Ok(false)` means nothing was published (a cancellation won, or there
+    /// was nothing to retain). An `Err` leaves the staged text pending.
+    fn admit(&self, operation: String) -> Fut<'_, Result<bool, String>>;
+    /// Record cancellation intent and release the staged text. Synchronous and
+    /// never waits, so a click is ordered before any admission that has not
+    /// started yet, and a failed admission cannot leave content pending.
+    fn cancel(&self, operation: &str);
 }
 fn lock(queue: &Mutex<Queue>) -> std::sync::MutexGuard<'_, Queue> {
     queue.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 /// Run queued items sequentially until none remain. The caller must hold the
-/// runner role from `Queue::claim`. Every failure is recorded on its own item.
+/// runner role from `Queue::claim`. Every failure is recorded on its own item
+/// and releases that item's staged transcript.
 pub async fn drain(queue: &Mutex<Queue>, engine: &dyn Engine, new_operation: fn() -> String) {
     loop {
-        let next = lock(queue).advance();
-        let Some((id, path)) = next else {
+        let next = lock(queue).advance(new_operation);
+        let Some((id, path, operation)) = next else {
             return;
         };
-        let operation = new_operation();
-        lock(queue).set_operation(id, &operation);
-        let result = engine.transcribe(path, operation.clone()).await;
-        let result = match result {
-            Ok(()) => {
-                let active = lock(queue)
-                    .item(id)
-                    .is_some_and(|i| i.status == Status::Transcribing);
-                if active {
-                    engine.accept(operation.clone()).await
-                } else {
-                    // Canceled after the text was produced: discard it
-                    // instead of publishing to History.
-                    engine.cancel(operation).await;
-                    continue;
-                }
-            }
-            Err(error) => Err(error),
-        };
-        if !lock(queue).finish(id, result) {
-            engine.cancel(operation).await;
+        if let Err(error) = engine.transcribe(path, operation.clone()).await {
+            lock(queue).fail(id, error);
+            continue;
         }
+        if !lock(queue).begin_admission(id) {
+            // Canceled after the text was produced: discard it instead of
+            // publishing to History.
+            engine.cancel(&operation);
+            continue;
+        }
+        match engine.admit(operation.clone()).await {
+            Ok(published) => {
+                lock(queue).settle(id, published);
+            }
+            Err(error) => {
+                // The failed admission keeps its staged transcript for retry.
+                // Nothing retries it, so release it now; otherwise repeated
+                // failures fill the pending-file capacity and block imports.
+                engine.cancel(&operation);
+                lock(queue).fail(id, error);
+            }
+        }
+    }
+}
+
+/// Cancel from a toast: record the request in the queue, then tell the backend
+/// synchronously (outside the queue lock). Admission that already won still
+/// shows Done; one that has not started loses to the recorded intent.
+pub fn cancel_import(queue: &Mutex<Queue>, engine: &dyn Engine, id: u64) {
+    let cancelled = lock(queue).cancel(id);
+    if let Some(Some(operation)) = cancelled {
+        engine.cancel(&operation);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use murmur_core::completion::{Command, CompletionService, producers::Producers};
     use std::sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -272,6 +328,10 @@ mod tests {
             .map(|i| (i.name.clone(), i.status, i.message.clone()))
             .collect()
     }
+    fn name_of(path: &str) -> &str {
+        path.rsplit('/').next().unwrap_or(path)
+    }
+
     /// A fake service boundary. Failures and cancel hooks are keyed by file name.
     #[derive(Default)]
     struct Fake {
@@ -283,9 +343,6 @@ mod tests {
         log: Mutex<Vec<String>>,
     }
     impl Fake {
-        fn name(path: &str) -> &str {
-            path.rsplit('/').next().unwrap_or(path)
-        }
         fn log(&self, line: String) {
             self.log.lock().unwrap().push(line);
         }
@@ -304,7 +361,7 @@ mod tests {
     impl Engine for Fake {
         fn transcribe(&self, path: String, operation: String) -> Fut<'_, Result<(), String>> {
             Box::pin(async move {
-                let name = Self::name(&path).to_owned();
+                let name = name_of(&path).to_owned();
                 self.log(format!("transcribe {name} {operation}"));
                 if self.cancel_while_running.contains(&name.as_str()) {
                     let id = lock(&self.queue)
@@ -321,21 +378,19 @@ mod tests {
                 Ok(())
             })
         }
-        fn accept(&self, operation: String) -> Fut<'_, Result<(), String>> {
+        fn admit(&self, operation: String) -> Fut<'_, Result<bool, String>> {
             Box::pin(async move {
                 let name = self.path_of(&operation);
                 self.log(format!("accept {name}"));
                 if self.fail_accept.contains(&name.as_str()) {
                     return Err("Storage unavailable".into());
                 }
-                Ok(())
+                Ok(true)
             })
         }
-        fn cancel(&self, operation: String) -> Fut<'_, ()> {
-            Box::pin(async move {
-                let name = self.path_of(&operation);
-                self.log(format!("cancel {name}"));
-            })
+        fn cancel(&self, operation: &str) {
+            let name = self.path_of(operation);
+            self.log(format!("cancel {name}"));
         }
     }
     fn run(fake: &Fake) {
@@ -377,6 +432,9 @@ mod tests {
         // The failed transcription is never accepted into History.
         assert_eq!(count(&fake, "accept"), 4);
         assert_eq!(count(&fake, "accept b.mp4"), 0);
+        // Only the failed admission releases staged content; nothing else cancels.
+        assert_eq!(count(&fake, "cancel"), 1);
+        assert_eq!(count(&fake, "cancel d.wav"), 1);
         // The runner role is released only after the last item.
         assert!(lock(&fake.queue).claim());
     }
@@ -445,8 +503,10 @@ mod tests {
         assert_eq!(count(&fake, "transcribe b.wav"), 0);
         assert_eq!(count(&fake, "accept"), 2);
         let mut q = lock(&fake.queue);
-        assert!(!q.finish(b, Ok(())));
+        assert!(!q.settle(b, true));
+        assert!(!q.fail(b, "late".into()));
         assert_eq!(q.visible()[1].status, Status::Error);
+        assert_eq!(q.visible()[1].message, CANCELED);
     }
 
     #[test]
@@ -486,9 +546,214 @@ mod tests {
         assert!(q.claim());
         q.enqueue(&paths(&["b.wav"]));
         assert!(!q.claim(), "the active runner owns the new item");
-        assert!(q.advance().is_some());
-        assert!(q.advance().is_some());
-        assert!(q.advance().is_none(), "queue empty: runner role released");
+        assert!(q.advance(operation).is_some());
+        assert!(q.advance(operation).is_some());
+        assert!(
+            q.advance(operation).is_none(),
+            "queue empty: runner role released"
+        );
         assert!(q.claim());
+    }
+
+    // The tests below drive the drain loop and the Cancel path against the real
+    // completion `Producers` (the owner behind `Services::accept_file` and
+    // `Services::cancel_file`), not the fake: the fake's failed admission stores
+    // no pending content and its cancel only fires during transcription.
+
+    struct Root(std::path::PathBuf);
+    impl Root {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "murmur-import-queue-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::SeqCst)
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+    impl Drop for Root {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    type Hook = Box<dyn FnOnce(&Real) + Send>;
+    struct Real {
+        queue: Arc<Mutex<Queue>>,
+        producers: Producers,
+        service: CompletionService,
+        /// Stage a transcript into History (false: retainHistory is off).
+        retain: bool,
+        during_transcribe: Mutex<Option<Hook>>,
+        before_accept: Mutex<Option<Hook>>,
+        after_accept: Mutex<Option<Hook>>,
+        // Dropped last, after the service releases its root.
+        root: Root,
+    }
+    impl Real {
+        fn new(retain: bool) -> Self {
+            let root = Root::new();
+            let service = CompletionService::start(root.0.clone(), false).unwrap();
+            service.execute(Command::Snapshot).unwrap();
+            Self {
+                queue: Arc::default(),
+                producers: Producers::new(service.clone(), "synthetic".into()),
+                service,
+                retain,
+                during_transcribe: Mutex::default(),
+                before_accept: Mutex::default(),
+                after_accept: Mutex::default(),
+                root,
+            }
+        }
+        fn history(&self) -> usize {
+            self.service
+                .execute(Command::Snapshot)
+                .unwrap()
+                .history
+                .len()
+        }
+        fn run(&self, names: &[&str]) {
+            lock(&self.queue).enqueue(&paths(names));
+            assert!(lock(&self.queue).claim());
+            futures::executor::block_on(drain(&self.queue, self, operation));
+        }
+        /// Click Cancel on a file's toast, exactly like the window does.
+        fn click(&self, name: &str) {
+            let id = lock(&self.queue)
+                .items
+                .iter()
+                .find(|i| i.name == name)
+                .map(|i| i.id)
+                .unwrap();
+            cancel_import(&self.queue, self, id);
+        }
+        fn toast(&self, name: &str) -> (Status, String) {
+            let queue = lock(&self.queue);
+            let item = queue.items.iter().find(|i| i.name == name).unwrap();
+            (item.status, item.status_text())
+        }
+        fn fire(hook: &Mutex<Option<Hook>>, real: &Real) {
+            let hook = hook.lock().unwrap().take();
+            if let Some(hook) = hook {
+                hook(real);
+            }
+        }
+    }
+    impl Engine for Real {
+        fn transcribe(&self, path: String, operation: String) -> Fut<'_, Result<(), String>> {
+            Box::pin(async move {
+                self.producers
+                    .begin_file(&operation)
+                    .map_err(|e| e.to_string())?;
+                Self::fire(&self.during_transcribe, self);
+                let name = name_of(&path);
+                self.producers.finish_file(
+                    &operation,
+                    Some(serde_json::json!({"schemaVersion":2,"pinned":false,"source":"file","id":name,"text":"synthetic file","timestamp":1,"duration":2})),
+                    self.retain,
+                );
+                Ok(())
+            })
+        }
+        fn admit(&self, operation: String) -> Fut<'_, Result<bool, String>> {
+            Box::pin(async move {
+                Self::fire(&self.before_accept, self);
+                let published = self
+                    .producers
+                    .accept_file(&operation)
+                    .map(|snapshot| snapshot.is_some())
+                    .map_err(|e| e.to_string());
+                Self::fire(&self.after_accept, self);
+                published
+            })
+        }
+        fn cancel(&self, operation: &str) {
+            self.producers.cancel_file(operation);
+        }
+    }
+
+    #[test]
+    fn failed_admissions_release_their_staged_text_so_imports_recover() {
+        let real = Real::new(true);
+        // A directory at the holding file makes every admission fail with a
+        // storage error, which the real producers keep for retry.
+        let holding = real.root.0.join("completion-holding.json");
+        let saved = std::fs::read(&holding).unwrap();
+        std::fs::remove_file(&holding).unwrap();
+        std::fs::create_dir(&holding).unwrap();
+        // More failures than the pending-file capacity (200).
+        let names: Vec<String> = (0..210).map(|i| format!("f{i}.wav")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        real.run(&names);
+        for (name, status, message) in snapshot(&real.queue) {
+            assert_eq!(status, Status::Error, "{name}");
+            assert!(
+                !message.contains("Too many"),
+                "{name} hit the pending cap: {message}"
+            );
+        }
+        // Storage recovers. The History view's next snapshot settles the owner's
+        // own queue; no released failure may resurrect into History, and the
+        // next import must not be blocked by the failures.
+        std::fs::remove_dir(&holding).unwrap();
+        std::fs::write(&holding, saved).unwrap();
+        assert_eq!(real.history(), 0, "failed imports never reach History");
+        real.run(&["after.wav"]);
+        assert_eq!(
+            real.toast("after.wav"),
+            (Status::Done, "Done".to_owned()),
+            "imports recover after storage does"
+        );
+        assert_eq!(real.history(), 1);
+    }
+
+    #[test]
+    fn cancel_before_admission_starts_wins_and_nothing_reaches_history() {
+        let real = Real::new(true);
+        *real.before_accept.lock().unwrap() = Some(Box::new(|real| {
+            real.click("a.wav");
+            // The click is a request until admission settles; it is neither
+            // success nor a premature "Canceled".
+            assert_eq!(
+                real.toast("a.wav"),
+                (Status::Transcribing, "Canceling…".to_owned())
+            );
+            real.click("a.wav"); // a second click changes nothing
+        }));
+        real.run(&["a.wav", "b.wav"]);
+        assert_eq!(real.toast("a.wav"), (Status::Error, CANCELED.to_owned()));
+        assert_eq!(real.toast("b.wav").0, Status::Done, "the batch continues");
+        assert_eq!(real.history(), 1, "only b.wav is in History");
+    }
+
+    #[test]
+    fn admission_that_already_won_shows_done_even_if_cancel_arrives_after() {
+        let real = Real::new(true);
+        *real.after_accept.lock().unwrap() = Some(Box::new(|real| real.click("a.wav")));
+        real.run(&["a.wav"]);
+        assert_eq!(real.toast("a.wav"), (Status::Done, "Done".to_owned()));
+        assert_eq!(real.history(), 1, "the published transcript stays");
+    }
+
+    #[test]
+    fn cancel_while_transcribing_discards_the_text_and_never_admits() {
+        let real = Real::new(true);
+        *real.during_transcribe.lock().unwrap() = Some(Box::new(|real| real.click("a.wav")));
+        real.run(&["a.wav", "b.wav"]);
+        assert_eq!(real.toast("a.wav"), (Status::Error, CANCELED.to_owned()));
+        assert_eq!(real.toast("b.wav").0, Status::Done);
+        assert_eq!(real.history(), 1);
+    }
+
+    #[test]
+    fn nothing_to_retain_is_done_not_canceled() {
+        let real = Real::new(false);
+        real.run(&["a.wav"]);
+        assert_eq!(real.toast("a.wav"), (Status::Done, "Done".to_owned()));
+        assert_eq!(real.history(), 0);
     }
 }

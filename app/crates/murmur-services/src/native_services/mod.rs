@@ -328,6 +328,18 @@ impl Services {
     ) -> Result<(), String> {
         crate::completion::native_copy_history(&self.context, revision, targets, text, live)
     }
+    /// Admit a staged file transcript. `Ok(true)` means it was published to
+    /// History; `Ok(false)` means nothing was published (a cancellation won
+    /// first, or there was nothing to retain).
+    pub async fn accept_file(&self, operation: String) -> Result<bool, String> {
+        crate::completion::native_accept_file(self.context.clone(), operation).await
+    }
+    /// Record cancellation intent for a file operation. Never waits, so it is
+    /// ordered before any admission that has not yet begun, and it releases a
+    /// staged transcript that was never admitted.
+    pub fn cancel_file(&self, operation: &str) -> Result<(), String> {
+        crate::completion::native_cancel_file(&self.context, operation)
+    }
 }
 
 /// Retains a producer's shutdown admission across an asynchronous OS operation.

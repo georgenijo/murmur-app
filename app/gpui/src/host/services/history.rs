@@ -93,19 +93,36 @@ impl Backend {
             });
         }
     }
-    /// Cancel a queued or active import from its toast.
+    /// Cancel a queued or active import from its toast. The intent is recorded
+    /// synchronously, so it is ordered before any admission that has not begun;
+    /// an admission that already won still shows Done.
     pub fn cancel_import(&self, id: u64) {
-        let cancelled = self
-            .events
-            .imports
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .cancel(id);
-        if let Some(Some(operation)) = cancelled {
-            let b = self.clone();
-            self.spawn(async move { Engine::cancel(&b, operation).await });
-        }
+        import_queue::cancel_import(&self.events.imports, self, id);
     }
+}
+/// Native QA fault injection for file imports, off in every other build. It is
+/// selected with `--native-import-qa=<mode>` in the synthetic QA identity and
+/// acts only at the admission seam; it never reads or writes any content.
+#[derive(Clone, Copy, PartialEq)]
+enum ImportQa {
+    /// The first admission fails as a storage error would.
+    FailAdmissionOnce,
+    /// Every admission waits `QA_PAUSE` after transcription finished, so Cancel
+    /// can be clicked after admission has begun but before it runs.
+    PauseBeforeAdmission,
+}
+const QA_PAUSE: std::time::Duration = std::time::Duration::from_secs(10);
+fn import_qa() -> Option<ImportQa> {
+    if !cfg!(feature = "native-host-qa")
+        || super::os::identity() != "com.localdictation.gpui-host-qa110"
+    {
+        return None;
+    }
+    std::env::args().find_map(|arg| match arg.strip_prefix("--native-import-qa=")? {
+        "fail-admission-once" => Some(ImportQa::FailAdmissionOnce),
+        "pause-before-admission" => Some(ImportQa::PauseBeforeAdmission),
+        _ => None,
+    })
 }
 fn job() -> Live {
     Arc::new(|| true)
@@ -125,26 +142,24 @@ impl Engine for Backend {
             .map(|_| ())
         })
     }
-    fn accept(&self, operation: String) -> Fut<'_, Result<(), String>> {
+    fn admit(&self, operation: String) -> Fut<'_, Result<bool, String>> {
         Box::pin(async move {
-            self.effect(
-                "accept_file_transcription",
-                json!({"operationId":operation}),
-                job(),
-            )
-            .await
-            .map(|_| ())
+            static FAILED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            match import_qa() {
+                Some(ImportQa::FailAdmissionOnce)
+                    if !FAILED.swap(true, std::sync::atomic::Ordering::SeqCst) =>
+                {
+                    return Err("Storage unavailable (QA injected admission failure)".into());
+                }
+                Some(ImportQa::PauseBeforeAdmission) => tokio::time::sleep(QA_PAUSE).await,
+                _ => {}
+            }
+            self.services.accept_file(operation).await
         })
     }
-    fn cancel(&self, operation: String) -> Fut<'_, ()> {
-        Box::pin(async move {
-            let _ = self
-                .call(
-                    "cancel_file_transcription",
-                    json!({"operationId":operation}),
-                )
-                .await;
-        })
+    fn cancel(&self, operation: &str) {
+        let _ = self.services.cancel_file(operation);
     }
 }
 impl Host for Backend {
