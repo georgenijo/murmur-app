@@ -128,7 +128,7 @@ registry identities. Multiple listeners within a window receive one delivery.
 | `meeting-segment-failed` | `meeting_capture.rs` | useMeetings (segment failure listener) | Main |
 | `meeting-segment-finalized` | `meeting_capture.rs` | useMeetings | Main |
 | `meeting-speakers-updated` | `meeting_diarization.rs` | useMeetings | Main |
-| `meeting-status-changed` | `meeting_capture.rs` | OverlayWidget; useMeetingAudio (dynamic events); useMeetings; smart_auto_probe (native); meeting_suggestions (native listen_any) | Main Overlay SmartAuto MeetingSuggestions |
+| `meeting-status-changed` | `meeting_capture.rs` | OverlayWidget; useMeetingAudio (dynamic events); useMeetings; useSoundCues (meeting cues); smart_auto_probe (native); meeting_suggestions (native listen_any); dictation_cues (native, meeting cues) | Main Overlay SoundCues SmartAuto MeetingSuggestions |
 | `mode-manual-changed` | `commands/mode_runtime.rs` | useSettings | Main |
 | `mode-runtime-changed` | `commands/mode_runtime.rs` | useModeRuntime | Main Overlay |
 | `model-runtime-status-changed` | `model_runtime.rs` | modelRuntime; useModelRuntimeCatalog; meeting_suggestions (native listen_any) | Main MeetingSuggestions |

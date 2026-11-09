@@ -14,6 +14,7 @@ pub(crate) fn initialize_event_subscriptions<R: crate::host::Runtime>(
         (EventKind::DictationDeliveryOutcome, "delivery"),
         (EventKind::RecordingInitializationFailed, "failure"),
         (EventKind::RecordingInterrupted, "failure"),
+        (EventKind::MeetingStatusChanged, MEETING),
     ] {
         let callback = callback.clone();
         crate::events::subscribe(app, Consumer::SoundCues, event, move |payload| {
@@ -21,30 +22,62 @@ pub(crate) fn initialize_event_subscriptions<R: crate::host::Runtime>(
         });
     }
 }
+/// Event name routed to `meeting_cue`; every other name goes to `cue_for`.
+const MEETING: &str = "meeting";
+
 pub(crate) fn initialize(app: &crate::host::Context) {
     let handle = app.clone();
-    initialize_event_subscriptions(app, move |cue, payload| {
-        let Some(cue) = cue_for(cue, payload) else {
+    // The shipped hook keeps the last phase it saw whether or not cues are
+    // enabled, so turning the setting on mid-meeting cannot replay a transition.
+    let previous = std::sync::Arc::new(std::sync::Mutex::new(String::from("idle")));
+    initialize_event_subscriptions(app, move |event, payload| {
+        let meeting = event == MEETING;
+        let cue = if meeting {
+            let Some(phase) = meeting_phase(payload) else {
+                return;
+            };
+            let mut last = previous.lock_or_recover();
+            let cue = meeting_cue(&last, &phase);
+            *last = phase;
+            cue
+        } else {
+            cue_for(event, payload)
+        };
+        let Some(cue) = cue else {
             return;
         };
         let control = handle.control();
         let settings = control.settings.lock_or_recover();
-        if settings["soundCuesEnabled"] != true || handle.services().meetings.is_active() {
+        let meeting_active = !meeting && handle.services().meetings.is_active();
+        let Some(volume) = cue_volume(&settings, meeting, meeting_active) else {
             return;
-        }
-        let volume = settings["soundCueVolume"]
-            .as_f64()
-            .unwrap_or(45.0)
-            .round()
-            .clamp(0.0, 100.0);
-        if volume == 0.0 {
-            return;
-        }
+        };
         drop(settings);
         // A blocking worker owns only this short-lived output player and
         // removes its synthetic WAV after playback. It cannot capture input.
         crate::host::runtime::spawn_blocking(move || play(cue, volume));
     });
+}
+
+/// The playback volume when settings allow this cue, otherwise `None`. Meeting
+/// cues have their own opt-in and are never suppressed by the meeting itself;
+/// dictation cues stay silent while a meeting is active.
+fn cue_volume(settings: &serde_json::Value, meeting: bool, meeting_active: bool) -> Option<f64> {
+    if settings["soundCuesEnabled"] != true {
+        return None;
+    }
+    if meeting && settings["meetingSoundCuesEnabled"] != true {
+        return None;
+    }
+    if !meeting && meeting_active {
+        return None;
+    }
+    let volume = settings["soundCueVolume"]
+        .as_f64()
+        .unwrap_or(45.0)
+        .round()
+        .clamp(0.0, 100.0);
+    (volume > 0.0).then_some(volume)
 }
 
 fn cue_for(event: &str, payload: &str) -> Option<&'static str> {
@@ -60,6 +93,26 @@ fn cue_for(event: &str, payload: &str) -> Option<&'static str> {
                 _ => None,
             }
         }
+        _ => None,
+    }
+}
+
+/// The runtime phase carried by a `meeting-status-changed` payload.
+fn meeting_phase(payload: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+    value["phase"].as_str().map(str::to_owned)
+}
+
+/// Meeting transitions that sound a cue, matching the shipped `useSoundCues`.
+fn meeting_cue(previous: &str, phase: &str) -> Option<&'static str> {
+    if previous == phase {
+        return None;
+    }
+    match (previous, phase) {
+        ("idle", "starting") => Some("start"),
+        (_, "stopping") => Some("stop"),
+        ("processing", "idle") => Some("success"),
+        (_, "failed") => Some("failure"),
         _ => None,
     }
 }
@@ -128,6 +181,102 @@ mod tests {
             assert_eq!(cue_for("stop", &format!("\"{status}\"")), None);
         }
         assert_eq!(cue_for("failure", "{}"), Some("failure"));
+    }
+    #[test]
+    fn meeting_transitions_sound_the_shipped_cues() {
+        assert_eq!(meeting_cue("idle", "starting"), Some("start"));
+        assert_eq!(meeting_cue("recording", "stopping"), Some("stop"));
+        assert_eq!(meeting_cue("starting", "stopping"), Some("stop"));
+        assert_eq!(meeting_cue("processing", "idle"), Some("success"));
+        assert_eq!(meeting_cue("recording", "failed"), Some("failure"));
+        assert_eq!(meeting_cue("starting", "failed"), Some("failure"));
+        // Only the transitions the shipped hook names make a sound.
+        assert_eq!(meeting_cue("stopping", "processing"), None);
+        assert_eq!(meeting_cue("starting", "recording"), None);
+        assert_eq!(meeting_cue("stopping", "idle"), None);
+        assert_eq!(meeting_cue("failed", "idle"), None);
+        assert_eq!(meeting_cue("failed", "starting"), None);
+        // A repeat of the same phase (elapsed-time or channel updates) is silent.
+        for phase in [
+            "idle",
+            "starting",
+            "recording",
+            "stopping",
+            "processing",
+            "failed",
+        ] {
+            assert_eq!(meeting_cue(phase, phase), None);
+        }
+    }
+    #[test]
+    fn a_full_meeting_sounds_start_stop_and_success_once_each() {
+        let mut last = String::from("idle");
+        let mut heard = Vec::new();
+        for phase in [
+            "starting",
+            "recording",
+            "recording",
+            "stopping",
+            "processing",
+            "processing",
+            "idle",
+            "idle",
+        ] {
+            heard.extend(meeting_cue(&last, phase));
+            last = phase.to_owned();
+        }
+        assert_eq!(heard, ["start", "stop", "success"]);
+    }
+    #[test]
+    fn meeting_phase_comes_from_the_status_payload_and_bad_payloads_are_ignored() {
+        let status = serde_json::json!({"generation":3,"sessionId":null,"phase":"stopping"});
+        assert_eq!(
+            meeting_phase(&status.to_string()).as_deref(),
+            Some("stopping")
+        );
+        assert_eq!(meeting_phase("{}"), None);
+        assert_eq!(meeting_phase("\"idle\""), None);
+        assert_eq!(meeting_phase("not json"), None);
+    }
+    #[test]
+    fn meeting_cues_need_both_toggles_and_ignore_the_active_meeting() {
+        let settings = |cues: bool, meeting: bool, volume: i64| {
+            serde_json::json!({
+                "soundCuesEnabled": cues,
+                "meetingSoundCuesEnabled": meeting,
+                "soundCueVolume": volume,
+            })
+        };
+        // The shipped default has meeting cues off, so nothing sounds.
+        assert_eq!(cue_volume(&settings(true, false, 45), true, true), None);
+        assert_eq!(cue_volume(&settings(false, true, 45), true, true), None);
+        assert_eq!(cue_volume(&settings(true, true, 0), true, true), None);
+        // While a meeting is active its own cues still play at the set volume.
+        assert_eq!(
+            cue_volume(&settings(true, true, 45), true, true),
+            Some(45.0)
+        );
+        assert_eq!(
+            cue_volume(&settings(true, true, 250), true, false),
+            Some(100.0)
+        );
+        // Missing settings fall back to the default volume only when both are on.
+        let sparse = serde_json::json!({"soundCuesEnabled": true, "meetingSoundCuesEnabled": true});
+        assert_eq!(cue_volume(&sparse, true, false), Some(45.0));
+    }
+    #[test]
+    fn dictation_cues_stay_suppressed_during_a_meeting_whatever_the_meeting_toggle() {
+        for meeting_toggle in [false, true] {
+            let settings = serde_json::json!({
+                "soundCuesEnabled": true,
+                "meetingSoundCuesEnabled": meeting_toggle,
+                "soundCueVolume": 45,
+            });
+            assert_eq!(cue_volume(&settings, false, true), None);
+            assert_eq!(cue_volume(&settings, false, false), Some(45.0));
+        }
+        let off = serde_json::json!({"soundCuesEnabled": false, "soundCueVolume": 45});
+        assert_eq!(cue_volume(&off, false, false), None);
     }
     #[test]
     fn native_cues_map_every_camel_case_delivery_outcome_and_ignore_unknown_payloads() {

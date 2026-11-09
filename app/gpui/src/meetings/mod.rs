@@ -58,11 +58,13 @@ pub struct Meetings {
     page: usize,
     text_pages: BTreeMap<u64, usize>,
     list_scroll: ListState,
-    list_identity: Vec<(String, i64)>,
+    list_identity: Vec<(String, i64, bool)>,
     list_selection: Option<String>,
     detail_scroll: ScrollHandle,
     content_scroll: ScrollHandle,
     seek_state: Option<(u64, u64, bool)>,
+    /// The save that closes the naming editor when its own reply is accepted.
+    close_editor_on: Option<Ticket>,
 }
 impl Meetings {
     pub fn new(host: Rc<dyn Host>, w: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -139,6 +141,7 @@ impl Meetings {
             detail_scroll: ScrollHandle::new(),
             content_scroll: ScrollHandle::new(),
             seek_state: None,
+            close_editor_on: None,
         };
         for key in ["title", "attendees", "me", "them"] {
             s.fields
@@ -267,7 +270,23 @@ impl Meetings {
     pub fn drain(&mut self, cx: &mut Context<Self>) {
         for event in self.inbox.drain() {
             let ownership = self.confirmation_owner();
+            // Only the host's accepted reply to the save itself finishes naming. The
+            // notice text is a timed status line, so it cannot decide whether the
+            // editor closes (a tick re-read would repeat it, and it may already be gone).
+            let reply = match &event {
+                Event::Reply { ticket, result } if self.close_editor_on == Some(*ticket) => {
+                    Some(result.is_ok())
+                }
+                _ => None,
+            };
             if self.model.event(event) {
+                if let Some(saved) = reply {
+                    self.close_editor_on = None;
+                    if saved && self.model.problem.is_none() {
+                        self.naming = false;
+                        self.clear_fields();
+                    }
+                }
                 self.authority.sync(&self.model);
                 if ownership != self.confirmation_owner() {
                     self.confirmation = None;
@@ -296,12 +315,6 @@ impl Meetings {
                     if matches!(s.calendar, Calendar::Closed) {
                         self.calendar_selection = None;
                     }
-                    if s.notice.as_deref() == Some("Meeting details saved on this Mac.")
-                        || s.notice.as_deref() == Some("Meeting named from calendar.")
-                    {
-                        self.naming = false;
-                        self.clear_fields();
-                    }
                 }
                 cx.notify();
             }
@@ -323,9 +336,14 @@ impl Meetings {
             self.host.pause_playback();
             self.model.invalidate();
         }
+        let closes_editor = matches!(
+            action,
+            Action::SaveMetadata { .. } | Action::CalendarApply { .. }
+        );
         let Some(ticket) = self.model.begin() else {
             return;
         };
+        self.close_editor_on = closes_editor.then_some(ticket);
         self.authority.sync(&self.model);
         self.host.request(
             Request {

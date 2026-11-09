@@ -1133,3 +1133,186 @@ fn large_fixture_paging_keyboard_and_retained_reveal(cx: &mut TestAppContext) {
     draw(cx);
     assert_row_visible(&e, cx, 249);
 }
+#[test]
+fn list_rows_badge_every_status_but_complete_and_explain_search_matches() {
+    let row = |status: &str, matches: &[&str]| Meeting {
+        status: status.into(),
+        search_matches: matches.iter().map(|m| String::from(*m)).collect(),
+        ..fixtures::meeting("synthetic-row")
+    };
+    assert_eq!(row("complete", &[]).status_badge(), None);
+    assert_eq!(row("active", &[]).status_badge().as_deref(), Some("Active"));
+    assert_eq!(row("failed", &[]).status_badge().as_deref(), Some("Failed"));
+    assert_eq!(row("", &[]).status_badge(), None);
+    assert_eq!(row("complete", &[]).matches_line(), None);
+    assert_eq!(
+        row(
+            "complete",
+            &[
+                "summary",
+                "decision",
+                "action_item",
+                "open_question",
+                "transcript",
+                "title"
+            ]
+        )
+        .matches_line()
+        .as_deref(),
+        Some("Matches: Summary, Decision, Action item, Open question, Transcript, Title")
+    );
+    // A field from a newer service is skipped, never shown raw or as an empty line.
+    assert_eq!(
+        row("complete", &["transcript", "future_field"])
+            .matches_line()
+            .as_deref(),
+        Some("Matches: Transcript")
+    );
+    assert_eq!(row("complete", &["future_field"]).matches_line(), None);
+}
+#[gpui::test]
+fn badged_and_matched_rows_render_and_remeasure(cx: &mut TestAppContext) {
+    let (e, _h, cx) = harness(cx);
+    e.update(cx, |s, cx| {
+        let rows = &mut s.model.snapshot.as_mut().unwrap().meetings;
+        rows[0].status = "failed".into();
+        rows[1].status = "active".into();
+        rows[1].search_matches = vec!["title".into(), "transcript".into()];
+        cx.notify();
+    });
+    draw(cx);
+    let identity = e.read_with(cx, |s, _| s.list_identity.clone());
+    assert_eq!(
+        identity.iter().map(|row| row.2).collect::<Vec<_>>(),
+        vec![false, true]
+    );
+    // Clearing the search drops the line, and the row is measured again.
+    e.update(cx, |s, cx| {
+        s.model.snapshot.as_mut().unwrap().meetings[1]
+            .search_matches
+            .clear();
+        cx.notify();
+    });
+    draw(cx);
+    assert!(e.read_with(cx, |s, _| s.list_identity.iter().all(|row| !row.2)));
+}
+fn open_editor(e: &Entity<Meetings>, cx: &mut VisualTestContext) {
+    cx.update(|w, cx| {
+        e.update(cx, |s, cx| {
+            s.name(w, cx);
+            s.fields["title"].update(cx, |f, cx| f.set_value("Synthetic edited title", w, cx));
+        })
+    });
+    draw(cx);
+}
+#[gpui::test]
+fn the_editor_closes_only_when_its_own_accepted_save_reply_arrives(cx: &mut TestAppContext) {
+    let (e, h, cx) = harness(cx);
+    open_editor(&e, cx);
+    h.hold.set(true);
+    e.update(cx, |s, cx| s.save_metadata(cx));
+    let (r, inbox) = h.held.borrow_mut().pop().unwrap();
+    assert!(matches!(r.action, Action::SaveMetadata { .. }));
+    draw(cx);
+    assert!(
+        e.read_with(cx, |s, _| s.naming),
+        "nothing closes before the host accepts the save"
+    );
+    // The accepted reply carries no notice at all, as when the line already timed out.
+    let mut reply = h.state.borrow().clone();
+    reply.notice = None;
+    let _ = inbox.publish(Event::Reply {
+        ticket: r.ticket,
+        result: Ok(reply),
+    });
+    e.update(cx, |s, cx| s.drain(cx));
+    assert!(e.read_with(cx, |s, _| {
+        !s.naming && s.model.snapshot.as_ref().unwrap().notice.is_none()
+    }));
+}
+#[gpui::test]
+fn a_failed_save_keeps_the_editor_and_a_later_success_line_cannot_close_it(
+    cx: &mut TestAppContext,
+) {
+    let (e, h, cx) = harness(cx);
+    open_editor(&e, cx);
+    h.hold.set(true);
+    e.update(cx, |s, cx| s.save_metadata(cx));
+    let (r, inbox) = h.held.borrow_mut().pop().unwrap();
+    let _ = inbox.publish(Event::Reply {
+        ticket: r.ticket,
+        result: Err(Problem::Unavailable),
+    });
+    e.update(cx, |s, cx| s.drain(cx));
+    assert!(e.read_with(cx, |s, cx| {
+        s.naming && s.model.problem.is_some() && s.value("title", cx) == "Synthetic edited title"
+    }));
+    // The save is spent. A re-read that repeats the shipped success line is not a save.
+    let mut again = h.state.borrow().clone();
+    again.revision += 1;
+    again.notice = Some("Meeting details saved on this Mac.".into());
+    let attachment = e.read_with(cx, |s, _| s.model.attachment);
+    let _ = inbox.publish(Event::Changed {
+        attachment,
+        snapshot: again,
+    });
+    e.update(cx, |s, cx| s.drain(cx));
+    assert!(e.read_with(cx, |s, _| s.naming));
+}
+#[gpui::test]
+fn speaker_label_saves_and_calendar_naming_follow_their_own_replies(cx: &mut TestAppContext) {
+    let (e, h, cx) = harness(cx);
+    open_editor(&e, cx);
+    h.hold.set(true);
+    e.update(cx, |s, cx| {
+        s.request(
+            Action::SaveLabels {
+                id: "fixture-1".into(),
+                revision: None,
+                me: "Me".into(),
+                them: "Them".into(),
+            },
+            cx,
+        )
+    });
+    let (r, inbox) = h.held.borrow_mut().pop().unwrap();
+    let reply = h.state.borrow().clone();
+    let _ = inbox.publish(Event::Reply {
+        ticket: r.ticket,
+        result: Ok(reply),
+    });
+    e.update(cx, |s, cx| s.drain(cx));
+    assert!(
+        e.read_with(cx, |s, _| s.naming),
+        "a label save does not finish naming"
+    );
+    e.update(cx, |s, _| {
+        s.model.snapshot.as_mut().unwrap().calendar = Calendar::Choosing(vec![Candidate {
+            token: "synthetic-selection-token".into(),
+            title: "Synthetic calendar event".into(),
+            attendees: vec![],
+            start_ms: 1,
+            end_ms: 2,
+        }]);
+    });
+    e.update(cx, |s, cx| {
+        s.request(
+            Action::CalendarApply {
+                id: "fixture-1".into(),
+                token: "synthetic-selection-token".into(),
+            },
+            cx,
+        )
+    });
+    let (r, inbox) = h.held.borrow_mut().pop().unwrap();
+    let reply = h.state.borrow().clone();
+    let _ = inbox.publish(Event::Reply {
+        ticket: r.ticket,
+        result: Ok(reply),
+    });
+    e.update(cx, |s, cx| s.drain(cx));
+    assert!(
+        e.read_with(cx, |s, _| !s.naming),
+        "applying a calendar event finishes naming"
+    );
+}

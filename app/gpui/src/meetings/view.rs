@@ -112,6 +112,23 @@ impl Meetings {
                                                     .font_weight(FontWeight::MEDIUM)
                                                     .child(title),
                                             )
+                                            .when_some(meeting.status_badge(), |d, badge| {
+                                                d.child(
+                                                    div()
+                                                        .flex_shrink_0()
+                                                        .rounded(tokens::CONTROL_RADIUS)
+                                                        .px(px(6.))
+                                                        .text_size(tokens::MICRO_SIZE)
+                                                        .font_weight(FontWeight::SEMIBOLD)
+                                                        .text_color(p.text)
+                                                        .bg(if meeting.status == "failed" {
+                                                            p.danger.opacity(0.14)
+                                                        } else {
+                                                            p.muted.opacity(0.14)
+                                                        })
+                                                        .child(badge),
+                                                )
+                                            })
                                             .child(
                                                 div()
                                                     .flex_shrink_0()
@@ -152,7 +169,16 @@ impl Meetings {
                                                     .text_color(p.muted)
                                                     .child(duration(meeting.duration_ms)),
                                             ),
-                                    ),
+                                    )
+                                    .when_some(meeting.matches_line(), |d, line| {
+                                        d.child(
+                                            div()
+                                                .text_size(tokens::MICRO_SIZE)
+                                                .line_height(tokens::CAPTION_LEADING)
+                                                .text_color(p.accent)
+                                                .child(line),
+                                        )
+                                    }),
                             )
                             .track_focus(&focus)
                             .on_click(cx.listener(move |s, _, _, cx| s.select(id.clone(), cx))),
@@ -1031,10 +1057,20 @@ impl Render for Meetings {
             if s.meetings.is_empty() {
                 list=list.child(if s.query.is_empty(){"No meeting transcripts yet. Start one to capture microphone and Mac playback as separate speakers."}else{"No meetings match this search. Try another word or clear the search."});
             }
+            // The matched-fields line changes a row's height, so a row that gains or
+            // loses it must be measured again like a new row.
             let identity: Vec<_> = s
                 .meetings
                 .iter()
-                .map(|m| (m.id.clone(), m.started_at_ms))
+                .map(|m| {
+                    (
+                        m.id.clone(),
+                        m.started_at_ms,
+                        m.search_matches
+                            .iter()
+                            .any(|field| search_field_label(field).is_some()),
+                    )
+                })
                 .collect();
             if identity != self.list_identity {
                 let prefix = identity.starts_with(&self.list_identity);
@@ -1042,7 +1078,7 @@ impl Render for Meetings {
                 let handles: Vec<_> = identity
                     .iter()
                     .skip(from)
-                    .map(|(id, _)| Some(self.focus_for(&format!("meeting-{id}"), cx)))
+                    .map(|(id, _, _)| Some(self.focus_for(&format!("meeting-{id}"), cx)))
                     .collect();
                 self.list_scroll
                     .splice_focusable(from..self.list_identity.len(), handles);

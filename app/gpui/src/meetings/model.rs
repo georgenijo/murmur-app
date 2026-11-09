@@ -108,6 +108,40 @@ pub struct Meeting {
     pub preview: String,
     pub search_matches: Vec<String>,
 }
+/// Shipped `MEETING_SEARCH_FIELD_LABELS`. A field the service names that this
+/// build does not know is left out rather than shown raw.
+pub fn search_field_label(field: &str) -> Option<&'static str> {
+    Some(match field {
+        "summary" => "Summary",
+        "decision" => "Decision",
+        "action_item" => "Action item",
+        "open_question" => "Open question",
+        "transcript" => "Transcript",
+        "title" => "Title",
+        _ => return None,
+    })
+}
+impl Meeting {
+    /// Shipped `meetings-row-status`: every status but `complete` is badged, in
+    /// the capitalized form the shipped list shows.
+    pub fn status_badge(&self) -> Option<String> {
+        if self.status.is_empty() || self.status == "complete" {
+            return None;
+        }
+        let mut chars = self.status.chars();
+        let first = chars.next()?;
+        Some(first.to_uppercase().chain(chars).collect())
+    }
+    /// Shipped `meetings-row-matches`: why a search listed this meeting.
+    pub fn matches_line(&self) -> Option<String> {
+        let labels: Vec<_> = self
+            .search_matches
+            .iter()
+            .filter_map(|field| search_field_label(field))
+            .collect();
+        (!labels.is_empty()).then(|| format!("Matches: {}", labels.join(", ")))
+    }
+}
 #[derive(Clone)]
 pub struct Segment {
     pub id: u64,

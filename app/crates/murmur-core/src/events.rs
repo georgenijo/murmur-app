@@ -207,7 +207,9 @@ impl EventKind {
             Self::MeetingSegmentFailed => &[Main],
             Self::MeetingSegmentFinalized => &[Main],
             Self::MeetingSpeakersUpdated => &[Main],
-            Self::MeetingStatusChanged => &[Main, Overlay, SmartAuto, MeetingSuggestions],
+            Self::MeetingStatusChanged => {
+                &[Main, Overlay, SoundCues, SmartAuto, MeetingSuggestions]
+            }
             Self::ModeManualChanged => &[Main],
             Self::ModeRuntimeChanged => &[Main, Overlay],
             Self::ModelRuntimeStatusChanged => &[Main, MeetingSuggestions],
@@ -324,6 +326,21 @@ mod tests {
         assert_eq!(
             router.recipients(EventKind::HistoryChanged, |_, _| true),
             vec![Consumer::Main, Consumer::Diagnostics]
+        );
+    }
+
+    #[test]
+    fn meeting_status_reaches_the_native_sound_cue_consumer() {
+        let router = Router::default();
+        assert_eq!(
+            router.recipients(EventKind::MeetingStatusChanged, |c, _| c
+                .window_label()
+                .is_none()),
+            vec![
+                Consumer::SoundCues,
+                Consumer::SmartAuto,
+                Consumer::MeetingSuggestions
+            ]
         );
     }
 
