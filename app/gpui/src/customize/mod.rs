@@ -3,6 +3,7 @@
 pub mod fixtures;
 pub mod host;
 pub mod model;
+pub mod projection;
 #[cfg(test)]
 mod tests;
 pub mod vocabulary;
@@ -243,6 +244,27 @@ impl Customize {
             .with_scroll_parent(Some(&self.scroll))
             .disabled(self.controller.model.pending)
             .on_click(move |_, _, cx| e.update(cx, |s, cx| s.request(a.clone(), cx)))
+    }
+    /// The scan owns the single pending request, so stopping or clearing it
+    /// revokes that request first; its late reply is dropped by the lease.
+    fn interrupt(&mut self, a: Action, cx: &mut Context<Self>) {
+        self.controller.invalidate();
+        self.terms_page = 0;
+        self.request(a, cx);
+    }
+    fn interrupt_button(
+        &self,
+        id: impl Into<String>,
+        label: impl Into<String>,
+        a: Action,
+        disabled: bool,
+        cx: &mut Context<Self>,
+    ) -> Button {
+        let e = cx.entity();
+        Button::new(SharedString::from(id.into()), label.into())
+            .with_scroll_parent(Some(&self.scroll))
+            .disabled(disabled)
+            .on_click(move |_, _, cx| e.update(cx, |s, cx| s.interrupt(a.clone(), cx)))
     }
     fn open(&mut self, entry: Value, w: &mut Window, cx: &mut Context<Self>) {
         self.return_focus = w.focused(cx);
@@ -998,24 +1020,69 @@ impl Render for Customize {
                             .as_str()
                             .unwrap_or("")
                             .to_string();
-                        let scanning = snapshot.scan["state"] == "scanning";
+                        let scanning = projection::is_scanning(&snapshot.scan);
                         let scan_id = snapshot.scan["id"].as_str().unwrap_or("").to_string();
-                        body=body.child(gpui::text!("Built-in dev terms active. Scan this folder to add your own identifiers.")).child(gpui::text!(folder.clone())).child(self.button("project-folder","Choose project folder…",Action::ChooseProject,cx)).child(self.button("project-scan",if scanning{"Scanning…"}else{"Scan folder"},Action::Scan{folder:folder.clone(),id:format!("scan-{}",chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default())},cx).disabled(scanning||folder.is_empty()||self.controller.model.pending));
+                        let (label, detail) = projection::status(&snapshot.scan);
+                        let new_scan_id = || {
+                            format!(
+                                "scan-{}",
+                                chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+                            )
+                        };
+                        let busy = self.controller.model.pending;
+                        body = body
+                            .child(gpui::text!("Built-in dev terms active. Scan this folder to add your own identifiers."))
+                            .child(gpui::text!(if folder.is_empty() {
+                                "No project folder selected".to_string()
+                            } else {
+                                folder.clone()
+                            }))
+                            .child(self.button(
+                                "project-folder",
+                                "Choose project folder…",
+                                Action::ChooseProject { id: new_scan_id() },
+                                cx,
+                            ))
+                            .child(
+                                self.button(
+                                    "project-scan",
+                                    if scanning {
+                                        "Scanning…"
+                                    } else {
+                                        "Scan folder"
+                                    },
+                                    Action::Scan {
+                                        folder: folder.clone(),
+                                        id: new_scan_id(),
+                                    },
+                                    cx,
+                                )
+                                .disabled(scanning || folder.is_empty() || busy),
+                            );
+                        if !folder.is_empty() {
+                            body = body.child(self.interrupt_button(
+                                "project-folder-clear",
+                                "Clear project folder",
+                                Action::ClearProject,
+                                busy && !scanning,
+                                cx,
+                            ));
+                        }
                         if scanning {
-                            body = body.child(self.button(
+                            body = body.child(self.interrupt_button(
                                 "project-scan-cancel",
                                 "Cancel scan",
                                 Action::CancelScan(scan_id),
+                                false,
                                 cx,
                             ));
                         }
                         body = body.child(div().id("scan-status").role(Role::Status).child(
-                            gpui::text!(format!(
-                                "{} · {} files · {} terms",
-                                snapshot.scan["state"],
-                                snapshot.scan["filesRead"],
-                                snapshot.scan["terms"]
-                            )),
+                            gpui::text!(if detail.is_empty() {
+                                label.to_string()
+                            } else {
+                                format!("{label} · {detail}")
+                            }),
                         ));
                         if snapshot.scan["capped"] == true {
                             body=body.child(gpui::text!("The 1,000-file cap was reached. Choose a smaller folder for complete coverage."));
@@ -1052,7 +1119,7 @@ impl Render for Customize {
                                 format!(
                                     "{} · {}",
                                     term["term"].as_str().unwrap_or(""),
-                                    term["frequency"]
+                                    projection::frequency(term)
                                 )
                             ));
                         }
@@ -1086,13 +1153,15 @@ impl Render for Customize {
                 }
             }
             if let Some(preview) = snapshot.preview {
-                body = body.child(
-                    div()
-                        .id("customize-preview")
-                        .role(Role::Group)
-                        .aria_label("Local preview result")
-                        .child(gpui::text!(preview)),
-                );
+                let mut result = div()
+                    .id("customize-preview")
+                    .role(Role::Group)
+                    .aria_label("Local preview result")
+                    .child(gpui::text!(preview));
+                if let Some(note) = snapshot.preview_note {
+                    result = result.child(gpui::text!(note));
+                }
+                body = body.child(result);
             }
         } else {
             body = body.child(gpui::text!("Loading customization…"));

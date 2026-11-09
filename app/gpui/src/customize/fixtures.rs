@@ -21,6 +21,7 @@ pub fn snapshot() -> Snapshot {
         ide: json!({}),
         scan: json!({"state":"idle","filesRead":0,"terms":0,"rankedTerms":[]}),
         preview: None,
+        preview_note: None,
         import_preview: None,
     }
 }
@@ -128,10 +129,15 @@ impl SectionHost<Snapshot, Action> for FixtureHost {
             Action::ClearIde(bundle) => {
                 s.ide[bundle] = json!({"state":"cleared","files":0,"symbols":0})
             }
-            Action::Scan { id, .. } => {
-                s.scan = json!({"id":id,"state":"done","filesRead":12,"terms":2,"rankedTerms":[{"term":"SyntheticTerm","frequency":4},{"term":"FixtureSymbol","frequency":2}]})
+            Action::Scan { id, .. } | Action::ChooseProject { id } => {
+                s.scan = json!({"id":id,"state":"done","filesRead":12,"terms":2,"rankedTerms":[{"term":"SyntheticTerm","freq":4},{"term":"FixtureSymbol","freq":2}]})
             }
-            Action::CancelScan(_) => s.scan["state"] = json!("idle"),
+            Action::ClearProject => {
+                s.settings["codeVocabFolder"] = json!("");
+                s.settings["codeVocabLastScan"] = json!(null);
+                s.scan = json!(null);
+            }
+            Action::CancelScan(_) => s.scan = json!(null),
             Action::InspectSpellings => {
                 let alias = if self.scenario == Scenario::ConflictingImport {
                     "synthetic term"

@@ -658,6 +658,86 @@ mod ax {
             1
         );
     }
+    fn disabled(t: &TreeUpdate, label: &str) -> bool {
+        let id = named(t, label);
+        t.nodes
+            .iter()
+            .find(|(i, _)| *i == id)
+            .unwrap()
+            .1
+            .is_disabled()
+    }
+    #[gpui::test]
+    fn vocabulary_scan_cancel_and_clear_stay_available_while_the_scan_is_pending(
+        cx: &mut TestAppContext,
+    ) {
+        use serde_json::json;
+        let (e, cx) = harness(cx, 1);
+        cx.update(|w, cx| {
+            e.update(cx, |s, cx| {
+                s.select_customize(crate::customize::model::Page::Scan, w, cx)
+            })
+        });
+        let custom = e.read_with(cx, |s, _| s.customize.clone());
+        custom.update(cx, |s, cx| {
+            let snapshot = s.controller.model.snapshot.as_mut().unwrap();
+            snapshot.settings["codeVocabFolder"] = json!("/synthetic/project");
+            snapshot.scan = json!({"id":"scan-1","state":"scanning","filesRead":3,
+                "dirsSkipped":0,"terms":1,"rankedTerms":[]});
+            // The scan request itself is the pending one.
+            s.controller.model.pending = true;
+            cx.notify();
+        });
+        draw(cx);
+        let t = tree(cx);
+        assert!(
+            disabled(&t, "Scanning…"),
+            "a running scan cannot start again"
+        );
+        assert!(disabled(&t, "Choose project folder…"));
+        assert!(!disabled(&t, "Cancel scan"), "Cancel must stay clickable");
+        assert!(!disabled(&t, "Clear project folder"));
+        let before = custom.read_with(cx, |s, _| s.controller.model.generation);
+        click(cx, named(&t, "Cancel scan"));
+        assert!(
+            custom.read_with(cx, |s, _| s.controller.model.generation) > before,
+            "Cancel revokes the pending scan request before issuing its own"
+        );
+    }
+    #[gpui::test]
+    fn vocabulary_scan_view_shows_finished_scan_and_hides_clear_without_a_folder(
+        cx: &mut TestAppContext,
+    ) {
+        use serde_json::json;
+        let (e, cx) = harness(cx, 1);
+        cx.update(|w, cx| {
+            e.update(cx, |s, cx| {
+                s.select_customize(crate::customize::model::Page::Scan, w, cx)
+            })
+        });
+        let custom = e.read_with(cx, |s, _| s.customize.clone());
+        custom.update(cx, |s, cx| {
+            let snapshot = s.controller.model.snapshot.as_mut().unwrap();
+            snapshot.settings["codeVocabFolder"] = json!("");
+            snapshot.scan = crate::customize::projection::finished(
+                None,
+                json!({"files":87,"terms":2,"adopted":true,
+                    "rankedTerms":[{"term":"SyntheticTerm","freq":42}]}),
+            );
+            s.controller.model.pending = false;
+            cx.notify();
+        });
+        draw(cx);
+        let t = tree(cx);
+        static_text(&t, "Scan complete · 2 terms layered on top of built-ins");
+        static_text(&t, "SyntheticTerm · 42");
+        assert!(
+            !t.nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Clear project folder")),
+            "nothing to clear without a folder"
+        );
+    }
     fn assert_visible_input(cx: &mut VisualTestContext, label: &str, height: f64) {
         let t = tree(cx);
         let node = &t

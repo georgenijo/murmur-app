@@ -55,6 +55,16 @@ fresh-profile settings normalization. This proves startup/composition, not real
 dictation, installed updates, OS permission flows or interactive acceptance.
 Shipping Tauri tests remain required and no frontend test is retired.
 
+### Vocabulary scan failure injection
+
+A failed code-vocabulary scan cannot be provoked reliably on a Mac with a real
+directory. Builds with `native-host-qa` therefore treat a chosen or scanned
+folder whose last path component is exactly `murmur-qa-scan-failure` as an
+unreadable folder: the production scan adapter reports a failure before the
+walk starts, and the Customize scan strip shows "Scan could not finish". The
+hook is compiled out without the feature, matches no other name, and never
+touches the folder. Create an empty synthetic folder with that name to use it.
+
 ## Native acceptance checklist
 
 Use a unique isolated test bundle and synthetic data. The separate GUI QA worker

@@ -31,7 +31,11 @@ pub enum Action {
     ChooseRoot(String),
     RefreshIde(String),
     ClearIde(String),
-    ChooseProject,
+    /// Choose a folder, save it, and scan it under the same scan ID.
+    ChooseProject {
+        id: String,
+    },
+    ClearProject,
     Scan {
         folder: String,
         id: String,
@@ -96,6 +100,10 @@ impl Action {
 // InspectSpellings uses read_modes_file + vocabulary::parse/preview, keeps
 // reviewed bytes in memory; import repeats vocabulary::commit against current.
 // Export uses vocabulary::export + save_text_export (native save panel).
+// ChooseProject saves the folder then scans it as shipped does; ClearProject cancels
+// any scan, then clears the folder and stored summary. Both CancelScan and
+// ClearProject interrupt the pending scan request, which the view revokes first.
+// A finished scan persists codeVocabLastScan through the settings owner.
 // Scan progress is correlated by exact scan ID and settings generation. Hide/drop
 // stops only this owner's scan and subscriptions; existing IDE generation owners
 // invalidate before refresh/clear/remove. Memory-only symbols never enter sources.

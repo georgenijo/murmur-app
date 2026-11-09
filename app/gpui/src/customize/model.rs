@@ -30,6 +30,7 @@ pub struct Snapshot {
     pub ide: Value,
     pub scan: Value,
     pub preview: Option<String>,
+    pub preview_note: Option<&'static str>,
     pub import_preview: Option<super::vocabulary::Preview>,
 }
 impl Projection for Snapshot {

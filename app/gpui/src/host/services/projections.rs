@@ -136,19 +136,30 @@ pub fn customize(b: Backend) -> Read<crate::customize::model::Snapshot> {
                 );
             }
         }
-        Ok(crate::customize::model::Snapshot {
-            revision,
-            settings,
-            commands: commands["entries"].as_array().cloned().unwrap_or_default(),
-            command_total: commands["total"].as_u64().unwrap_or_default() as usize,
-            next_offset: commands["nextOffset"].as_u64().map(|n| n as usize),
-            running_apps: vec![],
-            ide: Value::Object(ide),
-            scan: Value::Null,
-            preview: None,
-            import_preview: None,
-        })
+        Ok(customize_snapshot(revision, settings, &commands, ide))
     })
+}
+/// Pure projection of the Customize reads: the scan view comes from the
+/// persisted settings so reopening shows the last scan without re-walking.
+fn customize_snapshot(
+    revision: u64,
+    settings: Value,
+    commands: &Value,
+    ide: serde_json::Map<String, Value>,
+) -> crate::customize::model::Snapshot {
+    crate::customize::model::Snapshot {
+        revision,
+        scan: crate::customize::projection::restore(&settings),
+        settings,
+        commands: commands["entries"].as_array().cloned().unwrap_or_default(),
+        command_total: commands["total"].as_u64().unwrap_or_default() as usize,
+        next_offset: commands["nextOffset"].as_u64().map(|n| n as usize),
+        running_apps: vec![],
+        ide: Value::Object(ide),
+        preview: None,
+        preview_note: None,
+        import_preview: None,
+    }
 }
 pub fn models(b: Backend) -> Read<crate::models::model::Snapshot> {
     Box::pin(async move {
@@ -530,5 +541,37 @@ mod permission_tests {
             );
         }
         assert_eq!(access(&Value::Null), Access::Unknown);
+    }
+}
+
+#[cfg(test)]
+mod customize_tests {
+    use super::*;
+
+    // The production read builds the Customize snapshot through this projection.
+    #[test]
+    fn reopening_customize_restores_the_last_scan_from_settings() {
+        let mut settings = murmur_core::state::settings_defaults();
+        settings["codeVocabFolder"] = json!("/synthetic/project");
+        settings["codeVocabLastScan"] = json!({"files":87,"skipped":6,"terms":2,"bytes":2400000,
+            "capped":false,"ms":610,"sampleTerms":["SyntheticTerm"],
+            "rankedTerms":[{"term":"SyntheticTerm","freq":42},{"term":"FixtureSymbol","freq":31}],
+            "whisperCount":2,"adopted":true});
+        let settings = murmur_core::state::settings(settings).unwrap();
+        let snapshot = customize_snapshot(3, settings, &json!({}), Default::default());
+        assert_eq!(snapshot.scan["state"], "done");
+        assert_eq!(snapshot.scan["filesRead"], 87);
+        assert_eq!(snapshot.scan["rankedTerms"][0]["freq"], 42);
+        assert!(crate::workspace::Projection::valid(&snapshot));
+    }
+
+    #[test]
+    fn cleared_folder_and_never_scanned_settings_project_an_idle_scan() {
+        let settings =
+            murmur_core::state::settings(murmur_core::state::settings_defaults()).unwrap();
+        let snapshot = customize_snapshot(1, settings, &json!({}), Default::default());
+        assert!(snapshot.scan.is_null());
+        assert_eq!(snapshot.settings["codeVocabFolder"], "");
+        assert!(snapshot.preview_note.is_none());
     }
 }

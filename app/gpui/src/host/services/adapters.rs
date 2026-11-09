@@ -20,6 +20,10 @@ fn problem<T>(r: Result<T, String>) -> Result<T, Problem> {
 fn discovery(value: Option<&Value>) -> Value {
     value.cloned().unwrap_or_else(||json!({"version":1,"checklistDismissed":false,"completed":[],"baseline":{"transforms":0,"meetings":0,"correctionsTaught":0,"modeBindings":[]},"pendingHints":[],"dismissedHints":[]}))
 }
+/// The Voice commands toggle lives on the Text page, as shipped.
+fn voice_command_settings_route() -> Route {
+    Route::Settings(crate::settings::schema::Page::Text)
+}
 fn home_route(d: crate::home::model::Destination) -> Route {
     use crate::{home::model::Destination as D, settings::schema::Page};
     match d {
@@ -1103,11 +1107,16 @@ mod customize_action {
         inbox: Inbox<crate::customize::model::Snapshot>,
     ) -> super::super::backend::ProgressStop {
         let stop = super::super::backend::ProgressStop::default();
-        let crate::customize::host::Action::Scan { id, .. } = action else {
-            return stop;
+        let id = match action {
+            crate::customize::host::Action::Scan { id, .. } => {
+                *b.scan.lock().unwrap_or_else(|p| p.into_inner()) = Some((id.clone(), Value::Null));
+                id.clone()
+            }
+            // The scan registers itself once the folder is saved; progress is
+            // only published while this ID owns the scan.
+            crate::customize::host::Action::ChooseProject { id } => id.clone(),
+            _ => return stop,
         };
-        *b.scan.lock().unwrap_or_else(|p| p.into_inner()) = Some((id.clone(), Value::Null));
-        let id = id.clone();
         let finished = stop.0.clone();
         let backend = b.clone();
         b.spawn(async move {
@@ -1125,7 +1134,7 @@ mod customize_action {
                         && owner == id
                     {
                         snapshot.revision = ticket.revision;
-                        snapshot.scan = progress;
+                        snapshot.scan = crate::customize::projection::running(&id, &progress);
                         let _ = inbox.publish(Event::Progress { ticket, snapshot });
                     }
                 }
@@ -1145,6 +1154,102 @@ mod customize_action {
             ),
             _ => None,
         }
+    }
+    fn scan_owner(b: &Backend) -> Option<String> {
+        b.scan
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+            .map(|(id, _)| id.clone())
+    }
+    /// Drop this scan's ownership. A newer scan keeps its own entry.
+    fn release_scan(b: &Backend, id: &str) {
+        let mut scan = b.scan.lock().unwrap_or_else(|p| p.into_inner());
+        if scan.as_ref().is_some_and(|(owner, _)| owner == id) {
+            scan.take();
+        }
+    }
+    /// Stop one scan by ID. The walk finishes in the background but is never adopted.
+    async fn cancel_scan(b: &Backend, id: &str) {
+        release_scan(b, id);
+        let _ = b.call("cancel_code_vocab_scan", json!({"scanId":id})).await;
+    }
+    /// The effects one scan needs. `Backend` is the production implementation;
+    /// tests drive `scan_folder` with a scripted fake.
+    pub(super) trait ScanPorts: Sync {
+        fn begin(&self, id: &str);
+        fn release(&self, id: &str);
+        async fn walk(&self, folder: &str, id: &str, current: Live) -> Result<Value, String>;
+        async fn settings(&self) -> Result<(u64, Value), String>;
+        async fn save(&self, patch: Value, revision: u64) -> Result<(), String>;
+        async fn snapshot(&self) -> Result<Snapshot, String>;
+    }
+    impl ScanPorts for Backend {
+        fn begin(&self, id: &str) {
+            *self.scan.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some((id.to_owned(), Value::Null));
+        }
+        fn release(&self, id: &str) {
+            release_scan(self, id)
+        }
+        async fn walk(&self, folder: &str, id: &str, current: Live) -> Result<Value, String> {
+            #[cfg(feature = "native-host-qa")]
+            if scan_fault(folder) {
+                return Err("Synthetic scan failure".into());
+            }
+            self.effect(
+                "scan_code_vocab",
+                json!({"folder":folder,"scanId":id}),
+                current,
+            )
+            .await
+        }
+        async fn settings(&self) -> Result<(u64, Value), String> {
+            self.services.settings_snapshot().await
+        }
+        async fn save(&self, patch: Value, revision: u64) -> Result<(), String> {
+            self.patch(patch, revision).await.map(|_| ())
+        }
+        async fn snapshot(&self) -> Result<Snapshot, String> {
+            read::customize(self.clone()).await
+        }
+    }
+    /// Native QA only: a folder named `murmur-qa-scan-failure` makes the walk
+    /// fail, so the failed-scan state is reachable without damaging a real
+    /// directory. Compiled out of release builds.
+    #[cfg(feature = "native-host-qa")]
+    fn scan_fault(folder: &str) -> bool {
+        std::path::Path::new(folder.trim_end_matches('/'))
+            .file_name()
+            .is_some_and(|name| name == "murmur-qa-scan-failure")
+    }
+    /// Walk `folder` (the service adopts it), persist the summary like shipped
+    /// `runVocabScan`, and project the terminal scan view.
+    pub(super) async fn scan_folder<P: ScanPorts>(
+        ports: &P,
+        folder: String,
+        id: String,
+        current: Live,
+    ) -> Result<Snapshot, String> {
+        ports.begin(&id);
+        let result = ports.walk(&folder, &id, current.clone()).await;
+        ports.release(&id);
+        if !current() {
+            return Err("Presentation changed".into());
+        }
+        let Ok(summary) = result else {
+            let mut snapshot = ports.snapshot().await?;
+            snapshot.scan = crate::customize::projection::failed(&id);
+            return Ok(snapshot);
+        };
+        // The scan bumps the settings revision, so persist against a fresh read.
+        let (revision, settings) = ports.settings().await?;
+        if let Some(patch) = crate::customize::projection::persist(&settings, &folder, &summary) {
+            ports.save(patch, revision).await?;
+        }
+        let mut snapshot = ports.snapshot().await?;
+        snapshot.scan = crate::customize::projection::finished(Some(&id), summary);
+        Ok(snapshot)
     }
     pub async fn run(
         b: &Backend,
@@ -1186,14 +1291,45 @@ mod customize_action {
                     b.patch(json!({"appProfiles":profiles}), s.revision).await?;
                 }
             }
-            Action::ChooseProject => {
+            Action::ChooseProject { id } => {
                 if let Some(path) = b
                     .panel(json!({"kind":"open","directory":true}), current.clone())
                     .await?
                     && current()
                 {
-                    b.patch(json!({"codeVocabFolder":path}), s.revision).await?;
+                    // The panel can stay open a long time; patch against the live revision.
+                    let (revision, _) = b.services.settings_snapshot().await?;
+                    b.patch(
+                        json!({"codeVocabFolder":path,"codeVocabLastScan":null}),
+                        revision,
+                    )
+                    .await?;
+                    return scan_folder(b, path, id, current).await.map(Some);
                 }
+            }
+            Action::ClearProject => {
+                let active = scan_owner(b);
+                if let Some(id) = active {
+                    cancel_scan(b, &id).await;
+                }
+                if !current() {
+                    return Err("Presentation changed".into());
+                }
+                // A cancelled walk can still bump the revision as it unwinds.
+                let (revision, _) = b.services.settings_snapshot().await?;
+                b.patch(
+                    json!({"codeVocabFolder":"","codeVocabLastScan":null}),
+                    revision,
+                )
+                .await?;
+            }
+            Action::CancelScan(id) => {
+                cancel_scan(b, &id).await;
+                s.scan = Value::Null;
+                return Ok(Some(s));
+            }
+            Action::Scan { folder, id } => {
+                return scan_folder(b, folder, id, current).await.map(Some);
             }
             Action::CopyTerms(terms) => {
                 if current() {
@@ -1240,9 +1376,7 @@ mod customize_action {
                 )
                 .await?
             }
-            Action::VoiceCommandSettings => {
-                b.navigate(Route::Settings(crate::settings::schema::Page::Recording))
-            }
+            Action::VoiceCommandSettings => b.navigate(voice_command_settings_route()),
             Action::Cancel => {}
             action => {
                 if let Some((command, args)) = action.command() {
@@ -1251,29 +1385,6 @@ mod customize_action {
                         return Err("Presentation changed".into());
                     }
                     match action {
-                        Action::Scan { folder, id } => {
-                            if result["adopted"] == true {
-                                b.patch(
-                                    json!({"codeVocabFolder":folder,"codeVocabEnabled":true}),
-                                    revision,
-                                )
-                                .await?;
-                            }
-                            if b.scan
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner())
-                                .as_ref()
-                                .is_some_and(|(owner, _)| owner == &id)
-                            {
-                                b.scan.lock().unwrap_or_else(|p| p.into_inner()).take();
-                            }
-                            let mut snapshot = read::customize(b.clone()).await?;
-                            snapshot.scan = result;
-                            snapshot.scan["id"] = json!(id);
-                            snapshot.scan["state"] = json!("done");
-                            snapshot.scan["filesRead"] = snapshot.scan["files"].clone();
-                            return Ok(Some(snapshot));
-                        }
                         Action::RunningApps => {
                             s.running_apps = result
                                 .as_array()
@@ -1291,7 +1402,10 @@ mod customize_action {
                             return Ok(Some(s));
                         }
                         Action::PreviewCommand { .. } => {
-                            s.preview = result["output"].as_str().map(String::from);
+                            let (text, note) =
+                                crate::customize::projection::command_preview(&result)?;
+                            s.preview = Some(text);
+                            s.preview_note = note;
                             return Ok(Some(s));
                         }
                         Action::PreviewAliases { .. } => {
@@ -1307,6 +1421,130 @@ mod customize_action {
             }
         }
         Ok(None)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::customize::projection::{frequency, status};
+        use std::sync::{Arc, Mutex};
+
+        /// Scripted ports: no service, panel, or filesystem is touched.
+        struct Fake {
+            walk: Result<Value, String>,
+            stored: Value,
+            revision: u64,
+            saved: Mutex<Vec<(Value, u64)>>,
+            owner: Mutex<Option<String>>,
+        }
+        impl Fake {
+            fn new(walk: Result<Value, String>) -> Self {
+                Self {
+                    walk,
+                    stored: json!({}),
+                    revision: 9,
+                    saved: Default::default(),
+                    owner: Default::default(),
+                }
+            }
+        }
+        impl ScanPorts for Fake {
+            fn begin(&self, id: &str) {
+                *self.owner.lock().unwrap() = Some(id.to_owned());
+            }
+            fn release(&self, id: &str) {
+                let mut owner = self.owner.lock().unwrap();
+                if owner.as_deref() == Some(id) {
+                    owner.take();
+                }
+            }
+            async fn walk(&self, _: &str, _: &str, _: Live) -> Result<Value, String> {
+                assert!(
+                    self.owner.lock().unwrap().is_some(),
+                    "walk must be registered"
+                );
+                self.walk.clone()
+            }
+            async fn settings(&self) -> Result<(u64, Value), String> {
+                Ok((self.revision, self.stored.clone()))
+            }
+            async fn save(&self, patch: Value, revision: u64) -> Result<(), String> {
+                self.saved.lock().unwrap().push((patch, revision));
+                Ok(())
+            }
+            async fn snapshot(&self) -> Result<Snapshot, String> {
+                Ok(crate::customize::fixtures::snapshot())
+            }
+        }
+        fn summary(adopted: bool, terms: u64) -> Value {
+            json!({"files":87,"skipped":6,"terms":terms,"bytes":2400000,"capped":false,"ms":610,
+                "sampleTerms":["SyntheticTerm"],
+                "rankedTerms":[{"term":"SyntheticTerm","freq":42}],
+                "whisperCount":2,"adopted":adopted})
+        }
+        fn live(current: bool) -> Live {
+            Arc::new(move || current)
+        }
+        fn run(fake: &Fake, current: bool) -> Result<Snapshot, String> {
+            futures::executor::block_on(scan_folder(
+                fake,
+                " /synthetic/project ".into(),
+                "scan-1".into(),
+                live(current),
+            ))
+        }
+
+        #[test]
+        fn choosing_a_folder_scans_it_and_persists_the_summary_for_reopen() {
+            let fake = Fake::new(Ok(summary(true, 2)));
+            let snapshot = run(&fake, true).unwrap();
+            assert_eq!(snapshot.scan["state"], "done");
+            assert_eq!(status(&snapshot.scan).0, "Scan complete");
+            // The producer's `freq` reaches the view's frequency column.
+            assert_eq!(frequency(&snapshot.scan["rankedTerms"][0]), 42);
+            let saved = fake.saved.lock().unwrap();
+            assert_eq!(saved.len(), 1);
+            assert_eq!(saved[0].1, 9, "patch must use the post-scan revision");
+            assert_eq!(saved[0].0["codeVocabFolder"], "/synthetic/project");
+            assert_eq!(
+                saved[0].0["codeVocabLastScan"]["rankedTerms"][0]["freq"],
+                42
+            );
+            assert!(fake.owner.lock().unwrap().is_none());
+        }
+
+        #[test]
+        fn a_failed_walk_reports_failure_and_stores_nothing() {
+            let fake = Fake::new(Err("Folder unreadable".into()));
+            let snapshot = run(&fake, true).unwrap();
+            assert_eq!(snapshot.scan["state"], "failed");
+            assert_eq!(status(&snapshot.scan).0, "Scan could not finish");
+            assert!(!snapshot.scan.to_string().contains("unreadable"));
+            assert!(fake.saved.lock().unwrap().is_empty());
+            assert!(fake.owner.lock().unwrap().is_none());
+        }
+
+        #[test]
+        fn a_cancelled_or_stale_presentation_never_stores_a_summary() {
+            let fake = Fake::new(Ok(summary(true, 2)));
+            assert!(run(&fake, false).is_err());
+            assert!(fake.saved.lock().unwrap().is_empty());
+            assert!(fake.owner.lock().unwrap().is_none());
+        }
+
+        #[test]
+        fn a_superseded_scan_clears_the_stale_summary() {
+            let mut fake = Fake::new(Ok(summary(false, 2)));
+            fake.stored = json!({"codeVocabLastScan": summary(true, 5)});
+            let snapshot = run(&fake, true).unwrap();
+            assert_eq!(snapshot.scan["state"], "superseded");
+            let saved = fake.saved.lock().unwrap();
+            assert_eq!(saved.len(), 1);
+            assert_eq!(saved[0].0, json!({"codeVocabLastScan": null}));
+            let nothing_stored = Fake::new(Ok(summary(false, 2)));
+            run(&nothing_stored, true).unwrap();
+            assert!(nothing_stored.saved.lock().unwrap().is_empty());
+        }
     }
 }
 section_host!(customize, customize, customize_action);
@@ -1707,5 +1945,16 @@ mod setup_error_tests {
             setup_problem("private model path or setting".into()),
             Problem::Unavailable
         );
+    }
+}
+#[cfg(test)]
+mod voice_command_route_tests {
+    use super::*;
+    #[test]
+    fn voice_commands_settings_link_opens_the_text_page() {
+        assert!(matches!(
+            voice_command_settings_route(),
+            Route::Settings(crate::settings::schema::Page::Text)
+        ));
     }
 }
