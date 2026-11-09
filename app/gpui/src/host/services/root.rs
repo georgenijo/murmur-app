@@ -1373,7 +1373,11 @@ fn teach_dialog(
 // Reads painted bounds through the accessibility test transport.
 #[cfg(all(test, feature = "a11y-tests"))]
 mod tests {
-    use super::*;
+    // Explicit imports: a glob of `gpui::*` would shadow the builtin `#[test]`
+    // with `gpui::test`, which then expands itself without end.
+    use super::{teach_body, teach_dialog, teach_example, teach_text};
+    use crate::{Button, tokens::Palette};
+    use gpui::{Context, IntoElement, Pixels, Render, TestAppContext, Window, div, prelude::*, px};
 
     /// A review with far more content than the window can show.
     struct LongReview {
