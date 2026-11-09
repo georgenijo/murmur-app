@@ -1,9 +1,13 @@
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ModelDownloadPanel } from '../../components/ModelDownloader';
 import type { ModelOption } from '../settings';
-import type { ModelInstallState, ModelRuntimeSnapshot } from '../modelRuntime';
+import {
+  useModelRuntimeCatalog,
+  type ModelInstallState,
+  type ModelRuntimeSnapshot,
+} from '../modelRuntime';
 import { useInstalledModels } from './useInstalledModels';
 
 const mocks = vi.hoisted(() => ({
@@ -65,6 +69,22 @@ function CatalogHarness({ enabled = true }: { enabled?: boolean }) {
       <button type="button" onClick={retry}>Refresh</button>
       <span data-testid="base-en-state">{installStates?.['base.en'] ?? 'loading'}</span>
       {error && <span role="alert">Could not check installed models.</span>}
+    </div>
+  );
+}
+
+function RuntimeCatalogHarness() {
+  const [revision, setRevision] = useState(0);
+  const { models, byName, error, loaded } = useModelRuntimeCatalog(true, revision);
+  return (
+    <div>
+      <button type="button" onClick={() => setRevision((value) => value + 1)}>Retry catalog</button>
+      <span data-testid="runtime-loaded">{loaded ? 'loaded' : 'loading'}</span>
+      <span data-testid="runtime-by-name">{byName.get('base.en')?.installState ?? 'missing'}</span>
+      <span data-testid="runtime-models">
+        {models.map((model) => `${model.modelName}:${model.generation}`).join(',')}
+      </span>
+      {error && <span role="alert">Could not read the runtime catalog.</span>}
     </div>
   );
 }
@@ -237,5 +257,66 @@ describe('useInstalledModels live install state', () => {
 
     await emit(snapshot('base.en', 'notInstalled', 4));
     expect(baseEnState()).toBe('installed');
+  });
+
+  describe('useModelRuntimeCatalog after a failed catalog request', () => {
+    const runtimeByName = () => container.querySelector('[data-testid="runtime-by-name"]')?.textContent;
+    const runtimeLoaded = () => container.querySelector('[data-testid="runtime-loaded"]')?.textContent;
+    const runtimeModels = () => container.querySelector('[data-testid="runtime-models"]')?.textContent;
+
+    it('replays buffered events and applies later events without a baseline', async () => {
+      let rejectCatalog!: (reason: Error) => void;
+      const catalog = new Promise<ModelRuntimeSnapshot[]>((_, reject) => {
+        rejectCatalog = reject;
+      });
+      mocks.invoke.mockImplementation((command: string) => command === 'get_model_runtime_catalog'
+        ? catalog
+        : Promise.resolve(null));
+
+      await act(async () => root.render(<RuntimeCatalogHarness />));
+      await settle();
+
+      await emit(snapshot('base.en', 'installed', 2));
+      expect(runtimeModels()).not.toContain('base.en');
+
+      await act(async () => rejectCatalog(new Error('IPC unavailable')));
+      await settle();
+      expect(container.querySelector('[role="alert"]')).not.toBeNull();
+      expect(runtimeLoaded()).toBe('loading');
+      expect(runtimeByName()).toBe('installed');
+      expect(runtimeModels()).toContain('base.en:2');
+
+      await emit(snapshot('base.en', 'invalid', 3));
+      expect(runtimeByName()).toBe('invalid');
+      expect(runtimeModels()).toContain('base.en:3');
+      expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    });
+
+    it('starts a fresh baseline when a retry succeeds', async () => {
+      let failure = true;
+      mocks.invoke.mockImplementation((command: string) => {
+        if (command === 'get_model_runtime_catalog') {
+          return failure
+            ? Promise.reject(new Error('IPC unavailable'))
+            : Promise.resolve([snapshot('base.en', 'notInstalled', 0)]);
+        }
+        return Promise.resolve(null);
+      });
+
+      await act(async () => root.render(<RuntimeCatalogHarness />));
+      await settle();
+      expect(container.querySelector('[role="alert"]')).not.toBeNull();
+
+      await emit(snapshot('base.en', 'installed', 9));
+      expect(runtimeByName()).toBe('installed');
+
+      failure = false;
+      await act(async () => button('Retry catalog').click());
+      await settle();
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(runtimeLoaded()).toBe('loaded');
+      expect(runtimeByName()).toBe('notInstalled');
+      expect(runtimeModels()).toContain('base.en:0');
+    });
   });
 });

@@ -110,7 +110,17 @@ export function useModelRuntimeCatalog(enabled = true, revision = 0) {
           setLoaded(true);
         }
       } catch (reason: unknown) {
-        if (!disposed) setError(String(reason));
+        if (!disposed) {
+          setError(String(reason));
+          // The listener can still deliver transitions even though the baseline
+          // fetch failed. Leave buffering so later events apply directly, and
+          // replay anything that arrived while the request was in flight.
+          // `loaded` stays false so the UI can retry from a fresh subscription.
+          catalogLoaded = true;
+          const buffered = bufferedEvents;
+          bufferedEvents = [];
+          setModels((current) => buffered.reduce(applyRuntimeUpdate, current));
+        }
       }
     })();
     return () => {
