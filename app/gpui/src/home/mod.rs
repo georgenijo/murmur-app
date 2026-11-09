@@ -82,7 +82,7 @@ impl Home {
     }
     fn update_clicked(&mut self, cx: &mut Context<Self>) {
         if let Some(intent) = self.model.snapshot.as_ref().and_then(|s| s.update.intent()) {
-            cx.emit(UpdateRequested(intent));
+            crate::events::publish(cx, UpdateRequested(intent));
         }
     }
     /// Passive availability/progress/failure indicator. Idle shows nothing: manual
