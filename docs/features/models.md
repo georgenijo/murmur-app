@@ -171,7 +171,7 @@ On first launch (the selected model is not present), a full-screen download view
 | `large-v3-turbo` | "Highest accuracy, slower (1-2 seconds)" |
 | `base.en` | "Good balance of speed and accuracy" |
 
-Default selection: `parakeet-tdt-0.6b-v3-coreml`. The gate (`App.tsx`) checks the currently selected model through the runtime manager. The downloader starts on that model when it is one of the curated choices and persists whichever model the user actually downloads. Selection is disabled only while an exact correlated attempt is live. Byte progress is shown for Murmur-managed downloads; FluidAudio setup is indeterminate because its Rust bridge does not expose byte progress, but it reports Preparing, Repairing, Initializing, and Validating phases. On terminal Core ML failure, Retry and explicit Whisper Base / CPU Parakeet fallbacks become immediately available.
+Default selection: `parakeet-tdt-0.6b-v3-coreml`. The gate (`App.tsx`) checks the currently selected model through the runtime manager. The downloader starts on that model when it is one of the curated choices and persists whichever model the user actually downloads. Rows read each model's live install state from the runtime catalog and subscribe to `model-runtime-status-changed`, so they show **Installed**, **Installing…**, **Validating…**, or **Needs repair** and update without remounting. The primary action is **Continue** for an installed model, a disabled in-progress label while that model installs or validates elsewhere, **Repair download** for an invalid artifact, and **Download** otherwise. Selection is disabled only while an exact correlated attempt is live. Byte progress is shown for Murmur-managed downloads; FluidAudio setup is indeterminate because its Rust bridge does not expose byte progress, but it reports Preparing, Repairing, Initializing, and Validating phases. On terminal Core ML failure, Retry and explicit Whisper Base / CPU Parakeet fallbacks become immediately available.
 
 `init_dictation` acknowledges initialization with `{type: "initialized", state:
 "idle"}` without checking for or loading a model. `App.tsx` gates the main UI
@@ -235,7 +235,7 @@ An existing cache that fails Murmur's completeness check is removed only at the 
 
 ### VAD Co-Download
 
-Every transcription model download also triggers a co-download of the Silero VAD model (`ggml-silero-v5.1.2.bin`, ~1.8MB) if it is not already present. VAD cache and download checks use the same minimum-size and response-document validation as Whisper. VAD download failure is non-fatal. See [vad.md](vad.md) for details on the VAD fallback download mechanism.
+Every transcription model download also triggers a co-download of the Silero VAD model (`ggml-silero-v5.1.2.bin`, ~1.8MB) if it is not already present. That transfer publishes no `download-progress` events: the event payload carries the transcription model's name and request ID, so emitting VAD bytes would look like the requested model restarting from 0. The transcription download settles from the `download_model` result after the co-download completes or fails. VAD cache and download checks use the same minimum-size and response-document validation as Whisper. VAD download failure is non-fatal. See [vad.md](vad.md) for details on the VAD fallback download mechanism.
 
 ## Allowed Models
 
@@ -318,5 +318,6 @@ It preserves VAD, other model artifacts, and other FluidAudio caches. Symbolic
 links are refused. Whisper copies found through legacy or environment search
 paths are preserved: remove those manually before using this action, since
 a surviving external copy would still make the model installed. If a failed
-recursive removal damages a bundle, its runtime state becomes Invalid and the
-row offers Download to repair it.
+recursive removal damages a bundle, its runtime state becomes Invalid: the
+Settings row offers Download to repair it, while the first-launch and onboarding
+downloader show **Needs repair** with a **Repair download** action.

@@ -64,7 +64,7 @@ describe('ModelDownloadPanel', () => {
   const renderPanel = async (overrides: Partial<ComponentProps<typeof ModelDownloadPanel>> = {}) => {
     const props: ComponentProps<typeof ModelDownloadPanel> = {
       initialModel: 'parakeet-tdt-0.6b-v3-coreml',
-      installedModels: {},
+      installStates: {},
       onComplete: vi.fn(),
       ...overrides,
     };
@@ -92,7 +92,7 @@ describe('ModelDownloadPanel', () => {
     const onComplete = vi.fn();
     await renderPanel({
       initialModel: 'base.en',
-      installedModels: { 'base.en': true },
+      installStates: { 'base.en': 'installed' },
       onComplete,
     });
 
@@ -162,7 +162,7 @@ describe('ModelDownloadPanel', () => {
     const onDownloadingChange = vi.fn();
     mocks.invoke.mockRejectedValueOnce('Core ML setup stopped after reaching its time limit.');
     await renderPanel({
-      installedModels: { 'base.en': true },
+      installStates: { 'base.en': 'installed' },
       onComplete,
       onDownloadingChange,
     });

@@ -61,14 +61,17 @@ export function applyRuntimeUpdate(
   return catalog.map((model) => model.modelName === update.modelName ? update : model);
 }
 
-export function useModelRuntimeCatalog(enabled = true) {
+export function useModelRuntimeCatalog(enabled = true, revision = 0) {
   const [models, setModels] = useState<ModelRuntimeSnapshot[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!enabled) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    setLoaded(false);
+    setError(null);
     void (async () => {
       try {
         const dispose = await listen<ModelRuntimeSnapshot>(
@@ -89,6 +92,7 @@ export function useModelRuntimeCatalog(enabled = true) {
           // Merge by generation so a transition received after listener setup
           // cannot be overwritten by an older catalog response.
           setModels((current) => catalog.reduce(applyRuntimeUpdate, current));
+          setLoaded(true);
         }
       } catch (reason: unknown) {
         if (!disposed) setError(String(reason));
@@ -98,11 +102,11 @@ export function useModelRuntimeCatalog(enabled = true) {
       disposed = true;
       unlisten?.();
     };
-  }, [enabled]);
+  }, [enabled, revision]);
 
   const byName = useMemo(
     () => new Map(models.map((model) => [model.modelName, model])),
     [models],
   );
-  return { models, byName, error };
+  return { models, byName, error, loaded };
 }

@@ -28,9 +28,26 @@ vi.mock('../../lib/dictation', () => ({
   resetMicrophonePermission: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../lib/modelRuntime', () => ({
-  getModelRuntimeCatalog: () => mocks.getModelRuntimeCatalog(),
-}));
+vi.mock('../../lib/modelRuntime', async () => {
+  const { useEffect, useState } = await import('react');
+  return {
+    getModelRuntimeCatalog: () => mocks.getModelRuntimeCatalog(),
+    useModelRuntimeCatalog: () => {
+      const [state, setState] = useState<{ models: Array<{ modelName: string; installState: string }>; loaded: boolean; error: string | null }>({
+        models: [], loaded: false, error: null,
+      });
+      useEffect(() => {
+        let disposed = false;
+        void Promise.resolve(mocks.getModelRuntimeCatalog()).then(
+          (models) => { if (!disposed) setState({ models, loaded: true, error: null }); },
+          (reason) => { if (!disposed) setState({ models: [], loaded: false, error: String(reason) }); },
+        );
+        return () => { disposed = true; };
+      }, []);
+      return { ...state, byName: new Map(state.models.map((model) => [model.modelName, model])) };
+    },
+  };
+});
 
 vi.mock('../../lib/meetings', () => ({
   getSystemAudioPermissionStatus: () => mocks.getSystemAudioPermissionStatus(),
@@ -50,12 +67,12 @@ vi.mock('../../lib/calendar', () => ({
 vi.mock('../ModelDownloader', () => ({
   DOWNLOAD_MODEL_KEYS: ['base.en'],
   ModelDownloadPanel: ({
-    installedModels,
+    installStates,
     onComplete,
     onDownloadingChange,
     renderPrimaryAction,
   }: {
-    installedModels: Partial<Record<'base.en', boolean>>;
+    installStates: Partial<Record<'base.en', 'notInstalled' | 'installing' | 'validating' | 'installed' | 'invalid'>>;
     onComplete: (model: 'base.en') => void;
     onDownloadingChange: (downloading: boolean) => void;
     renderPrimaryAction: (action: {
@@ -66,7 +83,7 @@ vi.mock('../ModelDownloader', () => ({
     }) => ReactNode;
   }) => {
     const [phase, setPhase] = useState<'idle' | 'downloading' | 'error'>('idle');
-    const installed = installedModels['base.en'] === true;
+    const installed = installStates['base.en'] === 'installed';
     const startDownload = () => {
       setPhase('downloading');
       onDownloadingChange(true);

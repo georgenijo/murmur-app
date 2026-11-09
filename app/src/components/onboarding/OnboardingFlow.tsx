@@ -155,7 +155,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const [calendarBusy, setCalendarBusy] = useState(false);
   const calendarRequestPending = useRef(false);
   const [calendarError, setCalendarError] = useState<string | null>(null);
-  const { installedModels, error: modelCatalogError, retry: retryModelCatalog } = useInstalledModels(step === 'model');
+  const { installStates, installedModels, error: modelCatalogError, retry: retryModelCatalog } = useInstalledModels(step === 'model');
   // Whether the model step finished with a model on disk (Continue or download);
   // drives the done-step summary row.
   const [modelInstalled, setModelInstalled] = useState(false);
@@ -563,7 +563,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             </>}
             {step === 'model' && <>
               <StepHeading icon={Cpu} title="Transcription model" subtitle="Download a local model once, then transcribe offline." />
-              {modelCatalogError ? <><ErrorMessage message="Could not check installed models. Retry to continue setup." /><WizardNavigationRow onBack={goBack} onNext={retryModelCatalog} nextEnabled nextLabel="Retry" /></> : installedModels === null ? <WizardNavigationRow onBack={goBack} onNext={() => {}} nextEnabled={false} nextLabel="Loading…" /> : <ModelDownloadPanel initialModel={preferredModel} installedModels={installedModels} onDownloadingChange={setModelDownloading} renderPrimaryAction={({ label, disabled, onActivate, isNavigation }) => <WizardNavigationRow onBack={goBack} backDisabled={modelDownloading || disabled} onNext={onActivate} nextEnabled={!disabled} defaultAction={isNavigation} nextLabel={label} />} onComplete={(model) => { setInstalledModel(model); setModelInstalled(true); setModelDownloading(false); goNext(); }} />}
+              {modelCatalogError ? <><ErrorMessage message="Could not check installed models. Retry to continue setup." /><WizardNavigationRow onBack={goBack} onNext={retryModelCatalog} nextEnabled nextLabel="Retry" /></> : installStates === null ? <WizardNavigationRow onBack={goBack} onNext={() => {}} nextEnabled={false} nextLabel="Loading…" /> : <ModelDownloadPanel initialModel={preferredModel} installStates={installStates} onDownloadingChange={setModelDownloading} renderPrimaryAction={({ label, disabled, onActivate, isNavigation }) => <WizardNavigationRow onBack={goBack} backDisabled={modelDownloading || disabled} onNext={onActivate} nextEnabled={!disabled} defaultAction={isNavigation} nextLabel={label} />} onComplete={(model) => { setInstalledModel(model); setModelInstalled(true); setModelDownloading(false); goNext(); }} />}
             </>}
             {step === 'hotkey' && <>
               <StepHeading icon={Keyboard} title="Recording shortcut" subtitle="Choose how Murmur listens. You can change both options later in Recording settings." />

@@ -71,8 +71,8 @@ the `useMeetings` subscription to this emitted contract.
 
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
-| `download-progress` | `{modelName, attemptId, requestId, received, total, phase, repeatedRepair}` | `commands/models.rs` | During the exact requested model attempt. Byte downloads use `downloading`; Core ML uses `preparing`, `repairing`, `initializing`, and `validating`; archive extraction uses `installing`. `total` may be 0. Consumers lock to the first positive attempt ID for their requested model and ignore unrelated/stale events. Owned callers additionally match their request ID. | Settings download UI, `ModelDownloader`, onboarding, Performance Lab. |
-| `model-runtime-status-changed` | `ModelRuntimeSnapshot` | `model_runtime.rs` | On every lifecycle transition (selecting, loading, warming, ready, unloading, failed). Generation-ordered, so a stale load can't overwrite a newer status. | Settings, onboarding, Performance Lab. |
+| `download-progress` | `{modelName, attemptId, requestId, received, total, phase, repeatedRepair}` | `commands/models.rs` | During the exact requested model attempt. Byte downloads use `downloading`; Core ML uses `preparing`, `repairing`, `initializing`, and `validating`; archive extraction uses `installing`. `total` may be 0. Consumers lock to the first positive attempt ID for their requested model and ignore unrelated/stale events. Owned callers additionally match their request ID. The Silero VAD co-download publishes no events under this name, so its ~1.8 MB transfer can never be mistaken for the requested model's attempt. | Settings download UI, `ModelDownloader`, onboarding, Performance Lab. |
+| `model-runtime-status-changed` | `ModelRuntimeSnapshot` | `model_runtime.rs` | On every install or lifecycle transition (install state changes, selecting, loading, warming, ready, unloading, failed). Generation-ordered, so a stale load can't overwrite a newer status. | Settings, `ModelDownloader`, onboarding, Performance Lab. |
 
 ## Keyboard
 

@@ -593,7 +593,11 @@ pub async fn download_model(
 
         // Co-download VAD model alongside the transcription model (~1.8MB).
         // Its own lock prevents different model installs from sharing a temp file.
-        if let Err(error) = ensure_vad_model_with_progress(&app_handle, Some(progress_context)).await
+        // This transfer must not publish `download-progress` events: they carry
+        // the transcription model's name and request ID, so a listener would
+        // mistake the VAD bytes for a second attempt at the requested model.
+        // The caller still settles from the `download_model` result.
+        if let Err(error) = ensure_vad_model(&app_handle).await
         {
             tracing::warn!(target: "system", "VAD model co-download failed (non-fatal): {}", error);
         }

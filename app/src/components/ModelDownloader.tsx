@@ -3,7 +3,8 @@ import { listen } from '@tauri-apps/api/event';
 import { cn } from '../lib/sona-utils';
 import { cancelModelDownload, downloadModel } from '../lib/dictation';
 import { AVAILABLE_MODEL_OPTIONS, type ModelOption } from '../lib/settings';
-import { preferredInstalledModel, useInstalledModels } from '../lib/hooks/useInstalledModels';
+import { preferredInstalledModel, useInstalledModels, type ModelInstallStates } from '../lib/hooks/useInstalledModels';
+import type { ModelInstallState } from '../lib/modelRuntime';
 import {
   correlatedModelDownloadAttempt,
   modelDownloadLabel,
@@ -43,12 +44,13 @@ interface Props {
   /** Notifies embedders when a download starts/stops (e.g. to lock navigation). */
   onDownloadingChange?: (downloading: boolean) => void;
   /**
-   * Per-model on-disk status from the embedder's probe. Installed rows show an
-   * "Installed" chip instead of the size, and selecting one turns the primary
-   * button into Continue (completes without downloading). Omitted = unknown,
-   * every row behaves as before.
+   * Live per-model install state from the runtime catalog. Rows show Installed,
+   * Installing…, Validating…, or Needs repair instead of the size. Selecting an
+   * installed model turns the primary button into Continue (completes without
+   * downloading); a model installing or validating elsewhere disables it.
+   * Omitted = unknown, every row behaves as a fresh download.
    */
-  installedModels?: Partial<Record<ModelOption, boolean>>;
+  installStates?: ModelInstallStates;
   /** Lets an embedder place the live primary action in its own navigation row. */
   renderPrimaryAction?: (action: {
     label: string;
@@ -80,13 +82,13 @@ export function ModelDownloadPanel({
   initialModel,
   onComplete,
   onDownloadingChange,
-  installedModels,
+  installStates,
   renderPrimaryAction,
 }: Props) {
   const hardwareGuidance = useModelHardwareGuidance();
   const offeredModels = [
     ...DOWNLOAD_MODEL_KEYS,
-    ...MODELS.filter((model) => !DOWNLOAD_MODEL_KEYS.includes(model.name) && installedModels?.[model.name]).map((model) => model.name),
+    ...MODELS.filter((model) => !DOWNLOAD_MODEL_KEYS.includes(model.name) && installStates?.[model.name] === 'installed').map((model) => model.name),
   ].map((name) => MODELS.find((model) => model.name === name)!);
   const [selected, setSelected] = useState<ModelOption>(
     offeredModels.some((model) => model.name === initialModel) ? initialModel : offeredModels[0].name
@@ -196,7 +198,9 @@ export function ModelDownloadPanel({
   const progressPercent = progress ? modelDownloadPercent(progress) : null;
 
   const isDownloading = downloadState.phase === 'downloading';
-  const selectedInstalled = installedModels?.[selected] === true;
+  const selectedState: ModelInstallState = installStates?.[selected] ?? 'notInstalled';
+  const selectedInstalled = selectedState === 'installed';
+  const selectedInstallInProgress = selectedState === 'installing' || selectedState === 'validating';
   const selectedMemoryWarning = hardwareGuidance
     ? modelMemoryWarning(hardwareGuidance, selected)
     : null;
@@ -215,14 +219,22 @@ export function ModelDownloadPanel({
     ? progress ? modelDownloadLabel(progress) : 'Starting…'
     : selectedInstalled
     ? 'Continue'
+    : selectedState === 'installing'
+    ? 'Installing…'
+    : selectedState === 'validating'
+    ? 'Validating…'
     : downloadState.phase === 'error'
     ? 'Retry download'
+    : selectedState === 'invalid'
+    ? 'Repair download'
     : 'Download';
+  const primaryDisabled = isDownloading || selectedInstallInProgress;
   const activatePrimary = () => {
     if (selectedInstalled) {
       onComplete(selected);
       return;
     }
+    if (selectedInstallInProgress) return;
     void handleDownload();
   };
 
@@ -234,7 +246,9 @@ export function ModelDownloadPanel({
         </p>
       )}
       <div className="space-y-2 mb-6">
-          {offeredModels.map((model) => (
+          {offeredModels.map((model) => {
+            const state: ModelInstallState = installStates?.[model.name] ?? 'notInstalled';
+            return (
             <button
               key={model.name}
               id={`download-model-${model.name}`}
@@ -265,9 +279,21 @@ export function ModelDownloadPanel({
                       Higher memory
                     </span>
                   )}
-                  {installedModels?.[model.name] ? (
+                  {state === 'installed' ? (
                     <span className="rounded-full bg-[var(--ui-tint-accent-strong)] px-2 py-0.5 text-[11px] font-medium text-on-surface">
                       Installed
+                    </span>
+                  ) : state === 'installing' ? (
+                    <span className="rounded-full bg-[var(--ui-tint-sunken)] px-2 py-0.5 text-[length:var(--ui-font-caption)] font-medium text-on-surface-variant">
+                      Installing…
+                    </span>
+                  ) : state === 'validating' ? (
+                    <span className="rounded-full bg-[var(--ui-tint-sunken)] px-2 py-0.5 text-[length:var(--ui-font-caption)] font-medium text-on-surface-variant">
+                      Validating…
+                    </span>
+                  ) : state === 'invalid' ? (
+                    <span className="rounded-full bg-warning/15 px-2 py-0.5 text-[length:var(--ui-font-caption)] font-semibold text-warning">
+                      Needs repair
                     </span>
                   ) : (
                     <span className="text-xs text-on-surface-variant font-mono">
@@ -280,7 +306,8 @@ export function ModelDownloadPanel({
                 {model.description}
               </p>
             </button>
-          ))}
+            );
+          })}
         </div>
 
         {selectedMemoryWarning && (
@@ -361,14 +388,14 @@ export function ModelDownloadPanel({
             download takes — so nothing on disk is ever re-downloaded. */}
         {renderPrimaryAction ? renderPrimaryAction({
           label: primaryLabel,
-          disabled: isDownloading,
+          disabled: primaryDisabled,
           onActivate: activatePrimary,
           isNavigation: selectedInstalled,
         }) : (
           <button
             type="button"
             onClick={activatePrimary}
-            disabled={isDownloading}
+            disabled={primaryDisabled}
             className="w-full rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-2.5 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-colors hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {primaryLabel}
@@ -383,7 +410,7 @@ export function ModelDownloadPanel({
  * onboarding has already completed (e.g. the model file was deleted).
  */
 export function ModelDownloader({ initialModel, onComplete }: Props) {
-  const { installedModels, error, retry } = useInstalledModels();
+  const { installStates, installedModels, error, retry } = useInstalledModels();
   return (
     <div className="h-full min-h-0 bg-background flex flex-col items-center justify-center p-8">
       <div className="w-full max-w-md">
@@ -398,10 +425,10 @@ export function ModelDownloader({ initialModel, onComplete }: Props) {
             <p>Could not check installed models.</p>
             <button type="button" onClick={retry} className="dialog-pill-btn mt-3 px-4 py-2">Retry</button>
           </div>
-        ) : installedModels === null ? (
+        ) : installStates === null || installedModels === null ? (
           <p role="status">Checking installed models…</p>
         ) : (
-          <ModelDownloadPanel initialModel={preferredInstalledModel(initialModel, installedModels)} installedModels={installedModels} onComplete={onComplete} />
+          <ModelDownloadPanel initialModel={preferredInstalledModel(initialModel, installedModels)} installStates={installStates} onComplete={onComplete} />
         )}
       </div>
     </div>
