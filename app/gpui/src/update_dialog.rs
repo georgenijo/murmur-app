@@ -126,6 +126,53 @@ pub fn scrim() -> Stateful<Div> {
         .justify_center()
         .bg(black().opacity(0.45))
 }
+/// An optional update can fail with a reinstall recovery (App Translocation); the
+/// only fix is to quit and move the app, so the dialog must offer Quit.
+pub fn is_reinstall(status: &murmur_core::updater::Status) -> bool {
+    matches!(
+        status,
+        murmur_core::updater::Status::Error { recovery: Some(r), .. } if r == "reinstall"
+    )
+}
+/// Forced updates and reinstall errors both offer Quit; optional ones keep Later too.
+pub fn quit_offered(forced: bool, status: &murmur_core::updater::Status) -> bool {
+    forced || is_reinstall(status)
+}
+/// Updates the user cannot dismiss: forced ones and any in-flight work.
+pub fn update_required(status: &murmur_core::updater::Status) -> bool {
+    use murmur_core::updater::Status;
+    matches!(
+        status,
+        Status::Available {
+            is_forced: true,
+            ..
+        } | Status::Ready {
+            is_forced: true,
+            ..
+        } | Status::Error {
+            is_forced: true,
+            ..
+        } | Status::Preparing { .. }
+            | Status::Downloading { .. }
+            | Status::Restarting { .. }
+    )
+}
+/// The updater action that closes the dialog, or None when it cannot be closed.
+/// Release notes for a finished update are always dismissible and must be
+/// acknowledged with `dismissCompleted`; a plain `dismiss` leaves them pending, so
+/// the notes would reappear on the next snapshot.
+pub fn dismiss_action(
+    snapshot: &murmur_core::updater::Snapshot,
+    required: bool,
+) -> Option<&'static str> {
+    if snapshot.completed_update.is_some() {
+        Some("dismissCompleted")
+    } else if required || update_required(&snapshot.update_status) {
+        None
+    } else {
+        Some("dismiss")
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -193,5 +240,74 @@ mod tests {
             0,
             "modal dismissal must not click the workspace"
         );
+    }
+    /// The host reads `updater_snapshot` as wire JSON, so exercise the same decode.
+    fn wire(
+        status: serde_json::Value,
+        completed: Option<(&str, &str)>,
+    ) -> murmur_core::updater::Snapshot {
+        serde_json::from_value(serde_json::json!({
+            "revision": 7,
+            "updateStatus": status,
+            "completedUpdate": completed.map(|(v, n)| serde_json::json!({"version": v, "notes": n})),
+            "isUpdateDialogOpen": true,
+        }))
+        .unwrap()
+    }
+    fn error(forced: bool, recovery: Option<&str>) -> serde_json::Value {
+        let mut v = serde_json::json!({"phase":"error","stage":"install","message":"Quit Murmur, then move it to Applications.","isForced":forced});
+        if let Some(r) = recovery {
+            v["recovery"] = r.into();
+        }
+        v
+    }
+    #[test]
+    fn reinstall_error_offers_quit_whether_or_not_the_update_is_forced() {
+        use super::{dismiss_action, is_reinstall, quit_offered};
+        // Optional translocation failure: Quit and Later, as in the shipped dialog.
+        let optional = wire(error(false, Some("reinstall")), None);
+        assert!(is_reinstall(&optional.update_status));
+        assert!(quit_offered(false, &optional.update_status));
+        assert_eq!(dismiss_action(&optional, false), Some("dismiss"));
+        // Forced translocation failure: Quit only.
+        let forced = wire(error(true, Some("reinstall")), None);
+        assert!(quit_offered(true, &forced.update_status));
+        assert_eq!(dismiss_action(&forced, true), None);
+        // Ordinary optional failure keeps Retry and Later, no Quit; forced adds Quit.
+        let plain = wire(error(false, None), None);
+        assert!(!is_reinstall(&plain.update_status));
+        assert!(!quit_offered(false, &plain.update_status));
+        assert!(quit_offered(
+            true,
+            &wire(error(true, None), None).update_status
+        ));
+        // Another recovery value is not a reinstall.
+        assert!(!is_reinstall(
+            &wire(error(false, Some("retry")), None).update_status
+        ));
+    }
+    #[test]
+    fn finished_update_notes_are_acknowledged_not_merely_dismissed() {
+        use super::dismiss_action;
+        let notes = Some(("1.2.0", "Synthetic release notes"));
+        // Escape, the close button and Later all use this decision.
+        let finished = wire(serde_json::json!({"phase":"idle"}), notes);
+        assert_eq!(dismiss_action(&finished, false), Some("dismissCompleted"));
+        // Release notes are always dismissible, even with a stale required flag.
+        assert_eq!(dismiss_action(&finished, true), Some("dismissCompleted"));
+        let plain = wire(serde_json::json!({"phase":"up-to-date"}), None);
+        assert_eq!(dismiss_action(&plain, false), Some("dismiss"));
+        // Forced and in-flight updates cannot be dismissed.
+        let forced = wire(
+            serde_json::json!({"phase":"available","version":"1.2.0","notes":"n","isForced":true}),
+            None,
+        );
+        assert_eq!(dismiss_action(&forced, false), None);
+        let downloading = wire(
+            serde_json::json!({"phase":"downloading","version":"1.2.0","progress":42.0}),
+            None,
+        );
+        assert_eq!(dismiss_action(&downloading, false), None);
+        assert_eq!(dismiss_action(&plain, true), None);
     }
 }

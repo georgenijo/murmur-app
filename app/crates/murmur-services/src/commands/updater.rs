@@ -205,13 +205,18 @@ mod fixture {
         }
         let value: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|_| "Invalid updater fixture")?;
-        updater.isolated_fixture(
+        let updater = updater.isolated_fixture(
             value["feed"].as_str().ok_or("Fixture feed missing")?.into(),
             value["publicKey"]
                 .as_str()
                 .ok_or("Fixture key missing")?
                 .into(),
-        )
+        )?;
+        // Optional: shorten the six-hour background due gate (0 = always due).
+        Ok(match value["intervalMs"].as_u64() {
+            Some(ms) => updater.with_fixture_interval(ms),
+            None => updater,
+        })
     }
 }
 

@@ -658,6 +658,27 @@ fn rust_schedule_gates_setup_six_hours_ready_and_forced_dismissal() {
     updater.act(Action::Check { background: false }).unwrap();
     assert_eq!(server.count(), count);
 }
+#[cfg(feature = "updater-test-support")]
+#[test]
+fn fixture_interval_override_only_applies_to_isolated_fixtures() {
+    let temp = scratch();
+    let server = Server::new();
+    let (mut updater, _, _) = network_owner(temp.path(), &server, false);
+    updater.act(Action::Configure { automatic: true }).unwrap();
+    assert_eq!(server.count(), 1);
+    // A wake or focus re-check inside the six-hour window is still gated.
+    updater.act(Action::Check { background: true }).unwrap();
+    assert_eq!(server.count(), 1);
+    // A non-fixture updater ignores the override.
+    updater.local_fixture = false;
+    let mut updater = updater.with_fixture_interval(0);
+    updater.act(Action::Check { background: true }).unwrap();
+    assert_eq!(server.count(), 1);
+    updater.local_fixture = true;
+    let updater = updater.with_fixture_interval(0);
+    updater.act(Action::Check { background: true }).unwrap();
+    assert_eq!(server.count(), 2);
+}
 #[test]
 fn freshness_failure_keeps_prior_signed_offer_and_shutdown_fences_continuations() {
     let temp = scratch();
@@ -1043,6 +1064,11 @@ fn configure_preserves_downloaded_notes_then_relaunch_shows_once_after_dismissal
         replacement.snapshot().completed_update.unwrap().notes,
         saved["notes"]
     );
+    // A plain dismiss closes the dialog but does not acknowledge the notes, so a host
+    // must send dismissCompleted (not dismiss) for Escape/Close/Later on What's New.
+    replacement.act(Action::Dismiss).unwrap();
+    assert!(replacement.snapshot().completed_update.is_some());
+    assert!(!pending(&store).is_null());
     replacement.act(Action::DismissCompleted).unwrap();
     assert!(pending(&store).is_null());
     let later = next();

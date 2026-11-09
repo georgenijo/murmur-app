@@ -88,8 +88,125 @@ pub const HINTS: [(&str, &str, &str, &str); 3] = [
         "Set up site modes",
     ),
 ];
+/// Passive updater state for the Home header indicator, projected from the real
+/// updater snapshot. Copy matches the shipped `UpdateIndicator`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Update {
+    #[default]
+    Idle,
+    Checking,
+    UpToDate,
+    Available(String),
+    Preparing,
+    Downloading(Option<u8>),
+    Ready(String),
+    Restarting,
+    Failed {
+        check: bool,
+    },
+}
+/// What a click on the indicator asks the updater owner to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateIntent {
+    Open,
+    Check,
+    Restart,
+}
+impl Update {
+    pub fn from_status(status: &murmur_core::updater::Status) -> Self {
+        use murmur_core::updater::Status;
+        // Versions come from a signed feed but are still bounded for display.
+        let version = |v: &str| {
+            v.chars()
+                .filter(|c| !c.is_control())
+                .take(64)
+                .collect::<String>()
+        };
+        match status {
+            Status::Idle => Self::Idle,
+            Status::Checking => Self::Checking,
+            Status::UpToDate => Self::UpToDate,
+            Status::Available { version: v, .. } => Self::Available(version(v)),
+            Status::Preparing { .. } => Self::Preparing,
+            Status::Downloading { progress, .. } => {
+                Self::Downloading(progress.map(|p| p.clamp(0., 100.).round() as u8))
+            }
+            Status::Ready { version: v, .. } => Self::Ready(version(v)),
+            Status::Restarting { .. } => Self::Restarting,
+            Status::Error { stage, .. } => Self::Failed {
+                check: stage == "check",
+            },
+        }
+    }
+    /// Project the `updater_snapshot` command result. An unreadable snapshot is a
+    /// quiet Idle: the indicator is passive and must not fail the whole Home read.
+    pub fn from_wire(snapshot: &Value) -> Self {
+        serde_json::from_value::<murmur_core::updater::Snapshot>(snapshot.clone())
+            .map_or(Self::Idle, |s| Self::from_status(&s.update_status))
+    }
+    pub fn busy(&self) -> bool {
+        matches!(
+            self,
+            Self::Checking | Self::Preparing | Self::Downloading(_) | Self::Restarting
+        )
+    }
+    pub fn failed(&self) -> bool {
+        matches!(self, Self::Failed { .. })
+    }
+    pub fn label(&self) -> String {
+        match self {
+            Self::Available(_) => "View update".into(),
+            Self::Ready(_) => "Restart now".into(),
+            Self::Checking => "Checking for updates…".into(),
+            Self::Preparing => "Preparing update…".into(),
+            Self::Downloading(None) => "Downloading update…".into(),
+            Self::Downloading(Some(p)) => format!("Downloading update… {p}%"),
+            Self::Restarting => "Restarting Murmur…".into(),
+            Self::Failed { check: true } => "Retry update check".into(),
+            Self::Failed { check: false } => "Update needs attention".into(),
+            Self::Idle | Self::UpToDate => "Check for updates".into(),
+        }
+    }
+    pub fn detail(&self) -> Option<String> {
+        match self {
+            Self::Available(v) => Some(format!("Murmur {v} is available")),
+            Self::Ready(v) => Some(format!("Murmur {v} is ready to install")),
+            Self::UpToDate => Some("You’re up to date.".into()),
+            Self::Failed { check: true } => Some("Couldn’t check for updates. Try again.".into()),
+            Self::Failed { check: false } => Some("Open the update dialog to continue.".into()),
+            _ => None,
+        }
+    }
+    /// Accessible name and tooltip: "label. detail".
+    pub fn summary(&self) -> String {
+        match self.detail() {
+            Some(detail) => format!("{}. {detail}", self.label()),
+            None => self.label(),
+        }
+    }
+    /// Text for the polite live region: busy label, up-to-date, or failure detail.
+    pub fn announcement(&self) -> String {
+        if self.busy() {
+            self.label()
+        } else if matches!(self, Self::UpToDate) || self.failed() {
+            self.detail().unwrap_or_default()
+        } else {
+            String::new()
+        }
+    }
+    /// None while busy: clicks are ignored, as in the shipped indicator.
+    pub fn intent(&self) -> Option<UpdateIntent> {
+        match self {
+            _ if self.busy() => None,
+            Self::Available(_) | Self::Failed { check: false } => Some(UpdateIntent::Open),
+            Self::Ready(_) => Some(UpdateIntent::Restart),
+            _ => Some(UpdateIntent::Check),
+        }
+    }
+}
 #[derive(Clone)]
 pub struct Snapshot {
+    pub update: Update,
     pub revision: u64,
     pub settings: Value,
     pub discovery: Value,

@@ -19,6 +19,11 @@ use host::{Action, Host, Request};
 use inbox::Inbox;
 use model::*;
 use std::{collections::BTreeMap, rc::Rc, time::Duration};
+/// Emitted when the header update indicator is activated; the workspace owner
+/// routes it to the updater. Never a Home request: a network check must not hold
+/// the Home ticket and block recording.
+pub struct UpdateRequested(pub UpdateIntent);
+impl EventEmitter<UpdateRequested> for Home {}
 pub struct Home {
     pub workspace: Option<(Destination, AnyView)>,
     pub model: Session<Snapshot>,
@@ -74,6 +79,55 @@ impl Home {
             keyboard_return: None,
             last_permission: None,
         }
+    }
+    fn update_clicked(&mut self, cx: &mut Context<Self>) {
+        if let Some(intent) = self.model.snapshot.as_ref().and_then(|s| s.update.intent()) {
+            cx.emit(UpdateRequested(intent));
+        }
+    }
+    /// Passive availability/progress/failure indicator. Idle shows nothing: manual
+    /// checks stay in Settings and the application menu.
+    fn update_indicator(&mut self, cx: &mut Context<Self>) -> Option<Div> {
+        let update = self.model.snapshot.as_ref()?.update.clone();
+        if update == Update::Idle {
+            return None;
+        }
+        let glyph = match &update {
+            Update::Checking | Update::Preparing => Glyph::Spinner,
+            Update::Downloading(_) | Update::Available(_) => Glyph::Download,
+            Update::Ready(_) | Update::Restarting | Update::Idle => Glyph::Refresh,
+            Update::Failed { .. } => Glyph::Alert,
+            Update::UpToDate => Glyph::Check,
+        };
+        let intent = match &update {
+            Update::Available(_) | Update::Ready(_) => ButtonIntent::Primary,
+            Update::Failed { .. } => ButtonIntent::Danger,
+            _ => ButtonIntent::Ghost,
+        };
+        let e = cx.entity();
+        let announcement = update.announcement();
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .child(
+                    Button::new("update-indicator", update.summary())
+                        .icon_only(glyph)
+                        .intent(intent)
+                        .size(ButtonSize::Compact)
+                        .track_focus(&self.focus_for("update-indicator", cx))
+                        .on_click(move |_, _, cx| e.update(cx, |s, cx| s.update_clicked(cx))),
+                )
+                .when(!announcement.is_empty(), |d| {
+                    d.child(
+                        div()
+                            .id("update-indicator-status")
+                            .role(Role::Status)
+                            .aria_label(announcement)
+                            .size(px(1.)),
+                    )
+                }),
+        )
     }
     fn focus_for(&mut self, id: &str, cx: &mut Context<Self>) -> FocusHandle {
         self.focus
@@ -303,6 +357,7 @@ impl Render for Home {
         let collapsed = self.collapsed();
         let width = if collapsed { 48. } else { self.expanded_width };
         let e = cx.entity();
+        let update_indicator = self.update_indicator(cx);
         let header = div()
             .relative()
             .h(px(40.))
@@ -381,6 +436,7 @@ impl Render for Home {
                 )
             })
             .child(div().flex_1())
+            .children(update_indicator)
             .child(
                 self.button("settings", "Settings", Destination::General, cx)
                     .icon_only(Glyph::Settings)

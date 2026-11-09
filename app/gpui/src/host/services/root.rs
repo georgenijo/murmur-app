@@ -136,6 +136,22 @@ impl Main {
                 cx.notify();
             }),
         );
+        s.subscriptions.push(cx.subscribe(
+            &s.home,
+            |s, _, request: &crate::home::UpdateRequested, cx| {
+                use crate::home::model::UpdateIntent;
+                match request.0 {
+                    // Same entry as the Settings and menu update rows.
+                    UpdateIntent::Open => {
+                        s.update_action("show");
+                        s.backend.navigate(Route::Updates);
+                    }
+                    UpdateIntent::Check => s.update_action("check"),
+                    UpdateIntent::Restart => s.update_action("install"),
+                }
+                cx.notify();
+            },
+        ));
         s.subscriptions.push(
             cx.subscribe(&s.customize, |s, _, _: &crate::customize::Back, cx| {
                 let backend = s.backend.clone();
@@ -571,6 +587,16 @@ impl Main {
             let _ = b.call("updater_action", json!({"action":action})).await;
         });
     }
+    /// Close the update dialog with the action its content requires: finished-update
+    /// release notes must be acknowledged with `dismissCompleted`, or they reappear.
+    fn dismiss_update(&mut self) {
+        if let Some(kind) =
+            crate::update_dialog::dismiss_action(&self.updater, self.required_update)
+        {
+            self.update_open = false;
+            self.update_action(kind);
+        }
+    }
     fn body(&self) -> AnyView {
         match self.section {
             Section::Home => self.home.clone().into(),
@@ -632,10 +658,7 @@ impl Render for Main {
                     s.close_teaching();
                     s.home.update(cx, |s, cx| s.destination_closed(w, cx));
                 } else if s.update_open {
-                    if !s.required_update && !update_required(&s.updater.update_status) {
-                        s.update_open = false;
-                        s.update_action("dismiss");
-                    }
+                    s.dismiss_update();
                 } else {
                     s.select(Section::Home, w, cx);
                 }
@@ -764,7 +787,11 @@ impl Render for Main {
                     is_forced,
                     ..
                 } => (
-                    "Update could not finish".into(),
+                    if recovery.as_deref() == Some("reinstall") {
+                        "Reinstall Murmur to update".into()
+                    } else {
+                        "Update could not finish".into()
+                    },
                     message.clone(),
                     if recovery.as_deref() == Some("reinstall") {
                         None
@@ -804,18 +831,16 @@ impl Render for Main {
                 .skip(self.notes_page * 4096)
                 .take(4096)
                 .collect::<String>();
-            let close = (!forced && !busy).then(|| {
+            let dismissable = !busy
+                && crate::update_dialog::dismiss_action(&self.updater, self.required_update)
+                    .is_some();
+            let close = dismissable.then(|| {
                 Button::new("updater-close", "Close update dialog")
                     .icon_only(crate::icons::Glyph::Close)
                     .intent(crate::ButtonIntent::Ghost)
                     .size(crate::ButtonSize::Compact)
                     .on_click(cx.listener(|s, _, _, cx| {
-                        s.update_open = false;
-                        s.update_action(if s.updater.completed_update.is_some() {
-                            "dismissCompleted"
-                        } else {
-                            "dismiss"
-                        });
+                        s.dismiss_update();
                         cx.notify();
                     }))
             });
@@ -875,7 +900,7 @@ impl Render for Main {
                     }),
                 ));
             }
-            if forced {
+            if crate::update_dialog::quit_offered(forced, status) {
                 modal = modal.child(Button::new("updater-quit", "Quit Murmur").on_click(
                     cx.listener(|s, _, _, _| {
                         s.backend
@@ -897,7 +922,7 @@ impl Render for Main {
                     ),
                 );
             }
-            if !forced && !busy {
+            if dismissable {
                 footer = footer.child(
                     div().flex_1().child(
                         Button::new("updater-later", "Close")
@@ -907,12 +932,7 @@ impl Render for Main {
                             .full_width()
                             .intent(crate::ButtonIntent::Secondary)
                             .on_click(cx.listener(|s, _, _, cx| {
-                                s.update_open = false;
-                                s.update_action(if s.updater.completed_update.is_some() {
-                                    "dismissCompleted"
-                                } else {
-                                    "dismiss"
-                                });
+                                s.dismiss_update();
                                 cx.notify();
                             })),
                     ),
@@ -1002,23 +1022,4 @@ impl Render for Main {
         }
         root.into_any_element()
     }
-}
-
-fn update_required(status: &murmur_core::updater::Status) -> bool {
-    use murmur_core::updater::Status;
-    matches!(
-        status,
-        Status::Available {
-            is_forced: true,
-            ..
-        } | Status::Ready {
-            is_forced: true,
-            ..
-        } | Status::Error {
-            is_forced: true,
-            ..
-        } | Status::Preparing { .. }
-            | Status::Downloading { .. }
-            | Status::Restarting { .. }
-    )
 }

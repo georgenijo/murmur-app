@@ -281,7 +281,7 @@ and safe error class.
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
 | `check-for-updates-requested` | `()` | Native tray menu | The user selects `Check for Updates…` or the versioned update action. The main window is shown and focused first. | Main `App` → manual `checkForUpdate` or reopen the pending update dialog. |
-| `updater-background-check-requested` | `()` | `commands/tray.rs` | `NSWorkspaceDidWakeNotification` fires after macOS wakes. | `useAutoUpdater` forwards intent to Rust, whose durable six-hour gate decides whether a request is due. |
+| `updater-background-check-requested` | `()` | `commands/tray.rs`; GPUI host: `host/services/application.rs` (`on_system_wake`) | `NSWorkspaceDidWakeNotification` fires after macOS wakes (GPUI publishes it once startup has finished). | `useAutoUpdater` forwards intent to Rust, whose durable six-hour gate decides whether a request is due; the GPUI Main listener sends a background `updater_action check`. |
 
 ## Frontend-emitted (window to window)
 

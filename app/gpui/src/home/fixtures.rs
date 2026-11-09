@@ -8,6 +8,7 @@ use std::{
 };
 pub fn snapshot() -> Snapshot {
     Snapshot {
+        update: Update::Idle,
         revision: 1,
         settings: murmur_core::state::settings(murmur_core::state::settings_defaults()).unwrap(),
         discovery: json!({"version":1,"checklistDismissed":false,"completed":[],"baseline":{"transforms":0,"meetings":0,"correctionsTaught":0,"modeBindings":[]},"pendingHints":[],"dismissedHints":[]}),

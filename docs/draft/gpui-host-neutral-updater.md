@@ -101,6 +101,30 @@ can affect a production bundle. Requires the public minisign CLI on PATH. Genera
 with minisign 0.12 for normal, tampered-signature and signed-invalid-archive
 fixtures, and rejection of production identity; no app executable was run.
 
+### GPUI host QA: due-gate interval
+
+For the GPUI native host (`native-host-qa`, identity
+`com.localdictation.gpui-host-qa110`) the fixture JSON may add an optional
+`"intervalMs"` (for example `0`). It replaces the six-hour background due gate for
+that isolated fixture only, via `Updater::with_fixture_interval`, which is compiled
+only with `updater-test-support` and is ignored unless `isolated_fixture` accepted
+the feed. It lets a tester observe a wake or focus re-check hit the loopback feed
+without waiting six hours. Production builds neither compile nor read it.
+
+### GPUI host updater UI notes
+
+- Home shows a passive header indicator (available, downloading, ready, restarting,
+  failed, up to date) projected from `updater_snapshot`. Unlike the shipped
+  indicator it is hidden while the updater is idle; manual checks remain in
+  Settings and the application menu.
+- A reinstall (App Translocation) error always offers Quit, with Later when the
+  update is optional.
+- Escape, the close button and Later on a finished update's release notes send
+  `dismissCompleted`; a plain `dismiss` leaves the notes pending and they reappear.
+- Wake from sleep publishes `updater-background-check-requested` once startup has
+  finished; the core's due gate and automatic-updates setting still decide whether a
+  request is made.
+
 ## Native procedure for the lead (not executed by this worker)
 
 1. Build two QA bundles from this revision with distinct actual package and

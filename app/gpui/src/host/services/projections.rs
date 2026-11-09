@@ -335,7 +335,15 @@ pub fn home(b: Backend) -> Read<crate::home::model::Snapshot> {
             Some("recovering") => Status::Recovering,
             _ => Status::Idle,
         };
+        // Read the same owner snapshot the dialog and Settings use; a failed read
+        // leaves the passive indicator idle rather than failing Home.
+        let update = crate::home::model::Update::from_wire(
+            &b.call("updater_snapshot", json!({}))
+                .await
+                .unwrap_or(Value::Null),
+        );
         Ok(Snapshot {
+            update,
             revision: b.events.revision().max(revision),
             settings,
             discovery: sources

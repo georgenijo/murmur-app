@@ -541,3 +541,147 @@ fn talk_control_is_reached_by_keyboard_without_starting_recording(cx: &mut TestA
     assert!(reached);
     assert_eq!(host.actions.borrow().len(), count);
 }
+fn wire(status: serde_json::Value) -> Update {
+    // The production projection decodes the real owner snapshot, so serialize one.
+    let status: murmur_core::updater::Status = serde_json::from_value(status).unwrap();
+    let snapshot = murmur_core::updater::Snapshot {
+        revision: 3,
+        update_status: status,
+        completed_update: None,
+        is_update_dialog_open: false,
+    };
+    Update::from_wire(&serde_json::to_value(snapshot).unwrap())
+}
+#[test]
+fn update_indicator_projects_every_updater_phase_from_the_wire() {
+    use serde_json::json;
+    assert_eq!(wire(json!({"phase":"idle"})), Update::Idle);
+    assert_eq!(wire(json!({"phase":"checking"})), Update::Checking);
+    assert_eq!(wire(json!({"phase":"up-to-date"})), Update::UpToDate);
+    let available =
+        wire(json!({"phase":"available","version":"1.2.0","notes":"n","isForced":false}));
+    assert_eq!(available, Update::Available("1.2.0".into()));
+    assert_eq!(available.label(), "View update");
+    assert_eq!(
+        available.summary(),
+        "View update. Murmur 1.2.0 is available"
+    );
+    assert_eq!(available.intent(), Some(UpdateIntent::Open));
+    assert_eq!(
+        wire(json!({"phase":"preparing","version":"1.2.0"})),
+        Update::Preparing
+    );
+    let downloading = wire(json!({"phase":"downloading","version":"1.2.0","progress":41.6}));
+    assert_eq!(downloading, Update::Downloading(Some(42)));
+    assert_eq!(downloading.label(), "Downloading update… 42%");
+    assert_eq!(
+        wire(json!({"phase":"downloading","version":"1.2.0","progress":null})).label(),
+        "Downloading update…"
+    );
+    let ready = wire(json!({"phase":"ready","version":"1.2.0","isForced":false}));
+    assert_eq!(
+        ready.summary(),
+        "Restart now. Murmur 1.2.0 is ready to install"
+    );
+    assert_eq!(ready.intent(), Some(UpdateIntent::Restart));
+    assert_eq!(
+        wire(json!({"phase":"restarting","version":"1.2.0"})).label(),
+        "Restarting Murmur…"
+    );
+    // Failure paths: a failed check retries; any later stage opens the dialog.
+    let check = wire(json!({"phase":"error","stage":"check","message":"m","isForced":false}));
+    assert_eq!(check, Update::Failed { check: true });
+    assert_eq!(check.label(), "Retry update check");
+    assert_eq!(
+        check.detail().unwrap(),
+        "Couldn’t check for updates. Try again."
+    );
+    assert_eq!(check.intent(), Some(UpdateIntent::Check));
+    let install = wire(
+        json!({"phase":"error","stage":"install","message":"m","isForced":false,"recovery":"reinstall"}),
+    );
+    assert_eq!(install, Update::Failed { check: false });
+    assert_eq!(install.label(), "Update needs attention");
+    assert_eq!(install.intent(), Some(UpdateIntent::Open));
+    assert_eq!(
+        install.announcement(),
+        "Open the update dialog to continue."
+    );
+    // Busy states ignore clicks and announce their label; unreadable data is Idle.
+    for busy in [
+        Update::Checking,
+        Update::Preparing,
+        Update::Downloading(None),
+        Update::Restarting,
+    ] {
+        assert!(busy.busy() && busy.intent().is_none());
+        assert_eq!(busy.announcement(), busy.label());
+    }
+    assert_eq!(Update::UpToDate.announcement(), "You’re up to date.");
+    assert_eq!(Update::UpToDate.intent(), Some(UpdateIntent::Check));
+    assert_eq!(Update::from_wire(&serde_json::Value::Null), Update::Idle);
+    assert_eq!(
+        Update::from_wire(&json!({"updateStatus":{"phase":"bogus"}})),
+        Update::Idle
+    );
+}
+fn set_update(home: &Entity<Home>, cx: &mut VisualTestContext, update: Update) {
+    home.update(cx, |s, cx| {
+        let mut state = s.model.snapshot.clone().unwrap();
+        state.revision += 1;
+        state.update = update;
+        let _ = s.inbox.publish(Event::Changed {
+            attachment: s.model.attachment,
+            snapshot: state,
+        });
+        s.drain(cx);
+    });
+    draw(cx);
+}
+#[gpui::test]
+fn header_update_indicator_is_passive_and_routes_clicks_to_the_updater(cx: &mut TestAppContext) {
+    use gpui::Modifiers;
+    let (home, host, cx) = harness(cx);
+    let seen = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let log = seen.clone();
+    cx.update(|_, cx| {
+        cx.subscribe(&home, move |_, e: &super::UpdateRequested, _| {
+            log.borrow_mut().push(e.0)
+        })
+        .detach()
+    });
+    let click = |cx: &mut VisualTestContext| {
+        let bounds = cx
+            .debug_bounds("update-indicator")
+            .expect("indicator is drawn");
+        cx.simulate_click(bounds.center(), Modifiers::default());
+        cx.run_until_parked();
+    };
+    // Idle keeps the header as it was.
+    assert!(cx.debug_bounds("update-indicator").is_none());
+    set_update(&home, cx, Update::Available("1.2.0".into()));
+    click(cx);
+    set_update(&home, cx, Update::Failed { check: false });
+    click(cx);
+    set_update(&home, cx, Update::Failed { check: true });
+    click(cx);
+    set_update(&home, cx, Update::Ready("1.2.0".into()));
+    click(cx);
+    assert_eq!(
+        *seen.borrow(),
+        vec![
+            UpdateIntent::Open,
+            UpdateIntent::Open,
+            UpdateIntent::Check,
+            UpdateIntent::Restart
+        ]
+    );
+    // Busy ignores the click, and no Home request was queued for any of it.
+    set_update(&home, cx, Update::Downloading(Some(10)));
+    click(cx);
+    assert_eq!(seen.borrow().len(), 4);
+    assert_eq!(*host.actions.borrow(), vec![Action::Read]);
+    // Back to Idle hides the indicator again.
+    set_update(&home, cx, Update::Idle);
+    assert!(cx.debug_bounds("update-indicator").is_none());
+}

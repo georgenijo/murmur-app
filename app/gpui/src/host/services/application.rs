@@ -1046,12 +1046,8 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
         let stop = backend.events.listen(
             Consumer::Main,
             Arc::new(move |event, payload| {
-                if matches!(
-                    event,
-                    "updater-background-check-requested" | "check-for-updates-requested"
-                ) {
+                if let Some(background) = updater_check_request(event) {
                     let update = b.clone();
-                    let background = event == "updater-background-check-requested";
                     b.spawn(async move {
                         let _ = update
                             .call(
@@ -1115,6 +1111,13 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
             }),
         );
         host._subscriptions.borrow_mut().push(stop);
+        // Shipped re-checked on wake from the tray's NSWorkspace observer. GPUI owns
+        // that notification, so it produces the same event for the listener above.
+        let (wake_events, wake_booted) = (backend.events.clone(), backend.booted.clone());
+        cx.on_system_wake(move |_| {
+            wake_check(&wake_events, &wake_booted);
+        })
+        .detach();
         bootstrap(backend.clone());
         (
             Rc::new(host) as Rc<dyn ApplicationHost>,
@@ -1125,6 +1128,26 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
     // All native terminal paths have already passed the shared drain gate.
     runtime.shutdown_timeout(std::time::Duration::from_secs(1));
     std::process::ExitCode::SUCCESS
+}
+
+/// Updater check events the Main listener turns into `updater_action check`.
+/// Returns whether the check is a background one; the core still applies its
+/// six-hour due gate and the automatic-updates setting to background checks.
+fn updater_check_request(event: &str) -> Option<bool> {
+    match event {
+        "updater-background-check-requested" => Some(true),
+        "check-for-updates-requested" => Some(false),
+        _ => None,
+    }
+}
+/// Wake from sleep requests a background check once startup has finished, the
+/// same gate the window-focus re-check uses. Returns whether it was requested.
+fn wake_check(events: &Events, booted: &AtomicBool) -> bool {
+    if !booted.load(Ordering::Acquire) {
+        return false;
+    }
+    events.publish("main", "updater-background-check-requested", "null");
+    true
 }
 
 pub(super) fn bootstrap(b: Backend) {
@@ -1715,5 +1738,55 @@ mod startup_tests {
         );
         assert_eq!(legacy_microphone("Repeated", &devices), None);
         assert_eq!(legacy_microphone("Missing", &devices), None);
+    }
+}
+#[cfg(test)]
+mod updater_wake_tests {
+    use super::{updater_check_request, wake_check};
+    use crate::host::services::backend::Events;
+    use murmur_core::events::Consumer;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    #[test]
+    fn wake_publishes_the_background_check_event_only_after_startup() {
+        let events = Arc::new(Events::default());
+        let seen = Arc::new(Mutex::new(Vec::<(String, bool)>::new()));
+        let log = seen.clone();
+        // Same mapping the Main listener uses to start `updater_action check`.
+        let _stop = events.listen(
+            Consumer::Main,
+            Arc::new(move |event, _| {
+                if let Some(background) = updater_check_request(event) {
+                    log.lock().unwrap().push((event.into(), background));
+                }
+            }),
+        );
+        let booted = AtomicBool::new(false);
+        assert!(
+            !wake_check(&events, &booted),
+            "wake before startup is ignored"
+        );
+        assert!(seen.lock().unwrap().is_empty());
+        booted.store(true, Ordering::Release);
+        assert!(wake_check(&events, &booted));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![("updater-background-check-requested".to_string(), true)]
+        );
+    }
+    #[test]
+    fn only_updater_check_events_start_a_check_and_only_manual_ones_are_foreground() {
+        assert_eq!(
+            updater_check_request("updater-background-check-requested"),
+            Some(true)
+        );
+        assert_eq!(
+            updater_check_request("check-for-updates-requested"),
+            Some(false)
+        );
+        assert_eq!(updater_check_request("updater-state-changed"), None);
+        assert_eq!(updater_check_request("history-changed"), None);
     }
 }

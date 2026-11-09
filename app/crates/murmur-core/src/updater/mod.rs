@@ -134,6 +134,7 @@ pub struct Updater {
     feed: String,
     key: String,
     local_fixture: bool,
+    interval: u64,
     canary: Option<PathBuf>,
     dry_run: bool,
     changed: Arc<dyn Fn(Snapshot) + Send + Sync>,
@@ -170,6 +171,7 @@ impl Updater {
             feed: FEED.into(),
             key: PUBLIC_KEY.into(),
             local_fixture: false,
+            interval: INTERVAL,
             canary: canary_path(),
             dry_run: canary_dry_run(),
             changed: Arc::new(changed),
@@ -199,6 +201,16 @@ impl Updater {
         self.key = key;
         self.local_fixture = true;
         Ok(self)
+    }
+    /// QA builds only, and only for an isolated fixture: shorten the background due
+    /// gate so a native tester can observe a wake or focus re-check without waiting
+    /// six hours. Production builds neither compile nor read this.
+    #[cfg(feature = "updater-test-support")]
+    pub fn with_fixture_interval(mut self, milliseconds: u64) -> Self {
+        if self.local_fixture {
+            self.interval = milliseconds;
+        }
+        self
     }
     pub fn snapshot(&self) -> Snapshot {
         self.view.lock().unwrap_or_else(|p| p.into_inner()).clone()
@@ -355,7 +367,8 @@ impl Updater {
             .and_then(Value::as_u64)
             .unwrap_or(0);
         if background
-            && (!self.automatic.load(Ordering::Acquire) || now().saturating_sub(last) < INTERVAL)
+            && (!self.automatic.load(Ordering::Acquire)
+                || now().saturating_sub(last) < self.interval)
         {
             return Ok(());
         }

@@ -150,7 +150,7 @@ registry identities. Multiple listeners within a window receive one delivery.
 | `statistics-changed` | `completion.rs` | completionData | Main Diagnostics |
 | `system-audio-permission-changed` | `commands/meeting.rs` | PermissionsBanner; useMeetings | Main |
 | `transcription-complete` | `commands/recording.rs` | useDiscovery; useRecordingState | Main |
-| `updater-background-check-requested` | `commands/tray.rs` | useAutoUpdater | Main |
+| `updater-background-check-requested` | `commands/tray.rs`; GPUI `host/services/application.rs` wake observer | useAutoUpdater; GPUI Main listener | Main |
 | `vocab-scan-progress` | `commands/recording.rs` | useVocabScan (EVENT) | Main |
 
 ## Existing targeted producers
