@@ -17,6 +17,7 @@ type Listener = Arc<dyn Fn(&str, &str) + Send + Sync>;
 #[derive(Default)]
 pub struct Events {
     pub feedback: Mutex<super::dictation_feedback::Feedback>,
+    pub imports: Mutex<super::import_queue::Queue>,
     next: AtomicU64,
     revision: AtomicU64,
     listeners: Mutex<BTreeMap<u64, (&'static str, Listener)>>,

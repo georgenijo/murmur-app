@@ -51,6 +51,8 @@ pub mod microphone;
 
 pub mod history;
 
+pub mod import_queue;
+
 pub mod knowledge;
 
 pub mod meetings;

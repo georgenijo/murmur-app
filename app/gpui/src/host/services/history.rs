@@ -1,6 +1,7 @@
 //! Stable row identities and effects serialized with the existing Clear owner.
 use super::{
     backend::{Backend, Route},
+    import_queue::{self, Engine, Fut},
     os::Live,
 };
 use crate::history::{host::*, inbox::Inbox, model::*};
@@ -58,41 +59,92 @@ impl Backend {
         ))
     }
     pub async fn transcribe_files(&self, current: Live) -> Result<(), String> {
-        let paths=self.os.panel(json!({"kind":"open","multiple":true,"title":"Transcribe audio or video","extensions":["wav","mp3","m4a","mp4","mov","flac","aac","ogg"]}),current.clone()).await?;
+        let paths=self.os.panel(json!({"kind":"open","multiple":true,"title":"Transcribe audio or video","extensions":import_queue::EXTENSIONS}),current.clone()).await?;
         if let Some(paths) = paths.and_then(|v| v.as_array().cloned()) {
-            self.transcribe_paths(paths, current).await?;
+            self.transcribe_paths(paths, current);
         }
         Ok(())
     }
-    pub async fn transcribe_paths(&self, paths: Vec<Value>, current: Live) -> Result<(), String> {
-        for path in paths.into_iter().take(64) {
-            if !current() {
-                break;
-            }
-            let operation = uuid::Uuid::new_v4().to_string();
+    /// Queue every supported path (no cap) and start the sequential drain if
+    /// it is idle. Per-file failures are recorded on the queue, not returned.
+    /// `current` only guards submission; once queued, an import is a
+    /// background job that outlives the section that started it.
+    pub fn transcribe_paths(&self, paths: Vec<Value>, current: Live) {
+        if !current() {
+            return;
+        }
+        let paths: Vec<String> = paths
+            .iter()
+            .filter_map(|p| p.as_str().map(str::to_owned))
+            .collect();
+        let run = {
+            let mut queue = self
+                .events
+                .imports
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            queue.enqueue(&paths);
+            queue.claim()
+        };
+        if run {
+            let b = self.clone();
+            self.spawn(async move {
+                import_queue::drain(&b.events.imports, &b, operation_id).await;
+            });
+        }
+    }
+    /// Cancel a queued or active import from its toast.
+    pub fn cancel_import(&self, id: u64) {
+        let cancelled = self
+            .events
+            .imports
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .cancel(id);
+        if let Some(Some(operation)) = cancelled {
+            let b = self.clone();
+            self.spawn(async move { Engine::cancel(&b, operation).await });
+        }
+    }
+}
+fn job() -> Live {
+    Arc::new(|| true)
+}
+fn operation_id() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+impl Engine for Backend {
+    fn transcribe(&self, path: String, operation: String) -> Fut<'_, Result<(), String>> {
+        Box::pin(async move {
             self.effect(
                 "transcribe_file",
                 json!({"filePath":path,"operationId":operation}),
-                current.clone(),
+                job(),
             )
-            .await?;
-            if !current() {
-                let _ = self
-                    .call(
-                        "cancel_file_transcription",
-                        json!({"operationId":operation}),
-                    )
-                    .await;
-                break;
-            }
+            .await
+            .map(|_| ())
+        })
+    }
+    fn accept(&self, operation: String) -> Fut<'_, Result<(), String>> {
+        Box::pin(async move {
             self.effect(
                 "accept_file_transcription",
                 json!({"operationId":operation}),
-                current.clone(),
+                job(),
             )
-            .await?;
-        }
-        Ok(())
+            .await
+            .map(|_| ())
+        })
+    }
+    fn cancel(&self, operation: String) -> Fut<'_, ()> {
+        Box::pin(async move {
+            let _ = self
+                .call(
+                    "cancel_file_transcription",
+                    json!({"operationId":operation}),
+                )
+                .await;
+        })
     }
 }
 impl Host for Backend {

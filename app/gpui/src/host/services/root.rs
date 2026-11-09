@@ -70,6 +70,7 @@ pub struct Main {
     error: Option<&'static str>,
     dictation_notice: Option<super::dictation_feedback::Notice>,
     feedback_revision: u64,
+    import_revision: u64,
     subscriptions: Vec<Subscription>,
     pending_history: Option<String>,
     pending_meeting: Option<Option<String>>,
@@ -126,6 +127,7 @@ impl Main {
             error: None,
             dictation_notice: None,
             feedback_revision: 0,
+            import_revision: 0,
             subscriptions: vec![],
             pending_history: None,
             pending_meeting: None,
@@ -275,6 +277,21 @@ impl Main {
                 }
                 self.show(w, cx);
             }
+            cx.notify();
+        }
+        let imports_changed = {
+            let mut imports = self
+                .backend
+                .events
+                .imports
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            imports.expire(std::time::Instant::now());
+            let changed = imports.revision != self.import_revision;
+            self.import_revision = imports.revision;
+            changed
+        };
+        if imports_changed {
             cx.notify();
         }
         if self.section == Section::Home
@@ -605,10 +622,11 @@ impl Render for Main {
             .bg(p.surface)
             .text_color(p.text)
             .on_drop(cx.listener(|s, paths: &ExternalPaths, _, cx| {
+                // Every dropped path is queued (no cap). Unsupported-only drops
+                // and per-file failures surface in the import toasts below.
                 let paths: Vec<_> = paths
                     .paths()
                     .iter()
-                    .take(64)
                     .filter_map(|p| p.to_str().map(|s| json!(s)))
                     .collect();
                 if paths.is_empty() {
@@ -618,10 +636,7 @@ impl Render for Main {
                 let epoch = lifetime.load(Ordering::SeqCst);
                 let current: super::os::Live =
                     Arc::new(move || lifetime.load(Ordering::SeqCst) == epoch);
-                let b = s.backend.clone();
-                s.backend.spawn(async move {
-                    let _ = b.transcribe_paths(paths, current).await;
-                });
+                s.backend.transcribe_paths(paths, current);
                 cx.notify();
             }))
             .on_action(cx.listener(|s, _: &CommandPalette, w, cx| s.route(Route::Palette, w, cx)))
@@ -692,6 +707,129 @@ impl Render for Main {
         }
         if let Some(error) = self.error {
             root = root.child(gpui::text!(error));
+        }
+        let (imports, import_error) = {
+            let queue = self
+                .backend
+                .events
+                .imports
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            (queue.visible(), queue.error)
+        };
+        if !imports.is_empty() || import_error.is_some() {
+            use super::import_queue::Status;
+            root =
+                root.child(
+                    div()
+                        .id("file-import-toasts")
+                        .role(Role::Status)
+                        .aria_label("File imports")
+                        .absolute()
+                        .bottom_4()
+                        .right_4()
+                        .when(self.dictation_notice.is_some(), |d| d.bottom_24())
+                        .w(px(340.))
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .children(import_error.map(|message| {
+                            div()
+                                .id("file-import-error")
+                                .role(Role::Alert)
+                                .p_3()
+                                .rounded_lg()
+                                .bg(p.surface)
+                                .border_1()
+                                .border_color(p.border)
+                                .text_color(p.danger)
+                                .flex()
+                                .items_start()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(gpui::text!(id = "file-import-error-text", message)),
+                                )
+                                .child(
+                                    Button::new("file-import-error-dismiss", "Dismiss").on_click(
+                                        cx.listener(|s, _, _, cx| {
+                                            s.backend
+                                                .events
+                                                .imports
+                                                .lock()
+                                                .unwrap_or_else(|p| p.into_inner())
+                                                .dismiss_error();
+                                            cx.notify();
+                                        }),
+                                    ),
+                                )
+                        }))
+                        .children(imports.into_iter().map(|item| {
+                            let id = item.id;
+                            let status = item.status;
+                            div()
+                                .id(("file-import", id))
+                                .p_3()
+                                .rounded_lg()
+                                .bg(p.surface)
+                                .border_1()
+                                .border_color(p.border)
+                                .flex()
+                                .items_start()
+                                .gap_3()
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .child(div().truncate().child(gpui::text!(
+                                            id = ("file-import-name", id),
+                                            item.name.clone()
+                                        )))
+                                        .child(
+                                            div()
+                                                .text_color(if status == Status::Error {
+                                                    p.danger
+                                                } else {
+                                                    p.muted
+                                                })
+                                                .child(gpui::text!(
+                                                    id = ("file-import-status", id),
+                                                    item.status_text()
+                                                )),
+                                        ),
+                                )
+                                .when(
+                                    matches!(status, Status::Queued | Status::Transcribing),
+                                    |d| {
+                                        d.child(
+                                            Button::new(("file-import-cancel", id), "Cancel")
+                                                .on_click(cx.listener(move |s, _, _, cx| {
+                                                    s.backend.cancel_import(id);
+                                                    cx.notify();
+                                                })),
+                                        )
+                                    },
+                                )
+                                .when(matches!(status, Status::Done | Status::Error), |d| {
+                                    d.child(
+                                        Button::new(("file-import-dismiss", id), "Dismiss")
+                                            .on_click(cx.listener(move |s, _, _, cx| {
+                                                s.backend
+                                                    .events
+                                                    .imports
+                                                    .lock()
+                                                    .unwrap_or_else(|p| p.into_inner())
+                                                    .dismiss(id);
+                                                cx.notify();
+                                            })),
+                                    )
+                                })
+                        })),
+                );
         }
         if self.update_open {
             use murmur_core::updater::Status;
