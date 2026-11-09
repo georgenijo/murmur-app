@@ -20,9 +20,10 @@ fn problem<T>(r: Result<T, String>) -> Result<T, Problem> {
 fn discovery(value: Option<&Value>) -> Value {
     value.cloned().unwrap_or_else(||json!({"version":1,"checklistDismissed":false,"completed":[],"baseline":{"transforms":0,"meetings":0,"correctionsTaught":0,"modeBindings":[]},"pendingHints":[],"dismissedHints":[]}))
 }
-/// The Voice commands toggle lives on the Text page, as shipped.
-fn voice_command_settings_route() -> Route {
-    Route::Settings(crate::settings::schema::Page::Text)
+/// The Voice commands toggle lives on the Text page behind Advanced; shipped
+/// reveals and focuses it, so the route names the row rather than the page.
+pub(super) fn voice_command_settings_route() -> Route {
+    Route::SettingsReveal("voiceCommandsEnabled")
 }
 fn home_route(d: crate::home::model::Destination) -> Route {
     use crate::{home::model::Destination as D, settings::schema::Page};
@@ -1179,6 +1180,10 @@ mod customize_action {
     pub(super) trait ScanPorts: Sync {
         fn begin(&self, id: &str);
         fn release(&self, id: &str);
+        /// Whether `id` still owns the scan registry (no Cancel, Clear, or newer scan).
+        fn owns(&self, id: &str) -> bool;
+        fn owner(&self) -> Option<String>;
+        async fn cancel(&self, id: &str);
         async fn walk(&self, folder: &str, id: &str, current: Live) -> Result<Value, String>;
         async fn settings(&self) -> Result<(u64, Value), String>;
         async fn save(&self, patch: Value, revision: u64) -> Result<(), String>;
@@ -1191,6 +1196,15 @@ mod customize_action {
         }
         fn release(&self, id: &str) {
             release_scan(self, id)
+        }
+        fn owns(&self, id: &str) -> bool {
+            scan_owner(self).as_deref() == Some(id)
+        }
+        fn owner(&self) -> Option<String> {
+            scan_owner(self)
+        }
+        async fn cancel(&self, id: &str) {
+            cancel_scan(self, id).await
         }
         async fn walk(&self, folder: &str, id: &str, current: Live) -> Result<Value, String> {
             #[cfg(feature = "native-host-qa")]
@@ -1223,33 +1237,100 @@ mod customize_action {
             .file_name()
             .is_some_and(|name| name == "murmur-qa-scan-failure")
     }
+    const STALE: &str = "Presentation changed";
     /// Walk `folder` (the service adopts it), persist the summary like shipped
-    /// `runVocabScan`, and project the terminal scan view.
+    /// `runVocabScan`, and project the terminal scan view. Every await is
+    /// followed by a check that this presentation and scan still own the
+    /// result, so a Cancel, Clear, or newer scan never writes settings.
     pub(super) async fn scan_folder<P: ScanPorts>(
         ports: &P,
         folder: String,
         id: String,
         current: Live,
     ) -> Result<Snapshot, String> {
-        ports.begin(&id);
-        let result = ports.walk(&folder, &id, current.clone()).await;
-        ports.release(&id);
         if !current() {
-            return Err("Presentation changed".into());
+            return Err(STALE.into());
+        }
+        ports.begin(&id);
+        let out = scan_registered(ports, &folder, &id, current).await;
+        ports.release(&id);
+        out
+    }
+    async fn scan_registered<P: ScanPorts>(
+        ports: &P,
+        folder: &str,
+        id: &str,
+        current: Live,
+    ) -> Result<Snapshot, String> {
+        let live = || current() && ports.owns(id);
+        let result = ports.walk(folder, id, current.clone()).await;
+        if !live() {
+            return Err(STALE.into());
         }
         let Ok(summary) = result else {
             let mut snapshot = ports.snapshot().await?;
-            snapshot.scan = crate::customize::projection::failed(&id);
+            if !live() {
+                return Err(STALE.into());
+            }
+            snapshot.scan = crate::customize::projection::failed(id);
             return Ok(snapshot);
         };
         // The scan bumps the settings revision, so persist against a fresh read.
         let (revision, settings) = ports.settings().await?;
-        if let Some(patch) = crate::customize::projection::persist(&settings, &folder, &summary) {
+        if !live() {
+            return Err(STALE.into());
+        }
+        if let Some(patch) = crate::customize::projection::persist(&settings, folder, &summary) {
             ports.save(patch, revision).await?;
         }
         let mut snapshot = ports.snapshot().await?;
-        snapshot.scan = crate::customize::projection::finished(Some(&id), summary);
+        if !live() {
+            return Err(STALE.into());
+        }
+        snapshot.scan = crate::customize::projection::finished(Some(id), summary);
         Ok(snapshot)
+    }
+    /// Store a chosen folder, then scan it. The panel and the settings read can
+    /// both outlive the presentation, so nothing is written or registered
+    /// until the lease is confirmed again.
+    pub(super) async fn adopt_folder<P: ScanPorts>(
+        ports: &P,
+        path: String,
+        id: String,
+        current: Live,
+    ) -> Result<Snapshot, String> {
+        // The panel can stay open a long time; patch against the live revision.
+        let (revision, _) = ports.settings().await?;
+        if !current() {
+            return Err(STALE.into());
+        }
+        ports
+            .save(
+                json!({"codeVocabFolder":path,"codeVocabLastScan":null}),
+                revision,
+            )
+            .await?;
+        scan_folder(ports, path, id, current).await
+    }
+    /// Cancel any active scan and clear the stored folder.
+    pub(super) async fn clear_folder<P: ScanPorts>(ports: &P, current: Live) -> Result<(), String> {
+        if let Some(id) = ports.owner() {
+            ports.cancel(&id).await;
+        }
+        if !current() {
+            return Err(STALE.into());
+        }
+        // A cancelled walk can still bump the revision as it unwinds.
+        let (revision, _) = ports.settings().await?;
+        if !current() {
+            return Err(STALE.into());
+        }
+        ports
+            .save(
+                json!({"codeVocabFolder":"","codeVocabLastScan":null}),
+                revision,
+            )
+            .await
     }
     pub async fn run(
         b: &Backend,
@@ -1297,32 +1378,10 @@ mod customize_action {
                     .await?
                     && current()
                 {
-                    // The panel can stay open a long time; patch against the live revision.
-                    let (revision, _) = b.services.settings_snapshot().await?;
-                    b.patch(
-                        json!({"codeVocabFolder":path,"codeVocabLastScan":null}),
-                        revision,
-                    )
-                    .await?;
-                    return scan_folder(b, path, id, current).await.map(Some);
+                    return adopt_folder(b, path, id, current).await.map(Some);
                 }
             }
-            Action::ClearProject => {
-                let active = scan_owner(b);
-                if let Some(id) = active {
-                    cancel_scan(b, &id).await;
-                }
-                if !current() {
-                    return Err("Presentation changed".into());
-                }
-                // A cancelled walk can still bump the revision as it unwinds.
-                let (revision, _) = b.services.settings_snapshot().await?;
-                b.patch(
-                    json!({"codeVocabFolder":"","codeVocabLastScan":null}),
-                    revision,
-                )
-                .await?;
-            }
+            Action::ClearProject => clear_folder(b, current).await?,
             Action::CancelScan(id) => {
                 cancel_scan(b, &id).await;
                 s.scan = Value::Null;
@@ -1429,6 +1488,8 @@ mod customize_action {
         use crate::customize::projection::{frequency, status};
         use std::sync::{Arc, Mutex};
 
+        type SettingsHook = Box<dyn Fn(&Fake) + Send + Sync>;
+
         /// Scripted ports: no service, panel, or filesystem is touched.
         struct Fake {
             walk: Result<Value, String>,
@@ -1436,6 +1497,11 @@ mod customize_action {
             revision: u64,
             saved: Mutex<Vec<(Value, u64)>>,
             owner: Mutex<Option<String>>,
+            walks: Mutex<u32>,
+            cancelled: Mutex<Vec<String>>,
+            /// Runs while the settings read is in flight, like a Cancel or a
+            /// newer scan landing during the await.
+            during_settings: Option<SettingsHook>,
         }
         impl Fake {
             fn new(walk: Result<Value, String>) -> Self {
@@ -1445,6 +1511,9 @@ mod customize_action {
                     revision: 9,
                     saved: Default::default(),
                     owner: Default::default(),
+                    walks: Default::default(),
+                    cancelled: Default::default(),
+                    during_settings: None,
                 }
             }
         }
@@ -1458,7 +1527,18 @@ mod customize_action {
                     owner.take();
                 }
             }
+            fn owns(&self, id: &str) -> bool {
+                self.owner.lock().unwrap().as_deref() == Some(id)
+            }
+            fn owner(&self) -> Option<String> {
+                self.owner.lock().unwrap().clone()
+            }
+            async fn cancel(&self, id: &str) {
+                self.cancelled.lock().unwrap().push(id.to_owned());
+                self.release(id);
+            }
             async fn walk(&self, _: &str, _: &str, _: Live) -> Result<Value, String> {
+                *self.walks.lock().unwrap() += 1;
                 assert!(
                     self.owner.lock().unwrap().is_some(),
                     "walk must be registered"
@@ -1466,6 +1546,9 @@ mod customize_action {
                 self.walk.clone()
             }
             async fn settings(&self) -> Result<(u64, Value), String> {
+                if let Some(hook) = &self.during_settings {
+                    hook(self);
+                }
                 Ok((self.revision, self.stored.clone()))
             }
             async fn save(&self, patch: Value, revision: u64) -> Result<(), String> {
@@ -1530,6 +1613,101 @@ mod customize_action {
             assert!(run(&fake, false).is_err());
             assert!(fake.saved.lock().unwrap().is_empty());
             assert!(fake.owner.lock().unwrap().is_none());
+        }
+
+        /// A lease that turns stale the moment the settings read starts.
+        fn cancel_during_read(fake: &mut Fake) -> Live {
+            let current = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let flag = current.clone();
+            fake.during_settings = Some(Box::new(move |_| {
+                flag.store(false, std::sync::atomic::Ordering::SeqCst)
+            }));
+            Arc::new(move || current.load(std::sync::atomic::Ordering::SeqCst))
+        }
+
+        #[test]
+        fn cancel_during_the_settings_read_stores_nothing() {
+            let mut fake = Fake::new(Ok(summary(true, 2)));
+            let lease = cancel_during_read(&mut fake);
+            let result = futures::executor::block_on(scan_folder(
+                &fake,
+                "/synthetic/project".into(),
+                "scan-1".into(),
+                lease,
+            ));
+            assert!(result.is_err(), "a cancelled scan has no result");
+            assert!(fake.saved.lock().unwrap().is_empty());
+            assert!(fake.owner.lock().unwrap().is_none());
+        }
+
+        #[test]
+        fn losing_scan_ownership_during_the_settings_read_stores_nothing() {
+            for newer in [false, true] {
+                let mut fake = Fake::new(Ok(summary(true, 2)));
+                fake.during_settings = Some(Box::new(move |f| {
+                    // Clear or Cancel released the scan; a newer scan replaced it.
+                    *f.owner.lock().unwrap() = newer.then(|| "scan-2".to_owned());
+                }));
+                let result = futures::executor::block_on(scan_folder(
+                    &fake,
+                    "/synthetic/project".into(),
+                    "scan-1".into(),
+                    live(true),
+                ));
+                assert!(result.is_err(), "newer scan: {newer}");
+                assert!(fake.saved.lock().unwrap().is_empty(), "newer scan: {newer}");
+            }
+        }
+
+        #[test]
+        fn cancel_during_choose_project_settings_read_writes_and_registers_nothing() {
+            let mut fake = Fake::new(Ok(summary(true, 2)));
+            let lease = cancel_during_read(&mut fake);
+            let result = futures::executor::block_on(adopt_folder(
+                &fake,
+                "/synthetic/project".into(),
+                "scan-1".into(),
+                lease,
+            ));
+            assert!(result.is_err());
+            assert!(fake.saved.lock().unwrap().is_empty(), "no folder write");
+            assert_eq!(*fake.walks.lock().unwrap(), 0, "no scan started");
+            assert!(fake.owner.lock().unwrap().is_none(), "no scan registered");
+        }
+
+        #[test]
+        fn choosing_a_folder_stores_it_then_scans_it() {
+            let fake = Fake::new(Ok(summary(true, 2)));
+            let snapshot = futures::executor::block_on(adopt_folder(
+                &fake,
+                "/synthetic/project".into(),
+                "scan-1".into(),
+                live(true),
+            ))
+            .unwrap();
+            assert_eq!(snapshot.scan["state"], "done");
+            let saved = fake.saved.lock().unwrap();
+            assert_eq!(saved.len(), 2, "folder first, then the scan summary");
+            assert_eq!(
+                saved[0].0,
+                json!({"codeVocabFolder":"/synthetic/project","codeVocabLastScan":null})
+            );
+        }
+
+        #[test]
+        fn clear_cancels_the_active_scan_and_respects_a_cancel_during_its_read() {
+            let fake = Fake::new(Ok(summary(true, 2)));
+            *fake.owner.lock().unwrap() = Some("scan-1".into());
+            futures::executor::block_on(clear_folder(&fake, live(true))).unwrap();
+            assert_eq!(*fake.cancelled.lock().unwrap(), ["scan-1"]);
+            assert_eq!(
+                fake.saved.lock().unwrap()[0].0,
+                json!({"codeVocabFolder":"","codeVocabLastScan":null})
+            );
+            let mut cancelled = Fake::new(Ok(summary(true, 2)));
+            let lease = cancel_during_read(&mut cancelled);
+            assert!(futures::executor::block_on(clear_folder(&cancelled, lease)).is_err());
+            assert!(cancelled.saved.lock().unwrap().is_empty());
         }
 
         #[test]
@@ -1951,10 +2129,10 @@ mod setup_error_tests {
 mod voice_command_route_tests {
     use super::*;
     #[test]
-    fn voice_commands_settings_link_opens_the_text_page() {
+    fn voice_commands_settings_link_reveals_the_toggle() {
         assert!(matches!(
             voice_command_settings_route(),
-            Route::Settings(crate::settings::schema::Page::Text)
+            Route::SettingsReveal("voiceCommandsEnabled")
         ));
     }
 }

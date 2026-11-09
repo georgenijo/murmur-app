@@ -705,6 +705,112 @@ mod ax {
         );
     }
     #[gpui::test]
+    fn vocabulary_scan_cancel_works_before_the_first_progress_presentation(
+        cx: &mut TestAppContext,
+    ) {
+        use serde_json::json;
+        let options = crate::remaining::QaOptions {
+            spellings: crate::remaining::Scenario::HeldScan,
+            ..Default::default()
+        };
+        let (e, cx) = harness_options(cx, 1, options);
+        cx.update(|w, cx| {
+            e.update(cx, |s, cx| {
+                s.select_customize(crate::customize::model::Page::Scan, w, cx)
+            })
+        });
+        let custom = e.read_with(cx, |s, _| s.customize.clone());
+        custom.update(cx, |s, cx| {
+            let snapshot = s.controller.model.snapshot.as_mut().unwrap();
+            snapshot.settings["codeVocabFolder"] = json!("/synthetic/project");
+            snapshot.scan = json!(null);
+            cx.notify();
+        });
+        draw(cx);
+        // The real button issues the Scan request; the host never answers it, so
+        // no scanning presentation can arrive.
+        let t = tree(cx);
+        assert!(
+            !t.nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Cancel scan"))
+        );
+        click(cx, named(&t, "Scan folder"));
+        assert!(custom.read_with(cx, |s, _| s.controller.model.pending));
+        assert!(custom.read_with(cx, |s, _| {
+            !crate::customize::projection::is_scanning(
+                &s.controller.model.snapshot.as_ref().unwrap().scan,
+            )
+        }));
+        let t = tree(cx);
+        assert!(disabled(&t, "Scanning…"));
+        assert!(!disabled(&t, "Cancel scan"), "Cancel must work at once");
+        assert!(!disabled(&t, "Clear project folder"));
+        let before = custom.read_with(cx, |s, _| s.controller.model.generation);
+        click(cx, named(&t, "Cancel scan"));
+        assert!(custom.read_with(cx, |s, _| s.controller.model.generation) > before);
+        let t = tree(cx);
+        assert!(
+            !t.nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Cancel scan"))
+        );
+    }
+    #[gpui::test]
+    fn vocabulary_scan_view_shows_result_numbers_and_both_empty_cases(cx: &mut TestAppContext) {
+        use serde_json::json;
+        let (e, cx) = harness(cx, 1);
+        cx.update(|w, cx| {
+            e.update(cx, |s, cx| {
+                s.select_customize(crate::customize::model::Page::Scan, w, cx)
+            })
+        });
+        let custom = e.read_with(cx, |s, _| s.customize.clone());
+        let show = |cx: &mut VisualTestContext, summary: serde_json::Value| {
+            custom.update(cx, |s, cx| {
+                let snapshot = s.controller.model.snapshot.as_mut().unwrap();
+                snapshot.scan = crate::customize::projection::finished(None, summary);
+                cx.notify();
+            });
+            tree(cx)
+        };
+        let t = show(
+            cx,
+            json!({"files":87,"skipped":6,"terms":0,"bytes":2400000,"ms":610,"capped":false,
+                "rankedTerms":[],"adopted":true}),
+        );
+        for text in [
+            "0 terms",
+            "87 files read",
+            "6 dirs skipped",
+            "2.3 MB scanned",
+            "0.6s duration",
+            "Scanned 87 files but found 0 identifiers — built-in dev terms still apply.",
+        ] {
+            static_text(&t, text);
+        }
+        assert!(
+            !t.nodes
+                .iter()
+                .any(|(_, n)| n.value().is_some_and(|v| v.contains("no source files")))
+        );
+        let t = show(
+            cx,
+            json!({"files":0,"skipped":9,"terms":0,"bytes":0,"ms":40,"capped":false,
+                "rankedTerms":[],"adopted":true}),
+        );
+        static_text(&t, "0 files read");
+        static_text(&t, "0 MB scanned");
+        static_text(
+            &t,
+            "Found 0 source files. Wrong folder, or everything was in skipped dirs (node_modules, target, .git).",
+        );
+        static_text(
+            &t,
+            "No identifiers found · Folder had no source files — built-in dev terms still active.",
+        );
+    }
+    #[gpui::test]
     fn vocabulary_scan_view_shows_finished_scan_and_hides_clear_without_a_folder(
         cx: &mut TestAppContext,
     ) {

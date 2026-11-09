@@ -58,6 +58,8 @@ pub mod meetings;
 pub mod diagnostics;
 
 mod application;
+#[cfg(test)]
+mod reveal_tests;
 pub mod root;
 pub use application::run;
 

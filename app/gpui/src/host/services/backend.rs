@@ -270,6 +270,9 @@ pub enum Route {
     MeetingSuggested(String),
     Insights,
     Settings(crate::settings::schema::Page),
+    /// Open the Settings page that owns this row key, expand its Advanced
+    /// disclosure when the row is hidden there, and focus the control.
+    SettingsReveal(&'static str),
     Models,
     Knowledge,
     Modes,
@@ -288,8 +291,14 @@ pub enum Route {
     HistoryAction(String),
     Sources(Value),
     Update(murmur_core::updater::Snapshot),
-    TeachingResult { epoch: u64, result: Value },
-    Calibration { offset: Option<i64>, finish: bool },
+    TeachingResult {
+        epoch: u64,
+        result: Value,
+    },
+    Calibration {
+        offset: Option<i64>,
+        finish: bool,
+    },
 }
 impl Backend {
     pub fn navigate(&self, route: Route) {

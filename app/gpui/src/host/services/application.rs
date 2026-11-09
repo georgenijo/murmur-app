@@ -702,6 +702,7 @@ impl ApplicationHost for Rc<Host> {
                     | Route::About
                     | Route::Teach(_)
                     | Route::Settings(_)
+                    | Route::SettingsReveal(_)
                     | Route::Meetings
                     | Route::MeetingToggle
                     | Route::MeetingSuggested(_)

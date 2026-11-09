@@ -34,6 +34,9 @@ pub struct Customize {
     confirm: Option<String>,
     scroll: ScrollHandle,
     terms_page: usize,
+    /// ID of a scan request the view issued. Cancel must work from the click,
+    /// before the host's first progress presentation arrives.
+    scan_request: Option<String>,
     notice: Option<&'static str>,
     return_focus: Option<FocusHandle>,
     pub return_to: Option<FocusHandle>,
@@ -192,6 +195,7 @@ impl Customize {
             confirm: None,
             scroll: ScrollHandle::new(),
             terms_page: 0,
+            scan_request: None,
             notice: None,
             return_focus: None,
             return_to: None,
@@ -229,6 +233,10 @@ impl Customize {
         cx.notify();
     }
     fn request(&mut self, a: Action, cx: &mut Context<Self>) {
+        self.scan_request = match &a {
+            Action::Scan { id, .. } => Some(id.clone()),
+            _ => None,
+        };
         self.controller.request(a);
         cx.notify();
     }
@@ -1020,8 +1028,15 @@ impl Render for Customize {
                             .as_str()
                             .unwrap_or("")
                             .to_string();
-                        let scanning = projection::is_scanning(&snapshot.scan);
-                        let scan_id = snapshot.scan["id"].as_str().unwrap_or("").to_string();
+                        let busy = self.controller.model.pending;
+                        let requested = self.scan_request.clone().filter(|_| busy);
+                        let scanning =
+                            projection::is_scanning(&snapshot.scan) || requested.is_some();
+                        let scan_id = if projection::is_scanning(&snapshot.scan) {
+                            snapshot.scan["id"].as_str().unwrap_or("").to_string()
+                        } else {
+                            requested.unwrap_or_default()
+                        };
                         let (label, detail) = projection::status(&snapshot.scan);
                         let new_scan_id = || {
                             format!(
@@ -1029,7 +1044,6 @@ impl Render for Customize {
                                 chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
                             )
                         };
-                        let busy = self.controller.model.pending;
                         body = body
                             .child(gpui::text!("Built-in dev terms active. Scan this folder to add your own identifiers."))
                             .child(gpui::text!(if folder.is_empty() {
@@ -1084,8 +1098,27 @@ impl Render for Customize {
                                 format!("{label} · {detail}")
                             }),
                         ));
-                        if snapshot.scan["capped"] == true {
-                            body=body.child(gpui::text!("The 1,000-file cap was reached. Choose a smaller folder for complete coverage."));
+                        let stats = projection::result_stats(&snapshot.scan);
+                        if !stats.is_empty() {
+                            let mut card = div()
+                                .id("scan-result")
+                                .role(Role::Group)
+                                .aria_label("Scan result");
+                            for (value, caption) in stats {
+                                card = card.child(gpui::text!(
+                                    id = SharedString::from(format!("scan-stat-{caption}")),
+                                    format!("{value} {caption}")
+                                ));
+                            }
+                            body = body.child(card);
+                        }
+                        for (i, warning) in
+                            projection::warnings(&snapshot.scan).into_iter().enumerate()
+                        {
+                            body = body.child(gpui::text!(
+                                id = SharedString::from(format!("scan-warning-{i}")),
+                                warning
+                            ));
                         }
                         self.search
                             .update(cx, |f, _| f.scroll_parent = Some(self.scroll.clone()));

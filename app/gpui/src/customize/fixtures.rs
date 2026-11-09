@@ -61,6 +61,9 @@ impl SectionHost<Snapshot, Action> for FixtureHost {
         if !r.lease.is_current() {
             return;
         }
+        if self.scenario == Scenario::HeldScan && matches!(r.action, Action::Scan { .. }) {
+            return;
+        }
         let mut s = self.state.borrow_mut();
         let mut problem = None;
         match &r.action {

@@ -4370,6 +4370,41 @@ fn cancel_code_vocab_scan_id(app_state: &AppState, scan_id: &str) -> bool {
     true
 }
 
+/// Native QA only: a synthetic scan folder named `murmur-qa-scan-superseded`,
+/// inside the OS temp directory and carrying a `.murmur-qa-synthetic` marker
+/// file, has its scan cancelled just before adoption. That is the same state a
+/// newer scan or a Cancel produces mid-walk, so the superseded outcome is
+/// reachable in a real build without racing two scans. Compiled out otherwise.
+#[cfg(feature = "native-host-qa")]
+fn qa_supersede_allowed(folder: &str) -> bool {
+    let Ok(real) = std::path::Path::new(folder).canonicalize() else {
+        return false;
+    };
+    let Ok(temp) = std::env::temp_dir().canonicalize() else {
+        return false;
+    };
+    real.starts_with(&temp)
+        && real
+            .file_name()
+            .is_some_and(|name| name == "murmur-qa-scan-superseded")
+        && real.join(".murmur-qa-synthetic").is_file()
+}
+
+/// Final adoption step of `scan_code_vocab`: the single place a finished walk
+/// is handed to the service, so the native QA checkpoint sits on the real path.
+fn finish_code_vocab_scan(
+    app_state: &AppState,
+    scan_id: &str,
+    folder: &str,
+    prompt: String,
+) -> bool {
+    #[cfg(feature = "native-host-qa")]
+    if qa_supersede_allowed(folder) {
+        cancel_code_vocab_scan_id(app_state, scan_id);
+    }
+    complete_code_vocab_scan(app_state, scan_id, folder, prompt)
+}
+
 pub fn cancel_code_vocab_scan(state: crate::host::StateRef<'_, State>, scan_id: String) -> bool {
     cancel_code_vocab_scan_id(&state.app_state, &scan_id)
 }
@@ -4553,7 +4588,7 @@ pub async fn scan_code_vocab(
     .map_err(|e| format!("Vocab scan task panicked: {}", e))?;
 
     let mut summary = summary;
-    summary.adopted = complete_code_vocab_scan(&state.app_state, &scan_id, &folder_trimmed, prompt);
+    summary.adopted = finish_code_vocab_scan(&state.app_state, &scan_id, &folder_trimmed, prompt);
 
     // Final progress tick so the UI lands on the accurate adopted/superseded
     // state before the command result resolves.
@@ -8214,6 +8249,47 @@ pub(crate) mod tests {
             .lock_or_recover()
             .code_vocab_prompt
             .is_none());
+    }
+
+    #[cfg(feature = "native-host-qa")]
+    #[test]
+    fn qa_checkpoint_supersedes_only_marked_synthetic_temp_folders() {
+        let root = std::env::temp_dir().join(format!("murmur-qa-supersede-{}", std::process::id()));
+        let marked = root.join("murmur-qa-scan-superseded");
+        let unmarked = root.join("other").join("murmur-qa-scan-superseded");
+        let renamed = root.join("renamed");
+        for dir in [&marked, &unmarked, &renamed] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(marked.join(".murmur-qa-synthetic"), b"").unwrap();
+        std::fs::write(renamed.join(".murmur-qa-synthetic"), b"").unwrap();
+
+        let finish = |folder: &std::path::Path| {
+            let app_state = AppState::default();
+            let folder = folder.to_str().unwrap();
+            begin_code_vocab_scan(&app_state, "scan-a", folder);
+            finish_code_vocab_scan(&app_state, "scan-a", folder, "syntheticTerm".into())
+        };
+        assert!(!finish(&marked), "marked folder must be superseded");
+        assert!(finish(&unmarked), "marker file is required");
+        assert!(finish(&renamed), "folder name is required");
+        assert!(
+            !qa_supersede_allowed("/definitely/not/a/murmur-qa-scan-superseded"),
+            "folders outside the temp directory never qualify"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn finishing_an_unmarked_scan_adopts_it() {
+        let app_state = AppState::default();
+        begin_code_vocab_scan(&app_state, "scan-a", "/project");
+        assert!(finish_code_vocab_scan(
+            &app_state,
+            "scan-a",
+            "/project",
+            "syntheticTerm".into(),
+        ));
     }
 
     #[test]

@@ -90,7 +90,12 @@ pub fn status(scan: &Value) -> (&'static str, String) {
         ),
         Some("empty") => (
             "No identifiers found",
-            "Folder had no source files — built-in dev terms still active.".into(),
+            // Only a scan that read nothing means the folder had no source files.
+            if count("files") > 0 {
+                "Built-in dev terms still active.".into()
+            } else {
+                "Folder had no source files — built-in dev terms still active.".into()
+            },
         ),
         Some("superseded") => (
             "Scan superseded",
@@ -104,6 +109,97 @@ pub fn status(scan: &Value) -> (&'static str, String) {
         // The page intro already carries the idle guidance.
         _ => ("Not scanned yet", String::new()),
     }
+}
+
+/// Thousands-grouped integer, like shipped `toLocaleString()`.
+fn group(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Compact bytes, as shipped: "2.3 MB" from one MiB, else rounded "812 KB".
+fn bytes(n: u64) -> String {
+    if n == 0 {
+        return "0 MB".into();
+    }
+    let mb = n as f64 / (1024.0 * 1024.0);
+    if mb >= 1.0 {
+        format!("{mb:.1} MB")
+    } else {
+        format!("{} KB", (n as f64 / 1024.0).round() as u64)
+    }
+}
+
+fn duration(ms: u64) -> String {
+    format!("{:.1}s", ms as f64 / 1000.0)
+}
+
+fn terminal(scan: &Value) -> bool {
+    matches!(
+        scan["state"].as_str(),
+        Some("done" | "empty" | "superseded")
+    )
+}
+
+/// Result numbers for a finished scan, as `(value, caption)` pairs in the
+/// shipped order. Nothing for idle, running, or failed scans.
+pub fn result_stats(scan: &Value) -> Vec<(String, &'static str)> {
+    if !terminal(scan) {
+        return vec![];
+    }
+    let count = |key: &str| scan[key].as_u64().unwrap_or(0);
+    vec![
+        (group(count("terms")), "terms"),
+        (group(count("files")), "files read"),
+        (group(count("skipped")), "dirs skipped"),
+        (bytes(count("bytes")), "scanned"),
+        (duration(count("ms")), "duration"),
+    ]
+}
+
+/// Shipped warning copy for a finished scan: not applied, cap reached, and the
+/// empty guidance, which depends on whether any file was read.
+pub fn warnings(scan: &Value) -> Vec<String> {
+    let mut out = vec![];
+    if !terminal(scan) {
+        return out;
+    }
+    let files = scan["files"].as_u64().unwrap_or(0);
+    if scan["state"] == "superseded" {
+        out.push(
+            "This result was not applied because the selected folder, toggle, or active scan \
+             changed while it was running. Rescan the current folder to use its terms."
+                .into(),
+        );
+    }
+    let capped = scan["capped"] == true;
+    if capped {
+        out.push(
+            "Hit the 1,000-file cap before finishing — some folders weren't indexed. Point at \
+             a single project (e.g. /code/murmur-app) for full coverage."
+                .into(),
+        );
+    }
+    if !capped && scan["state"] == "empty" {
+        out.push(if files > 0 {
+            format!(
+                "Scanned {} files but found 0 identifiers — built-in dev terms still apply.",
+                group(files)
+            )
+        } else {
+            "Found 0 source files. Wrong folder, or everything was in skipped dirs \
+             (node_modules, target, .git)."
+                .into()
+        });
+    }
+    out
 }
 
 pub fn is_scanning(scan: &Value) -> bool {
@@ -162,6 +258,67 @@ mod tests {
             status(&finished(Some("a"), summary(false, 2))).0,
             "Scan superseded"
         );
+    }
+
+    #[test]
+    fn finished_scans_show_the_shipped_result_numbers() {
+        let scan = finished(Some("a"), summary(true, 1234));
+        let stats: Vec<_> = result_stats(&scan)
+            .into_iter()
+            .map(|(n, c)| format!("{n} {c}"))
+            .collect();
+        assert_eq!(
+            stats,
+            [
+                "1,234 terms",
+                "87 files read",
+                "6 dirs skipped",
+                "2.3 MB scanned",
+                "0.6s duration"
+            ]
+        );
+        let small = finished(
+            None,
+            json!({"files":3,"skipped":0,"terms":1,"bytes":831488,"ms":0,"adopted":true}),
+        );
+        assert_eq!(result_stats(&small)[3].0, "812 KB");
+        assert_eq!(result_stats(&small)[4].0, "0.0s");
+        assert!(result_stats(&running("a", &Value::Null)).is_empty());
+        assert!(result_stats(&failed("a")).is_empty());
+        assert!(result_stats(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn empty_scan_guidance_depends_on_whether_files_were_read() {
+        let mut read = summary(true, 0);
+        read["files"] = json!(12);
+        let read = finished(None, read);
+        assert_eq!(status(&read).1, "Built-in dev terms still active.");
+        assert_eq!(
+            warnings(&read),
+            ["Scanned 12 files but found 0 identifiers — built-in dev terms still apply."]
+        );
+        let mut none = summary(true, 0);
+        none["files"] = json!(0);
+        let none = finished(None, none);
+        assert!(status(&none).1.starts_with("Folder had no source files"));
+        assert_eq!(warnings(&none).len(), 1);
+        assert!(warnings(&none)[0].starts_with("Found 0 source files."));
+        assert!(!warnings(&read)[0].contains("Found 0 source files"));
+    }
+
+    #[test]
+    fn superseded_and_capped_scans_carry_their_shipped_warnings() {
+        let superseded = warnings(&finished(Some("a"), summary(false, 2)));
+        assert_eq!(superseded.len(), 1);
+        assert!(superseded[0].contains("not applied"));
+        let mut capped = summary(true, 0);
+        capped["capped"] = json!(true);
+        let capped = warnings(&finished(None, capped));
+        assert_eq!(capped.len(), 1, "cap replaces the empty guidance");
+        assert!(capped[0].contains("1,000-file cap"));
+        assert!(warnings(&finished(None, summary(true, 2))).is_empty());
+        assert!(warnings(&failed("a")).is_empty());
     }
 
     #[test]

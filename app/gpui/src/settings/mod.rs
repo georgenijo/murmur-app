@@ -629,6 +629,35 @@ impl Settings {
         }
         cx.notify();
     }
+    #[cfg(test)]
+    pub(crate) fn model_page(&self) -> Page {
+        self.model.page
+    }
+    #[cfg(test)]
+    pub(crate) fn model_advanced(&self) -> bool {
+        self.model.advanced()
+    }
+    #[cfg(test)]
+    pub(crate) fn revealed(&self) -> Option<&'static str> {
+        self.reveal
+    }
+    #[cfg(test)]
+    pub(crate) fn row_focused(&self, key: &str, w: &Window) -> bool {
+        self.focus.get(key).is_some_and(|f| f.is_focused(w))
+    }
+    /// Open the page owning `key`, expand its Advanced disclosure when the row
+    /// is hidden there, scroll to it, and focus the control.
+    pub fn reveal_setting(&mut self, key: &str, w: &mut Window, cx: &mut Context<Self>) {
+        if let Some(row) = ROWS.iter().find(|r| r.key == key) {
+            self.search_result(*row, w, cx);
+            // The row has not rendered yet when its Advanced disclosure was
+            // closed, so create the focus target the render will track.
+            let focus = self
+                .control_focus(*row, cx)
+                .unwrap_or_else(|| self.focus_for(row.key, cx));
+            w.focus(&focus, cx);
+        }
+    }
     fn search_link(&mut self, link: SearchLink, w: &mut Window, cx: &mut Context<Self>) {
         self.navigate(link.page, None, w, cx);
         if matches!(

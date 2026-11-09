@@ -10,6 +10,15 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
+/// Open the Settings row `key`, expanding its Advanced disclosure and focusing it.
+pub(super) fn reveal_setting(
+    settings: &Entity<crate::settings::Settings>,
+    key: &'static str,
+    w: &mut Window,
+    cx: &mut App,
+) {
+    settings.update(cx, |s, cx| s.reveal_setting(key, w, cx));
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
     Home,
@@ -439,6 +448,10 @@ impl Main {
                         .update(cx, |s, cx| s.navigate(page, None, w, cx));
                 }
             },
+            Route::SettingsReveal(key) => {
+                self.select(Section::Settings, w, cx);
+                reveal_setting(&self.settings, key, w, cx);
+            }
             Route::Setup | Route::SetupReplay => {
                 let replay = matches!(route, Route::SetupReplay);
                 self.onboarding.update(cx, |s, _| s.replay = replay);

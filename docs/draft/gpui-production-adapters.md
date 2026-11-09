@@ -65,6 +65,24 @@ walk starts, and the Customize scan strip shows "Scan could not finish". The
 hook is compiled out without the feature, matches no other name, and never
 touches the folder. Create an empty synthetic folder with that name to use it.
 
+### Vocabulary scan supersede injection
+
+A superseded scan (a Cancel, Clear, or newer scan landing before adoption) is a
+race that is hard to hit by hand. Builds with `native-host-qa` (which enables
+`murmur-services/native-host-qa`) add one checkpoint in the service's scan
+adoption step, `finish_code_vocab_scan`: it cancels the scan just before
+adoption, so the real service reports `adopted: false`, only when all of these
+hold:
+
+- the folder resolves inside the OS temporary directory,
+- its last component is exactly `murmur-qa-scan-superseded`, and
+- it contains a `.murmur-qa-synthetic` marker file.
+
+Create that folder and marker (for example under `$TMPDIR`), put a few synthetic
+source files in it, then choose or scan it. The strip shows "Scan superseded",
+nothing is stored, and a previously stored summary is cleared. Any other folder
+adopts normally. The checkpoint is compiled out without the feature.
+
 ## Native acceptance checklist
 
 Use a unique isolated test bundle and synthetic data. The separate GUI QA worker

@@ -17,6 +17,8 @@ pub enum Scenario {
     PartialBulk,
     StaleImport,
     ConflictingImport,
+    /// Customize holds a Scan request unanswered, as a slow production read does.
+    HeldScan,
 }
 #[derive(Clone, Copy, Default, Debug)]
 pub struct QaOptions {
