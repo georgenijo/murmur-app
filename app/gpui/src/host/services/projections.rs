@@ -2,7 +2,7 @@
 //! they never request permissions, enumerate calendars, download or start capture.
 use super::backend::Backend;
 use serde_json::{Value, json};
-use std::{future::Future, pin::Pin};
+use std::{future::Future, pin::Pin, sync::atomic::Ordering};
 type Read<S> = Pin<Box<dyn Future<Output = Result<S, String>> + Send>>;
 fn text(v: &Value, key: &str) -> String {
     v[key].as_str().unwrap_or_default().to_owned()
@@ -282,6 +282,7 @@ pub fn onboarding(b: Backend) -> Read<crate::onboarding::model::Snapshot> {
             .sources()
             .await
             .map_err(|_| "Setup settings unavailable")?;
+        let needs_relaunch = b.system_audio_relaunch.load(Ordering::Acquire);
         Ok(crate::onboarding::model::Snapshot {
             revision: b.events.revision(),
             settings,
@@ -303,12 +304,30 @@ pub fn onboarding(b: Backend) -> Read<crate::onboarding::model::Snapshot> {
             catalog_error: false,
             download_percent: models.percent,
             installing: models.attempt.is_some(),
-            needs_relaunch: false,
+            needs_relaunch,
             recommended: models.recommended,
             warned_models: models.warned,
             hardware_summary: models.hardware,
         })
     })
+}
+/// Shipped Home and palette treat a failed meeting as over: capture is released,
+/// so dictation and the dictation palette entry stay available.
+fn meeting_busy(status: &Value) -> bool {
+    status["phase"]
+        .as_str()
+        .is_some_and(|phase| !matches!(phase, "idle" | "failed"))
+}
+fn palette_meeting(status: &Value) -> crate::palette::registry::Meeting {
+    use crate::palette::registry::Meeting;
+    match status["phase"].as_str() {
+        Some("starting") => Meeting::Starting,
+        Some("recording") => Meeting::Recording,
+        Some("stopping") => Meeting::Stopping,
+        Some("processing") => Meeting::Processing,
+        Some("failed") => Meeting::Failed,
+        _ => Meeting::Idle,
+    }
 }
 pub fn home(b: Backend) -> Read<crate::home::model::Snapshot> {
     Box::pin(async move {
@@ -349,7 +368,7 @@ pub fn home(b: Backend) -> Read<crate::home::model::Snapshot> {
                 now.timestamp_millis().saturating_sub(ms).max(0) as u64 / 1000
             }),
             audio_level: 0.,
-            meeting_busy: meetings["phase"].as_str().is_some_and(|s| s != "idle"),
+            meeting_busy: meeting_busy(&meetings),
             words_this_month: words,
             recordings_this_month: recordings,
             permissions: permissions(&b).await?,
@@ -473,8 +492,9 @@ pub fn preferences(b: Backend) -> Read<crate::settings::model::Snapshot> {
 }
 pub fn palette(b: Backend) -> Read<crate::palette::model::Snapshot> {
     Box::pin(async move {
-        use crate::palette::registry::{self, Meeting, Recording, State};
+        use crate::palette::registry::{self, Recording, State};
         let home = home(b.clone()).await?;
+        let meeting = b.call("get_meeting_status", json!({})).await?;
         let modes = b.call("get_mode_runtime_status", json!({})).await?;
         let (_, history) = b.services.history_snapshot().await?;
         let state = State {
@@ -483,11 +503,7 @@ pub fn palette(b: Backend) -> Read<crate::palette::model::Snapshot> {
                 crate::home::model::Status::Recording => Recording::Recording,
                 _ => Recording::Idle,
             },
-            meeting: if home.meeting_busy {
-                Meeting::Recording
-            } else {
-                Meeting::Idle
-            },
+            meeting: palette_meeting(&meeting),
             disabled: home.settings["disabled"] == true,
             has_history: !history.history.is_empty(),
             paste_shortcut: home.settings["pasteLastShortcut"]
@@ -530,5 +546,61 @@ mod permission_tests {
             );
         }
         assert_eq!(access(&Value::Null), Access::Unknown);
+    }
+}
+
+#[cfg(test)]
+mod meeting_state_tests {
+    use super::*;
+    use crate::palette::registry::{Meeting, State, commands};
+
+    const PHASES: [&str; 6] = [
+        "idle",
+        "starting",
+        "recording",
+        "stopping",
+        "processing",
+        "failed",
+    ];
+    fn status(phase: &str) -> Value {
+        json!({"generation":3,"sessionId":"synthetic-session","phase":phase,"elapsedMs":0,"errorCode":null})
+    }
+
+    #[test]
+    fn failed_meeting_does_not_block_home_dictation() {
+        for phase in PHASES {
+            let expected = matches!(phase, "starting" | "recording" | "stopping" | "processing");
+            assert_eq!(meeting_busy(&status(phase)), expected, "{phase}");
+        }
+        // The Home model turns the projected flag into the dictation gate.
+        let mut home = crate::home::fixtures::snapshot();
+        home.meeting_busy = meeting_busy(&status("failed"));
+        assert!(!home.waiting());
+        assert_ne!(home.title(), "Notetaker is running");
+        home.meeting_busy = meeting_busy(&status("recording"));
+        assert!(home.waiting());
+        assert_eq!(home.title(), "Notetaker is running");
+    }
+
+    #[test]
+    fn palette_offers_the_shipped_entry_for_every_meeting_phase() {
+        for (phase, meeting_title, dictation) in [
+            ("idle", "Start meeting capture", true),
+            ("starting", "Stop meeting capture", false),
+            ("recording", "Stop meeting capture", false),
+            ("stopping", "Show meeting transcript progress", false),
+            ("processing", "Show meeting transcript progress", false),
+            ("failed", "Start meeting capture", true),
+        ] {
+            let state = State {
+                meeting: palette_meeting(&status(phase)),
+                ..Default::default()
+            };
+            let items = commands(&state);
+            let title = |id: &str| items.iter().find(|c| c.id == id).map(|c| c.title.as_str());
+            assert_eq!(title("meeting-toggle"), Some(meeting_title), "{phase}");
+            assert_eq!(title("recording-toggle").is_some(), dictation, "{phase}");
+        }
+        assert!(matches!(palette_meeting(&Value::Null), Meeting::Idle));
     }
 }

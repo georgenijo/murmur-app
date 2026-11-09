@@ -161,6 +161,10 @@ pub struct Backend {
     pub scan: Arc<Mutex<Option<(String, Value)>>>,
     pub theme_snapshot: Arc<Mutex<Option<(crate::themes::model::Snapshot, Value)>>>,
     pub calendar_access: Arc<Mutex<crate::onboarding::model::Access>>,
+    /// Last System Audio access receipt said macOS lists Murmur as allowed but
+    /// Core Audio still refuses the tap. Only a relaunch clears it, so it is
+    /// never derived from the passive status string.
+    pub system_audio_relaunch: Arc<AtomicBool>,
     pub consumer: Consumer,
     pub runtime: tokio::runtime::Handle,
     pub events: Arc<Events>,
@@ -331,9 +335,19 @@ impl Backend {
         args: Value,
         live: super::os::Live,
     ) -> Result<Value, String> {
-        self.services
+        let result = self
+            .services
             .request_guarded(self.consumer, command, args, live)
-            .await
+            .await?;
+        record_system_audio_receipt(&self.system_audio_relaunch, command, &result);
+        Ok(result)
+    }
+}
+/// `request_system_audio_permission` is the only command whose receipt carries
+/// `needsRelaunch`; each new request replaces the previous answer.
+pub fn record_system_audio_receipt(relaunch: &AtomicBool, command: &str, receipt: &Value) {
+    if command == "request_system_audio_permission" {
+        relaunch.store(receipt["needsRelaunch"] == true, Ordering::Release);
     }
 }
 
@@ -341,6 +355,24 @@ impl Backend {
 mod tests {
     use super::*;
     use crate::workspace::{Authority, Event, Inbox, Projection, Session};
+    #[test]
+    fn only_system_audio_access_receipts_set_and_clear_the_relaunch_fact() {
+        let flag = AtomicBool::new(false);
+        let refused = json!({"permission":"denied","captureReady":false,"audioFlowing":false,"needsRelaunch":true});
+        record_system_audio_receipt(&flag, "get_system_audio_permission_status", &refused);
+        assert!(!flag.load(Ordering::Acquire));
+        record_system_audio_receipt(&flag, "request_system_audio_permission", &refused);
+        assert!(flag.load(Ordering::Acquire));
+        record_system_audio_receipt(
+            &flag,
+            "get_system_audio_permission_status",
+            &json!("granted"),
+        );
+        assert!(flag.load(Ordering::Acquire));
+        let granted = json!({"permission":"granted","captureReady":true,"audioFlowing":false,"needsRelaunch":false});
+        record_system_audio_receipt(&flag, "request_system_audio_permission", &granted);
+        assert!(!flag.load(Ordering::Acquire));
+    }
     #[derive(Clone)]
     struct State(u64);
     impl Projection for State {

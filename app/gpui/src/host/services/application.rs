@@ -1010,6 +1010,7 @@ pub fn run(identifier: String, home: PathBuf) -> std::process::ExitCode {
             theme_snapshot: Default::default(),
             scan: scan.clone(),
             calendar_access: Arc::new(Mutex::new(crate::onboarding::model::Access::Unknown)),
+            system_audio_relaunch: Default::default(),
             consumer: Consumer::Main,
             runtime: handle,
             events,

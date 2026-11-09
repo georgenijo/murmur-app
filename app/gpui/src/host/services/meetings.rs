@@ -122,6 +122,52 @@ fn detail(v: &Value) -> Result<Detail, String> {
         review_revision: v["review"]["revision"].as_u64(),
     })
 }
+/// Service-owned runtime facts shown in the status strip. Everything comes
+/// from `get_meeting_status`, the permission probe and the last access receipt.
+struct Runtime {
+    phase: Phase,
+    permission: Permission,
+    needs_relaunch: bool,
+    failure: Option<&'static str>,
+    echo_notice: Option<String>,
+}
+fn runtime(status: &Value, permission: &Value, needs_relaunch: bool) -> Runtime {
+    Runtime {
+        phase: match status["phase"].as_str() {
+            Some("starting") => Phase::Starting,
+            Some("recording") => Phase::Recording,
+            Some("stopping") => Phase::Stopping,
+            Some("processing") => Phase::Processing,
+            Some("failed") => Phase::Failed,
+            _ => Phase::Idle,
+        },
+        permission: match permission.as_str() {
+            Some("granted") => Permission::Granted,
+            Some("denied") => Permission::Denied,
+            Some("unsupported") => Permission::Unsupported,
+            _ => Permission::Unknown,
+        },
+        needs_relaunch,
+        failure: status["errorCode"].as_str().map(error_message),
+        echo_notice: echo_notice(&status["echoCancellation"]),
+    }
+}
+/// Shipped `echoCancellationNotice`: only a recovering or bypassed echo canceller
+/// is user-visible; off, starting and active are silent.
+fn echo_notice(echo: &Value) -> Option<String> {
+    match echo["state"].as_str()? {
+        "recovering" => Some(format!(
+            "Speaker echo reduction was interrupted. Murmur is keeping the original microphone audio while it recovers (attempt {} of {}).",
+            n(echo, "attempt"),
+            n(echo, "maxAttempts")
+        )),
+        "bypassed" => Some(
+            "Speaker echo reduction is unavailable. Murmur is keeping the original microphone audio for the rest of this meeting."
+                .into(),
+        ),
+        _ => None,
+    }
+}
 pub fn read(b: Backend) -> super::backend::ReadFuture<Snapshot> {
     Box::pin(async move {
         let _read = b.meetings.reads.lock().await;
@@ -196,35 +242,27 @@ pub fn read(b: Backend) -> super::backend::ReadFuture<Snapshot> {
         if b.meetings.epoch.load(Ordering::Acquire) != epoch {
             return Err("Meeting selection changed".into());
         }
-        let phase = match status["phase"].as_str() {
-            Some("starting") => Phase::Starting,
-            Some("recording") => Phase::Recording,
-            Some("stopping") => Phase::Stopping,
-            Some("processing") => Phase::Processing,
-            Some("failed") => Phase::Failed,
-            _ => Phase::Idle,
-        };
+        let live = runtime(
+            &status,
+            &permission,
+            b.system_audio_relaunch.load(Ordering::Acquire),
+        );
         if busy {
             b.pause_player();
         }
         Ok(Snapshot {
             revision,
-            phase,
+            phase: live.phase,
             recording_generation: n(&status, "generation"),
             recording_session: status["sessionId"].as_str().map(String::from),
             elapsed_ms: n(&status, "elapsedMs"),
             microphone_active: status["microphoneActive"] == true,
             system_audio_active: status["systemAudioActive"] == true,
             capture_busy: busy,
-            permission: match permission.as_str() {
-                Some("granted") => Permission::Granted,
-                Some("denied") => Permission::Denied,
-                Some("unsupported") => Permission::Unsupported,
-                _ => Permission::Unknown,
-            },
-            needs_relaunch: false,
-            failure: None,
-            echo_notice: None,
+            permission: live.permission,
+            needs_relaunch: live.needs_relaunch,
+            failure: live.failure,
+            echo_notice: live.echo_notice,
             meetings: rows,
             query: selection.query,
             total,
@@ -559,6 +597,8 @@ impl Host for Backend {
                         let settings=super::projections::settings(&b).await?;
                         let request=json!({"deviceName":settings["microphone"].as_str().filter(|s|!s.is_empty()&&*s!="system_default"),"smartAuto":if settings["smartAutoMicrophoneEnabled"]==true{json!({"approvedDeviceIds":settings["smartAutoApprovedDeviceIds"],"preferredDeviceIds":settings["smartAutoPreferredDeviceIds"],"allowContinuity":settings["smartAutoAllowContinuity"],"requireRecentSignal":settings["smartAutoProbeEnabled"]})}else{Value::Null},"retainAudio":settings["meetingRetainAudio"],"retentionDays":settings["meetingRetentionDays"].as_u64().filter(|n|*n>0),"maxSessions":settings["meetingMaxSessions"],"echoCancellation":settings["meetingEchoCancellationEnabled"],"diarization":settings["meetingDiarization"],"suggestionToken":if let Action::StartSuggested(token)=&r.action{Some(token)}else{None}});
                         let session=b.effect("start_meeting",json!({"request":request}),current.clone()).await?;
+                        // A started meeting proves the tap works, so any earlier relaunch advice is stale.
+                        b.system_audio_relaunch.store(false,Ordering::Release);
                         if current(){b.meetings.selection.lock().unwrap_or_else(|p|p.into_inner()).id=session["id"].as_str().map(String::from);}
                     },
                     Action::Stop{generation}=>b.services.stop_meeting(*generation).await?,
@@ -600,5 +640,114 @@ impl Host for Backend {
             }.await;
             if current()&&!inbox.is_closed(){let _=inbox.publish(Event::Reply{ticket:r.ticket,result:result.map_err(|_|Problem::Unavailable)});}
         });
+    }
+}
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    // `get_meeting_status` wire shape of `MeetingRuntimeStatus`, synthetic values only.
+    fn status(phase: &str, error: Value, echo: Value) -> Value {
+        json!({
+            "generation": 7,
+            "sessionId": "synthetic-session",
+            "phase": phase,
+            "elapsedMs": 65000,
+            "microphoneActive": false,
+            "systemAudioActive": false,
+            "echoCancellation": echo,
+            "errorCode": error,
+        })
+    }
+
+    #[test]
+    fn failed_meeting_carries_the_service_error_and_does_not_look_busy() {
+        for (code, expected) in [
+            (
+                "system_audio_permission_denied",
+                "System Audio access was denied.",
+            ),
+            (
+                "capture_setup_timeout",
+                "Core Audio stalled while starting capture. Quit other audio capture apps and try again.",
+            ),
+            (
+                "termination_unconfirmed",
+                "The capture worker could not be confirmed stopped. Restart Murmur before recording again.",
+            ),
+            (
+                "future_unknown_code",
+                "Meeting capture stopped unexpectedly.",
+            ),
+        ] {
+            let r = runtime(
+                &status("failed", json!(code), json!({"state":"off"})),
+                &json!("denied"),
+                false,
+            );
+            assert!(r.phase == Phase::Failed);
+            assert!(!r.phase.busy(), "a failed meeting has released capture");
+            assert_eq!(r.failure, Some(expected));
+        }
+    }
+
+    #[test]
+    fn healthy_and_idle_meetings_show_no_failure_or_echo_notice() {
+        for (phase, expected) in [
+            ("idle", Phase::Idle),
+            ("starting", Phase::Starting),
+            ("recording", Phase::Recording),
+            ("stopping", Phase::Stopping),
+            ("processing", Phase::Processing),
+        ] {
+            let r = runtime(
+                &status(phase, Value::Null, json!({"state":"active"})),
+                &json!("granted"),
+                false,
+            );
+            assert!(r.phase == expected);
+            assert!(r.failure.is_none());
+            assert!(r.echo_notice.is_none());
+            assert!(r.permission == Permission::Granted);
+            assert!(!r.needs_relaunch);
+        }
+    }
+
+    #[test]
+    fn echo_reduction_notices_match_the_service_state() {
+        let notice = |echo| {
+            runtime(
+                &status("recording", Value::Null, echo),
+                &json!("granted"),
+                false,
+            )
+            .echo_notice
+        };
+        for silent in ["off", "starting", "active"] {
+            assert_eq!(notice(json!({"state":silent})), None);
+        }
+        assert_eq!(
+            notice(json!({"state":"recovering","reason":"processorFailed","episode":2,"attempt":2,"maxAttempts":3})).as_deref(),
+            Some("Speaker echo reduction was interrupted. Murmur is keeping the original microphone audio while it recovers (attempt 2 of 3).")
+        );
+        assert_eq!(
+            notice(json!({"state":"bypassed","reason":"initializationFailed"})).as_deref(),
+            Some(
+                "Speaker echo reduction is unavailable. Murmur is keeping the original microphone audio for the rest of this meeting."
+            )
+        );
+    }
+
+    #[test]
+    fn relaunch_fact_is_independent_of_the_passive_permission_string() {
+        // macOS lists the app as authorized, so the passive probe reports granted
+        // while the tap refusal still needs a relaunch.
+        let r = runtime(
+            &status("idle", Value::Null, json!({"state":"off"})),
+            &json!("granted"),
+            true,
+        );
+        assert!(r.needs_relaunch);
+        assert!(r.permission == Permission::Granted);
     }
 }
