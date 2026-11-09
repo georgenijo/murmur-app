@@ -1391,24 +1391,22 @@ mod microphone_ingress_tests {
     #[test]
     fn voice_detection_outcome_reaches_settings_and_refreshes_only_on_change() {
         let preview = Arc::new(Preview::default());
-        let ports = ports(preview.clone());
+        let main = ports(preview.clone());
         let unavailable =
             json!({"previewId":4,"sensitivity":60,"decision":"unavailable"}).to_string();
-        let before = ports.events.revision();
+        let before = main.events.revision();
         assert!(
-            ports
-                .send("main", "microphone-preview-vad", &unavailable)
+            main.send("main", "microphone-preview-vad", &unavailable)
                 .is_ok()
         );
         assert_eq!(*lock(&preview.vad), Some((4, 60, true)));
         // The event itself plus one refresh of the Settings projection.
-        assert_eq!(ports.events.revision(), before + 2);
+        assert_eq!(main.events.revision(), before + 2);
         assert!(
-            ports
-                .send("main", "microphone-preview-vad", &unavailable)
+            main.send("main", "microphone-preview-vad", &unavailable)
                 .is_ok()
         );
-        assert_eq!(ports.events.revision(), before + 3);
+        assert_eq!(main.events.revision(), before + 3);
         // Only the main window's events describe the Settings preview.
         let other = Arc::new(Preview::default());
         assert!(
@@ -1422,18 +1420,18 @@ mod microphone_ingress_tests {
     #[test]
     fn startup_progress_is_recorded_for_the_running_benchmark_only() {
         let preview = Arc::new(Preview::default());
-        let ports = ports(preview.clone());
+        let main = ports(preview.clone());
         let progress = |run: &str| {
             json!({"runId":run,"benchmarkRunId":"b","completedCycles":2,"totalCycles":5,"currentCycle":3,"phase":"capturing"})
                 .to_string()
         };
         let event = "microphone-startup-benchmark-progress";
-        assert!(ports.send("main", event, &progress("run-1")).is_ok());
+        assert!(main.send("main", event, &progress("run-1")).is_ok());
         assert!(lock(&preview.check).progress.is_none());
         lock(&preview.check).run = Some("run-1".into());
-        assert!(ports.send("main", event, &progress("older-run")).is_ok());
+        assert!(main.send("main", event, &progress("older-run")).is_ok());
         assert!(lock(&preview.check).progress.is_none());
-        assert!(ports.send("main", event, &progress("run-1")).is_ok());
+        assert!(main.send("main", event, &progress("run-1")).is_ok());
         let shown = startup(&lock(&preview.check));
         assert_eq!(shown.progress, Some(("Cycle 3 of 5".to_string(), 40)));
     }

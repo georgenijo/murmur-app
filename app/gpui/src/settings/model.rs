@@ -89,7 +89,7 @@ pub struct Calibration {
     pub max: i64,
 }
 /// Live microphone test feedback owned by the preview service.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MicTest {
     /// `Some(slow)` while the input is being claimed; `slow` once it exceeds
     /// the service's still-connecting threshold.
@@ -103,7 +103,7 @@ pub struct MicTest {
 }
 /// Smart Auto selection status. Inactive covers off and ready: like the
 /// shipped pane, a ready selection needs no feedback.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum SmartAuto {
     #[default]
     Inactive,
@@ -122,7 +122,7 @@ pub enum SmartAuto {
     Unavailable,
 }
 /// Microphone startup diagnostic: progress while running, then its report.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Startup {
     pub progress: Option<(String, u8)>,
     pub cancelling: bool,
