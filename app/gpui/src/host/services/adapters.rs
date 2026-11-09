@@ -1622,6 +1622,32 @@ mod palette_action {
             _ => return None,
         })
     }
+    /// The first half of every palette dispatch: re-read the registry, refuse an id
+    /// it no longer offers, and route a meeting entry to its own intent. Returns
+    /// `true` when the meeting entry was routed. Registry and navigation are
+    /// injected so the same code runs against a fake in tests.
+    pub(super) async fn dispatch_registry<R, Fut>(
+        read_registry: R,
+        id: &str,
+        current: &Live,
+        navigate: impl FnOnce(Route),
+    ) -> Result<bool, String>
+    where
+        R: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<Snapshot, String>>,
+    {
+        let registry = read_registry().await?;
+        if !offered(&registry, id) || !current() {
+            return Err("Command changed".into());
+        }
+        Ok(match meeting_route(id) {
+            Some(route) => {
+                navigate(route);
+                true
+            }
+            None => false,
+        })
+    }
     pub async fn run(
         b: &Backend,
         a: Action,
@@ -1631,9 +1657,15 @@ mod palette_action {
         let Action::Run(id) = a else {
             return Ok(None);
         };
-        let registry = read::palette(b.clone()).await?;
-        if !offered(&registry, &id) || !current() {
-            return Err("Command changed".into());
+        if dispatch_registry(
+            || read::palette(b.clone()),
+            &id,
+            &current,
+            |route| b.navigate(route),
+        )
+        .await?
+        {
+            return Ok(None);
         }
         match id.as_str() {
             "recording-toggle" => {
@@ -1656,9 +1688,6 @@ mod palette_action {
                 b.navigate(Route::HistoryAction(id))
             }
             "show-meetings" => b.navigate(Route::Meetings),
-            "meeting-progress" | "meeting-start" | "meeting-stop" => {
-                b.navigate(meeting_route(&id).ok_or("Command changed")?)
-            }
             "check-updates" => {
                 b.effect(
                     "updater_action",
@@ -1737,7 +1766,15 @@ mod palette_meeting_dispatch_tests {
             registry::{Meeting, State, commands},
         },
     };
-    use palette_action::{meeting_route, offered};
+    use palette_action::{dispatch_registry, meeting_route, offered};
+
+    fn block_on<T>(work: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(work)
+    }
 
     const PHASES: [Meeting; 6] = [
         Meeting::Idle,
@@ -1775,12 +1812,67 @@ mod palette_meeting_dispatch_tests {
             .expect("processing offers progress")
             .id
             .clone();
-        // The meeting went idle between selection and dispatch: the production
-        // dispatch re-reads the registry, no longer offers the id and refuses.
         assert!(offered(&processing, &progress));
-        assert!(!offered(&registry(Meeting::Idle), &progress));
+        // The meeting went idle between selection and dispatch. The production
+        // dispatch re-reads the registry from the now-idle backend, no longer
+        // finds the id, refuses it, and routes nothing: no start intent.
+        let routes = std::cell::RefCell::new(Vec::new());
+        let reads = std::cell::Cell::new(0);
+        let current: Live = Arc::new(|| true);
+        let dispatched = block_on(dispatch_registry(
+            || {
+                reads.set(reads.get() + 1);
+                std::future::ready(Ok(registry(Meeting::Idle)))
+            },
+            &progress,
+            &current,
+            |route| routes.borrow_mut().push(route),
+        ));
+        assert_eq!(dispatched, Err("Command changed".to_string()));
+        assert_eq!(reads.get(), 1);
+        assert!(routes.borrow().is_empty());
         // Had the id still been offered, progress only opens Meetings.
-        assert!(matches!(meeting_route(&progress), Some(Route::Meetings)));
+        let dispatched = block_on(dispatch_registry(
+            || std::future::ready(Ok(registry(Meeting::Processing))),
+            &progress,
+            &current,
+            |route| routes.borrow_mut().push(route),
+        ));
+        assert_eq!(dispatched, Ok(true));
+        assert!(matches!(routes.borrow().as_slice(), [Route::Meetings]));
+        // A lease that ended before dispatch refuses even an offered id.
+        let revoked: Live = Arc::new(|| false);
+        let dispatched = block_on(dispatch_registry(
+            || std::future::ready(Ok(registry(Meeting::Processing))),
+            &progress,
+            &revoked,
+            |route| routes.borrow_mut().push(route),
+        ));
+        assert!(dispatched.is_err());
+        assert_eq!(routes.borrow().len(), 1);
+    }
+
+    #[test]
+    fn dispatch_leaves_non_meeting_ids_to_the_command_table() {
+        let current: Live = Arc::new(|| true);
+        let idle = registry(Meeting::Idle);
+        let other = idle
+            .commands
+            .iter()
+            .find(|c| !c.id.starts_with("meeting-"))
+            .expect("idle offers other commands")
+            .id
+            .clone();
+        let routed = std::cell::Cell::new(false);
+        let dispatched = block_on(dispatch_registry(
+            || std::future::ready(Ok(idle)),
+            &other,
+            &current,
+            |_| routed.set(true),
+        ));
+        // An offered, non-meeting id passes the gate and is left to the command table.
+        assert_eq!(dispatched, Ok(false));
+        assert!(!routed.get());
     }
 
     #[test]

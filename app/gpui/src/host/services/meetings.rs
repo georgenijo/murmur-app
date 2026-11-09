@@ -173,6 +173,19 @@ fn echo_notice(echo: &Value) -> Option<String> {
         _ => None,
     }
 }
+/// The current status that may confirm a live tap. Only a held receipt and an
+/// observed live tap warrant the extra read, and a failed read confirms nothing.
+async fn confirm_live_tap<F, Fut>(held: bool, observed: &Value, fetch: F) -> Option<Value>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<Value, String>>,
+{
+    if held && observed["systemAudioActive"] == true {
+        fetch().await.ok()
+    } else {
+        None
+    }
+}
 pub fn read(b: Backend) -> super::backend::ReadFuture<Snapshot> {
     Box::pin(async move {
         let _read = b.meetings.reads.lock().await;
@@ -260,11 +273,8 @@ pub fn read(b: Backend) -> super::backend::ReadFuture<Snapshot> {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .has_receipt();
-        let confirm = if held && status["systemAudioActive"] == true {
-            b.call("get_meeting_status", json!({})).await.ok()
-        } else {
-            None
-        };
+        let confirm =
+            confirm_live_tap(held, &status, || b.call("get_meeting_status", json!({}))).await;
         let live = {
             let mut access = b
                 .system_audio_access
@@ -850,18 +860,96 @@ mod runtime_tests {
                 json!({"state":"off"}),
             ),
         ] {
-            access.supersede(seen, &status);
+            settle(&mut access, seen, &status, Ok(status.clone()));
             let r = runtime(&status, &json!("granted"), &access);
             assert!(r.needs_relaunch, "{}", status["phase"]);
             assert!(r.permission == Permission::Denied);
         }
         // Recording without a system tap proves nothing about System Audio.
-        access.supersede(seen, &live_status(false));
+        settle(
+            &mut access,
+            seen,
+            &live_status(false),
+            Ok(live_status(false)),
+        );
         assert!(access.needs_relaunch());
         // Only a live system-audio tap supersedes the receipt.
-        access.supersede(seen, &live_status(true));
+        settle(&mut access, seen, &live_status(true), Ok(live_status(true)));
         let r = runtime(&live_status(true), &json!("granted"), &access);
         assert!(!r.needs_relaunch);
         assert!(r.permission == Permission::Granted);
+    }
+
+    /// Runs the production confirmation step of `read` and then its clear, with
+    /// `fetched` standing in for the second `get_meeting_status` call. Returns how
+    /// many times that call was made.
+    fn settle(
+        access: &mut AccessMemory,
+        seen: u64,
+        observed: &Value,
+        fetched: Result<Value, String>,
+    ) -> usize {
+        let calls = std::cell::Cell::new(0);
+        let held = access.has_receipt();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let confirm = rt.block_on(confirm_live_tap(held, observed, || {
+            calls.set(calls.get() + 1);
+            std::future::ready(fetched)
+        }));
+        access.supersede_confirmed(seen, observed, confirm.as_ref());
+        calls.get()
+    }
+
+    #[test]
+    fn a_failed_or_changed_confirmation_keeps_the_relaunch_advice() {
+        // The first read saw a live tap, but the confirming read fails.
+        let mut access = memory("denied", true);
+        let seen = access.sequence();
+        let calls = settle(
+            &mut access,
+            seen,
+            &live_status(true),
+            Err("Meeting status unavailable".into()),
+        );
+        assert_eq!(calls, 1);
+        assert!(access.needs_relaunch());
+        assert!(access.permission(&json!("granted")) == json!("denied"));
+        // The confirming read shows a different generation.
+        let mut other = live_status(true);
+        other["generation"] = json!(8);
+        settle(&mut access, seen, &live_status(true), Ok(other));
+        assert!(access.needs_relaunch());
+        // The confirming read lost the tap.
+        settle(
+            &mut access,
+            seen,
+            &live_status(true),
+            Ok(live_status(false)),
+        );
+        assert!(access.needs_relaunch());
+        // The same generation still live confirms and clears.
+        settle(&mut access, seen, &live_status(true), Ok(live_status(true)));
+        assert!(!access.needs_relaunch());
+    }
+
+    #[test]
+    fn the_confirming_read_only_happens_for_a_held_receipt_and_a_live_tap() {
+        let mut none = AccessMemory::default();
+        let seen = none.sequence();
+        let calls = settle(&mut none, seen, &live_status(true), Ok(live_status(true)));
+        assert_eq!(calls, 0, "no receipt, nothing to confirm");
+        let mut access = memory("denied", true);
+        let seen = access.sequence();
+        let calls = settle(
+            &mut access,
+            seen,
+            &live_status(false),
+            Ok(live_status(true)),
+        );
+        assert_eq!(calls, 0, "no live tap observed, nothing to confirm");
+        assert!(access.needs_relaunch());
     }
 }

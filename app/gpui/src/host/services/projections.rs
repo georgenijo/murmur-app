@@ -664,7 +664,8 @@ mod meeting_state_tests {
             Access::Denied
         );
         // A live system-audio tap is the authoritative readiness that supersedes it.
-        memory.supersede(memory.sequence(), &json!({"systemAudioActive":true}));
+        let live = json!({"generation":4,"sessionId":"synthetic-session","systemAudioActive":true});
+        memory.supersede_confirmed(memory.sequence(), &live, Some(&live));
         assert_eq!(
             system_audio_access(&memory, &json!("granted")),
             Access::Granted

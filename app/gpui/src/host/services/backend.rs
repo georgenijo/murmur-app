@@ -398,7 +398,7 @@ impl AccessMemory {
     /// Only a live system-audio tap proves readiness. `seen` is the receipt
     /// sequence observed before `status` was read, so a receipt recorded while
     /// that read was in flight is never cleared by it.
-    pub fn supersede(&mut self, seen: u64, status: &Value) {
+    fn supersede(&mut self, seen: u64, status: &Value) {
         if seen == self.sequence && status["systemAudioActive"] == true {
             self.receipt = None;
         }
