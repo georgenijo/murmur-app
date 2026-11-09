@@ -1,10 +1,35 @@
 # Plan: Replace the Tauri + React UI with GPUI
 
-- Status: Draft, revision 13 (after twelve rounds of Sol, Astra, and Opus review)
+- Status: Discontinued on 2026-11-09; retained as a historical plan
 - Date: 2026-11-05
 - Base: `main` at `ed756336` (0.62.0)
 
-## Goal
+## Discontinued on 2026-11-09
+
+George stopped this rewrite because the remaining functionality and parity work
+outweighed the expected benefit. Murmur continues with its existing Tauri/React
+application. The plan below is historical and does not authorize further work;
+resume only with George's explicit authorization.
+
+The implementation did not merge into `main`. PRs #1046 and #1047 merged into
+the rewrite branch; only this planning document (PR #977) reached `main`.
+The latest public release at archival time was `v0.62.1`; releases, release tags,
+assets, updater files, application data, and credentials are outside this cleanup.
+
+[Permanent private recovery archive](https://george-ubuntu.tail1fdfb0.ts.net:8844/a/art_20261109T160833Z_64b040d2f1/)
+(`art_20261109T160833Z_64b040d2f1`, no expiry) contains all 47 rewrite PR head
+commits, 377 named Git references, and staged patches from two dirty worktrees.
+The bundle was restored in an empty repository and passed a full integrity
+check; the patches reconstructed the original staged tree hashes. The archive
+includes restoration instructions and the full branch/PR/issue inventory.
+Private local evidence and the two original dirty worktrees are retained under
+`~/Documents/archives/murmur-gpui-2026-11-09/` on the Ubuntu checkout host.
+
+The rewrite's 42 open PRs and 50 tracking issues are closed as discontinued.
+Closing PRs preserves their discussions and diffs. Keep useful code available
+through the archive instead of maintaining the rewrite stack as active work.
+
+## Original goal
 
 Replace Murmur's WebKit UI and Tauri host with one native GPUI UI process.
 Keep the transcription, audio, and meeting backends, and keep the isolated
