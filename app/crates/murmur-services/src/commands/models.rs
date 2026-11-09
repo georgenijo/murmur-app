@@ -505,19 +505,45 @@ pub async fn download_model(
             .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
         let storage = if definition.install_kind == InstallKind::Coreml {
-            crate::model_resolver::Locations::current().ok_or("Could not locate Core ML storage")?.coreml_root
-        } else { models_dir.clone() };
+            crate::model_resolver::Locations::current()
+                .ok_or("Could not locate Core ML storage")?
+                .coreml_root
+        } else {
+            models_dir.clone()
+        };
         let retained = match definition.install_kind {
-            InstallKind::Whisper => std::fs::metadata(models_dir.join(format!("ggml-{model_name}.bin.tmp"))).map(|m| m.len()).unwrap_or(0),
+            InstallKind::Whisper => {
+                std::fs::metadata(models_dir.join(format!("ggml-{model_name}.bin.tmp")))
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+            }
             InstallKind::Parakeet => {
-                let (_, bundle) = transcriber::parakeet::download_spec(&model_name).ok_or("Unknown Parakeet model")?;
-                [format!("{bundle}.tar.bz2"), format!("{bundle}.tar.bz2.download"), format!("{bundle}.tar.bz2.tmp")]
-                    .iter().filter_map(|name| std::fs::metadata(models_dir.join(name)).ok().map(|m| m.len())).max().unwrap_or(0).min(1_200_000_000)
+                let (_, bundle) = transcriber::parakeet::download_spec(&model_name)
+                    .ok_or("Unknown Parakeet model")?;
+                [
+                    format!("{bundle}.tar.bz2"),
+                    format!("{bundle}.tar.bz2.download"),
+                    format!("{bundle}.tar.bz2.tmp"),
+                ]
+                .iter()
+                .filter_map(|name| {
+                    std::fs::metadata(models_dir.join(name))
+                        .ok()
+                        .map(|m| m.len())
+                })
+                .max()
+                .unwrap_or(0)
+                .min(1_200_000_000)
             }
             InstallKind::Coreml => 0,
         };
-        model_download::preflight(&storage, model_download::install_bytes(&model_name).saturating_sub(retained))?;
-        if definition.install_kind == InstallKind::Coreml { model_download::preflight(&models_dir, model_download::RESERVE + 2_000_000)?; }
+        model_download::preflight(
+            &storage,
+            model_download::install_bytes(&model_name).saturating_sub(retained),
+        )?;
+        if definition.install_kind == InstallKind::Coreml {
+            model_download::preflight(&models_dir, model_download::RESERVE + 2_000_000)?;
+        }
         cancel.check()?;
         if definition.install_kind == InstallKind::Coreml {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -579,13 +605,8 @@ pub async fn download_model(
                 }
             }
         } else if definition.install_kind == InstallKind::Parakeet {
-            download_parakeet_model(
-                &app_handle,
-                &model_name,
-                &models_dir,
-                progress_context,
-            )
-            .await?;
+            download_parakeet_model(&app_handle, &model_name, &models_dir, progress_context)
+                .await?;
         } else {
             download_whisper_model(&app_handle, &model_name, &models_dir, progress_context).await?;
         }
@@ -606,7 +627,8 @@ pub async fn download_model(
 
         // Co-download VAD model alongside the transcription model (~1.8MB).
         // Its own lock prevents different model installs from sharing a temp file.
-        if let Err(error) = ensure_vad_model_with_progress(&app_handle, Some(progress_context)).await
+        if let Err(error) =
+            ensure_vad_model_with_progress(&app_handle, Some(progress_context)).await
         {
             tracing::warn!(target: "system", "VAD model co-download failed (non-fatal): {}", error);
         }
