@@ -126,23 +126,31 @@ compile the override, and every other identity ignores it (unit tests in
 Build each binary separately (the variable is tracked by cargo, so the second
 build recompiles the dependent crates):
 
+Build and bundle the old (0.62.1) and new (0.62.2) apps, each with a plist version
+equal to the version compiled into its binary:
+
 ```
+mkdir -p ~/.cache/qa110
 python3 scripts/build_capture_helpers.py
-for v in 0.62.1 0.62.2; do
+for pair in old:0.62.1 new:0.62.2; do
+  name=${pair%%:*}; v=${pair##*:}
   MURMUR_QA_PACKAGE_VERSION=$v cargo build --release --manifest-path app/Cargo.toml \
     -p murmur-ui --bin ui --features native-host-qa
   cp app/target/release/ui ~/.cache/qa110/ui-$v
+  app=~/.cache/qa110/$name/Murmur.app
+  python3 scripts/bundle_gpui.py --binary ~/.cache/qa110/ui-$v --output "$app"
+  plist="$app/Contents/Info.plist"
+  plutil -replace CFBundleIdentifier -string com.localdictation.gpui-host-qa110 "$plist"
+  plutil -replace CFBundleShortVersionString -string "$v" "$plist"
+  plutil -replace CFBundleVersion -string "$v" "$plist"
+  codesign --force --deep --sign - "$app"
 done
 ```
 
-Then bundle each binary (old = 0.62.1, new = 0.62.2) and make the plist match it:
-`python3 scripts/bundle_gpui.py --binary ~/.cache/qa110/ui-<v> --output
-~/.cache/qa110/<old|new>/Murmur.app`, then
-`plutil -replace CFBundleIdentifier -string com.localdictation.gpui-host-qa110
-<app>/Contents/Info.plist`, `plutil -replace CFBundleShortVersionString -string <v>`,
-`plutil -replace CFBundleVersion -string <v>`, and
-`codesign --force --deep --sign - <app>`. Serve the new one with
-`updater_test_fixture.py --bundle <new.app> --directory ~/.cache/qa110/feed`.
+Serve the new one with `python3 scripts/updater_test_fixture.py --bundle
+~/.cache/qa110/new/Murmur.app --directory ~/.cache/qa110/feed`, and launch
+`~/.cache/qa110/old/Murmur.app` with `MURMUR_UPDATER_FIXTURE` set to
+`~/.cache/qa110/feed/fixture.json`.
 Settings > About may keep showing the manifest version; the signal is the Home
 indicator offering 0.62.2 from the old bundle and no longer offering it after the
 relaunch.
