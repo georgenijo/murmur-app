@@ -1,5 +1,17 @@
 # Decisions Log
 
+## 2026-11-09: Pause the GPUI rewrite
+
+**Decision:** Stop active GPUI rewrite implementation, parity fixes, and review work. Retain the existing Tauri/React application as the maintained product. Preserve rewrite branches, draft PRs, and evidence; resume only after George explicitly authorizes it.
+
+**Rationale:** George judged the remaining functionality and parity work too large for the expected benefit. Prior time and token expenditure do not justify further investment.
+
+**Status:** deferred
+
+**References:** GPUI parity epic #1063, PR #1076, George's 2026-11-09 stop instruction
+
+---
+
 ## 2026-11-04: Keep strict branch protection; skip verified pushes and use merge trains (#924)
 
 **Decision:** `main` keeps `strict` up-to-date protection with `ci-pass` as the
