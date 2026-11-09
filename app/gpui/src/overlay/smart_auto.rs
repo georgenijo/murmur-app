@@ -48,7 +48,7 @@ impl SmartAuto {
         self.until_ms.is_none_or(|until| now < until)
     }
     pub fn cue(&self, now: u64) -> Option<Cue> {
-        self.current(now).then(|| match self.state {
+        self.current(now).then_some(match self.state {
             SmartAutoState::Ready { .. } => Cue::Ready,
             SmartAutoState::Probing { .. } => Cue::Probing,
             SmartAutoState::Blocked => Cue::Blocked,
