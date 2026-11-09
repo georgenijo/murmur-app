@@ -846,7 +846,8 @@ mod ax {
             host.actions.borrow().last(),
             Some(&Action::CopyMicrophoneReport)
         );
-        click(cx, named(&tree(cx), "Save to file"));
+        let save = named(&tree(cx), "Save to file");
+        click(cx, save);
         assert_eq!(
             host.actions.borrow().last(),
             Some(&Action::SaveMicrophoneReport)
@@ -883,9 +884,11 @@ mod ax {
         named(&tree(cx), "Saved");
         // Clearing the history asks for confirmation first.
         let before = host.actions.borrow().len();
-        click(cx, named(&tree(cx), "Clear reports…"));
+        let clear = named(&tree(cx), "Clear reports…");
+        click(cx, clear);
         assert_eq!(host.actions.borrow().len(), before);
-        click(cx, named(&tree(cx), "Confirm Clear reports…"));
+        let confirm = named(&tree(cx), "Confirm Clear reports…");
+        click(cx, confirm);
         assert_eq!(
             host.actions.borrow().last(),
             Some(&Action::ClearMicrophoneReports)
