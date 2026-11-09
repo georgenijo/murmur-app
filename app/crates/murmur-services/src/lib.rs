@@ -63,6 +63,8 @@ mod meeting_audio;
 mod meeting_bundle;
 mod meeting_capture;
 pub mod meeting_diarization;
+mod meeting_failure;
+mod meeting_qa;
 mod meeting_review;
 mod meeting_store;
 mod meeting_suggestions;

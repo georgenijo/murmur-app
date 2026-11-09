@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use uuid::Uuid;
 
-mod qa;
+pub(crate) mod qa;
 
 const CAPTURE_WORKER_IDENTIFIER: &str = "com.localdictation.capture-worker";
 const HELPER_STOP_DEADLINE: Duration = Duration::from_secs(2);

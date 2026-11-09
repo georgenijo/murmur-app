@@ -3,11 +3,22 @@
 use crate::host::ServiceAccess;
 use crate::MutexExt;
 use murmur_core::events::{Consumer, EventKind};
+/// What the cue subscriptions heard.
+pub(crate) enum Heard<'a> {
+    /// A dictation event name and its raw payload, for `cue_for`.
+    Dictation(&'a str, &'a str),
+    /// A meeting cue already decided from an accepted status transition.
+    Meeting(&'static str),
+}
+
 pub(crate) fn initialize_event_subscriptions<R: crate::host::Runtime>(
     app: &crate::host::Context<R>,
-    callback: impl Fn(&str, &str) + Send + Sync + 'static,
+    callback: impl Fn(Heard<'_>) + Send + Sync + 'static,
 ) {
     let callback = std::sync::Arc::new(callback);
+    // The shipped hook keeps the last status it saw whether or not cues are
+    // enabled, so turning the setting on mid-meeting cannot replay a transition.
+    let meeting = std::sync::Arc::new(std::sync::Mutex::new(MeetingCues::default()));
     for (event, cue) in [
         (EventKind::DictationGenerationStarted, "start"),
         (EventKind::RecordingStatusChanged, "stop"),
@@ -17,31 +28,28 @@ pub(crate) fn initialize_event_subscriptions<R: crate::host::Runtime>(
         (EventKind::MeetingStatusChanged, MEETING),
     ] {
         let callback = callback.clone();
+        let meeting = meeting.clone();
         crate::events::subscribe(app, Consumer::SoundCues, event, move |payload| {
-            callback(cue, payload)
+            if cue == MEETING {
+                let heard = meeting.lock_or_recover().hear(payload);
+                if let Some(cue) = heard {
+                    callback(Heard::Meeting(cue));
+                }
+            } else {
+                callback(Heard::Dictation(cue, payload));
+            }
         });
     }
 }
-/// Event name routed to `meeting_cue`; every other name goes to `cue_for`.
+/// Event name routed to the meeting status memory; every other name goes to `cue_for`.
 const MEETING: &str = "meeting";
 
 pub(crate) fn initialize(app: &crate::host::Context) {
     let handle = app.clone();
-    // The shipped hook keeps the last phase it saw whether or not cues are
-    // enabled, so turning the setting on mid-meeting cannot replay a transition.
-    let previous = std::sync::Arc::new(std::sync::Mutex::new(String::from("idle")));
-    initialize_event_subscriptions(app, move |event, payload| {
-        let meeting = event == MEETING;
-        let cue = if meeting {
-            let Some(phase) = meeting_phase(payload) else {
-                return;
-            };
-            let mut last = previous.lock_or_recover();
-            let cue = meeting_cue(&last, &phase);
-            *last = phase;
-            cue
-        } else {
-            cue_for(event, payload)
+    initialize_event_subscriptions(app, move |heard| {
+        let (cue, meeting) = match heard {
+            Heard::Meeting(cue) => (Some(cue), true),
+            Heard::Dictation(event, payload) => (cue_for(event, payload), false),
         };
         let Some(cue) = cue else {
             return;
@@ -97,10 +105,42 @@ fn cue_for(event: &str, payload: &str) -> Option<&'static str> {
     }
 }
 
-/// The runtime phase carried by a `meeting-status-changed` payload.
-fn meeting_phase(payload: &str) -> Option<String> {
+/// The generation and runtime phase carried by a `meeting-status-changed` payload.
+fn meeting_status(payload: &str) -> Option<(u64, String)> {
     let value: serde_json::Value = serde_json::from_str(payload).ok()?;
-    value["phase"].as_str().map(str::to_owned)
+    Some((
+        value["generation"].as_u64()?,
+        value["phase"].as_str()?.to_owned(),
+    ))
+}
+
+/// The last accepted meeting status. Like shipped `useMeetings`, a status from an
+/// older generation is dropped before it can replace the newer one or sound a
+/// cue: the coordinator publishes a finished meeting's terminal status after
+/// releasing ownership, so it can arrive after the next meeting has started.
+struct MeetingCues {
+    generation: u64,
+    phase: String,
+}
+impl Default for MeetingCues {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            phase: "idle".into(),
+        }
+    }
+}
+impl MeetingCues {
+    fn hear(&mut self, payload: &str) -> Option<&'static str> {
+        let (generation, phase) = meeting_status(payload)?;
+        if generation < self.generation {
+            return None;
+        }
+        let cue = meeting_cue(&self.phase, &phase);
+        self.generation = generation;
+        self.phase = phase;
+        cue
+    }
 }
 
 /// Meeting transitions that sound a cue, matching the shipped `useSoundCues`.
@@ -208,11 +248,13 @@ mod tests {
             assert_eq!(meeting_cue(phase, phase), None);
         }
     }
+    fn status(generation: u64, phase: &str) -> String {
+        serde_json::json!({"generation":generation,"sessionId":null,"phase":phase}).to_string()
+    }
     #[test]
     fn a_full_meeting_sounds_start_stop_and_success_once_each() {
-        let mut last = String::from("idle");
-        let mut heard = Vec::new();
-        for phase in [
+        let mut cues = MeetingCues::default();
+        let heard: Vec<_> = [
             "starting",
             "recording",
             "recording",
@@ -221,22 +263,42 @@ mod tests {
             "processing",
             "idle",
             "idle",
-        ] {
-            heard.extend(meeting_cue(&last, phase));
-            last = phase.to_owned();
-        }
+        ]
+        .into_iter()
+        .filter_map(|phase| cues.hear(&status(4, phase)))
+        .collect();
         assert_eq!(heard, ["start", "stop", "success"]);
     }
     #[test]
-    fn meeting_phase_comes_from_the_status_payload_and_bad_payloads_are_ignored() {
-        let status = serde_json::json!({"generation":3,"sessionId":null,"phase":"stopping"});
+    fn an_older_generation_neither_sounds_nor_rewinds_the_state() {
+        let mut cues = MeetingCues::default();
+        assert_eq!(cues.hear(&status(2, "starting")), Some("start"));
+        assert_eq!(cues.hear(&status(2, "recording")), None);
+        // The previous meeting's terminal status arrives late.
+        assert_eq!(cues.hear(&status(1, "failed")), None);
+        assert_eq!(cues.hear(&status(1, "stopping")), None);
+        assert_eq!(cues.hear(&status(1, "idle")), None);
+        // It did not move the remembered phase: the stop is still a stop.
+        assert_eq!(cues.hear(&status(2, "stopping")), Some("stop"));
+        // The same generation is accepted, and so is a newer one.
+        assert_eq!(cues.hear(&status(2, "processing")), None);
+        assert_eq!(cues.hear(&status(2, "idle")), Some("success"));
+        assert_eq!(cues.hear(&status(3, "starting")), Some("start"));
+    }
+    #[test]
+    fn meeting_status_comes_from_the_payload_and_bad_payloads_are_ignored() {
         assert_eq!(
-            meeting_phase(&status.to_string()).as_deref(),
-            Some("stopping")
+            meeting_status(&status(3, "stopping")),
+            Some((3, "stopping".to_owned()))
         );
-        assert_eq!(meeting_phase("{}"), None);
-        assert_eq!(meeting_phase("\"idle\""), None);
-        assert_eq!(meeting_phase("not json"), None);
+        assert_eq!(meeting_status("{}"), None);
+        assert_eq!(meeting_status("{\"phase\":\"idle\"}"), None);
+        assert_eq!(meeting_status("{\"generation\":1}"), None);
+        assert_eq!(meeting_status("\"idle\""), None);
+        assert_eq!(meeting_status("not json"), None);
+        let mut cues = MeetingCues::default();
+        assert_eq!(cues.hear("not json"), None);
+        assert_eq!(cues.hear(&status(1, "starting")), Some("start"));
     }
     #[test]
     fn meeting_cues_need_both_toggles_and_ignore_the_active_meeting() {

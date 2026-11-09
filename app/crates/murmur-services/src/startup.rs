@@ -114,6 +114,7 @@ pub(crate) fn initialize(app: &crate::host::Context) -> Result<(), String> {
             "meeting transcript store initialized"
         );
         if let Ok(repository) = app.services().meeting_store.repository() {
+            crate::meeting_qa::seed(&repository);
             app.services()
                 .meetings
                 .recover_pending(app.clone(), repository);

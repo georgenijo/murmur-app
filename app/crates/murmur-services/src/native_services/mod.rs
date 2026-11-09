@@ -14,6 +14,7 @@ mod commands;
 mod main_thread_queue;
 pub use crate::dock_watch::PillDisplay as DockDisplay;
 pub use crate::host::window::Color;
+pub use crate::meeting_failure::explain as explain_meeting_failure;
 pub use dpi::{PhysicalPosition, PhysicalSize, Position, Size};
 pub use main_thread_queue::MainThreadQueue;
 #[derive(Clone)]

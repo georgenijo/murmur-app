@@ -52,12 +52,13 @@ pub const MAX_BUNDLE_AUDIO_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_BUNDLE_SEGMENTS: usize = 50_000;
 const MANIFEST_NAME: &str = "manifest.json";
 const OMITTED_REASON: &str = "missing_or_unreadable";
-const WRITE_FAILED: &str = "The meeting bundle could not be written.";
-const NOTHING_TO_BUNDLE: &str =
+pub(crate) const WRITE_FAILED: &str = "The meeting bundle could not be written.";
+pub(crate) const NOTHING_TO_BUNDLE: &str =
     "None of this meeting's retained audio files could be found, so there is no audio to bundle.";
-const BUNDLE_REVOKED: &str =
+pub(crate) const BUNDLE_REVOKED: &str =
     "This meeting's audio changed or was deleted during the export. Nothing was saved. Try again.";
-const BUNDLE_BUSY: &str = "Another meeting export is already running. Try again shortly.";
+pub(crate) const BUNDLE_BUSY: &str =
+    "Another meeting export is already running. Try again shortly.";
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -96,7 +97,7 @@ impl Drop for BundlePermit {
     }
 }
 
-fn too_large() -> String {
+pub(crate) fn too_large() -> String {
     format!(
         "This meeting's audio is larger than the {} GiB bundle limit. Export the review document on its own instead.",
         MAX_BUNDLE_AUDIO_BYTES / (1024 * 1024 * 1024)
@@ -1032,5 +1033,28 @@ mod tests {
         let receipt = exporter.join().unwrap().unwrap();
         assert_eq!(receipt.included_segments, 3);
         assert!(BundlePermit::acquire().is_ok());
+    }
+
+    // The native QA fixture feeds the real preview and writer, and the receipt the
+    // presentation reads is the service's own wire shape.
+    #[test]
+    fn the_qa_fixture_previews_and_bundles_with_one_unavailable_segment() {
+        let (_temporary, repository) = repository();
+        crate::meeting_qa::build_fixture(&repository).unwrap();
+        let id = crate::meeting_qa::FIXTURE_SESSION;
+        let preview = preview_bundle(&repository, id).unwrap();
+        assert_eq!(
+            (preview.audio_segments, preview.unavailable_segments),
+            (2, 1)
+        );
+        let (receipt, _) = bundle(&repository, id, MeetingReviewExportFormat::Markdown).unwrap();
+        assert_eq!(
+            serde_json::to_value(&receipt).unwrap()["includedSegments"],
+            2
+        );
+        assert_eq!(
+            serde_json::to_value(&receipt).unwrap()["omittedSegments"],
+            1
+        );
     }
 }

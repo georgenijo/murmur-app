@@ -20,14 +20,14 @@ fn armed_for(feature: bool, identifier: Option<&str>) -> bool {
     feature && identifier == Some(QA_BUNDLE)
 }
 
-fn armed() -> bool {
+pub(crate) fn armed() -> bool {
     armed_for(
         cfg!(feature = "native-host-qa"),
         crate::identity::initialized_identifier(),
     )
 }
 
-fn setting(name: &str) -> Option<String> {
+pub(crate) fn setting(name: &str) -> Option<String> {
     if armed() {
         std::env::var(name).ok()
     } else {

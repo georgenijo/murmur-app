@@ -381,6 +381,7 @@ pub fn save_meeting_metadata(
     state: crate::host::StateRef<'_, State>,
 ) -> Result<MeetingWorkspace, String> {
     require_main_window(window.label())?;
+    crate::meeting_qa::save_gate(crate::meeting_qa::Save::Metadata)?;
     state.meeting_store.repository()?.save_metadata(request)
 }
 
@@ -410,6 +411,7 @@ pub fn save_meeting_review_export(
     path: String,
     state: crate::host::StateRef<'_, State>,
 ) -> Result<u64, String> {
+    crate::meeting_qa::save_gate(crate::meeting_qa::Save::Export)?;
     let expected = format.extension();
     if std::path::Path::new(&path)
         .extension()

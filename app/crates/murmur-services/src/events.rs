@@ -580,7 +580,11 @@ pub(crate) mod native_tests {
                 .push((Consumer::DictationControl, payload.to_owned()))
         });
         let r = receipts.clone();
-        crate::dictation_cues::initialize_event_subscriptions(app, move |_, payload| {
+        crate::dictation_cues::initialize_event_subscriptions(app, move |heard| {
+            let payload = match heard {
+                crate::dictation_cues::Heard::Dictation(_, payload) => payload,
+                crate::dictation_cues::Heard::Meeting(cue) => cue,
+            };
             r.lock_or_recover()
                 .push((Consumer::SoundCues, payload.to_owned()))
         });
@@ -675,6 +679,46 @@ pub(crate) mod native_tests {
         assert_eq!(snapshot.history.len(), 1);
         assert_eq!(snapshot.statistics.total_recordings, 2);
         assert!(app.get_window("main").is_none());
+    }
+
+    // The coordinator publishes a finished meeting's terminal status after it has
+    // released ownership, so it can arrive after the next meeting has started.
+    #[test]
+    fn registered_meeting_cues_drop_statuses_from_an_older_generation() {
+        let fixture = Deferred::new();
+        let app = &fixture.app;
+        let heard = Arc::new(Mutex::new(Vec::new()));
+        let sink = heard.clone();
+        crate::dictation_cues::initialize_event_subscriptions(app, move |cue| {
+            if let crate::dictation_cues::Heard::Meeting(cue) = cue {
+                sink.lock_or_recover().push(cue);
+            }
+        });
+        for (generation, phase) in [
+            (1, "starting"),
+            (1, "recording"),
+            (1, "stopping"),
+            (1, "processing"),
+            (1, "idle"),
+            (2, "starting"),
+            // Generation 1's late terminal statuses: no cue, no rewind.
+            (1, "failed"),
+            (1, "stopping"),
+            (1, "idle"),
+            (2, "recording"),
+            (2, "stopping"),
+        ] {
+            app.events()
+                .publish(
+                    EventKind::MeetingStatusChanged,
+                    serde_json::json!({"generation":generation,"sessionId":null,"phase":phase}),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            *heard.lock_or_recover(),
+            ["start", "stop", "success", "start", "stop"]
+        );
     }
 
     #[test]

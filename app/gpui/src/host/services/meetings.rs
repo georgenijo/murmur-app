@@ -132,6 +132,18 @@ fn live_notice(notice: Option<&(String, Instant)>, now: Instant) -> Option<Strin
         .filter(|(_, at)| now.saturating_duration_since(*at) < NOTICE_TTL)
         .map(|(text, _)| text.clone())
 }
+/// What a rejected request tells the user. Native error strings can carry OS
+/// detail and never cross the presentation boundary; the service maps its own
+/// rejection of `rejected` (the command in flight) to a static recovery line.
+/// A failure after the command was accepted, such as the refresh read, passes
+/// `None` and stays generic.
+fn failure(rejected: Option<&str>, error: &str) -> Problem {
+    rejected
+        .and_then(|command| {
+            murmur_services::native_services::explain_meeting_failure(command, error)
+        })
+        .map_or(Problem::Unavailable, Problem::Operation)
+}
 /// Shipped bundle receipt wording (`MeetingReviewWorkspace.exportBundle`). The
 /// counts are the service's `BundleReceipt`, never recomputed here.
 fn bundle_notice(receipt: &Value) -> String {
@@ -234,15 +246,50 @@ fn plan(audio: &Audio, action: PlaybackAction) -> Plan {
             from: Some(start_ms),
             channel,
         },
+        // A zero duration means the manifest has not been read, not that the
+        // recording is finished: the saved position is kept.
         PlaybackAction::Play | PlaybackAction::Retry => Plan::Start {
-            from: Some(if audio.position_ms >= audio.duration_ms {
-                0
-            } else {
-                audio.position_ms
-            }),
+            from: Some(
+                if audio.duration_ms > 0 && audio.position_ms >= audio.duration_ms {
+                    0
+                } else {
+                    audio.position_ms
+                },
+            ),
             channel: audio.channel,
         },
     }
+}
+/// Applies the `get_meeting_audio_manifest` answer to the audio being shown. A
+/// live or paused player keeps its own state; anything else follows the manifest.
+fn apply_manifest(audio: &mut Audio, manifest: &Value) {
+    audio.duration_ms = n(manifest, "durationMs");
+    if !matches!(
+        audio.state,
+        AudioState::Playing | AudioState::Paused | AudioState::Buffering
+    ) {
+        audio.state = match manifest["kind"].as_str() {
+            Some("available") => AudioState::Ready,
+            _ => match manifest["reason"].as_str() {
+                Some("notRetained") => AudioState::NotRetained,
+                Some("notFinished") => AudioState::NotFinished,
+                Some("noAudio") => AudioState::NoAudio,
+                _ => AudioState::Error,
+            },
+        };
+    }
+}
+/// Records the manifest duration on the stored selection. `read()` works on a
+/// clone, so without this the stored audio keeps a zero duration and Play treats
+/// every saved position as finished. Only the duration is written, and only while
+/// the same meeting is still selected, so a newer cursor move or a different
+/// selection is never overwritten.
+fn persist_duration(stored: &mut Selection, id: &str, duration_ms: u64) -> bool {
+    if stored.id.as_deref() != Some(id) {
+        return false;
+    }
+    stored.audio.duration_ms = duration_ms;
+    true
 }
 fn detail(v: &Value) -> Result<Detail, String> {
     let session = meeting(&v["session"])?;
@@ -390,24 +437,21 @@ pub fn read(b: Backend) -> super::backend::ReadFuture<Snapshot> {
         };
         if let Some(detail) = &detail {
             let manifest = b.call("get_meeting_audio_manifest", json!({"sessionId":detail.session.id,"fromMs":0,"channel":"all","cursor":null,"limit":1})).await?;
-            selection.audio.duration_ms = n(&manifest, "durationMs");
-            if !matches!(
-                selection.audio.state,
-                AudioState::Playing | AudioState::Paused | AudioState::Buffering
-            ) {
-                selection.audio.state = match manifest["kind"].as_str() {
-                    Some("available") => AudioState::Ready,
-                    _ => match manifest["reason"].as_str() {
-                        Some("notRetained") => AudioState::NotRetained,
-                        Some("notFinished") => AudioState::NotFinished,
-                        Some("noAudio") => AudioState::NoAudio,
-                        _ => AudioState::Error,
-                    },
-                };
-            }
+            apply_manifest(&mut selection.audio, &manifest);
         }
         if b.meetings.epoch.load(Ordering::Acquire) != epoch {
             return Err("Meeting selection changed".into());
+        }
+        if let Some(detail) = &detail {
+            persist_duration(
+                &mut b
+                    .meetings
+                    .selection
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()),
+                &detail.session.id,
+                selection.audio.duration_ms,
+            );
         }
         // `status` is older than the awaits above. Before it may clear the access
         // advice, confirm the same generation still has a live tap right now.
@@ -769,6 +813,8 @@ impl Host for Backend {
         let current: Live = Arc::new(move || r.lease.is_current());
         self.spawn(async move{
             let _active = active;
+            // The command whose rejection is explained; cleared once it is accepted.
+            let mut rejected=r.action.command().map(|(command,_)|command);
             let result=async{
                 if !current(){return Err("Presentation changed".into());}
                 match &r.action {
@@ -831,9 +877,10 @@ impl Host for Backend {
                         }
                     }
                 }
+                rejected=None;
                 read(b.clone()).await
             }.await;
-            if current()&&!inbox.is_closed(){let _=inbox.publish(Event::Reply{ticket:r.ticket,result:result.map_err(|_|Problem::Unavailable)});}
+            if current()&&!inbox.is_closed(){let _=inbox.publish(Event::Reply{ticket:r.ticket,result:result.map_err(|error:String|failure(rejected,&error))});}
         });
     }
 }
@@ -1420,5 +1467,142 @@ mod runtime_tests {
                 channel: Channel::Them
             }
         ));
+    }
+
+    // `get_meeting_audio_manifest` for a retained meeting, synthetic values only.
+    fn manifest() -> Value {
+        json!({"kind":"available","durationMs":60_000,"chunks":[],"nextCursor":null})
+    }
+
+    // The production sequence: `read` works on a clone of the stored selection, the
+    // manifest duration lands on the clone, and the read persists it. Without that
+    // the stored duration stays 0 and every saved position looks finished.
+    #[test]
+    fn a_read_then_seek_then_play_resumes_where_the_user_left_the_cursor() {
+        let mut stored = Selection {
+            id: Some("synthetic-meeting".into()),
+            ..Selection::default()
+        };
+        let mut shown = stored.clone();
+        apply_manifest(&mut shown.audio, &manifest());
+        assert!(shown.audio.state == AudioState::Ready);
+        assert!(persist_duration(
+            &mut stored,
+            "synthetic-meeting",
+            shown.audio.duration_ms
+        ));
+        assert_eq!(stored.audio.duration_ms, 60_000);
+        // Paused seek moves the stored cursor only.
+        let Plan::Cursor {
+            position_ms: Some(at),
+            ..
+        } = plan(&stored.audio, PlaybackAction::Seek(30_000))
+        else {
+            panic!("a ready seek only moves the cursor");
+        };
+        stored.audio.position_ms = at;
+        assert!(matches!(
+            plan(&stored.audio, PlaybackAction::Play),
+            Plan::Start {
+                from: Some(30_000),
+                ..
+            }
+        ));
+        // A later read keeps the cursor and the duration.
+        let mut again = stored.clone();
+        apply_manifest(&mut again.audio, &manifest());
+        assert!(persist_duration(
+            &mut stored,
+            "synthetic-meeting",
+            again.audio.duration_ms
+        ));
+        assert_eq!(stored.audio.position_ms, 30_000);
+        assert!(matches!(
+            plan(&stored.audio, PlaybackAction::Play),
+            Plan::Start {
+                from: Some(30_000),
+                ..
+            }
+        ));
+        // Only a really finished recording replays from zero.
+        stored.audio.position_ms = 60_000;
+        assert!(matches!(
+            plan(&stored.audio, PlaybackAction::Play),
+            Plan::Start { from: Some(0), .. }
+        ));
+    }
+
+    #[test]
+    fn a_read_never_overwrites_a_newer_cursor_or_another_selection() {
+        let mut stored = Selection {
+            id: Some("synthetic-meeting".into()),
+            ..Selection::default()
+        };
+        // The cursor moved while the read was awaiting the manifest.
+        stored.audio.position_ms = 12_000;
+        stored.audio.state = AudioState::Paused;
+        assert!(persist_duration(&mut stored, "synthetic-meeting", 60_000));
+        assert_eq!(stored.audio.position_ms, 12_000);
+        assert!(stored.audio.state == AudioState::Paused);
+        // Another meeting was selected meanwhile: its audio is not touched.
+        stored.id = Some("another-meeting".into());
+        stored.audio = Audio::default();
+        assert!(!persist_duration(&mut stored, "synthetic-meeting", 60_000));
+        assert_eq!(stored.audio.duration_ms, 0);
+        stored.id = None;
+        assert!(!persist_duration(&mut stored, "synthetic-meeting", 60_000));
+    }
+
+    #[test]
+    fn an_unread_manifest_is_not_a_finished_recording() {
+        let unread = Audio {
+            state: AudioState::Ready,
+            duration_ms: 0,
+            position_ms: 30_000,
+            channel: Channel::All,
+        };
+        assert!(matches!(
+            plan(&unread, PlaybackAction::Play),
+            Plan::Start {
+                from: Some(30_000),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_rejected_request_keeps_the_stage_explanation_and_a_late_failure_stays_generic() {
+        let save = Action::SaveMetadata {
+            id: "synthetic-meeting".into(),
+            title: Some("Synthetic".into()),
+            attendees: vec![],
+        };
+        let stage = save.command().map(|(command, _)| command);
+        let Problem::Operation(line) = failure(stage, "The meeting title is invalid.") else {
+            panic!("a rejected metadata save explains itself");
+        };
+        assert!(line.contains("200 characters") && line.contains("100 attendees"));
+        let export = Action::Export {
+            id: "synthetic-meeting".into(),
+            format: Format::Srt,
+        };
+        let Problem::Operation(line) = failure(
+            export.command().map(|(command, _)| command),
+            "Choose a .srt file for this export format.",
+        ) else {
+            panic!("a wrong export extension names the required one");
+        };
+        assert!(line.contains(".srt"));
+        // Accepted, then the refresh read failed: nothing specific to say.
+        assert!(failure(None, "Meeting selection changed") == Problem::Unavailable);
+        // No explanation exists for this command, and native text is never echoed.
+        assert!(
+            failure(
+                Action::Delete("synthetic-meeting".into())
+                    .command()
+                    .map(|(command, _)| command),
+                "/private/path failed"
+            ) == Problem::Unavailable
+        );
     }
 }
