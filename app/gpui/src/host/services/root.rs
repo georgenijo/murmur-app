@@ -401,10 +401,6 @@ impl Main {
                 self.select(Section::Meetings, w, cx);
                 self.pending_meeting = Some(None);
             }
-            Route::MeetingSuggested(token) => {
-                self.select(Section::Meetings, w, cx);
-                self.pending_meeting = Some(Some(token));
-            }
             Route::Insights => self.select(Section::Insights, w, cx),
             Route::Models => self.select(Section::Models, w, cx),
             Route::Knowledge => self.select(Section::Knowledge, w, cx),

@@ -53,6 +53,7 @@ pub mod history;
 
 pub mod knowledge;
 
+mod calendar;
 pub mod meetings;
 
 pub mod diagnostics;

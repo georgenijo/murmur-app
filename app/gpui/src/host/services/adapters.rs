@@ -220,6 +220,9 @@ impl crate::settings::host::Host for Backend {
                 let rollback=b.login.restoration(value!=true);
                 Some(b.services.accept_settings_effect(json!({"launchAtLogin":value}),r.ticket.revision,false,async move{future.await.map(|_|())},rollback))
             },
+            // Turning suggestions on waits for the Calendar prompt first, so it is admitted in the async branch below.
+            RequestKind::Patch{key:"meetingSuggestionsEnabled",value} if value==true=>None,
+            RequestKind::Patch{key:"meetingSuggestionsEnabled",..}=>Some(super::calendar::disable_suggestions(&b,r.ticket.revision)),
             RequestKind::Patch{key,value}=>Some(b.services.accept_settings(json!({*key:value}),r.ticket.revision)),
             RequestKind::ManualMicrophone{id}=>Some(b.services.accept_settings(json!({"microphone":id,"microphoneIdMigrationComplete":true,"smartAutoMicrophoneEnabled":false}),r.ticket.revision)),
             _=>None,
@@ -257,6 +260,10 @@ impl crate::settings::host::Host for Backend {
                         RequestKind::Action(action) => {
                             settings_action(&b, action, r.ticket.revision, current.clone()).await?
                         }
+                        RequestKind::Patch {
+                            key: "meetingSuggestionsEnabled",
+                            ..
+                        } => super::calendar::enable_suggestions(&b, &current).await?,
                         RequestKind::Patch { .. } | RequestKind::ManualMicrophone { .. } => {
                             return Err("Invalid preference admission".into());
                         }
@@ -268,7 +275,8 @@ impl crate::settings::host::Host for Backend {
             if current() && !inbox.is_closed() {
                 let _ = inbox.publish(Event::Reply {
                     ticket: r.ticket,
-                    result: result.map_err(|_| crate::settings::model::Problem::Unavailable),
+                    result: result
+                        .map_err(|error: String| super::calendar::settings_problem(&error)),
                 });
             }
         });

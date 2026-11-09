@@ -267,7 +267,6 @@ pub enum Route {
     BootstrapFailed,
     Meetings,
     MeetingToggle,
-    MeetingSuggested(String),
     Insights,
     Settings(crate::settings::schema::Page),
     Models,

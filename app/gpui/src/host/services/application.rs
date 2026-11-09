@@ -704,7 +704,6 @@ impl ApplicationHost for Rc<Host> {
                     | Route::Settings(_)
                     | Route::Meetings
                     | Route::MeetingToggle
-                    | Route::MeetingSuggested(_)
                     | Route::Setup
                     | Route::SetupReplay
             ) && let Some(handle) = handles.get("main")
@@ -868,7 +867,17 @@ impl crate::overlay::Host for OverlayHost {
                 Intent::OpenSettings => {
                     b.navigate(Route::Settings(crate::settings::schema::Page::General))
                 }
-                Intent::AcceptSuggestion(token) => b.navigate(Route::MeetingSuggested(token)),
+                Intent::AcceptSuggestion(token) => {
+                    // Admission samples the frontmost app: start before Murmur
+                    // activates. The window appears only to explain a failure.
+                    if super::calendar::accept_suggestion(&b, &token)
+                        .await
+                        .is_err()
+                    {
+                        b.navigate(Route::Notice(super::calendar::ACCEPT_FAILED));
+                        b.navigate(Route::Meetings);
+                    }
+                }
                 Intent::DismissSuggestion(token) => {
                     let _ = b
                         .call("dismiss_meeting_suggestion", json!({"token":token}))
@@ -1204,12 +1213,21 @@ async fn configure_background(b: &Backend, settings: &Value, complete: bool) {
         .await
         .is_ok_and(|installed| installed == true);
     let _ = b.call("updater_action", json!({"action":{"kind":"configure","automatic":complete && settings["autoUpdateEnabled"] != false}})).await;
-    let _ = b
-        .call(
-            "configure_meeting_suggestions",
-            json!({"enabled":complete && settings["meetingSuggestionsEnabled"] == true}),
-        )
+    let enabled = complete && settings["meetingSuggestionsEnabled"] == true;
+    let configured = b
+        .call("configure_meeting_suggestions", json!({"enabled":enabled}))
         .await;
+    // Shipped Murmur restores the opt-in when it cannot be configured (for
+    // example Calendar access was revoked) instead of leaving it saved but inert.
+    if super::calendar::restore_refused_opt_in(enabled, &configured) {
+        let _ = b
+            .patch(
+                json!({"meetingSuggestionsEnabled":false}),
+                b.services.settings_revision(),
+            )
+            .await;
+        b.navigate(Route::Notice(super::calendar::SUGGESTIONS_CONFIG));
+    }
 }
 
 /// Explicit, secretless CLI verification of production projections. It never

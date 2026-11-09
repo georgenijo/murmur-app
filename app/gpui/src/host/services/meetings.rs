@@ -1,5 +1,9 @@
 //! Meeting presentation and playback adapt the shared recording/store owners.
-use super::{backend::Backend, os::Live};
+use super::{
+    backend::Backend,
+    calendar::{apply_outcome, lookup_calendar},
+    os::Live,
+};
 use crate::{
     meetings::{host::*, model::*, playback as p},
     workspace::{Event, Problem},
@@ -17,6 +21,7 @@ struct Selection {
     calendar: Calendar,
     bundle: Option<Bundle>,
     audio: Audio,
+    notice: Option<String>,
 }
 #[derive(Default)]
 pub struct Presentation {
@@ -232,7 +237,7 @@ pub fn read(b: Backend) -> super::backend::ReadFuture<Snapshot> {
             calendar: selection.calendar,
             bundle: selection.bundle,
             audio: selection.audio,
-            notice: None,
+            notice: selection.notice,
         })
     })
 }
@@ -519,6 +524,12 @@ impl Host for Backend {
         if !r.lease.is_current() || inbox.is_closed() {
             return;
         }
+        // A confirmation belongs to the action that produced it; the next action clears it.
+        self.meetings
+            .selection
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .notice = None;
         // Selection is accepted synchronously, before a preceding read can finish.
         match &r.action {
             Action::Select(id) => {
@@ -578,13 +589,17 @@ impl Host for Backend {
                     Action::Back=>{b.pause_player();b.discard_calendar();b.meetings.selection.lock().unwrap_or_else(|p|p.into_inner()).id=None;b.navigate(super::backend::Route::Home);},
                     Action::Playback{id,action}=>b.player_action(id.clone(),*action)?,
                     Action::CalendarLookup(id)=>{
-                        let permission=b.effect("get_calendar_permission_status",json!({}),current.clone()).await?;
-                        let permission=if permission=="notDetermined"{b.effect("request_calendar_permission",json!({}),current.clone()).await?}else{permission};
-                        let calendar=if permission=="granted"{
-                            let candidates=b.effect("get_meeting_calendar_events",json!({"sessionId":id}),current.clone()).await?;
-                            Calendar::Choosing(candidates.as_array().into_iter().flatten().map(|c|Candidate{token:strv(c,"selectionToken"),title:strv(c,"title"),attendees:c["attendees"].as_array().into_iter().flatten().filter_map(Value::as_str).map(String::from).collect(),start_ms:n(c,"startMs") as i64,end_ms:n(c,"endMs") as i64}).collect())
-                        }else{Calendar::Unavailable{message:"Calendar access is unavailable. Change access in System Settings.",denied:permission=="denied",unsupported:permission=="unsupported"}};
+                        let calendar=lookup_calendar(&b,id,&current).await;
                         if current(){b.meetings.selection.lock().unwrap_or_else(|p|p.into_inner()).calendar=calendar;}
+                    },
+                    Action::CalendarApply{id,token}=>{
+                        let applied=b.effect("apply_meeting_calendar_event",json!({"sessionId":id,"selectionToken":token}),current.clone()).await;
+                        if current(){
+                            let (calendar,notice)=apply_outcome(applied.is_ok());
+                            let mut selection=b.meetings.selection.lock().unwrap_or_else(|p|p.into_inner());
+                            selection.calendar=calendar;
+                            selection.notice=notice;
+                        }
                     },
                     Action::Copy{id,format}=>{let text=b.effect("get_meeting_review_export",json!({"id":id,"format":format.wire()}),current.clone()).await?;if current(){b.services.copy_text(text.as_str().ok_or("Meeting export unavailable")?)?;}},
                     Action::Export{id,format}|Action::BundleExport{id,format}=>{

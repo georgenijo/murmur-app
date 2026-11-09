@@ -13,6 +13,8 @@ pub enum Problem {
     Invalid,
     Conflict,
     Denied,
+    /// A host-supplied static explanation for a failure with its own wording.
+    Message(&'static str),
 }
 impl Problem {
     pub fn message(self) -> &'static str {
@@ -27,6 +29,7 @@ impl Problem {
             Self::Denied => {
                 "That action is currently unavailable. Check the permission or stop the active recording."
             }
+            Self::Message(message) => message,
         }
     }
 }
