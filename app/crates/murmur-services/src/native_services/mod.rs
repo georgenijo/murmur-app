@@ -602,3 +602,81 @@ impl Services {
         }))
     }
 }
+
+#[cfg(test)]
+mod correction_tests {
+    use super::*;
+    use crate::correct_and_teach::{CorrectionProposalOutcome, CorrectionProposalRequest};
+    use crate::knowledge_store::KnowledgeScope;
+
+    fn services() -> Services {
+        Services {
+            context: crate::events::native_tests::Deferred::new().app,
+        }
+    }
+    fn propose(services: &Services, original: &str, corrected: &str) -> u64 {
+        let state = services.context.services();
+        let outcome = state.correct_and_teach.propose(
+            CorrectionProposalRequest {
+                original_text: original.into(),
+                corrected_text: corrected.into(),
+                teaching_context: None,
+            },
+            &crate::state::DictationState::default(),
+            &[],
+        );
+        let CorrectionProposalOutcome::Proposal { proposal_id, .. } = outcome else {
+            panic!("synthetic correction should be reviewable")
+        };
+        proposal_id
+    }
+    fn commit(services: &Services, id: u64) -> Result<Value, String> {
+        let job = services.accept_correction(id, serde_json::json!({"kind":"global"}))?;
+        host::runtime::block_on(job).map_err(|_| "Correction owner unavailable".to_string())?
+    }
+    fn confirmable(services: &Services, id: u64) -> bool {
+        services
+            .context
+            .services()
+            .correct_and_teach
+            .confirmed(id, &KnowledgeScope::Global)
+            .is_ok()
+    }
+
+    #[test]
+    fn a_failed_commit_leaves_the_reviewed_proposal_for_another_attempt() {
+        let services = services();
+        // The synthetic context has no initialized knowledge store, so every
+        // commit fails after the capability was admitted.
+        let id = propose(&services, "George Neo", "George Nijo");
+        for _ in 0..2 {
+            let error = commit(&services, id).expect_err("store is unavailable");
+            assert!(error.ends_with('.'), "{error}");
+            assert!(
+                confirmable(&services, id),
+                "a failed commit must not use up the review"
+            );
+        }
+    }
+
+    #[test]
+    fn a_conflict_keeps_its_explanation_and_a_newer_review_revokes_the_retry() {
+        let services = services();
+        let temp = tempfile::tempdir().unwrap();
+        let state = services.context.services();
+        state.knowledge.initialize(temp.path().join("knowledge"));
+        state
+            .knowledge
+            .create_learned_replacement("neo".into(), "Neo".into(), KnowledgeScope::Global)
+            .unwrap();
+        let first = propose(&services, "George neo", "George Nijo");
+        let error = commit(&services, first).expect_err("same-scope rule already exists");
+        assert!(error.contains("Review or edit it in Knowledge"), "{error}");
+        assert!(confirmable(&services, first));
+
+        let second = propose(&services, "Ask neo", "Ask Nijo");
+        assert!(commit(&services, first).is_err());
+        assert!(!confirmable(&services, first));
+        assert!(confirmable(&services, second));
+    }
+}

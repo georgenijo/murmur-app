@@ -4,12 +4,12 @@
 //! persisted by the separate confirmation command after the UI has shown the
 //! exact source, replacement, scope, and examples.
 
+use crate::MutexExt;
 use crate::knowledge_store::KnowledgeScope;
 use crate::state::DictationState;
-use crate::MutexExt;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_TRANSCRIPT_CHARS: usize = 8_192;
 const MAX_DIFF_TOKENS: usize = 512;
@@ -81,6 +81,9 @@ pub struct PendingCorrection {
 pub struct CorrectAndTeachState {
     next_id: AtomicU64,
     pending: Mutex<Option<PendingCorrection>>,
+    /// The capability taken for an in-flight commit, kept so a failed write
+    /// can restore it. Lock order: `pending`, then `committing`.
+    committing: Mutex<Option<PendingCorrection>>,
 }
 
 impl CorrectAndTeachState {
@@ -93,7 +96,7 @@ impl CorrectAndTeachState {
         // Starting any new review invalidates the previous capability, even if
         // this request turns out to be unsafe. Only the proposal currently on
         // screen may be confirmed.
-        *self.pending.lock_or_recover() = None;
+        self.clear();
         let candidate = match propose_rule(&request.original_text, &request.corrected_text) {
             Ok(candidate) => candidate,
             Err(reason) => return CorrectionProposalOutcome::Unsafe { reason },
@@ -115,7 +118,7 @@ impl CorrectAndTeachState {
         dictation: &DictationState,
         knowledge_voice_command_phrases: &[String],
     ) -> CorrectionProposalOutcome {
-        *self.pending.lock_or_recover() = None;
+        self.clear();
         if request.original_text.chars().count() > MAX_TRANSCRIPT_CHARS
             || tokenize(&request.original_text).len() > MAX_DIFF_TOKENS
         {
@@ -214,6 +217,9 @@ impl CorrectAndTeachState {
         Ok(pending)
     }
 
+    /// Consume the capability for one commit attempt. A copy stays in the
+    /// `committing` slot so a failed commit can give the same reviewed
+    /// proposal back for a retry (see `restore`).
     pub(crate) fn take_confirmed(
         &self,
         proposal_id: u64,
@@ -226,9 +232,47 @@ impl CorrectAndTeachState {
         {
             return Err("Correction review changed".into());
         }
-        pending
+        let taken = pending
             .take()
-            .ok_or_else(|| "Correction review changed".into())
+            .ok_or_else(|| "Correction review changed".to_string())?;
+        *self.committing.lock_or_recover() = Some(taken.clone());
+        Ok(taken)
+    }
+
+    /// Give a taken capability back after its commit failed. It is restored
+    /// only while it is still the newest proposal: a newer review, or a
+    /// discard, clears the `committing` slot and makes this a no-op.
+    pub(crate) fn restore(&self, proposal_id: u64) {
+        let mut pending = self.pending.lock_or_recover();
+        let mut committing = self.committing.lock_or_recover();
+        if pending.is_none()
+            && committing
+                .as_ref()
+                .is_some_and(|taken| taken.proposal_id == proposal_id)
+        {
+            *pending = committing.take();
+        }
+    }
+
+    /// Persist a taken capability. A failed write restores it so the same
+    /// reviewed proposal can be confirmed again; success consumes it.
+    pub(crate) fn persist(
+        &self,
+        knowledge: &crate::knowledge_store::KnowledgeStore,
+        proposal_id: u64,
+        pending: PendingCorrection,
+        scope: KnowledgeScope,
+    ) -> Result<crate::knowledge_store::KnowledgeEntry, String> {
+        match knowledge.create_learned_replacement(pending.source, pending.replacement, scope) {
+            Ok(entry) => {
+                self.discard(proposal_id);
+                Ok(entry)
+            }
+            Err(error) => {
+                self.restore(proposal_id);
+                Err(error)
+            }
+        }
     }
 
     pub fn discard(&self, proposal_id: u64) {
@@ -239,6 +283,21 @@ impl CorrectAndTeachState {
         {
             *pending = None;
         }
+        let mut committing = self.committing.lock_or_recover();
+        if committing
+            .as_ref()
+            .is_some_and(|proposal| proposal.proposal_id == proposal_id)
+        {
+            *committing = None;
+        }
+    }
+
+    /// Clear every capability, including one being committed.
+    fn clear(&self) {
+        let mut pending = self.pending.lock_or_recover();
+        let mut committing = self.committing.lock_or_recover();
+        *pending = None;
+        *committing = None;
     }
 }
 
@@ -654,12 +713,16 @@ mod tests {
     fn rejects_multiple_optimal_normalized_alignments() {
         let before = tokenize("ONE alpha one");
         let after = tokenize("one beta");
-        assert!(unique_normalized_lcs_matches(&before, &after)
-            .unwrap_err()
-            .contains("ambiguous"));
-        assert!(propose_rule("ONE alpha one", "one beta")
-            .unwrap_err()
-            .contains("ambiguous"));
+        assert!(
+            unique_normalized_lcs_matches(&before, &after)
+                .unwrap_err()
+                .contains("ambiguous")
+        );
+        assert!(
+            propose_rule("ONE alpha one", "one beta")
+                .unwrap_err()
+                .contains("ambiguous")
+        );
     }
 
     #[test]
@@ -676,31 +739,45 @@ mod tests {
 
     #[test]
     fn rejects_ambiguous_multiple_edits_and_unbounded_changes() {
-        assert!(propose_rule("alpha middle omega", "beta middle delta")
-            .unwrap_err()
-            .contains("more than one"));
-        assert!(propose_rule("alpha", "alpha beta")
-            .unwrap_err()
-            .contains("Insertions"));
-        assert!(propose_rule("alpha beta", "alpha")
-            .unwrap_err()
-            .contains("deletions"));
-        assert!(propose_rule("hello!", "hello?")
-            .unwrap_err()
-            .contains("Punctuation"));
-        assert!(propose_rule("alpha  beta", "alpha beta")
-            .unwrap_err()
-            .contains("Whitespace"));
+        assert!(
+            propose_rule("alpha middle omega", "beta middle delta")
+                .unwrap_err()
+                .contains("more than one")
+        );
+        assert!(
+            propose_rule("alpha", "alpha beta")
+                .unwrap_err()
+                .contains("Insertions")
+        );
+        assert!(
+            propose_rule("alpha beta", "alpha")
+                .unwrap_err()
+                .contains("deletions")
+        );
+        assert!(
+            propose_rule("hello!", "hello?")
+                .unwrap_err()
+                .contains("Punctuation")
+        );
+        assert!(
+            propose_rule("alpha  beta", "alpha beta")
+                .unwrap_err()
+                .contains("Whitespace")
+        );
         assert!(propose_rule("alpha beta", "beta alpha").is_err());
-        assert!(propose_rule(
-            "one two three four five six seven eight nine",
-            "a b c d e f g h i"
-        )
-        .unwrap_err()
-        .contains("too broad"));
-        assert!(propose_rule("murmur app is ready", "Murmur App is ready")
+        assert!(
+            propose_rule(
+                "one two three four five six seven eight nine",
+                "a b c d e f g h i"
+            )
             .unwrap_err()
-            .contains("more than one"));
+            .contains("too broad")
+        );
+        assert!(
+            propose_rule("murmur app is ready", "Murmur App is ready")
+                .unwrap_err()
+                .contains("more than one")
+        );
         assert!(propose_rule(&"a".repeat(MAX_TRANSCRIPT_CHARS + 1), "b").is_err());
     }
 
@@ -946,21 +1023,151 @@ mod tests {
         let CorrectionProposalOutcome::Proposal { proposal_id, .. } = outcome else {
             panic!("expected proposal")
         };
-        assert!(state
-            .confirmed(proposal_id, &KnowledgeScope::Global)
-            .is_ok());
-        assert!(state
-            .confirmed(
-                proposal_id,
-                &KnowledgeScope::App {
-                    bundle_id: "invented".to_string()
-                }
-            )
-            .is_err());
+        assert!(
+            state
+                .confirmed(proposal_id, &KnowledgeScope::Global)
+                .is_ok()
+        );
+        assert!(
+            state
+                .confirmed(
+                    proposal_id,
+                    &KnowledgeScope::App {
+                        bundle_id: "invented".to_string()
+                    }
+                )
+                .is_err()
+        );
         state.discard(proposal_id);
-        assert!(state
-            .confirmed(proposal_id, &KnowledgeScope::Global)
-            .is_err());
+        assert!(
+            state
+                .confirmed(proposal_id, &KnowledgeScope::Global)
+                .is_err()
+        );
+    }
+
+    fn propose_neo(state: &CorrectAndTeachState, original: &str, corrected: &str) -> u64 {
+        let outcome = state.propose(
+            CorrectionProposalRequest {
+                original_text: original.to_string(),
+                corrected_text: corrected.to_string(),
+                teaching_context: None,
+            },
+            &DictationState::default(),
+            &[],
+        );
+        let CorrectionProposalOutcome::Proposal { proposal_id, .. } = outcome else {
+            panic!("expected proposal")
+        };
+        proposal_id
+    }
+
+    #[test]
+    fn failed_commit_restores_the_capability_and_a_retry_can_succeed() {
+        let temp = tempfile::tempdir().unwrap();
+        // The store is not initialized yet, so the first write fails.
+        let store = crate::knowledge_store::KnowledgeStore::default();
+        let state = CorrectAndTeachState::default();
+        let id = propose_neo(&state, "George Neo", "George Nijo");
+
+        let taken = state.take_confirmed(id, &KnowledgeScope::Global).unwrap();
+        assert!(state.confirmed(id, &KnowledgeScope::Global).is_err());
+        let failed = state.persist(&store, id, taken, KnowledgeScope::Global);
+        assert!(failed.is_err());
+        assert!(
+            state.confirmed(id, &KnowledgeScope::Global).is_ok(),
+            "a failed commit must leave the reviewed proposal confirmable"
+        );
+
+        store.initialize(temp.path().join("knowledge"));
+        let retaken = state.take_confirmed(id, &KnowledgeScope::Global).unwrap();
+        let entry = state
+            .persist(&store, id, retaken, KnowledgeScope::Global)
+            .expect("retry after the store recovered should commit");
+        assert!(matches!(
+            entry.payload,
+            crate::knowledge_store::KnowledgePayload::ReplacementRule { .. }
+        ));
+        // Success consumes the capability for good.
+        assert!(state.confirmed(id, &KnowledgeScope::Global).is_err());
+        assert!(state.take_confirmed(id, &KnowledgeScope::Global).is_err());
+    }
+
+    #[test]
+    fn same_scope_conflict_keeps_its_explanation_and_the_capability() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = crate::knowledge_store::KnowledgeStore::default();
+        store.initialize(temp.path().join("knowledge"));
+        store
+            .create_learned_replacement("neo".into(), "Neo".into(), KnowledgeScope::Global)
+            .unwrap();
+        let state = CorrectAndTeachState::default();
+        let id = propose_neo(&state, "George neo", "George Nijo");
+
+        let taken = state.take_confirmed(id, &KnowledgeScope::Global).unwrap();
+        let error = state
+            .persist(&store, id, taken, KnowledgeScope::Global)
+            .unwrap_err();
+        assert!(error.contains("Review or edit it in Knowledge"), "{error}");
+        assert!(state.confirmed(id, &KnowledgeScope::Global).is_ok());
+    }
+
+    #[test]
+    fn restore_never_resurrects_a_superseded_or_discarded_proposal() {
+        let store = crate::knowledge_store::KnowledgeStore::default();
+        let state = CorrectAndTeachState::default();
+
+        // A newer proposal wins over the failed commit of the older one.
+        let first = propose_neo(&state, "George Neo", "George Nijo");
+        let taken = state
+            .take_confirmed(first, &KnowledgeScope::Global)
+            .unwrap();
+        let second = propose_neo(&state, "Ask Neo", "Ask Nijo");
+        assert!(
+            state
+                .persist(&store, first, taken, KnowledgeScope::Global)
+                .is_err()
+        );
+        assert!(state.confirmed(first, &KnowledgeScope::Global).is_err());
+        assert!(state.confirmed(second, &KnowledgeScope::Global).is_ok());
+
+        // An unsafe newer review also revokes it.
+        let third = propose_neo(&state, "Neo Neo", "Neo Nijo");
+        let taken = state
+            .take_confirmed(third, &KnowledgeScope::Global)
+            .unwrap();
+        let unsafe_outcome = state.propose(
+            CorrectionProposalRequest {
+                original_text: "same".into(),
+                corrected_text: "same".into(),
+                teaching_context: None,
+            },
+            &DictationState::default(),
+            &[],
+        );
+        assert!(matches!(
+            unsafe_outcome,
+            CorrectionProposalOutcome::Unsafe { .. }
+        ));
+        assert!(
+            state
+                .persist(&store, third, taken, KnowledgeScope::Global)
+                .is_err()
+        );
+        assert!(state.confirmed(third, &KnowledgeScope::Global).is_err());
+
+        // A discard (dialog closed) does too.
+        let fourth = propose_neo(&state, "George Neo", "George Nijo");
+        let taken = state
+            .take_confirmed(fourth, &KnowledgeScope::Global)
+            .unwrap();
+        state.discard(fourth);
+        assert!(
+            state
+                .persist(&store, fourth, taken, KnowledgeScope::Global)
+                .is_err()
+        );
+        assert!(state.confirmed(fourth, &KnowledgeScope::Global).is_err());
     }
 
     #[test]
@@ -1009,8 +1216,10 @@ mod tests {
             unsafe_outcome,
             CorrectionProposalOutcome::Unsafe { .. }
         ));
-        assert!(state
-            .confirmed(proposal_id, &KnowledgeScope::Global)
-            .is_err());
+        assert!(
+            state
+                .confirmed(proposal_id, &KnowledgeScope::Global)
+                .is_err()
+        );
     }
 }

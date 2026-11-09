@@ -42,6 +42,14 @@ an explicit Save correction only, or after Remember correction commits the rule.
 Back discards the pending proposal; a failed commit leaves History untouched, and
 a committed rule with a failed edit is reported and retries only the edit. A
 specific-term form proposes an exact heard term and replacement for review.
+History always receives the typed correction, never the rule preview; a failed
+confirmation restores the reviewed proposal for another attempt unless a newer
+review replaced it; closing the dialog stops any later History write; the
+transcript editors are multiline and the dialog scrolls inside the window.
+Native QA only (`native-host-qa`, bundle `com.localdictation.gpui-host-qa110`):
+`MURMUR_QA_TEACH_FAULT=review|confirm|history` (or `-once`) injects a failure
+and `MURMUR_QA_TEACH_DELAY_MS` (at most 30000) delays the review reply, the
+confirmation reply and the History read.
 No transcript, audio, clipboard, selection or private capture payload is logged.
 
 ## Implementation checks

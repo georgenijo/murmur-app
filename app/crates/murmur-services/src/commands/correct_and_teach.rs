@@ -127,6 +127,21 @@ pub fn confirm_learned_correction(
     let pending = state.correct_and_teach.confirmed(proposal_id, &scope)?;
     commit_confirmation(app, proposal_id, pending, scope, state)
 }
+/// Native QA only: `MURMUR_QA_TEACH_FAULT=confirm` fails every rule commit and
+/// `=confirm-once` only the first, after the reviewed proposal was admitted.
+/// Inert unless built with `native-host-qa` and run as the QA test bundle.
+#[cfg(feature = "native-host-qa")]
+fn qa_confirmation_fault(app: &crate::host::Context) -> bool {
+    static SPENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if app.config().identifier != "com.localdictation.gpui-host-qa110" {
+        return false;
+    }
+    match std::env::var("MURMUR_QA_TEACH_FAULT").as_deref() {
+        Ok("confirm") => true,
+        Ok("confirm-once") => !SPENT.swap(true, std::sync::atomic::Ordering::SeqCst),
+        _ => false,
+    }
+}
 pub(crate) fn commit_confirmation(
     app: crate::host::Context,
     proposal_id: u64,
@@ -134,14 +149,20 @@ pub(crate) fn commit_confirmation(
     scope: KnowledgeScope,
     state: crate::host::StateRef<'_, State>,
 ) -> Result<KnowledgeEntry, String> {
-    let entry =
-        state
-            .knowledge
-            .create_learned_replacement(pending.source, pending.replacement, scope)?;
+    #[cfg(feature = "native-host-qa")]
+    if qa_confirmation_fault(&app) {
+        // Same recovery a failed write gets: the reviewed proposal is restored.
+        state.correct_and_teach.restore(proposal_id);
+        return Err("Injected confirmation failure. Murmur kept the reviewed correction, so Remember can be retried.".into());
+    }
+    // A failed write restores the reviewed proposal so the same dialog can
+    // confirm it again; success consumes it.
+    let entry = state
+        .correct_and_teach
+        .persist(&state.knowledge, proposal_id, pending, scope)?;
     if let Err(error) = crate::commands::knowledge::refresh_correction_rules(&state) {
         tracing::warn!(target: "system", error, "correct_and_teach matcher refresh failed");
     }
-    state.correct_and_teach.discard(proposal_id);
     tracing::info!(
         target: "pipeline",
         scope = entry.scope.kind(),

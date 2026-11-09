@@ -4,6 +4,9 @@
 //! here so production composition and its tests share one path; `root.rs` only
 //! renders this state and forwards clicks.
 use super::os::Live;
+use crate::field::TextFieldState;
+use gpui::{App, Context, Entity, Window};
+use gpui_component::input::TextareaState;
 use murmur_core::history::Entry;
 use serde_json::{Value, json};
 use std::{future::Future, pin::Pin};
@@ -24,8 +27,53 @@ pub trait Gateway: Clone + Send + Sync + 'static {
     fn call(&self, command: &'static str, args: Value) -> Fut<Result<Value, String>>;
     /// Freeze the reviewed proposal and scope, then commit the learned rule.
     fn accept(&self, proposal: u64, scope: Value) -> Result<Fut<Result<(), String>>, String>;
-    /// Replace the exact History entry's text; fails when the entry changed.
-    fn edit(&self, entry: Entry, text: String) -> Fut<Result<(), String>>;
+    /// Replace the exact History entry's text; fails when the entry changed or
+    /// `live` turned false before the write.
+    fn edit(&self, entry: Entry, text: String, live: Live) -> Fut<Result<(), String>>;
+}
+
+/// The History owner as `edit_history` uses it.
+pub trait History: Send + Sync {
+    /// The current revision, and whether `target` is still in History.
+    fn read(&self, target: &Value) -> Fut<Result<(u64, bool), String>>;
+    /// The synchronous, revision-checked write.
+    fn write(&self, revision: u64, target: Value, text: String) -> Result<(), String>;
+}
+
+/// Edit one History entry. The dialog may close while History is read, so
+/// liveness is rechecked after that await and again right before the write,
+/// which follows it with no await in between.
+pub async fn edit_history<H: History>(
+    history: &H,
+    entry: &Entry,
+    text: String,
+    live: &Live,
+) -> Result<(), String> {
+    if !live() {
+        return Err(CANCELLED.into());
+    }
+    let target = entry.target();
+    let (revision, present) = history.read(&target).await?;
+    if !live() {
+        return Err(CANCELLED.into());
+    }
+    if !present {
+        return Err("History changed".into());
+    }
+    history.write(revision, target, text)
+}
+
+/// Show the service's own explanation when it is a safe, user-facing sentence
+/// (a bounded single sentence with no control characters, such as the
+/// same-scope conflict instruction); otherwise the generic fallback.
+pub fn explain(error: &str, fallback: &str) -> String {
+    let error = error.trim();
+    if error.ends_with('.') && error.chars().count() <= 300 && !error.chars().any(char::is_control)
+    {
+        error.to_owned()
+    } else {
+        fallback.to_owned()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -232,47 +280,116 @@ pub enum Review {
     Specific { source: String, replacement: String },
 }
 
-/// Native QA only: force one service failure so a tester can see its message.
-/// `MURMUR_QA_TEACH_FAULT=confirm` fails the rule commit; `=history` fails the
-/// History edit. Inert unless the binary is built with `native-host-qa`.
-fn qa_fault(kind: &str) -> bool {
-    cfg!(feature = "native-host-qa")
-        && std::env::var("MURMUR_QA_TEACH_FAULT").is_ok_and(|value| value == kind)
+/// Native QA fault injection. Inert unless the binary is built with
+/// `native-host-qa` and runs as the QA test bundle.
+///
+/// `MURMUR_QA_TEACH_FAULT` is one of `review`, `confirm`, `history` (fail every
+/// time) or `review-once`, `confirm-once`, `history-once` (fail only the first
+/// time in this process, so the same dialog can retry successfully). The
+/// `confirm` faults fire in the service commit, after the reviewed proposal was
+/// admitted. `MURMUR_QA_TEACH_DELAY_MS` (at most 30000) holds the review reply,
+/// the post-admission confirmation reply, and the History read, so a tester can
+/// close the dialog while that operation is in flight.
+mod qa {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Clone, Copy)]
+    pub enum Fault {
+        Review,
+        History,
+    }
+    static REVIEW_SPENT: AtomicBool = AtomicBool::new(false);
+    static HISTORY_SPENT: AtomicBool = AtomicBool::new(false);
+
+    fn enabled() -> bool {
+        cfg!(feature = "native-host-qa")
+            && super::super::os::identity() == "com.localdictation.gpui-host-qa110"
+    }
+    pub fn fault(fault: Fault) -> bool {
+        let (name, spent) = match fault {
+            Fault::Review => ("review", &REVIEW_SPENT),
+            Fault::History => ("history", &HISTORY_SPENT),
+        };
+        if !enabled() {
+            return false;
+        }
+        match std::env::var("MURMUR_QA_TEACH_FAULT") {
+            Ok(value) if value == name => true,
+            Ok(value) if value.strip_prefix(name) == Some("-once") => {
+                !spent.swap(true, Ordering::SeqCst)
+            }
+            _ => false,
+        }
+    }
+    pub async fn delay() {
+        if !enabled() {
+            return;
+        }
+        let milliseconds = std::env::var("MURMUR_QA_TEACH_DELAY_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .map_or(0, |value| value.min(30_000));
+        if milliseconds > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(milliseconds)).await;
+        }
+    }
+}
+
+impl History for super::backend::Backend {
+    fn read(&self, target: &Value) -> Fut<Result<(u64, bool), String>> {
+        let backend = self.clone();
+        let target = target.clone();
+        Box::pin(async move {
+            let (revision, snapshot) = backend.services.history_snapshot().await?;
+            qa::delay().await;
+            Ok((revision, snapshot.history.contains(&target)))
+        })
+    }
+    fn write(&self, revision: u64, target: Value, text: String) -> Result<(), String> {
+        self.services.mutate_history(
+            revision,
+            murmur_core::completion::Command::History(
+                murmur_core::completion::HistoryMutation::Edit { target, text },
+            ),
+        )
+    }
 }
 
 impl Gateway for super::backend::Backend {
     fn call(&self, command: &'static str, args: Value) -> Fut<Result<Value, String>> {
         let backend = self.clone();
-        Box::pin(async move { backend.call(command, args).await })
+        Box::pin(async move {
+            let review = matches!(
+                command,
+                "propose_learned_correction" | "propose_specific_learned_correction"
+            );
+            if review {
+                qa::delay().await;
+                if qa::fault(qa::Fault::Review) {
+                    return Err("Injected review failure.".into());
+                }
+            }
+            backend.call(command, args).await
+        })
     }
     fn accept(&self, proposal: u64, scope: Value) -> Result<Fut<Result<(), String>>, String> {
-        if qa_fault("confirm") {
-            return Err("Injected confirmation failure".into());
-        }
         let job = self.services.accept_correction(proposal, scope)?;
         Ok(Box::pin(async move {
-            job.await
+            let committed = job
+                .await
                 .map_err(|_| "Correction owner unavailable".to_owned())?
-                .map(|_| ())
+                .map(|_| ());
+            qa::delay().await;
+            committed
         }))
     }
-    fn edit(&self, entry: Entry, text: String) -> Fut<Result<(), String>> {
+    fn edit(&self, entry: Entry, text: String, live: Live) -> Fut<Result<(), String>> {
         let backend = self.clone();
         Box::pin(async move {
-            if qa_fault("history") {
-                return Err("Injected History failure".into());
+            if qa::fault(qa::Fault::History) {
+                return Err("Injected History failure.".into());
             }
-            let (revision, snapshot) = backend.services.history_snapshot().await?;
-            let target = entry.target();
-            if !snapshot.history.contains(&target) {
-                return Err("History changed".into());
-            }
-            backend.services.mutate_history(
-                revision,
-                murmur_core::completion::Command::History(
-                    murmur_core::completion::HistoryMutation::Edit { target, text },
-                ),
-            )
+            edit_history(&backend, &entry, text, &live).await
         })
     }
 }
@@ -310,12 +427,10 @@ pub async fn review<G: Gateway>(
             true,
         ),
     };
-    let result = gateway
-        .call(command, json!({"request":request}))
-        .await
-        .ok()
-        .and_then(|value| Outcome::parse(&value))
-        .ok_or_else(|| REVIEW_FAILED.to_owned());
+    let result = match gateway.call(command, json!({"request":request})).await {
+        Ok(value) => Outcome::parse(&value).ok_or_else(|| REVIEW_FAILED.to_owned()),
+        Err(error) => Err(explain(&error, REVIEW_FAILED)),
+    };
     if !live()
         && let Ok(Outcome::Proposal(proposal)) = &result
     {
@@ -336,8 +451,16 @@ pub async fn save_only<G: Gateway>(
     if !live() {
         return Settled::Failed(CANCELLED.into());
     }
-    if gateway.edit(entry.clone(), corrected).await.is_err() {
-        return Settled::Failed(HISTORY_FAILED.into());
+    if gateway
+        .edit(entry.clone(), corrected, live.clone())
+        .await
+        .is_err()
+    {
+        return Settled::Failed(if live() {
+            HISTORY_FAILED.into()
+        } else {
+            CANCELLED.into()
+        });
     }
     if let Some(id) = proposal {
         discard(gateway, id).await;
@@ -363,12 +486,69 @@ pub async fn remember<G: Gateway>(
         Ok(job) => job.await,
         Err(error) => Err(error),
     };
-    if committed.is_err() {
-        return Settled::Failed(REMEMBER_FAILED.into());
+    if let Err(error) = committed {
+        return Settled::Failed(explain(&error, REMEMBER_FAILED));
     }
-    match gateway.edit(entry.clone(), corrected).await {
+    // The rule is committed and cannot be revoked, but a dialog closed while
+    // waiting must not edit History afterwards.
+    if !live() {
+        return Settled::Failed(CANCELLED.into());
+    }
+    // History gets the text the user typed, not the rule's preview; a specific
+    // term can leave the typed text unchanged, which needs no edit.
+    if corrected.trim().is_empty() || corrected == entry.text {
+        return Settled::Closed;
+    }
+    match gateway.edit(entry.clone(), corrected, live.clone()).await {
         Ok(()) => Settled::Closed,
+        Err(_) if !live() => Settled::Failed(CANCELLED.into()),
         Err(_) => Settled::RuleSaved(RULE_SAVED_HISTORY_FAILED.into()),
+    }
+}
+
+/// The four editors of the dialog. The corrected and heard transcripts are
+/// multiline; the specific term and its replacement are single-line.
+#[derive(Clone)]
+pub struct Fields {
+    pub corrected: Entity<TextareaState>,
+    pub heard: Entity<TextareaState>,
+    pub source: Entity<TextFieldState>,
+    pub replacement: Entity<TextFieldState>,
+}
+impl Fields {
+    pub fn new<T: 'static>(w: &mut Window, cx: &mut Context<T>) -> Self {
+        Self {
+            corrected: cx.new(|cx| TextareaState::new(w, cx)),
+            heard: cx.new(|cx| TextareaState::new(w, cx)),
+            source: cx.new(|cx| TextFieldState::new(w, cx)),
+            replacement: cx.new(|cx| TextFieldState::new(w, cx)),
+        }
+    }
+    /// Load a History entry exactly as stored, line breaks included, so opening
+    /// the dialog never changes the transcript.
+    pub fn seed(&self, entry: &Entry, w: &mut Window, cx: &mut App) {
+        self.corrected
+            .update(cx, |s, cx| s.set_value(entry.text.clone(), w, cx));
+        self.heard
+            .update(cx, |s, cx| s.set_value(entry.text.clone(), w, cx));
+        self.source
+            .update(cx, |s, cx| s.set_value(String::new(), w, cx));
+        self.replacement
+            .update(cx, |s, cx| s.set_value(String::new(), w, cx));
+    }
+    /// The heard term is one line: selected line breaks and runs of whitespace
+    /// become single spaces, never joined words.
+    pub fn selected_term(&self, cx: &App) -> String {
+        let selected = self.heard.read(cx).selected_value();
+        selected.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+    pub fn use_selection(&self, w: &mut Window, cx: &mut App) -> bool {
+        let term = self.selected_term(cx);
+        if term.is_empty() {
+            return false;
+        }
+        self.source.update(cx, |s, cx| s.set_value(term, w, cx));
+        true
     }
 }
 
@@ -399,14 +579,22 @@ mod tests {
         Arc::new(|| true)
     }
 
-    /// Deterministic service that records every call in order.
+    type Gate = Arc<Mutex<Option<futures::channel::oneshot::Receiver<()>>>>;
+
+    /// Deterministic service that records every call in order. History goes
+    /// through the production `edit_history`, so liveness checks are real.
     #[derive(Clone, Default)]
     struct Fake {
         log: Arc<Mutex<Vec<String>>>,
         reply: Arc<Mutex<Option<Value>>>,
         fail_call: bool,
+        call_error: Option<&'static str>,
+        accept_error: Option<&'static str>,
         fail_accept: bool,
         fail_edit: bool,
+        /// Suspends the next History read, or the next accept, until released.
+        read_gate: Gate,
+        accept_gate: Gate,
     }
     impl Fake {
         fn replying(value: Value) -> Self {
@@ -421,7 +609,9 @@ mod tests {
     impl Gateway for Fake {
         fn call(&self, command: &'static str, args: Value) -> Fut<Result<Value, String>> {
             self.log.lock().unwrap().push(format!("{command} {args}"));
-            let result = if self.fail_call {
+            let result = if let Some(error) = self.call_error {
+                Err(error.to_owned())
+            } else if self.fail_call {
                 Err("synthetic service failure".to_owned())
             } else {
                 Ok(self.reply.lock().unwrap().clone().unwrap_or(Value::Null))
@@ -433,29 +623,58 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("accept {proposal} {scope}"));
-            let fail = self.fail_accept;
+            let error = self
+                .accept_error
+                .map(str::to_owned)
+                .or_else(|| self.fail_accept.then(|| "changed".to_owned()));
+            let gate = self.accept_gate.lock().unwrap().take();
             Ok(Box::pin(async move {
-                if fail {
-                    Err("changed".to_owned())
-                } else {
-                    Ok(())
+                if let Some(gate) = gate {
+                    let _ = gate.await;
                 }
+                error.map_or(Ok(()), Err)
             }))
         }
-        fn edit(&self, entry: Entry, text: String) -> Fut<Result<(), String>> {
+        fn edit(&self, entry: Entry, text: String, live: Live) -> Fut<Result<(), String>> {
+            let fake = self.clone();
+            Box::pin(async move { edit_history(&fake, &entry, text, &live).await })
+        }
+    }
+    impl History for Fake {
+        fn read(&self, _: &Value) -> Fut<Result<(u64, bool), String>> {
+            let gate = self.read_gate.lock().unwrap().take();
+            Box::pin(async move {
+                if let Some(gate) = gate {
+                    let _ = gate.await;
+                }
+                Ok((7, true))
+            })
+        }
+        fn write(&self, _: u64, target: Value, text: String) -> Result<(), String> {
             self.log
                 .lock()
                 .unwrap()
-                .push(format!("edit {} {text}", entry.key));
-            let fail = self.fail_edit;
-            Box::pin(async move {
-                if fail {
-                    Err("History changed".to_owned())
-                } else {
-                    Ok(())
-                }
-            })
+                .push(format!("edit {} {text}", target["id"].as_str().unwrap()));
+            if self.fail_edit {
+                Err("History changed".to_owned())
+            } else {
+                Ok(())
+            }
         }
+    }
+    /// A gate that suspends one operation until the sender fires.
+    fn gated() -> (Gate, futures::channel::oneshot::Sender<()>) {
+        let (release, wait) = futures::channel::oneshot::channel();
+        (Arc::new(Mutex::new(Some(wait))), release)
+    }
+    /// A `live` flag a test can flip while an operation is suspended.
+    fn cancellable() -> (Live, Arc<std::sync::atomic::AtomicBool>) {
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let seen = flag.clone();
+        (
+            Arc::new(move || seen.load(std::sync::atomic::Ordering::SeqCst)),
+            flag,
+        )
     }
     fn block<T>(work: impl Future<Output = T>) -> T {
         futures::executor::block_on(work)
@@ -632,7 +851,7 @@ mod tests {
         let log = fake.log();
         assert_eq!(log.len(), 2, "{log:?}");
         assert!(log[0].starts_with("accept 7 ") && log[0].contains("synthetic.app"));
-        assert_eq!(log[1], format!("edit 1 {AFTER}"));
+        assert_eq!(log[1], format!("edit e1 {AFTER}"));
         assert!(t.settle(settled));
     }
 
@@ -698,7 +917,7 @@ mod tests {
         let healthy = Fake::default();
         let settled = block(save_only(&healthy, &live(), &entry, AFTER.into(), None));
         assert_eq!(settled, Settled::Closed);
-        assert_eq!(healthy.log(), vec![format!("edit 1 {AFTER}")]);
+        assert_eq!(healthy.log(), vec![format!("edit e1 {AFTER}")]);
     }
 
     #[test]
@@ -708,7 +927,7 @@ mod tests {
         let settled = block(save_only(&fake, &live(), &entry, AFTER.into(), Some(7)));
         assert_eq!(settled, Settled::Closed);
         let log = fake.log();
-        assert_eq!(log[0], format!("edit 1 {AFTER}"));
+        assert_eq!(log[0], format!("edit e1 {AFTER}"));
         assert!(log[1].starts_with("discard_learned_correction_proposal "));
         assert!(!log.iter().any(|l| l.starts_with("accept")));
         // A failed edit keeps the proposal so the user can retry or go back.
@@ -762,5 +981,305 @@ mod tests {
         assert!(!t.can_review(BEFORE));
         assert!(!t.can_review("   "));
         assert!(t.can_review(AFTER));
+    }
+
+    const TYPED: &str = "ask synthetic nijo today and synthetic neo later";
+    const CONFLICT: &str = "A replacement rule already uses this phrase and scope. Review or edit it in Knowledge before teaching another.";
+
+    fn cancel(
+        flag: &Arc<std::sync::atomic::AtomicBool>,
+        release: futures::channel::oneshot::Sender<()>,
+    ) -> impl Future<Output = ()> {
+        let flag = flag.clone();
+        async move {
+            flag.store(false, std::sync::atomic::Ordering::SeqCst);
+            let _ = release.send(());
+        }
+    }
+
+    #[test]
+    fn closing_while_history_is_read_never_writes_it() {
+        let fake = Fake::default();
+        let (gate, release) = gated();
+        *fake.read_gate.lock().unwrap() = gate.lock().unwrap().take();
+        let (live, flag) = cancellable();
+        let entry = entry();
+        let save = save_only(&fake, &live, &entry, AFTER.into(), Some(7));
+        let (settled, ()) = block(futures::future::join(save, cancel(&flag, release)));
+        assert_eq!(settled, Settled::Failed(CANCELLED.into()));
+        assert_eq!(edits(&fake.log()), 0, "{:?}", fake.log());
+        // The same suspension under a still-open dialog does write exactly once.
+        let open = Fake::default();
+        let (gate, release) = gated();
+        *open.read_gate.lock().unwrap() = gate.lock().unwrap().take();
+        let (live, _flag) = cancellable();
+        let save = save_only(&open, &live, &entry, AFTER.into(), None);
+        let release = async move {
+            let _ = release.send(());
+        };
+        let (settled, ()) = block(futures::future::join(save, release));
+        assert_eq!(settled, Settled::Closed);
+        assert_eq!(edits(&open.log()), 1);
+    }
+
+    #[test]
+    fn closing_while_a_rule_is_confirming_never_edits_history_afterwards() {
+        let fake = Fake::default();
+        let (gate, release) = gated();
+        *fake.accept_gate.lock().unwrap() = gate.lock().unwrap().take();
+        let (live, flag) = cancellable();
+        let entry = entry();
+        let remember = remember(
+            &fake,
+            &live,
+            &entry,
+            TYPED.into(),
+            7,
+            json!({"kind":"global"}),
+        );
+        let (settled, ()) = block(futures::future::join(remember, cancel(&flag, release)));
+        assert_eq!(settled, Settled::Failed(CANCELLED.into()));
+        let log = fake.log();
+        assert!(log[0].starts_with("accept 7 "), "{log:?}");
+        assert_eq!(edits(&log), 0, "{log:?}");
+    }
+
+    #[test]
+    fn closing_while_history_is_read_after_a_confirmed_rule_never_writes_it() {
+        let fake = Fake::default();
+        let (gate, release) = gated();
+        *fake.read_gate.lock().unwrap() = gate.lock().unwrap().take();
+        let (live, flag) = cancellable();
+        let entry = entry();
+        let remember = remember(
+            &fake,
+            &live,
+            &entry,
+            TYPED.into(),
+            7,
+            json!({"kind":"global"}),
+        );
+        let (settled, ()) = block(futures::future::join(remember, cancel(&flag, release)));
+        assert_eq!(settled, Settled::Failed(CANCELLED.into()));
+        assert_eq!(edits(&fake.log()), 0, "{:?}", fake.log());
+    }
+
+    #[test]
+    fn a_specific_term_saves_the_typed_correction_not_the_rule_preview() {
+        let fake = Fake::default();
+        let entry = entry();
+        let settled = block(remember(
+            &fake,
+            &live(),
+            &entry,
+            TYPED.into(),
+            7,
+            json!({"kind":"global"}),
+        ));
+        assert_eq!(settled, Settled::Closed);
+        let log = fake.log();
+        assert_eq!(log[1], format!("edit e1 {TYPED}"), "{log:?}");
+        assert!(!log.iter().any(|line| line.contains(AFTER)));
+        // Typed text left unchanged (rule only) is not written back at all.
+        let rule_only = Fake::default();
+        let settled = block(remember(
+            &rule_only,
+            &live(),
+            &entry,
+            BEFORE.into(),
+            7,
+            json!({"kind":"global"}),
+        ));
+        assert_eq!(settled, Settled::Closed);
+        assert_eq!(edits(&rule_only.log()), 0);
+        let blank = Fake::default();
+        let settled = block(remember(
+            &blank,
+            &live(),
+            &entry,
+            "  ".into(),
+            7,
+            json!({"kind":"global"}),
+        ));
+        assert_eq!(settled, Settled::Closed);
+        assert_eq!(edits(&blank.log()), 0);
+    }
+
+    #[test]
+    fn service_explanations_survive_and_unsafe_text_falls_back() {
+        assert_eq!(explain(CONFLICT, REMEMBER_FAILED), CONFLICT);
+        assert_eq!(
+            explain("  Try again later.  ", REMEMBER_FAILED),
+            "Try again later."
+        );
+        for bad in [
+            "Correction review changed",
+            "database error\nstack frame.",
+            "",
+            &format!("{}.", "x".repeat(400)),
+        ] {
+            assert_eq!(explain(bad, REMEMBER_FAILED), REMEMBER_FAILED, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_conflicting_confirmation_explains_itself_and_the_same_dialog_can_retry() {
+        let entry = entry();
+        let mut t = Teaching::new(entry.clone(), 1);
+        t.settle(Settled::Reviewed {
+            specific: false,
+            result: Ok(Outcome::parse(&proposal_json(7)).unwrap()),
+        });
+        t.busy = true;
+        let conflicted = Fake {
+            accept_error: Some(CONFLICT),
+            ..Fake::default()
+        };
+        let settled = block(remember(
+            &conflicted,
+            &live(),
+            &entry,
+            AFTER.into(),
+            7,
+            json!({"kind":"global"}),
+        ));
+        assert_eq!(settled, Settled::Failed(CONFLICT.into()));
+        assert_eq!(edits(&conflicted.log()), 0);
+        assert!(!t.settle(settled));
+        assert_eq!((t.step, t.proposal_id()), (Step::AutomaticReview, Some(7)));
+        assert_eq!(t.error.as_deref(), Some(CONFLICT));
+        // A different scope, same proposal, same dialog: the retry succeeds.
+        t.select_scope(1);
+        t.busy = true;
+        let healthy = Fake::default();
+        let scope = t.selected_scope().unwrap().scope.clone();
+        let settled = block(remember(&healthy, &live(), &entry, AFTER.into(), 7, scope));
+        assert_eq!(settled, Settled::Closed);
+        assert!(
+            healthy.log()[0].starts_with("accept 7 ") && healthy.log()[0].contains("synthetic.app")
+        );
+        assert!(t.settle(settled));
+    }
+
+    #[test]
+    fn review_failures_show_the_service_explanation_or_the_fallback() {
+        let entry = entry();
+        let explained = Fake {
+            call_error: Some("The local knowledge store is unavailable."),
+            ..Fake::default()
+        };
+        let settled = block(review(
+            &explained,
+            &live(),
+            &entry,
+            Review::Automatic {
+                corrected: AFTER.into(),
+            },
+        ));
+        assert_eq!(
+            settled,
+            Settled::Reviewed {
+                specific: false,
+                result: Err("The local knowledge store is unavailable.".into())
+            }
+        );
+        let opaque = Fake {
+            call_error: Some("Murmur is shutting down"),
+            ..Fake::default()
+        };
+        let settled = block(review(
+            &opaque,
+            &live(),
+            &entry,
+            Review::Automatic {
+                corrected: AFTER.into(),
+            },
+        ));
+        assert_eq!(
+            settled,
+            Settled::Reviewed {
+                specific: false,
+                result: Err(REVIEW_FAILED.into())
+            }
+        );
+        let mut t = Teaching::new(entry, 1);
+        t.busy = true;
+        assert!(!t.settle(Settled::Reviewed {
+            specific: false,
+            result: Err("The local knowledge store is unavailable.".into())
+        }));
+        assert_eq!(t.step, Step::Edit);
+        assert_eq!(
+            t.error.as_deref(),
+            Some("The local knowledge store is unavailable.")
+        );
+    }
+
+    struct Host {
+        fields: Fields,
+    }
+    impl gpui::Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
+            gpui::Empty
+        }
+    }
+    const MULTILINE: &str = "alpha beta\ngamma delta\n\nepsilon";
+
+    fn opened(cx: &mut gpui::TestAppContext) -> (Fields, &mut gpui::VisualTestContext) {
+        cx.update(crate::init);
+        let slot = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let inner = slot.clone();
+        let (_, cx) = cx.add_window_view(move |w, cx| {
+            let host = cx.new(|cx| Host {
+                fields: Fields::new(w, cx),
+            });
+            *inner.borrow_mut() = Some(host.read(cx).fields.clone());
+            gpui_base::Root::new(host, w, cx)
+        });
+        let fields = slot.borrow().clone().expect("fields");
+        (fields, cx)
+    }
+
+    #[gpui::test]
+    fn a_multiline_entry_opens_unchanged_and_a_selection_keeps_its_words_apart(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (fields, cx) = opened(cx);
+        let entry = Entry::project(
+            1,
+            json!({"id":"e1","text":MULTILINE,"timestamp":1,"duration":1.0}),
+        )
+        .unwrap();
+        cx.update(|w, app| fields.seed(&entry, w, app));
+        let corrected = fields.corrected.read_with(cx, |s, _| s.value().to_string());
+        let heard = fields.heard.read_with(cx, |s, _| s.value().to_string());
+        assert_eq!(corrected, MULTILINE, "line breaks must survive opening");
+        assert_eq!(heard, MULTILINE);
+        // Opening alone is not an edit, so review stays unavailable.
+        assert!(!Teaching::new(entry.clone(), 1).can_review(&corrected));
+        // A selection across a line break becomes two separate words.
+        fields
+            .heard
+            .update(cx, |s, cx| s.set_selected_range(6..16, cx));
+        assert_eq!(
+            fields
+                .heard
+                .read_with(cx, |s, _| s.selected_value().to_string()),
+            "beta\ngamma"
+        );
+        assert!(cx.update(|w, app| fields.use_selection(w, app)));
+        assert_eq!(
+            fields.source.read_with(cx, |s, _| s.value().to_string()),
+            "beta gamma"
+        );
+        // An empty selection changes nothing.
+        fields
+            .heard
+            .update(cx, |s, cx| s.set_selected_range(3..3, cx));
+        assert!(!cx.update(|w, app| fields.use_selection(w, app)));
+        assert_eq!(
+            fields.source.read_with(cx, |s, _| s.value().to_string()),
+            "beta gamma"
+        );
     }
 }

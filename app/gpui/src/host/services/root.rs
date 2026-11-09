@@ -1,8 +1,9 @@
 //! Main window composition. Only the active section holds a presentation lease.
 use super::backend::{Backend, Route};
 use super::teaching::{self, Review, Settled, Step, Teaching};
-use crate::{Button, TextField, field::TextFieldState, settings::schema::Page, tokens::Palette};
+use crate::{Button, TextField, settings::schema::Page, tokens::Palette};
 use gpui::{prelude::*, *};
+use gpui_component::input::Textarea;
 use serde_json::json;
 use std::{
     rc::Rc,
@@ -59,10 +60,7 @@ pub struct Main {
     lifetime: Arc<AtomicU64>,
     notes_page: usize,
     teaching: Option<Teaching>,
-    corrected: Entity<TextFieldState>,
-    heard: Entity<TextFieldState>,
-    specific_source: Entity<TextFieldState>,
-    specific_replacement: Entity<TextFieldState>,
+    fields: teaching::Fields,
     teaching_epoch: Arc<AtomicU64>,
     return_section: Option<Section>,
     error: Option<&'static str>,
@@ -94,10 +92,7 @@ impl Main {
         insights.update(cx, |s, _| s.embedded = true);
         meetings.update(cx, |s, _| s.embedded = true);
         let palette = cx.new(|cx| crate::palette::CommandPalette::new(host, w, cx));
-        let corrected = cx.new(|cx| TextFieldState::new(w, cx));
-        let heard = cx.new(|cx| TextFieldState::new(w, cx));
-        let specific_source = cx.new(|cx| TextFieldState::new(w, cx));
-        let specific_replacement = cx.new(|cx| TextFieldState::new(w, cx));
+        let fields = teaching::Fields::new(w, cx);
         let mut s = Self {
             backend,
             section: Section::Home,
@@ -121,10 +116,7 @@ impl Main {
             lifetime: Arc::new(AtomicU64::new(1)),
             notes_page: 0,
             teaching: None,
-            corrected,
-            heard,
-            specific_source,
-            specific_replacement,
+            fields,
             teaching_epoch: Default::default(),
             return_section: None,
             error: None,
@@ -148,12 +140,11 @@ impl Main {
             }),
         );
         // Review buttons follow the typed text and the heard-term selection.
-        for field in [
-            s.corrected.clone(),
-            s.heard.clone(),
-            s.specific_source.clone(),
-            s.specific_replacement.clone(),
-        ] {
+        for field in [s.fields.corrected.clone(), s.fields.heard.clone()] {
+            s.subscriptions
+                .push(cx.observe(&field, |_, _, cx| cx.notify()));
+        }
+        for field in [s.fields.source.clone(), s.fields.replacement.clone()] {
             s.subscriptions
                 .push(cx.observe(&field, |_, _, cx| cx.notify()));
         }
@@ -509,30 +500,16 @@ impl Main {
                 self.close_teaching();
                 self.return_section = Some(self.section);
                 let epoch = self.teaching_epoch.fetch_add(1, Ordering::SeqCst) + 1;
-                for (field, text) in [
-                    (&self.corrected, entry.text.clone()),
-                    (&self.heard, entry.text.clone()),
-                    (&self.specific_source, String::new()),
-                    (&self.specific_replacement, String::new()),
-                ] {
-                    field.update(cx, |s, cx| s.set_value(text, w, cx));
-                }
+                self.fields.seed(&entry, w, cx);
                 self.teaching = Some(Teaching::new(entry, epoch));
-                w.focus(&self.corrected.read(cx).focus_handle(cx), cx);
+                w.focus(&self.fields.corrected.read(cx).focus_handle(cx), cx);
             }
             Route::TeachingResult { epoch, result } => {
                 let mut close = false;
-                let mut pending = None;
+                // The typed correction stays in its field through every step,
+                // so a "Save correction only" retry writes exactly that text.
                 if let Some(teaching) = self.teaching.as_mut().filter(|t| t.epoch == epoch) {
-                    // The rule is saved but History is not: keep the reviewed
-                    // text so "Save correction only" retries exactly that edit.
-                    if matches!(result, Settled::RuleSaved(_)) {
-                        pending = teaching.proposal().map(|p| p.after.clone());
-                    }
                     close = teaching.settle(result);
-                }
-                if let Some(text) = pending {
-                    self.corrected.update(cx, |s, cx| s.set_value(text, w, cx));
                 }
                 if close {
                     self.close_teaching();
@@ -558,12 +535,12 @@ impl Main {
         }
     }
     fn focus_teaching(&self, w: &mut Window, cx: &mut Context<Self>) {
-        let field = match self.teaching.as_ref().map(|t| t.step) {
-            Some(Step::Edit) => &self.corrected,
-            Some(Step::SpecificEdit) => &self.specific_source,
+        let handle = match self.teaching.as_ref().map(|t| t.step) {
+            Some(Step::Edit) => self.fields.corrected.read(cx).focus_handle(cx),
+            Some(Step::SpecificEdit) => self.fields.source.read(cx).focus_handle(cx),
             _ => return,
         };
-        w.focus(&field.read(cx).focus_handle(cx), cx);
+        w.focus(&handle, cx);
     }
     /// Run one service operation for the open dialog. The result returns through
     /// the route queue and is ignored if the dialog was closed or replaced.
@@ -591,18 +568,15 @@ impl Main {
         });
         cx.notify();
     }
-    /// The exact text a save writes: the reviewed result when there is one,
-    /// otherwise the typed correction. Blank or unchanged text never saves.
+    /// The exact History text a save writes: always the typed correction, never
+    /// the rule preview. Blank or unchanged text never saves.
     fn teaching_text(&self, cx: &App) -> Option<String> {
         let teaching = self.teaching.as_ref()?;
-        let text = match teaching.proposal() {
-            Some(proposal) => proposal.after.clone(),
-            None => self.corrected.read(cx).value().to_string(),
-        };
+        let text = self.fields.corrected.read(cx).value().to_string();
         (!text.trim().is_empty() && text != teaching.entry.text).then_some(text)
     }
     fn review_automatic(&mut self, cx: &mut Context<Self>) {
-        let corrected = self.corrected.read(cx).value().to_string();
+        let corrected = self.fields.corrected.read(cx).value().to_string();
         if !self
             .teaching
             .as_ref()
@@ -615,8 +589,8 @@ impl Main {
         });
     }
     fn review_specific(&mut self, cx: &mut Context<Self>) {
-        let source = self.specific_source.read(cx).value().to_string();
-        let replacement = self.specific_replacement.read(cx).value().to_string();
+        let source = self.fields.source.read(cx).value().to_string();
+        let replacement = self.fields.replacement.read(cx).value().to_string();
         if !self
             .teaching
             .as_ref()
@@ -642,9 +616,9 @@ impl Main {
         });
     }
     fn remember_teaching(&mut self, cx: &mut Context<Self>) {
-        let Some(text) = self.teaching_text(cx) else {
-            return;
-        };
+        // The typed correction travels with the rule; an unchanged or blank one
+        // saves the rule alone and leaves History untouched.
+        let text = self.fields.corrected.read(cx).value().to_string();
         let Some((proposal, scope)) = self
             .teaching
             .as_ref()
@@ -679,8 +653,8 @@ impl Main {
                 .spawn(async move { teaching::discard(&b, id).await });
         }
         for (field, text) in [
-            (&self.specific_source, source),
-            (&self.specific_replacement, replacement),
+            (&self.fields.source, source),
+            (&self.fields.replacement, replacement),
         ] {
             field.update(cx, |s, cx| s.set_value(text, w, cx));
         }
@@ -688,13 +662,9 @@ impl Main {
         cx.notify();
     }
     fn use_heard_selection(&mut self, w: &mut Window, cx: &mut Context<Self>) {
-        let selected = self.heard.read(cx).selected_value().trim().to_owned();
-        if selected.is_empty() {
-            return;
+        if self.fields.use_selection(w, cx) {
+            cx.notify();
         }
-        self.specific_source
-            .update(cx, |s, cx| s.set_value(selected, w, cx));
-        cx.notify();
     }
     fn update_action(&self, kind: &'static str) {
         let b = self.backend.clone();
@@ -724,7 +694,7 @@ actions!(
     [CommandPalette, HomePage, MeetingsPage, Back]
 );
 impl Render for Main {
-    fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.ready {
             return div().size_full().flex().flex_col().items_center().justify_center().gap_4()
                 .child(if self.startup_failed {"Murmur could not finish loading your local data. Your previous data is preserved."} else {"Loading your local data…"})
@@ -1058,7 +1028,7 @@ impl Render for Main {
             root = root.child(crate::update_dialog::scrim().child(modal));
         }
         if self.teaching.is_some() {
-            let modal = self.teaching_modal(p, cx);
+            let modal = self.teaching_modal(p, w.viewport_size().height, cx);
             root = root.child(
                 div()
                     .absolute()
@@ -1092,38 +1062,33 @@ fn teach_example(p: Palette, id: &'static str, label: &'static str, text: String
                 .text_color(p.muted)
                 .child(teach_text(format!("{id}-label"), label)),
         )
-        .child(div().child(teach_text(id, text)))
+        .child(
+            // Long examples scroll inside their own box so the dialog's actions
+            // always stay on screen.
+            div()
+                .id(format!("{id}-scroll"))
+                .max_h(px(120.))
+                .overflow_y_scroll()
+                .child(teach_text(id, text)),
+        )
 }
 
 impl Main {
     /// Step-based Correct & Teach dialog. Rendering reads state only; every
     /// button forwards to a method that goes through `teaching::*`.
-    fn teaching_modal(&self, p: Palette, cx: &mut Context<Self>) -> Div {
+    fn teaching_modal(&self, p: Palette, viewport: Pixels, cx: &mut Context<Self>) -> Div {
         let Some(t) = self.teaching.as_ref() else {
             return div();
         };
         let busy = t.busy;
-        let corrected = self.corrected.read(cx).value().to_string();
-        let source = self.specific_source.read(cx).value().to_string();
-        let replacement = self.specific_replacement.read(cx).value().to_string();
-        let selection = !self.heard.read(cx).selected_value().trim().is_empty();
+        let corrected = self.fields.corrected.read(cx).value().to_string();
+        let source = self.fields.source.read(cx).value().to_string();
+        let replacement = self.fields.replacement.read(cx).value().to_string();
+        let selection = !self.fields.selected_term(cx).is_empty();
         let can_save = !busy && self.teaching_text(cx).is_some();
+        let can_remember = !busy && t.proposal().is_some();
         let primary = crate::ButtonIntent::Primary;
-        let mut modal = div()
-            .key_context("CorrectAndTeach")
-            .flex()
-            .flex_col()
-            .gap_3()
-            .p_5()
-            .w(px(600.))
-            .bg(p.raised)
-            .border_1()
-            .border_color(p.border)
-            .child(
-                div()
-                    .text_size(px(20.))
-                    .child(teach_text("teach-title", "Correct & Teach")),
-            );
+        let mut modal = teach_body();
         let mut buttons = div().flex().flex_row().justify_end().gap_2();
         match t.step {
             Step::Edit => {
@@ -1132,7 +1097,12 @@ impl Main {
                         "teach-intro",
                         "Edit this local history entry. Murmur will not remember a rule unless you review it and press Remember correction.",
                     ))
-                    .child(TextField::new(&self.corrected, "Corrected dictation").disabled(busy));
+                    .child(
+                        Textarea::new(&self.fields.corrected)
+                            .aria_label("Corrected dictation")
+                            .disabled(busy)
+                            .h(px(140.)),
+                    );
                 buttons = buttons
                     .child(Button::new("teach-cancel", "Cancel").on_click(cx.listener(
                         |s, _, w, cx| {
@@ -1186,8 +1156,22 @@ impl Main {
                             "teach-after",
                             "After",
                             proposal.after.clone(),
-                        ))
-                        .child(teach_text("teach-scope-label", "Where should this apply?"));
+                        ));
+                    // The rule preview and the History edit are separate: show
+                    // the typed correction that Save/Remember will write.
+                    if let Some(typed) = self
+                        .teaching_text(cx)
+                        .filter(|typed| *typed != proposal.after)
+                    {
+                        modal = modal.child(teach_example(
+                            p,
+                            "teach-history",
+                            "Saved to History",
+                            typed,
+                        ));
+                    }
+                    modal =
+                        modal.child(teach_text("teach-scope-label", "Where should this apply?"));
                     let mut scopes = div().flex().flex_col().gap_1();
                     for (index, option) in proposal.scopes.iter().enumerate() {
                         scopes = scopes.child(
@@ -1248,7 +1232,7 @@ impl Main {
                             },
                         )
                         .intent(primary)
-                        .disabled(!can_save)
+                        .disabled(!can_remember)
                         .on_click(cx.listener(|s, _, _, cx| s.remember_teaching(cx))),
                     );
                 }
@@ -1257,17 +1241,19 @@ impl Main {
                 modal = modal
                     .child(teach_text("teach-review-title", "Teach specific term"))
                     .child(
-                        TextField::new(&self.heard, "Heard transcript for term selection")
-                            .readonly(true),
+                        Textarea::new(&self.fields.heard)
+                            .aria_label("Heard transcript for term selection")
+                            .readonly(true)
+                            .h(px(110.)),
                     )
                     .child(
                         Button::new("teach-use-selection", "Use selected text")
                             .disabled(busy || !selection)
                             .on_click(cx.listener(|s, _, w, cx| s.use_heard_selection(w, cx))),
                     )
-                    .child(TextField::new(&self.specific_source, "Exact heard term").disabled(busy))
+                    .child(TextField::new(&self.fields.source, "Exact heard term").disabled(busy))
                     .child(
-                        TextField::new(&self.specific_replacement, "Exact written replacement")
+                        TextField::new(&self.fields.replacement, "Exact written replacement")
                             .disabled(busy),
                     )
                     .child(teach_text(
@@ -1324,13 +1310,11 @@ impl Main {
                     );
             }
         }
-        if let Some(error) = &t.error {
-            modal = modal.child(
-                div()
-                    .text_color(p.danger)
-                    .child(teach_text("teach-error", error.clone())),
-            );
-        }
+        let error = t.error.as_ref().map(|error| {
+            div()
+                .text_color(p.danger)
+                .child(teach_text("teach-error", error.clone()))
+        });
         if !matches!(t.step, Step::Edit | Step::HistoryRetry) {
             buttons = buttons.child(Button::new("teach-cancel", "Cancel").on_click(cx.listener(
                 |s, _, w, cx| {
@@ -1340,7 +1324,110 @@ impl Main {
                 },
             )));
         }
-        modal.child(buttons)
+        teach_dialog(p, viewport, modal, error, buttons)
+    }
+}
+
+/// The scrolling content region of the dialog.
+fn teach_body() -> Stateful<Div> {
+    div()
+        .id("teach-body")
+        .flex()
+        .flex_col()
+        .gap_3()
+        .flex_1()
+        .min_h_0()
+        .overflow_y_scroll()
+}
+
+/// Dialog frame bounded by the window. Only `body` scrolls; the title, the
+/// error and the actions stay outside it so they are always reachable.
+fn teach_dialog(
+    p: Palette,
+    viewport: Pixels,
+    body: Stateful<Div>,
+    error: Option<Div>,
+    buttons: Div,
+) -> Div {
+    div()
+        .key_context("CorrectAndTeach")
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_5()
+        .w(px(600.))
+        .max_h((viewport - px(48.)).max(px(240.)))
+        .bg(p.raised)
+        .border_1()
+        .border_color(p.border)
+        .child(
+            div()
+                .text_size(px(20.))
+                .child(teach_text("teach-title", "Correct & Teach")),
+        )
+        .child(body)
+        .children(error.map(|error| error.flex_shrink_0()))
+        .child(buttons.flex_shrink_0())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A review with far more content than the window can show.
+    struct LongReview {
+        viewport: Pixels,
+    }
+    impl Render for LongReview {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let p = Palette::get(cx);
+            let long = "synthetic line ".repeat(400);
+            let mut body = teach_body().child(teach_example(p, "teach-before", "Before", long));
+            for line in 0..60 {
+                body = body.child(teach_text(
+                    format!("synthetic-line-{line}"),
+                    format!("Synthetic scope option {line}"),
+                ));
+            }
+            let buttons = div()
+                .flex()
+                .flex_row()
+                .child(Button::new("teach-cancel", "Cancel").on_click(|_, _, _| {}))
+                .child(Button::new("teach-remember", "Remember correction").on_click(|_, _, _| {}));
+            let error = Some(div().child(teach_text("teach-error", "Synthetic failure.")));
+            teach_dialog(p, self.viewport, body, error, buttons)
+        }
+    }
+
+    #[gpui::test]
+    fn a_long_review_scrolls_and_keeps_the_actions_inside_the_window(cx: &mut TestAppContext) {
+        cx.update(crate::init);
+        let viewport = px(400.);
+        let (_, cx) = cx.add_window_view(|w, cx| {
+            let content = cx.new(|_| LongReview { viewport });
+            gpui_base::Root::new(content, w, cx)
+        });
+        let window = cx.update(|w, _| w.window_handle());
+        cx.activate_accessibility(window);
+        cx.run_until_parked();
+        cx.update(|w, cx| w.draw(cx).clear(cx));
+        let tree = cx.accessibility_tree(window);
+        let scale = cx.update(|w, _| w.scale_factor()) as f64;
+        for label in ["Cancel", "Remember correction"] {
+            let node = tree
+                .nodes
+                .iter()
+                .find(|(_, n)| n.label() == Some(label))
+                .map(|(_, n)| n)
+                .expect("action is rendered");
+            let bounds = node.bounds().expect("painted action has bounds");
+            assert!(
+                bounds.y1 / scale <= f64::from(f32::from(viewport)),
+                "{label} ends at {} beyond the {} window",
+                bounds.y1 / scale,
+                f32::from(viewport)
+            );
+        }
     }
 }
 
