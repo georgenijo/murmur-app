@@ -788,6 +788,86 @@ mod ax {
             assert_eq!(e.read_with(cx, |s, _| s.selected), index);
         }
     }
+    /// A Core ML download failure on the Models section, over the fixture
+    /// catalog: Whisper base installed, CPU Parakeet missing.
+    fn core_ml_failure(cx: &mut VisualTestContext, e: &Entity<Review>, fallbacks: bool) {
+        let models = e.read_with(cx, |s, _| s.models.clone());
+        models.update(cx, |s, _| {
+            s.controller.model.snapshot.as_mut().unwrap().failure =
+                Some(crate::models::model::Failure {
+                    model: "parakeet-tdt-0.6b-v3-coreml".into(),
+                    operation: crate::models::model::Operation::Download,
+                    message: "Core ML setup finished, but the installed cache did not validate.",
+                    fallbacks,
+                })
+        });
+        draw(cx);
+    }
+    fn has(t: &TreeUpdate, label: &str) -> bool {
+        t.nodes.iter().any(|(_, n)| n.label() == Some(label))
+    }
+    #[gpui::test]
+    fn core_ml_failure_offers_use_for_an_installed_fallback_and_download_for_a_missing_one(
+        cx: &mut TestAppContext,
+    ) {
+        let (e, cx) = harness(cx, 2);
+        core_ml_failure(cx, &e, true);
+        let t = tree(cx);
+        named(&t, "Retry download");
+        // Installed: chosen, not downloaded again. Missing: downloaded.
+        named(&t, "Use Whisper base");
+        named(&t, "Download CPU Parakeet");
+        assert!(!has(&t, "Download Whisper base"));
+        assert!(!has(&t, "Use CPU Parakeet"));
+        let models = e.read_with(cx, |s, _| s.models.clone());
+        let state = |cx: &mut VisualTestContext| {
+            models.read_with(cx, |s, _| {
+                let snapshot = s.controller.model.snapshot.clone().unwrap();
+                (
+                    snapshot.selected.clone(),
+                    snapshot.model("parakeet-tdt-0.6b-v2-fp16").unwrap().install,
+                )
+            })
+        };
+        let (selected, install) = state(cx);
+        assert_eq!(selected, "parakeet-tdt-0.6b-v3-coreml");
+        assert_eq!(install, crate::models::model::Install::Missing);
+        click(cx, named(&t, "Use Whisper base"));
+        let (selected, install) = state(cx);
+        assert_eq!(selected, "base.en", "Use selects the installed fallback");
+        assert_eq!(
+            install,
+            crate::models::model::Install::Missing,
+            "Use must not download anything"
+        );
+        // The fixture owner clears the failure on its reply; keep it showing to
+        // check the selected fallback is no longer offered and the missing one is.
+        core_ml_failure(cx, &e, true);
+        let t = tree(cx);
+        assert!(!has(&t, "Use Whisper base"));
+        click(cx, named(&t, "Download CPU Parakeet"));
+        let (selected, install) = state(cx);
+        assert_eq!(
+            selected, "base.en",
+            "Download does not change the selection"
+        );
+        assert_eq!(install, crate::models::model::Install::Installed);
+    }
+    #[gpui::test]
+    fn failures_without_fallbacks_offer_none(cx: &mut TestAppContext) {
+        let (e, cx) = harness(cx, 2);
+        core_ml_failure(cx, &e, false);
+        let t = tree(cx);
+        named(&t, "Retry download");
+        for label in [
+            "Use Whisper base",
+            "Download Whisper base",
+            "Use CPU Parakeet",
+            "Download CPU Parakeet",
+        ] {
+            assert!(!has(&t, label), "{label}");
+        }
+    }
     #[gpui::test]
     fn knowledge_editor_delete_confirmation_and_cancel(cx: &mut TestAppContext) {
         let (e, cx) = harness(cx, 3);

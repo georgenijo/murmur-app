@@ -574,10 +574,7 @@ pub async fn download_model(
                     }
                     Err(_) => {
                         terminal_evidence.outcome_code = "worker_task_failed";
-                        return Err(
-                            "Core ML installer supervision failed. Retry Core ML, or choose Whisper Base or the CPU Parakeet fallback."
-                                .to_string(),
-                        );
+                        return Err(crate::model_failure::COREML_SUPERVISION_FAILED.to_string());
                     }
                 }
             }
@@ -604,7 +601,7 @@ pub async fn download_model(
                 && debug_coreml_scenario_reports_success_without_cache())
         {
             terminal_evidence.outcome_code = "validation_failed";
-            return Err("Model installation completed but validation failed".to_string());
+            return Err(crate::model_failure::INSTALL_VALIDATION_FAILED.to_string());
         }
 
         // Co-download VAD model alongside the transcription model (~1.8MB).
@@ -959,6 +956,13 @@ mod tests {
             "unexpected classification: {error:?}"
         );
         assert!(should_discard_archive(&error));
+        assert_eq!(
+            crate::model_failure::explain(
+                crate::model_failure::Operation::Download,
+                &error.to_string()
+            ),
+            Some(crate::model_failure::PARAKEET_BUNDLE_INCOMPLETE)
+        );
         assert!(!models_dir.join(&dir_name).exists());
         assert!(!models_dir.join(format!(".{dir_name}.extracting")).exists());
         fs::remove_dir_all(root).unwrap();
@@ -982,6 +986,12 @@ mod tests {
             "unexpected classification: {error:?}"
         );
         assert!(should_discard_archive(&error));
+        let explained = crate::model_failure::explain(
+            crate::model_failure::Operation::Download,
+            &error.to_string(),
+        )
+        .unwrap();
+        assert!(explained.contains("invalid or corrupt"), "{explained}");
         assert!(!models_dir.join(&dir_name).exists());
         fs::remove_dir_all(root).unwrap();
     }
@@ -1278,7 +1288,7 @@ fn extract_parakeet_archive_cancellable(
         cancel.check().map_err(ParakeetInstallError::Installation)?;
         if !transcriber::parakeet::specific_model_exists_in(model_name, &staging_root) {
             return Err(ParakeetInstallError::InvalidArchive(
-                "Extracted Parakeet bundle is incomplete".to_string(),
+                crate::model_failure::PARAKEET_BUNDLE_INCOMPLETE.to_string(),
             ));
         }
         cancel.check().map_err(ParakeetInstallError::Installation)?;

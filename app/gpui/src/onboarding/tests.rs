@@ -529,6 +529,106 @@ mod ax {
         draw(cx);
         assert!(!e.read_with(cx, |s, _| s.downloading()));
     }
+    /// The production adapter's explanation for a Core ML cache that did not
+    /// validate (`murmur_services::model_failure`), delivered as the download's
+    /// failed reply. Whisper base is installed in this catalog.
+    const EXPLAINED: &str = "Core ML setup finished, but the installed cache did not validate. Retry Core ML, or choose Whisper Base or the CPU Parakeet fallback.";
+    fn failed_first_download(
+        cx: &mut TestAppContext,
+    ) -> (Entity<Onboarding>, Rc<FixtureHost>, &mut VisualTestContext) {
+        let (e, h, cx) = harness(cx);
+        for m in h.state.borrow_mut().catalog.as_mut().unwrap() {
+            m.installed |= m.id == "base.en";
+        }
+        e.update(cx, |s, cx| s.request(Action::Read, cx));
+        draw(cx);
+        e.update(cx, |s, cx| s.visit(Step::Model, cx));
+        draw(cx);
+        h.hold.set(true);
+        e.update(cx, |s, cx| {
+            s.selected_model = CURATED[0].into();
+            s.activate(cx);
+        });
+        h.hold.set(false);
+        let (r, inbox) = h.held.borrow_mut().pop().unwrap();
+        assert_eq!(r.action, Action::Download(CURATED[0].into()));
+        super::inbox::reply(&inbox, r.ticket, Err(Problem::Operation(EXPLAINED)));
+        draw(cx);
+        (e, h, cx)
+    }
+    #[gpui::test]
+    fn first_launch_download_failure_shows_its_explanation_and_retries_the_download(
+        cx: &mut TestAppContext,
+    ) {
+        let (e, h, cx) = failed_first_download(cx);
+        let t = tree(cx);
+        named(&t, EXPLAINED);
+        named(&t, "Use Whisper base");
+        named(&t, "Use CPU Parakeet");
+        // The primary action is the retry, not the first-time download.
+        let retry = named(&t, "Retry download");
+        assert!(
+            !t.nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Download model"))
+        );
+        h.actions.borrow_mut().clear();
+        h.hold.set(true);
+        click(cx, retry);
+        assert_eq!(
+            *h.actions.borrow(),
+            vec![Action::Download(CURATED[0].into())],
+            "Retry download must re-download, not read"
+        );
+        assert!(e.read_with(cx, |s, _| s.downloading() && s.download_failed.is_none()));
+        // The retry fails again with its own explanation: still retryable.
+        let (r, inbox) = h.held.borrow_mut().pop().unwrap();
+        super::inbox::reply(&inbox, r.ticket, Err(Problem::Operation(EXPLAINED)));
+        draw(cx);
+        named(&tree(cx), "Retry download");
+    }
+    #[gpui::test]
+    fn first_launch_download_failure_fallbacks_continue_or_download(cx: &mut TestAppContext) {
+        let (e, h, cx) = failed_first_download(cx);
+        // Installed fallback: selected, the failure is dismissed, setup continues.
+        let t = tree(cx);
+        click(cx, named(&t, "Use Whisper base"));
+        assert_eq!(e.read_with(cx, |s, _| s.selected_model.clone()), "base.en");
+        assert!(e.read_with(cx, |s, _| s.model.problem.is_none()));
+        let t = tree(cx);
+        let primary = named(&t, "Continue");
+        assert!(!t.nodes.iter().any(|(_, n)| n.label() == Some(EXPLAINED)));
+        h.actions.borrow_mut().clear();
+        click(cx, primary);
+        assert!(
+            !h.actions
+                .borrow()
+                .iter()
+                .any(|a| matches!(a, Action::Download(_)))
+        );
+        assert_eq!(e.read_with(cx, |s, _| s.step), Step::Hotkey);
+    }
+    #[gpui::test]
+    fn first_launch_download_failure_missing_fallback_downloads_on_primary(
+        cx: &mut TestAppContext,
+    ) {
+        let (e, h, cx) = failed_first_download(cx);
+        // Missing fallback: selected, then the primary action downloads it.
+        let t = tree(cx);
+        click(cx, named(&t, "Use CPU Parakeet"));
+        assert_eq!(
+            e.read_with(cx, |s, _| s.selected_model.clone()),
+            "parakeet-tdt-0.6b-v2-fp16"
+        );
+        let t = tree(cx);
+        let primary = named(&t, "Download model");
+        h.actions.borrow_mut().clear();
+        click(cx, primary);
+        assert_eq!(
+            *h.actions.borrow(),
+            vec![Action::Download("parakeet-tdt-0.6b-v2-fp16".into())]
+        );
+    }
     #[gpui::test]
     fn compact_onboarding_tabs_reveal_model_buttons_and_hotkey_choices(cx: &mut TestAppContext) {
         let (e, _, cx) = harness(cx);

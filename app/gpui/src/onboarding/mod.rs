@@ -53,6 +53,9 @@ pub struct Onboarding {
     verified_model: Option<String>,
     cancelling: bool,
     read_started: Option<Instant>,
+    /// The model whose download last failed; its explanation is the section
+    /// problem. The primary action becomes "Retry download" for it.
+    download_failed: Option<String>,
 }
 impl Onboarding {
     pub fn new(host: Rc<dyn Host>, w: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -144,6 +147,7 @@ impl Onboarding {
             verified_model: None,
             cancelling: false,
             read_started: None,
+            download_failed: None,
         }
     }
     pub fn attach(&mut self, cx: &mut Context<Self>) {
@@ -177,6 +181,7 @@ impl Onboarding {
         self.operation = None;
         self.read_started = None;
         self.cancelling = false;
+        self.download_failed = None;
         self.selected_model.clear();
         self.recording_mode.clear();
         self.trigger_key.clear();
@@ -276,6 +281,10 @@ impl Onboarding {
                         }
                         _ => (),
                     }
+                } else if !self.cancelling
+                    && let Some(Action::Download(id)) = action
+                {
+                    self.download_failed = Some(id);
                 }
                 self.cancelling = false;
             }
@@ -330,6 +339,9 @@ impl Onboarding {
         };
         self.authority.sync(&self.model);
         self.read_started = matches!(action, Action::Read).then(Instant::now);
+        if matches!(action, Action::Download(_)) {
+            self.download_failed = None;
+        }
         self.operation = Some(action.clone());
         self.host.request(
             Request {
@@ -497,6 +509,10 @@ impl Onboarding {
             }
             return if s.installed(&self.selected_model) {
                 "Continue"
+            } else if self.download_failed.as_deref() == Some(self.selected_model.as_str())
+                && self.model.problem.is_some()
+            {
+                "Retry download"
             } else {
                 "Download model"
             }
@@ -606,6 +622,10 @@ impl Onboarding {
             return;
         }
         self.selected_model = id;
+        // Choosing another model dismisses the previous download's failure.
+        if self.download_failed.take().is_some() && !self.model.pending {
+            self.model.problem = None;
+        }
         cx.notify();
     }
     fn default_navigation(&self) -> bool {

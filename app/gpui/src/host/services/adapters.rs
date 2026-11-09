@@ -466,9 +466,19 @@ fn setup_problem(error: String) -> Problem {
         "Setup calendar unavailable" => {
             "Could not check or request Calendar access. Retry, or skip this optional meeting permission."
         }
-        _ => return Problem::Unavailable,
+        // A download error already explained by the shared classifier is static.
+        _ => match murmur_services::model_failure::known_explanation(&error) {
+            Some(explained) => explained,
+            None => return Problem::Unavailable,
+        },
     };
     Problem::Operation(message)
+}
+/// First-launch downloads report the same model-specific explanation as the
+/// Models section. Cancellation is not a failure and stays unexplained.
+fn setup_download_error(model: &str, error: String) -> String {
+    super::downloads::explain_failure(crate::models::model::Operation::Download, model, &error)
+        .map_or(error, |failure| failure.message.to_owned())
 }
 fn setup_permission_failure(action: &crate::onboarding::host::Action) -> &'static str {
     use crate::onboarding::{host::Action, model::Permission};
@@ -515,7 +525,7 @@ impl crate::onboarding::host::Host for Backend {
         let current = live(r.lease);
         let owner = format!("onboarding:{}", r.ticket.attachment);
         let download = if let Action::Download(model) = &r.action {
-            Some(b.download(owner.clone(), model.clone()))
+            Some((model.clone(), b.download(owner.clone(), model.clone())))
         } else {
             None
         };
@@ -551,7 +561,7 @@ impl crate::onboarding::host::Host for Backend {
             let _progress_stop = progress_stop;
             let loading = matches!(r.action, Action::Read);
             let work=async {
-                if let Some(download)=download {download.await?;}
+                if let Some((model,download))=download {download.await.map_err(|error|setup_download_error(&model,error))?;}
                 else {
                     if !current() && admitted.is_none(){return Err("Presentation changed".into());}
                     match r.action {
@@ -1832,5 +1842,77 @@ mod model_failure_tests {
             Ok(None)
         ));
         assert!(d.failure().is_none());
+    }
+}
+
+#[cfg(test)]
+mod setup_download_failure_tests {
+    use super::*;
+    use crate::workspace::Problem;
+
+    /// The exact composition `request` applies to a failed first-launch download.
+    fn problem(model: &str, error: &str) -> Problem {
+        setup_problem(setup_download_error(model, error.to_owned()))
+    }
+    const COREML: &str = "parakeet-tdt-0.6b-v3-coreml";
+
+    #[test]
+    fn first_launch_download_failures_keep_their_specific_explanation() {
+        let coreml = murmur_services::model_failure::explain(
+            murmur_services::model_failure::Operation::Download,
+            "Core ML model setup failed in the native installer. Retry Core ML, or choose Whisper Base or the CPU Parakeet fallback.",
+        )
+        .unwrap();
+        assert_eq!(
+            problem(
+                COREML,
+                "Core ML model setup failed in the native installer. Retry Core ML, or choose Whisper Base or the CPU Parakeet fallback."
+            ),
+            Problem::Operation(coreml)
+        );
+        for (error, needle) in [
+            (
+                "Download interrupted. Retry to resume: dns",
+                "retry to resume",
+            ),
+            (
+                "Not enough disk space: need 2000 MB, available 1 MB. Free space and retry.",
+                "Free some space",
+            ),
+            (
+                "Model installation completed but validation failed",
+                "did not validate",
+            ),
+            (
+                "Whisper model 'base.en' is incomplete or has an invalid GGML header",
+                "GGML header",
+            ),
+            ("Extracted Parakeet bundle is incomplete", "incomplete"),
+        ] {
+            let Problem::Operation(message) = problem("base.en", error) else {
+                panic!("{error} collapsed to a generic problem");
+            };
+            assert!(
+                message.to_lowercase().contains(&needle.to_lowercase()),
+                "{error}: {message}"
+            );
+            assert_ne!(Problem::Operation(message), Problem::Unavailable, "{error}");
+        }
+    }
+
+    #[test]
+    fn first_launch_cancellation_and_native_text_are_not_displayed() {
+        // Cancellation is not a failure to explain.
+        assert_eq!(
+            problem(COREML, "Model installation cancelled"),
+            Problem::Unavailable
+        );
+        let Problem::Operation(message) = problem(
+            "base.en",
+            "Failed to write model: /Users/synthetic/secret (os error 28)",
+        ) else {
+            panic!("native failure must still be explained");
+        };
+        assert!(!message.contains("/Users") && !message.contains("os error"));
     }
 }

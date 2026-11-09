@@ -95,5 +95,9 @@ Models download and removal failures are explained by
 `murmur_services::model_failure` with static, content-free messages. For native
 acceptance, a `native-host-qa` build reads `MURMUR_QA_MODEL_FAULT=<operation>:<kind>`
 and fails the next matching operation once, then stays inert. Operations and
-kinds: `download:network|disk|validation|coreml` and `remove:outside-copy|io`.
+kinds: `download:network|disk|validation|whisper-validation|archive-incomplete|archive-corrupt`,
+`download:coreml|coreml-timeout|coreml-validation|coreml-repair` and
+`remove:outside-copy|io`. The validation and Core ML kinds fail with the real
+validator or installer message, so the classifier is exercised end to end. The
+fault applies to the Models section and to first-launch onboarding downloads.
 Production builds do not compile the hook.

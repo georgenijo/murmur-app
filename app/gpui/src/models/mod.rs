@@ -13,11 +13,11 @@ use gpui::{prelude::*, *};
 use host::Action;
 use model::*;
 use std::rc::Rc;
-/// Explicit fallback downloads offered after a Core ML install fails, as the
-/// shipped downloader does. Choosing one is a deliberate download request.
+/// Fallbacks offered after a Core ML install fails, as the shipped downloader
+/// does: "Use" an installed one, or deliberately download a missing one.
 const FALLBACKS: [(&str, &str); 2] = [
-    ("base.en", "Download Whisper base"),
-    ("parakeet-tdt-0.6b-v2-fp16", "Download CPU Parakeet"),
+    ("base.en", "Whisper base"),
+    ("parakeet-tdt-0.6b-v2-fp16", "CPU Parakeet"),
 ];
 pub struct Models {
     pub controller: Controller<Snapshot, Action>,
@@ -142,20 +142,47 @@ impl Render for Models {
                 }
                 if failure.fallbacks {
                     for (id, caption) in FALLBACKS.iter() {
-                        if !snapshot.model(id).is_some_and(|m| snapshot.can_download(m)) {
+                        let Some(m) = snapshot.model(id) else {
                             continue;
-                        }
+                        };
                         let e = cx.entity();
-                        recovery = recovery.child(
-                            Button::new(SharedString::from(format!("fallback-{id}")), *caption)
-                                .with_scroll_parent(Some(&self.scroll))
-                                .disabled(self.controller.model.pending)
-                                .on_click(move |_, _, cx| {
-                                    e.update(cx, |s, cx| {
-                                        s.act(Action::Download((*id).to_owned()), cx)
-                                    })
-                                }),
-                        );
+                        let id = (*id).to_owned();
+                        // An installed fallback is chosen, as the shipped
+                        // downloader's "Use…" does; a missing one is downloaded.
+                        let button = if m.install == Install::Installed {
+                            if !m.supported || m.id == snapshot.selected {
+                                continue;
+                            }
+                            Button::new(
+                                SharedString::from(format!("fallback-{id}")),
+                                format!("Use {caption}"),
+                            )
+                            .disabled(
+                                snapshot.busy
+                                    || snapshot.attempt.is_some()
+                                    || self.controller.model.pending,
+                            )
+                            .on_click(move |_, _, cx| {
+                                e.update(cx, |s, cx| {
+                                    if let Some(snapshot) = &s.controller.model.snapshot {
+                                        let action = snapshot.select(id.clone());
+                                        s.act(action, cx);
+                                    }
+                                })
+                            })
+                        } else if snapshot.can_download(m) {
+                            Button::new(
+                                SharedString::from(format!("fallback-{id}")),
+                                format!("Download {caption}"),
+                            )
+                            .disabled(self.controller.model.pending)
+                            .on_click(move |_, _, cx| {
+                                e.update(cx, |s, cx| s.act(Action::Download(id.clone()), cx))
+                            })
+                        } else {
+                            continue;
+                        };
+                        recovery = recovery.child(button.with_scroll_parent(Some(&self.scroll)));
                     }
                 }
                 body = body.child(
