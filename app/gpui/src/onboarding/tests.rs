@@ -552,7 +552,7 @@ mod ax {
         h.hold.set(false);
         let (r, inbox) = h.held.borrow_mut().pop().unwrap();
         assert_eq!(r.action, Action::Download(CURATED[0].into()));
-        super::inbox::reply(&inbox, r.ticket, Err(Problem::Operation(EXPLAINED)));
+        crate::onboarding::inbox::reply(&inbox, r.ticket, Err(Problem::Operation(EXPLAINED)));
         draw(cx);
         (e, h, cx)
     }
@@ -583,7 +583,7 @@ mod ax {
         assert!(e.read_with(cx, |s, _| s.downloading() && s.download_failed.is_none()));
         // The retry fails again with its own explanation: still retryable.
         let (r, inbox) = h.held.borrow_mut().pop().unwrap();
-        super::inbox::reply(&inbox, r.ticket, Err(Problem::Operation(EXPLAINED)));
+        crate::onboarding::inbox::reply(&inbox, r.ticket, Err(Problem::Operation(EXPLAINED)));
         draw(cx);
         named(&tree(cx), "Retry download");
     }
@@ -639,7 +639,7 @@ mod ax {
         );
         // Choosing a model also dismisses a failure that survived a refresh.
         let (r, inbox) = h.held.borrow_mut().pop().unwrap();
-        super::inbox::reply(&inbox, r.ticket, Err(Problem::Operation(EXPLAINED)));
+        crate::onboarding::inbox::reply(&inbox, r.ticket, Err(Problem::Operation(EXPLAINED)));
         draw(cx);
         let mut refreshed = h.state.borrow().clone();
         refreshed.revision = e.read_with(cx, |s, _| s.model.revision) + 1;
