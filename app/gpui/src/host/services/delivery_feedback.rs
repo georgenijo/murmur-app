@@ -8,9 +8,10 @@
 //!
 //! A banner is owned by the recording generation that produced it, and a Try
 //! again by a retry identity kept apart from the visible notice. The command's
-//! completion, and the identity-less service event, only apply while that
-//! ownership still holds: a newer recording, a dismissal or a newer retry makes
-//! a late result inert instead of overwriting newer feedback.
+//! completion only applies while that ownership still holds: a newer recording,
+//! a dismissal or a newer retry makes a late result inert instead of
+//! overwriting newer feedback. The identity-less `delivery-retry-feedback`
+//! service event is not used to write the banner at all.
 use serde_json::Value;
 use std::time::{Duration, Instant};
 
@@ -55,9 +56,6 @@ pub struct DeliveryFeedback {
     retry_seq: u64,
     /// The one banner retry whose command completion may still be applied.
     retry: Option<RetryToken>,
-    /// A dismissed or superseded retry's identity-less service event must not
-    /// bring its notice back. Cleared by the next retry or recording.
-    suppress_retry_events: bool,
 }
 
 /// Trim and bound a service message for display.
@@ -129,6 +127,12 @@ impl DeliveryFeedback {
         true
     }
     /// Feed a main-window event. Unrelated or malformed events are ignored.
+    ///
+    /// `delivery-retry-feedback` is deliberately not handled. That service event
+    /// carries neither a recording nor a retry identity, so a late one cannot be
+    /// told apart from a newer recording's feedback and would overwrite it. The
+    /// banner's own retry reports through `finish_retry` instead, which carries
+    /// the same kind and message under a checked `RetryToken`.
     pub fn event(&mut self, event: &str, payload: &str, now: Instant) {
         if !matches!(
             event,
@@ -136,7 +140,6 @@ impl DeliveryFeedback {
                 | "auto-paste-failed"
                 | "file-output-failed"
                 | "dictation-delivery-outcome"
-                | "delivery-retry-feedback"
         ) {
             return;
         }
@@ -156,7 +159,7 @@ impl DeliveryFeedback {
                 }
                 self.generation = id;
                 self.dismissed = None;
-                self.suppress_retry_events = self.retry.take().is_some();
+                self.retry = None;
                 if self.notice.is_some() {
                     self.present(None, now, false, false, false);
                 }
@@ -187,17 +190,6 @@ impl DeliveryFeedback {
                     self.revision = self.revision.wrapping_add(1);
                 }
             }
-            "delivery-retry-feedback" => {
-                if self.suppress_retry_events {
-                    return;
-                }
-                if let (Some(kind), Some(message)) = (v["kind"].as_str(), v["message"].as_str())
-                    && self.show_result(kind, message, now)
-                {
-                    // The service reported the running retry's result first.
-                    self.retry = None;
-                }
-            }
             _ => {}
         }
     }
@@ -213,7 +205,6 @@ impl DeliveryFeedback {
         };
         self.retry = Some(token);
         self.dismissed = None;
-        self.suppress_retry_events = false;
         self.present(
             Some(Notice {
                 message: TRYING.into(),
@@ -251,10 +242,8 @@ impl DeliveryFeedback {
             self.dismissed = Some(notice.message.clone());
         }
         if self.from_retry {
-            // The dismissed attempt's late result, in either of its two forms,
-            // must not bring the notice back.
+            // The dismissed attempt's late completion must not bring it back.
             self.retry = None;
-            self.suppress_retry_events = true;
         }
         self.present(None, Instant::now(), false, false, false);
     }
@@ -293,6 +282,12 @@ mod tests {
     fn retry_event(f: &mut DeliveryFeedback, kind: &str, message: &str, now: Instant) {
         let payload = serde_json::json!({"kind": kind, "message": message}).to_string();
         at(f, "delivery-retry-feedback", &payload, now);
+    }
+    /// A banner Try again that completes with this result.
+    fn retried(f: &mut DeliveryFeedback, kind: &str, message: &str, now: Instant) -> RetryToken {
+        let token = f.begin_retry(now).unwrap();
+        assert!(f.finish_retry(token, Some((kind, message)), now));
+        token
     }
 
     #[test]
@@ -403,7 +398,7 @@ mod tests {
         at(&mut f, "file-output-failed", &text(FILE), t0);
         started(&mut f, 5, t0);
         assert!(f.notice.is_none());
-        retry_event(&mut f, "clipboard_only", "Copied; paste manually.", t0);
+        retried(&mut f, "clipboard_only", "Copied; paste manually.", t0);
         assert!(f.notice.is_some());
         started(&mut f, 6, t0);
         assert!(
@@ -411,7 +406,7 @@ mod tests {
             "a retry result is owned by its generation"
         );
         // An older or malformed generation announcement changes nothing.
-        retry_event(&mut f, "busy", "Busy.", t0);
+        retried(&mut f, "busy", "Busy.", t0);
         started(&mut f, 3, t0);
         at(&mut f, "dictation-generation-started", "{}", t0);
         assert_eq!(f.notice.as_ref().unwrap().message, "Busy.");
@@ -428,7 +423,7 @@ mod tests {
             ("failed", true),
         ] {
             let mut f = DeliveryFeedback::default();
-            retry_event(&mut f, kind, &format!("Synthetic {kind} message."), t0);
+            retried(&mut f, kind, &format!("Synthetic {kind} message."), t0);
             let n = f.notice.clone().unwrap();
             assert_eq!(n.message, format!("Synthetic {kind} message."));
             assert_eq!(n.retryable, retryable, "{kind}");
@@ -436,10 +431,15 @@ mod tests {
             f.expire(t0 + TTL);
             assert!(f.notice.is_none(), "{kind} clears after five seconds");
         }
+        // A result with an unknown kind or no message ends as the unfinished
+        // message, never as a success.
         let mut f = DeliveryFeedback::default();
-        retry_event(&mut f, "bogus", "x", t0);
-        at(&mut f, "delivery-retry-feedback", r#"{"kind":"busy"}"#, t0);
-        assert!(f.notice.is_none(), "malformed results are ignored");
+        let token = f.begin_retry(t0).unwrap();
+        assert!(f.finish_retry(token, Some(("bogus", "x")), t0));
+        assert_eq!(f.notice.as_ref().unwrap().message, RETRY_UNFINISHED);
+        let token = f.begin_retry(t0).unwrap();
+        assert!(f.finish_retry(token, Some(("busy", "  ")), t0));
+        assert_eq!(f.notice.as_ref().unwrap().message, RETRY_UNFINISHED);
     }
 
     #[test]
@@ -487,25 +487,45 @@ mod tests {
         assert_eq!(n.message, RETRY_UNFINISHED);
         assert!(n.retryable && !n.busy);
         // Once a result is on screen, a late failure cannot overwrite it.
-        retry_event(&mut f, "empty", "Nothing to paste yet.", t0);
-        assert!(!f.finish_retry(token, None, t0));
-        assert_eq!(f.notice.unwrap().message, "Nothing to paste yet.");
+        assert!(!f.finish_retry(token, Some(("empty", "Late.")), t0));
+        assert_eq!(f.notice.unwrap().message, RETRY_UNFINISHED);
     }
 
     #[test]
-    fn the_service_event_finishes_the_running_retry_and_the_late_command_result_is_inert() {
+    fn the_identity_less_service_event_never_writes_the_banner() {
         let t0 = Instant::now();
         let mut f = DeliveryFeedback::default();
+        // Idle: nothing to show.
+        retry_event(&mut f, "failed", PASTE, t0);
+        assert!(f.notice.is_none());
+        // Running: the banner stays on Trying until the command completes.
         let token = f.begin_retry(t0).unwrap();
+        let shown = (f.revision, f.notice.clone());
         retry_event(&mut f, "auto_pasted", "Pasted the latest dictation.", t0);
-        let shown = f.revision;
-        assert!(!f.finish_retry(token, Some(("failed", "Late.")), t0));
-        assert_eq!(f.revision, shown);
-        assert_eq!(
-            f.notice.unwrap().message,
-            "Pasted the latest dictation.",
-            "the already-shown result is not replaced"
-        );
+        assert_eq!((f.revision, f.notice.clone()), shown);
+        assert!(f.finish_retry(
+            token,
+            Some(("auto_pasted", "Pasted the latest dictation.")),
+            t0
+        ));
+        assert_eq!(f.notice.unwrap().message, "Pasted the latest dictation.");
+    }
+
+    #[test]
+    fn a_dismissed_retry_a_new_recording_and_the_old_retrys_late_event_leave_the_new_feedback() {
+        let t0 = Instant::now();
+        let mut f = DeliveryFeedback::default();
+        started(&mut f, 4, t0);
+        let a = f.begin_retry(t0).unwrap();
+        f.dismiss();
+        started(&mut f, 5, t0);
+        at(&mut f, "auto-paste-failed", &text(PASTE), t0);
+        let shown = (f.revision, f.notice.clone());
+        // A's late service event and late command result both arrive now.
+        retry_event(&mut f, "auto_pasted", "Pasted.", t0);
+        assert!(!f.finish_retry(a, Some(("auto_pasted", "Pasted.")), t0));
+        assert_eq!((f.revision, f.notice.clone()), shown);
+        assert_eq!(f.notice.unwrap().message, PASTE);
     }
 
     #[test]
@@ -530,9 +550,10 @@ mod tests {
         f.expire(t0 + TTL);
         let next = f.begin_retry(t0).unwrap();
         assert_ne!(next, token);
-        retry_event(&mut f, "busy", "Busy.", t0);
-        assert_eq!(f.notice.as_ref().unwrap().message, "Busy.");
         assert!(!f.finish_retry(token, None, t0));
+        assert_eq!(f.notice.as_ref().unwrap().message, TRYING);
+        assert!(f.finish_retry(next, Some(("busy", "Busy.")), t0));
+        assert_eq!(f.notice.as_ref().unwrap().message, "Busy.");
     }
 
     #[test]
@@ -564,10 +585,7 @@ mod tests {
         assert!(f.notice.is_none());
         started(&mut f, 9, t0);
         retry_event(&mut f, "failed", PASTE, t0);
-        assert!(
-            f.notice.is_some(),
-            "the next recording starts with a clean slate"
-        );
+        assert!(f.notice.is_none(), "still ignored under the next recording");
     }
 
     #[test]

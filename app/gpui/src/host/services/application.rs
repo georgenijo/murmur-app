@@ -1557,7 +1557,7 @@ mod overlay_ingress_tests {
     fn a_late_main_window_retry_result_cannot_replace_a_newer_recordings_banner() {
         let ports = test_ports(Inbox::default());
         let token = start_main_retry(&ports);
-        assert_eq!(main_notice(&ports).unwrap().1, true, "retry is running");
+        assert!(main_notice(&ports).unwrap().1, "retry is running");
         // The next recording starts, and its own delivery fails.
         ports
             .send(
@@ -1583,6 +1583,40 @@ mod overlay_ingress_tests {
                 &json!({"kind":"auto_pasted","message":"Pasted."}).to_string(),
             )
             .unwrap();
+        assert_eq!(main_notice(&ports).unwrap().0, newer);
+    }
+    #[test]
+    fn a_dismissed_retrys_late_service_event_cannot_replace_the_next_recordings_feedback() {
+        let ports = test_ports(Inbox::default());
+        // Retry A starts, is dismissed, and recording B begins.
+        let a = start_main_retry(&ports);
+        ports.events.delivery.lock().unwrap().dismiss();
+        ports
+            .send(
+                "main",
+                "dictation-generation-started",
+                &json!({"recordingId":8}).to_string(),
+            )
+            .unwrap();
+        // B has no feedback yet: A's late event must not create any.
+        let late = json!({"kind":"failed","message":"Late A result."}).to_string();
+        ports
+            .send("main", "delivery-retry-feedback", &late)
+            .unwrap();
+        assert!(main_notice(&ports).is_none(), "A cannot write into B");
+        // B's own failure shows, and A's event then its completion cannot replace it.
+        let newer = "Text delivery timed out. Check the clipboard before pasting.";
+        ports
+            .send("main", "auto-paste-failed", &json!(newer).to_string())
+            .unwrap();
+        ports
+            .send("main", "delivery-retry-feedback", &late)
+            .unwrap();
+        assert!(
+            !ports
+                .events
+                .finish_delivery_retry(a, &retry_ok("failed", "Late A result."))
+        );
         assert_eq!(main_notice(&ports).unwrap().0, newer);
     }
     #[test]
