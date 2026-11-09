@@ -292,7 +292,10 @@ pub enum Route {
         epoch: u64,
         result: super::teaching::Settled,
     },
-    Calibration { offset: Option<i64>, finish: bool },
+    Calibration {
+        offset: Option<i64>,
+        finish: bool,
+    },
 }
 impl Backend {
     pub fn navigate(&self, route: Route) {

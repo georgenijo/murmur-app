@@ -4,12 +4,12 @@
 //! persisted by the separate confirmation command after the UI has shown the
 //! exact source, replacement, scope, and examples.
 
-use crate::MutexExt;
 use crate::knowledge_store::KnowledgeScope;
 use crate::state::DictationState;
+use crate::MutexExt;
 use serde::{Deserialize, Serialize};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 const MAX_TRANSCRIPT_CHARS: usize = 8_192;
 const MAX_DIFF_TOKENS: usize = 512;
@@ -713,16 +713,12 @@ mod tests {
     fn rejects_multiple_optimal_normalized_alignments() {
         let before = tokenize("ONE alpha one");
         let after = tokenize("one beta");
-        assert!(
-            unique_normalized_lcs_matches(&before, &after)
-                .unwrap_err()
-                .contains("ambiguous")
-        );
-        assert!(
-            propose_rule("ONE alpha one", "one beta")
-                .unwrap_err()
-                .contains("ambiguous")
-        );
+        assert!(unique_normalized_lcs_matches(&before, &after)
+            .unwrap_err()
+            .contains("ambiguous"));
+        assert!(propose_rule("ONE alpha one", "one beta")
+            .unwrap_err()
+            .contains("ambiguous"));
     }
 
     #[test]
@@ -739,45 +735,31 @@ mod tests {
 
     #[test]
     fn rejects_ambiguous_multiple_edits_and_unbounded_changes() {
-        assert!(
-            propose_rule("alpha middle omega", "beta middle delta")
-                .unwrap_err()
-                .contains("more than one")
-        );
-        assert!(
-            propose_rule("alpha", "alpha beta")
-                .unwrap_err()
-                .contains("Insertions")
-        );
-        assert!(
-            propose_rule("alpha beta", "alpha")
-                .unwrap_err()
-                .contains("deletions")
-        );
-        assert!(
-            propose_rule("hello!", "hello?")
-                .unwrap_err()
-                .contains("Punctuation")
-        );
-        assert!(
-            propose_rule("alpha  beta", "alpha beta")
-                .unwrap_err()
-                .contains("Whitespace")
-        );
-        assert!(propose_rule("alpha beta", "beta alpha").is_err());
-        assert!(
-            propose_rule(
-                "one two three four five six seven eight nine",
-                "a b c d e f g h i"
-            )
+        assert!(propose_rule("alpha middle omega", "beta middle delta")
             .unwrap_err()
-            .contains("too broad")
-        );
-        assert!(
-            propose_rule("murmur app is ready", "Murmur App is ready")
-                .unwrap_err()
-                .contains("more than one")
-        );
+            .contains("more than one"));
+        assert!(propose_rule("alpha", "alpha beta")
+            .unwrap_err()
+            .contains("Insertions"));
+        assert!(propose_rule("alpha beta", "alpha")
+            .unwrap_err()
+            .contains("deletions"));
+        assert!(propose_rule("hello!", "hello?")
+            .unwrap_err()
+            .contains("Punctuation"));
+        assert!(propose_rule("alpha  beta", "alpha beta")
+            .unwrap_err()
+            .contains("Whitespace"));
+        assert!(propose_rule("alpha beta", "beta alpha").is_err());
+        assert!(propose_rule(
+            "one two three four five six seven eight nine",
+            "a b c d e f g h i"
+        )
+        .unwrap_err()
+        .contains("too broad"));
+        assert!(propose_rule("murmur app is ready", "Murmur App is ready")
+            .unwrap_err()
+            .contains("more than one"));
         assert!(propose_rule(&"a".repeat(MAX_TRANSCRIPT_CHARS + 1), "b").is_err());
     }
 
@@ -1023,27 +1005,21 @@ mod tests {
         let CorrectionProposalOutcome::Proposal { proposal_id, .. } = outcome else {
             panic!("expected proposal")
         };
-        assert!(
-            state
-                .confirmed(proposal_id, &KnowledgeScope::Global)
-                .is_ok()
-        );
-        assert!(
-            state
-                .confirmed(
-                    proposal_id,
-                    &KnowledgeScope::App {
-                        bundle_id: "invented".to_string()
-                    }
-                )
-                .is_err()
-        );
+        assert!(state
+            .confirmed(proposal_id, &KnowledgeScope::Global)
+            .is_ok());
+        assert!(state
+            .confirmed(
+                proposal_id,
+                &KnowledgeScope::App {
+                    bundle_id: "invented".to_string()
+                }
+            )
+            .is_err());
         state.discard(proposal_id);
-        assert!(
-            state
-                .confirmed(proposal_id, &KnowledgeScope::Global)
-                .is_err()
-        );
+        assert!(state
+            .confirmed(proposal_id, &KnowledgeScope::Global)
+            .is_err());
     }
 
     fn propose_neo(state: &CorrectAndTeachState, original: &str, corrected: &str) -> u64 {
@@ -1123,11 +1099,9 @@ mod tests {
             .take_confirmed(first, &KnowledgeScope::Global)
             .unwrap();
         let second = propose_neo(&state, "Call George Neo now", "Call George Nijo now");
-        assert!(
-            state
-                .persist(&store, first, taken, KnowledgeScope::Global)
-                .is_err()
-        );
+        assert!(state
+            .persist(&store, first, taken, KnowledgeScope::Global)
+            .is_err());
         assert!(state.confirmed(first, &KnowledgeScope::Global).is_err());
         assert!(state.confirmed(second, &KnowledgeScope::Global).is_ok());
 
@@ -1149,11 +1123,9 @@ mod tests {
             unsafe_outcome,
             CorrectionProposalOutcome::Unsafe { .. }
         ));
-        assert!(
-            state
-                .persist(&store, third, taken, KnowledgeScope::Global)
-                .is_err()
-        );
+        assert!(state
+            .persist(&store, third, taken, KnowledgeScope::Global)
+            .is_err());
         assert!(state.confirmed(third, &KnowledgeScope::Global).is_err());
 
         // A discard (dialog closed) does too.
@@ -1162,11 +1134,9 @@ mod tests {
             .take_confirmed(fourth, &KnowledgeScope::Global)
             .unwrap();
         state.discard(fourth);
-        assert!(
-            state
-                .persist(&store, fourth, taken, KnowledgeScope::Global)
-                .is_err()
-        );
+        assert!(state
+            .persist(&store, fourth, taken, KnowledgeScope::Global)
+            .is_err());
         assert!(state.confirmed(fourth, &KnowledgeScope::Global).is_err());
     }
 
@@ -1216,10 +1186,8 @@ mod tests {
             unsafe_outcome,
             CorrectionProposalOutcome::Unsafe { .. }
         ));
-        assert!(
-            state
-                .confirmed(proposal_id, &KnowledgeScope::Global)
-                .is_err()
-        );
+        assert!(state
+            .confirmed(proposal_id, &KnowledgeScope::Global)
+            .is_err());
     }
 }
