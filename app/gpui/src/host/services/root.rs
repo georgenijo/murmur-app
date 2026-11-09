@@ -1110,7 +1110,6 @@ impl Main {
         let can_save = !busy && self.teaching_text(cx).is_some();
         let primary = crate::ButtonIntent::Primary;
         let mut modal = div()
-            .id("teach-dialog")
             .key_context("CorrectAndTeach")
             .flex()
             .flex_col()
