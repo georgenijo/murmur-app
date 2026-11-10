@@ -18,7 +18,6 @@ for (const [pane, label, sheet] of [
   ['delivery', 'Manage app overrides', 'App overrides'],
   ['customize', 'Voice commands', 'Voice commands'],
   ['modes', 'Add an app', 'App overrides'],
-  ['text', 'Project scan', 'Project scan'],
 ] as const) {
   test(`non-focusing ${pane} ${label} activation restores the actual caller`, async ({ page }) => {
     await open(page, pane);
@@ -188,16 +187,19 @@ for (const [query, parent, child] of [
   });
 }
 
-test('enabling a feature reveals its explicit nav destination and closing a nav editor restores that caller', async ({ page }) => {
+test('Project scan stays with Text & vocabulary and has one sheet title', async ({ page }) => {
   await open(page, 'text');
   await expect(page.locator('.settings-sidebar').getByRole('button', { name: 'Project scan', exact: true })).toHaveCount(0);
   await advanced(page).click();
   await page.getByRole('switch', { name: 'Developer terms', exact: true }).check();
-  const nav = page.locator('.settings-sidebar').getByRole('button', { name: 'Project scan', exact: true });
-  await nav.click();
-  await expect(page.getByRole('dialog', { name: 'Project scan' })).toBeVisible();
+  await expect(page.locator('.settings-sidebar').getByRole('button', { name: 'Project scan', exact: true })).toHaveCount(0);
+  const opener = page.getByRole('button', { name: 'Manage project scan', exact: true });
+  await opener.click();
+  const dialog = page.getByRole('dialog', { name: 'Project scan' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Project scan', level: 2 })).toHaveCount(1);
   await page.keyboard.press('Escape');
-  await expect(nav).toBeFocused();
+  await expect(opener).toBeFocused();
   await expect(page.getByRole('heading', { name: 'Text & vocabulary', level: 1 })).toBeVisible();
 });
 

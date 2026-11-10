@@ -940,9 +940,6 @@ export const SettingsPanel = memo(function SettingsPanel({
               </button>
             );
           })}
-          {settings.codeVocabEnabled && <button type="button" aria-label="Project scan" title="Project scan"
-            className="settings-nav-item flex w-full items-center text-left" onClick={(event) => openEditor('scan', event.currentTarget)}>
-            <SettingsNavIcon icon="text" /><span className="min-w-0 truncate">Project scan</span></button>}
         </nav>
         <div className="settings-nav-tools">
           <p className="settings-tools-eyebrow mb-1 px-3">Tools</p>
