@@ -25,7 +25,6 @@ import { MainHeader } from './components/MainHeader';
 import { HomeDashboard } from './components/home/HomeDashboard';
 import { HomeSidebar } from './components/home/HomeSidebar';
 import { InsightsView } from './components/home/InsightsView';
-import { WorkspacePageHeader } from './components/ui/DashboardPrimitives';
 import type { MainDestination } from './lib/homeDashboard';
 import { FileTranscriptionToasts } from './components/FileTranscriptionToasts';
 import { MainErrorBanner } from './components/MainErrorBanner';
@@ -875,12 +874,6 @@ function App() {
                 />
               ) : mainDestination === 'meetings' ? (
                 <section className="main-secondary-view" aria-labelledby="meetings-view-title">
-                  <WorkspacePageHeader
-                    title="Notetaker"
-                    titleId="meetings-view-title"
-                    description="Local meeting transcripts with speaker separation"
-                    back={{ label: 'Back to Home', onActivate: backToHome }}
-                  />
                   <MeetingsPanel meetings={meetings} playbackBusy={status !== 'idle'} />
                 </section>
               ) : (

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   getCalendarPermissionStatus,
   getMeetingCalendarEvents,
@@ -22,11 +22,16 @@ interface MeetingCalendarNamingProps {
   onApply: (sessionId: string, selectionToken: string) => Promise<boolean>;
   onManualNaming: () => void;
   onNotice: (message: string) => void;
+  renderTrigger?: (lookup: () => void, disabled: boolean) => ReactNode;
 }
 
-export function MeetingCalendarNaming({ sessionId, disabled, onApply, onManualNaming, onNotice }: MeetingCalendarNamingProps) {
+export function MeetingCalendarNaming({ sessionId, disabled, onApply, onManualNaming, onNotice, renderTrigger }: MeetingCalendarNamingProps) {
   const [state, setState] = useState<PickerState>({ kind: 'closed' });
   const generation = useRef(0);
+  const pickerRef = useRef<HTMLFieldSetElement>(null);
+  useEffect(() => {
+    if (state.kind === 'choosing') pickerRef.current?.querySelector<HTMLElement>('input, button')?.focus();
+  }, [state.kind]);
   useEffect(() => () => { generation.current += 1; }, []);
   useEffect(() => {
     if (disabled) {
@@ -102,7 +107,7 @@ export function MeetingCalendarNaming({ sessionId, disabled, onApply, onManualNa
   const picking = state.kind === 'choosing' || state.kind === 'applying';
   return (
     <div className="contents text-xs">
-      <button type="button" disabled={disabled || state.kind === 'loading' || state.kind === 'applying'} onClick={() => void lookup()} className="meeting-header-action">{state.kind === 'loading' ? 'Reading calendar…' : 'Name from calendar…'}</button>
+      {renderTrigger ? renderTrigger(() => void lookup(), disabled || state.kind === 'loading' || state.kind === 'applying') : <button type="button" disabled={disabled || state.kind === 'loading' || state.kind === 'applying'} onClick={() => void lookup()} className="ui-form-button meeting-header-action">{state.kind === 'loading' ? 'Reading calendar…' : 'Name from calendar…'}</button>}
       {state.kind === 'unavailable' && (
         <div role="status" className="meeting-detail-header-panel space-y-2 text-xs text-on-surface-variant">
           <p>{state.message}</p>
@@ -114,7 +119,7 @@ export function MeetingCalendarNaming({ sessionId, disabled, onApply, onManualNa
         </div>
       )}
       {picking && (
-        <fieldset disabled={disabled || state.kind === 'applying'} aria-busy={state.kind === 'applying'} className="meeting-detail-header-panel space-y-2 text-xs">
+        <fieldset ref={pickerRef} disabled={disabled || state.kind === 'applying'} aria-busy={state.kind === 'applying'} className="meeting-detail-header-panel space-y-2 text-xs">
           <legend className="font-semibold text-on-surface">Choose an overlapping event</legend>
           {state.events.length === 0 ? <p className="text-on-surface-variant">No calendar events overlap this meeting. You can still name it manually.</p> : (
             <>

@@ -67,10 +67,9 @@ describe('useMeetings selected meeting finalization', () => {
 
   it.each([['idle', 'complete'], ['failed', 'failed']] as const)('reloads persisted selected detail on %s without re-clicking', async (phase, storedStatus) => {
     await act(async () => current.select('first'));
-    const format = container.querySelector<HTMLSelectElement>('select[aria-label="Meeting transcript export format"]')!;
-    await act(async () => { format.value = 'srt'; format.dispatchEvent(new Event('change', { bubbles: true })); });
-    const captions = () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Copy captions')!;
-    expect(captions().disabled).toBe(true);
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent?.trim() === 'Export')!.click());
+    const captions = () => [...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === 'SubRip (.srt)')!;
+    expect(captions().getAttribute('aria-disabled')).toBe('true');
     await status('processing');
     mocks.get.mockResolvedValue(workspace('first', storedStatus));
     await status(phase, phase === 'idle' ? null : 'first');
@@ -78,7 +77,7 @@ describe('useMeetings selected meeting finalization', () => {
     expect(current.detail?.segments[0].status).toBe('final');
     expect(mocks.get).toHaveBeenCalledTimes(2);
     expect(mocks.list).toHaveBeenCalledTimes(2);
-    expect(captions().disabled).toBe(false);
+    expect(captions().getAttribute('aria-disabled')).not.toBe('true');
     await status(phase, phase === 'idle' ? null : 'first');
     expect(mocks.get).toHaveBeenCalledTimes(2);
   });

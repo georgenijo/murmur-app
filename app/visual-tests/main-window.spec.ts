@@ -781,14 +781,15 @@ test('populated Insights keeps all tiles and charts reachable in the default win
   await expect(page.locator('.usage-analytics-section').first()).toHaveCSS('border-top-width', '1px');
 });
 
-test('secondary destinations share Back behavior and restore focus to Home navigation', async ({ page }) => {
+test('secondary destinations return through their supported Home navigation', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
   const home = page.getByRole('button', { name: 'Home', exact: true });
 
   for (const destination of ['Notetaker', 'Insights'] as const) {
     await page.getByRole('button', { name: destination, exact: true }).click();
     await expect(page.getByRole('heading', { name: destination, exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'Back to Home', exact: true }).click();
+    if (destination === 'Notetaker') await home.click();
+    else await page.getByRole('button', { name: 'Back to Home', exact: true }).click();
     await expect(home).toHaveAttribute('aria-current', 'page');
     await expect(home).toBeFocused();
   }
@@ -830,10 +831,11 @@ test('meeting captions explain segment timing and keep copy and export reachable
   ] as const) {
     await page.setViewportSize({ width, height });
     await page.goto(`/visual-fixtures.html?state=meetings-review&appearance=${appearance}`);
-    await page.getByRole('combobox', { name: 'Meeting transcript export format' }).selectOption(format);
-    await expect(page.getByRole('button', { name: 'Copy captions' })).toBeVisible();
+    await page.getByRole('button', { name: 'Export', exact: true }).click();
+    await page.getByRole('menuitem', { name: format === 'srt' ? 'SubRip (.srt)' : 'WebVTT (.vtt)', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Copy transcript' })).toBeVisible();
     await expect(page.getByText('One caption per recorded speech segment', { exact: false })).toBeVisible();
-    const exportButton = page.getByRole('button', { name: 'Export…', exact: true });
+    const exportButton = page.getByRole('button', { name: 'Export', exact: true });
     await expect(exportButton).toBeVisible();
     const bounds = await exportButton.boundingBox();
     expect(bounds && bounds.x + bounds.width).toBeLessThanOrEqual(width);
@@ -845,7 +847,8 @@ test('meeting captions explain segment timing and keep copy and export reachable
 test('meeting calendar picker requires selection and keeps denied access usable', async ({ page }) => {
   await page.setViewportSize({ width: 880, height: 720 });
   await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light');
-  await page.getByRole('button', { name: 'Name from calendar…', exact: true }).click();
+  await page.locator('.meeting-more').click();
+  await page.getByRole('menuitem', { name: 'Name from calendar…', exact: true }).click();
   await expect(page.getByRole('radio')).toHaveCount(2);
   await expect(page.getByRole('button', { name: 'Apply event' })).toBeDisabled();
   await page.getByRole('radio', { name: /Orion planning/ }).focus();
@@ -854,7 +857,8 @@ test('meeting calendar picker requires selection and keeps denied access usable'
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-meeting-calendar-picker.png');
 
   await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light&calendar=denied');
-  await page.getByRole('button', { name: 'Name from calendar…', exact: true }).click();
+  await page.locator('.meeting-more').click();
+  await page.getByRole('menuitem', { name: 'Name from calendar…', exact: true }).click();
   await expect(page.getByLabel('Meeting title', { exact: true })).toBeEditable();
   await expect(page.getByRole('button', { name: 'Open Calendar settings…' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Reset Calendar access…' })).toBeVisible();

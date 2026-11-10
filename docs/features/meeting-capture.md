@@ -15,7 +15,7 @@ display labels, copy or export the transcript, and play retained audio. See
 
 ## User contract
 
-- Start or stop from **History → Meetings**, or with the command palette.
+- Start or stop from **Notetaker**, or with the command palette.
 - **Me** is microphone audio. **Them** is system playback. Optional
   [local remote-speaker labels](meeting-diarization.md) can refine unambiguous
   Them passages after transcription. Experimental speaker-echo reduction is off by

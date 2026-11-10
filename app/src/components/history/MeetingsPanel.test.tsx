@@ -93,6 +93,58 @@ describe('MeetingsPanel retained audio deletion', () => {
     expect(container.textContent).toContain('No meeting transcripts yet.');
   });
 
+  it('shows one first-meeting action without an empty list or detail pane', async () => {
+    const meetings = meetingsController(vi.fn());
+    meetings.page = { sessions: [], searchMatches: {}, total: 0, offset: 0, limit: 50 };
+    meetings.detail = null;
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(container.textContent).toContain('Record your first meeting');
+    expect(container.querySelector('input[type="search"]')).toBeNull();
+    expect(container.querySelector('.meetings-split')).toBeNull();
+    const starts = [...container.querySelectorAll('button')].filter((button) => button.textContent === 'Start meeting');
+    expect(starts).toHaveLength(1);
+    await act(async () => starts[0].click());
+    expect(meetings.start).toHaveBeenCalledOnce();
+    expect(container.querySelector('.meetings-phase-dot')?.getAttribute('data-phase')).toBe('idle');
+  });
+
+  it('offers System Settings and an enabled retry when Mac audio access is denied', async () => {
+    const meetings = meetingsController(vi.fn());
+    meetings.permission = 'denied';
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(container.textContent).toContain('Screen & System Audio Recording is off.');
+    expect(container.querySelector('.meetings-statusbar-detail')).toBeNull();
+    const recovery = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Open System Settings…')!;
+    expect(recovery.dataset.action).toBe('primary');
+    await act(async () => recovery.click());
+    expect(meetings.openSystemAudioPreferences).toHaveBeenCalledOnce();
+    const retry = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Start meeting')!;
+    expect(retry.disabled).toBe(false);
+    await act(async () => retry.click());
+    expect(meetings.start).toHaveBeenCalledOnce();
+  });
+
+  it('checks access only on activation and uses real recording state in all three timers', async () => {
+    const meetings = meetingsController(vi.fn());
+    meetings.permission = 'unknown';
+    meetings.requestPermission = vi.fn().mockResolvedValue('granted');
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(meetings.requestPermission).not.toHaveBeenCalled();
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Check access')!.click());
+    expect(meetings.requestPermission).toHaveBeenCalledOnce();
+    meetings.status = { ...meetings.status, phase: 'recording', sessionId: detail.session.id, elapsedMs: 272_000, microphoneActive: true, systemAudioActive: true };
+    meetings.detail = { ...detail, session: { ...detail.session, title: null, status: 'active' } };
+    meetings.page.sessions = [meetings.detail.session];
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(container.querySelector('.meetings-elapsed')?.textContent).toBe('4:32');
+    expect(container.querySelector('.meetings-row-preview')?.textContent).toBe('Recording · 4:32');
+    expect(container.querySelector('.meeting-detail-meta p')?.textContent).toBe('Recording · 4:32');
+    expect(container.querySelector('.meeting-more')).toBeNull();
+    expect(container.querySelector('.meeting-detail-title')?.hasAttribute('disabled')).toBe(true);
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Stop meeting')!.click());
+    expect(meetings.stop).toHaveBeenCalledOnce();
+  });
+
   it('exposes a named load-more button with loading and search-pending states', async () => {
     const meetings = meetingsController(vi.fn());
     Object.assign(meetings, { hasMore: true, loadingMore: false, loadMore: vi.fn() });
@@ -159,13 +211,14 @@ describe('MeetingsPanel retained audio deletion', () => {
     ));
 
     const click = async (label: string) => {
-      const button = [...container.querySelectorAll('button')].find(
+      const button = [...document.querySelectorAll<HTMLElement>('button, [role="menuitem"]')].find(
         (candidate) => candidate.textContent?.trim() === label,
       );
       if (!button) throw new Error(`Missing ${label} button`);
       await act(async () => button.click());
     };
-    await click('Delete');
+    await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+    await click('Delete meeting…');
     await click('Confirm delete…');
 
     expect(order).toEqual(['invalidate', 'remove']);

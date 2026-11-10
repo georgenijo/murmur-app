@@ -77,7 +77,7 @@ describe('MeetingReviewWorkspace', () => {
     const saveMetadata = vi.fn().mockResolvedValue(true);
     const saveReview = vi.fn();
     await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ saveMetadata, saveReview })} segments={segments} captureBusy={false} onNotice={() => {}} />));
-    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Name meeting')?.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Name meeting"]')?.click());
     const title = container.querySelector<HTMLInputElement>('form[aria-label="Name meeting"] input');
     const attendees = container.querySelector<HTMLTextAreaElement>('form[aria-label="Name meeting"] textarea');
     if (!title || !attendees) throw new Error('Missing meeting metadata fields');
@@ -95,7 +95,7 @@ describe('MeetingReviewWorkspace', () => {
   it('keeps naming input after a failed save and clears it when selecting another meeting', async () => {
     const saveMetadata = vi.fn().mockResolvedValue(false);
     await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ saveMetadata })} segments={segments} captureBusy={false} onNotice={() => {}} />));
-    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Name meeting')?.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Name meeting"]')?.click());
     await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Save details')?.click());
     expect(container.querySelector('form[aria-label="Name meeting"]')).not.toBeNull();
     const other: MeetingDetail = { ...detail, session: { ...detail.session, id: 'other', title: 'Other meeting', titleSource: 'manual' } };
@@ -104,57 +104,81 @@ describe('MeetingReviewWorkspace', () => {
     expect(container.textContent).toContain('Other meeting');
   });
 
-  it('copies and exports captions with the selected format and explains their scope', async () => {
+  const click = async (label: string) => {
+    const element = [...document.querySelectorAll<HTMLElement>('button, [role="menuitem"], [role="menuitemcheckbox"]')].find((candidate) => candidate.textContent?.trim() === label);
+    if (!element) throw new Error(`Missing action: ${label}`);
+    await act(async () => element.click());
+  };
+  const openExport = () => click('Export');
+
+  it('exports captions from the menu and copies Markdown with the primary Copy action', async () => {
     const meetings = controller();
     const onNotice = vi.fn();
     await act(async () => root.render(<MeetingReviewWorkspace meetings={meetings} segments={segments} captureBusy={false} onNotice={onNotice} />));
-    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Meeting transcript export format"]');
-    if (!select) throw new Error('Missing export picker');
-    await act(async () => {
-      select.value = 'vtt';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
-    expect(container.textContent).toContain('One caption per recorded speech segment');
-    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Copy captions')?.click());
-    expect(meetings.copy).toHaveBeenCalledWith('meeting', 'vtt');
-    expect(onNotice).toHaveBeenCalledWith('Meeting captions copied as vtt.');
-    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Export…')?.click());
+    await openExport();
+    await click('WebVTT (.vtt)');
     expect(meetings.exportReview).toHaveBeenCalledWith('meeting', 1, 'vtt');
+    expect(onNotice).toHaveBeenCalledWith('Meeting captions exported as vtt.');
+    expect(container.textContent).toContain('One caption per recorded speech segment');
+    await click('Copy transcript');
+    expect(meetings.copy).toHaveBeenCalledWith('meeting', 'markdown');
   });
 
-  it('requires capture to stop before caption export', async () => {
-    const activeDetail: MeetingDetail = { ...detail, session: { ...detail.session, status: 'active' } };
-    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: activeDetail })} segments={segments} captureBusy onNotice={() => {}} />));
-    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Meeting transcript export format"]');
-    if (!select) throw new Error('Missing export picker');
-    await act(async () => {
-      select.value = 'srt';
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    });
-    expect(container.textContent).toContain('Stop this meeting before exporting captions.');
-    const buttons = [...container.querySelectorAll('button')].filter((button) => ['Copy captions', 'Export…'].includes(button.textContent ?? ''));
-    expect(buttons).toHaveLength(2);
-    expect(buttons.every((button) => button.disabled)).toBe(true);
+  it('opens naming and speaker editing from the More menu', async () => {
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={controller()} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+    await click('Rename…');
+    expect(container.querySelector('form[aria-label="Name meeting"]')).not.toBeNull();
+    await click('Cancel naming');
+    await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+    await click('Edit speakers…');
+    expect(container.querySelector<HTMLDetailsElement>('.meeting-speakers')?.open).toBe(true);
+  });
+
+  it('copies the selected format from the Copy as submenu', async () => {
+    const meetings = controller();
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={meetings} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+    await click('Copy as');
+    await click('JSON');
+    expect(meetings.copy).toHaveBeenCalledWith('meeting', 'json');
+  });
+
+  it('blocks caption formats during capture while keeping transcript copy and export available', async () => {
+    const meetings = controller({ detail: { ...detail, session: { ...detail.session, status: 'active' } } });
+    await act(async () => root.render(<MeetingReviewWorkspace meetings={meetings} segments={segments} captureBusy onNotice={() => {}} />));
+    expect(container.querySelector('.meeting-more')).toBeNull();
+    await click('Copy transcript');
+    expect(meetings.copy).toHaveBeenCalledWith('meeting', 'markdown');
+    await openExport();
+    const captions = [...document.querySelectorAll('[role="menuitem"]')].filter((item) => ['SubRip (.srt)', 'WebVTT (.vtt)'].includes(item.textContent ?? ''));
+    expect(captions).toHaveLength(2);
+    expect(captions.every((item) => item.getAttribute('aria-disabled') === 'true')).toBe(true);
+    await click('Plain text');
+    expect(meetings.exportReview).toHaveBeenCalledWith('meeting', 1, 'text');
   });
 
   const retainedDetail: MeetingDetail = { ...detail, session: { ...detail.session, retainAudio: true } };
-  const click = (label: string) => act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === label)?.click());
 
   it('hides the with-audio export when audio was not retained', async () => {
     await act(async () => root.render(<MeetingReviewWorkspace meetings={controller()} segments={segments} captureBusy={false} onNotice={() => {}} />));
-    expect(container.textContent).not.toContain('Export with audio…');
+    await openExport();
+    expect(document.querySelector('[role="menu"]')?.textContent).not.toContain('Export with audio…');
   });
 
   it('shows the bundle size before saving, then exports the selected format with audio', async () => {
     const meetings = controller({ detail: retainedDetail });
     const onNotice = vi.fn();
     await act(async () => root.render(<MeetingReviewWorkspace meetings={meetings} segments={segments} captureBusy={false} onNotice={onNotice} />));
+    await openExport();
     await click('Export with audio…');
     expect(meetings.previewBundle).toHaveBeenCalledWith('meeting');
     expect(meetings.exportBundle).not.toHaveBeenCalled();
     expect(container.textContent).toContain('3 audio segments (3.0 MB)');
+    const format = container.querySelector<HTMLSelectElement>('[aria-label="Meeting audio bundle format"]')!;
+    await act(async () => { format.value = 'vtt'; format.dispatchEvent(new Event('change', { bubbles: true })); });
     await click('Choose location…');
-    expect(meetings.exportBundle).toHaveBeenCalledWith('meeting', 1, 'markdown');
+    expect(meetings.exportBundle).toHaveBeenCalledWith('meeting', 1, 'vtt');
     expect(onNotice).toHaveBeenCalledWith('Meeting exported with 3 audio segments.');
     expect(container.querySelector('[aria-label="Export with audio"]')).toBeNull();
   });
@@ -167,6 +191,7 @@ describe('MeetingReviewWorkspace', () => {
     });
     const onNotice = vi.fn();
     await act(async () => root.render(<MeetingReviewWorkspace meetings={meetings} segments={segments} captureBusy={false} onNotice={onNotice} />));
+    await openExport();
     await click('Export with audio…');
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('1 retained audio segments are missing');
     await click('Choose location…');
@@ -179,6 +204,7 @@ describe('MeetingReviewWorkspace', () => {
       previewBundle: vi.fn().mockResolvedValue({ audioSegments: 9, audioBytes: 5000, unavailableSegments: 0, maxAudioBytes: 4096 }),
     });
     await act(async () => root.render(<MeetingReviewWorkspace meetings={meetings} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    await openExport();
     await click('Export with audio…');
     const choose = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Choose location…');
     expect(choose?.disabled).toBe(true);
@@ -189,7 +215,8 @@ describe('MeetingReviewWorkspace', () => {
 
   it('keeps with-audio export unavailable while capture is busy or the meeting is active', async () => {
     await act(async () => root.render(<MeetingReviewWorkspace meetings={controller({ detail: retainedDetail })} segments={segments} captureBusy onNotice={() => {}} />));
-    expect([...container.querySelectorAll('button')].find((button) => button.textContent === 'Export with audio…')?.disabled).toBe(true);
+    await openExport();
+    expect([...document.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === 'Export with audio…')?.getAttribute('aria-disabled')).toBe('true');
   });
 
   it('omits playback controls and explains audio retention for transcript-only meetings', async () => {
