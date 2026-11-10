@@ -43,6 +43,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [deleteArmedAt, setDeleteArmedAt] = useState<number | null>(null);
   const armedDeleteSessionRef = useRef<string | null>(null);
   const [listMenuOpen, setListMenuOpen] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -100,6 +101,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
   const setDeleteConfirmation = useCallback((sessionId: string | null) => {
     armedDeleteSessionRef.current = sessionId;
     setConfirmDelete(sessionId);
+    setDeleteArmedAt(sessionId ? Date.now() : null);
   }, []);
 
   const disarmDelete = useCallback(() => {
@@ -325,6 +327,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
               onDelete={() => void deleteSelected()}
               onDisarmDelete={disarmDelete}
               confirmingDelete={confirmDelete === detail.session.id}
+              deleteArmedAt={confirmDelete === detail.session.id ? deleteArmedAt : null}
             />
           ) : (
             <div className="grid h-full place-items-center p-8 text-center">

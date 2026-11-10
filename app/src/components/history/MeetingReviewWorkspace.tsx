@@ -29,6 +29,7 @@ interface MeetingReviewWorkspaceProps {
   onDelete?: () => void;
   onDisarmDelete?: () => void;
   confirmingDelete?: boolean;
+  deleteArmedAt?: number | null;
 }
 
 interface WorkspaceActivation {
@@ -77,7 +78,7 @@ function TranscriptRow({ segment, labels, remoteSpeakers, onPlay, playbackDisabl
   );
 }
 
-export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetingAudio, onNotice, headerMeta, onDelete, onDisarmDelete, confirmingDelete }: MeetingReviewWorkspaceProps) {
+export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetingAudio, onNotice, headerMeta, onDelete, onDisarmDelete, confirmingDelete, deleteArmedAt }: MeetingReviewWorkspaceProps) {
   const detail = meetings.detail!;
   const capture = meetingCapturePresentation(detail.session.id, meetings.status);
   const activeWorkspace = useRef<WorkspaceActivation | null>(null);
@@ -207,6 +208,7 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
         renderActions={(rename, calendar, calendarDisabled) => <MeetingHeaderActions
           active={detail.session.status === 'active'} busy={captureBusy} calendarDisabled={calendarDisabled}
           retainedAudio={detail.session.retainAudio} bundleBusy={bundleBusy} confirmingDelete={confirmingDelete}
+          deleteArmedAt={deleteArmedAt}
           onRename={rename} onCalendar={calendar} onDelete={onDelete} onDisarmDelete={onDisarmDelete}
           onSpeakers={() => { if (speakersRef.current) { speakersRef.current.open = true; speakersRef.current.querySelector('input')?.focus(); } }}
           onCopy={(value) => void copy(value)} onExport={(value) => void exportReview(value)} onBundle={() => void planBundle()}

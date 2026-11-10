@@ -1,4 +1,4 @@
-import { useRef, type KeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
 import { Menu } from '@base-ui/react/menu';
 import { ChevronDown, ChevronRight, Copy } from 'lucide-react';
 import { MEETING_EXPORT_FORMATS, type MeetingReviewExportFormat } from '../../lib/meetings';
@@ -11,6 +11,7 @@ interface MeetingHeaderActionsProps {
   retainedAudio: boolean;
   bundleBusy: boolean;
   confirmingDelete?: boolean;
+  deleteArmedAt?: number | null;
   onRename: () => void;
   onCalendar: () => void;
   onSpeakers: () => void;
@@ -20,6 +21,9 @@ interface MeetingHeaderActionsProps {
   onDelete?: () => void;
   onDisarmDelete?: () => void;
 }
+
+/** macOS reports consecutive pointer clicks with an increasing click count. */
+export const POINTER_DELETE_CONFIRMATION_WINDOW_MS = 500;
 
 function Popup({ children, submenu = false, finalFocus }: { children: ReactNode; submenu?: boolean; finalFocus?: () => HTMLElement | boolean }) {
   return <Menu.Portal><Menu.Positioner side={submenu ? 'right' : 'bottom'} align={submenu ? 'start' : 'end'} sideOffset={6} className="z-50">
@@ -47,6 +51,11 @@ export function MeetingHeaderActions(props: MeetingHeaderActionsProps) {
   const actionsRef = useRef<HTMLDivElement>(null);
   const focusAfterClose = useRef<string | null>(null);
   const deletePointerActivationRef = useRef(false);
+  const pointerDeleteArmedAtRef = useRef<number | null>(null);
+  const pointerDeleteDisarmedRef = useRef(false);
+  useEffect(() => {
+    if (!props.confirmingDelete) pointerDeleteArmedAtRef.current = null;
+  }, [props.confirmingDelete]);
   const formats = (action: MeetingHeaderActionsProps['onCopy']) => MEETING_EXPORT_FORMATS.map((format) => (
     <Menu.Item key={format.value} className="ui-menu-item" disabled={props.active && (format.value === 'srt' || format.value === 'vtt')} onClick={() => action(format.value)}>{format.label}</Menu.Item>
   ));
@@ -63,6 +72,8 @@ export function MeetingHeaderActions(props: MeetingHeaderActionsProps) {
       </Popup>
     </Menu.Root>
     {!props.busy && <Menu.Root onOpenChange={(open) => {
+      pointerDeleteArmedAtRef.current = null;
+      pointerDeleteDisarmedRef.current = false;
       props.onDisarmDelete?.();
       if (open) focusAfterClose.current = null;
     }}>
@@ -81,6 +92,7 @@ export function MeetingHeaderActions(props: MeetingHeaderActionsProps) {
         {props.onDelete && <><Menu.Separator className="ui-menu-separator" />
           <Menu.Item className="ui-menu-item" data-variant="destructive" closeOnClick={false} onKeyDownCapture={(event) => {
             deletePointerActivationRef.current = false;
+            pointerDeleteDisarmedRef.current = false;
             guardDestructiveKey(event, () => props.onDelete?.());
           }}
             onPointerDownCapture={() => {
@@ -88,8 +100,23 @@ export function MeetingHeaderActions(props: MeetingHeaderActionsProps) {
               requestAnimationFrame(() => { deletePointerActivationRef.current = false; });
             }}
             onBlur={() => {
-              if (!deletePointerActivationRef.current) props.onDisarmDelete?.();
-            }} onPointerLeave={props.onDisarmDelete} onClick={() => props.onDelete?.()}>{props.confirmingDelete ? 'Confirm delete…' : 'Delete meeting…'}</Menu.Item>
+              if (!deletePointerActivationRef.current) {
+                pointerDeleteArmedAtRef.current = null;
+                pointerDeleteDisarmedRef.current = true;
+                props.onDisarmDelete?.();
+              }
+            }} onPointerLeave={() => {
+              pointerDeleteArmedAtRef.current = null;
+              pointerDeleteDisarmedRef.current = true;
+              props.onDisarmDelete?.();
+            }} onClick={() => {
+              const now = Date.now();
+              const armedAt = pointerDeleteArmedAtRef.current ?? props.deleteArmedAt;
+              if (!pointerDeleteDisarmedRef.current && armedAt !== null && armedAt !== undefined && now - armedAt < POINTER_DELETE_CONFIRMATION_WINDOW_MS) return;
+              props.onDelete?.();
+              if (!props.confirmingDelete || pointerDeleteDisarmedRef.current) pointerDeleteArmedAtRef.current = now;
+              pointerDeleteDisarmedRef.current = false;
+            }}>{props.confirmingDelete ? 'Confirm delete…' : 'Delete meeting…'}</Menu.Item>
         </>}
       </Popup>
     </Menu.Root>}

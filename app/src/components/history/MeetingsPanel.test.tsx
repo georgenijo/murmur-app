@@ -313,6 +313,7 @@ describe('MeetingsPanel retained audio deletion', () => {
     expect(item.textContent).toBe('Confirm delete…');
     await act(async () => item.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true, cancelable: true })));
     expect(remove).not.toHaveBeenCalled();
+    await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 501)); });
     await act(async () => item.click());
     expect(remove).toHaveBeenCalledExactlyOnceWith(detail.session.id);
   });
@@ -355,17 +356,47 @@ describe('MeetingsPanel retained audio deletion', () => {
     }
   });
 
-  it('confirms a second pointer activation, including a native double-click detail', async () => {
-    const remove = vi.fn().mockResolvedValue(true);
-    await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
-    await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
-    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => element.textContent === 'Delete meeting…')!;
-    await act(async () => item.dispatchEvent(new Event('pointerdown', { bubbles: true })));
-    await act(async () => item.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 })));
-    expect(item.textContent).toBe('Confirm delete…');
-    await act(async () => item.dispatchEvent(new Event('pointerdown', { bubbles: true })));
-    await act(async () => item.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 })));
-    expect(remove).toHaveBeenCalledExactlyOnceWith(detail.session.id);
+  it('requires a fresh pointer confirmation after the macOS double-click window', async () => {
+    vi.useFakeTimers();
+    try {
+      const remove = vi.fn().mockResolvedValue(true);
+      await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
+      await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+      const item = () => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => /(?:Delete meeting|Confirm delete)…/.test(element.textContent ?? ''))!;
+      const pointerClick = async (detail: number) => {
+        await act(async () => item().dispatchEvent(new Event('pointerdown', { bubbles: true })));
+        await act(async () => item().dispatchEvent(new MouseEvent('click', { bubbles: true, detail })));
+      };
+      await pointerClick(1);
+      expect(item().textContent).toBe('Confirm delete…');
+      await pointerClick(2);
+      await pointerClick(3);
+      expect(item().textContent).toBe('Confirm delete…');
+      expect(remove).not.toHaveBeenCalled();
+      await act(async () => vi.advanceTimersByTime(501));
+      await pointerClick(3);
+      expect(remove).toHaveBeenCalledExactlyOnceWith(detail.session.id);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('re-arms after the four-second timeout instead of deleting', async () => {
+    vi.useFakeTimers();
+    try {
+      const remove = vi.fn().mockResolvedValue(true);
+      await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
+      await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+      const item = () => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => /(?:Delete meeting|Confirm delete)…/.test(element.textContent ?? ''))!;
+      await act(async () => item().click());
+      await act(async () => vi.advanceTimersByTime(4_000));
+      expect(item().textContent).toBe('Delete meeting…');
+      await act(async () => item().click());
+      expect(item().textContent).toBe('Confirm delete…');
+      expect(remove).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('invalidates local playback before deleting the selected meeting', async () => {
@@ -388,6 +419,7 @@ describe('MeetingsPanel retained audio deletion', () => {
     };
     await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
     await click('Delete meeting…');
+    await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 501)); });
     await click('Confirm delete…');
 
     expect(order).toEqual(['invalidate', 'remove']);

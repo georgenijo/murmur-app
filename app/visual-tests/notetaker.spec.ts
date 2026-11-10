@@ -125,10 +125,16 @@ for (const appearance of ['light', 'dark']) {
     });
   }
 
-  test(`Notetaker double-click confirms after arming ${appearance}`, async ({ page }) => {
+  test(`Notetaker double-click only arms ${appearance}`, async ({ page }) => {
     await page.goto(`/visual-fixtures.html?state=meetings-many&appearance=${appearance}`);
     await page.locator('.meeting-more').click();
     await page.getByRole('menuitem', { name: 'Delete meeting…', exact: true }).dblclick();
+    const confirm = page.getByRole('menuitem', { name: 'Confirm delete…', exact: true });
+    await expect(confirm).toBeVisible();
+    await expect(page.locator('html')).not.toHaveAttribute('data-meeting-deletions');
+    // A fresh pointer activation after the macOS double-click interval confirms.
+    await page.waitForTimeout(600);
+    await confirm.click();
     await expect(page.locator('html')).toHaveAttribute('data-meeting-deletions', '1');
   });
 
