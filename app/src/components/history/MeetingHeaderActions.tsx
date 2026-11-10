@@ -110,7 +110,7 @@ export function MeetingHeaderActions(props: MeetingHeaderActionsProps) {
               pointerDeleteDisarmedRef.current = true;
               props.onDisarmDelete?.();
             }} onClick={() => {
-              const now = Date.now();
+              const now = performance.now();
               const armedAt = pointerDeleteArmedAtRef.current ?? props.deleteArmedAt;
               if (!pointerDeleteDisarmedRef.current && armedAt !== null && armedAt !== undefined && now - armedAt < POINTER_DELETE_CONFIRMATION_WINDOW_MS) return;
               props.onDelete?.();

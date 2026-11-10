@@ -101,7 +101,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
   const setDeleteConfirmation = useCallback((sessionId: string | null) => {
     armedDeleteSessionRef.current = sessionId;
     setConfirmDelete(sessionId);
-    setDeleteArmedAt(sessionId ? Date.now() : null);
+    setDeleteArmedAt(sessionId ? performance.now() : null);
   }, []);
 
   const disarmDelete = useCallback(() => {

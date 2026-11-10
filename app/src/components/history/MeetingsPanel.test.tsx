@@ -381,6 +381,37 @@ describe('MeetingsPanel retained audio deletion', () => {
     }
   });
 
+  it('uses monotonic time for the pointer confirmation window despite wall-clock changes', async () => {
+    vi.useFakeTimers();
+    try {
+      const remove = vi.fn().mockResolvedValue(true);
+      const start = new Date('2026-11-10T12:00:00Z');
+      vi.setSystemTime(start);
+      await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
+      await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+      const item = () => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => /(?:Delete meeting|Confirm delete)…/.test(element.textContent ?? ''))!;
+      const pointerClick = async (detail: number) => {
+        await act(async () => item().dispatchEvent(new Event('pointerdown', { bubbles: true })));
+        await act(async () => item().dispatchEvent(new MouseEvent('click', { bubbles: true, detail })));
+      };
+
+      await pointerClick(1);
+      expect(item().textContent).toBe('Confirm delete…');
+      vi.setSystemTime(new Date(start.getTime() + 60_000));
+      await pointerClick(2);
+      vi.setSystemTime(new Date(start.getTime() - 60_000));
+      await pointerClick(3);
+      expect(item().textContent).toBe('Confirm delete…');
+      expect(remove).not.toHaveBeenCalled();
+
+      await act(async () => vi.advanceTimersByTime(501));
+      await pointerClick(4);
+      expect(remove).toHaveBeenCalledExactlyOnceWith(detail.session.id);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('re-arms after the four-second timeout instead of deleting', async () => {
     vi.useFakeTimers();
     try {
