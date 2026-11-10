@@ -2569,6 +2569,13 @@ fn register_shadow_measurement(
     );
 }
 
+#[derive(Default)]
+struct PipelineStopContext {
+    delivery_target: Option<crate::frontmost::DeliveryTargetSnapshot>,
+    stamp: Option<crate::shadow_measurement::StopStamp>,
+    measure_shadow: bool,
+}
+
 /// Shared transcription pipeline: model init -> transcribe -> inject text -> set idle.
 /// `recording_id` is checked against `app_state.cancelled_id` at checkpoints;
 /// if cancelled, returns empty text without clipboard write or paste.
@@ -2579,10 +2586,13 @@ async fn run_transcription_pipeline(
     recording_id: u64,
     performance_guard: &mut impl DictationPerformanceStageRecorder,
     context: Arc<DictationContextSnapshot>,
-    stop_delivery_target: Option<crate::frontmost::DeliveryTargetSnapshot>,
-    stop_stamp: Option<crate::shadow_measurement::StopStamp>,
-    measure_shadow: bool,
+    stop: PipelineStopContext,
 ) -> Result<PipelineResult, String> {
+    let PipelineStopContext {
+        delivery_target: stop_delivery_target,
+        stamp: stop_stamp,
+        measure_shadow,
+    } = stop;
     // Guard resets status to Idle on any return path (error or success),
     // but only if this recording is still the active one
     let mut _guard = IdleGuard::new(app_state, recording_id);
@@ -3383,9 +3393,7 @@ pub async fn process_audio(
         Arc::clone(&context),
         // Imported audio has no live stop transition: its snapshot is already
         // taken at the accepted Idle -> Processing transition.
-        None,
-        None,
-        false,
+        PipelineStopContext::default(),
     )
     .await;
     // Only emit idle if this recording wasn't cancelled/superseded.
@@ -5938,9 +5946,11 @@ async fn stop_native_recording_for(
         rid,
         &mut performance_guard,
         Arc::clone(&context),
-        stop_delivery_target,
-        stop_stamp,
-        true,
+        PipelineStopContext {
+            delivery_target: stop_delivery_target,
+            stamp: stop_stamp,
+            measure_shadow: true,
+        },
     )
     .await;
     // Only emit idle if this recording wasn't cancelled/superseded by a new one.

@@ -135,7 +135,7 @@ pub(crate) fn last_pause(bounds: &[(usize, usize)], end: usize) -> Option<usize>
             (pause_end.saturating_sub(*speech_end) >= 4_800)
                 .then_some(speech_end.saturating_add(4_800))
         })
-        .last()
+        .next_back()
 }
 pub(crate) fn pcm_equal(left: &[f32], right: &[f32]) -> bool {
     left.len() == right.len()
