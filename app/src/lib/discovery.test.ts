@@ -257,7 +257,7 @@ describe('hint mutations during storage failures', () => {
     });
     const cleanup = vi.spyOn(localStorage, 'removeItem').mockImplementation(() => { throw new Error('cleanup unavailable'); });
     try {
-      dismissDiscoveryHint('browser_modes');
+      expect(dismissDiscoveryHint('browser_modes')).toEqual(pending);
       expect(write).toHaveBeenCalledTimes(2);
       expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual(pending);
       expect(JSON.parse(localStorage.getItem(legacyKey)!)).toEqual({ ...pending, version: 1 });

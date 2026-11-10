@@ -116,12 +116,12 @@ export function loadDiscoveryState(): DiscoveryStateV2 | null {
   return readDiscoveryState().state;
 }
 
-function saveState(state: DiscoveryStateV2): DiscoveryStateV2 {
+function saveState(state: DiscoveryStateV2, previousState = state): DiscoveryStateV2 {
   try {
     localStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify(state));
   } catch {
-    // A failed write must not remove the legacy record or trigger a replacement write.
-    return state;
+    // Failed mutations keep the last persisted state visible and retain legacy data.
+    return previousState;
   }
   try { localStorage.removeItem(LEGACY_STORAGE_KEY); } catch {
     // A durable dismissal wins over leftover legacy pending IDs on the next load.
@@ -146,7 +146,7 @@ export function initializeGrandfatheredDiscovery(): DiscoveryStateV2 {
 export function enqueueDiscoveryHint(id: DiscoveryHintId): DiscoveryStateV2 | null {
   const { state, storageFailed } = readDiscoveryState();
   if (storageFailed || !state || state.pendingHints.includes(id) || state.dismissedHints.includes(id)) return state;
-  return saveState({ ...state, pendingHints: [...state.pendingHints, id] });
+  return saveState({ ...state, pendingHints: [...state.pendingHints, id] }, state);
 }
 
 export function dismissDiscoveryHint(id: DiscoveryHintId): DiscoveryStateV2 | null {
@@ -156,7 +156,7 @@ export function dismissDiscoveryHint(id: DiscoveryHintId): DiscoveryStateV2 | nu
     ...state,
     pendingHints: state.pendingHints.filter((pending) => pending !== id),
     dismissedHints: [...state.dismissedHints, id],
-  });
+  }, state);
 }
 
 export function resetDiscovery(): void {
