@@ -499,8 +499,8 @@
 .settings-rows-nested > * { padding-inline: 0; }
 .settings-stack > * + * { margin-top: var(--settings-stack-gap); }
 .settings-stack > .settings-dependent-branch { margin-top: 0; }
-.settings-sheet-backdrop { position: fixed; inset: 0; z-index: 45; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgb(0 0 0 / 30%); }
-.settings-editor-sheet { display: flex; flex-direction: column; width: 100%; max-width: 896px; max-height: calc(100dvh - 48px); min-height: 0; overflow-y: auto; padding: 24px; border-radius: 12px; border: 1px solid var(--settings-card-border); background: var(--murmur-background); }
+.settings-sheet-backdrop { position: fixed; inset: 0; z-index: 45; display: flex; align-items: center; justify-content: center; padding: 24px; background: var(--ui-scrim); }
+.settings-editor-sheet { display: flex; flex-direction: column; width: 100%; max-width: 896px; max-height: calc(100dvh - 48px); min-height: 0; overflow-y: auto; padding: 24px; border-radius: var(--ui-radius-popover); border: 1px solid var(--ui-hairline-strong); background: var(--ui-tint-raised); box-shadow: var(--ui-shadow-3); }
 .settings-field > * + * { margin-top: var(--settings-field-gap); }
 /* Existing complex fields retain their markup/behavior; simple fields share the row grid. */
 .settings-field:has(> .ui-select):not(:has(> .ui-select ~ .ui-select)) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(160px, auto); column-gap: 32px; align-items: center; }

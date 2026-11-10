@@ -18,7 +18,6 @@ for (const [pane, label, sheet] of [
   ['delivery', 'Manage app overrides', 'App overrides'],
   ['customize', 'Voice commands', 'Voice commands'],
   ['modes', 'Add an app', 'App overrides'],
-  ['text', 'Project scan', 'Project scan'],
 ] as const) {
   test(`non-focusing ${pane} ${label} activation restores the actual caller`, async ({ page }) => {
     await open(page, pane);
@@ -188,18 +187,52 @@ for (const [query, parent, child] of [
   });
 }
 
-test('enabling a feature reveals its explicit nav destination and closing a nav editor restores that caller', async ({ page }) => {
+test('Project scan stays with Text & vocabulary and has one sheet title', async ({ page }) => {
   await open(page, 'text');
   await expect(page.locator('.settings-sidebar').getByRole('button', { name: 'Project scan', exact: true })).toHaveCount(0);
   await advanced(page).click();
   await page.getByRole('switch', { name: 'Developer terms', exact: true }).check();
-  const nav = page.locator('.settings-sidebar').getByRole('button', { name: 'Project scan', exact: true });
-  await nav.click();
-  await expect(page.getByRole('dialog', { name: 'Project scan' })).toBeVisible();
+  await expect(page.locator('.settings-sidebar').getByRole('button', { name: 'Project scan', exact: true })).toHaveCount(0);
+  const opener = page.getByRole('button', { name: 'Manage project scan', exact: true });
+  await opener.click();
+  const dialog = page.getByRole('dialog', { name: 'Project scan' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: 'Project scan', level: 2 })).toHaveCount(1);
   await page.keyboard.press('Escape');
-  await expect(nav).toBeFocused();
+  await expect(opener).toBeFocused();
   await expect(page.getByRole('heading', { name: 'Text & vocabulary', level: 1 })).toBeVisible();
 });
+
+for (const appearance of ['light', 'dark']) {
+  test(`${appearance} settings editor uses the shared modal layer`, async ({ page }) => {
+    await open(page, 'text', appearance);
+    await advanced(page).click();
+    await page.getByRole('switch', { name: 'Developer terms', exact: true }).check();
+    await page.getByRole('button', { name: 'Manage project scan', exact: true }).click();
+    const backdrop = page.locator('.settings-sheet-backdrop');
+    const sheet = page.locator('.settings-editor-sheet');
+    const modal = await page.evaluate(() => {
+      const backdrop = document.querySelector<HTMLElement>('.settings-sheet-backdrop')!;
+      const sheet = document.querySelector<HTMLElement>('.settings-editor-sheet')!;
+      const token = (style: string, property: keyof CSSStyleDeclaration) => {
+        const probe = document.createElement('div');
+        probe.style.cssText = `transition:none;${style}`;
+        document.body.append(probe);
+        const value = getComputedStyle(probe)[property] as string;
+        probe.remove();
+        return value;
+      };
+      const backdropStyle = getComputedStyle(backdrop);
+      const sheetStyle = getComputedStyle(sheet);
+      const values = { backdrop: backdropStyle.backgroundColor, sheetBackground: sheetStyle.backgroundColor, shadow: sheetStyle.boxShadow, border: sheetStyle.borderTopColor, tokenBackdrop: token('background:var(--ui-scrim)', 'backgroundColor'), tokenSurface: token('background:var(--ui-tint-raised)', 'backgroundColor'), tokenShadow: token('box-shadow:var(--ui-shadow-3)', 'boxShadow'), tokenBorder: token('border:1px solid var(--ui-hairline-strong)', 'borderTopColor') };
+      return values;
+    });
+    expect(modal.backdrop).toBe(modal.tokenBackdrop);
+    expect(modal.sheetBackground).toBe(modal.tokenSurface);
+    expect(modal.shadow).toBe(modal.tokenShadow);
+    expect(modal.border).toBe(modal.tokenBorder);
+  });
+}
 
 for (const appearance of ['light', 'dark']) {
   test(`${appearance} app IDE rows and manual Advanced retain saved values`, async ({ page }) => {

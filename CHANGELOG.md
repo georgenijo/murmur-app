@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 
 - Allow meeting deletion when the app data root has a symlinked ancestor, while preserving no-follow rejection for the meeting-store root and audio directories.
+- Show Settings editors such as Project scan as a clearly raised sheet over a dimmed Settings window instead of a panel that blended into the page behind it.
+
+### Changed
+
+- Project scan no longer appears in the Settings sidebar when Developer terms is on; open it from Text & vocabulary → Advanced → Manage project scan.
 
 ## [0.63.0] - 2026-11-10
 

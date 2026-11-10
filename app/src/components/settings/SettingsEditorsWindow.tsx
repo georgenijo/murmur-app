@@ -194,8 +194,7 @@ export function SettingsEditorsWindow({
         )}
         {initialTab === 'scan' && (
           <section>
-            <h2 className="text-base font-semibold text-on-surface">Project scan</h2>
-            <p className="mt-1 text-xs text-on-surface-variant">Scan one local source folder for identifiers. Dependency and build directories remain excluded.</p>
+            <p className="text-[length:var(--ui-font-caption)] text-on-surface-variant">Scan one local source folder for identifiers. Dependency and build directories remain excluded.</p>
             <div className="settings-card mt-4 p-4">
               <p className="flex min-w-0 rounded-lg bg-surface-container-low px-3 py-2 text-xs text-on-surface">
                 <MiddleTruncate value={settings.codeVocabFolder || 'No project folder selected'} />
