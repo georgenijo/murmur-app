@@ -609,7 +609,14 @@ queries (including generation capture), focused-field query/transport/AX status,
 all three ordered target verifications with independent lookup retry counts,
 event construction, final live-focus proof/status, key-down, key hold and key-up.
 `nativePost` and `retryPost` separate event attempts; retry focus and target
-checks have their own fields. `nativePasteRetryCount` is incremented when the
+checks have their own fields. Each focus query's `axStatus` records the last
+attempted AX operation, including `AXSubrole` after a successful `AXRole` query;
+`timedOut` retains any timeout observed throughout that query. This applies to
+both the initial and retry query and does not change their role classification
+or fallback policy. The existing record shape and nested `schemaVersion: 1`
+are unchanged; historical rows remain readable.
+
+`nativePasteRetryCount` is incremented when the
 retry branch is entered, before its unchanged 100 ms wait, including a retry
 that subsequently refuses. It is distinct from native identity lookup retries.
 
@@ -620,7 +627,11 @@ timeout, cancellation and expiry remain explicit. Child timers are included in
 their parent phase; do not sum them again into the stage total. Clipboard write
 includes capturing its generation, so that first generation query also overlaps
 the pasteboard-query aggregate. A field not reached retains a status instead of
-inventing a zero. At timeout, open timers retain elapsed-so-far through sealing; metadata not yet returned remains unavailable. Those partial durations do not claim that native IPC completed.
+inventing a zero. At timeout, open timers retain elapsed-so-far through sealing;
+metadata not yet returned remains unavailable. A finished final-focus proof
+retains its atomically frozen duration even if sealing happens before key-up
+publishes it. Freezing adds no accumulator lock between proof and posting.
+Those partial durations do not claim that native IPC completed.
 
 Normal delivery verification and Smart preparation's process-only samples no longer query diagnostic-only `AXFocusedWindow` during
 verification. `windowDiagnostic: unavailableOffPath` and an unavailable duration

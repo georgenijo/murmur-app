@@ -4,7 +4,10 @@ use super::{MeasurementV1 as M, UnavailableReasonV1 as U};
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::Instant,
 };
 
@@ -296,13 +299,15 @@ pub(crate) fn route(snapshot: &crate::smart_destination::Snapshot) -> Route {
 #[derive(Clone)]
 pub(crate) struct DeliveryTiming(Arc<Mutex<Accumulator>>);
 type TimerField = fn(&mut DeliveryTimingV1) -> &mut M<u64>;
+// Internal sentinel only; persisted measurements never use a missing-data zero.
+const TIMER_RUNNING: u64 = u64::MAX;
 
 struct Accumulator {
     record: DeliveryTimingV1,
     started: Instant,
     closed: bool,
     next_timer: u64,
-    timers: Vec<(u64, Instant, TimerField)>,
+    timers: Vec<(u64, Instant, TimerField, Arc<AtomicU64>)>,
 }
 impl DeliveryTiming {
     pub(crate) fn new(started: Instant) -> Self {
@@ -332,8 +337,14 @@ impl DeliveryTiming {
         if !a.closed {
             // Preserve elapsed-so-far for the exact in-flight substep when a
             // callback outlives its receiver. Subsequent timer drops are inert.
-            for (_, start, field) in std::mem::take(&mut a.timers) {
-                add(field(&mut a.record), us(start));
+            for (_, start, field, frozen_us) in std::mem::take(&mut a.timers) {
+                let frozen = frozen_us.load(Ordering::Acquire);
+                let elapsed = if frozen == TIMER_RUNNING {
+                    us(start)
+                } else {
+                    frozen
+                };
+                add(field(&mut a.record), elapsed);
             }
             a.record.stage_total_us = M::measured(us(a.started));
             if !matches!(a.record.outcome, M::Measured { .. }) {
@@ -402,6 +413,7 @@ pub(crate) fn add(value: &mut M<u64>, duration: u64) {
 pub(crate) struct Timer {
     owner: Option<(DeliveryTiming, u64)>,
     start: Instant,
+    frozen_us: Option<Arc<AtomicU64>>,
 }
 impl DeliveryTiming {
     pub(crate) fn timer(&self, field: TimerField) -> Timer {
@@ -410,14 +422,18 @@ impl DeliveryTiming {
             return Timer {
                 owner: None,
                 start: Instant::now(),
+                frozen_us: None,
             };
         }
         a.next_timer += 1;
         let id = a.next_timer;
-        a.timers.push((id, Instant::now(), field));
+        let start = Instant::now();
+        let frozen_us = Arc::new(AtomicU64::new(TIMER_RUNNING));
+        a.timers.push((id, start, field, frozen_us.clone()));
         Timer {
             owner: Some((self.clone(), id)),
-            start: Instant::now(),
+            start,
+            frozen_us: Some(frozen_us),
         }
     }
 }
@@ -427,6 +443,7 @@ impl Timer {
             c.borrow().as_ref().map(|t| t.timer(field)).unwrap_or(Self {
                 owner: None,
                 start: Instant::now(),
+                frozen_us: None,
             })
         })
     }
@@ -441,9 +458,13 @@ impl Drop for StoppedTimer {
     }
 }
 impl Timer {
-    /// Freeze locally at the proof boundary; publish only after key-up.
+    /// Freeze at the proof boundary without locking the accumulator. Sealing
+    /// can observe this duration even before key-up publishes the stopped timer.
     pub(crate) fn stopped(self) -> StoppedTimer {
-        let elapsed = us(self.start);
+        let elapsed = us(self.start).min(TIMER_RUNNING - 1);
+        if let Some(frozen_us) = &self.frozen_us {
+            frozen_us.store(elapsed, Ordering::Release);
+        }
         StoppedTimer {
             timer: self,
             elapsed,
@@ -455,8 +476,8 @@ impl Timer {
             if a.closed {
                 return;
             }
-            if let Some(index) = a.timers.iter().position(|(i, _, _)| *i == id) {
-                let (_, _, field) = a.timers.swap_remove(index);
+            if let Some(index) = a.timers.iter().position(|(i, _, _, _)| *i == id) {
+                let (_, _, field, _) = a.timers.swap_remove(index);
                 add(field(&mut a.record), elapsed);
             }
         }
@@ -537,6 +558,40 @@ mod tests {
             timing.snapshot().native_post.final_focus_proof_us,
             M::measured(expected)
         );
+    }
+    #[test]
+    fn sealing_before_key_up_preserves_frozen_proof_duration() {
+        for retry in [false, true] {
+            let timing = DeliveryTiming::new(Instant::now());
+            let timer = timing.timer(if retry {
+                |r| &mut r.retry_post.final_focus_proof_us
+            } else {
+                |r| &mut r.native_post.final_focus_proof_us
+            });
+            // Freezing must not acquire the accumulator mutex at the final
+            // proof/post boundary. Keep it held while another thread freezes.
+            let lock = timing.0.lock().unwrap();
+            let (sender, receiver) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                sender.send(timer.stopped()).unwrap();
+            });
+            let frozen = receiver.recv_timeout(std::time::Duration::from_secs(1));
+            drop(lock);
+            let proof = frozen.expect("stopping must not wait on the accumulator");
+            worker.join().unwrap();
+            let expected = proof.elapsed;
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            timing.update(|r| set_outcome(r, Outcome::Cancelled));
+            let sealed = timing.close();
+            let post = if retry {
+                &sealed.retry_post
+            } else {
+                &sealed.native_post
+            };
+            assert_eq!(post.final_focus_proof_us, M::measured(expected));
+            drop(proof);
+            assert_eq!(timing.snapshot(), sealed);
+        }
     }
     #[test]
     fn version_and_content_free_contract() {

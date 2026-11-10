@@ -1218,6 +1218,21 @@ fn frontmost_application_is_finder() -> Option<bool> {
     })
 }
 
+/// Last attempted AX operation, with timeout evidence retained across the
+/// complete query. Initial and native-retry queries use separate records.
+#[cfg(any(target_os = "macos", test))]
+fn record_focus_ax_status(status: i32) {
+    dt::record(|r| {
+        let q = if r.native_paste_retry_count > 0 {
+            &mut r.retry_focus_query
+        } else {
+            &mut r.focus_query
+        };
+        q.ax_status = M::measured(status);
+        q.timed_out |= status == -25204;
+    });
+}
+
 #[cfg(target_os = "macos")]
 fn focused_role_native() -> Result<String, String> {
     autoreleasepool(|_| {
@@ -1263,15 +1278,7 @@ fn focused_role_native() -> Result<String, String> {
         }
         let timeout_status =
             unsafe { AXUIElementSetMessagingTimeout(app, AX_QUERY_TIMEOUT_SECONDS) };
-        dt::record(|r| {
-            let q = if r.native_paste_retry_count > 0 {
-                &mut r.retry_focus_query
-            } else {
-                &mut r.focus_query
-            };
-            q.ax_status = M::measured(timeout_status);
-            q.timed_out |= timeout_status == -25204;
-        });
+        record_focus_ax_status(timeout_status);
         if timeout_status != AX_SUCCESS {
             unsafe { CFRelease(app) };
             return Err(format!(
@@ -1293,15 +1300,7 @@ fn focused_role_native() -> Result<String, String> {
         let mut focused: CFTypeRef = std::ptr::null();
         let focused_status =
             unsafe { AXUIElementCopyAttributeValue(app, focused_attribute, &mut focused) };
-        dt::record(|r| {
-            let q = if r.native_paste_retry_count > 0 {
-                &mut r.retry_focus_query
-            } else {
-                &mut r.focus_query
-            };
-            q.ax_status = M::measured(focused_status);
-            q.timed_out |= focused_status == -25204;
-        });
+        record_focus_ax_status(focused_status);
         unsafe { CFRelease(focused_attribute) };
         unsafe { CFRelease(app) };
         if focused_status != AX_SUCCESS || focused.is_null() {
@@ -1315,15 +1314,7 @@ fn focused_role_native() -> Result<String, String> {
         }
         let timeout_status =
             unsafe { AXUIElementSetMessagingTimeout(focused, AX_QUERY_TIMEOUT_SECONDS) };
-        dt::record(|r| {
-            let q = if r.native_paste_retry_count > 0 {
-                &mut r.retry_focus_query
-            } else {
-                &mut r.focus_query
-            };
-            q.ax_status = M::measured(timeout_status);
-            q.timed_out |= timeout_status == -25204;
-        });
+        record_focus_ax_status(timeout_status);
         if timeout_status != AX_SUCCESS {
             unsafe { CFRelease(focused) };
             return Err(format!(
@@ -1341,15 +1332,7 @@ fn focused_role_native() -> Result<String, String> {
         let mut role: CFTypeRef = std::ptr::null();
         let role_status =
             unsafe { AXUIElementCopyAttributeValue(focused, role_attribute, &mut role) };
-        dt::record(|r| {
-            let q = if r.native_paste_retry_count > 0 {
-                &mut r.retry_focus_query
-            } else {
-                &mut r.focus_query
-            };
-            q.ax_status = M::measured(role_status);
-            q.timed_out |= role_status == -25204;
-        });
+        record_focus_ax_status(role_status);
         unsafe { CFRelease(role_attribute) };
         // Browser password inputs report AXTextField with an AXSecureTextField
         // subrole. Surface that as the secure role so the Smart destination
@@ -1364,6 +1347,7 @@ fn focused_role_native() -> Result<String, String> {
                 let subrole_status = unsafe {
                     AXUIElementCopyAttributeValue(focused, subrole_attribute, &mut subrole)
                 };
+                record_focus_ax_status(subrole_status);
                 unsafe { CFRelease(subrole_attribute) };
                 if !subrole.is_null() {
                     if subrole_status == AX_SUCCESS {
@@ -1514,6 +1498,36 @@ mod focus_tests {
         }
     }
 
+    #[test]
+    fn subrole_status_and_timeout_are_attributed_to_initial_and_retry_queries() {
+        for retry in [false, true] {
+            let timing = dt::DeliveryTiming::new(Instant::now());
+            let _scope = timing.bind();
+            dt::record(|r| r.native_paste_retry_count = u8::from(retry));
+            record_focus_ax_status(0); // successful AXRole
+            record_focus_ax_status(-25204); // AXSubrole timed out
+            let record = timing.snapshot();
+            let (query, other) = if retry {
+                (&record.retry_focus_query, &record.focus_query)
+            } else {
+                (&record.focus_query, &record.retry_focus_query)
+            };
+            assert_eq!(query.ax_status, M::measured(-25204));
+            assert!(query.timed_out);
+            assert!(other.ax_status.value().is_none());
+            assert!(!other.timed_out);
+            // A later status cannot erase observed timeout evidence.
+            record_focus_ax_status(0);
+            let record = timing.close();
+            let query = if retry {
+                &record.retry_focus_query
+            } else {
+                &record.focus_query
+            };
+            assert_eq!(query.ax_status, M::measured(0));
+            assert!(query.timed_out);
+        }
+    }
     #[test]
     fn attribution_retains_each_verifier_on_refusal() {
         for refused_at in 0..3 {
