@@ -50,10 +50,14 @@ const STAGE_LABELS: Record<PerformanceStageV1, string> = {
   undo: 'Undo',
   releaseToStop: 'Release to stop',
   releaseToPaste: 'Release to paste',
+  stopPressToRelease: 'Stop press to release',
+  stopReleaseToCommand: 'Stop release to command',
 };
 
 const STAGES_BY_KIND: Record<PerformanceRunKindV1, readonly PerformanceStageV1[]> = {
   dictation: [
+    'stopPressToRelease',
+    'stopReleaseToCommand',
     'releaseToStop',
     'captureFinalization',
     'vad',

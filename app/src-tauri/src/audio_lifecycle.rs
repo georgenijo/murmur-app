@@ -223,7 +223,10 @@ impl PublicPhase {
     }
 }
 
+type DiagnosticCursor = (AudioOwner, Arc<Mutex<audio::CaptureSamples>>, u32);
+
 struct PublicState {
+    diagnostic_cursor: Mutex<Option<DiagnosticCursor>>,
     phase: AtomicU8,
     still_connecting: std::sync::atomic::AtomicBool,
     owner: Mutex<Option<AudioOwner>>,
@@ -232,6 +235,7 @@ struct PublicState {
 impl Default for PublicState {
     fn default() -> Self {
         Self {
+            diagnostic_cursor: Mutex::new(None),
             phase: AtomicU8::new(PublicPhase::Idle as u8),
             still_connecting: std::sync::atomic::AtomicBool::new(false),
             owner: Mutex::new(None),
@@ -787,6 +791,14 @@ fn run_supervisor(
                             current.standby_deadline = None;
                             current.phase = AttemptPhase::Recording;
                             current.active.store(true, Ordering::SeqCst);
+                            *public
+                                .diagnostic_cursor
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner()) = Some((
+                                current.owner,
+                                Arc::clone(&current.shared),
+                                current.sample_rate,
+                            ));
                             public.set_owner(current.owner);
                             public.set_phase(PublicPhase::Recording);
                             publish_gesture_ready(current, sink.as_ref(), Instant::now());
@@ -1455,6 +1467,11 @@ fn handle_worker_event(
                     return;
                 }
                 current.sample_rate = sample_rate;
+                *public
+                    .diagnostic_cursor
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner()) =
+                    Some((current.owner, Arc::clone(&current.shared), sample_rate));
                 let ready_at = Instant::now();
                 current.ready_at = Some(ready_at);
                 current.active.store(true, Ordering::SeqCst);
@@ -1718,6 +1735,10 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
     }
     finished.active.store(false, Ordering::SeqCst);
     public.still_connecting.store(false, Ordering::SeqCst);
+    *public
+        .diagnostic_cursor
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = None;
     public.clear_owner(finished.owner);
     public.set_phase(PublicPhase::Idle);
     crate::audio_inventory::lifecycle_became_idle();
@@ -2280,6 +2301,23 @@ pub(crate) fn stop_dictation_recording(
     trigger: DictationStopTrigger,
 ) -> Result<Vec<f32>, String> {
     stop_with_trigger(Some(AudioOwner::Dictation(recording_id)), trigger)
+}
+
+/// Read only the retained sample count at a native stop-key press. Never queue,
+/// copy PCM, or wait for capture. Contention means unavailable, not zero.
+pub(crate) fn dictation_sample_cursor(recording_id: u64) -> Option<usize> {
+    use crate::MutexExt;
+    let public = &supervisor().public;
+    if public.phase() != PublicPhase::Recording {
+        return None;
+    }
+    let cursor = public.diagnostic_cursor.try_lock_or_recover()?;
+    let (owner, shared, rate) = cursor.as_ref()?;
+    if *owner != AudioOwner::Dictation(recording_id) || *rate == 0 {
+        return None;
+    }
+    let samples = shared.try_lock_or_recover()?;
+    Some(samples.len().saturating_mul(WHISPER_SAMPLE_RATE as usize) / *rate as usize)
 }
 
 /// Clone the live dictation buffer without stopping capture. The authoritative

@@ -27,7 +27,7 @@ performance diagnostics removes only these runs and resource samples. It also
 advances a clear epoch so an operation that began before Clear cannot reinsert
 its old diagnostics when it eventually finishes.
 
-The database currently uses SQLite `user_version = 6`; the v2 migration adds
+The database currently uses SQLite `user_version = 7`; the v2 migration adds
 Voice Query support and the v3 migration adds the dictation `releaseToStop`
 and `releaseToPaste` stages, neither changing tables. Run and resource JSON records
 remain backward-compatible at `schemaVersion: 1`. V4 adds `homophoneContext`
@@ -126,8 +126,8 @@ chord press that ends the hold) publishes `hold-down-stop`, keyed by the live
 recording ID. The first release of a recording wins. The stop claims the stamp
 when it accepts the transition, only for its own recording and only within 10
 seconds, so a release that did not drive the stop is never attributed to a
-run. Toggle, overlay, and auto-stop
-stops, and historical records, have no release stages; they are omitted, never
+run. Toggle stops use the separate stop-press stages described below. Overlay,
+auto-stop, and historical records have no hold release stages; they are omitted, never
 shown as zero. The stamp is one instant and one generation ID, with no content.
 The Runs workspace shows nearest-rank p50/p90 of `totalProcessing` and
 `releaseToPaste` across retained successful dictations.
@@ -585,3 +585,61 @@ onboarding, unavailable Accessibility, missing settings, or a model without the
 catalog startup-warm policy may omit early listener/model milestones. Failures
 use the existing frontend path. There is no new SQLite run kind or retained
 content; the telemetry boundary permits only the fixed code and elapsed integer.
+
+## Early-final shadow measurement (#1081 phase 3)
+
+SQLite `user_version = 7` adds `stopPressToRelease`, `stopReleaseToCommand`, and
+an optional dictation `shadow` companion (`schemaVersion: 1`). The metadata-only
+6 → 7 migration preserves historical JSON bytes. Run JSON remains V1; old
+records may omit the companion and stages. Older builds refuse this database.
+
+Double-tap/Both-mode single-tap stops stamp native press and release instants.
+`stopPressToRelease` measures the gesture, and `stopReleaseToCommand` measures
+release through the webview to native stop entry. The pending press belongs to
+the detector and is cleared by reset, chords, excessive holds, or reconfiguration.
+Only an emitted stop publishes it; the accepted stop consumes it for the same
+generation within ten seconds. Hold-to-talk retains its existing release stages.
+The press reads a nonblocking retained-PCM sample count, without copying audio;
+contention records an unavailable (`null`) cursor. The count represents PCM
+already received at the host, not samples still buffered inside the helper.
+
+The companion records only numbers, booleans, and fixed enums:
+
+- `pressSample`, `pauseSample`: 16 kHz prefix endpoints, or null;
+- `trailingSilenceBeforePressMs`, `trailingSilenceBeforeStopMs`: silence after
+  the latest preceding padded full-clip VAD segment (zero within a segment,
+  null when no preceding speech or VAD evidence exists);
+- `pressInputMatches`, `pauseInputMatches`: byte-exact equality of separately
+  filtered prefixes against the final filtered PCM, or null when unavailable;
+- `previewHeldBackendAtPress`: whether display-only preview actually held the
+  shared backend at press, not whether a preview tick was merely scheduled;
+- `determinism`: `disabled`, `pending`, `compared`, `backendUnavailable`,
+  `superseded`, `decodeFailed`, `unsupportedBackend`, or `notAttempted`;
+- `decodeMatches`: the in-memory hash comparison result only when `compared`.
+
+The pause endpoint is the first 300 ms point in the latest qualifying gap
+between padded speech segments, including trailing silence. Prefix VAD uses the
+same recording-start threshold and unchanged final PCM recipe. VAD-disabled,
+failed/missing VAD, absent clean press, and absent qualifying pause remain
+unavailable rather than becoming false or zero. This phase targets Core ML;
+Whisper and imported-file transcription are unchanged.
+
+All prefix passes and optional repeated decode run after confirmed delivery,
+off the pipeline, after the completed run UUID is durable. One process-wide
+shadow permit bounds retained audio/work. Runs without an admitted job retain
+`notAttempted`; completion starts with null shadow evidence and a later atomic
+UPDATE fills it. Refresh Runs to read that amendment. Clear/pruning cannot
+recreate a row, and a reused recording ID cannot receive an old UUID's result.
+A quit before the amendment can leave the original `notAttempted` evidence.
+No shadow result changes the delivered text or supplies a future decode.
+
+Repeated decode is off by default. For a diagnostic launch, set
+`MURMUR_SHADOW_DETERMINISM=1` in the application's Launch Services environment;
+the process switch is frozen on first use. It calls the same final decoder with
+the same filtered PCM, original retry PCM, and recording-start configuration.
+It uses immediate backend admission only, never waits for a backend or loads a
+model, and skips cancelled/superseded/non-idle owners. The original and repeated
+raw decoder outputs are hashed only in memory; neither text nor hash is stored,
+logged, or emitted by shadow diagnostics. The short-lived PCM copies are dropped
+when the job completes. Existing delivery, transcript transforms, and retention
+policies remain unchanged.

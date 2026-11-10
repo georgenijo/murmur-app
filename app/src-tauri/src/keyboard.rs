@@ -77,6 +77,9 @@ impl RejectionReason {
 }
 
 struct DoubleTapDetector {
+    stop_press: Option<crate::shadow_measurement::StopPress>,
+    fired_stop: Option<crate::shadow_measurement::StopStamp>,
+    native_recording: Option<(u64, bool)>,
     candidate: Option<Candidate>,
     fired_candidate: Option<Candidate>,
     state: DetectorState,
@@ -104,6 +107,9 @@ enum PrepareSignal {
 impl DoubleTapDetector {
     fn new() -> Self {
         Self {
+            stop_press: None,
+            fired_stop: None,
+            native_recording: None,
             candidate: None,
             fired_candidate: None,
             state: DetectorState::Idle,
@@ -148,6 +154,8 @@ impl DoubleTapDetector {
     }
 
     fn reset(&mut self) {
+        self.stop_press = None;
+        self.fired_stop = None;
         self.candidate = None;
         self.state = DetectorState::Idle;
         self.state_entered_at = Instant::now();
@@ -211,6 +219,25 @@ impl DoubleTapDetector {
         self.handle_event_with_context(event_type, shortcut_modifiers_held, false)
     }
 
+    fn handle_native_event(
+        &mut self,
+        handle: &tauri::AppHandle,
+        event: &EventType,
+        modifiers: bool,
+        repeated: bool,
+    ) -> bool {
+        let state = handle.state::<crate::State>();
+        self.native_recording = (state.app_state.dictation_status_if_uncontended()
+            == Some(crate::state::DictationStatus::Recording))
+        .then(|| {
+            (
+                state.app_state.recording_id.load(Ordering::SeqCst),
+                state.app_state.preview_holds_backend.load(Ordering::SeqCst),
+            )
+        });
+        self.handle_event_with_context(event, modifiers, repeated)
+    }
+
     fn handle_event_with_context(
         &mut self,
         event_type: &EventType,
@@ -251,6 +278,20 @@ impl DoubleTapDetector {
                 if let EventType::KeyPress(key) = event_type {
                     if is_target_key(*key, target) {
                         self.candidate = Some(Candidate::new());
+                        if self.recording {
+                            self.stop_press = self.native_recording.map(
+                                |(recording_id, preview_held_backend)| {
+                                    crate::shadow_measurement::StopPress {
+                                        recording_id,
+                                        pressed_at: Instant::now(),
+                                        sample: crate::audio_lifecycle::dictation_sample_cursor(
+                                            recording_id,
+                                        ),
+                                        preview_held_backend,
+                                    }
+                                },
+                            );
+                        }
                         self.transition(DetectorState::WaitingFirstUp);
                     }
                 }
@@ -264,8 +305,13 @@ impl DoubleTapDetector {
                             if self.recording {
                                 self.fired_candidate = None;
                                 // Single tap to stop — fire immediately
-                                self.last_fired_at = Some(Instant::now());
+                                let released_at = Instant::now();
+                                let stamp = self.stop_press.map(|press| {
+                                    crate::shadow_measurement::StopStamp { press, released_at }
+                                });
+                                self.last_fired_at = Some(released_at);
                                 self.reset();
+                                self.fired_stop = stamp;
                                 return true;
                             }
                             if let Some(candidate) = self.candidate.as_mut() {
@@ -782,7 +828,12 @@ fn emit_dictation_toggle(handle: &tauri::AppHandle) {
     let candidate = DOUBLE_TAP_DETECTOR
         .lock_or_recover()
         .as_mut()
-        .and_then(|d| d.fired_candidate.take());
+        .and_then(|d| {
+            if let Some(stamp) = d.fired_stop.take() {
+                crate::shadow_measurement::record(stamp);
+            }
+            d.fired_candidate.take()
+        });
     let token = candidate.map(|c| crate::audio_lifecycle::gesture::emit(c, false));
     let _ = handle.emit(
         "double-tap-toggle",
@@ -1836,7 +1887,8 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             let mut det = DOUBLE_TAP_DETECTOR.lock_or_recover();
                             if let Some(d) = det.as_mut() {
                                 let previous_wait = d.second_tap_wait_started_at();
-                                let fired = d.handle_event_with_context(
+                                let fired = d.handle_native_event(
+                                    &handle,
                                     &event.event_type,
                                     shortcut_modifiers.any(),
                                     repeated_function_press,
@@ -1980,7 +2032,8 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                     (false, None, None, d.take_prepare_signal(false))
                                 } else {
                                     let previous_wait = d.second_tap_wait_started_at();
-                                    let fired = d.handle_event_with_context(
+                                    let fired = d.handle_native_event(
+                                        &handle,
                                         &event.event_type,
                                         shortcut_modifiers.any(),
                                         repeated_function_press,
@@ -2915,6 +2968,47 @@ mod tests {
     }
 
     // -- Single-tap-to-stop tests (recording=true) --
+
+    #[test]
+    fn stop_press_release_and_rejected_gestures_do_not_leak() {
+        use crate::shadow_measurement::StopPress;
+        let mut d = DoubleTapDetector::new();
+        d.set_target(Some(Key::ShiftLeft));
+        d.recording = true;
+        assert!(!d.handle_event(&EventType::KeyPress(Key::ShiftLeft)));
+        let press = StopPress {
+            recording_id: 17,
+            pressed_at: Instant::now(),
+            sample: Some(32000),
+            preview_held_backend: true,
+        };
+        d.stop_press = Some(press);
+        assert!(d.handle_event(&EventType::KeyRelease(Key::ShiftLeft)));
+        let fired = d.fired_stop.take().unwrap();
+        assert_eq!(fired.press.recording_id, 17);
+        assert!(fired.released_at >= press.pressed_at);
+        assert!(d.stop_press.is_none());
+        for long_hold in [false, true] {
+            d.last_fired_at = None;
+            assert!(!d.handle_event(&EventType::KeyPress(Key::ShiftLeft)));
+            d.stop_press = Some(press);
+            if long_hold {
+                d.state_entered_at = Instant::now() - std::time::Duration::from_millis(201);
+                assert!(!d.handle_event(&EventType::KeyRelease(Key::ShiftLeft)));
+            } else {
+                assert!(!d.handle_event(&EventType::KeyPress(Key::KeyA)));
+            }
+            assert!(d.stop_press.is_none());
+            assert!(d.fired_stop.is_none());
+            d.reset();
+            assert!(!d.handle_event(&EventType::KeyPress(Key::ShiftLeft)));
+            assert!(d.handle_event(&EventType::KeyRelease(Key::ShiftLeft)));
+            assert!(
+                d.fired_stop.is_none(),
+                "rejected stamp cannot reach a later tap"
+            );
+        }
+    }
 
     #[test]
     fn single_tap_stops_when_recording() {

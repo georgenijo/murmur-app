@@ -61,6 +61,15 @@ pub fn filter_speech(
     samples: &[f32],
     threshold: f32,
 ) -> Result<VadResult, String> {
+    filter_speech_with_segments(model_path, samples, threshold).map(|(result, _)| result)
+}
+
+/// Same PCM recipe, with padded segment bounds for content-free shadow diagnostics.
+pub fn filter_speech_with_segments(
+    model_path: &str,
+    samples: &[f32],
+    threshold: f32,
+) -> Result<(VadResult, Vec<(usize, usize)>), String> {
     VAD_CONTEXT.with(|cache| {
         let mut cached = cache.borrow_mut();
         if cached
@@ -87,7 +96,7 @@ fn filter_speech_with_context(
     ctx: &mut WhisperVadContext,
     samples: &[f32],
     threshold: f32,
-) -> Result<VadResult, String> {
+) -> Result<(VadResult, Vec<(usize, usize)>), String> {
     let mut vad_params = WhisperVadParams::default();
     vad_params.set_threshold(threshold);
     // Preserve the initial consonant around VAD boundaries. The upstream
@@ -101,12 +110,13 @@ fn filter_speech_with_context(
 
     let num_segments = segments.num_segments();
     if num_segments == 0 {
-        return Ok(VadResult::NoSpeech);
+        return Ok((VadResult::NoSpeech, Vec::new()));
     }
 
     let sample_rate = 16_000.0_f32;
     let total_samples = samples.len();
     let mut speech_samples = Vec::new();
+    let mut bounds = Vec::new();
 
     for seg in segments {
         // Timestamps are in centiseconds (cs); convert to sample indices
@@ -117,14 +127,15 @@ fn filter_speech_with_context(
         let end_idx = end_idx.min(total_samples);
 
         if start_idx < end_idx {
+            bounds.push((start_idx, end_idx));
             speech_samples.extend_from_slice(&samples[start_idx..end_idx]);
         }
     }
 
     if speech_samples.is_empty() {
-        Ok(VadResult::NoSpeech)
+        Ok((VadResult::NoSpeech, bounds))
     } else {
-        Ok(VadResult::Speech(speech_samples))
+        Ok((VadResult::Speech(speech_samples), bounds))
     }
 }
 

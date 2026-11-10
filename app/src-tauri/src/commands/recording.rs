@@ -345,6 +345,9 @@ async fn decode_one_dictation_partial(
                     &transcription.model_name,
                     || dictation_partial_is_current_if_uncontended(&state.app_state, recording_id),
                     |backend| {
+                        let _preview_backend = crate::shadow_measurement::PreviewBackendLease::new(
+                            &state.app_state.preview_holds_backend,
+                        );
                         #[cfg(feature = "preview-decode-reuse")]
                         let reuse_range = state
                             .app_state
@@ -2047,6 +2050,9 @@ fn spawn_native_dictation_performance_begin(
         let result =
             performance.begin_dictation_diagnosed_at(recording_id, runtimes, started_at_ms);
         let succeeded = result.is_ok();
+        if !succeeded {
+            performance.discard_shadow(recording_id);
+        }
         if let Err(error) = &result {
             emit_performance_store_begin_failure(recording_id, error);
         }
@@ -2443,6 +2449,126 @@ fn decode_final_transcript(
     )
 }
 
+/// Register only after confirmed delivery; run only after its completed UUID
+/// is durable. No shadow job touches recording state or supplies delivered text.
+#[allow(clippy::too_many_arguments)]
+fn register_shadow_measurement(
+    app: &tauri::AppHandle,
+    recording_id: u64,
+    context: Arc<DictationContextSnapshot>,
+    original: &[f32],
+    filtered: Vec<f32>,
+    bounds: Option<Vec<(usize, usize)>>,
+    vad_trimmed: bool,
+    stamp: Option<crate::shadow_measurement::StopStamp>,
+    raw_text: &str,
+) {
+    use crate::shadow_measurement as shadow;
+    use sha2::{Digest, Sha256};
+    let Some(permit) = shadow::ShadowPermit::acquire() else {
+        return;
+    };
+    let original = original.to_vec();
+    let app = app.clone();
+    let performance = app.state::<State>().performance.clone();
+    static DETERMINISM: OnceLock<bool> = OnceLock::new();
+    let enabled = *DETERMINISM.get_or_init(|| {
+        shadow::determinism_enabled(std::env::var("MURMUR_SHADOW_DETERMINISM").ok().as_deref())
+    });
+    // The disabled switch performs no text hashing at all.
+    let expected_hash = (enabled
+        && transcriber::is_coreml_model(&context.transcription.model_name))
+    .then(|| Sha256::digest(raw_text.as_bytes()));
+    performance.register_shadow(
+        recording_id,
+        Box::new(move |metrics, run| {
+            let _permit = permit;
+            let mut result = shadow::ShadowMeasurementV1 {
+                press_sample: stamp.and_then(|s| s.press.sample).map(|s| s as u64),
+                preview_held_backend_at_press: stamp.map(|s| s.press.preview_held_backend),
+                determinism: if enabled {
+                    shadow::DeterminismStatus::Pending
+                } else {
+                    shadow::DeterminismStatus::Disabled
+                },
+                ..Default::default()
+            };
+            let transcription = &context.transcription;
+            if !transcriber::is_coreml_model(&transcription.model_name) {
+                result.determinism = shadow::DeterminismStatus::UnsupportedBackend;
+            } else {
+                let state = app.state::<State>();
+                if enabled {
+                    // Try-lock only: this cannot queue, prepare, load or switch a model.
+                    let attempt = state.app_state.model_runtime.try_with_ready_backend(
+                        &transcription.model_name,
+                        || {
+                            state.app_state.recording_id.load(Ordering::SeqCst) == recording_id
+                                && !state.app_state.is_cancelled(recording_id)
+                                && state.app_state.dictation_status_if_uncontended()
+                                    == Some(DictationStatus::Idle)
+                        },
+                        |backend| {
+                            decode_final_transcript(
+                                backend,
+                                transcription,
+                                &filtered,
+                                &original,
+                                vad_trimmed,
+                                #[cfg(feature = "preview-decode-reuse")]
+                                None,
+                            )
+                        },
+                    );
+                    match attempt {
+                        Ok(Some(attempt)) => {
+                            result.decode_matches = Some(
+                                Some(Sha256::digest(attempt.text.as_bytes())) == expected_hash,
+                            );
+                            result.determinism = shadow::DeterminismStatus::Compared;
+                        }
+                        Ok(None) => {
+                            result.determinism =
+                                if state.app_state.recording_id.load(Ordering::SeqCst)
+                                    != recording_id
+                                    || state.app_state.is_cancelled(recording_id)
+                                {
+                                    shadow::DeterminismStatus::Superseded
+                                } else {
+                                    shadow::DeterminismStatus::BackendUnavailable
+                                }
+                        }
+                        Err(_) => result.determinism = shadow::DeterminismStatus::DecodeFailed,
+                    }
+                }
+                if let Some(bounds) = bounds {
+                    result.trailing_silence_before_stop_ms =
+                        shadow::trailing_silence_ms(&bounds, original.len());
+                    let press = stamp
+                        .and_then(|s| s.press.sample)
+                        .filter(|sample| *sample <= original.len());
+                    result.trailing_silence_before_press_ms =
+                        press.and_then(|at| shadow::trailing_silence_ms(&bounds, at));
+                    let pause = shadow::last_pause(&bounds, original.len());
+                    result.pause_sample = pause.map(|at| at as u64);
+                    if let Some(path) = vad::vad_model_path().filter(|p| p.exists()) {
+                        let path = path.to_string_lossy();
+                        let threshold =
+                            vad::threshold_for_sensitivity(transcription.vad_sensitivity);
+                        result.press_input_matches = press.and_then(|at| {
+                            shadow::prefix_matches(&path, &original, at, threshold, &filtered)
+                        });
+                        result.pause_input_matches = pause.and_then(|at| {
+                            shadow::prefix_matches(&path, &original, at, threshold, &filtered)
+                        });
+                    }
+                }
+            }
+            let _ = metrics.amend_shadow(&run.run_id, recording_id, &result);
+        }),
+    );
+}
+
 /// Shared transcription pipeline: model init -> transcribe -> inject text -> set idle.
 /// `recording_id` is checked against `app_state.cancelled_id` at checkpoints;
 /// if cancelled, returns empty text without clipboard write or paste.
@@ -2454,6 +2580,8 @@ async fn run_transcription_pipeline(
     performance_guard: &mut impl DictationPerformanceStageRecorder,
     context: Arc<DictationContextSnapshot>,
     stop_delivery_target: Option<crate::frontmost::DeliveryTargetSnapshot>,
+    stop_stamp: Option<crate::shadow_measurement::StopStamp>,
+    measure_shadow: bool,
 ) -> Result<PipelineResult, String> {
     // Guard resets status to Idle on any return path (error or success),
     // but only if this recording is still the active one
@@ -2496,6 +2624,7 @@ async fn run_transcription_pipeline(
     // the authoritative full-buffer VAD + inference pass after recording stops.
     performance_guard.enter(PerformanceStageV1::Vad);
     let t_vad = std::time::Instant::now();
+    let mut speech_bounds = None;
     let (samples_for_transcription, vad_trimmed) = if !vad::is_enabled(
         transcription.vad_sensitivity,
     ) {
@@ -2508,13 +2637,13 @@ async fn run_transcription_pipeline(
                 let vad_path_str = vad_path.to_string_lossy().to_string();
                 let samples_owned = samples.to_vec();
                 let vad_result = tokio::task::spawn_blocking(move || {
-                    vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold)
+                    vad::filter_speech_with_segments(&vad_path_str, &samples_owned, vad_threshold)
                 })
                 .await
                 .unwrap_or_else(|e| Err(format!("VAD task panicked: {}", e)));
 
                 match vad_result {
-                    Ok(vad::VadResult::NoSpeech) => {
+                    Ok((vad::VadResult::NoSpeech, _)) => {
                         emit_preview_vad_disagreement(app_state, recording_id, samples.len());
                         tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
                             samples.len(), t_vad.elapsed());
@@ -2528,7 +2657,8 @@ async fn run_transcription_pipeline(
                             history: None,
                         });
                     }
-                    Ok(vad::VadResult::Speech(trimmed)) => {
+                    Ok((vad::VadResult::Speech(trimmed), bounds)) => {
+                        speech_bounds = Some(bounds);
                         tracing::info!(target: "pipeline", "VAD trimmed {} -> {} samples ({:.0}% speech, {:?})",
                             samples.len(), trimmed.len(),
                             trimmed.len() as f64 / samples.len() as f64 * 100.0,
@@ -3070,6 +3200,19 @@ async fn run_transcription_pipeline(
     timings.transform_stages = transform_stages;
     timings.file_output_ms = file_output_ms;
     timings.paste_ms = paste_ms;
+    if measure_shadow && timings.delivery_confirmed && !text.trim().is_empty() {
+        register_shadow_measurement(
+            app_handle,
+            recording_id,
+            context.clone(),
+            samples,
+            samples_for_transcription,
+            speech_bounds,
+            vad_trimmed,
+            stop_stamp,
+            &history.raw_text,
+        );
+    }
     let terminal = if text.trim().is_empty() {
         PipelineTerminal::NoSpeech(backend_empty_error.unwrap_or(DictationErrorCode::EmptyOutput))
     } else {
@@ -3241,6 +3384,8 @@ pub async fn process_audio(
         // Imported audio has no live stop transition: its snapshot is already
         // taken at the accepted Idle -> Processing transition.
         None,
+        None,
+        false,
     )
     .await;
     // Only emit idle if this recording wasn't cancelled/superseded.
@@ -5583,6 +5728,7 @@ async fn stop_native_recording_for(
     // Claim the release at the accepted transition, before teardown, so a
     // later release queued behind this stop cannot replace it.
     let hotkey_release = crate::hotkey_release::take_for(rid, stop_entered_at);
+    let stop_stamp = crate::shadow_measurement::take_for(rid, stop_entered_at);
     // A matching rdev release takes precedence even if another stop arrived
     // through the webview at the same time. Unknown sources retain speech.
     let stop_trigger = stop_trigger.resolve(hotkey_release);
@@ -5699,6 +5845,11 @@ async fn stop_native_recording_for(
     if let Some(release) = hotkey_release {
         performance_guard.record(release.release_to_stop());
     }
+    if let Some(stamp) = stop_stamp {
+        for stage in stamp.stages(stop_entered_at) {
+            performance_guard.record(stage);
+        }
+    }
     tracing::info!(
         target: "pipeline",
         event_code = "pipeline.dictation_stop_handoff",
@@ -5788,6 +5939,8 @@ async fn stop_native_recording_for(
         &mut performance_guard,
         Arc::clone(&context),
         stop_delivery_target,
+        stop_stamp,
+        true,
     )
     .await;
     // Only emit idle if this recording wasn't cancelled/superseded by a new one.

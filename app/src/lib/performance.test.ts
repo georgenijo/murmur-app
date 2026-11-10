@@ -463,3 +463,21 @@ describe('performance contracts', () => {
     })).toBe(false);
   });
 });
+
+describe('shadow diagnostics contract', () => {
+  const shadow = {
+    schemaVersion: 1, pressSample: 16000, pauseSample: 20800,
+    trailingSilenceBeforePressMs: 0, trailingSilenceBeforeStopMs: 500,
+    pressInputMatches: false, pauseInputMatches: true, previewHeldBackendAtPress: false,
+    determinism: 'disabled', decodeMatches: null,
+  };
+  it('reads historical runs and validates the versioned content-free companion', () => {
+    expect(isPerformanceRunV1(makeRun())).toBe(true);
+    expect(isPerformanceRunV1({ ...makeRun(), shadow })).toBe(true);
+    expect(isPerformanceRunV1({ ...makeRun(), shadow: { ...shadow, schemaVersion: 2 } })).toBe(false);
+    expect(isPerformanceRunV1({ ...makeRun(), shadow: { ...shadow, pressSample: -1 } })).toBe(false);
+    expect(isPerformanceRunV1({ ...makeRun(), shadow: { ...shadow, text: 'forbidden' } })).toBe(false);
+    expect(isPerformanceRunV1({ ...makeRun(), shadow: { ...shadow, decodeMatches: true } })).toBe(false);
+    expect(isPerformanceRunV1({ ...makeRun(), shadow: { ...shadow, determinism: 'compared', decodeMatches: true } })).toBe(true);
+  });
+});
