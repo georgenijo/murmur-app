@@ -45,8 +45,8 @@ column gap, 512px stacking boundary, and 8px controls / 12px cards remain.
 General groups Startup, Dictation, and Maintenance; Setup assistant and Updates
 are trailing actions, with the installed version under Updates. Advanced lives
 in Maintenance with a description of calibration and statistics reset. The
-getting-started checklist entry is removed. The shortcut index shares one
-binding column across global and window shortcuts, with Hold outside the cap,
+shortcut index shares one binding column across global and window shortcuts,
+with Hold outside the cap,
 owner-specific Configure actions, and explicit Paused/Off states when applicable.
 
 Existing Select/microphone values retain end ellipsis. The project-scan,

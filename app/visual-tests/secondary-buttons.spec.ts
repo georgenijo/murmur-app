@@ -16,11 +16,15 @@ for (const appearance of ['light', 'dark'] as const) {
     test.use({ colorScheme: appearance, reducedMotion: 'reduce' });
     test('meeting deletion retains its danger tone at rest, on hover and while confirming', async ({ page }) => {
       await page.goto(`/visual-fixtures.html?state=meetings-many&appearance=${appearance}`);
-      const remove = page.getByRole('button', { name: 'Delete meeting…', exact: true });
+      await page.getByRole('region', { name: 'Meeting details' }).getByRole('button', { name: 'More meeting actions', exact: true }).click();
+      const remove = page.getByRole('menuitem', { name: 'Delete meeting…', exact: true });
       await danger(remove);
-      await remove.click();
-      const confirm = page.getByRole('button', { name: 'Confirm delete…', exact: true });
+      // Leaving the destructive item disarms it, so arm from keyboard with
+      // the pointer already away to check confirmation paint before hover.
       await page.mouse.move(0, 0);
+      await remove.focus();
+      await remove.press('Space');
+      const confirm = page.getByRole('menuitem', { name: 'Confirm delete…', exact: true });
       await danger(confirm);
       const fill = await confirm.evaluate(n => getComputedStyle(n).backgroundColor);
       expect(fill).not.toBe('rgba(0, 0, 0, 0)');
@@ -46,7 +50,7 @@ for (const appearance of ['light', 'dark'] as const) {
     });
     test('real General actions and quiet actions use the shared control boundary', async ({ page }) => {
       await page.goto(`/visual-fixtures.html?state=settings-general&appearance=${appearance}`);
-      const setup = page.getByRole('button', { name: 'Run setup assistant…', exact: true });
+      const setup = page.getByRole('button', { name: 'Open setup assistant', exact: true });
       await expect(setup).toHaveCSS('border-top-color', await semanticColor(setup, '--murmur-on-surface-variant'));
       await page.getByRole('button', { name: /^Advanced/ }).click();
       const reset = page.getByRole('button', { name: 'Reset statistics', exact: true });
