@@ -204,6 +204,35 @@ test('Project scan stays with Text & vocabulary and has one sheet title', async 
 });
 
 for (const appearance of ['light', 'dark']) {
+  test(`${appearance} settings editor uses the shared modal layer`, async ({ page }) => {
+    await open(page, 'text', appearance);
+    await advanced(page).click();
+    await page.getByRole('switch', { name: 'Developer terms', exact: true }).check();
+    await page.getByRole('button', { name: 'Manage project scan', exact: true }).click();
+    const backdrop = page.locator('.settings-sheet-backdrop');
+    const sheet = page.locator('.settings-editor-sheet');
+    const modal = await page.evaluate(() => {
+      const backdrop = document.querySelector<HTMLElement>('.settings-sheet-backdrop')!;
+      const sheet = document.querySelector<HTMLElement>('.settings-editor-sheet')!;
+      const page = document.querySelector<HTMLElement>('.settings-workspace')!;
+      const backdropStyle = getComputedStyle(backdrop);
+      const sheetStyle = getComputedStyle(sheet);
+      return {
+        backdrop: backdropStyle.backgroundColor,
+        sheetBackground: sheetStyle.backgroundColor,
+        pageBackground: getComputedStyle(page).backgroundColor,
+        shadow: sheetStyle.boxShadow,
+        border: sheetStyle.borderTopColor,
+      };
+    });
+    expect(modal.backdrop).not.toBe('rgba(0, 0, 0, 0.3)');
+    expect(modal.shadow).not.toBe('none');
+    expect(modal.border).not.toBe(modal.sheetBackground);
+    expect(modal.sheetBackground).not.toBe(modal.pageBackground);
+  });
+}
+
+for (const appearance of ['light', 'dark']) {
   test(`${appearance} app IDE rows and manual Advanced retain saved values`, async ({ page }) => {
     await page.emulateMedia({ reducedMotion: 'reduce', colorScheme: appearance as 'light' | 'dark' });
     await page.goto(`/visual-fixtures.html?state=settings-folding&page=delivery&appearance=${appearance}&profile=1`);

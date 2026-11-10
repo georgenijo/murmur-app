@@ -1145,7 +1145,6 @@
   {"file":"styles/settings.css","rule":"font-size","pattern":".settings-page-subtitle | font-size: 12px","context":".settings-page-subtitle","occurrence":1},
   {"file":"styles/settings.css","rule":"font-size","pattern":".settings-unavailable-notice | font-size: 12px","context":".settings-unavailable-notice","occurrence":1},
   {"file":"styles/settings.css","rule":"font-size","pattern":".settings-advanced-toggle | font-size: 14px","context":".settings-advanced-toggle","occurrence":1},
-  {"file":"styles/settings.css","rule":"literal-color","pattern":".settings-sheet-backdrop | background: rgb(0 0 0 / 30%)","context":".settings-sheet-backdrop","occurrence":1},
   {"file":"styles/settings.css","rule":"font-size","pattern":".settings-field > :is(p, label):first-child | font-size: 14px","context":".settings-field > :is(p, label):first-child","occurrence":1},
   {"file":"styles/settings.css","rule":"font-size","pattern":".settings-field > p:not(:first-child) | font-size: 12px","context":".settings-field > p:not(:first-child)","occurrence":1},
   {"file":"styles/settings.css","rule":"literal-color","pattern":".ui-switch-thumb | box-shadow: rgb(0 0 0 / 5%)","context":".ui-switch-thumb","occurrence":1},
