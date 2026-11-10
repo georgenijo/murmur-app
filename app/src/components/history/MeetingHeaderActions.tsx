@@ -27,15 +27,18 @@ function Popup({ children, submenu = false, finalFocus }: { children: ReactNode;
   </Menu.Positioner></Menu.Portal>;
 }
 
-/** Destructive menu items never use Return as a default confirmation. Capture
- * runs before Base UI can synthesize a click; Space needs a fresh, plain press. */
-function guardDestructiveKey(event: KeyboardEvent) {
+/** Keyboard activation is handled here rather than delegated to the menu
+ * primitive. The item remains open while armed, so it must own both presses. */
+function isInvalidDestructiveKey(event: KeyboardEvent) {
+  return event.repeat || event.nativeEvent.isComposing
+    || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey;
+}
+
+function guardDestructiveKey(event: KeyboardEvent, onActivate: () => void) {
   if (event.key !== 'Enter' && event.key !== ' ') return;
-  if (event.key === 'Enter' || event.repeat || event.nativeEvent.isComposing
-    || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
-    event.preventDefault();
-    event.stopPropagation();
-  }
+  event.preventDefault();
+  event.stopPropagation();
+  if (!isInvalidDestructiveKey(event)) onActivate();
 }
 
 /** All menu items dispatch the same local export/naming handlers as the workspace. */
@@ -75,7 +78,7 @@ export function MeetingHeaderActions(props: MeetingHeaderActionsProps) {
           <Popup submenu>{formats(props.onCopy)}</Popup>
         </Menu.SubmenuRoot>
         {props.onDelete && <><Menu.Separator className="ui-menu-separator" />
-          <Menu.Item className="ui-menu-item" data-variant="destructive" closeOnClick={false} onKeyDownCapture={guardDestructiveKey} onKeyUpCapture={guardDestructiveKey}
+          <Menu.Item className="ui-menu-item" data-variant="destructive" closeOnClick={false} onKeyDownCapture={(event) => guardDestructiveKey(event, () => props.onDelete?.())}
             onBlur={props.onDisarmDelete} onPointerLeave={props.onDisarmDelete} onClick={(event) => {
               if (event.detail > 1) return;
               props.onDelete?.();

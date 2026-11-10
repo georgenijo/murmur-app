@@ -130,11 +130,6 @@
 
 .settings-back-btn:hover {
   color: var(--murmur-on-surface);
-  background: var(--murmur-surface-container-low);
-}
-
-.settings-quiet-btn:hover {
-  background: var(--murmur-surface-container-low);
 }
 
 .settings-segmented-btn:hover:not(:disabled) {

@@ -561,7 +561,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             </>}
             {step === 'model' && <>
               <StepHeading icon={Cpu} title="Speech model" subtitle="Download a local model once, then transcribe offline." />
-              {modelCatalogError ? <><ErrorMessage message="Could not check installed models. Retry to continue setup." /><WizardNavigationRow onBack={goBack} onNext={retryModelCatalog} nextEnabled nextLabel="Retry" /></> : installedModels === null ? <WizardNavigationRow onBack={goBack} onNext={() => {}} nextEnabled={false} nextLabel="Loading…" /> : <ModelDownloadPanel initialModel={preferredModel} installedModels={installedModels} statusPortalTarget={modelStatusTarget} onDownloadingChange={setModelDownloading} renderPrimaryAction={({ label, disabled, onActivate, isNavigation, isCancellation }) => <WizardNavigationRow secondary={isCancellation} onBack={goBack} backDisabled={modelDownloading || disabled} onNext={onActivate} nextEnabled={!disabled} defaultAction={isNavigation} nextLabel={label} />} onComplete={(model) => { setInstalledModel(model); setModelInstalled(true); setModelDownloading(false); goNext(); }} />}
+              {modelCatalogError ? <><ErrorMessage message="Could not check installed models. Retry to continue setup." /><WizardNavigationRow onBack={goBack} onNext={retryModelCatalog} nextEnabled nextLabel="Retry" /></> : installedModels === null ? <WizardNavigationRow onBack={goBack} onNext={() => {}} nextEnabled={false} nextLabel="Loading…" /> : <ModelDownloadPanel initialModel={preferredModel} installedModels={installedModels} statusPortalTarget={modelStatusTarget} onDownloadingChange={setModelDownloading} renderPrimaryAction={({ label, disabled, onActivate, isNavigation, isCancellation }) => <WizardNavigationRow primaryClassName="onboarding-model-primary-action" secondary={isCancellation} onBack={goBack} backDisabled={modelDownloading || disabled} onNext={onActivate} nextEnabled={!disabled} defaultAction={isNavigation} nextLabel={label} />} onComplete={(model) => { setInstalledModel(model); setModelInstalled(true); setModelDownloading(false); goNext(); }} />}
             </>}
             {step === 'hotkey' && <>
               <StepHeading icon={Keyboard} title="Recording shortcut" subtitle="Choose how Murmur listens. You can change both options later in Recording settings." />
@@ -634,14 +634,14 @@ function SummaryRow({ ok, label, okText, missingText }: { ok: boolean; label: st
   return <div className="onboarding-summary-row"><span aria-hidden="true" className={ok ? 'text-success' : 'text-on-surface-variant'}>{ok ? <Check size={16} /> : <Minus size={16} />}</span><strong>{label}</strong><span>{ok ? okText : missingText}</span></div>;
 }
 
-function WizardNavigationRow({ onBack, backDisabled = false, hideBack = false, onNext, onSkip, nextEnabled, nextLabel, defaultAction = false, skippable = false, skipLabel = 'Skip', inline = false, secondary = false }: { inline?: boolean; secondary?: boolean; onBack: () => void; backDisabled?: boolean; hideBack?: boolean; onNext: () => void; onSkip?: () => void; nextEnabled: boolean; nextLabel: string; defaultAction?: boolean; skippable?: boolean; skipLabel?: string }) {
+function WizardNavigationRow({ onBack, backDisabled = false, hideBack = false, onNext, onSkip, nextEnabled, nextLabel, defaultAction = false, skippable = false, skipLabel = 'Skip', inline = false, secondary = false, primaryClassName }: { inline?: boolean; secondary?: boolean; primaryClassName?: string; onBack: () => void; backDisabled?: boolean; hideBack?: boolean; onNext: () => void; onSkip?: () => void; nextEnabled: boolean; nextLabel: string; defaultAction?: boolean; skippable?: boolean; skipLabel?: string }) {
   const target = useContext(ActionTarget);
   if (!target && !inline) return null;
   const navigation = <nav aria-label="Setup step actions" className="onboarding-nav">
     {!hideBack && <Button variant="ghost" onClick={onBack} disabled={backDisabled} aria-label="Go back to the previous setup step" title={backDisabled ? 'Please wait for the model download to finish' : undefined}>Back</Button>}
     <div role="group" aria-label="Step actions" className="onboarding-nav-end">
       {skippable && <Button variant="ghost" onClick={onSkip ?? onNext}>{skipLabel}</Button>}
-      <Button variant={secondary ? "outline" : "primary"} onClick={onNext} data-default-button={defaultAction || undefined} disabled={!nextEnabled}>{nextLabel}</Button>
+      <Button variant={secondary ? "outline" : "primary"} className={primaryClassName} onClick={onNext} data-default-button={defaultAction || undefined} disabled={!nextEnabled}>{nextLabel}</Button>
     </div>
   </nav>;
   return inline ? navigation : createPortal(navigation, target!);

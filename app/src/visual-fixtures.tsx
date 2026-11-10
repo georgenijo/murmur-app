@@ -52,7 +52,7 @@ const query = new URLSearchParams(window.location.search);
 const requestedState = query.get('state') ?? 'idle';
 const homeFixture = query.get('proposal') ?? requestedState;
 const copyFixture = requestedState === 'settings-copy';
-const copyKnowledge = [
+const copyKnowledge = query.get('knowledge') === 'empty' ? [] : [
   { id: 'copy-command', payload: { kind: 'replacement_rule', source: 'insert greeting', replacement: 'Hello, team' }, enabled: true, scope: { kind: 'global' }, provenance: 'manual', voiceCommand: { commandType: 'text_replacement', allowClipboardRead: false }, createdAtMs: 1, updatedAtMs: 2, revision: 1 },
 ];
 const appearance = query.get('appearance') === 'dark' ? 'dark' : 'light';

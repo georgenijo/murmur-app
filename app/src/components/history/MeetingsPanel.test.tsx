@@ -269,14 +269,38 @@ describe('MeetingsPanel retained audio deletion', () => {
     expect(title?.nextElementSibling?.textContent).toBe('interrupted');
   });
 
-  it('blocks held Return, composing keys and repeated Space before the destructive menu item can click', async () => {
+  it('confirms deletion with separate plain Space or Enter presses', async () => {
+    const press = async (item: HTMLElement, key: ' ' | 'Enter') => {
+      const down = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      const up = new KeyboardEvent('keyup', { key, bubbles: true, cancelable: true });
+      await act(async () => {
+        item.dispatchEvent(down);
+        item.dispatchEvent(up);
+      });
+      expect(down.defaultPrevented).toBe(true);
+      return down;
+    };
+
+    for (const key of [' ', 'Enter'] as const) {
+      const remove = vi.fn().mockResolvedValue(true);
+      await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
+      await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+      await press([...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => element.textContent === 'Delete meeting…')!, key);
+      expect([...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => element.textContent === 'Confirm delete…')).toBeDefined();
+      await press([...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => element.textContent === 'Confirm delete…')!, key);
+      expect(remove).toHaveBeenCalledExactlyOnceWith(detail.session.id);
+      await act(async () => root.render(<div />));
+    }
+  });
+
+  it('blocks held, composing and modified keyboard activation before the destructive menu item can click', async () => {
     const remove = vi.fn();
     await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
     await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
     const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => element.textContent === 'Delete meeting…')!;
     for (const options of [
-      { key: 'Enter' }, { key: 'Enter', repeat: true }, { key: 'Enter', repeat: true },
-      { key: 'Enter', isComposing: true }, { key: ' ', isComposing: true }, { key: ' ', repeat: true },
+      { key: 'Enter', repeat: true }, { key: 'Enter', isComposing: true },
+      { key: ' ', isComposing: true }, { key: ' ', repeat: true }, { key: ' ', shiftKey: true },
     ]) {
       const event = new KeyboardEvent('keydown', { ...options, bubbles: true, cancelable: true });
       await act(async () => item.dispatchEvent(event));
@@ -312,6 +336,23 @@ describe('MeetingsPanel retained audio deletion', () => {
 
     expect(remove).not.toHaveBeenCalled();
     expect(item.textContent).toBe('Confirm delete…');
+  });
+
+  it('disarms the destructive confirmation after four seconds', async () => {
+    vi.useFakeTimers();
+    try {
+      const remove = vi.fn().mockResolvedValue(true);
+      await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
+      await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+      const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => element.textContent === 'Delete meeting…')!;
+      await act(async () => item.click());
+      expect(item.textContent).toBe('Confirm delete…');
+      await act(async () => vi.advanceTimersByTime(4_000));
+      expect(item.textContent).toBe('Delete meeting…');
+      expect(remove).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('ignores a double-click confirmation but accepts a separate single click', async () => {

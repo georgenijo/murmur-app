@@ -122,6 +122,7 @@
 .onboarding-model-status .model-download-help { position: static; }
 .onboarding-model-status .model-cancel-error { padding-top: 0; }
 .onboarding-flow[data-step='model'] .onboarding-nav { margin-top: 0; }
+.onboarding-flow[data-step='model'] .onboarding-model-primary-action { width: 153px; min-width: 153px; }
 @media (max-height: 660px) {
   .model-downloader { padding: 24px; }
   .onboarding-flow[data-step='model'] .onboarding-outer { padding-top: 0; }

@@ -55,18 +55,24 @@ for (const appearance of ['light', 'dark']) {
     await page.keyboard.down('Enter');
     await page.keyboard.down('Enter');
     await page.keyboard.up('Enter');
-    await expect(deletion).toBeFocused();
+    const enterConfirm = page.getByRole('menuitem', { name: 'Confirm delete…', exact: true });
+    await expect(enterConfirm).toBeFocused();
     await expect(page.locator('html')).not.toHaveAttribute('data-meeting-deletions');
+    // A new plain Enter confirms after a held Enter has armed only once.
+    await page.keyboard.press('Enter');
+    await expect(page.locator('html')).toHaveAttribute('data-meeting-deletions', '1');
+
+    await page.goto(`/visual-fixtures.html?state=meetings-many&appearance=${appearance}`);
+    await page.locator('.meeting-more').click();
+    const spaceDeletion = page.getByRole('menuitem', { name: 'Delete meeting…', exact: true });
+    await spaceDeletion.focus();
     // A held Space is one activation. Release, then press again to confirm.
     await page.keyboard.down('Space');
     await page.keyboard.down('Space');
     await page.keyboard.down('Space');
     await page.keyboard.up('Space');
-    const confirm = page.getByRole('menuitem', { name: 'Confirm delete…', exact: true });
-    await expect(confirm).toBeVisible();
-    await page.keyboard.down('Enter');
-    await page.keyboard.down('Enter');
-    await page.keyboard.up('Enter');
+    const spaceConfirm = page.getByRole('menuitem', { name: 'Confirm delete…', exact: true });
+    await expect(spaceConfirm).toBeVisible();
     await expect(page.locator('html')).not.toHaveAttribute('data-meeting-deletions');
     await page.keyboard.press('Space');
     await expect(page.locator('html')).toHaveAttribute('data-meeting-deletions', '1');

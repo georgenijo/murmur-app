@@ -11,6 +11,13 @@ async function danger(control: Locator) {
   await expect(control).toHaveCSS('color', await semanticColor(control, '--murmur-error'));
 }
 
+async function sharedHoverFill(control: Locator) {
+  const resting = await control.evaluate(element => getComputedStyle(element).backgroundColor);
+  await control.hover();
+  await expect(control).toHaveCSS('background-color', await semanticColor(control, '--ui-dashboard-hover'));
+  return resting;
+}
+
 for (const appearance of ['light', 'dark'] as const) {
   test.describe(`Shared secondary buttons ${appearance}`, () => {
     test.use({ colorScheme: appearance, reducedMotion: 'reduce' });
@@ -60,6 +67,18 @@ for (const appearance of ['light', 'dark'] as const) {
       await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=knowledge&appearance=${appearance}`);
       const quiet = page.getByRole('button', { name: 'Enable all shown', exact: true });
       await expect(quiet).toHaveCSS('border-top-color', await semanticColor(quiet, '--murmur-on-surface-variant'));
+      await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=knowledge&knowledge=empty&appearance=${appearance}`);
+      const disabledQuiet = page.getByRole('button', { name: 'Enable all shown', exact: true });
+      await expect(disabledQuiet).toBeDisabled();
+      const disabledRestingFill = await disabledQuiet.evaluate(element => getComputedStyle(element).backgroundColor);
+      await disabledQuiet.hover();
+      await expect(disabledQuiet).toHaveCSS('background-color', disabledRestingFill);
+      await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=knowledge&appearance=${appearance}`);
+      const enabledQuiet = page.getByRole('button', { name: 'Enable all shown', exact: true });
+      await sharedHoverFill(enabledQuiet);
+      const back = page.locator('.settings-back-btn').first();
+      await expect(back).toBeVisible();
+      await sharedHoverFill(back);
     });
   });
 }
