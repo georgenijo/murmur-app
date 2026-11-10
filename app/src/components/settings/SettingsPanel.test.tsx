@@ -151,7 +151,7 @@ describe('SettingsPanel information architecture', () => {
     isOpen = true,
     settings: Settings = DEFAULT_SETTINGS,
     pageRequest: SettingsPageRequest | null = null,
-    extras: Pick<Parameters<typeof SettingsPanel>[0], 'onDiscoveryChecklistReopen' | 'onPageOpened' | 'activeRef'> = {},
+    extras: Pick<Parameters<typeof SettingsPanel>[0], 'onPageOpened' | 'activeRef'> = {},
   ) {
     void isOpen;
     return root.render(
@@ -412,18 +412,12 @@ describe('SettingsPanel information architecture', () => {
     expect(onPageOpened).toHaveBeenCalledExactlyOnceWith('shortcuts');
   });
 
-  it('reopens the feature checklist from General and reports rendered pages', async () => {
-    const onDiscoveryChecklistReopen = vi.fn();
+  it('reports rendered General and shortcuts pages', async () => {
     const onPageOpened = vi.fn();
     await act(async () => renderPanel(true, DEFAULT_SETTINGS, null, {
-      onDiscoveryChecklistReopen,
       onPageOpened,
     }));
     expect(onPageOpened).toHaveBeenCalledWith('general');
-    const show = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Show feature checklist') as HTMLButtonElement;
-    await act(async () => show.click());
-    expect(onDiscoveryChecklistReopen).toHaveBeenCalledOnce();
 
     const shortcuts = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent?.includes('Keyboard shortcuts')) as HTMLButtonElement;

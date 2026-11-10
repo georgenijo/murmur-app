@@ -172,10 +172,16 @@ macOS traffic lights. Below it, a compact sidebar routes Home, Notetaker, and
 Insights. A single gear/keyboard entry opens General and
 the complete Settings workspace; customization no longer competes with the three
 primary destinations in the Home sidebar. Home uses
-one 64px row for the real recording state and configured shortcut, with this
-month's word and dictation totals beside it, then gives Recent Dictations the
-remaining workspace. Dictations are grouped into one surface per day with a time
-column; row actions appear on hover or keyboard focus.
+a talk card labelled “Click to start dictating”, with the configured shortcut
+and a passive month-summary strip. Recording feedback stays in the talk row.
+Empty history omits the summary and disables Search, Filter and More; file
+import remains available through drag-and-drop and the command palette.
+Denied microphone access replaces the talk action with a System Settings
+recovery action; returning from Settings refreshes live authorization.
+The 208–384px resizable sidebar also supports a 48px icon rail.
+History day groups use 28px above and 8px below their labels, with hairlines
+only between rows in the same day. Time uses right-aligned tabular sans;
+Copy and More occupy a reserved column and appear on hover or keyboard focus.
 The Home month summary and full Insights destination use only
 durable local statistics. Insights includes total dictation minutes, estimated
 typing time saved at 40 words per minute minus dictation time, the most-used
@@ -243,13 +249,10 @@ redesigned surfaces visually consistent as features evolve.
 
 ### Onboarding — [features/onboarding-flow.md](features/onboarding-flow.md)
 
-The eight-step first-launch assistant is followed by a dismissible Home
-checklist for Command Palette, app-bound Modes,
-meetings, Correct and Teach, and shortcuts. Real local counters and explicit
-configuration complete operational rows. Four content-free, once-only hints
-react to existing hotkey, history, browser teaching-context, and meeting events.
-Settings → General reopens the checklist; either setup-assistant entry point
-resets checklist and hint state.
+The eight-step first-launch assistant leads directly to Home. Three content-free,
+once-only hints react to hotkey, history and browser teaching-context events.
+Either setup-assistant entry point resets hint state; upgrades preserve hint
+dismissals while removing retired local progress data.
 First-launch wizard: Welcome → Microphone → Accessibility → optional System
 Audio → optional Calendar → Model download → Hotkey → Done. The mic step fires
 the native macOS prompt in-app; permission steps update when the user returns

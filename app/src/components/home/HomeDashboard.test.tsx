@@ -1,6 +1,9 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+const native = vi.hoisted(() => ({ openSettings: vi.fn() }));
+vi.mock('../../lib/dictation', () => ({ openMicrophoneSettings: native.openSettings }));
+
 import { HomeRecordingBar } from './HomeRecordingBar';
 import { HomeSidebar as ControlledHomeSidebar } from './HomeSidebar';
 import { useHomeSidebar } from '../../lib/hooks/useHomeSidebar';
@@ -50,7 +53,7 @@ describe('home dashboard interactions', () => {
 
     await renderBar('idle');
     expect(container.querySelectorAll('button')).toHaveLength(1);
-    expect(container.textContent).toContain('Click to start talking');
+    expect(container.textContent).toContain('Click to start dictating');
     expect(container.textContent).toContain('or hold ⇧ Left Shift in any app');
     const startLabel = container.querySelector<HTMLElement>('.home-talk-title strong');
     expect(startLabel?.closest('button')?.dataset.testid).toBe('home-record-button');
@@ -64,7 +67,7 @@ describe('home dashboard interactions', () => {
 
     await renderBar('recording');
     const record = container.querySelector('[data-testid="home-record-button"]') as HTMLButtonElement;
-    expect(record.getAttribute('aria-label')).toBe('Click to stop recording, 0:12');
+    expect(record.getAttribute('aria-label')).toBe('Stop dictation');
     expect(container.textContent).toContain('Listening · 0:12');
     await act(async () => container.querySelector<HTMLElement>('.home-talk-hint')?.click());
     expect(onStop).toHaveBeenCalledOnce();
@@ -73,6 +76,30 @@ describe('home dashboard interactions', () => {
     await renderBar('recovering');
     expect(container.textContent).toContain('Reconnecting your microphone…');
     expect((container.querySelector('[data-testid="home-record-button"]') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('uses confirmed denial for inline recovery and calls the native Settings route', async () => {
+    const onRecord = vi.fn();
+    const render = async (permission: 'denied' | 'unknown' | 'notDetermined' | 'granted') => {
+      await act(async () => root.render(<HomeRecordingBar status="idle" initialized recordingDuration={0}
+        audioLevel={0} triggerKey="shift_l" recordingMode="hold_down" meetingPhase="idle"
+        microphonePermission={permission} onRecord={onRecord} onStop={vi.fn()} />));
+    };
+    native.openSettings.mockResolvedValue(undefined);
+    await render('denied');
+    expect(container.querySelector<HTMLButtonElement>('.home-talk-action')?.disabled).toBe(true);
+    const recovery = container.querySelector<HTMLButtonElement>('.home-mic-recovery-copy button')!;
+    await act(async () => recovery.click());
+    expect(native.openSettings).toHaveBeenCalledOnce();
+    expect(onRecord).not.toHaveBeenCalled();
+    native.openSettings.mockRejectedValueOnce(new Error('unavailable'));
+    await act(async () => recovery.click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Privacy & Security');
+    for (const permission of ['unknown', 'notDetermined', 'granted'] as const) {
+      await render(permission);
+      expect(container.querySelector('.home-mic-recovery')).toBeNull();
+      expect(container.querySelector<HTMLButtonElement>('[aria-label="Start dictation"]')?.disabled).toBe(false);
+    }
   });
 
   it.each([
@@ -150,7 +177,7 @@ describe('home dashboard interactions', () => {
       'Home', 'Notetaker', 'Insights',
     ]);
     expect(container.textContent).not.toContain('Customize');
-    expect(container.querySelector('.home-sidebar-bottom')?.textContent).toContain('Dictation stays on this Mac.');
+    expect(container.querySelector('.home-sidebar-bottom')?.textContent).toContain('Audio and transcripts stay local.');
   });
 
   it('describes auditable milestones rather than an opaque score', async () => {

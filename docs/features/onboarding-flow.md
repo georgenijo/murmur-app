@@ -129,29 +129,18 @@ Settings → General → **Run setup assistant…** clears the flag and relaunch
 wizard — the recovery path when a user revokes a permission and wants a guided
 re-grant instead of spelunking through System Settings.
 
-## Post-setup discovery
+## Contextual hints after setup
 
-The wizard remains eight steps. After it finishes, Home shows a dismissible
-**Get more from Murmur** checklist for features that are useful after the first
-dictation: Command Palette, an app-bound Mode, meeting capture, Correct and Teach, and Keyboard Shortcuts. Settings →
-General can reopen the checklist.
+The wizard remains eight steps. Home goes directly to dictation and history.
+Three once-only hints respond to an expired double-tap window, a new history
+entry, and an existing teaching context identifying an allow-listed browser.
+The local record stores fixed hint IDs, without transcript, selection, site,
+window-title or meeting content. Dismissed hints stay dismissed after relaunch.
+Both setup-assistant entry points reset hint state.
 
-Meeting and correction rows read the durable local activity
-counters. A Mode row
-requires an explicit `modeId` on an app profile; the built-in default Mode does
-not count. Command Palette and Keyboard Shortcuts complete only after their
-views open. Completing setup records the current evidence as a baseline, so a
-fresh setup cycle starts with every row incomplete. Existing installs without
-a discovery record keep credit for prior local usage and explicit
-configuration.
-
-Four event-driven hints are queued once: an expired double-tap window, the
-first new history entry, a dictation whose existing teaching context identifies
-an allow-listed browser, and a meeting entering post-stop processing. The
-stored record contains fixed hint IDs only. It never stores transcript text,
-selected text, site data, window titles, or meeting IDs. Dismissed hints do not
-return after relaunch. Both Run Setup Assistant entry points clear the
-checklist, evidence baseline, and hint state.
+`murmur_discovery_v2` preserves validated pending/dismissed hint IDs from the
+legacy v1 record and removes the retired progress fields and old storage key.
+No native settings or registered commands changed.
 
 ## Files
 
@@ -159,8 +148,7 @@ checklist, evidence baseline, and hint state.
 |------|---------|
 | `app/src/components/onboarding/OnboardingFlow.tsx` | The wizard |
 | `app/src/lib/onboarding.ts` | Completion-flag persistence |
-| `app/src/lib/discovery.ts` | Checklist evidence, dismissal, and once-only hint persistence |
-| `app/src/lib/hooks/useDiscovery.ts` | Existing-event listeners and live evidence updates |
-| `app/src/components/home/DiscoveryChecklist.tsx` | Home checklist |
+| `app/src/lib/discovery.ts` | Once-only hint persistence and legacy migration |
+| `app/src/lib/hooks/useDiscovery.ts` | Existing-event hint listeners |
 | `app/src/components/ModelDownloader.tsx` | `ModelDownloadPanel` extracted for reuse |
 | `app/src-tauri/src/commands/permissions.rs` | `request_microphone_access` (block2 completion handler) |

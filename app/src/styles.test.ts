@@ -155,7 +155,7 @@ describe('Murmur layout contracts', () => {
       /\.home-history \.transcript-text\s*\{[^}]*padding-right:\s*0;/s,
     );
     expect(css).toMatch(
-      /\.home-history \.transcript-actions\s*\{[^}]*grid-column:\s*3;[^}]*opacity:\s*0;/s,
+      /\.home-history \.transcript-actions\s*\{[^}]*position:\s*absolute;[^}]*width:\s*var\(--ui-history-actions-width\);[^}]*opacity:\s*0;/s,
     );
   });
 

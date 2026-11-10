@@ -52,7 +52,7 @@ describe('HomeSidebar labeled navigation', () => {
 
   it.each(['home', 'meetings'] as const)('keeps the privacy assurance scoped to dictation on %s', async (active) => {
     await act(async () => root.render(<HomeSidebar active={active} onNavigate={() => {}} />));
-    expect(container.querySelector('.home-privacy-note')?.textContent).toContain('Dictation stays on this Mac.');
+    expect(container.querySelector('.home-privacy-note')?.textContent).toContain('Audio and transcripts stay local.');
     expect(container.textContent).not.toContain('Everything stays');
   });
 
@@ -102,11 +102,11 @@ describe('HomeSidebar labeled navigation', () => {
     const separator = container.querySelector<HTMLDivElement>('[role="separator"]')!;
     const sidebar = container.querySelector<HTMLElement>('aside')!;
     const capture = vi.spyOn(separator, 'setPointerCapture');
-    await act(async () => pointer(separator, 'pointerdown', 9, 256, { button: 2 }));
+    await act(async () => pointer(separator, 'pointerdown', 9, 208, { button: 2 }));
     expect(capture).not.toHaveBeenCalled();
-    await act(async () => pointer(separator, 'pointerdown', 10, 256, { isPrimary: false }));
+    await act(async () => pointer(separator, 'pointerdown', 10, 208, { isPrimary: false }));
     expect(capture).not.toHaveBeenCalled();
-    await act(async () => pointer(separator, 'pointerdown', 9, 256));
+    await act(async () => pointer(separator, 'pointerdown', 9, 208));
     expect(capture).toHaveBeenCalledExactlyOnceWith(9);
     await act(async () => pointer(separator, 'pointermove', 9, 300));
     expect(sidebar.style.width).toBe('300px');
@@ -119,7 +119,7 @@ describe('HomeSidebar labeled navigation', () => {
     expect(sidebar.style.width).toBe('300px');
     expect(sidebar.dataset.resizing).toBe('true');
     await act(async () => pointer(separator, 'pointercancel', 9, 300));
-    expect(sidebar.style.width).toBe('256px');
+    expect(sidebar.style.width).toBe('208px');
     expect(sidebar.dataset.resizing).toBe('false');
   });
 
@@ -130,11 +130,11 @@ describe('HomeSidebar labeled navigation', () => {
     vi.spyOn(separator, 'hasPointerCapture').mockReturnValue(true);
     const release = vi.spyOn(separator, 'releasePointerCapture');
     await act(async () => {
-      pointer(separator, 'pointerdown', 4, 256);
+      pointer(separator, 'pointerdown', 4, 208);
       pointer(separator, 'pointermove', 4, 330);
     });
     await act(async () => render(true));
-    expect(container.querySelector<HTMLElement>('aside')!.style.width).toBe('256px');
+    expect(container.querySelector<HTMLElement>('aside')!.style.width).toBe('208px');
     expect(release).toHaveBeenCalledExactlyOnceWith(4);
     expect(container.querySelector('[aria-current="page"]')?.getAttribute('aria-label')).toBe('Insights');
   });
@@ -144,7 +144,7 @@ describe('HomeSidebar labeled navigation', () => {
     const separator = container.querySelector<HTMLDivElement>('[role="separator"]')!;
     vi.spyOn(separator, 'hasPointerCapture').mockReturnValue(true);
     const release = vi.spyOn(separator, 'releasePointerCapture');
-    await act(async () => pointer(separator, 'pointerdown', 7, 256));
+    await act(async () => pointer(separator, 'pointerdown', 7, 208));
     await act(async () => root.render(null));
     expect(release).toHaveBeenCalledExactlyOnceWith(7);
   });
@@ -155,12 +155,12 @@ describe('HomeSidebar labeled navigation', () => {
     await act(async () => root.render(<HomeSidebar active="home" onNavigate={() => {}} />));
     const separator = container.querySelector<HTMLDivElement>('[role="separator"]')!;
     await act(async () => {
-      pointer(separator, 'pointerdown', 7, 256);
+      pointer(separator, 'pointerdown', 7, 208);
       pointer(separator, 'pointermove', 7, 340);
     });
     media.matches = true;
     await act(async () => pointer(separator, 'pointerup', 7, 340));
-    expect(container.querySelector<HTMLElement>('aside')!.style.width).toBe('256px');
+    expect(container.querySelector<HTMLElement>('aside')!.style.width).toBe('208px');
     expect(container.querySelector('aside')!.dataset.resizing).toBe('false');
   });
 

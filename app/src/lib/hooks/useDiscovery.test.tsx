@@ -12,36 +12,26 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
 
-import { DEFAULT_SETTINGS } from '../settings';
-import { initializeDiscoveryAfterSetup, loadDiscoveryState, type DiscoveryEvidence } from '../discovery';
+import { initializeDiscoveryAfterSetup, loadDiscoveryState } from '../discovery';
 import { addHistoryEntry, type HistoryEntry } from '../history';
 import { useDiscovery } from './useDiscovery';
-import { updateActivityStats } from '../stats';
 
-const emptyEvidence: DiscoveryEvidence = {
-  transforms: 0,
-  meetings: 0,
-  correctionsTaught: 0,
-  modeBindings: [],
-};
 
 describe('discovery event receipts', () => {
   let container: HTMLDivElement;
   let root: Root;
   let entries: HistoryEntry[];
-  let statsVersion: number;
 
   function Harness() {
-    const discovery = useDiscovery({ enabled: true, settings: DEFAULT_SETTINGS, statsVersion, historyEntries: entries });
-    return <output>{discovery.state?.completed.join(',')}</output>;
+    const discovery = useDiscovery({ enabled: true, historyEntries: entries });
+    return <output>{discovery.state?.pendingHints.join(',')}</output>;
   }
 
   beforeEach(async () => {
     localStorage.clear();
     mocks.listeners.clear();
-    initializeDiscoveryAfterSetup(emptyEvidence);
+    initializeDiscoveryAfterSetup();
     entries = [];
-    statsVersion = 0;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -73,7 +63,7 @@ describe('discovery event receipts', () => {
     expect(loadDiscoveryState()?.pendingHints).toEqual([
       'double_tap_timing', 'browser_modes', 'correct_and_teach',
     ]);
-    expect(localStorage.getItem('murmur_discovery_v1')).not.toContain('SECRET');
+    expect(localStorage.getItem('murmur_discovery_v2')).not.toContain('SECRET');
 
     await act(async () => root.unmount());
     root = createRoot(container);
@@ -81,20 +71,9 @@ describe('discovery event receipts', () => {
     expect(loadDiscoveryState()?.pendingHints).toHaveLength(3);
   });
 
-  it('updates a mounted checklist when a real activity counter changes', async () => {
-    expect(container.textContent).toBe('');
-    await act(async () => {
-      updateActivityStats({ kind: 'meeting', durationMs: 1000 });
-      statsVersion += 1;
-      root.render(<Harness />);
-    });
-    expect(container.textContent).toContain('meeting');
-    expect(loadDiscoveryState()?.completed).toContain('meeting');
-  });
-
   it('detects a new entry by identity when retained history stays at its cap', async () => {
     await act(async () => root.unmount());
-    initializeDiscoveryAfterSetup(emptyEvidence);
+    initializeDiscoveryAfterSetup();
     entries = Array.from({ length: 200 }, (_, index) => ({
       id: `entry-${index}`,
       text: 'fixture',

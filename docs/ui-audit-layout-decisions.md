@@ -73,10 +73,8 @@ and source provenance are not editable through this form.
 - Diagnostics chips already wrap (`StreamChips`) following #853. Preserve that
   fix and the horizontally scrollable diagnostics tab strip; test all streams
   by pointer and keyboard in the compact embedded workspace.
-- Home's former ellipsized styles tip was removed by the #850 flow. The current
-  source-owned discovery checklist explains app-bound modes and selected-text
-  rewrite without CSS-generated alternate wording. Preserve its full help and
-  accessible setup/dismiss actions instead of reviving a redundant tip.
+- Home's former styles tip and subsequent discovery progress surface have been
+  removed by the approved Home redesign. Contextual hints remain independent.
 
 ## Default palette groups (#899)
 

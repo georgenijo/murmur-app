@@ -61,9 +61,9 @@ export function HomeSidebar({ active, homeButtonRef, onNavigate, sidebar, navId,
       </FluidTooltip.Group>
 
       <div className="home-sidebar-bottom">
-        <div className="home-privacy-note" title={sidebar.collapsed ? 'Dictation stays on this Mac.' : undefined}>
+        <div className="home-privacy-note" role="note" aria-label="Audio and transcripts stay local." title="Audio and transcripts stay local.">
           <span className="home-privacy-dot" aria-hidden="true" />
-          <span className="home-nav-label">Dictation stays on this Mac.</span>
+          <span className="home-nav-label">Audio and transcripts stay local.</span>
         </div>
       </div>
       {!sidebar.collapsed && <div className="home-sidebar-resize" role="separator" tabIndex={0}

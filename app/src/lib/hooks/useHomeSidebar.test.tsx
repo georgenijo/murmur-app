@@ -59,11 +59,11 @@ describe('useHomeSidebar breakpoint ownership', () => {
     await key('End');
     expect(width()).toBe(384);
     await key('Home');
-    expect(width()).toBe(256);
+    expect(width()).toBe(208);
     // The query already matched during initial render. Its queued notification
     // must not start another narrow visit after the user has expanded it.
     await notify(true);
-    expect(width()).toBe(256);
+    expect(width()).toBe(208);
     expect(container.querySelector('[role="separator"]')).not.toBeNull();
   });
 
@@ -71,9 +71,9 @@ describe('useHomeSidebar breakpoint ownership', () => {
     await act(async () => root.render(<Harness onLayout={() => { matches = true; }} />));
     expect(width()).toBe(48);
     await toggle();
-    expect(width()).toBe(256);
+    expect(width()).toBe(208);
     await notify(true);
-    expect(width()).toBe(256);
+    expect(width()).toBe(208);
   });
 
   it('collapses each new narrow visit while restoring desktop width and collapse preference', async () => {
