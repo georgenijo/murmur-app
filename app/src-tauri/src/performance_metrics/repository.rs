@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 const DB_FILE: &str = "performance.sqlite3";
-const LATEST_DB_SCHEMA_VERSION: u32 = 8;
+const LATEST_DB_SCHEMA_VERSION: u32 = 9;
 pub(super) const MAX_COMPLETED_RUNS: usize = 200;
 const MAX_RESOURCE_SAMPLES: usize = 600;
 const BUSY_TIMEOUT: Duration = Duration::from_millis(25);
@@ -750,6 +750,10 @@ fn migrate(connection: &mut Connection) -> StoreResult<()> {
         // V8 adds the bounded foreground-latency skip reason.
         transaction
             .pragma_update(None, "user_version", 8)
+            .map_err(db_error)?;
+        // V9 records live determinism explicitly as not measured in app.
+        transaction
+            .pragma_update(None, "user_version", 9)
             .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
     }
@@ -1593,7 +1597,7 @@ mod tests {
     }
 
     #[test]
-    fn v7_migration_preserves_older_comparison_and_accepts_bounded_skip() {
+    fn v8_migration_preserves_older_comparison_and_accepts_not_measured() {
         use crate::shadow_measurement::{DeterminismStatus, ShadowMeasurementV1};
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("diagnostics");
@@ -1626,7 +1630,7 @@ mod tests {
         let before: String = connection
             .query_row("SELECT payload_json FROM completed_runs", [], |r| r.get(0))
             .unwrap();
-        connection.pragma_update(None, "user_version", 7).unwrap();
+        connection.pragma_update(None, "user_version", 8).unwrap();
         drop(connection);
         let migrated = PerformanceRepository::initialize(root).unwrap().0;
         let after: String = migrated
@@ -1639,7 +1643,7 @@ mod tests {
             migrated.get(&run.run_id).unwrap().unwrap().shadow.as_ref(),
             Some(&shadow)
         );
-        shadow.determinism = DeterminismStatus::SkippedForegroundLatencyRisk;
+        shadow.determinism = DeterminismStatus::NotMeasuredInApp;
         shadow.decode_matches = None;
         migrated
             .update_completed_shadow(&run.run_id, 79, &shadow)

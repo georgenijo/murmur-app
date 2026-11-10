@@ -55,7 +55,7 @@ describe('RunDetail shadow evidence', () => {
     ['disabled', 'Disabled'], ['notAttempted', 'Not attempted'],
     ['backendUnavailable', 'Skipped: backend unavailable'], ['superseded', 'Skipped: recording superseded'],
     ['decodeFailed', 'Unavailable: decode failed'], ['unsupportedBackend', 'Not applicable to this backend'],
-    ['pending', 'Pending'],
+    ['pending', 'Pending'], ['notMeasuredInApp', 'Not measured in app'],
   ] as const)('renders %s as %s', async (determinism, label) => {
     await render({ ...shadow, determinism });
     expect(value('Repeat decode')).toBe(label);

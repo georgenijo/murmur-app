@@ -60,6 +60,7 @@ impl StopStamp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum DeterminismStatus {
+    // Historical values remain readable; live records only use NotMeasuredInApp.
     Disabled,
     Pending,
     Compared,
@@ -69,6 +70,7 @@ pub(crate) enum DeterminismStatus {
     UnsupportedBackend,
     NotAttempted,
     SkippedForegroundLatencyRisk,
+    NotMeasuredInApp,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -104,30 +106,11 @@ impl Default for ShadowMeasurementV1 {
             press_input_matches: None,
             pause_input_matches: None,
             preview_held_backend_at_press: None,
-            determinism: DeterminismStatus::NotAttempted,
+            determinism: DeterminismStatus::NotMeasuredInApp,
             decode_matches: None,
         }
     }
 }
-/// A process diagnostics switch; no settings/profile changes during a recording.
-/// Launch with MURMUR_SHADOW_DETERMINISM=1 to opt in. Default is strictly off.
-pub(crate) fn determinism_enabled(value: Option<&str>) -> bool {
-    value == Some("1")
-}
-
-/// The shared final decoder cannot be preempted. Even an idle try-lock can
-/// delay a foreground request arriving just afterwards, so never admit a
-/// diagnostic repeat on this runtime. This policy needs no backend capability.
-pub(crate) fn repeat_status(enabled: bool, supported: bool) -> DeterminismStatus {
-    if !supported {
-        DeterminismStatus::UnsupportedBackend
-    } else if !enabled {
-        DeterminismStatus::Disabled
-    } else {
-        DeterminismStatus::SkippedForegroundLatencyRisk
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(crate) struct PostDeliveryBoundary {
     pub idle_observed_at: Instant,
@@ -146,26 +129,24 @@ impl PostDeliveryBoundary {
 pub(crate) struct ShadowAudio {
     pub original: Vec<f32>,
     pub filtered: Vec<f32>,
-    pub bounds: Option<Vec<(usize, usize)>>,
     pub stamp: Option<StopStamp>,
     pub boundary: PostDeliveryBoundary,
 }
 impl ShadowAudio {
     pub fn measure(
         self,
-        enabled: bool,
         supported: bool,
+        full_bounds: impl FnOnce(&[f32], &[f32]) -> Option<Vec<(usize, usize)>>,
         mut filter: impl FnMut(&[f32], usize, &[f32]) -> Option<bool>,
     ) -> ShadowMeasurementV1 {
         self.boundary.assert_precedes_setup(Instant::now());
         let mut result = ShadowMeasurementV1 {
             press_sample: self.stamp.and_then(|s| s.press.sample).map(|s| s as u64),
             preview_held_backend_at_press: self.stamp.map(|s| s.press.preview_held_backend),
-            determinism: repeat_status(enabled, supported),
             ..Default::default()
         };
         if supported {
-            if let Some(bounds) = self.bounds {
+            if let Some(bounds) = full_bounds(&self.original, &self.filtered) {
                 result.trailing_silence_before_stop_ms =
                     trailing_silence_ms(&bounds, self.original.len());
                 let press = self
@@ -350,47 +331,59 @@ mod tests {
             ShadowAudio {
                 original,
                 filtered,
-                bounds: Some(vec![(0, 1_000)]),
                 stamp: None,
                 boundary: PostDeliveryBoundary {
                     idle_observed_at,
                     delivered_at,
                 },
             }
-            .measure(true, true, |original, _, filtered| {
-                let setup_at = Instant::now();
-                assert!(idle_observed_at <= delivered_at && delivered_at <= setup_at);
-                assert_eq!(
-                    original.as_ptr() as usize,
-                    original_ptr,
-                    "original PCM must move, not copy"
-                );
-                assert_eq!(
-                    filtered.as_ptr() as usize,
-                    filtered_ptr,
-                    "filtered PCM must move, not copy"
-                );
-                Some(true)
-            })
+            .measure(
+                true,
+                |original, filtered| {
+                    assert!(idle_observed_at <= delivered_at && delivered_at <= Instant::now());
+                    assert_eq!(original.as_ptr() as usize, original_ptr);
+                    assert_eq!(filtered.as_ptr() as usize, filtered_ptr);
+                    Some(vec![(0, 1_000)])
+                },
+                |original, _, filtered| {
+                    let setup_at = Instant::now();
+                    assert!(idle_observed_at <= delivered_at && delivered_at <= setup_at);
+                    assert_eq!(
+                        original.as_ptr() as usize,
+                        original_ptr,
+                        "original PCM must move, not copy"
+                    );
+                    assert_eq!(
+                        filtered.as_ptr() as usize,
+                        filtered_ptr,
+                        "filtered PCM must move, not copy"
+                    );
+                    Some(true)
+                },
+            )
         })
         .join()
         .unwrap();
-        assert_eq!(
-            result.determinism,
-            DeterminismStatus::SkippedForegroundLatencyRisk
-        );
+        assert_eq!(result.determinism, DeterminismStatus::NotMeasuredInApp);
         assert_eq!(result.decode_matches, None);
-        assert_eq!(repeat_status(false, true), DeterminismStatus::Disabled);
-        assert_eq!(
-            repeat_status(true, false),
-            DeterminismStatus::UnsupportedBackend
-        );
     }
 
     #[test]
-    fn determinism_is_off_by_default() {
-        assert!(!determinism_enabled(None));
-        assert!(!determinism_enabled(Some("true")));
-        assert!(determinism_enabled(Some("1")));
+    fn live_determinism_is_always_unmeasured() {
+        for supported in [false, true] {
+            let now = Instant::now();
+            let result = ShadowAudio {
+                original: Vec::new(),
+                filtered: Vec::new(),
+                stamp: None,
+                boundary: PostDeliveryBoundary {
+                    idle_observed_at: now,
+                    delivered_at: now,
+                },
+            }
+            .measure(supported, |_, _| None, |_, _, _| None);
+            assert_eq!(result.determinism, DeterminismStatus::NotMeasuredInApp);
+            assert_eq!(result.decode_matches, None);
+        }
     }
 }

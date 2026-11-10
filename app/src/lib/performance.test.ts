@@ -492,3 +492,14 @@ it('accepts the bounded repeat skip reason and rejects a fabricated comparison',
   expect(isPerformanceRunV1({ ...makeRun(), shadow })).toBe(true);
   expect(isPerformanceRunV1({ ...makeRun(), shadow: { ...shadow, decodeMatches: false } })).toBe(false);
 });
+
+it('accepts not measured in app without inventing a comparison', () => {
+  const shadow = {
+    schemaVersion: 1, pressSample: null, pauseSample: null,
+    trailingSilenceBeforePressMs: null, trailingSilenceBeforeStopMs: null,
+    pressInputMatches: null, pauseInputMatches: null, previewHeldBackendAtPress: null,
+    determinism: 'notMeasuredInApp', decodeMatches: null,
+  };
+  expect(isPerformanceRunV1({ ...makeRun(), shadow })).toBe(true);
+  expect(isPerformanceRunV1({ ...makeRun(), shadow: { ...shadow, decodeMatches: true } })).toBe(false);
+});

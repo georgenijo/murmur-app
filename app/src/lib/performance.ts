@@ -727,7 +727,7 @@ export interface ShadowMeasurementV1 {
   pauseInputMatches: boolean | null;
   previewHeldBackendAtPress: boolean | null;
   determinism: 'disabled' | 'pending' | 'compared' | 'backendUnavailable' | 'superseded'
-    | 'decodeFailed' | 'unsupportedBackend' | 'notAttempted' | 'skippedForegroundLatencyRisk';
+    | 'decodeFailed' | 'unsupportedBackend' | 'notAttempted' | 'skippedForegroundLatencyRisk' | 'notMeasuredInApp';
   decodeMatches: boolean | null;
 }
 export function isShadowMeasurementV1(value: unknown): value is ShadowMeasurementV1 {
@@ -740,7 +740,7 @@ export function isShadowMeasurementV1(value: unknown): value is ShadowMeasuremen
     && ['pressInputMatches', 'pauseInputMatches', 'previewHeldBackendAtPress', 'decodeMatches']
       .every(key => value[key] === null || typeof value[key] === 'boolean')
     && ['disabled', 'pending', 'compared', 'backendUnavailable', 'superseded', 'decodeFailed',
-      'unsupportedBackend', 'notAttempted', 'skippedForegroundLatencyRisk'].includes(String(value.determinism))
+      'unsupportedBackend', 'notAttempted', 'skippedForegroundLatencyRisk', 'notMeasuredInApp'].includes(String(value.determinism))
     && (value.determinism === 'compared' ? typeof value.decodeMatches === 'boolean' : value.decodeMatches === null);
 }
 

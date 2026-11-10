@@ -70,6 +70,7 @@ const REPEAT_LABELS: Record<ShadowMeasurementV1['determinism'], string> = {
   unsupportedBackend: 'Not applicable to this backend',
   notAttempted: 'Not attempted',
   skippedForegroundLatencyRisk: 'Skipped: foreground latency risk',
+  notMeasuredInApp: 'Not measured in app',
 };
 
 function ShadowEvidence({ shadow }: { shadow?: ShadowMeasurementV1 | null }) {

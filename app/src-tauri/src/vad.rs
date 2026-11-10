@@ -61,11 +61,19 @@ pub fn filter_speech(
     samples: &[f32],
     threshold: f32,
 ) -> Result<VadResult, String> {
-    filter_speech_with_segments(model_path, samples, threshold).map(|(result, _)| result)
+    filter_speech_impl::<false>(model_path, samples, threshold).map(|(result, _)| result)
 }
 
 /// Same PCM recipe, with padded segment bounds for content-free shadow diagnostics.
 pub fn filter_speech_with_segments(
+    model_path: &str,
+    samples: &[f32],
+    threshold: f32,
+) -> Result<(VadResult, Vec<(usize, usize)>), String> {
+    filter_speech_impl::<true>(model_path, samples, threshold)
+}
+
+fn filter_speech_impl<const COLLECT_BOUNDS: bool>(
     model_path: &str,
     samples: &[f32],
     threshold: f32,
@@ -88,11 +96,11 @@ pub fn filter_speech_with_segments(
             .as_mut()
             .expect("VAD context was initialized above")
             .1;
-        filter_speech_with_context(context, samples, threshold)
+        filter_speech_with_context::<COLLECT_BOUNDS>(context, samples, threshold)
     })
 }
 
-fn filter_speech_with_context(
+fn filter_speech_with_context<const COLLECT_BOUNDS: bool>(
     ctx: &mut WhisperVadContext,
     samples: &[f32],
     threshold: f32,
@@ -127,7 +135,9 @@ fn filter_speech_with_context(
         let end_idx = end_idx.min(total_samples);
 
         if start_idx < end_idx {
-            bounds.push((start_idx, end_idx));
+            if COLLECT_BOUNDS {
+                bounds.push((start_idx, end_idx));
+            }
             speech_samples.extend_from_slice(&samples[start_idx..end_idx]);
         }
     }

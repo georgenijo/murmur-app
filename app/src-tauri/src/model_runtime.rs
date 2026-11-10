@@ -1245,18 +1245,21 @@ mod tests {
                 ShadowAudio {
                     original: vec![0.0; 10_000],
                     filtered: vec![0.0; 1_000],
-                    bounds: Some(vec![(0, 1_000)]),
                     stamp: None,
                     boundary: PostDeliveryBoundary {
                         idle_observed_at: now,
                         delivered_at: now,
                     },
                 }
-                .measure(true, true, |_, _, _| {
-                    started_tx.send(()).unwrap();
-                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-                    Some(true)
-                })
+                .measure(
+                    true,
+                    |_, _| Some(vec![(0, 1_000)]),
+                    |_, _, _| {
+                        started_tx.send(()).unwrap();
+                        release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                        Some(true)
+                    },
+                )
             });
             let started = started_rx.recv_timeout(Duration::from_secs(2));
             drop(busy);
@@ -1287,10 +1290,7 @@ mod tests {
                 admitted.unwrap(),
                 "foreground must enter before shadow work is released"
             );
-            assert_eq!(
-                result.determinism,
-                DeterminismStatus::SkippedForegroundLatencyRisk
-            );
+            assert_eq!(result.determinism, DeterminismStatus::NotMeasuredInApp);
             assert_eq!(result.decode_matches, None);
         }
     }

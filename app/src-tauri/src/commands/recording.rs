@@ -1725,7 +1725,8 @@ mod clipboard_delivery_tests {
 }
 
 struct PipelineResult {
-    shadow: Option<PipelineShadowAudio>,
+    // Return ownership only. Shadow admission/setup happens after this future's Idle guard drops.
+    final_input: Option<Vec<f32>>,
     text: String,
     timings: PipelineTimings,
     terminal: PipelineTerminal,
@@ -2495,40 +2496,48 @@ fn register_shadow_measurement(
         recording_id,
         Box::new(move |metrics, run| {
             let _permit = permit;
-            static DETERMINISM: OnceLock<bool> = OnceLock::new();
-            let enabled = *DETERMINISM.get_or_init(|| {
-                shadow::determinism_enabled(
-                    std::env::var("MURMUR_SHADOW_DETERMINISM").ok().as_deref(),
-                )
-            });
             let supported = transcriber::is_coreml_model(&context.transcription.model_name);
             let threshold = vad::threshold_for_sensitivity(context.transcription.vad_sensitivity);
             let path = vad::vad_model_path().filter(|p| p.exists());
-            let result = audio.measure(enabled, supported, |original, at, filtered| {
-                shadow::prefix_matches(
-                    &path.as_ref()?.to_string_lossy(),
-                    original,
-                    at,
-                    threshold,
-                    filtered,
-                )
-            });
+            let result = audio.measure(
+                supported,
+                |original, filtered| {
+                    if !vad::is_enabled(context.transcription.vad_sensitivity) {
+                        return None;
+                    }
+                    let (result, bounds) = vad::filter_speech_with_segments(
+                        &path.as_ref()?.to_string_lossy(),
+                        original,
+                        threshold,
+                    )
+                    .ok()?;
+                    match result {
+                        vad::VadResult::Speech(repeated)
+                            if shadow::pcm_equal(&repeated, filtered) =>
+                        {
+                            Some(bounds)
+                        }
+                        _ => None,
+                    }
+                },
+                |original, at, filtered| {
+                    shadow::prefix_matches(
+                        &path.as_ref()?.to_string_lossy(),
+                        original,
+                        at,
+                        threshold,
+                        filtered,
+                    )
+                },
+            );
             let _ = metrics.amend_shadow(&run.run_id, recording_id, &result);
         }),
     );
 }
 
-struct PipelineShadowAudio {
-    filtered: Vec<f32>,
-    bounds: Option<Vec<(usize, usize)>>,
-    stamp: Option<crate::shadow_measurement::StopStamp>,
-}
-
 #[derive(Default)]
 struct PipelineStopContext {
     delivery_target: Option<crate::frontmost::DeliveryTargetSnapshot>,
-    stamp: Option<crate::shadow_measurement::StopStamp>,
-    measure_shadow: bool,
 }
 
 /// Shared transcription pipeline: model init -> transcribe -> inject text -> set idle.
@@ -2545,8 +2554,6 @@ async fn run_transcription_pipeline(
 ) -> Result<PipelineResult, String> {
     let PipelineStopContext {
         delivery_target: stop_delivery_target,
-        stamp: stop_stamp,
-        measure_shadow,
     } = stop;
     // Guard resets status to Idle on any return path (error or success),
     // but only if this recording is still the active one
@@ -2578,7 +2585,7 @@ async fn run_transcription_pipeline(
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before VAD (recording_id={})", recording_id);
         return Ok(PipelineResult {
-            shadow: None,
+            final_input: None,
             text: String::new(),
             timings: PipelineTimings::default(),
             terminal: PipelineTerminal::Cancelled(PerformanceStageV1::Vad),
@@ -2590,7 +2597,6 @@ async fn run_transcription_pipeline(
     // the authoritative full-buffer VAD + inference pass after recording stops.
     performance_guard.enter(PerformanceStageV1::Vad);
     let t_vad = std::time::Instant::now();
-    let mut speech_bounds = None;
     let (samples_for_transcription, vad_trimmed) = if !vad::is_enabled(
         transcription.vad_sensitivity,
     ) {
@@ -2603,18 +2609,18 @@ async fn run_transcription_pipeline(
                 let vad_path_str = vad_path.to_string_lossy().to_string();
                 let samples_owned = samples.to_vec();
                 let vad_result = tokio::task::spawn_blocking(move || {
-                    vad::filter_speech_with_segments(&vad_path_str, &samples_owned, vad_threshold)
+                    vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold)
                 })
                 .await
                 .unwrap_or_else(|e| Err(format!("VAD task panicked: {}", e)));
 
                 match vad_result {
-                    Ok((vad::VadResult::NoSpeech, _)) => {
+                    Ok(vad::VadResult::NoSpeech) => {
                         emit_preview_vad_disagreement(app_state, recording_id, samples.len());
                         tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
                             samples.len(), t_vad.elapsed());
                         return Ok(PipelineResult {
-                            shadow: None,
+                            final_input: None,
                             text: String::new(),
                             timings: PipelineTimings {
                                 vad_ms: t_vad.elapsed().as_millis() as u64,
@@ -2624,8 +2630,7 @@ async fn run_transcription_pipeline(
                             history: None,
                         });
                     }
-                    Ok((vad::VadResult::Speech(trimmed), bounds)) => {
-                        speech_bounds = Some(bounds);
+                    Ok(vad::VadResult::Speech(trimmed)) => {
                         tracing::info!(target: "pipeline", "VAD trimmed {} -> {} samples ({:.0}% speech, {:?})",
                             samples.len(), trimmed.len(),
                             trimmed.len() as f64 / samples.len() as f64 * 100.0,
@@ -2655,7 +2660,7 @@ async fn run_transcription_pipeline(
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before transcription (recording_id={})", recording_id);
         return Ok(PipelineResult {
-            shadow: None,
+            final_input: None,
             text: String::new(),
             timings: PipelineTimings {
                 vad_ms,
@@ -2813,7 +2818,7 @@ async fn run_transcription_pipeline(
         timings.transform_ms = transform_ms;
         timings.transform_stages = transform_stages;
         return Ok(PipelineResult {
-            shadow: None,
+            final_input: None,
             text: String::new(),
             timings,
             terminal: PipelineTerminal::Cancelled(PerformanceStageV1::ClipboardPaste),
@@ -3066,7 +3071,7 @@ async fn run_transcription_pipeline(
                 timings.file_output_ms = file_output_ms;
                 timings.paste_ms = t_inject.elapsed().as_millis() as u64;
                 return Ok(PipelineResult {
-                    shadow: None,
+                    final_input: None,
                     text: String::new(),
                     timings,
                     terminal: PipelineTerminal::Cancelled(PerformanceStageV1::ClipboardPaste),
@@ -3170,19 +3175,13 @@ async fn run_transcription_pipeline(
     timings.transform_stages = transform_stages;
     timings.file_output_ms = file_output_ms;
     timings.paste_ms = paste_ms;
-    let shadow = (measure_shadow && timings.delivery_confirmed && !text.trim().is_empty())
-        .then_some(PipelineShadowAudio {
-            filtered: samples_for_transcription,
-            bounds: speech_bounds,
-            stamp: stop_stamp,
-        });
     let terminal = if text.trim().is_empty() {
         PipelineTerminal::NoSpeech(backend_empty_error.unwrap_or(DictationErrorCode::EmptyOutput))
     } else {
         PipelineTerminal::Success
     };
     Ok(PipelineResult {
-        shadow,
+        final_input: Some(samples_for_transcription),
         text,
         timings,
         terminal,
@@ -5902,8 +5901,6 @@ async fn stop_native_recording_for(
         Arc::clone(&context),
         PipelineStopContext {
             delivery_target: stop_delivery_target,
-            stamp: stop_stamp,
-            measure_shadow: true,
         },
     )
     .await;
@@ -6013,16 +6010,18 @@ async fn stop_native_recording_for(
         delivered_at,
     ));
     let recording_secs = samples.len() / 16_000;
-    if let Some(shadow) = pipeline.shadow {
+    if let Some(filtered) = pipeline
+        .final_input
+        .filter(|_| timings.delivery_confirmed && matches!(outcome, RunOutcomeV1::Success))
+    {
         register_shadow_measurement(
             &app_handle,
             rid,
             context.clone(),
             crate::shadow_measurement::ShadowAudio {
                 original: samples,
-                filtered: shadow.filtered,
-                bounds: shadow.bounds,
-                stamp: shadow.stamp,
+                filtered,
+                stamp: stop_stamp,
                 boundary: crate::shadow_measurement::PostDeliveryBoundary {
                     idle_observed_at,
                     delivered_at,
@@ -9009,3 +9008,8 @@ pub(crate) mod tests {
         );
     }
 }
+
+// This developer-only model test is never compiled into the running app.
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+#[path = "recording_determinism_test.rs"]
+mod offline_determinism;
