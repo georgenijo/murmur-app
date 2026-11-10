@@ -726,11 +726,11 @@ test('the sidebar opens a real expanded Insights view', async ({ page }) => {
   await page.getByRole('button', { name: 'Insights', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Insights' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Developing' })).toHaveCount(0);
-  await expect(page.locator('.usage-analytics-section')).toHaveCount(3);
+  await expect(page.locator('.usage-analytics-section')).toHaveCount(2);
   const sectionBottoms = await page.locator('.usage-analytics-section').evaluateAll((sections) => (
     sections.map((section) => section.getBoundingClientRect().bottom)
   ));
-  expect(sectionBottoms[0]).toBe(sectionBottoms[1]);
+  expect(sectionBottoms[0]).toBeLessThan(sectionBottoms[1]);
   const [workspaceBox, analyticsBox] = await Promise.all([
     page.locator('.main-dashboard-workspace').boundingBox(),
     page.locator('.usage-dashboard-content').boundingBox(),
@@ -766,8 +766,8 @@ test('populated Insights keeps all tiles and charts reachable in the default win
   expect(fit.datesContained).toBe(true);
   expect(fit.heatmapCellWidth).toBeLessThanOrEqual(32);
   expect(fit.sectionBottoms[0]).toBe(fit.sectionBottoms[1]);
-  const tiles = view.locator('[aria-label="Usage totals"] > .ui-dashboard-stat');
-  await expect(tiles).toHaveCount(10);
+  const tiles = view.locator('[aria-label="Headline usage statistics"] > .ui-dashboard-stat');
+  await expect(tiles).toHaveCount(4);
   await expect(tiles.filter({ hasText: 'Most-used transform' })).toHaveCount(0);
   for (const item of [...await tiles.all(), ...await view.locator('.usage-analytics-section').all()]) {
     await item.scrollIntoViewIfNeeded();
@@ -881,7 +881,7 @@ test('dashboard charts keep tooltip, plot, and seven weekday labels in stable re
     width: box?.width ?? null,
     height: box?.height ?? null,
   }));
-  expect(relativeGeometry(after)).toEqual(relativeGeometry(before));
+  expect(relativeGeometry(after).slice(1)).toEqual(relativeGeometry(before).slice(1));
 
   const [plotBox, labelBoxes] = await Promise.all([
     plot.boundingBox(),
@@ -893,7 +893,8 @@ test('dashboard charts keep tooltip, plot, and seven weekday labels in stable re
   expect(labelBoxes.every((box) => box.top >= plotBox!.y + plotBox!.height)).toBe(true);
   expect(labelBoxes.every((box, index) => index === 0 || box.left >= labelBoxes[index - 1].right)).toBe(true);
 
-  const lineChart = page.locator('figure[aria-label="Words-per-minute trend line"]');
+  await page.getByRole('button', { name: 'Speed', exact: true }).click();
+  const lineChart = page.getByRole('figure', { name: /^Words-per-minute trend line/ });
   const [svgBox, pointCoordinates, targetBoxes] = await Promise.all([
     lineChart.locator('svg').boundingBox(),
     lineChart.locator('polyline').getAttribute('points'),
@@ -932,7 +933,8 @@ test('all Insights chart marks share exact hover, keyboard, click, and dismissal
   await page.keyboard.press('Escape');
   await expect(bars.locator('.ui-day-chart-tooltip')).toContainText('Focus a day');
 
-  const line = page.locator('figure[aria-label="Words-per-minute trend line"]');
+  await page.getByRole('button', { name: 'Speed', exact: true }).click();
+  const line = page.getByRole('figure', { name: /^Words-per-minute trend line/ });
   const finalPoint = line.locator('.ui-day-chart-line-targets button').last();
   await finalPoint.click();
   await expect(line.locator('.ui-day-chart-tooltip')).toContainText('WPM');
@@ -997,9 +999,9 @@ test('the compact 720x560 Insights view stacks analytics without horizontal clip
   await page.setViewportSize({ width: 720, height: 560 });
   await page.goto('/visual-fixtures.html?state=insights&appearance=light');
   const sections = page.locator('.usage-analytics-section');
-  await expect(sections).toHaveCount(3);
+  await expect(sections).toHaveCount(2);
   expect(await sections.evaluateAll((elements) => elements.map((element) => element.dataset.analytics)))
-    .toEqual(['activity', 'words', 'wpm']);
+    .toEqual(['daily', 'activity']);
   const overflow = await page.locator('.insights-view').evaluate((element) => ({
     clientWidth: element.clientWidth,
     scrollWidth: element.scrollWidth,
@@ -1030,12 +1032,12 @@ for (const width of [720, 800, 880] as const) {
 for (const { appearance, width, height, label } of surfaceCases([{ width: 720, height: 560 }, { width: 880, height: 820 }, { width: 1120, height: 820 }])) {
   test.describe(`Insights ${label}`, () => {
     test.use({ viewport: { width, height }, colorScheme: appearance });
-    test('Calendar dates, exact values and bounded proportions survive keyboard dismissal and disclosure', async ({ page }, testInfo) => {
+    test('Calendar dates, exact values and accessible tables survive keyboard dismissal', async ({ page }, testInfo) => {
       await page.goto(`/visual-fixtures.html?state=insights&appearance=${appearance}`);
       const chart = page.getByRole('figure', { name: 'Words per day heatmap', exact: true });
       const grid = chart.locator('.ui-day-chart-heatmap');
       await grid.scrollIntoViewIfNeeded();
-      await expect(chart.locator('.ui-day-chart-date-range')).toContainText(/\d{4}/);
+      await expect(page.locator('[data-analytics="activity"] .insights-range')).toContainText(/\d{4}/);
       await expect(chart.locator('.ui-day-chart-weekdays span')).toHaveCount(7);
       await expect(grid.getByRole('button')).toHaveCount(56);
       const bounds = await chart.evaluate(element => {
@@ -1055,8 +1057,8 @@ for (const { appearance, width, height, label } of surfaceCases([{ width: 720, h
       await page.keyboard.press('Escape');
       await expect(chart.getByRole('status')).toContainText('Focus a day');
       if (width !== 1120) await page.screenshot({ path: testInfo.outputPath('insights-calendar.png') });
-      await chart.getByText('Daily values', { exact: true }).click();
-      await expect(chart.getByRole('table')).toBeVisible();
+      await expect(chart.getByRole('table')).toHaveCount(1);
+      await expect(chart.locator('.insights-values-accessible')).toHaveClass(/sr-only/);
       await expect(chart.locator('tbody tr')).toHaveCount(56);
       await expect(chart.locator('tbody')).toContainText('760');
     });

@@ -19,9 +19,16 @@ describe('UsageDashboard', () => {
     container.remove();
   });
 
-  it('uses three peer analytics sections', async () => {
+  it('uses a daily metric selector and calendar backed by accessible tables', async () => {
     await act(async () => root.render(<UsageDashboard statsVersion={0} displayMode="page" />));
 
-    expect(container.querySelectorAll('.usage-analytics-section')).toHaveLength(3);
+    expect(container.querySelectorAll('.usage-analytics-section')).toHaveLength(2);
+    expect(container.querySelectorAll('table')).toHaveLength(2);
+    const buttons = container.querySelectorAll('.insights-chart-selector button');
+    expect(buttons[0].getAttribute('aria-pressed')).toBe('true');
+    await act(async () => (buttons[1] as HTMLButtonElement).click());
+    expect(buttons[1].getAttribute('aria-pressed')).toBe('true');
+    expect(container.querySelector('.insights-range')?.textContent).toContain('words per minute');
+    expect(container.querySelector('figure')?.getAttribute('aria-label')).toContain('no dictations yet');
   });
 });

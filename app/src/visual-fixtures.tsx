@@ -42,6 +42,7 @@ import type { DictationStatus } from './lib/types';
 import type { MainDestination } from './lib/homeDashboard';
 import { removeHistoryEntries, toggleHistoryEntryPinned, type HistoryEntry } from './lib/history';
 import { dayKey, loadStats } from './lib/stats';
+import { sanitizeActivityStats } from './lib/activityStats';
 import { useMeetings } from './lib/hooks/useMeetings';
 import { DEFAULT_THEME, OPENCODE_THEME, applyResolvedTheme, parseVsCodeThemeFile, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
 import { VoiceIslandFixture } from './visual-fixtures/VoiceIslandFixture';
@@ -528,15 +529,21 @@ const fixtureBuckets = Object.fromEntries(Array.from({ length: 7 }, (_, index) =
   }];
 }));
 
+// Explicit Insights states seed the production data path; no screenshot-time layer.
 const fixtureStats = loadStats();
+const insightsEmpty = requestedState === 'insights-empty';
+if (requestedState === 'insights-gap') {
+  const missingDay = Object.keys(fixtureBuckets)[3];
+  fixtureBuckets[missingDay] = { words: 0, recordings: 0, recordingSeconds: 0 };
+}
 localStorage.setItem('dictation-stats', JSON.stringify({
   ...fixtureStats,
-  totalWords: 5168,
-  totalRecordings: 220,
-  totalDurationSeconds: 1640,
-  wpmSamples: [184, 192, 189, 191],
-  dailyBuckets: fixtureBuckets,
-  activity: {
+  totalWords: insightsEmpty ? 0 : 5168,
+  totalRecordings: insightsEmpty ? 0 : 220,
+  totalDurationSeconds: insightsEmpty ? 0 : 1640,
+  wpmSamples: insightsEmpty ? [] : [184, 192, 189, 191],
+  dailyBuckets: insightsEmpty ? {} : fixtureBuckets,
+  activity: insightsEmpty ? sanitizeActivityStats({}) : {
     ...fixtureStats.activity,
     meetings: { count: 2, totalMinutes: 44, summariesGenerated: 1 },
     transforms: { runs: 4, approved: 3, undone: 0, byPresetName: {} },
@@ -571,7 +578,7 @@ function VisualFixture() {
   const [copyRequestReady, setCopyRequestReady] = React.useState(false);
   React.useEffect(() => { if (copyFixture) setCopyRequestReady(true); }, []);
   const [destination, setDestination] = React.useState<MainDestination>(
-    requestedState === 'insights' ? 'insights' : requestedState.startsWith('meetings-') ? 'meetings' : 'home',
+    requestedState.startsWith('insights') ? 'insights' : requestedState.startsWith('meetings-') ? 'meetings' : 'home',
   );
   const homeNavigationRef = React.useRef<HTMLButtonElement>(null);
   const restoreHomeNavigationFocusRef = React.useRef(false);
@@ -686,6 +693,8 @@ function VisualFixture() {
           <div className="main-dashboard-workspace">
             {destination === 'insights' ? (
               <InsightsView
+                initialMetric={requestedState === 'insights-speed' || requestedState === 'insights-gap' ? 'wpm' : 'words'}
+                defaultMoreOpen={requestedState === 'insights-more'}
                 statsVersion={0}
                 onBackToHome={backToHome}
               />

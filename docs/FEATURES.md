@@ -177,10 +177,11 @@ month's word and dictation totals beside it, then gives Recent Dictations the
 remaining workspace. Dictations are grouped into one surface per day with a time
 column; row actions appear on hover or keyboard focus.
 The Home month summary and full Insights destination use only
-durable local statistics. Insights includes total dictation minutes, estimated
-typing time saved at 40 words per minute minus dictation time, the most-used
-Mode, this month's completed meetings and capture minutes, this month's
-transform proposals and approval rate, and corrections taught.
+durable local statistics. [Insights](features/insights.md) shows four summary
+figures, a Words/Speed daily chart and an eight-week activity calendar. Nonzero
+dictation time, corrections taught and this month's completed meetings live
+under More statistics. Estimated typing time saved compares typing at 40 words
+per minute with dictation time.
 
 Local counters retain corrections proposed and taught, scope choices, recordings by Mode, and successful Paste Last uses. Meeting minutes use native capture elapsed time
 before processing, excluding the UI timer and transcript processing time.
@@ -193,8 +194,8 @@ Older stats load with zeroed new counters.
 
 Home keeps inspectable vocabulary, app-style, and
 regular-use milestones—not a tuning percentage, acoustic-training claim, or
-fabricated unlock. The full Insights page reserves its width for aligned Voice
-Interactive activity, words-per-day, and WPM charts. File
+fabricated unlock. Insights aligns its daily chart and calendar at regular
+widths and stacks them in its scrolling content column at compact widths. File
 drag-and-drop, the command palette, history actions, and cancelable
 file-transcription toasts remain available.
 

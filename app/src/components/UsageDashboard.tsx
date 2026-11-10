@@ -24,11 +24,13 @@ interface UsageDashboardProps {
   // Bumped by App when a recording finishes (or stats reset) — forces a re-read.
   statsVersion: number;
   displayMode?: 'inline' | 'popover' | 'page';
+  initialMetric?: 'words' | 'wpm';
 }
 
-export function UsageDashboard({ statsVersion, displayMode = 'inline' }: UsageDashboardProps) {
+export function UsageDashboard({ statsVersion, displayMode = 'inline', initialMetric = 'words' }: UsageDashboardProps) {
   const [isCollapsed, setIsCollapsed] = useState(loadCollapsed);
   const [version, setVersion] = useState(0);
+  const [metric, setMetric] = useState<'words' | 'wpm'>(initialMetric);
   const expanded = displayMode !== 'inline' || !isCollapsed;
 
   useEffect(() => {
@@ -83,7 +85,35 @@ export function UsageDashboard({ statsVersion, displayMode = 'inline' }: UsageDa
         </button>
       )}
 
-      {expanded && stats && (
+      {displayMode === 'page' && stats ? (
+        <div className="usage-dashboard-sections">
+          <section className="usage-analytics-section insights-daily" data-analytics="daily">
+            <div className="ui-dashboard-section-header insights-chart-header">
+              <div className="insights-chart-titles">
+                <h2>Daily activity</h2>
+                <p className="insights-range">Last 7 days · {metric === 'words' ? 'words' : 'words per minute'}</p>
+              </div>
+              <div className="history-filter-track insights-chart-selector" role="group" aria-label="Daily activity metric">
+                <button type="button" className="ui-filter-chip" aria-pressed={metric === 'words'} onClick={() => setMetric('words')}>Words</button>
+                <button type="button" className="ui-filter-chip" aria-pressed={metric === 'wpm'} onClick={() => setMetric('wpm')}>Speed</button>
+              </div>
+            </div>
+            {metric === 'words'
+              ? <DayChart key="words" kind="bars" metric="words" days={recent} ariaLabel="Words per day bar chart" presentation="insights" />
+              : <DayChart key="speed" kind="line" metric="wpm" days={recent} ariaLabel="Words-per-minute trend line" presentation="insights" />}
+          </section>
+          <section className="usage-analytics-section" data-analytics="activity">
+            <div className="ui-dashboard-section-header insights-chart-header">
+              <div className="insights-chart-titles">
+                <h2>Last 8 weeks</h2>
+                <p className="insights-range">{weeks[0]?.[0]?.date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} – {weeks[weeks.length - 1]?.[6]?.date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</p>
+              </div>
+            </div>
+            <DayChart kind="heatmap" metric="words" weeks={weeks} ariaLabel="Words per day heatmap" presentation="insights" />
+            {streak > 0 && <p className="insights-streak">{streak}-day streak</p>}
+          </section>
+        </div>
+      ) : expanded && stats && (
         <div className="usage-dashboard-sections">
           <Section title={`Activity · last ${HEATMAP_WEEKS} weeks`} kind="activity">
             <DayChart kind="heatmap" metric="words" weeks={weeks} ariaLabel="Words per day heatmap" />

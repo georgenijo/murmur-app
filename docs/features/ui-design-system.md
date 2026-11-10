@@ -93,7 +93,7 @@ Use these before creating a feature-local control or surface.
 | Copy | The non-interactive card surface copies its full transcript; Space does the same when focused |
 | Correct & Teach | Compact muted action on the newest entry only |
 | Secondary pages | Insights and Notetaker use one page header with a visible Back action that returns focus to Home navigation |
-| Charts | Tooltip, plot, and axis are separate regions; each day is keyboard reachable, hover/focus/click share exact values, Escape or blur dismisses, tooltips never move the plot, and heatmaps expose date-range/month/weekday labels plus a Daily values disclosure |
+| Charts | Tooltip, plot, and axis are separate regions; each day is keyboard reachable, hover/focus/click share exact values, Escape or blur dismisses, tooltips never move the plot, and heatmaps expose date-range/month/weekday labels; Insights exposes daily values in assistive-technology tables, while other heatmaps retain the Daily values disclosure |
 
 ## Input contracts
 
