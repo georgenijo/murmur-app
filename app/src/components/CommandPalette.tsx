@@ -97,18 +97,18 @@ export function CommandPalette({ isOpen, onClose, commands, onOpened }: CommandP
   return (
     <div
       ref={paletteRef}
-      className="dialog-backdrop fixed inset-0 z-50 flex items-start justify-center pt-[16vh] backdrop-blur-[4px]"
+      className="dialog-backdrop palette-backdrop fixed inset-0 z-50 flex items-start justify-center pt-[16vh] "
       onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-label="Command palette"
-        className="dialog-popover w-[min(38rem,92vw)] overflow-hidden"
+        className="dialog-popover command-palette overflow-hidden"
         onKeyDown={onKeyDown}
       >
-        <div className="p-3">
-          <div className="dialog-search-pill flex items-center gap-3 px-4 py-2.5 focus-within:shadow-[var(--ui-shadow-1),0_0_0_2px_color-mix(in_srgb,var(--murmur-primary)_35%,transparent)]">
+        <div className="palette-search-row">
+          <div className="palette-search flex items-center gap-3">
             <svg className="h-4 w-4 shrink-0 text-on-surface-variant" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z" />
             </svg>
@@ -124,9 +124,9 @@ export function CommandPalette({ isOpen, onClose, commands, onOpened }: CommandP
               aria-autocomplete="list"
               aria-controls="command-palette-results"
               aria-activedescendant={results[selected] ? `command-${results[selected].id}` : undefined}
-              className="w-full bg-transparent text-base text-on-surface placeholder:text-on-surface-variant focus:outline-none"
+              className="w-full bg-transparent text-on-surface placeholder:text-on-surface-variant focus:outline-none"
             />
-            <kbd className="dialog-kbd shrink-0 px-1.5 py-0.5 text-[10px] font-medium text-on-surface-variant">esc</kbd>
+            <kbd className="dialog-kbd shrink-0 px-1.5 py-0.5 font-medium text-on-surface-variant">esc</kbd>
           </div>
         </div>
 
@@ -138,7 +138,7 @@ export function CommandPalette({ isOpen, onClose, commands, onOpened }: CommandP
           className="max-h-[min(28rem,60vh)] overflow-y-auto px-3 pb-2"
         >
           {results.length === 0 && (
-            <li className="px-3.5 py-6 text-center text-sm text-on-surface-variant">No matching command</li>
+            <li className="px-3.5 py-6 text-center text-on-surface-variant">No matching command</li>
           )}
           {results.map((command, index) => (
             <li key={command.id} role="none">
@@ -160,25 +160,20 @@ export function CommandPalette({ isOpen, onClose, commands, onOpened }: CommandP
                   void command.run();
                 }}
                 className={cn(
-                  'flex w-full items-center gap-3 rounded-[var(--ui-radius-control)] px-3 py-2.5 text-left text-sm font-medium transition-colors',
+                  'flex w-full items-center gap-3 rounded-[var(--ui-radius-control)] px-3 py-2.5 text-left font-medium transition-colors',
                   index === selected
                     ? 'bg-surface-container-high text-on-surface shadow-[var(--ui-shadow-1)]'
                     : 'text-on-surface hover:bg-surface-container',
                 )}
               >
                 <span className="min-w-0 flex-1 truncate">{command.title}</span>
-                {command.hint && (
-                  <span className="shrink-0 text-[11px] text-on-surface">{command.hint}</span>
-                )}
-                <span className="shrink-0 rounded-full bg-[color-mix(in_srgb,var(--murmur-on-surface)_6%,transparent)] px-2 py-0.5 text-[10px] font-semibold text-on-surface-variant">
-                  {command.section}
-                </span>
+                {command.hint && <span className="palette-binding">{command.hintPrefix && <span>{command.hintPrefix}</span>}<kbd className="dialog-kbd">{command.hint}</kbd></span>}
               </button>
             </li>
           ))}
         </ul>
-        <div className="border-t border-outline-variant/20 px-4 py-2 text-[11px] text-on-surface-variant">
-          ↑↓ navigate · ↵ run · esc close
+        <div className="palette-footer">
+          <kbd className="dialog-kbd">↑↓</kbd> navigate · <kbd className="dialog-kbd">↵</kbd> run · <kbd className="dialog-kbd">esc</kbd> close
         </div>
       </div>
     </div>

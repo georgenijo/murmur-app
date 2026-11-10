@@ -1,3 +1,4 @@
+import { dictationKeyLabel } from './lib/settings';
 import { MeetingsPanel } from './components/history';
 import { useHomeSidebar } from './lib/hooks/useHomeSidebar';
 import { AppSurface } from './components/ui/AppSurface';
@@ -560,7 +561,9 @@ function App() {
           ? 'Cancel microphone connection'
           : isRecording
             ? 'Stop recording'
-            : 'Start recording',
+            : 'Start dictation',
+        hintPrefix: settings.recordingMode === 'double_tap' ? 'Double-tap' : 'Hold',
+        hint: dictationKeyLabel(settings.doubleTapKey),
         section: 'Recording',
         keywords: ['dictate', 'microphone', 'transcribe'],
         run: () => { void (isRecording ? handleStop() : handleStart()); },
@@ -694,6 +697,7 @@ function App() {
     return items;
   }, [
     status, historyEntries, settings.disabled, settings.pasteLastShortcut, settings.microphone,
+    settings.recordingMode, settings.doubleTapKey,
     settings.smartAutoMicrophoneEnabled, settings.smartAutoApprovedDeviceIds,
     settings.smartAutoPreferredDeviceIds, settings.smartAutoAllowContinuity,
     updateSettings, handleStart, handleStop,

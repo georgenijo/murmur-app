@@ -16,8 +16,7 @@ for (const { appearance, width, height, label } of surfaceCases()) {
         let navBounds: typeof progressBounds = null;
         for (const [index, title] of titles.entries()) {
           await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
-          await expect(page.getByRole('progressbar', { name: `Step ${index + 2} of 8` })).toHaveAttribute('aria-valuenow', String(index + 2));
-          await expect(page.locator('.onboarding-progress-wrap')).toContainText(`Step ${index + 2} of 8`);
+          await expect(page.locator('.onboarding-stages [aria-current=step]')).toHaveText('Permissions');
           // Wait for the fixture's asynchronous probes before checking the actions.
           const status = page.locator('.onboarding-permission-state');
           const expectedStatus = permission === 'granted' ? 'Allowed'
@@ -37,9 +36,12 @@ for (const { appearance, width, height, label } of surfaceCases()) {
           await expect(scope.locator('button[data-default-button]')).toHaveCount(isNavigation ? 1 : 0);
           if (isNavigation) await expect(primary).toHaveAttribute('data-default-button');
           else await expect(primary).not.toHaveAttribute('data-default-button');
-          await expect(page.getByRole('button', { name: /^(Allow microphone access…|Grant accessibility access…|Allow Calendar access|Allow system audio access)$/ })).toHaveCount(0);
+          const inlineAllow = page.locator('.onboarding-permission-allow');
+          const unavailable = index === 3 && ['restricted', 'unsupported'].includes(permission);
+          await expect(inlineAllow).toHaveCount(permission === 'granted' || unavailable ? 0 : 1);
+          if (permission !== 'granted' && !unavailable) await expect(inlineAllow).toHaveAttribute('aria-label', `Allow ${title.replace(' access', '').toLowerCase()} access`);
 
-          const progress = await page.locator('.onboarding-progress-wrap').boundingBox();
+          const progress = await page.locator('.onboarding-stages').boundingBox();
           const nav = await page.locator('.onboarding-nav').boundingBox();
           expect(progress).not.toBeNull();
           expect(nav).not.toBeNull();
@@ -69,7 +71,7 @@ for (const { appearance, width, height, label } of surfaceCases()) {
             await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
             await page.getByRole('button', { name: /^Skip / }).click();
           }
-          await expect(page.getByRole('heading', { name: titles[index + 1] ?? 'Transcription model', exact: true })).toBeVisible();
+          await expect(page.getByRole('heading', { name: titles[index + 1] ?? 'Speech model', exact: true })).toBeVisible();
         }
       });
     }

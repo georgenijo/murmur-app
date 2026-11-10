@@ -99,7 +99,7 @@ async function shortcut(key: string) {
   });
 }
 function button(label: string) {
-  const result = Array.from(container.querySelectorAll('button')).find((node) => node.textContent?.trim() === label);
+  const result = Array.from(container.querySelectorAll('button')).find((node) => label === 'Download' ? node.textContent?.trim().startsWith('Download ·') : node.textContent?.trim() === label);
   if (!result) throw new Error(`Missing button: ${label}`);
   return result;
 }

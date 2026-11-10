@@ -1,3 +1,4 @@
+import { MurmurMark } from './onboarding/StepHeading';
 import { defaultButtonKeyDown } from '../lib/defaultButton';
 import { useState, useEffect } from 'react';
 import { getVersion } from '@tauri-apps/api/app';
@@ -26,7 +27,7 @@ function AboutDialog({ onClose }: Pick<AboutModalProps, 'onClose'>) {
     <>
       {/* Backdrop */}
       <div
-        className="dialog-backdrop fixed inset-0 z-50"
+        className="dialog-backdrop about-backdrop fixed inset-0 z-50"
         onClick={onClose}
       />
 
@@ -36,28 +37,23 @@ function AboutDialog({ onClose }: Pick<AboutModalProps, 'onClose'>) {
           initial={shouldReduceMotion ? false : { opacity: 0, scale: 0.98 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ duration: shouldReduceMotion ? 0 : 0.16, ease: [0.23, 1, 0.32, 1] }}
-          className="dialog-popover w-72 p-6 text-center pointer-events-auto"
+          className="dialog-popover about-dialog w-72 text-center pointer-events-auto"
         >
           {/* Icon */}
-          <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-[var(--ui-radius-card)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] shadow-[var(--ui-shadow-accent)]">
-            <svg className="w-10 h-10 text-on-primary" fill="currentColor" viewBox="0 0 24 24">
-              <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
-              <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
-            </svg>
-          </div>
+          <div className="about-mark"><MurmurMark /></div>
 
-          <h2 className="text-xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface mb-1">
+          <h2 className="font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface mb-1">
             Murmur
           </h2>
-          <p className="text-sm text-on-surface-variant mb-4">
+          <p className="text-on-surface-variant mb-4">
             Version {version}
           </p>
 
-          <p className="text-sm text-on-surface mb-4">
-            Private dictation and meeting transcription with local models, including Whisper and Parakeet. Audio and transcripts stay on this Mac.
+          <p className="text-on-surface mb-4">
+            Private dictation and meeting transcription. Audio and transcripts stay on this Mac.
           </p>
 
-          <p className="text-xs text-on-surface-variant">
+          <p className="text-on-surface-variant">
             © 2026 Murmur
           </p>
 

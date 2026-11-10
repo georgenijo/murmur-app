@@ -55,10 +55,10 @@ describe('UpdateModal', () => {
       isForced: false,
     });
 
-    expect(actionLabels()).toEqual(['Download update', 'Later']);
+    expect(actionLabels()).toEqual(['Later', 'Download update']);
     expect(container.textContent).not.toContain('Skip');
 
-    const [download, later] = Array.from(
+    const [later, download] = Array.from(
       container.querySelectorAll<HTMLButtonElement>('button:not([aria-label])'),
     );
     await act(async () => download?.click());
@@ -83,7 +83,7 @@ describe('UpdateModal', () => {
       (link) => link.textContent === 'Unsafe link',
     );
     expect(dialog?.getAttribute('aria-modal')).toBe('true');
-    expect(dialog?.className).toContain('h-[min(620px,calc(100vh-2.5rem))]');
+    expect(dialog?.className).toContain('update-dialog');
     expect(unsafeLink?.getAttribute('href') ?? '').not.toMatch(/^javascript:/);
     expect(container.querySelector('script')).toBeNull();
     expect(document.activeElement?.textContent).toBe('Download update');
@@ -91,7 +91,7 @@ describe('UpdateModal', () => {
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
     });
-    expect(document.activeElement?.textContent).toBe('Later');
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Close update dialog');
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
@@ -106,7 +106,7 @@ describe('UpdateModal', () => {
     const progress = container.querySelector<HTMLElement>('[role="progressbar"]');
     expect(container.textContent).toContain('Downloading update');
     expect(container.textContent).toContain('42%');
-    expect(dialog?.className).toContain('max-h-[calc(100vh-2.5rem)]');
+    expect(dialog?.className).toContain('update-dialog');
     expect(progress?.getAttribute('aria-valuemin')).toBe('0');
     expect(progress?.getAttribute('aria-valuemax')).toBe('100');
     expect(progress?.getAttribute('aria-valuenow')).toBe('42');
@@ -153,7 +153,7 @@ describe('UpdateModal', () => {
 
     expect(container.textContent).toContain('Ready to restart');
     expect(container.textContent).toContain('Restart Murmur to install the downloaded update.');
-    expect(actionLabels()).toEqual(['Restart now', 'Later']);
+    expect(actionLabels()).toEqual(['Later', 'Restart now']);
     expect(document.activeElement?.textContent).toBe('Restart now');
 
     await act(async () => {
@@ -166,7 +166,7 @@ describe('UpdateModal', () => {
     await render({ phase: 'idle' });
     await render({ phase: 'ready', version: '0.43.1', isForced: false });
     await act(async () => vi.advanceTimersByTime(60));
-    expect(actionLabels()).toEqual(['Restart now', 'Later']);
+    expect(actionLabels()).toEqual(['Later', 'Restart now']);
     expect(document.activeElement?.textContent).toBe('Restart now');
   });
 
@@ -187,9 +187,9 @@ describe('UpdateModal', () => {
     await act(async () => vi.advanceTimersByTime(60));
     expect(document.activeElement?.textContent).toBe('Restart now');
     await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true })));
-    expect(document.activeElement?.getAttribute('aria-label')).toBe('Close update dialog');
-    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true })));
     expect(document.activeElement?.textContent).toBe('Later');
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true })));
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('Close update dialog');
     await render({ phase: 'idle' });
     expect(document.activeElement).toBe(opener);
     opener.remove();
@@ -198,7 +198,7 @@ describe('UpdateModal', () => {
   it('uses Quit for required updates and does not allow dismissal', async () => {
     await render({ phase: 'ready', version: '0.43.1', isForced: true });
 
-    expect(actionLabels()).toEqual(['Restart now', 'Quit']);
+    expect(actionLabels()).toEqual(['Quit', 'Restart now']);
     expect(container.querySelector('[aria-label="Close update dialog"]')).toBeNull();
 
     await act(async () => {
@@ -237,7 +237,7 @@ describe('UpdateModal', () => {
       isForced: false,
     });
 
-    expect(actionLabels()).toEqual(['Retry', 'Later']);
+    expect(actionLabels()).toEqual(['Later', 'Retry']);
     await act(async () => {
       Array.from(container.querySelectorAll('button')).find(
         (button) => button.textContent === 'Retry',
@@ -259,7 +259,7 @@ describe('UpdateModal', () => {
       (link) => link.textContent === 'download the latest version manually',
     );
     expect(manualDownload?.getAttribute('href')).toBe(LATEST_RELEASES_URL);
-    expect(actionLabels()).toEqual(['Retry', 'Later']);
+    expect(actionLabels()).toEqual(['Later', 'Retry']);
 
     await act(async () => manualDownload?.click());
     expect(mocks.openUrl).toHaveBeenCalledWith(LATEST_RELEASES_URL);
@@ -278,9 +278,9 @@ describe('UpdateModal', () => {
 
     expect(container.textContent).toContain('Reinstall Murmur to update');
     expect(container.textContent).toContain(message);
-    expect(actionLabels()).toEqual(['Quit', 'Later']);
+    expect(actionLabels()).toEqual(['Later', 'Quit']);
 
-    const [quit, later] = Array.from(
+    const [later, quit] = Array.from(
       container.querySelectorAll<HTMLButtonElement>('button:not([aria-label])'),
     );
     await act(async () => quit?.click());

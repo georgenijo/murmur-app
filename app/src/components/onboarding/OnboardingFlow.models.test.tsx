@@ -37,7 +37,7 @@ describe('onboarding model state with native IPC boundaries', () => {
   let completed: ReturnType<typeof vi.fn<(...args: unknown[]) => void>>;
 
   const button = (label: string) => {
-    const result = Array.from(container.querySelectorAll('button')).find((element) => element.textContent?.trim() === label);
+    const result = Array.from(container.querySelectorAll('button')).find((element) => label === 'Download' ? element.textContent?.trim().startsWith('Download ·') : element.textContent?.trim() === label);
     expect(result, `Button ${label}`).toBeDefined();
     return result!;
   };
@@ -184,10 +184,10 @@ describe('onboarding model state with native IPC boundaries', () => {
     await select('large-v3-turbo');
     await click('Download');
 
-    expect(container.querySelector('.onboarding-content')?.textContent).not.toContain('Cancel download');
+    expect(container.querySelector('.onboarding-content')?.textContent).not.toContain('Cancel');
     const status = container.querySelector<HTMLElement>('.onboarding-model-status');
     expect(status).not.toBeNull();
-    expect(status!.textContent).toContain('Cancel download');
+    expect(container.querySelector('.onboarding-actions')?.textContent).toContain('Cancel');
     expect(status!.querySelector('[role="progressbar"]')).not.toBeNull();
 
     const requestId = native.invoke.mock.calls.find(([command]) => command === 'download_model')![1].requestId;

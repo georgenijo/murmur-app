@@ -83,3 +83,14 @@ Tokens are **ANDed** — `settings del` narrows to the Delivery page rather than
 - `app/src/lib/commandPalette.test.ts` — tier ordering, keyword/section matching, token AND, tie-breaking, stability, and selection wrapping.
 - `app/src/lib/keyboardShortcuts.test.ts` — every binding, Control equivalence, case-insensitivity, and the pass-through cases.
 - `app/src/components/CommandPalette.test.tsx` — filtering, arrow navigation, Enter/Escape, click-to-run, backdrop vs dialog clicks, and reset-on-open.
+
+## Compact presentation
+
+The palette uses 34px result rows in a 520px dialog, a single focused search row,
+section headings without repeated category badges, and sans keycaps. Start
+**dictation** shows the configured trigger key; Hold (or Double-tap) stays outside
+the keycap. The binding follows Recording settings rather than assuming Left
+Shift. About and the update dialog use the same 2px blurred backdrop; About uses
+the existing sidebar waveform mark. Update actions appear in keyboard/DOM order
+Later (or Quit), then the primary action, in an intrinsic-height dialog whose
+release notes scroll when needed. Focus trapping and update recovery stay intact.
