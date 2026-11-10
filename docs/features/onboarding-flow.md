@@ -192,3 +192,8 @@ are deterministic fixture signals, not actual downloads or OS permission grants.
 Both first-run fixtures provide an explicit Apple M4 hardware-guidance response;
 production uses the native hardware probe. All states support `appearance=light`
 and `appearance=dark`, at 1100×780 and 840×620, without injected CSS or DOM edits.
+
+The native title bar stays above Welcome's centered wrapper. Every wizard step
+and the standalone model gate retain hit-testable native drag regions without
+moving the approved content. Model cards use an inset keyboard focus outline
+inside the scrolling wizard column, including the first and last choices.

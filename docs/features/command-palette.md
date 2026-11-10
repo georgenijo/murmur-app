@@ -94,3 +94,8 @@ Shift. About and the update dialog use the same 2px blurred backdrop; About uses
 the existing sidebar waveform mark. Update actions appear in keyboard/DOM order
 Later (or Quit), then the primary action, in an intrinsic-height dialog whose
 release notes scroll when needed. Focus trapping and update recovery stay intact.
+
+The recording command's binding follows its current action: idle shows Hold or
+Double-tap, double-tap recording shows Tap to stop, and hold-down recording shows
+Release. The connecting/cancel state has no start-gesture hint. Combined-mode
+recording omits the stop hint because the palette has no recording gesture owner.

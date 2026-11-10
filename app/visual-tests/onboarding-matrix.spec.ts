@@ -41,8 +41,31 @@ for (const { appearance, width, height, label } of surfaceCases()) {
           await expect(inlineAllow).toHaveCount(permission === 'granted' || unavailable ? 0 : 1);
           if (permission !== 'granted' && !unavailable) await expect(inlineAllow).toHaveAttribute('aria-label', `Allow ${title.replace(' access', '').toLowerCase()} access`);
 
-          const progress = await page.locator('.onboarding-stages').boundingBox();
-          const nav = await page.locator('.onboarding-nav').boundingBox();
+          // Wait for Welcome's padding to yield to the pinned-footer layout,
+          // then sample the frame and portal footer in one layout pass.
+          let geometry: { progress: { x: number; y: number; width: number; height: number }; nav: { x: number; y: number; width: number; height: number }; settled: boolean } | undefined;
+          await expect.poll(async () => {
+            geometry = await page.locator('.onboarding-frame').evaluate((frame) => {
+              const rect = (node: Element) => {
+                const { x, y, width, height } = node.getBoundingClientRect();
+                return { x, y, width, height };
+              };
+              const outer = frame.parentElement!;
+              const style = getComputedStyle(outer);
+              const headerBottom = document.querySelector('.ui-window-header')!.getBoundingClientRect().bottom;
+              const available = innerHeight - headerBottom - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
+              const expectedHeight = Math.min(parseFloat(getComputedStyle(frame).getPropertyValue('--ui-onboarding-frame-height')), available);
+              const bounds = frame.getBoundingClientRect();
+              const nav = frame.querySelector('.onboarding-nav')!.getBoundingClientRect();
+              const expectedTop = headerBottom + parseFloat(style.paddingTop) + (available - expectedHeight) / 2;
+              return {
+                progress: rect(document.querySelector('.onboarding-stages')!), nav: rect(frame.querySelector('.onboarding-nav')!),
+                settled: style.paddingTop === '20px' && style.paddingBottom === '88px' && Math.abs(bounds.top - expectedTop) < 1 && Math.abs(bounds.height - expectedHeight) < 1 && Math.abs(nav.bottom - bounds.bottom) < 1,
+              };
+            });
+            return geometry.settled;
+          }).toBe(true);
+          const { progress, nav } = geometry!;
           expect(progress).not.toBeNull();
           expect(nav).not.toBeNull();
           if (index === 0) { progressBounds = progress; navBounds = nav; }

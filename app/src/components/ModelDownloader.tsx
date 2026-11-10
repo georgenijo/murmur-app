@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { Check, CircleAlert, Cpu } from 'lucide-react';
+import { WindowHeader } from './ui/WindowHeader';
 import { StepHeading } from './onboarding/StepHeading';
 import { createPortal } from 'react-dom';
 import { listen } from '@tauri-apps/api/event';
@@ -294,6 +295,7 @@ export function ModelDownloader({ initialModel, onComplete }: Props) {
   const { installedModels, error, retry } = useInstalledModels();
   return (
     <div className="model-downloader h-full min-h-0 bg-background flex flex-col items-center justify-center">
+      <WindowHeader showWordmark={false} />
       <div className="model-downloader-column">
         <StepHeading icon={Cpu} title="Speech model" subtitle="Download a local model once, then transcribe offline." />
         {error ? (

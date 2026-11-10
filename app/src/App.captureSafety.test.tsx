@@ -152,6 +152,31 @@ afterEach(async () => {
 });
 
 describe('App setup capture safety', () => {
+  it.each([
+    ['hold_down', 'idle', 'Start dictation', 'Hold'],
+    ['hold_down', 'starting', 'Cancel microphone connection', undefined],
+    ['hold_down', 'recording', 'Stop recording', 'Release'],
+    ['double_tap', 'idle', 'Start dictation', 'Double-tap'],
+    ['double_tap', 'starting', 'Cancel microphone connection', undefined],
+    ['double_tap', 'recording', 'Stop recording', 'Tap'],
+    ['both', 'idle', 'Start dictation', 'Hold'],
+    ['both', 'starting', 'Cancel microphone connection', undefined],
+    ['both', 'recording', 'Stop recording', undefined],
+  ] as const)('shows the %s/%s palette gesture', async (recordingMode, status, title, gesture) => {
+    await mount({ recordingMode });
+    if (status !== 'idle') await emit('recording-status-changed', status);
+    await shortcut('k');
+    const command = container.querySelector('#command-recording-toggle');
+    expect(command).not.toBeNull();
+    expect(command?.firstElementChild?.textContent).toBe(title);
+    if (gesture) {
+      expect(command?.querySelector('.palette-binding > span')?.textContent).toBe(gesture);
+      expect(command?.querySelector('kbd')?.textContent).toBe('⇧ Left Shift');
+    } else {
+      expect(command?.querySelector('.palette-binding')).toBeNull();
+    }
+  });
+
   it.each(['settings', 'palette'] as const)('enters setup through %s when idle', async (entry) => {
     await mount();
     await rerun(entry);

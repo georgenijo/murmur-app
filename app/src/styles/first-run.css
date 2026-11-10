@@ -55,6 +55,8 @@
 .onboarding-summary-row + .onboarding-summary-row { border-top: 1px solid var(--ui-hairline); }
 .onboarding-summary-row strong { color: var(--murmur-on-surface); font-weight: 600; }
 .onboarding-flow { position: relative; font-family: var(--ui-font-sans); }
+/* Welcome is centered against the full surface; keep native chrome above its wrapper. */
+.onboarding-flow > .ui-window-header { position: relative; z-index: 1; }
 .onboarding-flow button { min-width: 28px; min-height: 28px; font-size: var(--ui-font-label); line-height: 18px; border-radius: var(--ui-radius-control); box-shadow: none; }
 .onboarding-flow .onboarding-nav button[data-variant='primary'] { background: var(--murmur-primary); color: var(--murmur-on-primary); }
 .onboarding-flow[data-step='welcome'] .onboarding-outer { position: absolute; inset: 0 0 48px; padding: 24px; }
@@ -78,7 +80,10 @@
 .onboarding-permission-card:has(.onboarding-permission-allow) .onboarding-permission-state { padding-inline: 0; background: transparent; }
 .onboarding-nav { margin-top: 20px; }
 .onboarding-flow button:focus-visible, .model-downloader button:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 2px; }
-.model-downloader { padding: 32px; }
+.model-downloader { position: relative; padding: 32px; }
+.model-downloader > .ui-window-header { position: absolute; inset: 0 0 auto; z-index: 1; }
+/* Keep the complete focus indicator within the scrolling column without narrowing cards. */
+.onboarding-content .model-option:focus-visible { outline-offset: -4px; }
 .model-downloader-column { flex-shrink: 0; width: 100%; max-width: 620px; }
 .model-download-panel { font-size: var(--ui-font-label); line-height: 18px; }
 .model-options { display: flex; flex-direction: column; gap: 8px; }

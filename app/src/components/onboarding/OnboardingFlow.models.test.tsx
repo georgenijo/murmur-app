@@ -206,6 +206,36 @@ describe('onboarding model state with native IPC boundaries', () => {
     await act(async () => pending.resolve());
   });
 
+  it('cancels through the real footer and unlocks navigation only after native termination', async () => {
+    const download = deferred<void>();
+    const cancellation = deferred<void>();
+    const implementation = native.invoke.getMockImplementation()!;
+    native.invoke.mockImplementation((command, ...args) => command === 'download_model'
+      ? download.promise : command === 'cancel_model_download' ? cancellation.promise : implementation(command, ...args));
+    await mount();
+    await select('large-v3-turbo');
+    await click('Download');
+    const request = native.invoke.mock.calls.find(([command]) => command === 'download_model')![1];
+    const back = () => container.querySelector<HTMLButtonElement>('[aria-label="Go back to the previous setup step"]')!;
+    expect(back().disabled).toBe(true);
+    const cancel = container.querySelector<HTMLButtonElement>('.onboarding-actions button[data-variant="outline"]');
+    expect(cancel?.textContent).toBe('Cancel');
+    await act(async () => cancel!.click());
+    expect(native.invoke).toHaveBeenCalledWith('cancel_model_download', request);
+    expect(button('Cancelling…').disabled).toBe(true);
+    expect(back().disabled).toBe(true);
+    await act(async () => cancellation.resolve());
+    expect(back().disabled).toBe(true); // The download must settle too.
+    await act(async () => download.resolve());
+    expect(back().disabled).toBe(false);
+    expect(button('Download').disabled).toBe(false);
+    expect([...container.querySelectorAll<HTMLButtonElement>('.model-option')].every((row) => !row.disabled)).toBe(true);
+    expect(container.querySelector('[role="progressbar"]')).toBeNull();
+    expect(completed).not.toHaveBeenCalled();
+    await click('Back');
+    expect(container.querySelector('h1')?.textContent).toBe('Calendar access');
+  });
+
   it('waits for acknowledgment before persisting the combined choices or completion (#951)', async () => {
     const pending = deferred<unknown>();
     const implementation = native.invoke.getMockImplementation()!;
