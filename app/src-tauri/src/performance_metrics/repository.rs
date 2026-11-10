@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 const DB_FILE: &str = "performance.sqlite3";
-const LATEST_DB_SCHEMA_VERSION: u32 = 6;
+const LATEST_DB_SCHEMA_VERSION: u32 = 9;
 pub(super) const MAX_COMPLETED_RUNS: usize = 200;
 const MAX_RESOURCE_SAMPLES: usize = 600;
 const BUSY_TIMEOUT: Duration = Duration::from_millis(25);
@@ -373,6 +373,39 @@ impl PerformanceRepository {
         })
     }
 
+    /// UPDATE only the exact completed UUID. Clear/pruning/restart cannot
+    /// resurrect rows or attach a delayed result to a reused generation.
+    pub(crate) fn update_completed_shadow(
+        &self,
+        run_id: &str,
+        recording_id: u64,
+        shadow: &crate::shadow_measurement::ShadowMeasurementV1,
+    ) -> StoreResult<bool> {
+        retry_operation(PerformanceStoreOperationV1::Update, || {
+            let mut connection = self.open()?;
+            let transaction = connection.transaction().map_err(db_error)?;
+            let payload = transaction.query_row(
+                "SELECT payload_json FROM completed_runs WHERE run_id = ? AND correlation_kind = 'dictation' AND correlation_id = ?",
+                params![run_id, to_i64(recording_id)?], |row| row.get::<_, String>(0))
+                .optional().map_err(db_error)?;
+            let Some(payload) = payload else {
+                return Ok(false);
+            };
+            let mut run =
+                serde_json::from_str::<PerformanceRunV1>(&payload).map_err(|_| invalid_record())?;
+            run.shadow = Some(shadow.clone());
+            let payload = serde_json::to_string(&run).map_err(|_| invalid_record())?;
+            let changed = transaction
+                .execute(
+                    "UPDATE completed_runs SET payload_json = ? WHERE run_id = ?",
+                    params![payload, run_id],
+                )
+                .map_err(db_error)?;
+            transaction.commit().map_err(db_error)?;
+            Ok(changed == 1)
+        })
+    }
+
     pub(crate) fn complete(
         &self,
         correlation: &RunCorrelationV1,
@@ -455,6 +488,7 @@ impl PerformanceRepository {
             finished_at_ms,
         )?;
         let run = PerformanceRunV1 {
+            shadow: (active.kind == PerformanceRunKindV1::Dictation).then(Default::default),
             schema_version: PERFORMANCE_RUN_SCHEMA_VERSION,
             run_id: active.run_id.clone(),
             kind: active.kind,
@@ -730,6 +764,18 @@ fn migrate(connection: &mut Connection) -> StoreResult<()> {
         transaction
             .pragma_update(None, "user_version", 6)
             .map_err(db_error)?;
+        // V7 adds the optional shadow companion and stop gesture stages.
+        transaction
+            .pragma_update(None, "user_version", 7)
+            .map_err(db_error)?;
+        // V8 adds the bounded foreground-latency skip reason.
+        transaction
+            .pragma_update(None, "user_version", 8)
+            .map_err(db_error)?;
+        // V9 records live determinism explicitly as not measured in app.
+        transaction
+            .pragma_update(None, "user_version", 9)
+            .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
     }
     Ok(())
@@ -835,6 +881,8 @@ const ALL_STAGES: &[PerformanceStageV1] = &[
     PerformanceStageV1::Undo,
     PerformanceStageV1::ReleaseToStop,
     PerformanceStageV1::ReleaseToPaste,
+    PerformanceStageV1::StopPressToRelease,
+    PerformanceStageV1::StopReleaseToCommand,
 ];
 
 fn canonical_stages(measured: Vec<StageTimingV1>) -> Vec<StageTimingV1> {
@@ -1477,6 +1525,160 @@ mod tests {
     }
 
     #[test]
+    fn shadow_amendment_preserves_delivery_and_cannot_resurrect_or_cross_generations() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = PerformanceRepository::initialize(temp.path().join("diagnostics"))
+            .unwrap()
+            .0;
+        repository
+            .begin(
+                PerformanceRunKindV1::Dictation,
+                correlation(77),
+                Vec::new(),
+                ContentFreeInputSummaryV1::default(),
+            )
+            .unwrap();
+        let delivery = crate::performance_metrics::delivery::DeliveryTimingV1::default();
+        let original = repository
+            .complete_with_delivery(
+                &correlation(77),
+                RunOutcomeV1::Success,
+                vec![StageTimingV1::measured(
+                    PerformanceStageV1::TotalProcessing,
+                    99,
+                )],
+                None,
+                None,
+                Some(delivery.clone()),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(original.delivery_timing.as_ref(), Some(&delivery));
+        let shadow = crate::shadow_measurement::ShadowMeasurementV1 {
+            press_input_matches: Some(true),
+            determinism: crate::shadow_measurement::DeterminismStatus::Disabled,
+            ..Default::default()
+        };
+        assert!(!repository
+            .update_completed_shadow(&original.run_id, 78, &shadow)
+            .unwrap());
+        assert!(repository
+            .update_completed_shadow(&original.run_id, 77, &shadow)
+            .unwrap());
+        let mut expected = original.clone();
+        expected.shadow = Some(shadow.clone());
+        assert_eq!(repository.get(&original.run_id).unwrap(), Some(expected));
+        repository.clear().unwrap();
+        assert!(!repository
+            .update_completed_shadow(&original.run_id, 77, &shadow)
+            .unwrap());
+        assert!(repository.list(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn v6_shadow_migration_keeps_legacy_payload_bytes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("diagnostics");
+        let repository = PerformanceRepository::initialize(root.clone()).unwrap().0;
+        repository
+            .begin(
+                PerformanceRunKindV1::Dictation,
+                correlation(78),
+                Vec::new(),
+                ContentFreeInputSummaryV1::default(),
+            )
+            .unwrap();
+        let run = repository
+            .complete(
+                &correlation(78),
+                RunOutcomeV1::Success,
+                Vec::new(),
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let mut old = serde_json::to_value(run).unwrap();
+        old.as_object_mut().unwrap().remove("shadow");
+        old["stages"].as_array_mut().unwrap().retain(|s| {
+            !["stopPressToRelease", "stopReleaseToCommand"].contains(&s["stage"].as_str().unwrap())
+        });
+        let payload = serde_json::to_string(&old).unwrap();
+        let connection = repository.open().unwrap();
+        connection
+            .execute("UPDATE completed_runs SET payload_json = ?", [&payload])
+            .unwrap();
+        connection.pragma_update(None, "user_version", 6).unwrap();
+        drop(connection);
+        let migrated = PerformanceRepository::initialize(root).unwrap().0;
+        let saved: String = migrated
+            .open()
+            .unwrap()
+            .query_row("SELECT payload_json FROM completed_runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(saved, payload);
+        assert!(migrated.list(10).unwrap()[0].shadow.is_none());
+    }
+
+    #[test]
+    fn v8_migration_preserves_older_comparison_and_accepts_not_measured() {
+        use crate::shadow_measurement::{DeterminismStatus, ShadowMeasurementV1};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("diagnostics");
+        let repo = PerformanceRepository::initialize(root.clone()).unwrap().0;
+        repo.begin(
+            PerformanceRunKindV1::Dictation,
+            correlation(79),
+            Vec::new(),
+            ContentFreeInputSummaryV1::default(),
+        )
+        .unwrap();
+        let run = repo
+            .complete(
+                &correlation(79),
+                RunOutcomeV1::Success,
+                Vec::new(),
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let mut shadow = ShadowMeasurementV1 {
+            determinism: DeterminismStatus::Compared,
+            decode_matches: Some(false),
+            ..Default::default()
+        };
+        repo.update_completed_shadow(&run.run_id, 79, &shadow)
+            .unwrap();
+        let connection = repo.open().unwrap();
+        let before: String = connection
+            .query_row("SELECT payload_json FROM completed_runs", [], |r| r.get(0))
+            .unwrap();
+        connection.pragma_update(None, "user_version", 8).unwrap();
+        drop(connection);
+        let migrated = PerformanceRepository::initialize(root).unwrap().0;
+        let after: String = migrated
+            .open()
+            .unwrap()
+            .query_row("SELECT payload_json FROM completed_runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(before, after);
+        assert_eq!(
+            migrated.get(&run.run_id).unwrap().unwrap().shadow.as_ref(),
+            Some(&shadow)
+        );
+        shadow.determinism = DeterminismStatus::NotMeasuredInApp;
+        shadow.decode_matches = None;
+        migrated
+            .update_completed_shadow(&run.run_id, 79, &shadow)
+            .unwrap();
+        assert_eq!(
+            migrated.get(&run.run_id).unwrap().unwrap().shadow.as_ref(),
+            Some(&shadow)
+        );
+    }
+
+    #[test]
     fn v3_migration_preserves_absent_homophone_stage_and_persists_new_fallback() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("diagnostics");
@@ -1827,7 +2029,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(run.schema_version, 1);
-        assert_eq!(run.stages.len(), 31);
+        assert_eq!(run.stages.len(), 33);
         assert_eq!(
             run.query_process,
             Some(QueryProcessSummaryV1 {

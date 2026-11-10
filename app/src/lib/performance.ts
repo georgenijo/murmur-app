@@ -62,7 +62,9 @@ export type PerformanceStageV1 =
   | 'apply'
   | 'undo'
   | 'releaseToStop'
-  | 'releaseToPaste';
+  | 'releaseToPaste'
+  | 'stopPressToRelease'
+  | 'stopReleaseToCommand';
 
 export type StageOutcomeV1 = 'completed' | 'skipped' | 'fallback' | 'failed';
 
@@ -262,6 +264,7 @@ export interface PerformanceRunV1 {
     stderrPresent: boolean;
   };
   production?: ProductionRunV1 | null;
+  shadow?: ShadowMeasurementV1 | null;
   deliveryTiming?: DeliveryTimingV1;
 }
 
@@ -332,13 +335,14 @@ export const PERFORMANCE_STAGES_V1: readonly PerformanceStageV1[] = [
   'fileOutput', 'clipboardPaste', 'fileReturn', 'totalProcessing',
   'selectedTextCapture', 'instructionCapture', 'instructionAsr',
   'sidecarSpawnLoad', 'generation', 'reviewReady', 'apply', 'undo',
-  'releaseToStop', 'releaseToPaste',
+  'releaseToStop', 'releaseToPaste', 'stopPressToRelease', 'stopReleaseToCommand',
 ] as const;
 const performanceStages = new Set<PerformanceStageV1>(PERFORMANCE_STAGES_V1);
 // Stages added after the first v1 records shipped. Historical records omit
 // them; that absence must not be read as a measured zero.
 const ADDITIVE_STAGES_V1 = new Set<PerformanceStageV1>([
   'inferenceQueue', 'releaseToStop', 'releaseToPaste', 'homophoneContext',
+  'stopPressToRelease', 'stopReleaseToCommand',
 ]);
 const sizeBuckets = new Set<SizeBucketV1>([
   'empty', 'tiny', 'small', 'medium', 'large', 'extraLarge',
@@ -715,6 +719,33 @@ function isRunCorrelation(value: unknown, kind: PerformanceRunKindV1): value is 
   }
 }
 
+export interface ShadowMeasurementV1 {
+  schemaVersion: 1;
+  pressSample: number | null;
+  pauseSample: number | null;
+  trailingSilenceBeforePressMs: number | null;
+  trailingSilenceBeforeStopMs: number | null;
+  pressInputMatches: boolean | null;
+  pauseInputMatches: boolean | null;
+  previewHeldBackendAtPress: boolean | null;
+  determinism: 'disabled' | 'pending' | 'compared' | 'backendUnavailable' | 'superseded'
+    | 'decodeFailed' | 'unsupportedBackend' | 'notAttempted' | 'skippedForegroundLatencyRisk' | 'notMeasuredInApp';
+  decodeMatches: boolean | null;
+}
+export function isShadowMeasurementV1(value: unknown): value is ShadowMeasurementV1 {
+  if (!isRecord(value) || !hasExactKeys(value, ['schemaVersion', 'pressSample', 'pauseSample',
+    'trailingSilenceBeforePressMs', 'trailingSilenceBeforeStopMs', 'pressInputMatches',
+    'pauseInputMatches', 'previewHeldBackendAtPress', 'determinism', 'decodeMatches'])
+    || value.schemaVersion !== 1) return false;
+  return ['pressSample', 'pauseSample', 'trailingSilenceBeforePressMs', 'trailingSilenceBeforeStopMs']
+    .every(key => value[key] === null || (Number.isSafeInteger(value[key]) && Number(value[key]) >= 0))
+    && ['pressInputMatches', 'pauseInputMatches', 'previewHeldBackendAtPress', 'decodeMatches']
+      .every(key => value[key] === null || typeof value[key] === 'boolean')
+    && ['disabled', 'pending', 'compared', 'backendUnavailable', 'superseded', 'decodeFailed',
+      'unsupportedBackend', 'notAttempted', 'skippedForegroundLatencyRisk', 'notMeasuredInApp'].includes(String(value.determinism))
+    && (value.determinism === 'compared' ? typeof value.decodeMatches === 'boolean' : value.decodeMatches === null);
+}
+
 export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
   if (!isRecord(value)) return false;
   const expectedKeys = [
@@ -723,6 +754,7 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
   ];
   if ('queryProcess' in value) expectedKeys.push('queryProcess');
   if ('production' in value) expectedKeys.push('production');
+  if ('shadow' in value) expectedKeys.push('shadow');
   if ('deliveryTiming' in value) expectedKeys.push('deliveryTiming');
   if (!hasExactKeys(value, expectedKeys)
     || value.schemaVersion !== 1
@@ -743,6 +775,7 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
     || !value.followUps.every(isFollowUp)
     || ('deliveryTiming' in value && !isDeliveryTimingV1(value.deliveryTiming))
     || ('queryProcess' in value && !isQueryProcess(value.queryProcess))
+    || ('shadow' in value && value.shadow !== null && !isShadowMeasurementV1(value.shadow))
     || ('production' in value
       && value.production !== null
       && !isProductionRunV1(value.production))) {

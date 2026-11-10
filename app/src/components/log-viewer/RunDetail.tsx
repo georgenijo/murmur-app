@@ -4,6 +4,7 @@ import type {
   PerformanceRunV1,
   ResourceRangeV1,
   StageTimingV1,
+  ShadowMeasurementV1,
 } from '../../lib/performance';
 import {
   acceleratorLabel,
@@ -56,6 +57,55 @@ function SummaryCard({
       <div className="mt-1 text-base font-semibold tabular-nums text-on-surface">{value}</div>
       {detail && <div className="mt-0.5 text-[10px] text-on-surface-variant">{detail}</div>}
     </div>
+  );
+}
+
+const REPEAT_LABELS: Record<ShadowMeasurementV1['determinism'], string> = {
+  disabled: 'Disabled',
+  pending: 'Pending',
+  compared: 'Compared',
+  backendUnavailable: 'Skipped: backend unavailable',
+  superseded: 'Skipped: recording superseded',
+  decodeFailed: 'Unavailable: decode failed',
+  unsupportedBackend: 'Not applicable to this backend',
+  notAttempted: 'Not attempted',
+  skippedForegroundLatencyRisk: 'Skipped: foreground latency risk',
+  notMeasuredInApp: 'Not measured in app',
+};
+
+function ShadowEvidence({ shadow }: { shadow?: ShadowMeasurementV1 | null }) {
+  const boolean = (value: boolean | null) => value === null ? 'Unavailable' : value ? 'Yes' : 'No';
+  const number = (value: number | null) => value === null ? 'Unavailable' : String(value);
+  const silence = (value: number | null) => value === null ? 'Unavailable' : formatMilliseconds(value);
+  const rows = shadow ? [
+    ['Press sample', number(shadow.pressSample)],
+    ['Pause sample', number(shadow.pauseSample)],
+    ['Silence before press', silence(shadow.trailingSilenceBeforePressMs)],
+    ['Silence before stop', silence(shadow.trailingSilenceBeforeStopMs)],
+    ['Press input matches final', boolean(shadow.pressInputMatches)],
+    ['Pause input matches final', boolean(shadow.pauseInputMatches)],
+    ['Preview held backend at press', boolean(shadow.previewHeldBackendAtPress)],
+    ['Repeat decode', REPEAT_LABELS[shadow.determinism]],
+    ['Decode outputs match', shadow.decodeMatches === null ? 'Not compared' : boolean(shadow.decodeMatches)],
+  ] : [];
+  return (
+    <section aria-labelledby="shadow-heading">
+      <h3 id="shadow-heading" className="mb-2 text-[length:var(--ui-font-title)] font-semibold text-on-surface">Early-final shadow</h3>
+      {shadow ? (
+        <dl className="grid gap-3 rounded-xl border border-outline-variant/15 bg-surface-container-lowest p-3 text-[length:var(--ui-font-caption)] md:grid-cols-2">
+          {rows.map(([label, value]) => (
+            <div key={label}>
+              <dt className="text-on-surface-variant">{label}</dt>
+              <dd className="mt-1 font-medium tabular-nums text-on-surface">{value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p className="rounded-xl bg-surface-container-low p-3 text-[length:var(--ui-font-caption)] text-on-surface-variant">
+          Shadow evidence not recorded for this run.
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -233,6 +283,8 @@ export function RunDetail({ run, onBack, onShowEvents }: RunDetailProps) {
           )}
         </div>
       </section>
+
+      {run.kind === 'dictation' && <ShadowEvidence shadow={run.shadow} />}
 
       <section aria-labelledby="runtime-heading">
         <h3 id="runtime-heading" className="mb-2 text-xs font-semibold uppercase tracking-wider text-on-surface-variant">

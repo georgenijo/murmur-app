@@ -11,11 +11,14 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 
+type ShadowJob = Box<dyn FnOnce(&PerformanceMetrics, &PerformanceRunV1) + Send>;
+
 #[derive(Clone)]
 pub(crate) struct PerformanceMetrics {
     inner: Arc<Mutex<PerformanceMetricsInner>>,
     operation_lock: Arc<Mutex<()>>,
     production: Arc<Mutex<production::ProductionAccumulator>>,
+    shadow_jobs: Arc<Mutex<std::collections::HashMap<u64, ShadowJob>>>,
 }
 
 impl Default for PerformanceMetrics {
@@ -24,6 +27,7 @@ impl Default for PerformanceMetrics {
             inner: Arc::new(Mutex::new(PerformanceMetricsInner::default())),
             operation_lock: Arc::new(Mutex::new(())),
             production: Arc::new(Mutex::new(production::ProductionAccumulator::default())),
+            shadow_jobs: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 }
@@ -420,6 +424,37 @@ impl PerformanceMetrics {
         self.update_active(correlation, |active| active.current_stage = stage)
     }
 
+    /// Called after delivery only. The single shadow permit bounds retained PCM.
+    pub(crate) fn discard_shadow(&self, id: u64) {
+        self.shadow_jobs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&id);
+    }
+
+    pub(crate) fn register_shadow(&self, id: u64, job: ShadowJob) {
+        self.shadow_jobs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id, job);
+    }
+
+    pub(crate) fn amend_shadow(
+        &self,
+        run_id: &str,
+        id: u64,
+        shadow: &crate::shadow_measurement::ShadowMeasurementV1,
+    ) -> Result<(), String> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let result = self
+            .repository(PerformanceStoreOperationV1::Update)
+            .and_then(|repo| repo.update_completed_shadow(run_id, id, shadow));
+        self.observe(result).map(|_| ())
+    }
+
     #[cfg(test)]
     pub(crate) fn complete(
         &self,
@@ -482,8 +517,32 @@ impl PerformanceMetrics {
                     }
                     Ok(completed)
                 });
-            self.observe(result)?
+            match self.observe(result) {
+                Ok(run) => run,
+                Err(error) => {
+                    if let RunCorrelationV1::Dictation { recording_id } = correlation {
+                        self.shadow_jobs
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .remove(recording_id);
+                    }
+                    return Err(error);
+                }
+            }
         };
+        if let RunCorrelationV1::Dictation { recording_id } = correlation {
+            let job = self
+                .shadow_jobs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .remove(recording_id);
+            if let (Some(job), Some(run)) = (job, run.clone()) {
+                let metrics = self.clone();
+                drop(tauri::async_runtime::spawn_blocking(move || {
+                    job(&metrics, &run)
+                }));
+            }
+        }
         if let Some(run) = &run {
             let app_handle = self
                 .inner
@@ -586,6 +645,10 @@ impl PerformanceMetrics {
                 .and_then(|repository| repository.clear());
             self.observe(result)?;
             self.production
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+            self.shadow_jobs
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .clear();
@@ -865,7 +928,7 @@ mod tests {
         let decoded: PerformanceRunV1 = serde_json::from_str(&payload).unwrap();
         assert_eq!(decoded, run);
         assert_eq!(decoded.schema_version, PERFORMANCE_RUN_SCHEMA_VERSION);
-        assert_eq!(decoded.stages.len(), 31);
+        assert_eq!(decoded.stages.len(), 33);
     }
 
     #[test]

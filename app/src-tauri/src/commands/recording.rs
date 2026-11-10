@@ -346,6 +346,9 @@ async fn decode_one_dictation_partial(
                     &transcription.model_name,
                     || dictation_partial_is_current_if_uncontended(&state.app_state, recording_id),
                     |backend| {
+                        let _preview_backend = crate::shadow_measurement::PreviewBackendLease::new(
+                            &state.app_state.preview_holds_backend,
+                        );
                         #[cfg(feature = "preview-decode-reuse")]
                         let reuse_range = state
                             .app_state
@@ -1745,6 +1748,8 @@ mod clipboard_delivery_tests {
 }
 
 struct PipelineResult {
+    // Return ownership only. Shadow admission/setup happens after this future's Idle guard drops.
+    final_input: Option<Vec<f32>>,
     text: String,
     timings: PipelineTimings,
     terminal: PipelineTerminal,
@@ -1826,8 +1831,15 @@ impl DictationPerformanceBeginCoordinator {
         );
     }
 
-    fn abort(&self, recording_id: u64) {
+    fn abort(
+        &self,
+        recording_id: u64,
+        performance: &crate::performance_metrics::PerformanceMetrics,
+    ) {
         self.entries.lock_or_recover().remove(&recording_id);
+        // Retract the deferral slot first. A pipeline registering after this
+        // removal must persist (and release its job), never defer into a dead run.
+        performance.discard_shadow(recording_id);
     }
 
     fn request_completion(
@@ -1872,6 +1884,7 @@ impl DictationPerformanceBeginCoordinator {
         &self,
         recording_id: u64,
         succeeded: bool,
+        performance: &crate::performance_metrics::PerformanceMetrics,
     ) -> Option<DictationPerformanceBeginResolution> {
         let mut entries = self.entries.lock_or_recover();
         let (completion, latest_stage) = match entries.get_mut(&recording_id) {
@@ -1900,11 +1913,18 @@ impl DictationPerformanceBeginCoordinator {
             })
         } else {
             entries.remove(&recording_id);
+            drop(entries);
+            // Cleanup follows failed resolution, closing the register/defer race.
+            performance.discard_shadow(recording_id);
             None
         }
     }
 
-    fn finish_completion(&self, recording_id: u64) {
+    fn finish_completion(
+        &self,
+        recording_id: u64,
+        performance: &crate::performance_metrics::PerformanceMetrics,
+    ) {
         let mut entries = self.entries.lock_or_recover();
         let should_remove = match entries.get(&recording_id) {
             Some(DictationPerformanceBeginState::Completing(claimed)) => {
@@ -1917,6 +1937,10 @@ impl DictationPerformanceBeginCoordinator {
         };
         if should_remove {
             entries.remove(&recording_id);
+            drop(entries);
+            // Completion already consumed its job; discard any late registration
+            // arriving between that consumption and removal of the claim.
+            performance.discard_shadow(recording_id);
         }
     }
 
@@ -1933,7 +1957,6 @@ impl DictationPerformanceBeginCoordinator {
         }
     }
 
-    #[cfg(test)]
     fn completion_is_claimed(&self, recording_id: u64) -> bool {
         matches!(
             self.entries.lock_or_recover().get(&recording_id),
@@ -1959,14 +1982,20 @@ impl DictationPerformanceBeginCoordinator {
 
 struct DictationPerformanceBeginRegistration<'a> {
     coordinator: &'a DictationPerformanceBeginCoordinator,
+    performance: &'a crate::performance_metrics::PerformanceMetrics,
     recording_id: u64,
     armed: bool,
 }
 
 impl<'a> DictationPerformanceBeginRegistration<'a> {
-    fn new(coordinator: &'a DictationPerformanceBeginCoordinator, recording_id: u64) -> Self {
+    fn new(
+        coordinator: &'a DictationPerformanceBeginCoordinator,
+        recording_id: u64,
+        performance: &'a crate::performance_metrics::PerformanceMetrics,
+    ) -> Self {
         Self {
             coordinator,
+            performance,
             recording_id,
             armed: true,
         }
@@ -1980,7 +2009,7 @@ impl<'a> DictationPerformanceBeginRegistration<'a> {
 impl Drop for DictationPerformanceBeginRegistration<'_> {
     fn drop(&mut self) {
         if self.armed {
-            self.coordinator.abort(self.recording_id);
+            self.coordinator.abort(self.recording_id, self.performance);
         }
     }
 }
@@ -2018,7 +2047,7 @@ fn flush_dictation_performance_begin(
     }
     if let Some(completion) = resolution.completion {
         if persist_dictation_performance_completion(performance, recording_id, completion).is_ok() {
-            coordinator.finish_completion(recording_id);
+            coordinator.finish_completion(recording_id, performance);
         }
     }
 }
@@ -2031,7 +2060,7 @@ fn spawn_dictation_performance_completion(
     drop(tauri::async_runtime::spawn_blocking(move || {
         if persist_dictation_performance_completion(&performance, recording_id, completion).is_ok()
         {
-            dictation_performance_begins().finish_completion(recording_id);
+            dictation_performance_begins().finish_completion(recording_id, &performance);
         }
     }));
 }
@@ -2076,6 +2105,14 @@ fn complete_dictation_performance_with_delivery(
         DictationPerformanceCompletionAction::Persist(completion) => {
             spawn_dictation_performance_completion(performance.clone(), recording_id, completion);
         }
+        DictationPerformanceCompletionAction::AlreadyCompleting
+            if dictation_performance_begins().completion_is_claimed(recording_id) =>
+        {
+            // A terminal outcome already owns completion, possibly after a
+            // failed persistence attempt. This ignored request must not retain
+            // a job registered after that attempt consumed its earlier slot.
+            performance.discard_shadow(recording_id);
+        }
         DictationPerformanceCompletionAction::Deferred
         | DictationPerformanceCompletionAction::AlreadyCompleting => {}
     }
@@ -2090,14 +2127,14 @@ fn spawn_native_dictation_performance_begin(
     drop(tauri::async_runtime::spawn_blocking(move || {
         let coordinator = dictation_performance_begins();
         let mut registration =
-            DictationPerformanceBeginRegistration::new(coordinator, recording_id);
+            DictationPerformanceBeginRegistration::new(coordinator, recording_id, &performance);
         let result =
             performance.begin_dictation_diagnosed_at(recording_id, runtimes, started_at_ms);
         let succeeded = result.is_ok();
         if let Err(error) = &result {
             emit_performance_store_begin_failure(recording_id, error);
         }
-        if let Some(resolution) = coordinator.resolve_begin(recording_id, succeeded) {
+        if let Some(resolution) = coordinator.resolve_begin(recording_id, succeeded, &performance) {
             flush_dictation_performance_begin(coordinator, &performance, recording_id, resolution);
         }
         registration.disarm();
@@ -2501,6 +2538,66 @@ fn decode_final_transcript(
     )
 }
 
+/// Register only after Idle and captured delivery timing. Ownership moves into
+/// a worker that starts after the exact completed UUID is durable.
+fn register_shadow_measurement(
+    app: &tauri::AppHandle,
+    recording_id: u64,
+    context: Arc<DictationContextSnapshot>,
+    audio: crate::shadow_measurement::ShadowAudio,
+) {
+    use crate::shadow_measurement as shadow;
+    let Some(permit) = shadow::ShadowPermit::acquire() else {
+        return;
+    };
+    app.state::<State>().performance.register_shadow(
+        recording_id,
+        Box::new(move |metrics, run| {
+            let _permit = permit;
+            let supported = transcriber::is_coreml_model(&context.transcription.model_name);
+            let threshold = vad::threshold_for_sensitivity(context.transcription.vad_sensitivity);
+            let path = vad::vad_model_path().filter(|p| p.exists());
+            let result = audio.measure(
+                supported,
+                |original, filtered| {
+                    if !vad::is_enabled(context.transcription.vad_sensitivity) {
+                        return None;
+                    }
+                    let (result, bounds) = vad::filter_speech_with_segments(
+                        &path.as_ref()?.to_string_lossy(),
+                        original,
+                        threshold,
+                    )
+                    .ok()?;
+                    match result {
+                        vad::VadResult::Speech(repeated)
+                            if shadow::pcm_equal(&repeated, filtered) =>
+                        {
+                            Some(bounds)
+                        }
+                        _ => None,
+                    }
+                },
+                |original, at, filtered| {
+                    shadow::prefix_matches(
+                        &path.as_ref()?.to_string_lossy(),
+                        original,
+                        at,
+                        threshold,
+                        filtered,
+                    )
+                },
+            );
+            let _ = metrics.amend_shadow(&run.run_id, recording_id, &result);
+        }),
+    );
+}
+
+#[derive(Default)]
+struct PipelineStopContext {
+    delivery_target: Option<crate::frontmost::DeliveryTargetSnapshot>,
+}
+
 /// Shared transcription pipeline: model init -> transcribe -> inject text -> set idle.
 /// `recording_id` is checked against `app_state.cancelled_id` at checkpoints;
 /// if cancelled, returns empty text without clipboard write or paste.
@@ -2511,8 +2608,11 @@ async fn run_transcription_pipeline(
     recording_id: u64,
     performance_guard: &mut impl DictationPerformanceStageRecorder,
     context: Arc<DictationContextSnapshot>,
-    stop_delivery_target: Option<crate::frontmost::DeliveryTargetSnapshot>,
+    stop: PipelineStopContext,
 ) -> Result<PipelineResult, String> {
+    let PipelineStopContext {
+        delivery_target: stop_delivery_target,
+    } = stop;
     // Guard resets status to Idle on any return path (error or success),
     // but only if this recording is still the active one
     let mut _guard = IdleGuard::new(app_state, recording_id);
@@ -2543,6 +2643,7 @@ async fn run_transcription_pipeline(
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before VAD (recording_id={})", recording_id);
         return Ok(PipelineResult {
+            final_input: None,
             text: String::new(),
             timings: PipelineTimings::default(),
             terminal: PipelineTerminal::Cancelled(PerformanceStageV1::Vad),
@@ -2577,6 +2678,7 @@ async fn run_transcription_pipeline(
                         tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
                             samples.len(), t_vad.elapsed());
                         return Ok(PipelineResult {
+                            final_input: None,
                             text: String::new(),
                             timings: PipelineTimings {
                                 vad_ms: t_vad.elapsed().as_millis() as u64,
@@ -2616,6 +2718,7 @@ async fn run_transcription_pipeline(
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before transcription (recording_id={})", recording_id);
         return Ok(PipelineResult {
+            final_input: None,
             text: String::new(),
             timings: PipelineTimings {
                 vad_ms,
@@ -2773,6 +2876,7 @@ async fn run_transcription_pipeline(
         timings.transform_ms = transform_ms;
         timings.transform_stages = transform_stages;
         return Ok(PipelineResult {
+            final_input: None,
             text: String::new(),
             timings,
             terminal: PipelineTerminal::Cancelled(PerformanceStageV1::ClipboardPaste),
@@ -3108,6 +3212,7 @@ async fn run_transcription_pipeline(
                 timings.file_output_ms = file_output_ms;
                 timings.paste_ms = t_inject.elapsed().as_millis() as u64;
                 return Ok(PipelineResult {
+                    final_input: None,
                     text: String::new(),
                     timings,
                     terminal: PipelineTerminal::Cancelled(PerformanceStageV1::ClipboardPaste),
@@ -3225,6 +3330,7 @@ async fn run_transcription_pipeline(
         PipelineTerminal::Success
     };
     Ok(PipelineResult {
+        final_input: Some(samples_for_transcription),
         text,
         timings,
         terminal,
@@ -3389,7 +3495,7 @@ pub async fn process_audio(
         Arc::clone(&context),
         // Imported audio has no live stop transition: its snapshot is already
         // taken at the accepted Idle -> Processing transition.
-        None,
+        PipelineStopContext::default(),
     )
     .await;
     // Only emit idle if this recording wasn't cancelled/superseded.
@@ -5429,7 +5535,7 @@ pub async fn start_native_recording(
         origin,
         gesture,
     ) {
-        dictation_performance_begins().abort(rid);
+        dictation_performance_begins().abort(rid, &state.performance);
         tracing::error!(target: "audio", "start_native_recording: audio failed: {}", error);
         state.app_state.clear_active_context(rid);
         let mut dictation = state.app_state.dictation.lock_or_recover();
@@ -5565,7 +5671,7 @@ pub async fn start_native_recording(
             }));
         }
         (NativeStartContextAction::Superseded, status) => {
-            dictation_performance_begins().abort(rid);
+            dictation_performance_begins().abort(rid, &state.performance);
             emit_dictation_terminal(
                 &state,
                 rid,
@@ -5651,6 +5757,16 @@ fn stop_owner_matches(current_recording_id: u64, expected_recording_id: Option<u
     expected_recording_id.is_none_or(|expected| expected == current_recording_id)
 }
 
+/// Only the resolved double-tap toggle owns its stop-key diagnostics. A
+/// pending stamp is consumed but discarded when an overlay, auto-stop, or
+/// matching hold release wins the accepted stop.
+fn attributable_stop_stamp(
+    trigger: audio_lifecycle::DictationStopTrigger,
+    stamp: Option<crate::shadow_measurement::StopStamp>,
+) -> Option<crate::shadow_measurement::StopStamp> {
+    stamp.filter(|_| trigger == audio_lifecycle::DictationStopTrigger::Toggle)
+}
+
 /// Stop only the recording generation captured by the caller. User commands
 /// pass no expectation; asynchronous lifecycle continuations must pass the
 /// generation that scheduled them so they cannot stop a newer recording.
@@ -5734,9 +5850,11 @@ async fn stop_native_recording_for(
     // Claim the release at the accepted transition, before teardown, so a
     // later release queued behind this stop cannot replace it.
     let hotkey_release = crate::hotkey_release::take_for(rid, stop_entered_at);
+    let stop_stamp = crate::shadow_measurement::take_for(rid, stop_entered_at);
     // A matching rdev release takes precedence even if another stop arrived
     // through the webview at the same time. Unknown sources retain speech.
     let stop_trigger = stop_trigger.resolve(hotkey_release);
+    let stop_stamp = attributable_stop_stamp(stop_trigger, stop_stamp);
     if status == DictationStatus::Starting {
         drop(transition);
         // Cancel the exact owner even if readiness races with this command
@@ -5850,6 +5968,11 @@ async fn stop_native_recording_for(
     if let Some(release) = hotkey_release {
         performance_guard.record(release.release_to_stop());
     }
+    if let Some(stamp) = stop_stamp {
+        for stage in stamp.stages(stop_entered_at) {
+            performance_guard.record(stage);
+        }
+    }
     tracing::info!(
         target: "pipeline",
         event_code = "pipeline.dictation_stop_handoff",
@@ -5938,7 +6061,9 @@ async fn stop_native_recording_for(
         rid,
         &mut performance_guard,
         Arc::clone(&context),
-        stop_delivery_target,
+        PipelineStopContext {
+            delivery_target: stop_delivery_target,
+        },
     )
     .await;
     // Only emit idle if this recording wasn't cancelled/superseded by a new one.
@@ -5970,6 +6095,7 @@ async fn stop_native_recording_for(
             return Err(error);
         }
     };
+    let idle_observed_at = std::time::Instant::now();
     let history = pipeline.history;
     let text = pipeline.text;
     let timings = pipeline.timings;
@@ -6045,6 +6171,26 @@ async fn stop_native_recording_for(
         hotkey_release,
         delivered_at,
     ));
+    let recording_secs = samples.len() / 16_000;
+    if let Some(filtered) = pipeline
+        .final_input
+        .filter(|_| timings.delivery_confirmed && matches!(outcome, RunOutcomeV1::Success))
+    {
+        register_shadow_measurement(
+            &app_handle,
+            rid,
+            context.clone(),
+            crate::shadow_measurement::ShadowAudio {
+                original: samples,
+                filtered,
+                stamp: stop_stamp,
+                boundary: crate::shadow_measurement::PostDeliveryBoundary {
+                    idle_observed_at,
+                    delivered_at,
+                },
+            },
+        );
+    }
     performance_guard.finish(
         outcome,
         stages,
@@ -6057,7 +6203,6 @@ async fn stop_native_recording_for(
 
     // Broadcast transcription result to all windows (so the main window can update
     // its history even when recording was initiated from the overlay).
-    let recording_secs = samples.len() / 16_000;
     if !text.is_empty() {
         let teaching_context = crate::correct_and_teach::teaching_context(
             context.app.bundle_id.as_deref(),
@@ -6777,7 +6922,9 @@ pub(crate) mod tests {
         performance
             .begin_dictation(recording_id, Vec::new())
             .unwrap();
-        let resolution = coordinator.resolve_begin(recording_id, true).unwrap();
+        let resolution = coordinator
+            .resolve_begin(recording_id, true, &performance)
+            .unwrap();
         flush_dictation_performance_begin(&coordinator, &performance, recording_id, resolution);
         let run = performance.list(10).unwrap().runs.remove(0);
         assert_eq!(
@@ -6813,8 +6960,143 @@ pub(crate) mod tests {
         panic!("timed out waiting for {expected} completed diagnostics runs");
     }
 
+    fn register_pending_shadow_permit(
+        performance: &crate::performance_metrics::PerformanceMetrics,
+        recording_id: u64,
+    ) {
+        let permit = crate::shadow_measurement::ShadowPermit::acquire()
+            .expect("the previous run must have released its shadow permit");
+        performance.register_shadow(
+            recording_id,
+            Box::new(move |_, _| {
+                let _permit = permit;
+                panic!("an abandoned run must never execute its shadow job");
+            }),
+        );
+    }
+
+    #[test]
+    fn failed_begin_releases_shadow_registered_before_failed_resolution() {
+        let coordinator = DictationPerformanceBeginCoordinator::default();
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
+        let recording_id = 536_010;
+        coordinator.register(recording_id);
+        // Reproduce the old failed-begin worker's early discard, then let the
+        // pipeline register and defer completion before begin failure resolves.
+        performance.discard_shadow(recording_id);
+        register_pending_shadow_permit(&performance, recording_id);
+        assert!(matches!(
+            coordinator.request_completion(recording_id, failed_capture_completion()),
+            DictationPerformanceCompletionAction::Deferred
+        ));
+        assert!(coordinator
+            .resolve_begin(recording_id, false, &performance)
+            .is_none());
+        assert!(!coordinator.begin_is_pending(recording_id));
+        let next = crate::shadow_measurement::ShadowPermit::acquire();
+        assert!(
+            next.is_some(),
+            "failed begin must release the abandoned job's global permit"
+        );
+        drop(next);
+        // The opposite ordering also releases: once failure has retracted the
+        // deferral entry, a late pipeline must try persistence, not defer.
+        register_pending_shadow_permit(&performance, recording_id);
+        let late = match coordinator.request_completion(recording_id, failed_capture_completion()) {
+            DictationPerformanceCompletionAction::Persist(completion) => completion,
+            _ => panic!("a late completion cannot defer after failed begin"),
+        };
+        assert!(
+            persist_dictation_performance_completion(&performance, recording_id, late).is_err()
+        );
+        assert!(crate::shadow_measurement::ShadowPermit::acquire().is_some());
+    }
+
+    #[test]
+    fn abort_releases_pending_shadow_with_or_without_deferred_completion() {
+        for deferred in [false, true] {
+            let coordinator = DictationPerformanceBeginCoordinator::default();
+            let performance = crate::performance_metrics::PerformanceMetrics::default();
+            let recording_id = 536_011;
+            coordinator.register(recording_id);
+            register_pending_shadow_permit(&performance, recording_id);
+            if deferred {
+                assert!(matches!(
+                    coordinator.request_completion(recording_id, failed_capture_completion()),
+                    DictationPerformanceCompletionAction::Deferred
+                ));
+            }
+            coordinator.abort(recording_id, &performance);
+            assert!(!coordinator.begin_is_pending(recording_id));
+            assert!(crate::shadow_measurement::ShadowPermit::acquire().is_some());
+        }
+    }
+
+    #[test]
+    fn completed_run_releases_shadow_registered_after_persistence() {
+        let root = tempfile::tempdir().unwrap();
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
+        performance
+            .initialize(root.path().to_path_buf(), None)
+            .unwrap();
+        let coordinator = DictationPerformanceBeginCoordinator::default();
+        let recording_id = 536_012;
+        coordinator.register(recording_id);
+        performance
+            .begin_dictation(recording_id, Vec::new())
+            .unwrap();
+        coordinator
+            .resolve_begin(recording_id, true, &performance)
+            .unwrap();
+        let completion =
+            match coordinator.request_completion(recording_id, failed_capture_completion()) {
+                DictationPerformanceCompletionAction::Persist(completion) => completion,
+                _ => panic!("ready begin must claim completion"),
+            };
+        persist_dictation_performance_completion(&performance, recording_id, completion).unwrap();
+        register_pending_shadow_permit(&performance, recording_id);
+        coordinator.finish_completion(recording_id, &performance);
+        assert!(crate::shadow_measurement::ShadowPermit::acquire().is_some());
+    }
+
+    #[test]
+    fn ignored_terminal_releases_late_shadow_after_persistence_failure() {
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
+        let coordinator = dictation_performance_begins();
+        let recording_id = 536_013;
+        coordinator.register(recording_id);
+        coordinator
+            .resolve_begin(recording_id, true, &performance)
+            .unwrap();
+        let first = failed_capture_completion();
+        let original_outcome = first.outcome.clone();
+        let claimed = match coordinator.request_completion(recording_id, first) {
+            DictationPerformanceCompletionAction::Persist(completion) => completion,
+            _ => panic!("ready begin must claim completion"),
+        };
+        assert!(
+            persist_dictation_performance_completion(&performance, recording_id, claimed).is_err()
+        );
+        register_pending_shadow_permit(&performance, recording_id);
+        complete_dictation_performance(
+            &performance,
+            recording_id,
+            RunOutcomeV1::NoSpeech,
+            Vec::new(),
+            None,
+            None,
+        );
+        assert_eq!(
+            coordinator.claimed_outcome(recording_id),
+            Some(original_outcome)
+        );
+        assert!(crate::shadow_measurement::ShadowPermit::acquire().is_some());
+        coordinator.finish_completion(recording_id, &performance);
+    }
+
     #[test]
     fn terminal_before_diagnostics_begin_is_deferred_and_keeps_first_outcome() {
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
         let coordinator = DictationPerformanceBeginCoordinator::default();
         let recording_id = 536_001;
         coordinator.register(recording_id);
@@ -6840,7 +7122,7 @@ pub(crate) mod tests {
         ));
 
         let resolution = coordinator
-            .resolve_begin(recording_id, true)
+            .resolve_begin(recording_id, true, &performance)
             .expect("the first terminal waits for begin");
         let pending = resolution.completion.expect("queued terminal outcome");
         assert!(matches!(
@@ -6851,7 +7133,7 @@ pub(crate) mod tests {
             }
         ));
         assert!(coordinator.begin_is_pending(recording_id));
-        coordinator.finish_completion(recording_id);
+        coordinator.finish_completion(recording_id, &performance);
         assert!(!coordinator.begin_is_pending(recording_id));
     }
 
@@ -6888,12 +7170,12 @@ pub(crate) mod tests {
             .begin_dictation(recording_id, Vec::new())
             .expect("begin delayed diagnostics row");
         let resolution = coordinator
-            .resolve_begin(recording_id, true)
+            .resolve_begin(recording_id, true, &performance)
             .expect("queued terminal outcome");
         let pending = resolution.completion.expect("queued terminal completion");
         persist_dictation_performance_completion(&performance, recording_id, pending)
             .expect("persist queued terminal");
-        coordinator.finish_completion(recording_id);
+        coordinator.finish_completion(recording_id, &performance);
 
         let runs = wait_for_completed_runs(&performance, 1);
         assert_eq!(runs.len(), 1);
@@ -6908,10 +7190,13 @@ pub(crate) mod tests {
 
     #[test]
     fn terminal_after_diagnostics_begin_can_persist_immediately() {
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
         let coordinator = DictationPerformanceBeginCoordinator::default();
         let recording_id = 536_003;
         coordinator.register(recording_id);
-        assert!(coordinator.resolve_begin(recording_id, true).is_some());
+        assert!(coordinator
+            .resolve_begin(recording_id, true, &performance)
+            .is_some());
         assert!(coordinator.begin_is_pending(recording_id));
         let claimed =
             match coordinator.request_completion(recording_id, failed_capture_completion()) {
@@ -6949,7 +7234,7 @@ pub(crate) mod tests {
                 ..
             })
         ));
-        coordinator.finish_completion(recording_id);
+        coordinator.finish_completion(recording_id, &performance);
         assert!(!coordinator.begin_is_pending(recording_id));
     }
 
@@ -6987,7 +7272,7 @@ pub(crate) mod tests {
             .begin_dictation(recording_id, Vec::new())
             .expect("begin delayed diagnostics row");
         let resolution = coordinator
-            .resolve_begin(recording_id, true)
+            .resolve_begin(recording_id, true, &performance)
             .expect("native terminal waits for begin");
         flush_dictation_performance_begin(coordinator, &performance, recording_id, resolution);
 
@@ -7005,17 +7290,23 @@ pub(crate) mod tests {
 
     #[test]
     fn begin_registration_cleans_up_if_worker_unwinds() {
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
         let coordinator = DictationPerformanceBeginCoordinator::default();
         let recording_id = 536_005;
         coordinator.register(recording_id);
+        register_pending_shadow_permit(&performance, recording_id);
 
         let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _registration =
-                DictationPerformanceBeginRegistration::new(&coordinator, recording_id);
+            let _registration = DictationPerformanceBeginRegistration::new(
+                &coordinator,
+                recording_id,
+                &performance,
+            );
             panic!("forced begin worker unwind");
         }));
 
         assert!(unwind.is_err());
+        assert!(crate::shadow_measurement::ShadowPermit::acquire().is_some());
         assert!(!coordinator.begin_is_pending(recording_id));
         assert!(matches!(
             coordinator.request_completion(recording_id, failed_capture_completion()),
@@ -7041,7 +7332,7 @@ pub(crate) mod tests {
             .expect("begin delayed diagnostics row");
         assert_eq!(active.started_at_ms, requested_at_ms);
         let resolution = coordinator
-            .resolve_begin(recording_id, true)
+            .resolve_begin(recording_id, true, &performance)
             .expect("successful delayed begin");
         assert_eq!(resolution.latest_stage, Some(PerformanceStageV1::Vad));
         flush_dictation_performance_begin(&coordinator, &performance, recording_id, resolution);
@@ -7169,6 +7460,59 @@ pub(crate) mod tests {
         assert!(requested);
         assert!(performance_started_at_ms > 0);
         assert_eq!(dictation.status, DictationStatus::Starting);
+    }
+
+    #[test]
+    fn only_the_resolved_toggle_stop_owns_a_published_stamp() {
+        use crate::shadow_measurement::{self, StopPress, StopStamp};
+        use audio_lifecycle::DictationStopTrigger;
+        let entered = std::time::Instant::now();
+        let released = entered - std::time::Duration::from_millis(12);
+        let stamp = StopStamp {
+            press: StopPress {
+                recording_id: 1_082,
+                pressed_at: released - std::time::Duration::from_millis(80),
+                sample: Some(16_000),
+                preview_held_backend: true,
+            },
+            released_at: released,
+        };
+        for trigger in [
+            DictationStopTrigger::Toggle,
+            DictationStopTrigger::HoldRelease,
+            DictationStopTrigger::Overlay,
+            DictationStopTrigger::AutoStop,
+            DictationStopTrigger::Other,
+        ] {
+            for release in [
+                None,
+                Some(crate::hotkey_release::HotkeyRelease::for_test(
+                    released, entered,
+                )),
+            ] {
+                // A double-tap publishes first, but this command wins the stop.
+                shadow_measurement::record(stamp);
+                let pending = shadow_measurement::take_for(1_082, entered);
+                assert!(pending.is_some());
+                let resolved = trigger.resolve(release);
+                let attributed = attributable_stop_stamp(resolved, pending);
+                assert_eq!(
+                    attributed.is_some(),
+                    trigger == DictationStopTrigger::Toggle && release.is_none(),
+                    "{trigger:?}"
+                );
+                if let Some(attributed) = attributed {
+                    assert_eq!(attributed.press.sample, Some(16_000));
+                    assert_eq!(attributed.stages(entered)[0].duration_ms.value(), Some(&80));
+                    assert_eq!(attributed.stages(entered)[1].duration_ms.value(), Some(&12));
+                }
+                assert!(
+                    shadow_measurement::take_for(1_082, entered).is_none(),
+                    "the losing stamp must not leak to another stop"
+                );
+                assert!(attributable_stop_stamp(resolved, None).is_none());
+            }
+        }
     }
 
     #[test]
@@ -8914,3 +9258,8 @@ pub(crate) mod tests {
         );
     }
 }
+
+// This developer-only model test is never compiled into the running app.
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+#[path = "recording_determinism_test.rs"]
+mod offline_determinism;

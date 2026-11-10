@@ -71,6 +71,7 @@ mod preview_pause;
 #[cfg(feature = "preview-decode-reuse")]
 mod preview_reuse;
 mod resource_monitor;
+mod shadow_measurement;
 mod smart_auto_probe;
 mod smart_destination;
 mod smart_formatting;

@@ -363,7 +363,15 @@ trait TranscriptionBackend: Send + Sync {
 - **Core ML (FluidAudio)** — Parakeet v3 on the ANE. Decoder state is reset between one-shot dictations. An empty result after VAD trimming retries once with the original unfiltered audio.
 - **Parakeet CPU (sherpa-onnx)** — English fallback, also the non-macOS path.
 
-All backends take one authoritative final-after-stop pass; delivery happens exactly once. Core ML and Whisper Tiny/Base also emit display-only partials. Whisper partials own a separate cancellable CPU context for the recording, leaving the final Metal context and runtime lock untouched.
+All backends take one authoritative final-after-stop pass; delivery happens exactly once.
+After confirmed delivery, Core ML shadow diagnostics compare VAD-filtered prefixes
+after Idle and the captured delivery timestamp. Full-clip shadow bounds are also
+recomputed there, with no bounds collection in final VAD. Live determinism always
+records `notMeasuredInApp`; an ignored developer-only model test measures repeat
+decode equality outside the app.
+Shadow work has no shared-backend capability and never supplies delivered text;
+only content-free evidence amends the completed
+run UUID. See [performance diagnostics](features/performance-diagnostics.md#early-final-shadow-measurement-1081-phase-3). Core ML and Whisper Tiny/Base also emit display-only partials. Whisper partials own a separate cancellable CPU context for the recording, leaving the final Metal context and runtime lock untouched.
 
 ### `keyboard.rs` — Keyboard Detection
 

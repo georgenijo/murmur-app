@@ -238,6 +238,8 @@ pub enum PerformanceStageV1 {
     Undo,
     ReleaseToStop,
     ReleaseToPaste,
+    StopPressToRelease,
+    StopReleaseToCommand,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -592,6 +594,8 @@ pub struct TransformFollowUpV1 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PerformanceRunV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<crate::shadow_measurement::ShadowMeasurementV1>,
     pub schema_version: u32,
     pub run_id: String,
     pub kind: PerformanceRunKindV1,
