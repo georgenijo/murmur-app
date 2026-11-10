@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Allow meeting deletion when the app data root has a symlinked ancestor, while continuing to refuse symlinks inside the meeting store.
+
 ## [0.63.0] - 2026-11-10
 
 <!-- Release notes generated using configuration in .github/release.yml at 50d3323d7f10e42021fd8e6d966823c9c1ee2c1e -->

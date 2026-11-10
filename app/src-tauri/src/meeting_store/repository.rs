@@ -218,6 +218,11 @@ impl Drop for RecoveryCandidate {
 impl MeetingRepository {
     pub fn initialize(root: PathBuf) -> Result<(Self, InitializationOutcome), String> {
         fs::create_dir_all(&root).map_err(|_| storage_error())?;
+        // The app-data location may be reached through a system or user-managed
+        // ancestor symlink (for example macOS `/tmp`). Resolve that trusted
+        // prefix once, then keep every later no-follow open rooted at the
+        // concrete meeting-store directory.
+        let root = root.canonicalize().map_err(|_| storage_error())?;
         let lease = InitializationLease::acquire(&root)?;
         fs::create_dir_all(root.join("audio")).map_err(|_| storage_error())?;
         fs::create_dir_all(root.join("backups")).map_err(|_| storage_error())?;
@@ -1512,6 +1517,61 @@ mod tests {
         let (repository, _) =
             MeetingRepository::initialize(temp.path().canonicalize().unwrap()).unwrap();
         (temp, repository)
+    }
+
+    #[test]
+    fn deleting_empty_session_succeeds_with_symlinked_root_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+        let actual_parent = temp.path().join("actual-parent");
+        let symlinked_parent = temp.path().join("symlinked-parent");
+        fs::create_dir(&actual_parent).unwrap();
+        symlink(&actual_parent, &symlinked_parent).unwrap();
+
+        let root = symlinked_parent.join("meetings");
+        let (repository, _) = MeetingRepository::initialize(root).unwrap();
+        assert_eq!(
+            repository.root(),
+            actual_parent.join("meetings").canonicalize().unwrap()
+        );
+
+        repository
+            .create_session("empty-session", "base.en", "en", true, false)
+            .unwrap();
+        repository
+            .finish_session("empty-session", MeetingSessionStatus::Complete, None)
+            .unwrap();
+        repository.delete_session("empty-session").unwrap();
+
+        assert!(repository.get_session("empty-session").is_err());
+        assert_eq!(repository.status().unwrap().session_count, 0);
+    }
+
+    #[test]
+    fn deleting_empty_session_refuses_symlinked_audio_root() {
+        use std::os::unix::fs::symlink;
+
+        let (temp, repository) = repository();
+        repository
+            .create_session("empty-session", "base.en", "en", true, false)
+            .unwrap();
+        repository
+            .finish_session("empty-session", MeetingSessionStatus::Complete, None)
+            .unwrap();
+
+        let audio_root = repository.root().join("audio");
+        let outside_audio = temp.path().join("outside-audio");
+        fs::rename(&audio_root, &outside_audio).unwrap();
+        symlink(&outside_audio, &audio_root).unwrap();
+
+        let error = repository.delete_session("empty-session").unwrap_err();
+        assert_eq!(
+            error,
+            "The meeting audio folder could not be removed safely."
+        );
+        assert!(repository.get_session("empty-session").is_ok());
+        assert!(outside_audio.is_dir());
     }
 
     fn final_segment(
