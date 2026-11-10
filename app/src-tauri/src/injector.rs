@@ -830,8 +830,9 @@ fn post_paste_native_guarded(
             return Err(error);
         }
     };
-    // Collect locally across proof/commit/post. Publish only after key-up so
-    // diagnostic locking cannot widen the final safety boundary.
+    // Register before the proof; publish progress using only atomic stores
+    // across proof/commit/post. Normal completion still publishes after key-up.
+    let progress = dt::PostingProgress::new(construction_us);
     let mut posted_at = None;
     let mut down_us = None;
     let mut hold_us = None;
@@ -839,15 +840,24 @@ fn post_paste_native_guarded(
     let mut post = || {
         let started = Instant::now();
         posted_at = Some(started);
+        progress.started(dt::PostStep::Down, started);
         key_down.post(CGEventTapLocation::HID);
-        down_us = Some(dt::us(started));
+        let elapsed = dt::us(started);
+        down_us = Some(elapsed);
+        progress.finished(dt::PostStep::Down, elapsed);
         let started = Instant::now();
+        progress.started(dt::PostStep::Hold, started);
         // Always release the key, including when cancellation races the post.
         thread::sleep(Duration::from_millis(hold_ms));
-        hold_us = Some(dt::us(started));
+        let elapsed = dt::us(started);
+        hold_us = Some(elapsed);
+        progress.finished(dt::PostStep::Hold, elapsed);
         let started = Instant::now();
+        progress.started(dt::PostStep::Up, started);
         key_up.post(CGEventTapLocation::HID);
-        up_us = Some(dt::us(started));
+        let elapsed = dt::us(started);
+        up_us = Some(elapsed);
+        progress.finished(dt::PostStep::Up, elapsed);
     };
     POST_BOUNDARY.with(|p| p.set(true));
     let posted = match authority {

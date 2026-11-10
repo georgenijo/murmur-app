@@ -646,6 +646,12 @@ inventing a zero. At timeout, open timers retain elapsed-so-far through sealing;
 metadata not yet returned remains unavailable. A finished final-focus proof
 retains its atomically frozen duration even if sealing happens before key-up
 publishes it. Freezing adds no accumulator lock between proof and posting.
+Posting progress is registered before that proof and published with atomic
+stores: sealing during key-down, the hold, or key-up preserves `toPostUs` and
+the elapsed time of the active key-event leaf. Completed leaves keep their
+measured durations. A partial key pair leaves the post outcome unavailable;
+only completion of key-up establishes `posted`, still without insertion
+acknowledgment. No schema fields or delivery checks change.
 Those partial durations do not claim that native IPC completed.
 
 Normal delivery verification and Smart preparation's process-only samples no longer query diagnostic-only `AXFocusedWindow` during

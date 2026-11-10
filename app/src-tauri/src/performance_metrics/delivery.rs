@@ -332,6 +332,7 @@ struct Accumulator {
     closed: bool,
     next_timer: u64,
     timers: Vec<(u64, Instant, TimerField, Arc<AtomicU64>)>,
+    posts: Vec<(bool, Arc<PostProgress>)>,
 }
 impl DeliveryTiming {
     pub(crate) fn new(started: Instant) -> Self {
@@ -341,6 +342,7 @@ impl DeliveryTiming {
             closed: false,
             next_timer: 0,
             timers: Vec::new(),
+            posts: Vec::new(),
         })))
     }
     pub(crate) fn update(&self, f: impl FnOnce(&mut DeliveryTimingV1)) {
@@ -359,6 +361,12 @@ impl DeliveryTiming {
     pub(crate) fn close(&self) -> DeliveryTimingV1 {
         let mut a = self.0.lock().unwrap_or_else(|p| p.into_inner());
         if !a.closed {
+            let sealed_at = Instant::now();
+            // Acquiring observed posting progress also publishes the proof
+            // freeze that preceded it, before we read the registered timers.
+            for (retry, progress) in std::mem::take(&mut a.posts) {
+                progress.checkpoint(&mut a.record, retry, sealed_at);
+            }
             // Preserve elapsed-so-far for the exact in-flight substep when a
             // callback outlives its receiver. Subsequent timer drops are inert.
             for (_, start, field, frozen_us) in std::mem::take(&mut a.timers) {
@@ -390,6 +398,105 @@ impl DeliveryTiming {
     }
     pub(crate) fn bind(&self) -> ThreadScope {
         ThreadScope(CURRENT.with(|c| c.replace(Some(self.clone()))))
+    }
+}
+
+/// Registered before the final proof. Only atomic stores occur between that
+/// proof and key-up, so a receiver can seal observed posting progress without
+/// making the delivery thread wait for the accumulator.
+pub(crate) struct PostingProgress(Option<Arc<PostProgress>>);
+#[derive(Clone, Copy)]
+pub(crate) enum PostStep {
+    Down = 0,
+    Hold = 1,
+    Up = 2,
+}
+struct PostProgress {
+    origin: Instant,
+    // Each step has an immutable start offset and then its completed duration.
+    samples: [AtomicU64; 6],
+}
+impl PostProgress {
+    fn offset(&self, at: Instant) -> u64 {
+        at.saturating_duration_since(self.origin)
+            .as_micros()
+            .min((TIMER_RUNNING - 1) as u128) as u64
+    }
+    fn checkpoint(&self, record: &mut DeliveryTimingV1, retry: bool, at: Instant) {
+        let cutoff = self.offset(at);
+        let mut samples = [TIMER_RUNNING; 6];
+        // Read latest first: an acquired later sample also publishes every
+        // preceding sample. Ignore starts after the sealing instant.
+        for i in (0..samples.len()).rev() {
+            samples[i] = self.samples[i].load(Ordering::Acquire);
+        }
+        if samples[0] > cutoff {
+            return;
+        }
+        if record.to_post_us.value().is_none() {
+            record.to_post_us = M::measured(samples[0]);
+        }
+        let post = if retry {
+            &mut record.retry_post
+        } else {
+            &mut record.native_post
+        };
+        for (i, field) in [
+            &mut post.key_down_post_us,
+            &mut post.key_hold_us,
+            &mut post.key_up_post_us,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let start = samples[i * 2];
+            if start <= cutoff {
+                // An unfinished native call/hold is the blocked leaf. A
+                // completion racing sealing cannot extend it past the cutoff.
+                *field = M::measured(samples[i * 2 + 1].min(cutoff - start));
+            }
+        }
+        if samples[4] <= cutoff && samples[5] <= cutoff - samples[4] {
+            post.outcome = M::measured(PostOutcome::Posted);
+        }
+    }
+}
+impl PostingProgress {
+    pub(crate) fn new(construction_us: u64) -> Self {
+        CURRENT.with(|c| {
+            let current = c.borrow();
+            let Some(timing) = current.as_ref() else {
+                return Self(None);
+            };
+            let mut a = timing.0.lock().unwrap_or_else(|p| p.into_inner());
+            if a.closed {
+                return Self(None);
+            }
+            let retry = a.record.native_paste_retry_count > 0;
+            let post = if retry {
+                &mut a.record.retry_post
+            } else {
+                &mut a.record.native_post
+            };
+            post.event_construction_us = M::measured(construction_us);
+            let progress = Arc::new(PostProgress {
+                origin: a.started,
+                samples: std::array::from_fn(|_| AtomicU64::new(TIMER_RUNNING)),
+            });
+            a.posts.push((retry, progress.clone()));
+            Self(Some(progress))
+        })
+    }
+    pub(crate) fn started(&self, step: PostStep, at: Instant) {
+        if let Some(progress) = &self.0 {
+            progress.samples[step as usize * 2].store(progress.offset(at), Ordering::Release);
+        }
+    }
+    pub(crate) fn finished(&self, step: PostStep, elapsed: u64) {
+        if let Some(progress) = &self.0 {
+            progress.samples[step as usize * 2 + 1]
+                .store(elapsed.min(TIMER_RUNNING - 1), Ordering::Release);
+        }
     }
 }
 /// Seals on every return, dispatch error, timeout and future cancellation.
@@ -691,6 +798,104 @@ mod tests {
             drop(proof);
             assert_eq!(timing.snapshot(), sealed);
         }
+    }
+    #[test]
+    fn timeout_during_each_post_step_retains_observed_post_and_frozen_proof() {
+        use std::time::Duration;
+        for retry in [false, true] {
+            // Pause in key-down, hold, key-up, or after key-up but before the
+            // existing completion update. Exercise both native attempt slots.
+            for completed_steps in 0..=3 {
+                let timing = DeliveryTiming::new(Instant::now() - Duration::from_millis(1));
+                let _scope = timing.bind();
+                timing.update(|r| r.native_paste_retry_count = u8::from(retry));
+                let progress = PostingProgress::new(5);
+                let timer = timing.timer(if retry {
+                    |r| &mut r.retry_post.final_focus_proof_us
+                } else {
+                    |r| &mut r.native_post.final_focus_proof_us
+                });
+                let lock = timing.0.lock().unwrap();
+                let (sender, receiver) = std::sync::mpsc::channel();
+                let worker = std::thread::spawn(move || {
+                    let proof = timer.stopped();
+                    for (i, step) in [PostStep::Down, PostStep::Hold, PostStep::Up]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        progress.started(step, Instant::now());
+                        if i == completed_steps {
+                            break;
+                        }
+                        progress.finished(step, [7, 11, 13][i]);
+                    }
+                    sender.send((progress, proof)).unwrap();
+                });
+                let observed = receiver.recv_timeout(Duration::from_secs(1));
+                drop(lock);
+                let (progress, proof) =
+                    observed.expect("proof and post progress must not wait for the accumulator");
+                worker.join().unwrap();
+                let frozen_proof = proof.elapsed;
+                std::thread::sleep(Duration::from_millis(2));
+                timing.update(|r| set_outcome(r, Outcome::Timeout));
+                let sealed = timing.close();
+                assert!(sealed.to_post_us.value().is_some());
+                assert_eq!(sealed.outcome, M::measured(Outcome::Timeout));
+                let post = if retry {
+                    &sealed.retry_post
+                } else {
+                    &sealed.native_post
+                };
+                assert_eq!(post.event_construction_us, M::measured(5));
+                assert_eq!(post.final_focus_proof_us, M::measured(frozen_proof));
+                for (i, duration) in [
+                    &post.key_down_post_us,
+                    &post.key_hold_us,
+                    &post.key_up_post_us,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    if i < completed_steps {
+                        assert_eq!(*duration, M::measured([7, 11, 13][i]));
+                    } else if i == completed_steps {
+                        assert!(duration.value().is_some_and(|v| *v >= 2_000));
+                    } else {
+                        assert!(matches!(duration, M::Unavailable { .. }));
+                    }
+                }
+                if completed_steps == 3 {
+                    assert_eq!(post.outcome, M::measured(PostOutcome::Posted));
+                } else {
+                    assert!(matches!(post.outcome, M::Unavailable { .. }));
+                }
+                // Late completion can neither reopen this record nor change
+                // the timeout outcome into successful insertion.
+                progress.finished(PostStep::Up, 99);
+                posted_at(Instant::now());
+                drop(proof);
+                record(|r| set_outcome(r, Outcome::AutoPasted));
+                assert_eq!(timing.close(), sealed);
+            }
+        }
+    }
+    #[test]
+    fn registered_but_refused_post_does_not_invent_posting_evidence() {
+        let timing = DeliveryTiming::new(Instant::now());
+        let _scope = timing.bind();
+        let _progress = PostingProgress::new(5);
+        record(|r| r.native_post.outcome = M::measured(PostOutcome::Refused));
+        let sealed = timing.close();
+        assert!(matches!(sealed.to_post_us, M::Unavailable { .. }));
+        assert!(matches!(
+            sealed.native_post.key_down_post_us,
+            M::Unavailable { .. }
+        ));
+        assert_eq!(
+            sealed.native_post.outcome,
+            M::measured(PostOutcome::Refused)
+        );
     }
     #[test]
     fn version_and_content_free_contract() {
