@@ -45,8 +45,7 @@ function unique<T extends string>(values: T[]): T[] {
 
 function parseState(value: unknown): DiscoveryStateV2 | null {
   if (!isRecord(value) || (value.version !== 1 && value.version !== 2)) return null;
-  // v1 progress-only records may omit hints; v2 requires its two array fields.
-  if (value.version === 2 && (!Array.isArray(value.pendingHints) || !Array.isArray(value.dismissedHints))) return null;
+  // Recover the arrays independently: malformed pending data must never lose a dismissal.
   const knownIds = (items: unknown): DiscoveryHintId[] => Array.isArray(items)
     ? unique(items.filter((id): id is DiscoveryHintId => typeof id === 'string' && isHintId(id)))
     : [];
@@ -65,37 +64,53 @@ function readState(raw: string | null): DiscoveryStateV2 | null {
   try { return parseState(JSON.parse(raw)); } catch { return null; }
 }
 
-export function loadDiscoveryState(): DiscoveryStateV2 | null {
-  try {
-    const stored = localStorage.getItem(DISCOVERY_STORAGE_KEY);
-    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
-    const current = readState(stored);
-    const previous = readState(legacy);
-    if (legacy !== null) {
-      try { JSON.parse(legacy); } catch {
-        // Unreadable JSON cannot contribute hint IDs, and must not linger forever.
-        localStorage.removeItem(LEGACY_STORAGE_KEY);
-      }
+interface DiscoveryLoadResult {
+  state: DiscoveryStateV2 | null;
+  storageFailed: boolean;
+}
+
+function readDiscoveryState(): DiscoveryLoadResult {
+  let storageFailed = false;
+  const read = (key: string): string | null => {
+    try { return localStorage.getItem(key); } catch {
+      storageFailed = true;
+      return null;
     }
-    if (!current && !previous) return null;
-    const dismissedHints = unique([...(current?.dismissedHints ?? []), ...(previous?.dismissedHints ?? [])]);
-    const state: DiscoveryStateV2 = {
-      version: 2,
-      pendingHints: unique([...(current?.pendingHints ?? []), ...(previous?.pendingHints ?? [])])
-        .filter((id) => !dismissedHints.includes(id)),
-      dismissedHints,
-    };
+  };
+  const removeLegacy = () => {
+    try { localStorage.removeItem(LEGACY_STORAGE_KEY); } catch {
+      storageFailed = true;
+    }
+  };
+  // Read both keys even when one is unavailable, retaining every readable dismissal.
+  const stored = read(DISCOVERY_STORAGE_KEY);
+  const legacy = read(LEGACY_STORAGE_KEY);
+  const current = readState(stored);
+  const previous = readState(legacy);
+  if (legacy !== null && !previous) removeLegacy();
+  if (!current && !previous) return { state: null, storageFailed };
+  const dismissedHints = unique([...(current?.dismissedHints ?? []), ...(previous?.dismissedHints ?? [])]);
+  const state: DiscoveryStateV2 = {
+    version: 2,
+    pendingHints: unique([...(current?.pendingHints ?? []), ...(previous?.pendingHints ?? [])])
+      .filter((id) => !dismissedHints.includes(id)),
+    dismissedHints,
+  };
+  // A partial read must not replace dismissals that may still exist in the unread key.
+  if (!storageFailed) {
     try {
       localStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify(state));
-      // Keep recoverable legacy data until its replacement has been persisted.
-      localStorage.removeItem(LEGACY_STORAGE_KEY);
     } catch {
-      // Return validated hints in memory; a later load can retry the migration.
+      storageFailed = true;
     }
-    return state;
-  } catch {
-    return null;
+    // Keep recoverable legacy data until its replacement has been persisted.
+    if (!storageFailed && previous) removeLegacy();
   }
+  return { state, storageFailed };
+}
+
+export function loadDiscoveryState(): DiscoveryStateV2 | null {
+  return readDiscoveryState().state;
 }
 
 function saveState(state: DiscoveryStateV2): DiscoveryStateV2 {
@@ -114,18 +129,23 @@ export function initializeDiscoveryAfterSetup(): DiscoveryStateV2 {
 }
 
 export function initializeGrandfatheredDiscovery(): DiscoveryStateV2 {
-  return loadDiscoveryState() ?? initializeDiscoveryAfterSetup();
+  const { state, storageFailed } = readDiscoveryState();
+  if (state) return state;
+  // Storage failure is not absence. Use session defaults without overwriting disk data.
+  return storageFailed
+    ? { version: 2, pendingHints: [], dismissedHints: [] }
+    : initializeDiscoveryAfterSetup();
 }
 
 export function enqueueDiscoveryHint(id: DiscoveryHintId): DiscoveryStateV2 | null {
-  const state = loadDiscoveryState();
-  if (!state || state.pendingHints.includes(id) || state.dismissedHints.includes(id)) return state;
+  const { state, storageFailed } = readDiscoveryState();
+  if (storageFailed || !state || state.pendingHints.includes(id) || state.dismissedHints.includes(id)) return state;
   return saveState({ ...state, pendingHints: [...state.pendingHints, id] });
 }
 
 export function dismissDiscoveryHint(id: DiscoveryHintId): DiscoveryStateV2 | null {
-  const state = loadDiscoveryState();
-  if (!state || state.dismissedHints.includes(id)) return state;
+  const { state, storageFailed } = readDiscoveryState();
+  if (storageFailed || !state || state.dismissedHints.includes(id)) return state;
   return saveState({
     ...state,
     pendingHints: state.pendingHints.filter((pending) => pending !== id),
