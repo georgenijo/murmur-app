@@ -11,6 +11,11 @@
 //! any candidate that differs anywhere else. Timeouts, an unavailable OS or
 //! model, and rejected answers all deliver the deterministic text. Nothing in
 //! this module logs, persists, or transmits transcript text.
+//!
+//! The live dictation path currently does not reach the model at all (#1081):
+//! see [`FOUNDATION_MODELS_ON_DICTATION_PATH`]. The pass still finds
+//! confusable tokens and reports `unavailable` for them, so diagnostics show
+//! the pass would have run.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -18,6 +23,25 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::correction::{levenshtein, phonetic_key};
+
+/// The one switch for whether the live dictation path may use Apple
+/// FoundationModels (session preparation at recording start and the generation
+/// call at transform time). It is a code-level decision, separate from the
+/// user's "Resolve homophones" setting, which is never changed by it.
+///
+/// Off since #1081. Measured on macOS 27.0.1, a prepared first response takes
+/// 307-352 ms on an M4 Mac mini and 309-337 ms on an M5 Pro MacBook, so 0 of 26
+/// probe responses fit the 150 ms [`ENGINE_BUDGET`]. In production 23 of 23
+/// attempts timed out at 151-155 ms, so every triggered dictation waited the
+/// full budget and then delivered the unchanged deterministic text. A shorter
+/// cooldown alone would still leave 17 such waits in 176 dictations (p95 about
+/// 153 ms). While this is `false`, [`system_engine`] returns an engine that
+/// answers [`EngineError::Unavailable`] immediately and never touches the
+/// bridge; the pass then reports `unavailable` and delivers the deterministic
+/// text. Flip it back to `true` only with measurements showing the model
+/// answers inside the budget. The Swift bridge and [`FoundationModelsEngine`]
+/// stay in place for that.
+pub(crate) const FOUNDATION_MODELS_ON_DICTATION_PATH: bool = false;
 
 /// Hard end-to-end engine budget per dictation.
 pub(crate) const ENGINE_BUDGET: Duration = Duration::from_millis(150);
@@ -378,8 +402,8 @@ pub(crate) enum EngineError {
     Backoff,
 }
 
-/// The local language model. Production uses [`FoundationModelsEngine`];
-/// tests inject fakes.
+/// The local language model. Production uses [`FoundationModelsEngine`] only
+/// while [`FOUNDATION_MODELS_ON_DICTATION_PATH`] is on; tests inject fakes.
 pub(crate) trait HomophoneEngine: Send + Sync {
     /// Best effort only: never wait for preparation on the delivery path.
     fn prewarm(&self) {}
@@ -461,8 +485,11 @@ impl HomophoneEngine for BackoffEngine {
         }
         let started = Instant::now();
         let mut result = self.engine.choose(instructions, prompt, budget, max_tokens);
-        // Count a late successful response as a timeout, like run_pass does.
-        if result.is_ok() && started.elapsed() > budget {
+        // Anything that comes back after the budget is a timeout, whether it is
+        // an answer or an error, and it is classified before the backoff
+        // accounting below. A late `Failed` would otherwise reset the failure
+        // streak even though the dictation waited out the whole budget.
+        if started.elapsed() > budget {
             result = Err(EngineError::Timeout);
         }
         self.state.lock_or_recover().observe(&result, (self.now)());
@@ -482,6 +509,10 @@ pub(crate) enum PassOutcome {
     Accepted,
     Rejected,
     Timeout,
+    /// The pass would have run but the engine cannot be used: the OS or model
+    /// is missing, or [`FOUNDATION_MODELS_ON_DICTATION_PATH`] is off. Distinct
+    /// from `NotTriggered` (nothing to resolve) and `Backoff` (cooldown after
+    /// repeated failures).
     Unavailable,
     Failed,
     Backoff,
@@ -711,7 +742,25 @@ impl HomophoneEngine for FoundationModelsEngine {
     }
 }
 
-pub(crate) fn system_engine() -> Arc<dyn HomophoneEngine> {
+/// Stands in for the on-device model while
+/// [`FOUNDATION_MODELS_ON_DICTATION_PATH`] is off (#1081). It never reaches the
+/// FoundationModels bridge: preparation is the trait's no-op `prewarm`, and
+/// `choose` reports [`EngineError::Unavailable`] immediately, so [`run_pass`]
+/// records the `unavailable` outcome and delivers the deterministic text.
+///
+/// It is deliberately not wrapped in [`BackoffEngine`]. Backoff would count
+/// these answers as failures and, after three, turn the reported outcome into
+/// `backoff`, hiding that the model path is switched off.
+struct SuspendedEngine;
+
+impl HomophoneEngine for SuspendedEngine {
+    fn choose(&self, _: &str, _: &str, _: Duration, _: u32) -> Result<String, EngineError> {
+        Err(EngineError::Unavailable)
+    }
+}
+
+/// The FoundationModels engine behind the app-lifetime failure backoff.
+fn foundation_models_engine() -> Arc<dyn HomophoneEngine> {
     static STATE: OnceLock<Arc<Mutex<BackoffState>>> = OnceLock::new();
     Arc::new(BackoffEngine {
         engine: Arc::new(FoundationModelsEngine::default()),
@@ -720,6 +769,30 @@ pub(crate) fn system_engine() -> Arc<dyn HomophoneEngine> {
             .clone(),
         now: Box::new(Instant::now),
     })
+}
+
+/// Picks the engine for one live dictation. `foundation_models` is only called
+/// when the model is allowed on this path, so a suspended path constructs no
+/// model engine and can never prepare a session or issue a generation call.
+fn live_dictation_engine(
+    foundation_models_enabled: bool,
+    foundation_models: impl FnOnce() -> Arc<dyn HomophoneEngine>,
+) -> Arc<dyn HomophoneEngine> {
+    if foundation_models_enabled {
+        foundation_models()
+    } else {
+        Arc::new(SuspendedEngine)
+    }
+}
+
+/// The engine installed for live dictation, both at recording start (where it
+/// is prewarmed) and as the transform stage's default. See
+/// [`FOUNDATION_MODELS_ON_DICTATION_PATH`].
+pub(crate) fn system_engine() -> Arc<dyn HomophoneEngine> {
+    live_dictation_engine(
+        FOUNDATION_MODELS_ON_DICTATION_PATH,
+        foundation_models_engine,
+    )
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1021,6 +1094,192 @@ mod tests {
         let result = run_pass("Add it to the cue.", &[], &[], &SlowEngine);
         assert_eq!(result.outcome, PassOutcome::Timeout);
         assert_eq!(result.text, "Add it to the cue.");
+    }
+
+    /// Fails with a fixed error once a fixed delay has passed.
+    struct DelayedErrorEngine {
+        delay: Duration,
+        error: EngineError,
+        calls: AtomicUsize,
+    }
+
+    impl HomophoneEngine for DelayedErrorEngine {
+        fn choose(&self, _: &str, _: &str, _: Duration, _: u32) -> Result<String, EngineError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(self.delay);
+            Err(self.error)
+        }
+    }
+
+    #[test]
+    fn a_late_error_is_a_timeout_and_cannot_reset_the_failure_streak() {
+        // `sleep` never returns early, so every call outlasts the 1 ms budget
+        // and then fails with an error that is not itself a health failure.
+        let budget = Duration::from_millis(1);
+        let inner = Arc::new(DelayedErrorEngine {
+            delay: Duration::from_millis(10),
+            error: EngineError::Failed,
+            calls: AtomicUsize::new(0),
+        });
+        let engine = BackoffEngine {
+            engine: inner.clone(),
+            state: Arc::new(Mutex::new(BackoffState::default())),
+            now: Box::new(Instant::now),
+        };
+        for _ in 0..BACKOFF_FAILURE_LIMIT {
+            assert_eq!(engine.choose("", "", budget, 1), Err(EngineError::Timeout));
+        }
+        // The streak reached the limit instead of being reset by each failure.
+        assert_eq!(engine.choose("", "", budget, 1), Err(EngineError::Backoff));
+        assert_eq!(
+            inner.calls.load(Ordering::SeqCst),
+            BACKOFF_FAILURE_LIMIT as usize
+        );
+    }
+
+    #[test]
+    fn an_error_inside_the_budget_keeps_its_classification() {
+        let (engine, inner, _) = backoff_engine(vec![
+            Err(EngineError::Timeout),
+            Err(EngineError::Timeout),
+            Err(EngineError::Failed),
+            Err(EngineError::Timeout),
+            Err(EngineError::Timeout),
+            Ok("1=cue".into()),
+        ]);
+        let budget = Duration::from_secs(60);
+        let results: Vec<_> = (0..6).map(|_| engine.choose("", "", budget, 1)).collect();
+        // A prompt non-timeout error still resets the streak, so five calls with
+        // one such error in the middle never reach the backoff limit.
+        assert_eq!(
+            results,
+            vec![
+                Err(EngineError::Timeout),
+                Err(EngineError::Timeout),
+                Err(EngineError::Failed),
+                Err(EngineError::Timeout),
+                Err(EngineError::Timeout),
+                Ok("1=cue".to_string()),
+            ]
+        );
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 6);
+    }
+
+    /// The engine live dictation gets while the model is switched off. Building
+    /// the model engine through this factory is a test failure.
+    fn suspended_dictation_engine() -> Arc<dyn HomophoneEngine> {
+        live_dictation_engine(false, || -> Arc<dyn HomophoneEngine> {
+            panic!("the model engine must not be built while the dictation path is off")
+        })
+    }
+
+    #[test]
+    fn suspended_dictation_path_never_builds_prepares_or_calls_a_model_engine() {
+        let model = Arc::new(SequenceEngine {
+            answers: Mutex::new(std::collections::VecDeque::new()),
+            calls: AtomicUsize::new(0),
+            prewarms: AtomicUsize::new(0),
+        });
+        let built = AtomicUsize::new(0);
+        let engine = live_dictation_engine(false, || {
+            built.fetch_add(1, Ordering::SeqCst);
+            model.clone()
+        });
+        // Recording start prepares the engine; transform time asks it to choose.
+        engine.prewarm();
+        let result = run_pass("Add the job to the cue.", &[], &[], engine.as_ref());
+        assert_eq!(result.outcome, PassOutcome::Unavailable);
+        assert_eq!(built.load(Ordering::SeqCst), 0);
+        assert_eq!(model.prewarms.load(Ordering::SeqCst), 0);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn suspended_dictation_path_reports_unavailable_and_delivers_the_deterministic_text() {
+        let engine = suspended_dictation_engine();
+        let text = "Add the job to the cue, then deploy.";
+        let result = run_pass(text, &[], &[], engine.as_ref());
+        assert_eq!(result.outcome, PassOutcome::Unavailable);
+        assert_eq!(result.outcome.as_str(), "unavailable");
+        assert!(result.outcome.is_fallback());
+        assert!(result.flagged > 0);
+        assert_eq!(result.text, text);
+        assert!(result.replacements.is_empty());
+    }
+
+    #[test]
+    fn suspended_dictation_path_stays_unavailable_and_never_enters_backoff() {
+        let text = "Put it in the cue.  ";
+        // Well past the backoff limit on one engine, then a fresh engine, as
+        // each recording installs its own.
+        let engine = suspended_dictation_engine();
+        for _ in 0..2 * BACKOFF_FAILURE_LIMIT {
+            let result = run_pass(text, &[], &[], engine.as_ref());
+            assert_eq!(result.outcome, PassOutcome::Unavailable);
+            assert_eq!(result.text, text);
+        }
+        assert_eq!(
+            run_pass(text, &[], &[], suspended_dictation_engine().as_ref()).outcome,
+            PassOutcome::Unavailable
+        );
+    }
+
+    #[test]
+    fn suspended_dictation_path_keeps_unavailable_distinct_from_the_other_outcomes() {
+        let engine = suspended_dictation_engine();
+        let quiet = run_pass(
+            "Ship the release notes tomorrow morning.",
+            &[],
+            &[],
+            engine.as_ref(),
+        );
+        assert_eq!(quiet.outcome, PassOutcome::NotTriggered);
+        assert_eq!(quiet.flagged, 0);
+        let crowded = run_pass("cue cue cue cue cue cue cue", &[], &[], engine.as_ref());
+        assert_eq!(crowded.outcome, PassOutcome::BoundedSkip);
+        let triggered = run_pass("Add the job to the cue.", &[], &[], engine.as_ref());
+        assert_eq!(triggered.outcome, PassOutcome::Unavailable);
+        for other in [
+            PassOutcome::NotTriggered,
+            PassOutcome::BoundedSkip,
+            PassOutcome::Backoff,
+        ] {
+            assert_ne!(triggered.outcome.as_str(), other.as_str());
+        }
+    }
+
+    #[test]
+    fn enabled_dictation_path_uses_the_model_engine() {
+        let model = Arc::new(SequenceEngine {
+            answers: Mutex::new(vec![Ok("1: queue".to_string())].into()),
+            calls: AtomicUsize::new(0),
+            prewarms: AtomicUsize::new(0),
+        });
+        let engine = live_dictation_engine(true, || model.clone());
+        engine.prewarm();
+        let result = run_pass(
+            "Add the job to the cue, then deploy.",
+            &[],
+            &[],
+            engine.as_ref(),
+        );
+        assert_eq!(result.outcome, PassOutcome::Accepted);
+        assert_eq!(result.text, "Add the job to the queue, then deploy.");
+        assert_eq!(model.prewarms.load(Ordering::SeqCst), 1);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// Guards the shipped configuration. If this fails because
+    /// `FOUNDATION_MODELS_ON_DICTATION_PATH` was turned back on (#1081), update
+    /// it together with the measurements that justify the change.
+    #[test]
+    fn shipped_live_engine_is_suspended() {
+        let engine = system_engine();
+        engine.prewarm();
+        let text = "Add the job to the cue, then deploy.";
+        let result = run_pass(text, &[], &[], engine.as_ref());
+        assert_eq!(result.outcome, PassOutcome::Unavailable);
+        assert_eq!(result.text, text);
     }
 
     #[test]

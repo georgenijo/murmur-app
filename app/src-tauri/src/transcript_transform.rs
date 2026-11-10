@@ -423,7 +423,9 @@ pub(crate) struct TranscriptTransformResources {
     pub cli_lexicon: CliLexicon,
     pub ide_context_index: Option<Arc<IdeContextIndex>>,
     pub voice_command_runtime: Option<Arc<dyn crate::voice_commands::VoiceCommandRuntime>>,
-    /// `None` uses the on-device FoundationModels engine.
+    /// `None` uses `homophone_context::system_engine`, the live dictation
+    /// engine. While the on-device model is switched off on that path (#1081)
+    /// it reports `unavailable` and the deterministic text is delivered.
     pub homophone_engine: Option<Arc<dyn crate::homophone_context::HomophoneEngine>>,
 }
 
@@ -1060,6 +1062,33 @@ mod tests {
             .iter()
             .find(|s| s.stage == HOMOPHONE_CONTEXT_STAGE)
             .unwrap();
+        assert_eq!(report.outcome, StageOutcome::Fallback);
+        assert!(!report.changed);
+    }
+
+    #[test]
+    fn shipped_live_homophone_engine_falls_back_and_delivers_the_deterministic_text() {
+        // No injected engine: the stage uses the engine live dictation ships
+        // with. With the on-device model switched off (#1081) the enabled pass
+        // is still reported, as an optional fallback, and the text is untouched.
+        let context = live_context(TranscriptStageConfig {
+            smart_correction_enabled: true,
+            homophone_context_enabled: true,
+            ..TranscriptStageConfig::verbatim()
+        });
+        let output = transform_transcript(
+            "the cue".into(),
+            &context,
+            TranscriptTransformResources::empty(),
+        )
+        .unwrap();
+        assert_eq!(output.text, "the cue");
+        let report = output
+            .stages
+            .iter()
+            .find(|s| s.stage == HOMOPHONE_CONTEXT_STAGE)
+            .unwrap();
+        assert_eq!(report.failure_policy, StageFailurePolicy::OptionalFallback);
         assert_eq!(report.outcome, StageOutcome::Fallback);
         assert!(!report.changed);
     }

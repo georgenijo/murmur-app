@@ -108,8 +108,15 @@ The contract never uses numeric zero as a missing-data sentinel.
   rejected answer, and adaptive cooldown). A cooldown fallback records its
   actual short duration, including a legitimate measured 0 ms after rounding;
   disabled/non-live runs use `notApplicable`. An unavailable timing uses the
-  existing `unavailable { reason }` contract, never a synthetic zero. This row
-  is included in `transcriptTransform`, not additional time to add to it;
+  existing `unavailable { reason }` contract, never a synthetic zero. While the
+  on-device model is paused on the live dictation path (#1081), an enabled tier
+  that would have triggered records `fallback` with an immediate, near-zero
+  duration, and its content-free `homophone_context.pass` event carries
+  `outcome=unavailable`, distinct from `not_triggered` and `backoff`; a
+  dictation with no confusable word still records `completed`. No stored field
+  or enum changed for this, so records written before and after stay readable at
+  `schemaVersion: 1` and `user_version = 6`. This row is included in
+  `transcriptTransform`, not additional time to add to it;
 - optional file output;
 - clipboard/paste;
 - total post-stop processing;

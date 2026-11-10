@@ -71,7 +71,7 @@ The **transcript transform pipeline** (`transcript_transform.rs`) runs stages in
 1. `cleanup` — filler removal, capitalization
 2. `voice_commands` — typed replacements/snippets from the knowledge store
 3. `smart_correction` — vocabulary matcher (explicit aliases, register/cue-gated contextual variants, exact tier + optional fuzzy tier)
-4. `homophone_context` — opt-in live-only on-device spelling choices for flagged homophones; 150 ms optional fallback
+4. `homophone_context` — opt-in live-only on-device spelling choices for flagged homophones; 150 ms optional fallback. The model is paused on the live path (#1081): one switch, `FOUNDATION_MODELS_ON_DICTATION_PATH` in `homophone_context.rs`, keeps recording start from preparing a session and the stage from calling the model, so a pass that would have triggered reports `unavailable` and delivers the deterministic text
 5. `smart_formatting` — deterministic prose grammar, lists, same-utterance backtracking (live only)
 6. `spoken_structure` — punctuation, breaks, paired delimiters, symbols, and sentence-boundary editing (live only)
 7. `spoken_numbers` — English cardinals, times, dates, years, labels, and versions rendered under the frozen Mode register's prose or technical policy (live dictation)

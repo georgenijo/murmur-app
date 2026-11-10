@@ -724,10 +724,33 @@ text, model paths, or raw backend errors.
 
 `homophoneContextEnabled` defaults to false. Under Smart Correction, Resolve
 Homophones enables an experimental live-only tier immediately after deterministic
-correction and before formatting. It uses Apple's on-device FoundationModels
-(macOS 26+ with Apple Intelligence); no remote engine or fallback is configured.
-The setting is frozen at recording start and has no effect in Verbatim, imported
-files, or deterministic evaluation fixtures.
+correction and before formatting. When the model is allowed on the live path it
+uses Apple's on-device FoundationModels (macOS 26+ with Apple Intelligence); no
+remote engine or fallback is configured. The setting is frozen at recording start
+and has no effect in Verbatim, imported files, or deterministic evaluation
+fixtures.
+
+**Current status (#1081): the model is paused on the live dictation path.** The
+tier stays selectable and the saved setting is never changed, but live dictation
+does not reach the on-device model, because a single code-level switch,
+`FOUNDATION_MODELS_ON_DICTATION_PATH` in `homophone_context.rs`, is off. Measured
+on macOS 27.0.1, a prepared first response took 307–352 ms on an M4 Mac mini and
+309–337 ms on an M5 Pro MacBook, so none of 26 probe responses fit the 150 ms
+budget, and in production all 23 attempts timed out at 151–155 ms. Every
+dictation containing a confusable word therefore waited the full budget and then
+delivered unchanged text. A shorter cooldown alone would still have left 17 such
+waits in 176 dictations. While the switch is off, `system_engine()` returns an
+engine that answers `unavailable` immediately: recording start prepares no
+session, no generation request is made, and the 150 ms budget is unchanged.
+Scanning for confusable words still runs, so a dictation that would have
+triggered the pass reports `outcome=unavailable`, distinct from `not_triggered`
+(nothing to resolve), `bounded_skip`, and `backoff` (cooldown after repeated
+failures), and its `homophoneContext` stage is a `fallback`. The delivered text
+is the deterministic text through the existing optional-fallback path; there is
+no separate delivery path. The Swift bridge and `FoundationModelsEngine` stay in
+the tree, so the model can return to the live path by flipping that one switch
+once measurements show answers consistently inside the budget. The paragraphs
+below describe the tier's behavior with the switch on.
 
 The trigger matches whole word cores against curated confusable groups (including
 cue/queue, cloud/Claude, CPO/CPU, there/their/they're, Maine/main) and close phonetic
@@ -736,9 +759,9 @@ learned replacements remain authoritative: their output spans are protected, and
 already canonical vocabulary spellings are skipped. Multiword aliases continue
 through deterministic correction; this tier does not rewrite phrases.
 
-Recording start prepares a fresh, one-use FoundationModels session only when the
-frozen Smart Correction and homophone settings enable this tier. Preparation
-runs asynchronously with static instructions and no transcript. Its owner lives
+With the switch on, recording start prepares a fresh, one-use FoundationModels
+session only when the frozen Smart Correction and homophone settings enable this
+tier. Preparation runs asynchronously with static instructions and no transcript. Its owner lives
 in that recording's immutable snapshot; stale work can publish only into that
 disposable owner. Generation consumes the session exactly once, so no prior
 transcript or response can enter another dictation. If preparation is still
@@ -755,18 +778,22 @@ at most 150 ms, cancels overdue work, and refuses another request until that tas
 exits. Three consecutive timeouts or model-unavailable results pause inference
 and preparation for five minutes of monotonic time. The next eligible attempt
 then retries; an engine success resets the failure count (including an
-unchanged spelling). Other engine failures also break the consecutive streak.
-The cooldown is app-lifetime memory shared across recording sessions, resets
+unchanged spelling). Other engine failures that arrive inside the budget also
+break the consecutive streak; any result that arrives after the budget, answer or
+error, counts as a timeout before this accounting, so a late failure cannot reset
+the streak. The cooldown is app-lifetime memory shared across recording sessions, resets
 on relaunch, and does not depend on wall-clock changes. It leaves deterministic
 text byte-for-byte unchanged. Content-free structured events
 `homophone_context.backoff_entered` / `homophone_context.backoff_exited` mark
 transitions; `homophone_context.pass` reports `outcome=backoff` for skipped
-inference. Unavailable models, errors, late answers and failed validation use the
+inference and `outcome=unavailable` when the pass would have run but the engine
+cannot be used, including while the model is paused on the live path. Unavailable
+models, errors, late answers and failed validation use the
 pipeline's optional-fallback policy and deliver deterministic text. Stage timing
 and pass outcomes/counts are content-free; neither prompt nor answer is logged.
 Performance runs persist the separate `homophoneContext` duration/outcome inside
-the aggregate transcript-transform span; timeout/backoff uses `fallback`, while
-a disabled tier is `notApplicable`. A measured sub-millisecond pass may be 0 ms;
+the aggregate transcript-transform span; timeout/unavailable/backoff uses
+`fallback`, while a disabled tier is `notApplicable`. A measured sub-millisecond pass may be 0 ms;
 that is an actual measurement, never a missing-data sentinel.
 
 CI uses floating `macos-latest` (observed image 20261013.0424: macOS 26 ARM64,
@@ -774,7 +801,10 @@ default Xcode 26.6 with macOS SDK 26.5). `canImport` gates the
 bridge for older SDKs, availability guards gate older runtimes, and the framework
 is weakly linked. SDK 27 builds retain the macOS 14 deployment target.
 Focused fake-engine tests cover triggers, no-call neutrality, restricted diffs,
-scoping/protection, failures and late answers. An explicitly ignored
+scoping/protection, failures, late answers and late errors. Further tests cover
+the paused live path: no model engine is built, no session is prepared and no
+generation call is made, the outcome is `unavailable` rather than `not_triggered`
+or `backoff` however many dictations repeat, and the text is unchanged. An explicitly ignored
 `synthetic_system_engine_metrics` test measures content-free trigger, latency and
 accuracy aggregates on synthetic phrases. It is not evidence to enable this by
 default; real model improvement must be established before changing that default.
@@ -787,7 +817,8 @@ while its cancellation completed; maximum observed pass wall time was 161.4 ms
 1.48 ms including cold initialization. Five additional requests spaced one
 second apart all timed out (153.4–155.1 ms bridge wall time). These results do
 not establish an accuracy benefit within the budget. The tier stays opt-in;
-default enablement needs successful on-device accuracy and latency evidence.
+default enablement needs successful on-device accuracy and latency evidence, and
+so does returning the model to the live path (#1081).
 
 ## Optional warm microphone standby
 

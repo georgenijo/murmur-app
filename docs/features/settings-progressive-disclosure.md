@@ -104,8 +104,11 @@ Smart destination row/search item, a confirmed absent NotchPill integration,
 and `supported: false` for remote-speaker labeling. Unknown capability is not
 interpreted as unsupported. Downloadable models remain offered, and temporary
 model/language/runtime/recording unavailability retains the disabled contract.
-No immutable backend setting, permission workflow or private-data boundary
-was changed.
+The Resolve homophones switch follows the same rule while the on-device model is
+paused on the live dictation path (#1081): the row stays visible, keeps its saved
+value and copy, and is never flipped by the pause; the pass reports `unavailable`
+and delivers the deterministic text. No immutable backend setting, permission
+workflow or private-data boundary was changed.
 
 ## Verification and native handoff
 

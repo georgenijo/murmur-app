@@ -5461,6 +5461,8 @@ pub async fn start_native_recording(
         // Still under recording_transition and after the exact-owner Activate
         // check. Swift returns immediately; async publication is confined to
         // this context's disposable owner, never app-wide recording state.
+        // While the model is switched off on the dictation path (#1081) this
+        // engine's prewarm is a no-op, so no session is prepared.
         engine.prewarm();
     }
     publish_recording_ready_if_audio_ready(&app_handle, rid, context_ready_at);
