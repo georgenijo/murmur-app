@@ -278,7 +278,7 @@ stay local and never reach logs or telemetry. See
 | `microphone_preview.rs` | Capture-only microphone-test state, VAD analysis, level accumulation, and quiet or clipping classification |
 | `model_artifact.rs` | Size and prefix validation that rejects HTML, JSON, and Git LFS responses masquerading as downloaded model binaries |
 | `coreml_installer.rs` | Same-signed killable Core ML install worker/supervisor: bounded phases, hard deadline, confirmed process-group cleanup |
-| `performance_metrics/` | SQLite run history, stage timings, resource samples, retention |
+| `performance_metrics/` | SQLite run history, stage timings, resource samples, retention; `shadow.rs` holds the content-free early-final shadow measurement |
 | `platform/` | macOS CPU/resource metrics seam |
 | `resource_monitor.rs` | CPU/RSS sampling, 1s heartbeat, idle-timeout enforcement |
 | `smart_formatting.rs` | Deterministic prose formatting and same-utterance backtracking |
@@ -287,10 +287,11 @@ stay local and never reach logs or telemetry. See
 | `spoken_structure.rs` | Single owner for spoken punctuation, layout, symbols, arbitration, and `scratch that` |
 | `sqlite_support.rs` | Shared SQLite pragma, integrity, schema-version, sidecar quarantine, timestamp, and newest-first file helpers |
 | `state.rs` | `DictationStatus`, `TransformStatus`, `DictationState`, `AppState` |
+| `stop_gesture.rs` | Content-free press/release stamps of a double-tap stop, keyed by recording generation, for the `stopPressToRelease` and `stopReleaseToCommand` stages |
 | `telemetry.rs` | Structured event system: `TauriEmitterLayer`, ring buffer, JSONL, privacy stripping |
 | `transcriber/` | `TranscriptionBackend` trait + whisper / parakeet / coreml implementations |
 | `transcript_transform.rs` | The ordered post-recognition pipeline and its stage contracts |
-| `vad.rs` | Silero VAD filtering, thread-local context cache |
+| `vad.rs` | Silero VAD filtering (`filter_speech`, and `filter_speech_detailed` with its segment bounds), thread-local context cache |
 | `vocab.rs`, `vocabulary_alias.rs` | Code-vocabulary scanning and explicit spoken aliases |
 | `voice_commands.rs` | Typed voice command execution and variable expansion |
 
@@ -370,7 +371,7 @@ All backends take one authoritative final-after-stop pass; delivery happens exac
 One persistent rdev background thread feeds dictation hold-down and double-tap detectors plus Paste Last.
 
 - **Hold-down** — 2 states; press emits `hold-down-start`, release emits `hold-down-stop`. Combos (trigger+letter) cancel.
-- **Double-tap** — 4 states; each tap under 200ms, gap under 400ms. Rejects holds, combos, slow taps, triple-tap spam. Emits `hotkey-tap-rejected` when an idle first tap expires (opt-in overlay feedback).
+- **Double-tap** — 4 states; each tap under 200ms, gap under 400ms. Rejects holds, combos, slow taps, triple-tap spam. Emits `hotkey-tap-rejected` when an idle first tap expires (opt-in overlay feedback). While a recording is live it stamps the press and release of the tap that stops it and publishes the pair to `stop_gesture.rs` just before `double-tap-toggle`; any rejected tap drops its press.
 - **Both** — deferred hold promotion: a 200ms timer thread with an atomic invalidation counter decides tap-vs-hold. Releasing before 200ms invalidates the timer; still held at 200ms promotes to a hold.
 
 **macOS thread safety.** rdev's key translation uses TIS/TSM APIs that must run on the main thread. `rdev::set_is_main_thread(false)` is called before `listen()`, which makes rdev marshal only those calls to main via `dispatch_sync` while the listener loop stays on its background thread. Without it, the app silently segfaults.

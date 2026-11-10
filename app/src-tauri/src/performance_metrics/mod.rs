@@ -1,5 +1,6 @@
 pub(crate) mod production;
 mod repository;
+pub(crate) mod shadow;
 mod types;
 
 pub use types::*;
@@ -15,6 +16,7 @@ pub(crate) struct PerformanceMetrics {
     inner: Arc<Mutex<PerformanceMetricsInner>>,
     operation_lock: Arc<Mutex<()>>,
     production: Arc<Mutex<production::ProductionAccumulator>>,
+    shadow: Arc<Mutex<shadow::ShadowAccumulator>>,
 }
 
 impl Default for PerformanceMetrics {
@@ -23,6 +25,7 @@ impl Default for PerformanceMetrics {
             inner: Arc::new(Mutex::new(PerformanceMetricsInner::default())),
             operation_lock: Arc::new(Mutex::new(())),
             production: Arc::new(Mutex::new(production::ProductionAccumulator::default())),
+            shadow: Arc::new(Mutex::new(shadow::ShadowAccumulator::default())),
         }
     }
 }
@@ -184,6 +187,35 @@ impl PerformanceMetrics {
                     |active| active.production = Some(snapshot.clone()),
                 )
             });
+        self.observe(result).map(|_| ())
+    }
+
+    /// Attach the post-delivery early-final shadow measurement (#1081) to the
+    /// dictation `id`. It rides along with the run when delivery has not been
+    /// persisted yet, and otherwise amends the delivered row. It never creates
+    /// a row: a cleared or pruned run simply drops the measurement. Holding the
+    /// operation lock orders this against `complete`, so exactly one of the two
+    /// paths carries the measurement.
+    pub(crate) fn record_shadow(
+        &self,
+        id: u64,
+        measurement: shadow::ShadowMeasurementV1,
+    ) -> Result<(), String> {
+        let _operation = self
+            .operation_lock
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let delivered_run_id = self
+            .shadow
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .record(id, measurement.clone());
+        let Some(run_id) = delivered_run_id else {
+            return Ok(());
+        };
+        let result = self
+            .repository(PerformanceStoreOperationV1::Update)
+            .and_then(|repository| repository.update_completed_shadow(&run_id, id, &measurement));
         self.observe(result).map(|_| ())
     }
 
@@ -449,8 +481,29 @@ impl PerformanceMetrics {
                             active.production = production.clone()
                         })?;
                     }
+                    // A shadow measurement that finished before this delivery
+                    // was persisted rides along with the run.
+                    let shadow = if let RunCorrelationV1::Dictation { recording_id } = correlation {
+                        self.shadow
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .pending(*recording_id)
+                    } else {
+                        None
+                    };
+                    if shadow.is_some() {
+                        repository
+                            .update_active(correlation, |active| active.shadow = shadow.clone())?;
+                    }
                     let completed =
                         repository.complete(correlation, outcome, stages, input, runtimes)?;
+                    if let RunCorrelationV1::Dictation { recording_id } = correlation {
+                        let mut accumulator = self.shadow.lock().unwrap_or_else(|p| p.into_inner());
+                        match &completed {
+                            Some(run) => accumulator.completed(*recording_id, &run.run_id),
+                            None => accumulator.forget_pending(*recording_id),
+                        }
+                    }
                     if let (RunCorrelationV1::Dictation { recording_id }, Some(run)) =
                         (correlation, &completed)
                     {
@@ -564,6 +617,10 @@ impl PerformanceMetrics {
                 .and_then(|repository| repository.clear());
             self.observe(result)?;
             self.production
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+            self.shadow
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .clear();
@@ -793,7 +850,7 @@ mod tests {
         let decoded: PerformanceRunV1 = serde_json::from_str(&payload).unwrap();
         assert_eq!(decoded, run);
         assert_eq!(decoded.schema_version, PERFORMANCE_RUN_SCHEMA_VERSION);
-        assert_eq!(decoded.stages.len(), 31);
+        assert_eq!(decoded.stages.len(), 33);
     }
 
     #[test]
@@ -1267,6 +1324,101 @@ mod production_persistence_tests {
             .update_completed_capture(&new.run_id, 19, &capture)
             .unwrap());
         assert_eq!(metrics.get(&new.run_id).unwrap(), Some(new));
+    }
+
+    fn shadow_sample(trailing_ms: u64) -> shadow::ShadowMeasurementV1 {
+        shadow::ShadowMeasurementV1 {
+            schema_version: shadow::SHADOW_SCHEMA_VERSION,
+            trailing_silence_before_press_ms: MeasurementV1::measured(trailing_ms),
+            trailing_silence_before_stop_ms: MeasurementV1::measured(trailing_ms + 100),
+            press_prefix_matches_final: MeasurementV1::measured(true),
+            pause_prefix_matches_final: MeasurementV1::NotApplicable,
+            model_free_at_press: MeasurementV1::measured(true),
+            decode_deterministic: MeasurementV1::NotApplicable,
+        }
+    }
+
+    #[test]
+    fn shadow_finished_before_delivery_rides_along_with_the_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+        begin(&metrics, 31);
+        metrics.record_shadow(31, shadow_sample(250)).unwrap();
+        // Nothing is written until the run itself is delivered.
+        assert!(metrics.list(200).unwrap().runs.is_empty());
+        let run = finish(&metrics, 31);
+        assert_eq!(run.shadow, Some(shadow_sample(250)));
+        assert_eq!(metrics.get(&run.run_id).unwrap(), Some(run));
+    }
+
+    #[test]
+    fn shadow_finished_after_delivery_amends_only_the_delivered_row() {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+        begin(&metrics, 32);
+        let delivered = finish(&metrics, 32);
+        assert_eq!(delivered.shadow, None);
+        metrics.record_shadow(32, shadow_sample(400)).unwrap();
+        let mut expected = delivered.clone();
+        expected.shadow = Some(shadow_sample(400));
+        assert_eq!(metrics.get(&delivered.run_id).unwrap(), Some(expected));
+        // A second report for the same run is not amended again: the first
+        // follow-up per recording wins, and nothing queues up for a later row.
+        metrics.record_shadow(32, shadow_sample(999)).unwrap();
+        assert_eq!(
+            metrics.get(&delivered.run_id).unwrap().unwrap().shadow,
+            Some(shadow_sample(400))
+        );
+    }
+
+    #[test]
+    fn shadow_cannot_resurrect_a_cleared_run_or_land_on_a_reused_recording_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+        begin(&metrics, 33);
+        let old = finish(&metrics, 33);
+        metrics.clear().unwrap();
+        metrics.record_shadow(33, shadow_sample(100)).unwrap();
+        assert!(metrics.list(200).unwrap().runs.is_empty());
+
+        // The same recording ID is reused after diagnostics were cleared (or
+        // after a restart): a measurement for the old run must not land on it.
+        begin(&metrics, 33);
+        let new = finish(&metrics, 33);
+        let repository = metrics
+            .repository(PerformanceStoreOperationV1::Update)
+            .unwrap();
+        assert!(!repository
+            .update_completed_shadow(&old.run_id, 33, &shadow_sample(100))
+            .unwrap());
+        assert!(!repository
+            .update_completed_shadow(&new.run_id, 34, &shadow_sample(100))
+            .unwrap());
+        assert_eq!(metrics.get(&new.run_id).unwrap(), Some(new));
+    }
+
+    #[test]
+    fn shadow_for_a_run_dropped_before_delivery_is_forgotten() {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics.initialize(temp.path().to_path_buf(), None).unwrap();
+        begin(&metrics, 35);
+        let correlation = RunCorrelationV1::Dictation { recording_id: 35 };
+        // Diagnostics are cleared while the run is in flight, so its row is
+        // dropped at completion instead of delivered.
+        metrics.clear().unwrap();
+        metrics.record_shadow(35, shadow_sample(10)).unwrap();
+        assert_eq!(
+            metrics
+                .complete(&correlation, RunOutcomeV1::Success, Vec::new(), None, None)
+                .unwrap(),
+            None
+        );
+        assert!(metrics.shadow.lock().unwrap().pending(35).is_none());
+        assert!(metrics.list(200).unwrap().runs.is_empty());
     }
 
     #[test]

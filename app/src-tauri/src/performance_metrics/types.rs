@@ -238,6 +238,10 @@ pub enum PerformanceStageV1 {
     Undo,
     ReleaseToStop,
     ReleaseToPaste,
+    /// Double-tap stop key press -> release (#1081).
+    StopPressToRelease,
+    /// Double-tap stop key release -> `stop_native_recording` entry (#1081).
+    StopReleaseToCommand,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -611,6 +615,10 @@ pub struct PerformanceRunV1 {
     pub query_process: Option<QueryProcessSummaryV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub production: Option<super::production::ProductionRunV1>,
+    /// Content-free early-final shadow measurement (#1081). Absent on records written before the
+    /// field existed and on runs whose post-delivery follow-up never finished.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<super::shadow::ShadowMeasurementV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -630,6 +638,8 @@ pub(crate) struct ActiveRunV1 {
     pub query_process: Option<QueryProcessSummaryV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub production: Option<super::production::ProductionRunV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<super::shadow::ShadowMeasurementV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

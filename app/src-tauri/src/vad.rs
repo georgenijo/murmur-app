@@ -51,6 +51,18 @@ pub fn threshold_for_sensitivity(sensitivity: u32) -> f32 {
     1.0 - (sensitivity.clamp(0, 100) as f32 / 100.0)
 }
 
+/// Sample range kept by the VAD (start inclusive, end exclusive) in the
+/// original clip. Includes the [`SPEECH_PAD_MS`] padding on both sides.
+pub type SpeechRange = std::ops::Range<usize>;
+
+/// A filter result together with the clip ranges it was built from.
+pub struct DetailedVad {
+    pub result: VadResult,
+    /// Non-empty kept ranges in segment order, clamped to the clip. These are
+    /// exactly the slices concatenated into `result`.
+    pub ranges: Vec<SpeechRange>,
+}
+
 /// Run Silero VAD on the given 16kHz mono samples and return only speech segments.
 ///
 /// `model_path` must point to a valid Silero VAD GGML model file.
@@ -61,6 +73,16 @@ pub fn filter_speech(
     samples: &[f32],
     threshold: f32,
 ) -> Result<VadResult, String> {
+    filter_speech_detailed(model_path, samples, threshold).map(|detailed| detailed.result)
+}
+
+/// [`filter_speech`] that also exposes the kept segment bounds. The filtered
+/// output is built by the same code, so it is identical for every caller.
+pub fn filter_speech_detailed(
+    model_path: &str,
+    samples: &[f32],
+    threshold: f32,
+) -> Result<DetailedVad, String> {
     VAD_CONTEXT.with(|cache| {
         let mut cached = cache.borrow_mut();
         if cached
@@ -87,7 +109,7 @@ fn filter_speech_with_context(
     ctx: &mut WhisperVadContext,
     samples: &[f32],
     threshold: f32,
-) -> Result<VadResult, String> {
+) -> Result<DetailedVad, String> {
     let mut vad_params = WhisperVadParams::default();
     vad_params.set_threshold(threshold);
     // Preserve the initial consonant around VAD boundaries. The upstream
@@ -101,12 +123,15 @@ fn filter_speech_with_context(
 
     let num_segments = segments.num_segments();
     if num_segments == 0 {
-        return Ok(VadResult::NoSpeech);
+        return Ok(DetailedVad {
+            result: VadResult::NoSpeech,
+            ranges: Vec::new(),
+        });
     }
 
     let sample_rate = 16_000.0_f32;
     let total_samples = samples.len();
-    let mut speech_samples = Vec::new();
+    let mut ranges = Vec::new();
 
     for seg in segments {
         // Timestamps are in centiseconds (cs); convert to sample indices
@@ -117,14 +142,82 @@ fn filter_speech_with_context(
         let end_idx = end_idx.min(total_samples);
 
         if start_idx < end_idx {
-            speech_samples.extend_from_slice(&samples[start_idx..end_idx]);
+            ranges.push(start_idx..end_idx);
         }
     }
 
+    Ok(DetailedVad {
+        result: concatenate_ranges(samples, &ranges),
+        ranges,
+    })
+}
+
+/// Concatenate the kept ranges in order. No ranges means no speech.
+fn concatenate_ranges(samples: &[f32], ranges: &[SpeechRange]) -> VadResult {
+    let mut speech_samples = Vec::new();
+    for range in ranges {
+        speech_samples.extend_from_slice(&samples[range.clone()]);
+    }
     if speech_samples.is_empty() {
-        Ok(VadResult::NoSpeech)
+        VadResult::NoSpeech
     } else {
-        Ok(VadResult::Speech(speech_samples))
+        VadResult::Speech(speech_samples)
+    }
+}
+
+/// Samples per millisecond of the 16 kHz mono clips the VAD consumes.
+pub const SAMPLES_PER_MS: usize = 16;
+
+/// Shortest pause the early-input shadow measurement treats as a pause.
+pub const SHADOW_MIN_PAUSE_MS: usize = 300;
+
+/// Silence, in samples, between the last speech at or before `position` and
+/// `position`. Zero when a segment covers `position`; `position` itself when no
+/// speech precedes it. `ranges` are ordered, as returned by the VAD.
+pub fn trailing_silence_samples(ranges: &[SpeechRange], position: usize) -> usize {
+    ranges
+        .iter()
+        .filter(|range| range.start < position)
+        .map(|range| range.end.min(position))
+        .max()
+        .map_or(position, |last_end| position - last_end)
+}
+
+/// End of the last kept range, if any speech was kept.
+pub fn last_speech_end(ranges: &[SpeechRange]) -> Option<usize> {
+    ranges.iter().map(|range| range.end).max()
+}
+
+/// Where a trigger waiting for a pause of at least `min_pause` samples would
+/// have fired on its latest qualifying pause: `min_pause` after the pause
+/// began. The pause is the gap between consecutive kept ranges, or the gap
+/// between the last range and the end of the clip. `None` when no gap
+/// qualifies. A gap between ranges that qualifies yields a cut that is
+/// followed by more speech, so the audio up to it is a strict prefix.
+pub fn last_pause_cut(ranges: &[SpeechRange], clip_len: usize, min_pause: usize) -> Option<usize> {
+    let mut cut = None;
+    for window in ranges.windows(2) {
+        if window[1].start.saturating_sub(window[0].end) >= min_pause {
+            cut = Some(window[0].end + min_pause);
+        }
+    }
+    if let Some(last) = ranges.last() {
+        if clip_len.saturating_sub(last.end) >= min_pause {
+            cut = Some(last.end + min_pause);
+        }
+    }
+    cut
+}
+
+/// Whether two filter outputs are byte-identical: the same kind of result and,
+/// for speech, the same samples bit for bit. Two "no speech" results match.
+pub fn outputs_identical(a: &VadResult, b: &VadResult) -> bool {
+    match (a, b) {
+        (VadResult::NoSpeech, VadResult::NoSpeech) => true,
+        (VadResult::Speech(a), VadResult::Speech(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.to_bits() == b.to_bits())
+        }
+        _ => false,
     }
 }
 
@@ -218,6 +311,112 @@ mod tests {
         assert_eq!(threshold_for_sensitivity(50), 0.5);
         assert_eq!(threshold_for_sensitivity(100), 0.0);
         assert_eq!(threshold_for_sensitivity(150), 0.0);
+    }
+
+    #[test]
+    fn concatenated_ranges_are_the_filtered_output() {
+        let samples: Vec<f32> = (0..20).map(|i| i as f32).collect();
+        let VadResult::Speech(kept) = concatenate_ranges(&samples, &[2..4, 10..13]) else {
+            panic!("ranges keep speech");
+        };
+        assert_eq!(kept, vec![2.0, 3.0, 10.0, 11.0, 12.0]);
+        assert!(matches!(
+            concatenate_ranges(&samples, &[]),
+            VadResult::NoSpeech
+        ));
+    }
+
+    #[test]
+    fn trailing_silence_is_measured_from_the_last_speech_before_a_position() {
+        let ranges = [100..400, 1_000..1_600];
+        // Between segments: 600 samples after the first one.
+        assert_eq!(trailing_silence_samples(&ranges, 1_000), 600);
+        // A position inside a segment has no trailing silence.
+        assert_eq!(trailing_silence_samples(&ranges, 1_200), 0);
+        // After the final segment, up to the end of a clip.
+        assert_eq!(trailing_silence_samples(&ranges, 2_000), 400);
+        // Before any speech the whole prefix is silence.
+        assert_eq!(trailing_silence_samples(&ranges, 50), 50);
+        assert_eq!(trailing_silence_samples(&[], 800), 800);
+        assert_eq!(last_speech_end(&ranges), Some(1_600));
+        assert_eq!(last_speech_end(&[]), None);
+    }
+
+    // A single speech segment is the input here, not a mistyped `[0; 16_000]`.
+    #[allow(clippy::single_range_in_vec_init)]
+    #[test]
+    fn trailing_silence_in_milliseconds_uses_the_sixteen_khz_clock() {
+        let ranges = [0..16_000];
+        let silence = trailing_silence_samples(&ranges, 16_000 + 4_800);
+        assert_eq!(silence / SAMPLES_PER_MS, 300);
+    }
+
+    // A single speech segment is the input here, not a mistyped `[0; 1_000]`.
+    #[allow(clippy::single_range_in_vec_init)]
+    #[test]
+    fn last_pause_cut_fires_a_minimum_pause_after_the_pause_began() {
+        let pause = SHADOW_MIN_PAUSE_MS * SAMPLES_PER_MS;
+        // Trailing silence of exactly the minimum pause qualifies and the cut
+        // is the end of the clip.
+        let ranges = [0..1_000];
+        assert_eq!(
+            last_pause_cut(&ranges, 1_000 + pause, pause),
+            Some(1_000 + pause)
+        );
+        // Longer trailing silence cuts earlier than the clip end.
+        assert_eq!(
+            last_pause_cut(&ranges, 1_000 + 3 * pause, pause),
+            Some(1_000 + pause)
+        );
+        // Below the minimum there is no pause.
+        assert_eq!(last_pause_cut(&ranges, 1_000 + pause - 1, pause), None);
+        assert_eq!(last_pause_cut(&[], 10 * pause, pause), None);
+    }
+
+    #[test]
+    fn last_pause_cut_prefers_the_latest_qualifying_pause() {
+        let pause = 300 * SAMPLES_PER_MS;
+        let ranges = [
+            0..1_000,
+            1_000 + 2 * pause..2_000 + 2 * pause,
+            10_000 + 2 * pause..11_000 + 2 * pause,
+        ];
+        // Both interior gaps qualify; the later one wins, and speech follows it.
+        let clip_len = 11_000 + 2 * pause + 100;
+        assert_eq!(
+            last_pause_cut(&ranges, clip_len, pause),
+            Some(2_000 + 2 * pause + pause)
+        );
+        // A qualifying trailing pause is later than any interior one.
+        assert_eq!(
+            last_pause_cut(&ranges, 11_000 + 2 * pause + pause, pause),
+            Some(11_000 + 2 * pause + pause)
+        );
+    }
+
+    #[test]
+    fn identical_outputs_compare_bit_for_bit() {
+        let speech = |samples: &[f32]| VadResult::Speech(samples.to_vec());
+        assert!(outputs_identical(
+            &VadResult::NoSpeech,
+            &VadResult::NoSpeech
+        ));
+        assert!(outputs_identical(
+            &speech(&[0.0, 0.5, -0.25]),
+            &speech(&[0.0, 0.5, -0.25])
+        ));
+        // Different length, different value, and sign of zero all differ.
+        assert!(!outputs_identical(
+            &speech(&[0.0, 0.5]),
+            &speech(&[0.0, 0.5, 0.5])
+        ));
+        assert!(!outputs_identical(
+            &speech(&[0.0, 0.5]),
+            &speech(&[0.0, 0.25])
+        ));
+        assert!(!outputs_identical(&speech(&[0.0]), &speech(&[-0.0])));
+        assert!(!outputs_identical(&VadResult::NoSpeech, &speech(&[0.0])));
+        assert!(!outputs_identical(&speech(&[0.0]), &VadResult::NoSpeech));
     }
 
     #[test]

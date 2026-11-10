@@ -79,6 +79,7 @@ mod spoken_numbers;
 mod spoken_structure;
 mod sqlite_support;
 mod state;
+mod stop_gesture;
 pub mod telemetry;
 pub mod transcriber;
 mod transcript_transform;

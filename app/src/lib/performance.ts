@@ -61,7 +61,9 @@ export type PerformanceStageV1 =
   | 'apply'
   | 'undo'
   | 'releaseToStop'
-  | 'releaseToPaste';
+  | 'releaseToPaste'
+  | 'stopPressToRelease'
+  | 'stopReleaseToCommand';
 
 export type StageOutcomeV1 = 'completed' | 'skipped' | 'fallback' | 'failed';
 
@@ -236,6 +238,29 @@ export type RunOutcomeV1 =
         | 'interruptedByRestart';
     };
 
+/**
+ * Early-final shadow measurement of one dictation (#1081). Numbers and
+ * booleans only: it never carries transcript, audio, clipboard or selection
+ * content, nor a hash of any. Written after delivery, so a run without it was
+ * recorded before the field existed or its follow-up never finished: that is
+ * "not measured", never zero.
+ */
+export interface ShadowMeasurementV1 {
+  schemaVersion: 1;
+  /** Silence between the last VAD speech and the stop-key press. */
+  trailingSilenceBeforePressMs: MeasurementV1<number>;
+  /** Silence between the last VAD speech and the end of the clip. */
+  trailingSilenceBeforeStopMs: MeasurementV1<number>;
+  /** VAD output up to the press is byte-identical to the full-clip output. */
+  pressPrefixMatchesFinal: MeasurementV1<boolean>;
+  /** The same, for the audio up to the last pause of at least 300 ms. */
+  pausePrefixMatchesFinal: MeasurementV1<boolean>;
+  /** No live preview held the transcription backend at the press. */
+  modelFreeAtPress: MeasurementV1<boolean>;
+  /** A second decode of the same filtered audio gave the same text. */
+  decodeDeterministic: MeasurementV1<boolean>;
+}
+
 export interface PerformanceRunV1 {
   schemaVersion: 1;
   runId: string;
@@ -261,6 +286,8 @@ export interface PerformanceRunV1 {
     stderrPresent: boolean;
   };
   production?: ProductionRunV1 | null;
+  /** Dictation runs only, and only once the post-delivery follow-up finished. */
+  shadow?: ShadowMeasurementV1;
 }
 
 export interface PerformanceRunListV1 {
@@ -330,13 +357,14 @@ export const PERFORMANCE_STAGES_V1: readonly PerformanceStageV1[] = [
   'fileOutput', 'clipboardPaste', 'fileReturn', 'totalProcessing',
   'selectedTextCapture', 'instructionCapture', 'instructionAsr',
   'sidecarSpawnLoad', 'generation', 'reviewReady', 'apply', 'undo',
-  'releaseToStop', 'releaseToPaste',
+  'releaseToStop', 'releaseToPaste', 'stopPressToRelease', 'stopReleaseToCommand',
 ] as const;
 const performanceStages = new Set<PerformanceStageV1>(PERFORMANCE_STAGES_V1);
 // Stages added after the first v1 records shipped. Historical records omit
 // them; that absence must not be read as a measured zero.
 const ADDITIVE_STAGES_V1 = new Set<PerformanceStageV1>([
   'inferenceQueue', 'releaseToStop', 'releaseToPaste', 'homophoneContext',
+  'stopPressToRelease', 'stopReleaseToCommand',
 ]);
 const sizeBuckets = new Set<SizeBucketV1>([
   'empty', 'tiny', 'small', 'medium', 'large', 'extraLarge',
@@ -695,6 +723,24 @@ function isProductionGestureV1(value: unknown): value is ProductionGestureV1 {
     && durations.every(key => isMeasurementV1(value[key], isNonNegativeSafeInteger));
 }
 
+const isBoolean = (candidate: unknown): candidate is boolean => typeof candidate === 'boolean';
+
+function isShadowMeasurementV1(value: unknown): value is ShadowMeasurementV1 {
+  return isRecord(value)
+    && hasExactKeys(value, [
+      'schemaVersion', 'trailingSilenceBeforePressMs', 'trailingSilenceBeforeStopMs',
+      'pressPrefixMatchesFinal', 'pausePrefixMatchesFinal', 'modelFreeAtPress',
+      'decodeDeterministic',
+    ])
+    && value.schemaVersion === 1
+    && isMeasurementV1(value.trailingSilenceBeforePressMs, isNonNegativeSafeInteger)
+    && isMeasurementV1(value.trailingSilenceBeforeStopMs, isNonNegativeSafeInteger)
+    && isMeasurementV1(value.pressPrefixMatchesFinal, isBoolean)
+    && isMeasurementV1(value.pausePrefixMatchesFinal, isBoolean)
+    && isMeasurementV1(value.modelFreeAtPress, isBoolean)
+    && isMeasurementV1(value.decodeDeterministic, isBoolean);
+}
+
 function isRunCorrelation(value: unknown, kind: PerformanceRunKindV1): value is RunCorrelationV1 {
   if (!isRecord(value) || value.kind !== kind) return false;
   switch (kind) {
@@ -721,6 +767,8 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
   ];
   if ('queryProcess' in value) expectedKeys.push('queryProcess');
   if ('production' in value) expectedKeys.push('production');
+  // Written after delivery, so a freshly completed run may not have it yet.
+  if ('shadow' in value) expectedKeys.push('shadow');
   if (!hasExactKeys(value, expectedKeys)
     || value.schemaVersion !== 1
     || typeof value.runId !== 'string'
@@ -741,7 +789,8 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
     || ('queryProcess' in value && !isQueryProcess(value.queryProcess))
     || ('production' in value
       && value.production !== null
-      && !isProductionRunV1(value.production))) {
+      && !isProductionRunV1(value.production))
+    || ('shadow' in value && !isShadowMeasurementV1(value.shadow))) {
     return false;
   }
   const stages = new Set(value.stages.map(stage => isRecord(stage) ? stage.stage : undefined));
@@ -754,7 +803,8 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
     return false;
   }
   return isRunCorrelation(value.correlation, value.kind as PerformanceRunKindV1)
-    && (value.kind === 'voiceQuery' || !('queryProcess' in value));
+    && (value.kind === 'voiceQuery' || !('queryProcess' in value))
+    && (value.kind === 'dictation' || !('shadow' in value));
 }
 
 export async function listPerformanceRuns(limit = 50): Promise<PerformanceRunListV1> {

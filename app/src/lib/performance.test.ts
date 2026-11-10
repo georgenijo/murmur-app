@@ -31,13 +31,86 @@ describe('performance contracts', () => {
 
   it('accepts historical v1 runs without release timing stages, but not other gaps', () => {
     const run = makeRun();
-    const additive = new Set(['inferenceQueue', 'releaseToStop', 'releaseToPaste']);
+    const additive = new Set([
+      'inferenceQueue',
+      'releaseToStop',
+      'releaseToPaste',
+      'stopPressToRelease',
+      'stopReleaseToCommand',
+    ]);
     const legacy = { ...run, stages: run.stages.filter(timing => !additive.has(timing.stage)) };
     expect(isPerformanceRunV1(legacy)).toBe(true);
     expect(isPerformanceRunV1({
       ...legacy,
       stages: legacy.stages.filter(timing => timing.stage !== 'totalProcessing'),
     })).toBe(false);
+  });
+
+  it('accepts the double-tap stop gesture stages when measured', () => {
+    const run = makeRun();
+    run.stages = run.stages.map(timing => timing.stage === 'stopPressToRelease'
+      ? { ...timing, durationMs: { status: 'measured', value: 96 } }
+      : timing.stage === 'stopReleaseToCommand'
+        ? { ...timing, durationMs: { status: 'measured', value: 31 } }
+        : timing);
+    expect(PERFORMANCE_STAGES_V1).toContain('stopPressToRelease');
+    expect(PERFORMANCE_STAGES_V1).toContain('stopReleaseToCommand');
+    expect(isPerformanceRunV1(run)).toBe(true);
+  });
+
+  it('accepts an optional, content-free shadow measurement on dictation runs only', () => {
+    const shadow = {
+      schemaVersion: 1,
+      trailingSilenceBeforePressMs: { status: 'measured', value: 350 },
+      trailingSilenceBeforeStopMs: { status: 'measured', value: 800 },
+      pressPrefixMatchesFinal: { status: 'measured', value: true },
+      pausePrefixMatchesFinal: { status: 'notApplicable' },
+      modelFreeAtPress: { status: 'measured', value: false },
+      decodeDeterministic: { status: 'unavailable', reason: 'dependencyPending' },
+    };
+    const run = makeRun();
+    expect(isPerformanceRunV1({ ...run, shadow })).toBe(true);
+    // A run delivered before the follow-up finished, or recorded before the
+    // field existed, has none: not measured, never zero.
+    expect(isPerformanceRunV1(run)).toBe(true);
+    const file = makeRun({
+      kind: 'fileTranscription',
+      correlation: { kind: 'fileTranscription', fileRunId: 9 },
+    });
+    expect(isPerformanceRunV1({ ...file, shadow })).toBe(false);
+  });
+
+  it('rejects a shadow measurement that is not numbers and booleans in its own schema', () => {
+    const shadow = {
+      schemaVersion: 1,
+      trailingSilenceBeforePressMs: { status: 'measured', value: 350 },
+      trailingSilenceBeforeStopMs: { status: 'measured', value: 800 },
+      pressPrefixMatchesFinal: { status: 'measured', value: true },
+      pausePrefixMatchesFinal: { status: 'measured', value: false },
+      modelFreeAtPress: { status: 'measured', value: true },
+      decodeDeterministic: { status: 'notApplicable' },
+    };
+    const run = makeRun();
+    const withShadow = (value: unknown) => isPerformanceRunV1({ ...run, shadow: value });
+    expect(withShadow(shadow)).toBe(true);
+    expect(withShadow({ ...shadow, schemaVersion: 2 })).toBe(false);
+    expect(withShadow({ ...shadow, transcript: 'hello' })).toBe(false);
+    expect(withShadow({
+      ...shadow,
+      decodeDeterministic: { status: 'measured', value: 'e3b0c442' },
+    })).toBe(false);
+    expect(withShadow({
+      ...shadow,
+      trailingSilenceBeforeStopMs: { status: 'measured', value: -1 },
+    })).toBe(false);
+    expect(withShadow({
+      ...shadow,
+      trailingSilenceBeforeStopMs: { status: 'measured', value: 1.5 },
+    })).toBe(false);
+    expect(withShadow(null)).toBe(false);
+    expect(withShadow(
+      Object.fromEntries(Object.entries(shadow).filter(([key]) => key !== 'decodeDeterministic')),
+    )).toBe(false);
   });
 
   it('accepts only the bounded, content-free diagnostics-health schema', () => {

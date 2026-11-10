@@ -173,6 +173,7 @@ WaitingFirstUp → KeyUp(target) within 200ms → FIRE
 - Hook syncs recording status to backend via `set_keyboard_recording` command
 - Rust `keyboard::start_listener(app_handle, hotkey, "double_tap")` spawns rdev thread
 - On detection: emits `"double-tap-toggle"` event to frontend via `app_handle.emit()`
+- When the detection stops a live recording, the detector first publishes the stop key's press and release instants (no content) for the diagnostics stages `stopPressToRelease` and `stopReleaseToCommand`; see [Performance diagnostics](performance-diagnostics.md#dictation-stages). They change nothing about how the stop is handled.
 - Frontend event handler calls `toggleRecording()`
 
 ### Optional Timing-Miss Feedback

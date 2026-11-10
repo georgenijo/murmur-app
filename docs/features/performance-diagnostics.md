@@ -27,7 +27,7 @@ performance diagnostics removes only these runs and resource samples. It also
 advances a clear epoch so an operation that began before Clear cannot reinsert
 its old diagnostics when it eventually finishes.
 
-The database currently uses SQLite `user_version = 6`; the v2 migration adds
+The database currently uses SQLite `user_version = 7`; the v2 migration adds
 Voice Query support and the v3 migration adds the dictation `releaseToStop`
 and `releaseToPaste` stages, neither changing tables. Run and resource JSON records
 remain backward-compatible at `schemaVersion: 1`. V4 adds `homophoneContext`
@@ -38,7 +38,11 @@ capture timing in a separate 4 → 5 metadata migration. The v3 → v5 path appl
 v4 then v5 in one transaction, preserving existing JSON bytes, including v4
 homophoneContext rows. V6 adds the optional stream-open split and
 `helperPreparation` capture fields in a 5 → 6 metadata step with the same
-byte-preserving guarantees. Older builds refuse the newer database. A
+byte-preserving guarantees. V7 adds the dictation `stopPressToRelease` and
+`stopReleaseToCommand` stages and the optional `shadow` measurement (see
+[Early-final shadow measurement](#early-final-shadow-measurement)) in a 6 → 7
+metadata step with the same byte-preserving guarantees; the run `schemaVersion`
+stays 1. Older builds refuse the newer database. A
 database created by a newer Murmur build is preserved and treated as unavailable rather than rewritten. Unknown
 record versions are not decoded as V1.
 
@@ -72,7 +76,8 @@ quarantined evidence, and a healthy database is never quarantined.
 - catalog-backed model, backend, accelerator, and warm/cold state;
 - typed stage measurements;
 - content-free audio duration or bounded size/token fields;
-- scoped resource summaries.
+- scoped resource summaries;
+- for dictation, an optional `shadow` measurement of numbers and booleans.
 
 Retired Voice Query records may carry `queryProcess` with only an integer
 exit code (or unavailable) and a boolean `stderrPresent`. Old V1 rows omit the
@@ -119,7 +124,13 @@ The contract never uses numeric zero as a missing-data sentinel.
 - `releaseToPaste`: native hotkey release → end of delivery, measured at the
   same instant `totalProcessing` ends, recorded only for successful runs whose
   delivery was confirmed (clipboard-only or posted auto-paste; a failed
-  clipboard write, timeout, or stopped delivery has none).
+  clipboard write, timeout, or stopped delivery has none);
+- `stopPressToRelease`: for a double-tap-mode stop, the stop key's press →
+  release, which is the tap's own hold;
+- `stopReleaseToCommand`: for the same stop, that release → the start of
+  `stop_native_recording_for` handling. It is the measure of the rdev →
+  `double-tap-toggle` → webview → IPC hop, the toggle counterpart of
+  `releaseToStop`.
 
 The rdev listener stamps a monotonic instant when a trigger-key release (not a
 chord press that ends the hold) publishes `hold-down-stop`, keyed by the live
@@ -127,10 +138,29 @@ recording ID. The first release of a recording wins. The stop claims the stamp
 when it accepts the transition, only for its own recording and only within 10
 seconds, so a release that did not drive the stop is never attributed to a
 run. Toggle, overlay, and auto-stop
-stops, and historical records, have no release stages; they are omitted, never
-shown as zero. The stamp is one instant and one generation ID, with no content.
+stops, and historical records, have no `releaseToStop` or `releaseToPaste`; they
+are omitted, never shown as zero. The stamp is one instant and one generation
+ID, with no content.
 The Runs workspace shows nearest-rank p50/p90 of `totalProcessing` and
 `releaseToPaste` across retained successful dictations.
+
+A double-tap-mode stop has no hold release, so its press and release are
+stamped separately, in `stop_gesture.rs`. That stamp never feeds the hold-release
+stamp above: a matching hold release makes a stop a `HoldRelease`, which changes
+the release tail the audio supervisor applies, and this measurement must change
+nothing. The detector stamps a monotonic instant at the `Idle → WaitingFirstUp`
+transition, only while a recording is live, and pairs it with the release that
+fires the stop. The pair is published, keyed by the live recording ID, just
+before `double-tap-toggle` is emitted. A press that is rejected (another key,
+mouse button or scroll during the tap, a hold past 200 ms, a function-key
+chord, Escape, or a key or mode change) or whose recording state changes before
+it fires is dropped, so it cannot reach a later run. The first gesture of a
+recording wins; a later tap queued behind the same stop does not replace it. The
+stop command claims the pair when it accepts the transition, only for its own
+recording ID, only within 10 seconds of the release, and only when the stop
+resolved as a toggle. Hold, overlay, and auto-stop stops, and historical
+records, have neither stop-gesture stage; they are omitted, never shown as zero.
+The stamp is two instants, one generation ID, and one flag, with no content.
 
 ### File stages
 
@@ -172,7 +202,9 @@ selected/proposed/replaced text, clipboard contents, paths or filenames, bundle
 IDs, window titles, selected context, project/profile names, raw stderr, or
 free-form native error messages. Retired Voice Query records retain stderr presence
 only. Errors are stable enums. Text-related sizes are bounded buckets.
-Database contents are never uploaded. When a dictation diagnostics row still
+The early-final shadow measurement stores numbers and booleans only: the audio
+and decoded text it compares stay in memory and are dropped when the comparison
+ends. Database contents are never uploaded. When a dictation diagnostics row still
 cannot begin after its bounded retry, one content-free structured event reports
 only `operation`, the safe error class, attempt count, and `recording_id`. The
 telemetry layer independently rejects every other key and unknown string in
@@ -561,6 +593,109 @@ preserves tables and historical V1 JSON; v3 → v5 applies both additive steps.
 Run and companion `schemaVersion` remain 1. Rust and TypeScript accept absent
 historical `gesture` fields and validate all durations/statuses when present.
 The 5 → 6 step does the same for the stream-open split and `helperPreparation`.
+
+## Early-final shadow measurement
+
+Issue [#1081](https://github.com/georgenijo/murmur-app/issues/1081) records, for
+each dictation, the data that decides whether an early final decode is worth
+building and which trigger it should use. It is measurement only: delivered
+text, delivery timing, and every user-visible behavior are unchanged. A
+dictation run may carry an optional `shadow` object with its own
+`schemaVersion: 1`, inside the run's `schemaVersion: 1`. It holds numbers and
+booleans only, each a `MeasurementV1`.
+
+| Field | Meaning |
+| --- | --- |
+| `trailingSilenceBeforePressMs` | Silence between the last speech the full-clip VAD kept and the stop-key press |
+| `trailingSilenceBeforeStopMs` | Silence between that last speech and the end of the clip, which ends at the stop |
+| `pressPrefixMatchesFinal` | Whether the VAD output for the audio up to the press is byte-identical to the full-clip filtered PCM the final decode consumed |
+| `pausePrefixMatchesFinal` | The same comparison for the audio up to the last pause of at least 300 ms |
+| `modelFreeAtPress` | `true` when no live preview held the transcription backend when the stop key went down |
+| `decodeDeterministic` | Whether decoding the same filtered PCM a second time produced the same text |
+
+The three press fields (`trailingSilenceBeforePressMs`, `pressPrefixMatchesFinal`,
+and `modelFreeAtPress`) need the native stop-key stamps described under
+Dictation stages, so they are `notApplicable` for a hold, overlay, toolbar, or
+auto-stop stop and for a toggle whose gesture was not stamped.
+
+All of the work happens after delivery: the stop command returns and emits its
+result first, then a detached blocking worker computes the measurement. Nothing
+waits for it, and a panic or failure there leaves the dictation untouched. The
+full-clip VAD already runs in the final pass; `vad::filter_speech_detailed`
+exposes the segment bounds it computes, and `vad::filter_speech` is a wrapper
+around it, so its filtered output stays byte-identical for every caller.
+Segment bounds include the VAD's 120 ms speech padding, so a silence or pause
+here is shorter than the raw silence around the speech by that padding on each
+side.
+
+- **Press sample.** The press is located in the clip as the clip length minus
+  the press-to-stop interval at 16 samples per millisecond, clamped to the clip.
+  The clip ends after the 0 or 50 ms release tail the audio supervisor applies
+  once the stop is requested, and that tail is not visible to the estimate, so
+  the estimated press sample runs late by up to the tail (exactly right when it
+  is 0).
+- **Prefix equality.** `filter_speech` runs again, with the same model and
+  threshold, on the audio up to the press sample and on the audio up to the
+  last pause. The result is `true` only when it is the same kind of output and,
+  for speech, the same samples bit for bit; two no-speech outputs match. A
+  prefix that cannot be filtered records `unavailable { reason: sampleFailed }`.
+- **Last pause.** The latest gap of at least 300 ms between two kept segments,
+  or between the last segment and the end of the clip. The audio is cut 300 ms
+  after that pause began, which is where a pause-triggered early decode would
+  have fired. A clip with no such pause has `pausePrefixMatchesFinal` of
+  `notApplicable`.
+- **Model free.** The keyboard listener reads the live-preview lease once at the
+  press. Only the Core ML preview decodes on the backend the final decode uses,
+  so a Whisper preview, which owns a separate recording-local context, never
+  makes the model busy. `unavailable { reason: sampleFailed }` means the listener
+  could not read app state.
+- **No VAD.** With VAD sensitivity at zero, the VAD-derived fields are
+  `notApplicable`. A missing VAD model records `unavailable { reason:
+  dependencyPending }` and a VAD failure `unavailable { reason: sampleFailed }`.
+  Only a run whose final pass succeeded carries a `shadow`; no-speech,
+  cancelled, failed, and interrupted runs have none.
+
+### Decode determinism
+
+`decodeDeterministic` is off by default and has no Settings control or Tauri
+command, so the command reference is unchanged. Set the environment variable
+`MURMUR_SHADOW_DECODE_DETERMINISM` to exactly `1` before launching Murmur to turn
+it on; it is read once per dictation, at the final pass. While it is off the
+field is `notApplicable`.
+
+When it is on, after delivery the follow-up decodes the same filtered PCM again
+through the same final decode function and the recording-start settings snapshot,
+and records only whether the two texts are equal. The texts are compared by an
+in-memory SHA-256 of each; the digests exist only for the length of the
+comparison and are never stored, logged, or emitted, and the delivered text is
+never touched. The re-decode never queues and never loads a model. It runs only
+if the backend is immediately available and, under the backend lock, this is
+still the current, uncancelled recording. Otherwise it is skipped and the field
+records `unavailable { reason: dependencyPending }`; a decode error records
+`unavailable { reason: sampleFailed }`.
+
+Only the Core ML model is re-decoded. The authoritative Whisper backend reuses a
+cached decoder state whose history carries across decodes, so a second pass would
+not be independent of the first and could change the state the next dictation
+decodes from. Whisper and every other model record `notApplicable`. While a
+re-decode runs it holds the backend, so a dictation started immediately
+afterward can briefly wait for it; this is why the switch is off by default and
+is meant for deliberate measurement runs.
+
+### Persistence and ordering
+
+The measurement can finish before or after its run is delivered. One that
+finishes first waits in memory (at most 16 recordings) and is stored with the
+run at completion, so `performance-run-completed` carries it. One that finishes
+later amends the delivered row in an UPDATE-only transaction bound to that run's
+UUID and recording ID, like the late capture-teardown evidence above: it cannot
+recreate a cleared or pruned row or land on a reused recording ID, and it emits
+no second event. Reopening or refreshing Runs reads the amended row. A run
+recorded before V7, or whose follow-up never finished (for example, Murmur quit
+first), has no `shadow`; that means not measured, never zero. The TypeScript
+guard accepts a run without `shadow`, and rejects one whose `shadow` has an
+unknown key, another schema version, a non-numeric or negative millisecond
+field, or a non-boolean comparison, or that is on a non-dictation run.
 
 ## Launch milestones
 

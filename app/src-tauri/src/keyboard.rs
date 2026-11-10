@@ -76,6 +76,25 @@ impl RejectionReason {
     }
 }
 
+/// The press of a tap that may stop the recording (#1081). Two instants and
+/// one flag; nothing about what was typed or said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StopPress {
+    pressed_at: Instant,
+    /// A live preview decode was in flight when the key went down. Filled once
+    /// by the listener right after the press; `None` when app state was not
+    /// reachable from it.
+    preview_in_flight: Option<bool>,
+    preview_checked: bool,
+}
+
+/// A stop tap that fired: its stamped press and the release that fired it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StopTap {
+    press: StopPress,
+    released_at: Instant,
+}
+
 struct DoubleTapDetector {
     candidate: Option<Candidate>,
     fired_candidate: Option<Candidate>,
@@ -90,6 +109,15 @@ struct DoubleTapDetector {
     /// The gesture token whose preparation is outstanding until this sequence
     /// fires or is abandoned.
     prepared_token: Option<u64>,
+    /// Press of a tap that may stop the recording, stamped at the
+    /// `Idle -> WaitingFirstUp` transition while recording (#1081). Every exit
+    /// that does not fire (a combo, a long hold, Escape, a key change, a
+    /// recording-state change) drops it, so a rejected gesture cannot leak
+    /// into a later run.
+    stop_press: Option<StopPress>,
+    /// The stop tap that fired on the event being handled. Cleared at the
+    /// start of the next event, so it is either published right away or lost.
+    fired_stop: Option<StopTap>,
 }
 
 /// What the listener must do with silent first-tap preparation after one
@@ -114,7 +142,34 @@ impl DoubleTapDetector {
             last_rejection: None,
             prepare_request: None,
             prepared_token: None,
+            stop_press: None,
+            fired_stop: None,
         }
+    }
+
+    /// Record, once per stamped press, whether a live preview held the
+    /// transcription backend. The listener calls this right after the event
+    /// that stamped the press, where app state is reachable (#1081).
+    fn note_preview_at_press(&mut self, in_flight: impl FnOnce() -> Option<bool>) {
+        if let Some(press) = self.stop_press.as_mut().filter(|p| !p.preview_checked) {
+            press.preview_in_flight = in_flight();
+            press.preview_checked = true;
+        }
+    }
+
+    /// The stop tap that fired on the last event, if any.
+    fn take_fired_stop(&mut self) -> Option<StopTap> {
+        self.fired_stop.take()
+    }
+
+    /// Track whether a recording is live. A change ends the stop gesture the
+    /// previous state was building.
+    fn set_recording(&mut self, recording: bool) {
+        if self.recording != recording {
+            self.stop_press = None;
+            self.fired_stop = None;
+        }
+        self.recording = recording;
     }
 
     /// Drain this event's preparation transition. A fired double tap leaves
@@ -149,6 +204,7 @@ impl DoubleTapDetector {
 
     fn reset(&mut self) {
         self.candidate = None;
+        self.stop_press = None;
         self.state = DetectorState::Idle;
         self.state_entered_at = Instant::now();
     }
@@ -218,6 +274,7 @@ impl DoubleTapDetector {
         repeated_function_press: bool,
     ) -> bool {
         self.last_rejection = None;
+        self.fired_stop = None;
         let target = match self.target_key {
             Some(k) => k,
             None => return false,
@@ -251,6 +308,12 @@ impl DoubleTapDetector {
                 if let EventType::KeyPress(key) = event_type {
                     if is_target_key(*key, target) {
                         self.candidate = Some(Candidate::new());
+                        // A press while recording may be the tap that stops it.
+                        self.stop_press = self.recording.then(|| StopPress {
+                            pressed_at: Instant::now(),
+                            preview_in_flight: None,
+                            preview_checked: false,
+                        });
                         self.transition(DetectorState::WaitingFirstUp);
                     }
                 }
@@ -263,11 +326,21 @@ impl DoubleTapDetector {
                         if self.elapsed_ms() <= MAX_HOLD_DURATION_MS {
                             if self.recording {
                                 self.fired_candidate = None;
+                                // Pair the stamped press with this release; the
+                                // listener publishes the pair when it emits the
+                                // toggle (#1081).
+                                let released_at = Instant::now();
+                                self.fired_stop = self
+                                    .stop_press
+                                    .take()
+                                    .map(|press| StopTap { press, released_at });
                                 // Single tap to stop — fire immediately
                                 self.last_fired_at = Some(Instant::now());
                                 self.reset();
                                 return true;
                             }
+                            // Not a stop gesture: never carry a press forward.
+                            self.stop_press = None;
                             if let Some(candidate) = self.candidate.as_mut() {
                                 candidate.released = Some(Instant::now());
                             }
@@ -779,15 +852,48 @@ fn emit_hold_start(handle: &tauri::AppHandle, candidate: Option<Candidate>) {
     );
 }
 fn emit_dictation_toggle(handle: &tauri::AppHandle) {
-    let candidate = DOUBLE_TAP_DETECTOR
-        .lock_or_recover()
-        .as_mut()
-        .and_then(|d| d.fired_candidate.take());
+    let (candidate, stop) = {
+        let mut det = DOUBLE_TAP_DETECTOR.lock_or_recover();
+        match det.as_mut() {
+            Some(d) => (d.fired_candidate.take(), d.take_fired_stop()),
+            None => (None, None),
+        }
+    };
+    // Publish the stop tap's stamps before the webview can hear about it, so
+    // the stop command always finds them (#1081).
+    if let Some(stop) = stop {
+        publish_stop_gesture(handle, stop);
+    }
     let token = candidate.map(|c| crate::audio_lifecycle::gesture::emit(c, false));
     let _ = handle.emit(
         "double-tap-toggle",
         serde_json::json!({ "gestureToken": token }),
     );
+}
+
+/// Whether a live-preview decode holds the transcription backend right now.
+/// One atomic load; `None` when app state is not reachable from the listener.
+fn preview_in_flight_now(handle: &tauri::AppHandle) -> Option<bool> {
+    handle.try_state::<crate::State>().map(|state| {
+        state
+            .app_state
+            .dictation_partial_in_flight_id
+            .load(Ordering::SeqCst)
+            != 0
+    })
+}
+
+/// Hand a fired stop tap to the stop path, keyed by the recording generation it
+/// stopped. Content-free: two instants and one flag (#1081).
+fn publish_stop_gesture(handle: &tauri::AppHandle, stop: StopTap) {
+    if let Some(state) = handle.try_state::<crate::State>() {
+        crate::stop_gesture::record(
+            state.app_state.recording_id.load(Ordering::SeqCst),
+            stop.press.pressed_at,
+            stop.released_at,
+            stop.press.preview_in_flight,
+        );
+    }
 }
 
 fn invalidate_preparation(reason: crate::audio::prepare::InvalidateReason) {
@@ -1841,6 +1947,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                     shortcut_modifiers.any(),
                                     repeated_function_press,
                                 );
+                                d.note_preview_at_press(|| preview_in_flight_now(&handle));
                                 let wait_started_at = d
                                     .second_tap_wait_started_at()
                                     .filter(|started_at| Some(*started_at) != previous_wait);
@@ -1985,6 +2092,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                         shortcut_modifiers.any(),
                                         repeated_function_press,
                                     );
+                                    d.note_preview_at_press(|| preview_in_flight_now(&handle));
                                     let wait_started_at = d
                                         .second_tap_wait_started_at()
                                         .filter(|started_at| Some(*started_at) != previous_wait);
@@ -2231,7 +2339,7 @@ pub fn set_recording_state(recording: bool) {
         .lock()
         .unwrap_or_else(|p| p.into_inner());
     if let Some(d) = det.as_mut() {
-        d.recording = recording;
+        d.set_recording(recording);
     }
 }
 
@@ -2503,6 +2611,203 @@ mod tests {
         d.handle_event(&press(Key::ShiftLeft));
         assert!(d.handle_event(&release(Key::ShiftLeft)));
         assert!(matches!(d.take_prepare_signal(true), PrepareSignal::None));
+    }
+
+    // -- Stop-key stamps for the shadow measurement (#1081) --
+
+    fn recording_detector_with_stamped_press() -> DoubleTapDetector {
+        let mut d = make_detector(Key::ShiftLeft);
+        d.recording = true;
+        assert!(!d.handle_event(&press(Key::ShiftLeft)));
+        assert!(d.stop_press.is_some(), "a press while recording is stamped");
+        d
+    }
+
+    #[test]
+    fn stop_tap_pairs_the_stamped_press_with_the_release_that_fires() {
+        let mut d = make_detector(Key::ShiftLeft);
+        d.recording = true;
+        let before = Instant::now();
+        assert!(!d.handle_event(&press(Key::ShiftLeft)));
+        let stamped = d
+            .stop_press
+            .expect("the press is stamped at Idle -> WaitingFirstUp");
+        assert!(stamped.pressed_at >= before);
+        assert!(
+            d.take_fired_stop().is_none(),
+            "nothing is published on the press"
+        );
+
+        sleep(Duration::from_millis(5));
+        assert!(d.handle_event(&release(Key::ShiftLeft)));
+        let tap = d.take_fired_stop().expect("the fire carries its stamps");
+        assert_eq!(tap.press.pressed_at, stamped.pressed_at);
+        assert!(tap.released_at > tap.press.pressed_at);
+        assert!(d.stop_press.is_none(), "the fire consumes the press");
+        assert!(d.take_fired_stop().is_none(), "a stop tap is taken once");
+    }
+
+    #[test]
+    fn a_press_while_not_recording_is_never_a_stop_stamp() {
+        let mut d = make_detector(Key::ShiftLeft);
+        d.handle_event(&press(Key::ShiftLeft));
+        assert!(d.stop_press.is_none());
+        d.handle_event(&release(Key::ShiftLeft));
+        d.handle_event(&press(Key::ShiftLeft));
+        assert!(d.stop_press.is_none());
+        assert!(
+            d.handle_event(&release(Key::ShiftLeft)),
+            "the double tap starts"
+        );
+        assert!(
+            d.take_fired_stop().is_none(),
+            "a start gesture carries no stop stamps"
+        );
+    }
+
+    #[test]
+    fn a_stop_tap_whose_press_was_not_stamped_cannot_invent_one() {
+        // Recording began between the press and the release: the existing
+        // behaviour still stops it, but there is no press time to claim.
+        let mut d = make_detector(Key::ShiftLeft);
+        assert!(!d.handle_event(&press(Key::ShiftLeft)));
+        d.set_recording(true);
+        assert!(d.handle_event(&release(Key::ShiftLeft)));
+        assert!(d.take_fired_stop().is_none());
+    }
+
+    #[test]
+    fn rejected_stop_gestures_drop_their_press() {
+        for interrupt in [
+            press(Key::KeyA),
+            press(Key::MetaLeft),
+            EventType::ButtonPress(rdev::Button::Left),
+            EventType::Wheel {
+                delta_x: 0,
+                delta_y: 1,
+            },
+        ] {
+            let mut d = recording_detector_with_stamped_press();
+            assert!(!d.handle_event(&interrupt), "{interrupt:?}");
+            assert!(d.stop_press.is_none(), "{interrupt:?} must drop the press");
+            // The trigger's own release no longer fires anything.
+            assert!(!d.handle_event(&release(Key::ShiftLeft)), "{interrupt:?}");
+            assert!(d.take_fired_stop().is_none(), "{interrupt:?}");
+        }
+    }
+
+    #[test]
+    fn a_long_hold_drops_the_press() {
+        let mut d = recording_detector_with_stamped_press();
+        d.state_entered_at =
+            Instant::now() - Duration::from_millis(MAX_HOLD_DURATION_MS as u64 + 50);
+        assert!(!d.handle_event(&release(Key::ShiftLeft)));
+        assert!(d.stop_press.is_none());
+        assert!(d.take_fired_stop().is_none());
+    }
+
+    #[test]
+    fn a_function_key_chord_drops_or_never_stamps_the_press() {
+        // The chord arrives after the press: the stamped press is dropped.
+        let mut d = make_detector(Key::F8);
+        d.recording = true;
+        assert!(!d.handle_event_with_context(&press(Key::F8), false, false));
+        assert!(d.stop_press.is_some());
+        assert!(!d.handle_event_with_context(&press(Key::F8), true, false));
+        assert!(d.stop_press.is_none());
+        assert!(d.take_fired_stop().is_none());
+
+        // The chord is already held at the press: it is never stamped.
+        let mut d = make_detector(Key::F8);
+        d.recording = true;
+        assert!(!d.handle_event_with_context(&press(Key::F8), true, false));
+        assert!(d.stop_press.is_none());
+        assert!(!d.handle_event_with_context(&release(Key::F8), false, false));
+        assert!(d.take_fired_stop().is_none());
+    }
+
+    #[test]
+    fn escape_key_change_and_recording_change_drop_the_press() {
+        // Escape, `stop_listener` and `set_target` all reset the detector.
+        let mut d = recording_detector_with_stamped_press();
+        d.reset();
+        assert!(d.stop_press.is_none());
+
+        let mut d = recording_detector_with_stamped_press();
+        d.set_target(Some(Key::ShiftRight));
+        assert!(d.stop_press.is_none());
+
+        // A recording that ends mid-tap leaves a tap that no longer stops it.
+        let mut d = recording_detector_with_stamped_press();
+        d.set_recording(false);
+        assert!(d.stop_press.is_none());
+        assert!(!d.handle_event(&release(Key::ShiftLeft)));
+        assert!(d.take_fired_stop().is_none());
+
+        // Re-asserting the current state is not a change.
+        let mut d = recording_detector_with_stamped_press();
+        d.set_recording(true);
+        assert!(d.stop_press.is_some());
+    }
+
+    #[test]
+    fn a_rejected_gesture_cannot_leak_into_the_next_stop() {
+        let mut d = recording_detector_with_stamped_press();
+        let rejected_press = d.stop_press.unwrap().pressed_at;
+        assert!(!d.handle_event(&press(Key::KeyA)));
+        assert!(d.stop_press.is_none());
+
+        sleep(Duration::from_millis(5));
+        assert!(!d.handle_event(&press(Key::ShiftLeft)));
+        sleep(Duration::from_millis(5));
+        assert!(d.handle_event(&release(Key::ShiftLeft)));
+        let tap = d.take_fired_stop().expect("the clean tap stamps itself");
+        assert!(
+            tap.press.pressed_at > rejected_press,
+            "the stop carries its own press, not the rejected one"
+        );
+    }
+
+    #[test]
+    fn an_unpublished_stop_tap_does_not_outlive_the_next_event() {
+        // Both mode can fire the detector without emitting a toggle (a promoted
+        // hold wins). The tap must not wait for some later emit.
+        let mut d = recording_detector_with_stamped_press();
+        assert!(d.handle_event(&release(Key::ShiftLeft)));
+        assert!(d.fired_stop.is_some());
+        d.handle_event(&EventType::MouseMove { x: 1.0, y: 2.0 });
+        assert!(d.fired_stop.is_none());
+
+        let mut d = recording_detector_with_stamped_press();
+        assert!(d.handle_event(&release(Key::ShiftLeft)));
+        d.set_recording(false);
+        assert!(d.fired_stop.is_none());
+    }
+
+    #[test]
+    fn the_preview_snapshot_is_taken_once_per_stamped_press() {
+        let mut d = recording_detector_with_stamped_press();
+        let mut calls = 0;
+        d.note_preview_at_press(|| {
+            calls += 1;
+            Some(true)
+        });
+        d.note_preview_at_press(|| {
+            calls += 1;
+            Some(false)
+        });
+        assert_eq!(calls, 1);
+        assert_eq!(d.stop_press.unwrap().preview_in_flight, Some(true));
+        assert!(d.handle_event(&release(Key::ShiftLeft)));
+        assert_eq!(
+            d.take_fired_stop().unwrap().press.preview_in_flight,
+            Some(true)
+        );
+
+        // No stamped press, nothing to annotate and nothing evaluated.
+        let mut idle = make_detector(Key::ShiftLeft);
+        idle.handle_event(&press(Key::ShiftLeft));
+        idle.note_preview_at_press(|| panic!("no stop press to annotate"));
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 const DB_FILE: &str = "performance.sqlite3";
-const LATEST_DB_SCHEMA_VERSION: u32 = 6;
+const LATEST_DB_SCHEMA_VERSION: u32 = 7;
 pub(super) const MAX_COMPLETED_RUNS: usize = 200;
 const MAX_RESOURCE_SAMPLES: usize = 600;
 const BUSY_TIMEOUT: Duration = Duration::from_millis(25);
@@ -266,6 +266,7 @@ impl PerformanceRepository {
             clear_epoch,
             query_process: None,
             production,
+            shadow: None,
         };
         insert_active(&transaction, &active)?;
         transaction.commit().map_err(db_error)?;
@@ -372,6 +373,56 @@ impl PerformanceRepository {
         })
     }
 
+    /// Attach the early-final shadow measurement (#1081) to the exact delivered
+    /// run, which finished before the post-delivery follow-up did. Same
+    /// guarantees as `update_completed_capture`: UPDATE-only, bound to the run
+    /// ID and its recording generation, and nothing else on the row changes.
+    pub(crate) fn update_completed_shadow(
+        &self,
+        run_id: &str,
+        recording_id: u64,
+        shadow: &super::shadow::ShadowMeasurementV1,
+    ) -> StoreResult<bool> {
+        retry_operation(PerformanceStoreOperationV1::Update, || {
+            let mut connection = self.open()?;
+            let transaction = connection.transaction().map_err(db_error)?;
+            let row = transaction
+                .query_row(
+                    "SELECT payload_json FROM completed_runs
+                     WHERE run_id = ? AND record_version = ?
+                     AND correlation_kind = 'dictation' AND correlation_id = ?",
+                    params![
+                        run_id,
+                        PERFORMANCE_RUN_SCHEMA_VERSION,
+                        to_i64(recording_id)?
+                    ],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(db_error)?;
+            let Some(payload) = row else {
+                return Ok(false);
+            };
+            let mut run: PerformanceRunV1 =
+                serde_json::from_str(&payload).map_err(|_| invalid_record())?;
+            if run.run_id != run_id
+                || run.correlation != (RunCorrelationV1::Dictation { recording_id })
+            {
+                return Err(invalid_record());
+            }
+            run.shadow = Some(shadow.clone());
+            let payload = serde_json::to_string(&run).map_err(|_| invalid_record())?;
+            let changed = transaction
+                .execute(
+                    "UPDATE completed_runs SET payload_json = ? WHERE run_id = ?",
+                    params![payload, run_id],
+                )
+                .map_err(db_error)?;
+            transaction.commit().map_err(db_error)?;
+            Ok(changed == 1)
+        })
+    }
+
     pub(crate) fn complete(
         &self,
         correlation: &RunCorrelationV1,
@@ -450,6 +501,7 @@ impl PerformanceRepository {
             follow_ups: Vec::new(),
             query_process: active.query_process,
             production: active.production,
+            shadow: active.shadow,
         };
         let payload = serde_json::to_string(&run).map_err(|_| invalid_record())?;
         let (correlation_kind, correlation_id) = run.correlation.storage_parts();
@@ -706,8 +758,17 @@ fn migrate(connection: &mut Connection) -> StoreResult<()> {
         // V5 -> V6 (#933) adds optional production stream-open split (including
         // separate AUHAL new/initialize/start) and helper-preparation fields.
         // Older strict decoders must refuse them.
+        if current < 6 {
+            transaction
+                .pragma_update(None, "user_version", 6)
+                .map_err(db_error)?;
+        }
+        // V6 -> V7 (#1081) adds the stopPressToRelease and stopReleaseToCommand
+        // stages and the optional content-free `shadow` measurement. Older
+        // strict decoders must refuse them; every existing payload byte is
+        // unchanged, and rows written before V7 stay readable without `shadow`.
         transaction
-            .pragma_update(None, "user_version", 6)
+            .pragma_update(None, "user_version", 7)
             .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
     }
@@ -814,6 +875,8 @@ const ALL_STAGES: &[PerformanceStageV1] = &[
     PerformanceStageV1::Undo,
     PerformanceStageV1::ReleaseToStop,
     PerformanceStageV1::ReleaseToPaste,
+    PerformanceStageV1::StopPressToRelease,
+    PerformanceStageV1::StopReleaseToCommand,
 ];
 
 fn canonical_stages(measured: Vec<StageTimingV1>) -> Vec<StageTimingV1> {
@@ -1266,6 +1329,84 @@ mod tests {
         }
     }
 
+    #[test]
+    fn shadow_amendment_changes_only_the_shadow_of_the_exact_delivered_run() {
+        use crate::performance_metrics::shadow::{ShadowMeasurementV1, SHADOW_SCHEMA_VERSION};
+
+        let (_temp, repository) = repository();
+        repository
+            .begin(
+                PerformanceRunKindV1::Dictation,
+                correlation(41),
+                Vec::new(),
+                ContentFreeInputSummaryV1::default(),
+            )
+            .unwrap();
+        let delivered = repository
+            .complete(
+                &correlation(41),
+                RunOutcomeV1::Success,
+                vec![StageTimingV1::measured(
+                    PerformanceStageV1::TotalProcessing,
+                    150,
+                )],
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        // Records written before the field existed carry no `shadow` key, and
+        // the two stop-gesture stages are present as not applicable.
+        assert_eq!(delivered.shadow, None);
+        assert!(serde_json::to_value(&delivered)
+            .unwrap()
+            .get("shadow")
+            .is_none());
+        assert_eq!(delivered.stages.len(), ALL_STAGES.len());
+        for stage in [
+            PerformanceStageV1::StopPressToRelease,
+            PerformanceStageV1::StopReleaseToCommand,
+        ] {
+            assert_eq!(
+                delivered
+                    .stages
+                    .iter()
+                    .find(|timing| timing.stage == stage)
+                    .unwrap()
+                    .duration_ms,
+                MeasurementV1::NotApplicable
+            );
+        }
+
+        let shadow = ShadowMeasurementV1 {
+            schema_version: SHADOW_SCHEMA_VERSION,
+            trailing_silence_before_press_ms: MeasurementV1::measured(310),
+            trailing_silence_before_stop_ms: MeasurementV1::measured(480),
+            press_prefix_matches_final: MeasurementV1::measured(true),
+            pause_prefix_matches_final: MeasurementV1::measured(false),
+            model_free_at_press: MeasurementV1::measured(true),
+            decode_deterministic: MeasurementV1::Unavailable {
+                reason: UnavailableReasonV1::DependencyPending,
+            },
+        };
+        assert!(repository
+            .update_completed_shadow(&delivered.run_id, 41, &shadow)
+            .unwrap());
+        let mut expected = delivered.clone();
+        expected.shadow = Some(shadow.clone());
+        assert_eq!(repository.list(10).unwrap(), vec![expected]);
+
+        // A different recording generation or an unknown run changes nothing and
+        // creates nothing.
+        assert!(!repository
+            .update_completed_shadow(&delivered.run_id, 42, &shadow)
+            .unwrap());
+        assert!(!repository
+            .update_completed_shadow("00000000000000000000000000000000", 41, &shadow)
+            .unwrap());
+        assert_eq!(repository.counts().unwrap(), (0, 1, 0));
+    }
+
     fn sample(at: i64, cpu: MeasurementV1<f32>) -> ResourceSampleV1 {
         ResourceSampleV1 {
             schema_version: RESOURCE_SAMPLE_SCHEMA_VERSION,
@@ -1542,7 +1683,8 @@ mod tests {
 
     #[test]
     fn v4_homophone_rows_survive_v5_and_v3_path_preserves_payloads() {
-        for source_version in [3, 4, 5] {
+        // V6 -> V7 (#1081) must also leave pre-shadow rows byte-for-byte alone.
+        for source_version in [3, 4, 5, 6] {
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().join("diagnostics");
             let repository = PerformanceRepository::initialize(root.clone()).unwrap().0;
@@ -1806,7 +1948,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(run.schema_version, 1);
-        assert_eq!(run.stages.len(), 31);
+        assert_eq!(run.stages.len(), 33);
         assert_eq!(
             run.query_process,
             Some(QueryProcessSummaryV1 {

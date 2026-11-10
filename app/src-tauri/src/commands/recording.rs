@@ -4,10 +4,12 @@ use crate::dictation_diagnostics::DictationCaptureCompletion;
 use crate::dictation_telemetry::{DictationErrorCode, DictationTerminalOutcome};
 use crate::microphone_auto::SmartAutoRequest;
 use crate::model_runtime::{self, PreparationReason};
+use crate::performance_metrics::shadow;
 use crate::performance_metrics::{
-    AcceleratorV1, ContentFreeInputSummaryV1, ModelWarmStateV1, PerformanceRunGuard,
+    AcceleratorV1, ContentFreeInputSummaryV1, MeasurementV1, ModelWarmStateV1, PerformanceRunGuard,
     PerformanceStageV1, PerformanceStoreError, RunCorrelationV1, RunOutcomeV1, RuntimeBackendV1,
     RuntimeIdentityV1, RuntimeRoleV1, StableRunErrorV1, StageOutcomeV1, StageTimingV1,
+    UnavailableReasonV1,
 };
 use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
@@ -1726,6 +1728,10 @@ struct PipelineResult {
     timings: PipelineTimings,
     terminal: PipelineTerminal,
     history: Option<PipelineHistory>,
+    /// What the post-delivery shadow measurement (#1081) takes from the final
+    /// pass. Set only for a successful run: cancelled and empty runs have
+    /// nothing to compare.
+    shadow: Option<shadow::FinalPass>,
 }
 
 #[derive(serde::Serialize)]
@@ -2489,6 +2495,7 @@ async fn run_transcription_pipeline(
             timings: PipelineTimings::default(),
             terminal: PipelineTerminal::Cancelled(PerformanceStageV1::Vad),
             history: None,
+            shadow: None,
         });
     }
 
@@ -2496,6 +2503,8 @@ async fn run_transcription_pipeline(
     // the authoritative full-buffer VAD + inference pass after recording stops.
     performance_guard.enter(PerformanceStageV1::Vad);
     let t_vad = std::time::Instant::now();
+    // How the full-clip VAD ran, kept for the post-delivery shadow measurement.
+    let mut final_vad = shadow::FinalVad::Disabled;
     let (samples_for_transcription, vad_trimmed) = if !vad::is_enabled(
         transcription.vad_sensitivity,
     ) {
@@ -2507,14 +2516,18 @@ async fn run_transcription_pipeline(
             Some(vad_path) if vad_path.exists() => {
                 let vad_path_str = vad_path.to_string_lossy().to_string();
                 let samples_owned = samples.to_vec();
+                let task_vad_path = vad_path_str.clone();
                 let vad_result = tokio::task::spawn_blocking(move || {
-                    vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold)
+                    vad::filter_speech_detailed(&task_vad_path, &samples_owned, vad_threshold)
                 })
                 .await
                 .unwrap_or_else(|e| Err(format!("VAD task panicked: {}", e)));
 
                 match vad_result {
-                    Ok(vad::VadResult::NoSpeech) => {
+                    Ok(vad::DetailedVad {
+                        result: vad::VadResult::NoSpeech,
+                        ..
+                    }) => {
                         emit_preview_vad_disagreement(app_state, recording_id, samples.len());
                         tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
                             samples.len(), t_vad.elapsed());
@@ -2526,23 +2539,35 @@ async fn run_transcription_pipeline(
                             },
                             terminal: PipelineTerminal::NoSpeech(DictationErrorCode::VadNoSpeech),
                             history: None,
+                            shadow: None,
                         });
                     }
-                    Ok(vad::VadResult::Speech(trimmed)) => {
+                    Ok(vad::DetailedVad {
+                        result: vad::VadResult::Speech(trimmed),
+                        ranges,
+                    }) => {
                         tracing::info!(target: "pipeline", "VAD trimmed {} -> {} samples ({:.0}% speech, {:?})",
                             samples.len(), trimmed.len(),
                             trimmed.len() as f64 / samples.len() as f64 * 100.0,
                             t_vad.elapsed());
                         let vad_trimmed = trimmed.len() != samples.len();
+                        final_vad = shadow::FinalVad::Ran {
+                            ranges,
+                            model_path: vad_path_str,
+                            threshold: vad_threshold,
+                        };
                         (trimmed, vad_trimmed)
                     }
                     Err(e) => {
                         tracing::warn!(target: "pipeline", "VAD failed ({}), proceeding without filtering", e);
+                        final_vad =
+                            shadow::FinalVad::Unavailable(UnavailableReasonV1::SampleFailed);
                         (samples.to_vec(), false)
                     }
                 }
             }
             _ => {
+                final_vad = shadow::FinalVad::Unavailable(UnavailableReasonV1::DependencyPending);
                 let handle = app_handle.clone();
                 tokio::spawn(async move {
                     if let Err(e) = super::models::ensure_vad_model(&handle).await {
@@ -2565,6 +2590,7 @@ async fn run_transcription_pipeline(
             },
             terminal: PipelineTerminal::Cancelled(PerformanceStageV1::InferenceDecode),
             history: None,
+            shadow: None,
         });
     }
 
@@ -2609,6 +2635,11 @@ async fn run_transcription_pipeline(
         },
     )?;
     let backend_empty_error = transcription_attempt.empty_error;
+    // Only with the diagnostics switch on, for a model that can be re-decoded
+    // cleanly: keep a one-way digest of this decode, never the text, so the
+    // post-delivery shadow pass can tell whether a second decode agrees.
+    let first_decode_digest = shadow::should_digest_first_decode(&transcription.model_name)
+        .then(|| shadow::text_digest(&transcription_attempt.text));
     let text = transcription_attempt.text;
     let model_load_ms = load_report.load_ms;
     let inference_ms = t_transcribe.elapsed().as_millis() as u64;
@@ -2719,6 +2750,7 @@ async fn run_transcription_pipeline(
             timings,
             terminal: PipelineTerminal::Cancelled(PerformanceStageV1::ClipboardPaste),
             history: None,
+            shadow: None,
         });
     }
 
@@ -2971,6 +3003,7 @@ async fn run_transcription_pipeline(
                     timings,
                     terminal: PipelineTerminal::Cancelled(PerformanceStageV1::ClipboardPaste),
                     history: None,
+                    shadow: None,
                 });
             }
             Ok(Err(_)) => {
@@ -3075,11 +3108,20 @@ async fn run_transcription_pipeline(
     } else {
         PipelineTerminal::Success
     };
+    // Hand the final pass to the post-delivery shadow measurement. Only a
+    // delivered result has anything to compare.
+    let shadow = matches!(terminal, PipelineTerminal::Success).then(|| shadow::FinalPass {
+        vad: final_vad,
+        filtered: samples_for_transcription,
+        vad_trimmed,
+        first_decode_digest,
+    });
     Ok(PipelineResult {
         text,
         timings,
         terminal,
         history: Some(history),
+        shadow,
     })
     // _guard drops here, setting status to Idle
 }
@@ -5583,9 +5625,14 @@ async fn stop_native_recording_for(
     // Claim the release at the accepted transition, before teardown, so a
     // later release queued behind this stop cannot replace it.
     let hotkey_release = crate::hotkey_release::take_for(rid, stop_entered_at);
+    // The double-tap stop-key gesture is claimed at the same point, from its
+    // own stamp: it only measures, so it never reaches `resolve` or the release
+    // tail the supervisor applies (#1081).
+    let stop_gesture = crate::stop_gesture::take_for(rid, stop_entered_at);
     // A matching rdev release takes precedence even if another stop arrived
     // through the webview at the same time. Unknown sources retain speech.
     let stop_trigger = stop_trigger.resolve(hotkey_release);
+    let native_stop = attributable_stop_gesture(stop_trigger, stop_gesture);
     if status == DictationStatus::Starting {
         drop(transition);
         // Cancel the exact owner even if readiness races with this command
@@ -5660,6 +5707,9 @@ async fn stop_native_recording_for(
             "durationMs": capture.duration_ms,
         })
     });
+    // Where the stop-key press falls in the clip is estimated back from here,
+    // the moment the supervisor is asked to end the capture.
+    let stop_requested_at = std::time::Instant::now();
     let samples = if let Some(capture) = interrupted_capture {
         capture.samples
     } else {
@@ -5698,6 +5748,10 @@ async fn stop_native_recording_for(
     );
     if let Some(release) = hotkey_release {
         performance_guard.record(release.release_to_stop());
+    }
+    if let Some(gesture) = native_stop {
+        performance_guard.record(gesture.press_to_release());
+        performance_guard.record(gesture.release_to_command());
     }
     tracing::info!(
         target: "pipeline",
@@ -5822,6 +5876,7 @@ async fn stop_native_recording_for(
     let history = pipeline.history;
     let text = pipeline.text;
     let timings = pipeline.timings;
+    let shadow_pass = pipeline.shadow;
 
     let delivered_at = std::time::Instant::now();
     let total_ms = delivered_at.duration_since(t_total).as_millis() as u64;
@@ -5937,11 +5992,154 @@ async fn stop_native_recording_for(
         );
     }
 
+    // Delivery is complete. What remains is measurement: content-free, off the
+    // critical path, and detached from this command's result (#1081).
+    if let Some(pass) = shadow_pass {
+        spawn_shadow_follow_up(ShadowFollowUp {
+            app_handle: app_handle.clone(),
+            recording_id: rid,
+            context: Arc::clone(&context),
+            samples,
+            pass,
+            native_stop,
+            stop_requested_at,
+        });
+    }
+
     Ok(serde_json::json!({
         "type": "transcription",
         "text": text,
         "state": "idle"
     }))
+}
+
+/// Only a stop that arrived as the double-tap toggle can own the native
+/// stop-key stamp. A stop with a matching hold release, or one from the overlay
+/// or an auto-stop, was not driven by that gesture, so a stamp that happens to
+/// be pending must not be attributed to it.
+fn attributable_stop_gesture(
+    trigger: audio_lifecycle::DictationStopTrigger,
+    gesture: Option<crate::stop_gesture::StopGesture>,
+) -> Option<crate::stop_gesture::StopGesture> {
+    gesture.filter(|_| trigger == audio_lifecycle::DictationStopTrigger::Toggle)
+}
+
+/// What the post-delivery shadow measurement (#1081) needs, owned so it can
+/// outlive the stop command. It stays in memory until the measurement ends and
+/// is never stored, logged or emitted.
+struct ShadowFollowUp {
+    app_handle: tauri::AppHandle,
+    recording_id: u64,
+    /// The recording-start snapshot, so the re-decode uses the settings the
+    /// first decode used rather than whatever is configured now.
+    context: Arc<DictationContextSnapshot>,
+    /// The captured clip, before the full-clip VAD.
+    samples: Vec<f32>,
+    pass: shadow::FinalPass,
+    /// The stop-key gesture that stopped this recording, when it was a
+    /// double-tap-mode stop.
+    native_stop: Option<crate::stop_gesture::StopGesture>,
+    stop_requested_at: std::time::Instant,
+}
+
+/// Run the measurement on a blocking worker, detached: delivery is complete and
+/// nothing waits for it. A panic stays inside the dropped join handle.
+fn spawn_shadow_follow_up(follow_up: ShadowFollowUp) {
+    drop(tokio::task::spawn_blocking(move || {
+        run_shadow_follow_up(follow_up)
+    }));
+}
+
+/// Revalidated under the backend lock before the determinism re-decode, so it
+/// reads atomics only: no other ownership or status lock may be taken there.
+fn shadow_redecode_is_current(app_state: &AppState, recording_id: u64) -> bool {
+    recording_id > 0
+        && app_state.recording_id.load(Ordering::SeqCst) == recording_id
+        && !app_state.is_cancelled(recording_id)
+}
+
+/// Compute and record the shadow measurement for a delivered dictation.
+///
+/// Everything here runs after the paste. Its only output is a
+/// [`shadow::ShadowMeasurementV1`] of numbers and booleans, keyed to the
+/// recording generation and bound to its run by the store.
+fn run_shadow_follow_up(follow_up: ShadowFollowUp) {
+    let ShadowFollowUp {
+        app_handle,
+        recording_id,
+        context,
+        samples,
+        pass,
+        native_stop,
+        stop_requested_at,
+    } = follow_up;
+    let Some(state) = app_handle.try_state::<State>() else {
+        return;
+    };
+    let transcription = &context.transcription;
+    let shadow::FinalPass {
+        vad: final_vad,
+        filtered,
+        vad_trimmed,
+        first_decode_digest,
+    } = pass;
+    // The PCM the final decode consumed, which is also the full-clip filtered
+    // output the prefix comparisons are made against.
+    let full = vad::VadResult::Speech(filtered);
+
+    // Only while the diagnostics switch is on, and only for a model that can be
+    // decoded twice cleanly: `try_with_ready_backend` never queues behind the
+    // next dictation or loads a model, and revalidates ownership under the
+    // backend lock.
+    let decode_deterministic = match first_decode_digest {
+        None => MeasurementV1::NotApplicable,
+        Some(first) => {
+            let redecoded = state.app_state.model_runtime.try_with_ready_backend(
+                &transcription.model_name,
+                || shadow_redecode_is_current(&state.app_state, recording_id),
+                |backend| {
+                    decode_final_transcript(
+                        backend,
+                        transcription,
+                        shadow::speech_pcm(&full),
+                        &samples,
+                        vad_trimmed,
+                        #[cfg(feature = "preview-decode-reuse")]
+                        None,
+                    )
+                    .map(|attempt| attempt.text)
+                },
+            );
+            shadow::decode_determinism(&first, redecoded)
+        }
+    };
+
+    let press_sample = native_stop.map(|gesture| {
+        shadow::estimate_press_sample(samples.len(), gesture.pressed_at(), stop_requested_at)
+    });
+    let model_free_at_press = match native_stop {
+        Some(gesture) => shadow::model_free_at_press(
+            &transcription.model_name,
+            gesture.preview_in_flight_at_press(),
+        ),
+        None => MeasurementV1::NotApplicable,
+    };
+    let measurement = shadow::measure_final_pass(
+        &final_vad,
+        &full,
+        &samples,
+        press_sample,
+        model_free_at_press,
+        decode_deterministic,
+    );
+    if let Err(error) = state.performance.record_shadow(recording_id, measurement) {
+        tracing::warn!(
+            target: "pipeline",
+            recording_id,
+            %error,
+            "shadow measurement could not be recorded"
+        );
+    }
 }
 
 /// Cancel an in-progress recording or transcription.
@@ -6514,6 +6712,54 @@ pub(crate) mod tests {
             .store(recording_id + 1, Ordering::SeqCst);
         finish_dictation_partial(&app_state, recording_id);
         assert!(!try_begin_dictation_partial(&app_state, recording_id));
+    }
+
+    #[test]
+    fn only_a_toggle_stop_owns_the_native_stop_gesture() {
+        use crate::stop_gesture::StopGesture;
+        use audio_lifecycle::DictationStopTrigger;
+        let pressed_at = std::time::Instant::now();
+        let released_at = pressed_at + std::time::Duration::from_millis(90);
+        let gesture = StopGesture::for_test(
+            pressed_at,
+            released_at,
+            released_at + std::time::Duration::from_millis(12),
+        );
+        assert_eq!(
+            attributable_stop_gesture(DictationStopTrigger::Toggle, Some(gesture)),
+            Some(gesture)
+        );
+        for trigger in [
+            DictationStopTrigger::HoldRelease,
+            DictationStopTrigger::Overlay,
+            DictationStopTrigger::AutoStop,
+            DictationStopTrigger::Other,
+        ] {
+            assert_eq!(
+                attributable_stop_gesture(trigger, Some(gesture)),
+                None,
+                "{trigger:?} did not come from the double-tap gesture"
+            );
+        }
+        assert_eq!(
+            attributable_stop_gesture(DictationStopTrigger::Toggle, None),
+            None
+        );
+    }
+
+    #[test]
+    fn shadow_redecode_requires_the_same_uncancelled_recording() {
+        let app_state = AppState::default();
+        app_state.recording_id.store(41, Ordering::SeqCst);
+        assert!(shadow_redecode_is_current(&app_state, 41));
+        assert!(!shadow_redecode_is_current(&app_state, 0));
+        assert!(!shadow_redecode_is_current(&app_state, 40));
+        app_state.cancel_recording(41);
+        assert!(!shadow_redecode_is_current(&app_state, 41));
+        // A newer recording supersedes the one that was measured.
+        app_state.recording_id.store(42, Ordering::SeqCst);
+        assert!(!shadow_redecode_is_current(&app_state, 41));
+        assert!(shadow_redecode_is_current(&app_state, 42));
     }
 
     pub(crate) fn partial_lease_fixture() -> (tauri::App<tauri::test::MockRuntime>, impl Send) {

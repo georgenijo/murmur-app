@@ -74,6 +74,8 @@ The VAD execution time is logged as `vad_ms` in the structured telemetry output 
 
 Every live recording with non-zero sensitivity runs VAD once against the final full buffer after recording stops. At zero, or if VAD is unavailable or fails, Murmur proceeds once with the unfiltered full buffer.
 
+The final pass calls `filter_speech_detailed`, which returns the same filtered output as `filter_speech` together with the kept segment bounds (padding included). After delivery, the content-free [early-final shadow measurement](performance-diagnostics.md#early-final-shadow-measurement) uses those bounds to measure trailing silence and runs `filter_speech` again on prefixes of the clip to record whether each would have produced the same output. It changes no filtering behavior and stores only numbers and booleans.
+
 ### Live Settings preview
 
 While Dictation Settings is visible and no productive capture owns the

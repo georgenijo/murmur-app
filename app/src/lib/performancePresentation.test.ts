@@ -95,8 +95,15 @@ describe('performance presentation semantics', () => {
     expect(stageLabel('releaseToPaste', 'dictation')).toBe('Release to paste');
   });
 
+  it('labels the double-tap stop gesture stages', () => {
+    expect(stageLabel('stopPressToRelease', 'dictation')).toBe('Stop key press to release');
+    expect(stageLabel('stopReleaseToCommand', 'dictation')).toBe('Stop key release to command');
+  });
+
   it('orders each run kind without inventing stage offsets', () => {
     expect(orderedStages(makeRun()).map(stage => stage.stage)).toEqual([
+      'stopPressToRelease',
+      'stopReleaseToCommand',
       'releaseToStop',
       'captureFinalization',
       'vad',
