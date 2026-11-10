@@ -378,7 +378,7 @@ pub(crate) enum EngineError {
     Backoff,
 }
 
-/// The local language model. Production uses [`FoundationModelsEngine`];
+/// The local language model. Live dictation gates [`FoundationModelsEngine`];
 /// tests inject fakes.
 pub(crate) trait HomophoneEngine: Send + Sync {
     /// Best effort only: never wait for preparation on the delivery path.
@@ -461,8 +461,9 @@ impl HomophoneEngine for BackoffEngine {
         }
         let started = Instant::now();
         let mut result = self.engine.choose(instructions, prompt, budget, max_tokens);
-        // Count a late successful response as a timeout, like run_pass does.
-        if result.is_ok() && started.elapsed() > budget {
+        // Normalize every over-budget result before backoff accounting. A late
+        // failure must not reset the timeout streak.
+        if started.elapsed() > budget {
             result = Err(EngineError::Timeout);
         }
         self.state.lock_or_recover().observe(&result, (self.now)());
@@ -711,14 +712,51 @@ impl HomophoneEngine for FoundationModelsEngine {
     }
 }
 
+// #1081: prepared first responses took 307–352 ms on M4 and 309–337 ms
+// on M5 Pro; 0/26 completed within the unchanged 150 ms dictation budget.
+// Re-enable only when generation can meet that delivery budget. This gate is
+// specific to live dictation; the FoundationModels bridge remains available.
+const LIVE_DICTATION_GENERATION_ENABLED: bool = false;
+
+struct LiveDictationEngine {
+    enabled: bool,
+    engine: Arc<dyn HomophoneEngine>,
+}
+
+impl HomophoneEngine for LiveDictationEngine {
+    fn prewarm(&self) {
+        if self.enabled {
+            self.engine.prewarm();
+        }
+    }
+
+    fn choose(
+        &self,
+        instructions: &str,
+        prompt: &str,
+        budget: Duration,
+        max_tokens: u32,
+    ) -> Result<String, EngineError> {
+        if !self.enabled {
+            return Err(EngineError::Unavailable);
+        }
+        self.engine.choose(instructions, prompt, budget, max_tokens)
+    }
+}
+
 pub(crate) fn system_engine() -> Arc<dyn HomophoneEngine> {
     static STATE: OnceLock<Arc<Mutex<BackoffState>>> = OnceLock::new();
-    Arc::new(BackoffEngine {
-        engine: Arc::new(FoundationModelsEngine::default()),
-        state: STATE
-            .get_or_init(|| Arc::new(Mutex::new(BackoffState::default())))
-            .clone(),
-        now: Box::new(Instant::now),
+    // Gate outside backoff: an intentionally unavailable pass must always
+    // report unavailable, never accumulate failures and turn into backoff.
+    Arc::new(LiveDictationEngine {
+        enabled: LIVE_DICTATION_GENERATION_ENABLED,
+        engine: Arc::new(BackoffEngine {
+            engine: Arc::new(FoundationModelsEngine::default()),
+            state: STATE
+                .get_or_init(|| Arc::new(Mutex::new(BackoffState::default())))
+                .clone(),
+            now: Box::new(Instant::now),
+        }),
     })
 }
 
@@ -774,6 +812,101 @@ mod tests {
             }),
         };
         (backoff, engine, elapsed_ms)
+    }
+
+    #[test]
+    fn live_dictation_never_generates_or_prepares_and_reports_unavailable() {
+        let (backoff, inner, _) = backoff_engine(vec![]);
+        let engine = LiveDictationEngine {
+            enabled: LIVE_DICTATION_GENERATION_ENABLED,
+            engine: Arc::new(backoff),
+        };
+        // Mirror repeated recording starts, beyond the cooldown threshold.
+        for _ in 0..BACKOFF_FAILURE_LIMIT + 2 {
+            engine.prewarm();
+            let result = run_pass("Put it in the cue.  ", &[], &[], &engine);
+            assert_eq!(result.outcome, PassOutcome::Unavailable);
+            assert!(result.outcome.is_fallback());
+            assert_eq!(result.text, "Put it in the cue.  ");
+            assert!(result.replacements.is_empty());
+            assert_eq!(result.flagged, 1);
+        }
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(inner.prewarms.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            run_pass("Hello world.", &[], &[], &engine).outcome,
+            PassOutcome::NotTriggered
+        );
+    }
+
+    #[test]
+    fn enabled_live_dictation_delegates_preparation_and_accepts_a_choice() {
+        let (backoff, inner, _) = backoff_engine(vec![Ok("1: queue".into())]);
+        let engine = LiveDictationEngine {
+            enabled: true,
+            engine: Arc::new(backoff),
+        };
+        engine.prewarm();
+        let result = run_pass("Add it to the cue.", &[], &[], &engine);
+        assert_eq!(result.outcome, PassOutcome::Accepted);
+        assert_eq!(result.text, "Add it to the queue.");
+        assert_eq!(result.flagged, 1);
+        assert_eq!(inner.prewarms.load(Ordering::SeqCst), 1);
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn an_error_inside_the_budget_keeps_its_classification() {
+        let expected = vec![
+            Err(EngineError::Timeout),
+            Err(EngineError::Timeout),
+            Err(EngineError::Failed),
+            Err(EngineError::Timeout),
+            Err(EngineError::Timeout),
+            Ok("1=cue".to_string()),
+        ];
+        let (engine, inner, _) = backoff_engine(expected.clone());
+        let budget = Duration::from_secs(60);
+        let results: Vec<_> = (0..6).map(|_| engine.choose("", "", budget, 1)).collect();
+        assert_eq!(results, expected);
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 6);
+    }
+
+    #[test]
+    fn late_failure_counts_as_timeout_before_backoff_observes_it() {
+        struct LateFailure;
+        impl HomophoneEngine for LateFailure {
+            fn choose(
+                &self,
+                _: &str,
+                _: &str,
+                budget: Duration,
+                _: u32,
+            ) -> Result<String, EngineError> {
+                std::thread::sleep(budget + Duration::from_millis(1));
+                Err(EngineError::Failed)
+            }
+        }
+        let state = Arc::new(Mutex::new(BackoffState::default()));
+        let engine = BackoffEngine {
+            engine: Arc::new(LateFailure),
+            state: state.clone(),
+            now: Box::new(Instant::now),
+        };
+        for _ in 0..BACKOFF_FAILURE_LIMIT {
+            assert_eq!(
+                engine.choose("", "", Duration::ZERO, 1),
+                Err(EngineError::Timeout)
+            );
+        }
+        assert_eq!(
+            state.lock().unwrap().consecutive_failures,
+            BACKOFF_FAILURE_LIMIT
+        );
+        assert_eq!(
+            engine.choose("", "", Duration::ZERO, 1),
+            Err(EngineError::Backoff)
+        );
     }
 
     #[test]
