@@ -5606,6 +5606,16 @@ fn stop_owner_matches(current_recording_id: u64, expected_recording_id: Option<u
     expected_recording_id.is_none_or(|expected| expected == current_recording_id)
 }
 
+/// Only the resolved double-tap toggle owns its stop-key diagnostics. A
+/// pending stamp is consumed but discarded when an overlay, auto-stop, or
+/// matching hold release wins the accepted stop.
+fn attributable_stop_stamp(
+    trigger: audio_lifecycle::DictationStopTrigger,
+    stamp: Option<crate::shadow_measurement::StopStamp>,
+) -> Option<crate::shadow_measurement::StopStamp> {
+    stamp.filter(|_| trigger == audio_lifecycle::DictationStopTrigger::Toggle)
+}
+
 /// Stop only the recording generation captured by the caller. User commands
 /// pass no expectation; asynchronous lifecycle continuations must pass the
 /// generation that scheduled them so they cannot stop a newer recording.
@@ -5693,6 +5703,7 @@ async fn stop_native_recording_for(
     // A matching rdev release takes precedence even if another stop arrived
     // through the webview at the same time. Unknown sources retain speech.
     let stop_trigger = stop_trigger.resolve(hotkey_release);
+    let stop_stamp = attributable_stop_stamp(stop_trigger, stop_stamp);
     if status == DictationStatus::Starting {
         drop(transition);
         // Cancel the exact owner even if readiness races with this command
@@ -7263,6 +7274,59 @@ pub(crate) mod tests {
         assert!(requested);
         assert!(performance_started_at_ms > 0);
         assert_eq!(dictation.status, DictationStatus::Starting);
+    }
+
+    #[test]
+    fn only_the_resolved_toggle_stop_owns_a_published_stamp() {
+        use crate::shadow_measurement::{self, StopPress, StopStamp};
+        use audio_lifecycle::DictationStopTrigger;
+        let entered = std::time::Instant::now();
+        let released = entered - std::time::Duration::from_millis(12);
+        let stamp = StopStamp {
+            press: StopPress {
+                recording_id: 1_082,
+                pressed_at: released - std::time::Duration::from_millis(80),
+                sample: Some(16_000),
+                preview_held_backend: true,
+            },
+            released_at: released,
+        };
+        for trigger in [
+            DictationStopTrigger::Toggle,
+            DictationStopTrigger::HoldRelease,
+            DictationStopTrigger::Overlay,
+            DictationStopTrigger::AutoStop,
+            DictationStopTrigger::Other,
+        ] {
+            for release in [
+                None,
+                Some(crate::hotkey_release::HotkeyRelease::for_test(
+                    released, entered,
+                )),
+            ] {
+                // A double-tap publishes first, but this command wins the stop.
+                shadow_measurement::record(stamp);
+                let pending = shadow_measurement::take_for(1_082, entered);
+                assert!(pending.is_some());
+                let resolved = trigger.resolve(release);
+                let attributed = attributable_stop_stamp(resolved, pending);
+                assert_eq!(
+                    attributed.is_some(),
+                    trigger == DictationStopTrigger::Toggle && release.is_none(),
+                    "{trigger:?}"
+                );
+                if let Some(attributed) = attributed {
+                    assert_eq!(attributed.press.sample, Some(16_000));
+                    assert_eq!(attributed.stages(entered)[0].duration_ms.value(), Some(&80));
+                    assert_eq!(attributed.stages(entered)[1].duration_ms.value(), Some(&12));
+                }
+                assert!(
+                    shadow_measurement::take_for(1_082, entered).is_none(),
+                    "the losing stamp must not leak to another stop"
+                );
+                assert!(attributable_stop_stamp(resolved, None).is_none());
+            }
+        }
     }
 
     #[test]

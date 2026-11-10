@@ -3010,6 +3010,83 @@ mod tests {
         }
     }
 
+    // Gesture-reset cases adapted from the claude-sonnet-5-5 trial lane (#1092).
+    fn recording_detector_with_stamped_press() -> DoubleTapDetector {
+        let mut d = make_detector(Key::ShiftLeft);
+        d.recording = true;
+        d.native_recording = Some((17, true));
+        assert!(!d.handle_event(&press(Key::ShiftLeft)));
+        assert!(d.stop_press.is_some());
+        d
+    }
+
+    #[test]
+    fn rejected_stop_gestures_drop_their_stamped_press() {
+        for interrupt in [
+            press(Key::KeyA),
+            press(Key::MetaLeft),
+            EventType::ButtonPress(rdev::Button::Left),
+            EventType::Wheel {
+                delta_x: 0,
+                delta_y: 1,
+            },
+        ] {
+            let mut d = recording_detector_with_stamped_press();
+            assert!(!d.handle_event(&interrupt), "{interrupt:?}");
+            assert!(d.stop_press.is_none(), "{interrupt:?}");
+            assert!(!d.handle_event(&release(Key::ShiftLeft)), "{interrupt:?}");
+            assert!(d.fired_stop.is_none(), "{interrupt:?}");
+        }
+    }
+
+    #[test]
+    fn function_key_chords_drop_or_never_stamp_the_press() {
+        let mut d = make_detector(Key::F8);
+        d.recording = true;
+        d.native_recording = Some((17, true));
+        assert!(!d.handle_event_with_context(&press(Key::F8), false, false));
+        assert!(d.stop_press.is_some());
+        assert!(!d.handle_event_with_context(&press(Key::F8), true, false));
+        assert!(d.stop_press.is_none());
+        assert!(d.fired_stop.is_none());
+
+        let mut d = make_detector(Key::F8);
+        d.recording = true;
+        d.native_recording = Some((17, true));
+        assert!(!d.handle_event_with_context(&press(Key::F8), true, false));
+        assert!(d.stop_press.is_none());
+        assert!(!d.handle_event_with_context(&release(Key::F8), false, false));
+        assert!(d.fired_stop.is_none());
+    }
+
+    #[test]
+    fn reset_and_key_change_drop_pending_and_fired_stop_stamps() {
+        for fired in [false, true] {
+            for change_key in [false, true] {
+                let mut d = recording_detector_with_stamped_press();
+                if fired {
+                    assert!(d.handle_event(&release(Key::ShiftLeft)));
+                    assert!(d.fired_stop.is_some());
+                }
+                let target = if change_key {
+                    d.set_target(Some(Key::ShiftRight));
+                    Key::ShiftRight
+                } else {
+                    d.reset();
+                    Key::ShiftLeft
+                };
+                assert!(d.stop_press.is_none());
+                assert!(d.fired_stop.is_none());
+                assert!(!d.handle_event(&release(target)));
+                d.last_fired_at = None;
+                d.native_recording = Some((99, false));
+                assert!(!d.handle_event(&press(target)));
+                assert!(d.handle_event(&release(target)));
+                assert_eq!(d.fired_stop.take().unwrap().press.recording_id, 99);
+            }
+        }
+    }
+
     #[test]
     fn single_tap_stops_when_recording() {
         let mut d = make_detector(Key::ShiftLeft);

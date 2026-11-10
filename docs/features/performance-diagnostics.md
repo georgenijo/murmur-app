@@ -602,7 +602,10 @@ Double-tap/Both-mode single-tap stops stamp native press and release instants.
 release through the webview to native stop entry. The pending press belongs to
 the detector and is cleared by reset, chords, excessive holds, or reconfiguration.
 Only an emitted stop publishes it; the accepted stop consumes it for the same
-generation within ten seconds. Hold-to-talk retains its existing release stages.
+generation within ten seconds. Only a resolved double-tap toggle stop attributes
+that stamp; an overlay, auto-stop, other stop, or matching hold release discards
+it without recording double-tap stages or press evidence. Hold-to-talk retains
+its existing release stages.
 The press reads a nonblocking retained-PCM sample count, without copying audio;
 contention records an unavailable (`null`) cursor. The count represents PCM
 already received at the host, not samples still buffered inside the helper.
@@ -611,8 +614,9 @@ The companion records only numbers, booleans, and fixed enums:
 
 - `pressSample`, `pauseSample`: 16 kHz prefix endpoints, or null;
 - `trailingSilenceBeforePressMs`, `trailingSilenceBeforeStopMs`: silence after
-  the latest preceding padded full-clip VAD segment (zero within a segment,
-  null when no preceding speech or VAD evidence exists);
+  the latest preceding padded full-clip VAD segment (zero within a segment);
+  before the first segment, measure from clip start, since complete VAD ranges
+  prove that prefix is silent. Missing VAD evidence remains null;
 - `pressInputMatches`, `pauseInputMatches`: byte-exact equality of separately
   filtered prefixes against the final filtered PCM, or null when unavailable;
 - `previewHeldBackendAtPress`: whether display-only preview actually held the

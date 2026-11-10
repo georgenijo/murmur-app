@@ -148,13 +148,13 @@ impl ShadowAudio {
         if supported {
             if let Some(bounds) = full_bounds(&self.original, &self.filtered) {
                 result.trailing_silence_before_stop_ms =
-                    trailing_silence_ms(&bounds, self.original.len());
+                    Some(trailing_silence_ms(&bounds, self.original.len()));
                 let press = self
                     .stamp
                     .and_then(|s| s.press.sample)
                     .filter(|at| *at <= self.original.len());
                 result.trailing_silence_before_press_ms =
-                    press.and_then(|at| trailing_silence_ms(&bounds, at));
+                    press.map(|at| trailing_silence_ms(&bounds, at));
                 let pause = last_pause(&bounds, self.original.len());
                 result.pause_sample = pause.map(|at| at as u64);
                 result.press_input_matches =
@@ -167,15 +167,16 @@ impl ShadowAudio {
     }
 }
 
-/// Bounds are the same padded, clamped segments used to assemble final PCM.
-/// Inside a speech segment silence is zero; no preceding speech is unavailable.
-pub(crate) fn trailing_silence_ms(bounds: &[(usize, usize)], at: usize) -> Option<u64> {
-    bounds
+/// Complete padded, clamped VAD bounds prove silence from clip start when
+/// no speech precedes `at`. Missing VAD evidence is handled by the caller.
+pub(crate) fn trailing_silence_ms(bounds: &[(usize, usize)], at: usize) -> u64 {
+    let preceding_end = bounds
         .iter()
         .filter(|(start, _)| *start <= at)
         .map(|(_, end)| (*end).min(at))
         .max()
-        .map(|end| (at.saturating_sub(end) / 16) as u64)
+        .unwrap_or(0);
+    (at.saturating_sub(preceding_end) / 16) as u64
 }
 /// First 300ms point of the latest qualifying quiet interval, including
 /// trailing silence. This is an actual hypothetical trigger before final stop.
@@ -278,14 +279,55 @@ mod tests {
     #[test]
     fn padded_silence_and_last_pause_have_explicit_missing_values() {
         let bounds = [(1600, 8000), (16000, 24000)];
-        assert_eq!(trailing_silence_ms(&bounds, 1000), None);
-        assert_eq!(trailing_silence_ms(&bounds, 4000), Some(0));
-        assert_eq!(trailing_silence_ms(&bounds, 12800), Some(300));
-        assert_eq!(trailing_silence_ms(&bounds, 32000), Some(500));
+        assert_eq!(trailing_silence_ms(&bounds, 1000), 62);
+        assert_eq!(trailing_silence_ms(&bounds, 4000), 0);
+        assert_eq!(trailing_silence_ms(&bounds, 12800), 300);
+        assert_eq!(trailing_silence_ms(&bounds, 32000), 500);
         assert_eq!(last_pause(&bounds, 32000), Some(28800));
         assert_eq!(last_pause(&bounds, 25000), Some(12800));
         assert_eq!(last_pause(&[(0, 16000)], 20000), None);
     }
+    #[test]
+    fn press_before_first_speech_measures_silence_from_clip_start() {
+        let now = Instant::now();
+        let stamp = StopStamp {
+            press: StopPress {
+                recording_id: 1,
+                pressed_at: now,
+                sample: Some(1_600),
+                preview_held_backend: false,
+            },
+            released_at: now,
+        };
+        for bounds in [None, Some(vec![(3_200, 4_800)])] {
+            let available = bounds.is_some();
+            let result = ShadowAudio {
+                original: vec![0.0; 8_000],
+                filtered: vec![1.0; 1_600],
+                stamp: Some(stamp),
+                boundary: PostDeliveryBoundary {
+                    idle_observed_at: now,
+                    delivered_at: now,
+                },
+            }
+            .measure(true, |_, _| bounds, |_, _, _| Some(false));
+            assert_eq!(
+                result.trailing_silence_before_press_ms,
+                available.then_some(100)
+            );
+            assert_eq!(
+                result.trailing_silence_before_stop_ms,
+                available.then_some(200)
+            );
+            assert_eq!(result.press_input_matches, available.then_some(false));
+        }
+        let bounds = [(1_600, 8_000)];
+        assert_eq!(trailing_silence_ms(&bounds, 0), 0);
+        assert_eq!(trailing_silence_ms(&bounds, 1_599), 99);
+        assert_eq!(trailing_silence_ms(&bounds, 1_600), 0);
+        assert_eq!(trailing_silence_ms(&[], 1_600), 100);
+    }
+
     #[test]
     fn equality_is_byte_exact_including_signed_zero_and_nan() {
         assert!(pcm_equal(&[1.0, 2.0], &[1.0, 2.0]));
