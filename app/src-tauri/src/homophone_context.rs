@@ -856,6 +856,23 @@ mod tests {
     }
 
     #[test]
+    fn an_error_inside_the_budget_keeps_its_classification() {
+        let expected = vec![
+            Err(EngineError::Timeout),
+            Err(EngineError::Timeout),
+            Err(EngineError::Failed),
+            Err(EngineError::Timeout),
+            Err(EngineError::Timeout),
+            Ok("1=cue".to_string()),
+        ];
+        let (engine, inner, _) = backoff_engine(expected.clone());
+        let budget = Duration::from_secs(60);
+        let results: Vec<_> = (0..6).map(|_| engine.choose("", "", budget, 1)).collect();
+        assert_eq!(results, expected);
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 6);
+    }
+
+    #[test]
     fn late_failure_counts_as_timeout_before_backoff_observes_it() {
         struct LateFailure;
         impl HomophoneEngine for LateFailure {
