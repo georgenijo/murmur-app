@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.62.2] - 2026-11-10
+
+<!-- Release notes generated using configuration in .github/release.yml at d6f360c6db61fa5ee2ae2e51f6e86cfdfe8ddae5 -->
+
+## What's Changed
+### Other Changes
+* feat: schedule automatic patch releases by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1013
+* revert: remove scheduled automatic patch releases by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1016
+* chore: remove stale agent skills and swarm prompt by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1024
+* docs: archive and discontinue the GPUI rewrite by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1077
+* fix(onboarding): keep model download status visible by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1078
+* docs: reproduce visible bugs first; native UI work runs on a Mac by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1080
+* perf: stop waiting on the homophone engine during dictation (#1081 phase 1) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1083
+* perf: attribute paste-stage latency and move the diagnostic window lookup off the delivery path (#1081 phase 2) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1084
+* perf: shadow measurement for early final decode (#1081 phase 3) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1082
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.62.1...v0.62.2
+
 ## [0.62.1] - 2026-11-05
 
 <!-- Release notes generated using configuration in .github/release.yml at fdf8f46fa1d6e08c279e009916ddea8c84f59a9a -->
