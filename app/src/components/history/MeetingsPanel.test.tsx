@@ -293,6 +293,27 @@ describe('MeetingsPanel retained audio deletion', () => {
     expect(remove).toHaveBeenCalledExactlyOnceWith(detail.session.id);
   });
 
+  it('disarms synchronously before a departure, re-entry and click in the same batch', async () => {
+    const remove = vi.fn().mockResolvedValue(true);
+    await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
+    await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => element.textContent === 'Delete meeting…')!;
+    await act(async () => item.click());
+    expect(item.textContent).toBe('Confirm delete…');
+
+    await act(async () => {
+      // Do not yield or flush React between these events: the click still has
+      // the prior render's handler when the pointer-departure update is queued.
+      item.dispatchEvent(new MouseEvent('pointerout', { bubbles: true, relatedTarget: document.body }));
+      item.dispatchEvent(new MouseEvent('pointerover', { bubbles: true, relatedTarget: document.body }));
+      item.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+      expect(remove).not.toHaveBeenCalled();
+    });
+
+    expect(remove).not.toHaveBeenCalled();
+    expect(item.textContent).toBe('Confirm delete…');
+  });
+
   it('ignores a double-click confirmation but accepts a separate single click', async () => {
     const remove = vi.fn().mockResolvedValue(true);
     await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));

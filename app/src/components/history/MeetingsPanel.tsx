@@ -43,6 +43,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const armedDeleteSessionRef = useRef<string | null>(null);
   const [listMenuOpen, setListMenuOpen] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -94,11 +95,18 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
     }
   };
 
+  // Cancellation and activation can arrive in one React batch. The ref is
+  // authoritative immediately; state only renders the confirmation label.
+  const setDeleteConfirmation = useCallback((sessionId: string | null) => {
+    armedDeleteSessionRef.current = sessionId;
+    setConfirmDelete(sessionId);
+  }, []);
+
   const disarmDelete = useCallback(() => {
-    setConfirmDelete(null);
+    setDeleteConfirmation(null);
     if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
     deleteTimerRef.current = null;
-  }, []);
+  }, [setDeleteConfirmation]);
 
   useEffect(() => {
     disarmDelete();
@@ -107,8 +115,8 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
   const deleteSelected = async () => {
     const id = meetings.detail?.session.id;
     if (!id) return;
-    if (confirmDelete !== id) {
-      setConfirmDelete(id);
+    if (armedDeleteSessionRef.current !== id) {
+      setDeleteConfirmation(id);
       if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
       deleteTimerRef.current = setTimeout(disarmDelete, 4000);
       return;
