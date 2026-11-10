@@ -7,6 +7,20 @@ for (const appearance of ['light', 'dark'] as const) {
       test.beforeEach(async ({ page }) => {
         await page.clock.setFixedTime(new Date('2026-09-04T20:00:00Z'));
       });
+      test('newest and later rows receive the same pointer hover fill', async ({ page }) => {
+        await page.goto(`/visual-fixtures.html?state=idle&appearance=${appearance}`);
+        const rows = page.locator('.transcript-card');
+        const fills: string[] = [];
+        for (const index of [0, 1]) {
+          const row = rows.nth(index);
+          await row.hover();
+          await expect(row.locator('.transcript-actions')).toHaveCSS('opacity', '1');
+          const fill = await row.evaluate(n => getComputedStyle(n).backgroundColor);
+          expect(fill).not.toBe('rgba(0, 0, 0, 0)');
+          fills.push(fill);
+        }
+        expect(fills[0]).toBe(fills[1]);
+      });
       test('empty history has one dictation action and no passive usage strip', async ({ page }) => {
         await page.goto(`/visual-fixtures.html?state=home-empty&appearance=${appearance}`);
         await expect(page.getByRole('button', { name: 'Start dictation', exact: true })).toBeEnabled();

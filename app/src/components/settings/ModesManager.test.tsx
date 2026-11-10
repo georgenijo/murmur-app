@@ -114,8 +114,7 @@ describe('ModesManager', () => {
 
   it('binds one Mode to an application and supports disabling it', async () => {
     const onChange = vi.fn();
-    const onModeBound = vi.fn();
-    await act(async () => root.render(<ModesManager modes={[mode]} profiles={[profile]} siteLookupEnabled={false} siteRules={[]} onChange={onChange} onModeBound={onModeBound} />));
+    await act(async () => root.render(<ModesManager modes={[mode]} profiles={[profile]} siteLookupEnabled={false} siteRules={[]} onChange={onChange} />));
     const focus = [...container.querySelectorAll('button')].find((button) => button.textContent?.includes('Focus'))!;
     await act(async () => focus.click());
     const bindSwitch = container.querySelector('[role="switch"][aria-label="Bind Editor"]') as HTMLElement;
@@ -123,7 +122,6 @@ describe('ModesManager', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
       appProfiles: [expect.objectContaining({ modeId: 'mode.focus' })],
     }));
-    expect(onModeBound).toHaveBeenCalledOnce();
     const enabled = container.querySelector('[role="switch"][aria-label="Enable mode"]') as HTMLElement;
     expect(enabled.getAttribute('aria-checked')).toBe('true');
     await act(async () => enabled.click());

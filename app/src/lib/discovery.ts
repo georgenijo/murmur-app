@@ -10,9 +10,7 @@ export const DISCOVERY_HINT_IDS = [
 export type DiscoveryHintId = (typeof DISCOVERY_HINT_IDS)[number];
 
 export type DiscoveryDestination =
-  | { kind: 'palette' }
   | { kind: 'settings'; page: string; target: string }
-  | { kind: 'main'; page: 'meetings' }
   | { kind: 'teach' };
 
 export function hintDestination(id: DiscoveryHintId): DiscoveryDestination {
@@ -46,26 +44,54 @@ function unique<T extends string>(values: T[]): T[] {
 }
 
 function parseState(value: unknown): DiscoveryStateV2 | null {
-  if (!isRecord(value) || (value.version !== 1 && value.version !== 2)
-    || !Array.isArray(value.pendingHints) || !value.pendingHints.every((id) => typeof id === 'string' && isHintId(id))
-    || !Array.isArray(value.dismissedHints) || !value.dismissedHints.every((id) => typeof id === 'string' && isHintId(id))) return null;
-  const dismissedHints = unique(value.dismissedHints as DiscoveryHintId[]);
+  if (!isRecord(value) || (value.version !== 1 && value.version !== 2)) return null;
+  // v1 progress-only records may omit hints; v2 requires its two array fields.
+  if (value.version === 2 && (!Array.isArray(value.pendingHints) || !Array.isArray(value.dismissedHints))) return null;
+  const knownIds = (items: unknown): DiscoveryHintId[] => Array.isArray(items)
+    ? unique(items.filter((id): id is DiscoveryHintId => typeof id === 'string' && isHintId(id)))
+    : [];
+  const dismissedHints = knownIds(value.dismissedHints);
   return {
     version: 2,
-    pendingHints: unique(value.pendingHints as DiscoveryHintId[]).filter((id) => !dismissedHints.includes(id)),
+    pendingHints: knownIds(value.pendingHints).filter((id) => !dismissedHints.includes(id)),
     dismissedHints,
   };
+}
+
+const LEGACY_STORAGE_KEY = 'murmur_discovery_v1';
+
+function readState(raw: string | null): DiscoveryStateV2 | null {
+  if (raw === null) return null;
+  try { return parseState(JSON.parse(raw)); } catch { return null; }
 }
 
 export function loadDiscoveryState(): DiscoveryStateV2 | null {
   try {
     const stored = localStorage.getItem(DISCOVERY_STORAGE_KEY);
-    if (stored !== null) return parseState(JSON.parse(stored));
-    const legacy = localStorage.getItem('murmur_discovery_v1');
-    if (legacy === null) return null;
-    const state = parseState(JSON.parse(legacy));
-    if (state) localStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify(state));
-    localStorage.removeItem('murmur_discovery_v1');
+    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
+    const current = readState(stored);
+    const previous = readState(legacy);
+    if (legacy !== null) {
+      try { JSON.parse(legacy); } catch {
+        // Unreadable JSON cannot contribute hint IDs, and must not linger forever.
+        localStorage.removeItem(LEGACY_STORAGE_KEY);
+      }
+    }
+    if (!current && !previous) return null;
+    const dismissedHints = unique([...(current?.dismissedHints ?? []), ...(previous?.dismissedHints ?? [])]);
+    const state: DiscoveryStateV2 = {
+      version: 2,
+      pendingHints: unique([...(current?.pendingHints ?? []), ...(previous?.pendingHints ?? [])])
+        .filter((id) => !dismissedHints.includes(id)),
+      dismissedHints,
+    };
+    try {
+      localStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify(state));
+      // Keep recoverable legacy data until its replacement has been persisted.
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+    } catch {
+      // Return validated hints in memory; a later load can retry the migration.
+    }
     return state;
   } catch {
     return null;
@@ -75,6 +101,7 @@ export function loadDiscoveryState(): DiscoveryStateV2 | null {
 function saveState(state: DiscoveryStateV2): DiscoveryStateV2 {
   try {
     localStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify(state));
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
     window.dispatchEvent(new Event(DISCOVERY_CHANGED_EVENT));
   } catch {
     // Discovery never blocks the main app when storage is unavailable.
@@ -109,7 +136,7 @@ export function dismissDiscoveryHint(id: DiscoveryHintId): DiscoveryStateV2 | nu
 export function resetDiscovery(): void {
   try {
     localStorage.removeItem(DISCOVERY_STORAGE_KEY);
-    localStorage.removeItem('murmur_discovery_v1');
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
     window.dispatchEvent(new Event(DISCOVERY_CHANGED_EVENT));
   } catch {
     // Non-fatal.

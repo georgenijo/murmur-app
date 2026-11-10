@@ -369,3 +369,12 @@ the second transcript row for the row-action state; talk-row hover is exercised
 separately. Fixtures run without capture-time CSS or DOM rewriting. Verify each
 appearance at 1100×780 and 840×620; the combined native build remains the final
 manual acceptance gate.
+
+The shared secondary defaults use `[class]:where(...)` with specificity 0,1,0, keeping the element-level
+font reset below the shared defaults. Geometry
+rules must not assign a neutral border color to shared or destructive consumers. Explicit danger consumers
+(`data-tone="danger"`, confirming/destructive variants, `.settings-modes-danger`
+and error text utilities) receive shared geometry/focus and retain their own
+paint at rest, on hover and when armed. Computed-style coverage exercises actual
+meeting deletion, mode deletion, knowledge actions and General setup/reset
+buttons in both appearances.

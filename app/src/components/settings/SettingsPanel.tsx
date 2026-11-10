@@ -217,8 +217,6 @@ interface SettingsPanelProps {
   status: DictationStatus;
   onResetStats: () => void;
   onRerunSetup: () => void;
-  onPageOpened?: (page: string) => void;
-  onModeBound?: () => void;
   accessibilityGranted: boolean | null;
   onCheckForUpdate: () => Promise<void>;
   onDownloadUpdate: () => void;
@@ -427,8 +425,6 @@ export const SettingsPanel = memo(function SettingsPanel({
   status,
   onResetStats,
   onRerunSetup,
-  onPageOpened,
-  onModeBound,
   accessibilityGranted,
   onCheckForUpdate,
   onDownloadUpdate,
@@ -448,8 +444,6 @@ export const SettingsPanel = memo(function SettingsPanel({
   const backgroundRef = useRef<HTMLDivElement>(null);
   const editorOpenerRef = useRef<HTMLElement | null>(null);
   const [appliedRequestToken, setAppliedRequestToken] = useState(pageRequest?.token);
-  const pageRequestPending = pageRequest !== null && pageRequest.token !== appliedRequestToken;
-  const pageVisible = settingsSurfaceActive && activeRef?.current !== false;
   const [diagnosticsWindowError, setDiagnosticsWindowError] = useState<string | null>(null);
   const [calendarSettingsError, setCalendarSettingsError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -472,10 +466,6 @@ export const SettingsPanel = memo(function SettingsPanel({
   useLayoutEffect(() => {
     onLatencyViewChange?.(latencyView);
   }, [latencyView, onLatencyViewChange]);
-  useEffect(() => {
-    if (!pageVisible || pageRequestPending) return;
-    onPageOpened?.(activeCat);
-  }, [activeCat, pageVisible, pageRequestPending, onPageOpened]);
   const searchResults = useMemo(() => {
     const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
     const query = normalize(searchQuery);
@@ -1433,7 +1423,6 @@ export const SettingsPanel = memo(function SettingsPanel({
                 onChange={onUpdateSettings}
                 onAddAppProfile={openAppProfileForMode}
                 initialSelectedId={modeSelectionId}
-                onModeBound={onModeBound}
               />
             </div>
           </SettingsSection>

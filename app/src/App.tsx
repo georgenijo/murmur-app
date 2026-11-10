@@ -208,10 +208,7 @@ function App() {
     initializeDiscoveryAfterSetup();
     setModelReady(true);
     setOnboardingState('done');
-  }, [
-    configureOnboarding,
-    settings.appProfiles,
-  ]);
+  }, [configureOnboarding]);
 
   // Keep settings in sync when the overlay's quick controls change them.
   useOverlaySettingsSync(applyExternalSettings);
@@ -492,16 +489,14 @@ function App() {
     discovery.dismissHint(id);
     const destination = hintDestination(id);
     switch (destination.kind) {
-      case 'palette': setIsPaletteOpen(true); break;
       case 'settings': openSettingsTarget(destination); break;
-      case 'main': navigateMain(destination.page, 'programmatic'); break;
       case 'teach': openLatestTeaching(); break;
       default: {
         const exhaustive: never = destination;
         return exhaustive;
       }
     }
-  }, [discovery.dismissHint, navigateMain, openLatestTeaching, openSettingsTarget]);
+  }, [discovery.dismissHint, openLatestTeaching, openSettingsTarget]);
 
   useEffect(() => {
     if (!mainAppReady) return;

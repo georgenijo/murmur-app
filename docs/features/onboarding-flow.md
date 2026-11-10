@@ -139,7 +139,10 @@ window-title or meeting content. Dismissed hints stay dismissed after relaunch.
 Both setup-assistant entry points reset hint state.
 
 `murmur_discovery_v2` preserves validated pending/dismissed hint IDs from the
-legacy v1 record and removes the retired progress fields and old storage key.
+legacy v1 record, filtering unknown IDs individually. Invalid v2 data falls back
+to v1; valid dismissals from both versions are preserved. Retired progress fields
+are ignored. Recoverable v1 data is removed only after v2 is written successfully;
+unreadable old JSON is removed. Migration can be retried safely.
 No native settings or registered commands changed.
 
 ## Files

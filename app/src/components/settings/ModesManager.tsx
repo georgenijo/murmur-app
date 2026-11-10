@@ -77,7 +77,7 @@ function ModesGroup({ title, children }: { title: string; children: ReactNode })
   );
 }
 
-export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, onChange, onAddAppProfile, onModeBound, initialSelectedId }: {
+export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, onChange, onAddAppProfile, initialSelectedId }: {
   modes: MurmurMode[];
   profiles: AppProfile[];
   siteLookupEnabled: boolean;
@@ -89,7 +89,6 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
     browserSiteRules: BrowserSiteRule[];
   }) => void;
   onAddAppProfile?: (modeId: string, opener: HTMLButtonElement) => void;
-  onModeBound?: () => void;
   initialSelectedId?: string | null;
 }) {
   const allModes = useMemo(() => [...BUILTIN_MODES, ...modes], [modes]);
@@ -139,7 +138,6 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
         ? { ...profile, modeId: checked ? selected?.id ?? null : null }
         : profile),
     });
-    if (checked) onModeBound?.();
   };
   const addSiteRule = () => {
     if (!selected) return;
