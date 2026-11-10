@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
 
-import { initializeDiscoveryAfterSetup, loadDiscoveryState } from '../discovery';
+import { DISCOVERY_STORAGE_KEY, initializeDiscoveryAfterSetup, loadDiscoveryState } from '../discovery';
 import { addHistoryEntry, type HistoryEntry } from '../history';
 import { useDiscovery } from './useDiscovery';
 
@@ -24,7 +24,12 @@ describe('discovery event receipts', () => {
 
   function Harness() {
     const discovery = useDiscovery({ enabled: true, historyEntries: entries });
-    return <output>{discovery.state?.pendingHints.join(',')}</output>;
+    return <>
+      <output>{discovery.state?.pendingHints.join(',')}</output>
+      {discovery.state?.pendingHints.map((id) => (
+        <button key={id} onClick={() => discovery.dismissHint(id)}>Dismiss {id}</button>
+      ))}
+    </>;
   }
 
   beforeEach(async () => {
@@ -88,4 +93,34 @@ describe('discovery event receipts', () => {
     await act(async () => root.render(<Harness />));
     expect(loadDiscoveryState()?.pendingHints).toContain('correct_and_teach');
   });
+
+  it('visibly dismisses and queues hints while legacy cleanup keeps failing, including after remount', async () => {
+    await act(async () => root.unmount());
+    const pending = { version: 2, pendingHints: ['browser_modes'], dismissedHints: [] };
+    localStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify(pending));
+    localStorage.setItem('murmur_discovery_v1', JSON.stringify({ ...pending, version: 1 }));
+    const cleanup = vi.spyOn(localStorage, 'removeItem').mockImplementation(() => { throw new Error('cleanup unavailable'); });
+    try {
+      root = createRoot(container);
+      await act(async () => root.render(<Harness />));
+      expect(container.querySelector('output')?.textContent).toBe('browser_modes');
+      await act(async () => container.querySelector('button')!.click());
+      expect(container.querySelector('output')?.textContent).toBe('');
+      expect(container.querySelector('button')).toBeNull();
+      expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual({ ...pending, pendingHints: [], dismissedHints: ['browser_modes'] });
+      await act(async () => {
+        entries = [{ id: 'new-fixture', text: 'fixture', timestamp: 1, duration: 1 }];
+        root.render(<Harness />);
+      });
+      expect(container.querySelector('output')?.textContent).toBe('correct_and_teach');
+      expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual({ version: 2, pendingHints: ['correct_and_teach'], dismissedHints: ['browser_modes'] });
+      await act(async () => root.unmount());
+      root = createRoot(container);
+      await act(async () => root.render(<Harness />));
+      expect(container.querySelector('output')?.textContent).toBe('correct_and_teach');
+      expect(container.textContent).not.toContain('browser_modes');
+      expect(localStorage.getItem('murmur_discovery_v1')).not.toBeNull();
+    } finally { cleanup.mockRestore(); }
+  });
+
 });

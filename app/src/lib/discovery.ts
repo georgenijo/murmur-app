@@ -67,10 +67,12 @@ function readState(raw: string | null): DiscoveryStateV2 | null {
 interface DiscoveryLoadResult {
   state: DiscoveryStateV2 | null;
   storageFailed: boolean;
+  cleanupFailed: boolean;
 }
 
 function readDiscoveryState(): DiscoveryLoadResult {
   let storageFailed = false;
+  let cleanupFailed = false;
   const read = (key: string): string | null => {
     try { return localStorage.getItem(key); } catch {
       storageFailed = true;
@@ -79,7 +81,8 @@ function readDiscoveryState(): DiscoveryLoadResult {
   };
   const removeLegacy = () => {
     try { localStorage.removeItem(LEGACY_STORAGE_KEY); } catch {
-      storageFailed = true;
+      // Cleanup is best effort: both records remain readable and can still be updated.
+      cleanupFailed = true;
     }
   };
   // Read both keys even when one is unavailable, retaining every readable dismissal.
@@ -88,7 +91,7 @@ function readDiscoveryState(): DiscoveryLoadResult {
   const current = readState(stored);
   const previous = readState(legacy);
   if (legacy !== null && !previous) removeLegacy();
-  if (!current && !previous) return { state: null, storageFailed };
+  if (!current && !previous) return { state: null, storageFailed, cleanupFailed };
   const dismissedHints = unique([...(current?.dismissedHints ?? []), ...(previous?.dismissedHints ?? [])]);
   const state: DiscoveryStateV2 = {
     version: 2,
@@ -106,7 +109,7 @@ function readDiscoveryState(): DiscoveryLoadResult {
     // Keep recoverable legacy data until its replacement has been persisted.
     if (!storageFailed && previous) removeLegacy();
   }
-  return { state, storageFailed };
+  return { state, storageFailed, cleanupFailed };
 }
 
 export function loadDiscoveryState(): DiscoveryStateV2 | null {
@@ -116,11 +119,14 @@ export function loadDiscoveryState(): DiscoveryStateV2 | null {
 function saveState(state: DiscoveryStateV2): DiscoveryStateV2 {
   try {
     localStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify(state));
-    localStorage.removeItem(LEGACY_STORAGE_KEY);
-    window.dispatchEvent(new Event(DISCOVERY_CHANGED_EVENT));
   } catch {
-    // Discovery never blocks the main app when storage is unavailable.
+    // A failed write must not remove the legacy record or trigger a replacement write.
+    return state;
   }
+  try { localStorage.removeItem(LEGACY_STORAGE_KEY); } catch {
+    // A durable dismissal wins over leftover legacy pending IDs on the next load.
+  }
+  window.dispatchEvent(new Event(DISCOVERY_CHANGED_EVENT));
   return state;
 }
 
@@ -129,10 +135,10 @@ export function initializeDiscoveryAfterSetup(): DiscoveryStateV2 {
 }
 
 export function initializeGrandfatheredDiscovery(): DiscoveryStateV2 {
-  const { state, storageFailed } = readDiscoveryState();
+  const { state, storageFailed, cleanupFailed } = readDiscoveryState();
   if (state) return state;
   // Storage failure is not absence. Use session defaults without overwriting disk data.
-  return storageFailed
+  return storageFailed || cleanupFailed
     ? { version: 2, pendingHints: [], dismissedHints: [] }
     : initializeDiscoveryAfterSetup();
 }

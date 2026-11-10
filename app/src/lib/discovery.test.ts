@@ -198,3 +198,92 @@ describe('hint storage failure isolation', () => {
     expect(localStorage.getItem(legacyKey)).toBeNull();
   });
 });
+
+describe('hint mutations during storage failures', () => {
+  const legacyKey = 'murmur_discovery_v1';
+  const pending = { version: 2, pendingHints: ['browser_modes'], dismissedHints: [] };
+  beforeEach(() => localStorage.clear());
+
+  it.each(['readable', 'unreadable'])('persists dismissal and queuing while every cleanup throws (%s legacy)', (legacyKind) => {
+    const legacy = legacyKind === 'readable' ? JSON.stringify({ ...pending, version: 1 }) : 'not JSON';
+    localStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify(pending));
+    localStorage.setItem(legacyKey, legacy);
+    const cleanup = vi.spyOn(localStorage, 'removeItem').mockImplementation(() => { throw new Error('cleanup unavailable'); });
+    try {
+      const dismissed = { version: 2, pendingHints: [], dismissedHints: ['browser_modes'] };
+      expect(dismissDiscoveryHint('browser_modes')).toEqual(dismissed);
+      expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual(dismissed);
+      // The retained v1 pending ID must not resurrect the dismissed hint on reload.
+      expect(loadDiscoveryState()).toEqual(dismissed);
+      const queued = { ...dismissed, pendingHints: ['correct_and_teach'] };
+      expect(enqueueDiscoveryHint('correct_and_teach')).toEqual(queued);
+      expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual(queued);
+      for (let repeat = 0; repeat < 3; repeat++) {
+        expect(enqueueDiscoveryHint('browser_modes')).toEqual(queued);
+        expect(enqueueDiscoveryHint('correct_and_teach')).toEqual(queued);
+        expect(dismissDiscoveryHint('browser_modes')).toEqual(queued);
+        expect(loadDiscoveryState()).toEqual(queued);
+      }
+      expect(localStorage.getItem(legacyKey)).toBe(legacy);
+      expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual(queued);
+    } finally { cleanup.mockRestore(); }
+    expect(loadDiscoveryState()).toEqual({ version: 2, pendingHints: ['correct_and_teach'], dismissedHints: ['browser_modes'] });
+    expect(localStorage.getItem(legacyKey)).toBeNull();
+  });
+
+  it('does not retry with replacement/default data when every write fails during dismissal', () => {
+    const current = JSON.stringify(pending);
+    const legacy = JSON.stringify({ ...pending, version: 1 });
+    localStorage.setItem(DISCOVERY_STORAGE_KEY, current);
+    localStorage.setItem(legacyKey, legacy);
+    const write = vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('write unavailable'); });
+    const cleanup = vi.spyOn(localStorage, 'removeItem');
+    try {
+      expect(dismissDiscoveryHint('browser_modes')).toEqual(pending);
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(localStorage.getItem(DISCOVERY_STORAGE_KEY)).toBe(current);
+      expect(localStorage.getItem(legacyKey)).toBe(legacy);
+    } finally { write.mockRestore(); cleanup.mockRestore(); }
+  });
+
+  it('keeps both readable records when the dismissal write fails after migration succeeds', () => {
+    localStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify(pending));
+    localStorage.setItem(legacyKey, JSON.stringify({ ...pending, version: 1 }));
+    const originalWrite = localStorage.setItem.bind(localStorage);
+    const write = vi.spyOn(localStorage, 'setItem').mockImplementation((key, value) => {
+      if (JSON.parse(value).dismissedHints.includes('browser_modes')) throw new Error('dismissal write unavailable');
+      originalWrite(key, value);
+    });
+    const cleanup = vi.spyOn(localStorage, 'removeItem').mockImplementation(() => { throw new Error('cleanup unavailable'); });
+    try {
+      dismissDiscoveryHint('browser_modes');
+      expect(write).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual(pending);
+      expect(JSON.parse(localStorage.getItem(legacyKey)!)).toEqual({ ...pending, version: 1 });
+      expect(loadDiscoveryState()).toEqual(pending);
+    } finally { write.mockRestore(); cleanup.mockRestore(); }
+  });
+
+  it.each([DISCOVERY_STORAGE_KEY, legacyKey])('does not write a dismissal after reading only %s fails', (failedKey) => {
+    const current = JSON.stringify(pending);
+    const legacy = JSON.stringify({ ...pending, version: 1 });
+    localStorage.setItem(DISCOVERY_STORAGE_KEY, current);
+    localStorage.setItem(legacyKey, legacy);
+    const originalRead = localStorage.getItem.bind(localStorage);
+    const read = vi.spyOn(localStorage, 'getItem').mockImplementation((key) => {
+      if (key === failedKey) throw new Error('read unavailable');
+      return originalRead(key);
+    });
+    const write = vi.spyOn(localStorage, 'setItem');
+    const cleanup = vi.spyOn(localStorage, 'removeItem');
+    try {
+      expect(dismissDiscoveryHint('browser_modes')).toEqual(pending);
+      expect(write).not.toHaveBeenCalled();
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(originalRead(DISCOVERY_STORAGE_KEY)).toBe(current);
+      expect(originalRead(legacyKey)).toBe(legacy);
+    } finally { read.mockRestore(); write.mockRestore(); cleanup.mockRestore(); }
+    expect(dismissDiscoveryHint('browser_modes')).toEqual({ version: 2, pendingHints: [], dismissedHints: ['browser_modes'] });
+  });
+});
