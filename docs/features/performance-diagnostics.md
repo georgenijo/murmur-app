@@ -107,7 +107,12 @@ The contract never uses numeric zero as a missing-data sentinel.
   `completed` or `fallback` outcomes (including timeout, unavailable model,
   rejected answer, and adaptive cooldown). A cooldown fallback records its
   actual short duration, including a legitimate measured 0 ms after rounding;
-  disabled/non-live runs use `notApplicable`. An unavailable timing uses the
+  #1081 makes eligible live passes promptly unavailable without generation or
+  session preparation; their stage outcome remains `fallback`. The existing
+  content-free `homophone_context.pass` event records `outcome=unavailable`,
+  distinct from `not_triggered` and `backoff`, with `flagged`, `engine_us` and
+  `budget_ms`. No fields or enums change and no schema migration is needed.
+  Disabled/non-live runs use `notApplicable`. An unavailable timing uses the
   existing `unavailable { reason }` contract, never a synthetic zero. This row
   is included in `transcriptTransform`, not additional time to add to it;
 - optional file output;
