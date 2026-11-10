@@ -5351,7 +5351,8 @@ pub async fn start_native_recording(
         session_overrides,
     );
     // Install the resource in the immutable recording snapshot before publishing
-    // it. Preparation starts only after this generation wins Activate below.
+    // it. The live-dictation engine currently refuses generation and preparation
+    // (#1081); if re-enabled, preparation waits for Activate below.
     if context.transformations.correction_enabled
         && context.transformations.homophone_context_enabled
     {
@@ -5459,7 +5460,8 @@ pub async fn start_native_recording(
     );
     if let Some(engine) = &context.homophone_engine {
         // Still under recording_transition and after the exact-owner Activate
-        // check. Swift returns immediately; async publication is confined to
+        // check. The #1081 live-dictation gate makes this a no-op while the
+        // engine is unavailable. If re-enabled, async publication is confined to
         // this context's disposable owner, never app-wide recording state.
         engine.prewarm();
     }

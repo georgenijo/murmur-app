@@ -4804,7 +4804,9 @@ mod tests {
 
     #[test]
     fn homophone_events_keep_only_content_free_fields_in_all_builds() {
-        for debug_build in [true, false] {
+        for (debug_build, outcome) in [true, false].into_iter().flat_map(|debug| {
+            ["unavailable", "not_triggered", "backoff"].map(|outcome| (debug, outcome))
+        }) {
             for code in [
                 "homophone_context.pass",
                 "homophone_context.backoff_entered",
@@ -4813,14 +4815,14 @@ mod tests {
             ] {
                 let mut data = serde_json::json!({
                     "event_code": code, "session_id": 7, "flagged": 1,
-                    "engine_us": 151_000, "budget_ms": 150, "outcome": "backoff",
+                    "engine_us": 151_000, "budget_ms": 150, "outcome": outcome,
                     "consecutive_failures": 3, "cooldown_ms": 300_000, "scheduled": true,
                     "prompt": "SENTINEL PRIVATE", "answer": {"nested": "SENTINEL"},
                     "transcript": "SENTINEL PRIVATE", "error": "/Users/private/path"
                 });
                 sanitize_event_data("pipeline", &mut data, debug_build);
                 assert_eq!(data["event_code"], code);
-                assert_eq!(data["outcome"], "backoff");
+                assert_eq!(data["outcome"], outcome);
                 assert_eq!(data["engine_us"], 151_000);
                 assert_eq!(
                     sanitized_summary(
