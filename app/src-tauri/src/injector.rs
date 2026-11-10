@@ -1090,13 +1090,44 @@ fn focused_field_state() -> FocusedFieldState {
         };
         q.transport = M::measured(dt::Transport::Native);
     });
-    let state = focused_field_state_unmeasured();
+    let mut subrole = FocusSubroleDiagnostics::default();
+    let state = focused_field_state_unmeasured(&mut subrole);
+    record_focus_query_completion(retry, state, &subrole);
+    state
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[derive(Default)]
+struct FocusSubroleDiagnostics {
+    status: Option<i32>,
+    timed_out: bool,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl FocusSubroleDiagnostics {
+    // Keep subrole evidence local: no accumulator lock during the AX query.
+    fn observe(&mut self, status: i32) {
+        self.status = Some(status);
+        self.timed_out |= status == -25204;
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn record_focus_query_completion(
+    retry: bool,
+    state: FocusedFieldState,
+    subrole: &FocusSubroleDiagnostics,
+) {
     dt::record(|r| {
         let q = if retry {
             &mut r.retry_focus_query
         } else {
             &mut r.focus_query
         };
+        if let Some(status) = subrole.status {
+            q.ax_status = M::measured(status);
+        }
+        q.timed_out |= subrole.timed_out;
         q.outcome = M::measured(match state {
             FocusedFieldState::Editable => dt::FocusKind::Editable,
             FocusedFieldState::NonEditable => dt::FocusKind::NonEditable,
@@ -1104,12 +1135,11 @@ fn focused_field_state() -> FocusedFieldState {
             FocusedFieldState::Unknown => dt::FocusKind::Unknown,
         });
     });
-    state
 }
 
 #[cfg(target_os = "macos")]
-fn focused_field_state_unmeasured() -> FocusedFieldState {
-    let role = match focused_role_native() {
+fn focused_field_state_unmeasured(subrole: &mut FocusSubroleDiagnostics) -> FocusedFieldState {
+    let role = match focused_role_native(subrole) {
         Ok(role) => {
             tracing::info!(target: "pipeline", "focused_field_state: native AX query completed");
             role
@@ -1237,7 +1267,9 @@ fn record_focus_ax_status(status: i32) {
 }
 
 #[cfg(target_os = "macos")]
-fn focused_role_native() -> Result<String, String> {
+fn focused_role_native(
+    subrole_diagnostics: &mut FocusSubroleDiagnostics,
+) -> Result<String, String> {
     autoreleasepool(|_| {
         use objc2_app_kit::NSWorkspace;
         use std::ffi::{c_char, c_void, CStr};
@@ -1350,7 +1382,7 @@ fn focused_role_native() -> Result<String, String> {
                 let subrole_status = unsafe {
                     AXUIElementCopyAttributeValue(focused, subrole_attribute, &mut subrole)
                 };
-                record_focus_ax_status(subrole_status);
+                subrole_diagnostics.observe(subrole_status);
                 unsafe { CFRelease(subrole_attribute) };
                 if !subrole.is_null() {
                     if subrole_status == AX_SUCCESS {
@@ -1508,7 +1540,20 @@ mod focus_tests {
             let _scope = timing.bind();
             dt::record(|r| r.native_paste_retry_count = u8::from(retry));
             record_focus_ax_status(0); // successful AXRole
-            record_focus_ax_status(-25204); // AXSubrole timed out
+            let mut subrole = FocusSubroleDiagnostics::default();
+            subrole.observe(-25204); // AXSubrole timed out
+
+            // Subrole evidence must stay local until the existing completion
+            // update, for either the initial or retry query.
+            let before_completion = timing.snapshot();
+            let query = if retry {
+                &before_completion.retry_focus_query
+            } else {
+                &before_completion.focus_query
+            };
+            assert_eq!(query.ax_status, M::measured(0));
+            assert!(!query.timed_out);
+            record_focus_query_completion(retry, FocusedFieldState::Editable, &subrole);
             let record = timing.snapshot();
             let (query, other) = if retry {
                 (&record.retry_focus_query, &record.focus_query)
@@ -1520,7 +1565,8 @@ mod focus_tests {
             assert!(other.ax_status.value().is_none());
             assert!(!other.timed_out);
             // A later status cannot erase observed timeout evidence.
-            record_focus_ax_status(0);
+            subrole.observe(0);
+            record_focus_query_completion(retry, FocusedFieldState::Editable, &subrole);
             let record = timing.close();
             let query = if retry {
                 &record.retry_focus_query
@@ -2209,7 +2255,7 @@ mod focus_tests {
             return;
         }
 
-        if let Ok(role) = focused_role_native() {
+        if let Ok(role) = focused_role_native(&mut FocusSubroleDiagnostics::default()) {
             assert!(role.starts_with("AX"), "unexpected AX role: {}", role);
         }
     }
