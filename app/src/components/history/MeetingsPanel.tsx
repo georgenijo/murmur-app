@@ -4,6 +4,7 @@ import { Search } from 'lucide-react';
 import { echoCancellationNotice, formatMeetingDuration, meetingErrorMessage, formatMeetingTimestamp } from '../../lib/meetings';
 import { historyDayKey, historyDayLabel } from '../../lib/history';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
+import { meetingCapturePresentation } from './meetingCapturePresentation';
 import { MeetingReviewWorkspace } from './MeetingReviewWorkspace';
 import { useMeetingAudio } from '../../lib/hooks/useMeetingAudio';
 import {
@@ -117,6 +118,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
 
   const showPermissionHint = meetings.permission !== 'granted' && meetings.permission !== 'unsupported' && !active && !processing;
   const detail = meetings.detail;
+  const detailCapture = detail ? meetingCapturePresentation(detail.session.id, meetings.status) : null;
 
   const denied = meetings.permission === 'denied' && !active && !processing;
   const empty = !meetings.loading && sessions.length === 0 && !appliedQuery && !detail && !active && !processing;
@@ -141,7 +143,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
     <button type="button" disabled={processing || meetings.status.phase === 'stopping'}
       onClick={() => void (active ? meetings.stop() : meetings.start())}
       className="ui-dashboard-action meetings-start" data-action="primary" data-tone={active ? 'danger' : 'default'}>
-      {active ? 'Stop meeting' : processing ? 'Finishing…' : 'Start meeting'}
+      {meetings.status.phase === 'stopping' ? 'Stopping…' : active ? 'Stop meeting' : processing ? 'Finishing…' : 'Start meeting'}
     </button>
   );
 
@@ -240,6 +242,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
             {sessions.map((session, index) => {
               const showDay = index === 0 || historyDayKey(session.startedAtMs) !== historyDayKey(sessions[index - 1].startedAtMs);
               const selected = detail?.session.id === session.id;
+              const capture = meetingCapturePresentation(session.id, meetings.status);
               const matches = meetings.page.searchMatches[session.id] ?? [];
               return (
                 <Fragment key={session.id}>
@@ -248,7 +251,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
                     type="button"
                     onClick={() => void meetings.select(session.id)}
                     aria-pressed={selected}
-                    className="meetings-row" data-live={session.status === 'active'}
+                    className="meetings-row" data-live={capture !== null}
                   >
                     <span className="meetings-row-title" data-untitled={!session.title}>
                       <span className="meetings-row-title-text" title={session.title || `Meeting · ${meetingTime(session.startedAtMs)}`}>{session.title || `Meeting · ${meetingTime(session.startedAtMs)}`}</span>
@@ -258,9 +261,9 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
                     </span>
                     {session.title && <span className="meetings-row-time">{meetingTime(session.startedAtMs)}</span>}
                     <span className="meetings-row-preview">
-                      {session.status === 'active' ? <><span className="meetings-live-dot" aria-hidden="true" />Recording · {formatMeetingTimestamp(meetings.status.sessionId === session.id ? meetings.status.elapsedMs : session.durationMs)}</> : session.preview || `${session.segmentCount} transcript ${session.segmentCount === 1 ? 'segment' : 'segments'}`}
+                      {capture ? <>{capture.phase === 'recording' && <span className="meetings-live-dot" aria-hidden="true" />}{capture.summary}</> : session.preview || `${session.segmentCount} transcript ${session.segmentCount === 1 ? 'segment' : 'segments'}`}
                     </span>
-                    {session.status !== 'active' && <span className="meetings-row-duration">{formatMeetingDuration(session.durationMs)}</span>}
+                    {!capture && <span className="meetings-row-duration">{formatMeetingDuration(session.durationMs)}</span>}
                     {matches.length > 0 && (
                       <span className="meetings-row-matches">
                         Matches: {matches.map((field) => MEETING_SEARCH_FIELD_LABELS[field]).join(', ')}
@@ -295,8 +298,8 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
               captureBusy={captureBusy}
               meetingAudio={meetingAudio}
               onNotice={showNotice}
-              headerMeta={detail.session.status === 'active'
-                ? `Recording · ${formatMeetingTimestamp(meetings.status.elapsedMs)}`
+              headerMeta={detailCapture
+                ? detailCapture.summary
                 : [detail.session.title ? new Date(detail.session.startedAtMs).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : null,
                   formatMeetingDuration(detail.session.durationMs), detail.session.retainAudio ? 'Audio kept' : 'Transcript only'].filter(Boolean).join(' · ')}
               onDelete={() => void deleteSelected()}

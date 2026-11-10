@@ -30,7 +30,7 @@ export function MeetingCalendarNaming({ sessionId, disabled, onApply, onManualNa
   const generation = useRef(0);
   const pickerRef = useRef<HTMLFieldSetElement>(null);
   useEffect(() => {
-    if (state.kind === 'choosing') pickerRef.current?.querySelector<HTMLElement>('input, button')?.focus();
+    if (state.kind === 'choosing') pickerRef.current?.querySelector<HTMLElement>('input:not(:disabled), button:not(:disabled)')?.focus();
   }, [state.kind]);
   useEffect(() => () => { generation.current += 1; }, []);
   useEffect(() => {

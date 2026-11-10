@@ -4,7 +4,7 @@ for (const appearance of ['light', 'dark']) {
   for (const [width, height] of [[1100, 780], [840, 620]]) {
     test(`Notetaker state geometry ${appearance} ${width}`, async ({ page }) => {
       await page.setViewportSize({ width, height });
-      for (const state of ['meetings-many', 'meetings-empty', 'meetings-recording', 'meetings-permission-denied']) {
+      for (const state of ['meetings-many', 'meetings-empty', 'meetings-recording', 'meetings-stopping', 'meetings-finishing', 'meetings-permission-denied']) {
         await page.goto(`/visual-fixtures.html?state=${state}&appearance=${appearance}`);
         await expect(page.getByRole('heading', { name: 'Notetaker', exact: true })).toBeVisible();
         await expect(page.locator('.meetings-statusbar')).toHaveCSS('height', width === 840 ? '75px' : '57px');
@@ -28,6 +28,14 @@ for (const appearance of ['light', 'dark']) {
           await expect(page.locator('.meeting-more')).toHaveCount(0);
           await expect(page.locator('.meeting-transcript-row')).toHaveCount(3);
         }
+        if (state === 'meetings-stopping' || state === 'meetings-finishing') {
+          const label = state === 'meetings-stopping' ? 'Stopping…' : 'Finishing…';
+          await expect(page.getByRole('button', { name: label, exact: true })).toBeDisabled();
+          await expect(page.locator('.meetings-row[data-live="true"] .meetings-row-preview')).toContainText(label);
+          await expect(page.locator('.meeting-detail-meta')).toContainText(label);
+          await expect(page.locator('.meeting-listening')).toContainText(state === 'meetings-stopping' ? 'Stopping capture…' : 'Finishing pending transcript chunks…');
+          await expect(page.locator('.meetings-row-preview, .meeting-detail-meta, .meeting-listening').filter({ hasText: /Recording|Listening/ })).toHaveCount(0);
+        }
         if (state === 'meetings-permission-denied') {
           await expect(page.getByRole('button', { name: 'Open System Settings…' })).toBeVisible();
           await expect(page.getByRole('button', { name: 'Start meeting', exact: true })).toBeEnabled();
@@ -36,6 +44,43 @@ for (const appearance of ['light', 'dark']) {
       }
     });
   }
+
+  test(`Notetaker destructive keyboard activation ${appearance}`, async ({ page }) => {
+    await page.setViewportSize({ width: 1100, height: 780 });
+    await page.goto(`/visual-fixtures.html?state=meetings-many&appearance=${appearance}`);
+    await page.locator('.meeting-more').click();
+    const deletion = page.getByRole('menuitem', { name: 'Delete meeting…', exact: true });
+    await deletion.focus();
+    await page.keyboard.down('Enter');
+    await page.keyboard.down('Enter');
+    await page.keyboard.down('Enter');
+    await page.keyboard.up('Enter');
+    await expect(deletion).toBeFocused();
+    await expect(page.locator('html')).not.toHaveAttribute('data-meeting-deletions');
+    // A held Space is one activation. Release, then press again to confirm.
+    await page.keyboard.down('Space');
+    await page.keyboard.down('Space');
+    await page.keyboard.down('Space');
+    await page.keyboard.up('Space');
+    const confirm = page.getByRole('menuitem', { name: 'Confirm delete…', exact: true });
+    await expect(confirm).toBeVisible();
+    await page.keyboard.down('Enter');
+    await page.keyboard.down('Enter');
+    await page.keyboard.up('Enter');
+    await expect(page.locator('html')).not.toHaveAttribute('data-meeting-deletions');
+    await page.keyboard.press('Space');
+    await expect(page.locator('html')).toHaveAttribute('data-meeting-deletions', '1');
+  });
+
+  test(`Notetaker empty Calendar lookup focus ${appearance}`, async ({ page }) => {
+    await page.goto(`/visual-fixtures.html?state=meetings-many&appearance=${appearance}&calendar=empty&calendarDelay=2000`);
+    const more = page.locator('.meeting-more');
+    await more.click();
+    await page.getByRole('menuitem', { name: 'Name from calendar…', exact: true }).click();
+    await expect(more).toBeFocused();
+    await expect(page.getByRole('button', { name: 'Cancel calendar lookup', exact: true })).toBeFocused();
+    await expect(page.getByRole('button', { name: 'Apply event', exact: true })).toBeDisabled();
+  });
 
   test(`Notetaker play affordance and keyboard menus ${appearance}`, async ({ page }) => {
     await page.setViewportSize({ width: 1100, height: 780 });

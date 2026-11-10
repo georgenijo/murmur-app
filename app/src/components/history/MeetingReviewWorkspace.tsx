@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
 import { ChevronDown } from 'lucide-react';
 import { MeetingHeaderActions } from './MeetingHeaderActions';
+import { meetingCapturePresentation } from './meetingCapturePresentation';
 import { MeetingMetadataEditor } from './MeetingMetadataEditor';
 import {
   formatBundleSize,
@@ -77,6 +78,7 @@ function TranscriptRow({ segment, labels, remoteSpeakers, onPlay, playbackDisabl
 
 export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetingAudio, onNotice, headerMeta, onDelete, confirmingDelete }: MeetingReviewWorkspaceProps) {
   const detail = meetings.detail!;
+  const capture = meetingCapturePresentation(detail.session.id, meetings.status);
   const activeWorkspace = useRef<WorkspaceActivation | null>(null);
   const [labelDrafts, setLabelDrafts] = useState<Partial<MeetingSpeakerLabels>>({});
   const [remoteSpeakerDrafts, setRemoteSpeakerDrafts] = useState<Partial<Record<number, string>>>({});
@@ -249,7 +251,7 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
       )}
 
       {captions && <p className="meeting-quiet-note" role="status">{detail.session.status === 'active'
-        ? 'Stop this meeting before exporting captions.'
+        ? capture?.phase === 'recording' ? 'Stop this meeting before exporting captions.' : capture?.footer ?? 'Captions will be available when this meeting finishes.'
         : 'One caption per recorded speech segment, with saved speaker names. Untranscribed sections are marked. Review notes are not included.'}</p>}
 
       <section className="meeting-transcript" aria-labelledby="meeting-transcript-title">
@@ -298,8 +300,8 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
             </div>
           </details>
         </div>
-        {segments.length === 0 ? <p className="py-8 text-center text-xs text-on-surface-variant">{detail.session.status === 'active' ? 'Listening…' : 'No speech segments were saved.'}</p> : segments.map((segment) => <TranscriptRow key={segment.id} segment={segment} labels={labels} remoteSpeakers={remoteSpeakers} onPlay={detail.session.retainAudio && meetingAudio && segment.audioAvailable ? () => meetingAudio.playSegment({ speaker: segment.speaker, startMs: segment.startMs }) : undefined} playbackDisabled={captureBusy || meetingAudio?.status === 'loading' || meetingAudio?.status === 'buffering' || meetingAudio?.status === 'unavailable' || meetingAudio?.status === 'error'} />)}
-        {segments.length > 0 && detail.session.status === 'active' && <p className="meeting-listening" role="status">Listening…</p>}
+        {segments.length === 0 ? <p className="py-8 text-center text-xs text-on-surface-variant">{capture?.footer ?? 'No speech segments were saved.'}</p> : segments.map((segment) => <TranscriptRow key={segment.id} segment={segment} labels={labels} remoteSpeakers={remoteSpeakers} onPlay={detail.session.retainAudio && meetingAudio && segment.audioAvailable ? () => meetingAudio.playSegment({ speaker: segment.speaker, startMs: segment.startMs }) : undefined} playbackDisabled={captureBusy || meetingAudio?.status === 'loading' || meetingAudio?.status === 'buffering' || meetingAudio?.status === 'unavailable' || meetingAudio?.status === 'error'} />)}
+        {segments.length > 0 && capture && <p className="meeting-listening" role="status">{capture.footer}</p>}
       </section>
     </div>
   );

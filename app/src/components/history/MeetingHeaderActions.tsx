@@ -1,4 +1,4 @@
-import { useRef, type ReactNode } from 'react';
+import { useRef, type KeyboardEvent, type ReactNode } from 'react';
 import { Menu } from '@base-ui/react/menu';
 import { ChevronDown, ChevronRight, Copy } from 'lucide-react';
 import { MEETING_EXPORT_FORMATS, type MeetingReviewExportFormat } from '../../lib/meetings';
@@ -26,8 +26,20 @@ function Popup({ children, submenu = false, finalFocus }: { children: ReactNode;
   </Menu.Positioner></Menu.Portal>;
 }
 
+/** Destructive menu items never use Return as a default confirmation. Capture
+ * runs before Base UI can synthesize a click; Space needs a fresh, plain press. */
+function guardDestructiveKey(event: KeyboardEvent) {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  if (event.key === 'Enter' || event.repeat || event.nativeEvent.isComposing
+    || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+    event.preventDefault();
+    event.stopPropagation();
+  }
+}
+
 /** All menu items dispatch the same local export/naming handlers as the workspace. */
 export function MeetingHeaderActions(props: MeetingHeaderActionsProps) {
+  const moreTriggerRef = useRef<HTMLButtonElement>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
   const focusAfterClose = useRef<string | null>(null);
   const formats = (action: MeetingHeaderActionsProps['onCopy']) => MEETING_EXPORT_FORMATS.map((format) => (
@@ -46,20 +58,20 @@ export function MeetingHeaderActions(props: MeetingHeaderActionsProps) {
       </Popup>
     </Menu.Root>
     {!props.busy && <Menu.Root onOpenChange={(open) => { if (open) focusAfterClose.current = null; }}>
-      <Menu.Trigger aria-label="More meeting actions" className="ui-form-button meeting-header-action meeting-more">···</Menu.Trigger>
+      <Menu.Trigger ref={moreTriggerRef} aria-label="More meeting actions" className="ui-form-button meeting-header-action meeting-more">···</Menu.Trigger>
       <Popup finalFocus={() => {
         const workspace = actionsRef.current?.closest('.meeting-workspace');
-        return focusAfterClose.current ? workspace?.querySelector<HTMLElement>(focusAfterClose.current) ?? false : true;
+        return focusAfterClose.current ? workspace?.querySelector<HTMLElement>(focusAfterClose.current) ?? moreTriggerRef.current ?? true : true;
       }}>
         <Menu.Item className="ui-menu-item" onClick={() => { focusAfterClose.current = 'form[aria-label="Name meeting"] input'; props.onRename(); }}>Rename…</Menu.Item>
-        <Menu.Item className="ui-menu-item" disabled={props.calendarDisabled} onClick={() => { focusAfterClose.current = '.meeting-detail-header-panel input, form[aria-label="Name meeting"] input'; props.onCalendar(); }}>Name from calendar…</Menu.Item>
+        <Menu.Item className="ui-menu-item" disabled={props.calendarDisabled} onClick={() => { focusAfterClose.current = '.meeting-detail-header-panel input:not(:disabled), .meeting-detail-header-panel button:not(:disabled), form[aria-label="Name meeting"] input:not(:disabled)'; props.onCalendar(); }}>Name from calendar…</Menu.Item>
         <Menu.Item className="ui-menu-item" onClick={() => { focusAfterClose.current = '.meeting-speakers input'; props.onSpeakers(); }}>Edit speakers…</Menu.Item>
         <Menu.SubmenuRoot>
           <Menu.SubmenuTrigger className="ui-menu-item">Copy as <ChevronRight aria-hidden="true" className="ml-auto h-4 w-4" /></Menu.SubmenuTrigger>
           <Popup submenu>{formats(props.onCopy)}</Popup>
         </Menu.SubmenuRoot>
         {props.onDelete && <><Menu.Separator className="ui-menu-separator" />
-          <Menu.Item className="ui-menu-item" data-variant="destructive" closeOnClick={false} onClick={props.onDelete}>{props.confirmingDelete ? 'Confirm delete…' : 'Delete meeting…'}</Menu.Item>
+          <Menu.Item className="ui-menu-item" data-variant="destructive" closeOnClick={false} onKeyDownCapture={guardDestructiveKey} onKeyUpCapture={guardDestructiveKey} onClick={props.onDelete}>{props.confirmingDelete ? 'Confirm delete…' : 'Delete meeting…'}</Menu.Item>
         </>}
       </Popup>
     </Menu.Root>}

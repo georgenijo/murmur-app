@@ -173,10 +173,12 @@ const meetingFixture = {
 
 // A realistic backlog: many sessions across weeks, mostly untitled, with a long
 // retained-audio transcript and no review yet.
-const meetingRecording = requestedState === 'meetings-recording';
+const meetingCapturePhase = requestedState === 'meetings-recording' ? 'recording' : requestedState === 'meetings-stopping' ? 'stopping' : requestedState === 'meetings-finishing' ? 'processing' : 'idle';
+const meetingCapturing = meetingCapturePhase !== 'idle';
+const meetingRecording = meetingCapturePhase === 'recording';
 const meetingDenied = requestedState === 'meetings-permission-denied';
 const meetingMenu = requestedState === 'meetings-export-menu' ? 'export-menu' : requestedState === 'meetings-more-menu' ? 'more-menu' : query.get('proposal');
-const manyMeetings = ['meetings-many', 'meetings-recording', 'meetings-permission-denied', 'meetings-export-menu', 'meetings-more-menu'].includes(requestedState);
+const manyMeetings = ['meetings-many', 'meetings-recording', 'meetings-stopping', 'meetings-finishing', 'meetings-permission-denied', 'meetings-export-menu', 'meetings-more-menu'].includes(requestedState);
 const manyMeetingLines = [
   'Thanks for jumping on. I wanted to walk through the launch checklist before Friday.',
   'Sounds good. I pulled the latest numbers this morning, so we can start there.',
@@ -210,7 +212,7 @@ const manyMeetingSessions: MeetingSession[] = Array.from({ length: 14 }, (_, ind
     errorCode: null,
   };
 });
-if (meetingRecording) manyMeetingSessions.unshift({
+if (meetingCapturing) manyMeetingSessions.unshift({
   ...manyMeetingSessions[0], id: 'meeting-live', startedAtMs: Date.now(), endedAtMs: null,
   status: 'active', durationMs: 272_000, segmentCount: 3,
 });
@@ -278,7 +280,7 @@ mockIPC((command, payload) => {
     if (command === 'request_system_audio_permission' || command === 'request_calendar_permission') return new Promise(() => {});
   }
   if (manyMeetings) {
-    if (command === 'get_system_audio_permission_status') return meetingDenied ? 'denied' : meetingRecording ? 'granted' : 'unknown';
+    if (command === 'get_system_audio_permission_status') return meetingDenied ? 'denied' : meetingCapturing ? 'granted' : 'unknown';
     if (command === 'list_meetings') {
       return { sessions: manyMeetingSessions, searchMatches: {}, total: manyMeetingSessions.length, offset: 0, limit: 50 };
     }
@@ -287,7 +289,7 @@ mockIPC((command, payload) => {
       return manyMeetingDetail(id);
     }
     if (command === 'get_meeting_audio_manifest') {
-      if (meetingRecording) return { kind: 'unavailable', reason: 'notFinished' };
+      if (meetingCapturing) return { kind: 'unavailable', reason: 'notFinished' };
       return {
         kind: 'available', sessionId: 'meeting-0', durationMs: 12 * 60_000,
         chunks: [{ segmentId: 500, channel: 'me', startMs: 4_000, endMs: 19_000 }], nextCursor: null,
@@ -319,10 +321,10 @@ mockIPC((command, payload) => {
   if (command === 'configure_smart_auto_probe' || command === 'retry_smart_auto_probe') return 1;
   if (command === 'get_meeting_status') {
     return {
-      phase: meetingRecording ? 'recording' : 'idle',
-      generation: meetingRecording ? 1 : 0,
-      sessionId: meetingRecording ? 'meeting-live' : null,
-      elapsedMs: meetingRecording ? 272_000 : 0,
+      phase: meetingCapturePhase,
+      generation: meetingCapturing ? 1 : 0,
+      sessionId: meetingCapturing ? 'meeting-live' : null,
+      elapsedMs: meetingCapturing ? 272_000 : 0,
       chunksCommitted: 0,
       microphoneActive: meetingRecording,
       systemAudioActive: meetingRecording,
@@ -332,6 +334,13 @@ mockIPC((command, payload) => {
   }
   if (command === 'get_system_audio_permission_status') return 'granted';
   if (command === 'get_calendar_permission_status') return query.get('calendar') === 'denied' ? 'denied' : 'granted';
+  if (command === 'delete_meeting' && manyMeetings) {
+    document.documentElement.dataset.meetingDeletions = String(Number(document.documentElement.dataset.meetingDeletions ?? 0) + 1);
+    return;
+  }
+  if (command === 'get_meeting_calendar_events' && query.get('calendar') === 'empty') {
+    return new Promise((resolve) => setTimeout(() => resolve([]), Math.min(2000, Number(query.get('calendarDelay') ?? 0))));
+  }
   if (command === 'get_meeting_calendar_events') return [
     { selectionToken: 'first-event', title: 'Orion planning', attendees: ['Alex Example', 'Casey Example'], startMs: Date.UTC(2026, 7, 31, 14), endMs: Date.UTC(2026, 7, 31, 15) },
     { selectionToken: 'second-event', title: 'Design review', attendees: ['Jordan Example'], startMs: Date.UTC(2026, 7, 31, 14, 30), endMs: Date.UTC(2026, 7, 31, 15, 30) },
@@ -598,7 +607,7 @@ function VisualFixture() {
 
   React.useEffect(() => {
     if (requestedState.startsWith('meetings-review')) void meetings.select('meeting-fixture');
-    if (manyMeetings) void meetings.select(meetingRecording ? 'meeting-live' : 'meeting-0');
+    if (manyMeetings) void meetings.select(meetingCapturing ? 'meeting-live' : 'meeting-0');
   }, [meetings.select]);
 
   const openedMeetingMenu = React.useRef(false);

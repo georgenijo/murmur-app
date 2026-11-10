@@ -45,8 +45,10 @@ accessible name. The meeting list and detail continue scrolling independently.
 Copy transcript copies Markdown. Export offers the five supported formats and,
 when audio was retained, Export with audio. More contains Rename, Calendar
 naming, speaker editing, Copy as (a format submenu), and the existing two-step
-Delete action. Caption menu items stay unavailable during capture; ordinary
-transcript copy/export remain available. Bundle export still requires capture
+Delete action. Return is suppressed on the destructive menu item; repeated,
+composing, and modified Space cannot activate it. Two separate deliberate Space
+presses or pointer activations still arm and confirm deletion. Caption menu items
+stay unavailable during capture; ordinary transcript copy/export remain available. Bundle export still requires capture
 to finish and presents the existing size, format choice, and missing-audio disclosure.
 
 The 40px player preserves native channel selection, playback/seek handlers,
@@ -56,17 +58,25 @@ sans text with a reserved play-glyph slot: pointer hover and keyboard focus
 reveal the glyph without shifting the time or transcript columns. Speakers
 continues opening the real session-label editor.
 
-An active meeting shows its live session, elapsed time, finalized segments, and
-Listening status. The existing timer formatter already emits `4:32`; it is
-unchanged. Naming and More are unavailable while capture is busy. With no saved
+Live labels use the runtime phase only for its matching session. Recording shows
+the elapsed time, finalized segments, and Listening status. After Stop, the list,
+detail header, and transcript footer show Stopping or Finishing while capture
+shuts down and transcription drains. Saved wording returns when the runtime
+finishes, even if the persisted session status has not caught up yet. A different
+persisted active session never claims to be recording. The existing timer
+formatter already emits `4:32`; it is unchanged. Naming and More are unavailable while capture is busy. With no saved
 meetings, one centered first-meeting message and Start meeting action replace
 the split list/detail layout. Empty search results retain the search controls.
 
 Visual fixtures support `meetings-many`, `meetings-empty`, `meetings-recording`,
-`meetings-permission-denied`, `meetings-export-menu`, and `meetings-more-menu` in
+`meetings-stopping`, `meetings-finishing`, `meetings-permission-denied`,
+`meetings-export-menu`, and `meetings-more-menu` in
 both appearances. Menu fixtures activate the actual production triggers, and
 row hover/focus uses the production playback control. The older
 `state=meetings-many&proposal=export-menu` / `more-menu` capture URLs remain
-supported. No proposal CSS or DOM rewriting is needed.
+supported. `calendar=empty` exercises the no-events picker; optional
+`calendarDelay` (up to two seconds) exposes pending lookup. Focus returns to More
+while lookup is pending, then moves to the first enabled picker control (Cancel
+when there are no events). No proposal CSS or DOM rewriting is needed.
 
 Native verification: pending for the combined redesign build.

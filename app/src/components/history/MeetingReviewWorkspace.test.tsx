@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
-import type { MeetingDetail, MeetingSegment } from '../../lib/meetings';
+import { IDLE_MEETING_STATUS, type MeetingDetail, type MeetingSegment } from '../../lib/meetings';
 import { MeetingReviewWorkspace } from './MeetingReviewWorkspace';
 import type { MeetingAudioController } from '../../lib/hooks/useMeetingAudio';
 
@@ -26,6 +26,7 @@ const detail: MeetingDetail = {
 function controller(overrides: Partial<ReturnType<typeof useMeetings>> = {}): ReturnType<typeof useMeetings> {
   return {
     detail,
+    status: IDLE_MEETING_STATUS,
     saveMetadata: vi.fn().mockResolvedValue(true),
     saveReview: vi.fn().mockResolvedValue(true),
     copy: vi.fn().mockResolvedValue(true),

@@ -60,6 +60,7 @@ describe('MeetingsPanel retained audio deletion', () => {
   let root: Root;
 
   beforeEach(() => {
+    audioMocks.controller = audioController(vi.fn());
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -145,6 +146,47 @@ describe('MeetingsPanel retained audio deletion', () => {
     expect(meetings.stop).toHaveBeenCalledOnce();
   });
 
+  it.each([false, true])('follows capture through recording, stopping, processing and saved state (empty=%s)', async (empty) => {
+    const meetings = meetingsController(vi.fn());
+    const session = { ...detail.session, status: 'active' as const };
+    meetings.detail = { ...detail, session, segments: empty ? [] : detail.segments };
+    meetings.page.sessions = [session];
+    for (const [phase, summary, footer] of [
+      ['recording', 'Recording · 4:32', 'Listening…'],
+      ['stopping', 'Stopping… · 4:32', 'Stopping capture…'],
+      ['processing', 'Finishing… · 4:32', 'Finishing pending transcript chunks…'],
+      ['idle', null, null],
+    ] as const) {
+      // Keep persisted status active even after idle, as it can lag the runtime receipt.
+      meetings.status = { ...meetings.status, phase, sessionId: phase === 'idle' ? null : session.id, elapsedMs: 272_000 };
+      await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+      expect(container.querySelector('.meetings-row-preview')?.textContent).toBe(summary ?? session.preview);
+      expect(container.querySelector('.meeting-detail-meta p')?.textContent).toBe(summary ?? [new Date(session.startedAtMs).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }), '4 sec', 'Audio kept'].join(' · '));
+      const transcript = container.querySelector('.meeting-transcript')!;
+      if (footer) expect(transcript.textContent).toContain(footer);
+      else {
+        expect(transcript.textContent).not.toContain('Listening…');
+        expect(transcript.textContent).not.toContain('Stopping capture…');
+        expect(transcript.textContent).not.toContain('Finishing pending');
+        expect(container.querySelector('.meetings-row-duration')).not.toBeNull();
+        if (empty) expect(transcript.textContent).toContain('No speech segments were saved.');
+      }
+      if (phase !== 'recording') expect(transcript.textContent).not.toContain('Listening…');
+    }
+  });
+
+  it('does not present another persisted active session as recording', async () => {
+    const meetings = meetingsController(vi.fn());
+    meetings.detail = { ...detail, session: { ...detail.session, status: 'active' } };
+    meetings.page.sessions = [meetings.detail.session];
+    meetings.status = { ...meetings.status, phase: 'recording', sessionId: 'another-meeting', elapsedMs: 999_000 };
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(container.querySelector('.meetings-row-preview')?.textContent).toBe(detail.session.preview);
+    expect(container.querySelector('.meeting-detail-meta p')?.textContent).not.toContain('Recording');
+    expect(container.querySelector('.meeting-detail-meta p')?.textContent).not.toContain('16:39');
+    expect(container.querySelector('.meeting-transcript')?.textContent).not.toContain('Listening…');
+  });
+
   it('exposes a named load-more button with loading and search-pending states', async () => {
     const meetings = meetingsController(vi.fn());
     Object.assign(meetings, { hasMore: true, loadingMore: false, loadMore: vi.fn() });
@@ -197,6 +239,30 @@ describe('MeetingsPanel retained audio deletion', () => {
     expect(title?.textContent).toBe('A very long synthetic meeting title');
     expect(title?.nextElementSibling?.className).toBe('meetings-row-status');
     expect(title?.nextElementSibling?.textContent).toBe('interrupted');
+  });
+
+  it('blocks held Return, composing keys and repeated Space before the destructive menu item can click', async () => {
+    const remove = vi.fn();
+    await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
+    await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => element.textContent === 'Delete meeting…')!;
+    for (const options of [
+      { key: 'Enter' }, { key: 'Enter', repeat: true }, { key: 'Enter', repeat: true },
+      { key: 'Enter', isComposing: true }, { key: ' ', isComposing: true }, { key: ' ', repeat: true },
+    ]) {
+      const event = new KeyboardEvent('keydown', { ...options, bubbles: true, cancelable: true });
+      await act(async () => item.dispatchEvent(event));
+      expect(event.defaultPrevented).toBe(true);
+      expect(item.textContent).toBe('Delete meeting…');
+      expect(remove).not.toHaveBeenCalled();
+    }
+    // Arm deliberately; a held Return must also be inert while armed.
+    await act(async () => item.click());
+    expect(item.textContent).toBe('Confirm delete…');
+    await act(async () => item.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true, cancelable: true })));
+    expect(remove).not.toHaveBeenCalled();
+    await act(async () => item.click());
+    expect(remove).toHaveBeenCalledExactlyOnceWith(detail.session.id);
   });
 
   it('invalidates local playback before deleting the selected meeting', async () => {
