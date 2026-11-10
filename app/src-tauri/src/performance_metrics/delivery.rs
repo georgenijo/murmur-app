@@ -284,7 +284,7 @@ impl Default for DeliveryTimingV1 {
     }
 }
 
-pub(crate) fn route(snapshot: &crate::smart_destination::Snapshot) -> Route {
+pub(crate) fn accepted_route(snapshot: &crate::smart_destination::Snapshot) -> Route {
     use crate::smart_destination::Snapshot::*;
     match snapshot {
         Disabled | Unverified => Route::Normal,
@@ -293,6 +293,30 @@ pub(crate) fn route(snapshot: &crate::smart_destination::Snapshot) -> Route {
             current_app: true, ..
         } => Route::SmartCurrent,
         Target { .. } => Route::SmartHandoff,
+    }
+}
+
+/// Actual Smart routing is established by preparation, not the recording-start
+/// flag: a current-field recording can activate that field after a switch away.
+pub(crate) fn actual_route(
+    snapshot: &crate::smart_destination::Snapshot,
+    auto_paste: bool,
+    preparation: &M<SmartOutcome>,
+) -> M<Route> {
+    use crate::smart_destination::Snapshot;
+    if !auto_paste {
+        return M::measured(Route::ClipboardOnly);
+    }
+    match snapshot {
+        Snapshot::Disabled | Snapshot::Unverified => M::measured(Route::Normal),
+        Snapshot::Unavailable => M::measured(Route::ClipboardOnly),
+        Snapshot::Target { .. } => match preparation.value() {
+            Some(SmartOutcome::Ready) => M::measured(Route::SmartCurrent),
+            Some(SmartOutcome::ActivationRequested) => M::measured(Route::SmartHandoff),
+            // No confirmed preparation path (for example, permission was
+            // unavailable before preparation): do not invent a Smart cohort.
+            _ => missing(),
+        },
     }
 }
 
@@ -524,6 +548,81 @@ pub(crate) fn set_outcome(r: &mut DeliveryTimingV1, outcome: Outcome) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn switched_away_current_field_records_the_prepared_handoff_route() {
+        let snapshot = crate::smart_destination::Snapshot::Target {
+            token: 1,
+            revision: 1,
+            identity: crate::frontmost::DeliveryTargetSnapshot::Incomplete,
+            current_app: true,
+        };
+        let timing = DeliveryTiming::new(Instant::now());
+        timing.update(|r| {
+            r.accepted_route = M::measured(accepted_route(&snapshot));
+            // Native preparation returns this after activating the original
+            // current field when the user switched away while speaking.
+            r.preparation = M::measured(SmartOutcome::ActivationRequested);
+            r.actual_route = actual_route(&snapshot, true, &r.preparation);
+        });
+        let record = timing.close();
+        assert_eq!(record.accepted_route, M::measured(Route::SmartCurrent));
+        assert_eq!(record.actual_route, M::measured(Route::SmartHandoff));
+    }
+
+    #[test]
+    fn actual_route_uses_preparation_for_both_start_snapshot_shapes() {
+        for current_app in [false, true] {
+            let snapshot = crate::smart_destination::Snapshot::Target {
+                token: 1,
+                revision: 1,
+                identity: crate::frontmost::DeliveryTargetSnapshot::Incomplete,
+                current_app,
+            };
+            assert_eq!(
+                actual_route(&snapshot, true, &M::measured(SmartOutcome::Ready)),
+                M::measured(Route::SmartCurrent)
+            );
+            assert_eq!(
+                actual_route(
+                    &snapshot,
+                    true,
+                    &M::measured(SmartOutcome::ActivationRequested)
+                ),
+                M::measured(Route::SmartHandoff)
+            );
+            assert!(matches!(
+                actual_route(&snapshot, true, &M::NotApplicable),
+                M::Unavailable { .. }
+            ));
+            assert_eq!(
+                actual_route(
+                    &snapshot,
+                    false,
+                    &M::measured(SmartOutcome::ActivationRequested)
+                ),
+                M::measured(Route::ClipboardOnly)
+            );
+        }
+        // Refused preparation may fall back to normal paste or clipboard only;
+        // the final snapshot records that fallback, not a Smart timing cohort.
+        assert_eq!(
+            actual_route(
+                &crate::smart_destination::Snapshot::Unverified,
+                true,
+                &M::measured(SmartOutcome::Refused)
+            ),
+            M::measured(Route::Normal)
+        );
+        assert_eq!(
+            actual_route(
+                &crate::smart_destination::Snapshot::Unavailable,
+                true,
+                &M::measured(SmartOutcome::Timeout)
+            ),
+            M::measured(Route::ClipboardOnly)
+        );
+    }
+
     #[test]
     fn shared_native_frontend_fixture_decodes() {
         let record: DeliveryTimingV1 = serde_json::from_str(include_str!(

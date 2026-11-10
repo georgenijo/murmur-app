@@ -603,7 +603,10 @@ fn inject_text_with_policy(
         });
     }
 
-    // If auto-paste is disabled, we're done
+    // If auto-paste is disabled, we're done. This path has no permission
+    // sample or Rust permission cache: populating diagnostic accessibility
+    // would add an AXIsProcessTrusted call. Leave it unavailable rather than
+    // adding a delivery-path AX call or presenting stale UI state as current.
     if !auto_paste {
         authorized_clipboard_write(text, authority)?;
         let clipboard_ms = inject_started.elapsed().as_millis() as u64;

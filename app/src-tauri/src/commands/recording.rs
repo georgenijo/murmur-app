@@ -2828,7 +2828,8 @@ async fn run_transcription_pipeline(
         );
         let accepted_route = smart_destination.route_code();
         delivery_timing.update(|r| {
-            r.accepted_route = DeliveryMeasurement::measured(dt::route(&smart_destination));
+            r.accepted_route =
+                DeliveryMeasurement::measured(dt::accepted_route(&smart_destination));
             r.configured_delay_ms = paste_delay_ms;
         });
         let mut recovery_smart_destination = smart_destination.clone();
@@ -2948,11 +2949,8 @@ async fn run_transcription_pipeline(
         }
         let delivery_route = smart_destination.route_code();
         delivery_timing.update(|r| {
-            r.actual_route = DeliveryMeasurement::measured(if effective_auto_paste {
-                dt::route(&smart_destination)
-            } else {
-                dt::Route::ClipboardOnly
-            })
+            r.actual_route =
+                dt::actual_route(&smart_destination, effective_auto_paste, &r.preparation)
         });
         let (tx, rx) = tokio::sync::oneshot::channel::<(
             Option<Result<injector::InjectionResult, String>>,

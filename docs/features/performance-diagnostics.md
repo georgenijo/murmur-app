@@ -597,7 +597,22 @@ measurement status contract; unavailable is never a numeric zero. The existing
 
 The companion separates accepted/actual route (normal, Smart current field,
 Smart handoff, or clipboard only), configured delay, permission, and final
-injection/refusal/error outcome. Whole-phase fields distinguish preparation
+injection/refusal/error outcome. `acceptedRoute` describes the recording-start
+snapshot. `actualRoute` describes the preparation path: `ready` is
+`smartCurrent`, while `activationRequested` is `smartHandoff`, including a
+recording that started in the current field but switched away while speaking.
+Normal/clipboard fallbacks use the post-preparation snapshot. Without a
+confirmed Smart preparation path, the actual route is unavailable rather than
+inferred from the start flag. Historical rows retain their recorded values;
+there is no backfill or change to the schemaVersion 1 shape.
+
+Disabled auto-paste makes no accessibility-permission query and has no Rust
+permission cache. Its `accessibility` measurement remains unavailable: filling
+it would add an `AXIsProcessTrusted` call on the delivery path or substitute
+potentially stale UI state. Existing permission checks and their ordering are
+unchanged.
+
+Whole-phase fields distinguish preparation
 queue, delivery-owner lock wait and work; activation settling; injection queue,
 owner wait and work; cleanup; and receiver/outcome publication. `toPostUs` ends
 immediately before actual key-down posting and is unavailable if no post was
