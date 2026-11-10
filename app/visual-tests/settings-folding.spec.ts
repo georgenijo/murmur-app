@@ -214,14 +214,17 @@ for (const appearance of ['light', 'dark']) {
     const modal = await page.evaluate(() => {
       const backdrop = document.querySelector<HTMLElement>('.settings-sheet-backdrop')!;
       const sheet = document.querySelector<HTMLElement>('.settings-editor-sheet')!;
-      const tokenProbe = document.createElement('div');
-      tokenProbe.style.cssText = 'background:var(--ui-scrim);color:var(--ui-hairline-strong);box-shadow:var(--ui-shadow-3);border-color:var(--ui-hairline-strong)';
-      document.body.append(tokenProbe);
-      const tokenStyle = getComputedStyle(tokenProbe);
+      const token = (style: string, property: keyof CSSStyleDeclaration) => {
+        const probe = document.createElement('div');
+        probe.style.cssText = `transition:none;${style}`;
+        document.body.append(probe);
+        const value = getComputedStyle(probe)[property] as string;
+        probe.remove();
+        return value;
+      };
       const backdropStyle = getComputedStyle(backdrop);
       const sheetStyle = getComputedStyle(sheet);
-      const values = { backdrop: backdropStyle.backgroundColor, sheetBackground: sheetStyle.backgroundColor, shadow: sheetStyle.boxShadow, border: sheetStyle.borderTopColor, tokenBackdrop: tokenStyle.backgroundColor, tokenSurface: (() => { tokenProbe.style.background = 'var(--ui-tint-raised)'; return getComputedStyle(tokenProbe).backgroundColor; })(), tokenShadow: tokenStyle.boxShadow, tokenBorder: tokenStyle.borderTopColor };
-      tokenProbe.remove();
+      const values = { backdrop: backdropStyle.backgroundColor, sheetBackground: sheetStyle.backgroundColor, shadow: sheetStyle.boxShadow, border: sheetStyle.borderTopColor, tokenBackdrop: token('background:var(--ui-scrim)', 'backgroundColor'), tokenSurface: token('background:var(--ui-tint-raised)', 'backgroundColor'), tokenShadow: token('box-shadow:var(--ui-shadow-3)', 'boxShadow'), tokenBorder: token('border:1px solid var(--ui-hairline-strong)', 'borderTopColor') };
       return values;
     });
     expect(modal.backdrop).toBe(modal.tokenBackdrop);
