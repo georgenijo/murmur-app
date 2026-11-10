@@ -536,6 +536,9 @@ if (requestedState === 'insights-gap') {
   const missingDay = Object.keys(fixtureBuckets)[3];
   fixtureBuckets[missingDay] = { words: 0, recordings: 0, recordingSeconds: 0 };
 }
+if (requestedState === 'insights-no-speed') {
+  for (const bucket of Object.values(fixtureBuckets)) bucket.words = 0;
+}
 localStorage.setItem('dictation-stats', JSON.stringify({
   ...fixtureStats,
   totalWords: insightsEmpty ? 0 : 5168,
@@ -693,7 +696,7 @@ function VisualFixture() {
           <div className="main-dashboard-workspace">
             {destination === 'insights' ? (
               <InsightsView
-                initialMetric={requestedState === 'insights-speed' || requestedState === 'insights-gap' ? 'wpm' : 'words'}
+                initialMetric={['insights-speed', 'insights-gap', 'insights-no-speed'].includes(requestedState) ? 'wpm' : 'words'}
                 defaultMoreOpen={requestedState === 'insights-more'}
                 statsVersion={0}
                 onBackToHome={backToHome}

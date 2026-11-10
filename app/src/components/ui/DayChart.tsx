@@ -165,6 +165,7 @@ function LineChart({ days, activeKey, tooltipId, markEvents, insights }: {
   const scale = insights ? dayChartScale(days, 'wpm') : { min: 0, max: Math.max(1, ...days.filter(hasSpeed).map(day => day.wpm)), ticks: [] };
   const points = speedPoints(days, scale).map(point => insights || point.y === null ? point : { ...point, y: point.y * 0.84 + 8 });
   const empty = insights && !days.some(day => day.recordings > 0);
+  const noSpeed = insights && !days.some(hasSpeed);
   return <>
     <div className="ui-day-chart-plot" data-plot="line" data-empty={empty} data-axis-min={insights ? scale.min : undefined} data-axis-max={insights && !empty ? scale.max : undefined}>
       {insights && <ValueAxis scale={scale} empty={empty} />}
@@ -173,6 +174,7 @@ function LineChart({ days, activeKey, tooltipId, markEvents, insights }: {
           {!insights && <line x1="0" y1="50" x2="100" y2="50" />}
           {speedSegments(points).map((segment, index) => <polyline key={index} points={segment.map(({ x, y }) => `${x},${y}`).join(' ')} />)}
         </svg>
+        {noSpeed && <p className="insights-empty-message"><span>No speed data for these days.</span></p>}
         <div className="ui-day-chart-line-targets">
           {points.map(({ day, y }) => <button key={day.key} type="button" data-active={activeKey === day.key}
             aria-label={markLabel(day, 'wpm')} aria-describedby={tooltipId} {...markEvents(day, 'wpm')}>
@@ -195,6 +197,7 @@ export function DayChart(props: DayChartProps) {
   const scale = props.kind === 'line' && insights ? dayChartScale(props.days, 'wpm') : null;
   const accessibleLabel = scale
     ? !flatDays.some(day => day.recordings > 0) ? `${props.ariaLabel}: no dictations yet`
+      : !flatDays.some(hasSpeed) ? `${props.ariaLabel}: no speed data for these days`
       : `${props.ariaLabel}; speed axis ${scale.min} to ${scale.max} words per minute; days without dictations are gaps`
     : props.ariaLabel;
 

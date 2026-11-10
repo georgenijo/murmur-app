@@ -44,6 +44,13 @@ for (const appearance of ['light', 'dark'] as const) {
       await expect(view.locator('polyline')).toHaveCount(2);
       expect(await view.locator('polyline').evaluateAll(lines => lines.map(line => line.getAttribute('points')!.split(' ').length))).toEqual([3, 3]);
 
+      await page.goto(`/visual-fixtures.html?state=insights-no-speed&appearance=${appearance}`);
+      await expect(view.locator('.insights-empty-message')).toHaveText('No speed data for these days.');
+      await expect(view.locator('.ui-day-chart-line-targets button')).toHaveCount(7);
+      await expect(view.locator('polyline, .ui-day-chart-line-targets span')).toHaveCount(0);
+      await view.locator('.ui-day-chart-line-targets button').first().focus();
+      await expect(view.locator('.insights-daily [role="status"]')).toContainText('No WPM data · 3 recordings');
+
       await page.goto(`/visual-fixtures.html?state=insights-empty&appearance=${appearance}`);
       await expect(view.locator('.insights-empty-message')).toHaveText('Dictate something and your activity will show up here.');
       await expect(view.locator('.ui-day-chart-plot button, .ui-day-chart-plot svg')).toHaveCount(0);
@@ -51,6 +58,37 @@ for (const appearance of ['light', 'dark'] as const) {
       await expect(view.locator('.insights-more-statistics, .insights-streak')).toHaveCount(0);
       await speed.click();
       await expect(view.getByRole('figure', { name: /trend line: no dictations yet/ })).toHaveCount(1);
+    });
+  }
+
+  for (const sidebarWidth of [256, 208]) {
+    test(`Insights calendar containment: ${appearance}, ${sidebarWidth}px sidebar`, async ({ page }) => {
+      await page.clock.setFixedTime(new Date('2026-09-04T20:00:00Z'));
+      await page.goto(`/visual-fixtures.html?state=insights-more&appearance=${appearance}`);
+      // Exercise both current and upcoming Home sidebar geometry without owning
+      // its implementation. Standard rendering captures use the real sidebar.
+      await page.evaluate(width => {
+        (document.querySelector('.main-app-shell') as HTMLElement).style.setProperty('--home-sidebar-width', `${width}px`);
+        (document.querySelector('.home-sidebar') as HTMLElement).style.width = `${width}px`;
+      }, sidebarWidth);
+      for (const width of [951, 1000]) {
+        await page.setViewportSize({ width, height: 780 });
+        const bounds = await page.locator('[data-analytics="activity"]').evaluate(card => {
+          const rect = card.getBoundingClientRect();
+          const style = getComputedStyle(card);
+          const calendar = card.querySelector('.ui-day-chart-heatmap')!.getBoundingClientRect();
+          const daily = document.querySelector('.insights-daily')!.getBoundingClientRect();
+          const details = document.querySelector('[data-stats="details"]')!.getBoundingClientRect();
+          return { calendarLeft: calendar.left, calendarRight: calendar.right,
+            innerRight: rect.right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight),
+            cardLeft: rect.left, sidebar: document.querySelector('.home-sidebar')!.getBoundingClientRect().width,
+            dailyRight: daily.right, detailsRight: details.right };
+        });
+        expect(bounds.sidebar).toBe(sidebarWidth);
+        expect(bounds.calendarRight).toBeLessThanOrEqual(bounds.innerRight + 0.01);
+        expect(bounds.calendarLeft).toBeGreaterThan(bounds.cardLeft);
+        expect(bounds.detailsRight).toBeCloseTo(bounds.dailyRight, 1);
+      }
     });
   }
 }

@@ -5,8 +5,9 @@
   --ui-font-insights-value: 22px;
   --ui-font-insights-title: 18px;
   --ui-font-insights-axis: 11px;
-  --insights-chart-columns: minmax(0, 1.6fr) minmax(285px, 1fr);
-  --insights-daily-width: min(calc((100% - 16px) * 1.6 / 2.6), calc(100% - 301px));
+  /* Calendar: 279px tracks + 24px padding + 2px border; keep details aligned. */
+  --insights-chart-columns: minmax(0, 1.6fr) minmax(305px, 1fr);
+  --insights-daily-width: min(calc((100% - 16px) * 1.6 / 2.6), calc(100% - 321px));
   overflow-x: hidden;
   overflow-y: auto;
 }

@@ -61,6 +61,44 @@ describe('DayChart', () => {
     expect(container.querySelector('.ui-day-chart-tooltip')?.textContent).toContain('Focus a day');
   });
 
+  it('invites dictation when the Speed chart has no recordings', async () => {
+    const emptyDays = days.map(value => ({ ...value, recordings: 0, wpm: 0 }));
+    await act(async () => root.render(
+      <DayChart kind="line" metric="wpm" days={emptyDays} ariaLabel="WPM trend" presentation="insights" />,
+    ));
+    expect(container.querySelector('.insights-empty-message')?.textContent)
+      .toBe('Dictate something and your activity will show up here.');
+    expect(container.querySelectorAll('.ui-day-chart-plot button, .ui-day-chart-plot svg')).toHaveLength(0);
+    expect(container.querySelectorAll('.ui-day-chart-axis span')).toHaveLength(7);
+  });
+
+  it('explains missing speed while preserving all seven accessible day targets', async () => {
+    const noSpeedDays = days.map((value, index) => ({ ...value, recordings: 1, wpm: index === 0 ? NaN : 0 }));
+    await act(async () => root.render(
+      <DayChart kind="line" metric="wpm" days={noSpeedDays} ariaLabel="WPM trend" presentation="insights" />,
+    ));
+    expect(container.querySelector('.insights-empty-message')?.textContent).toBe('No speed data for these days.');
+    expect(container.querySelector('figure')?.getAttribute('aria-label')).toContain('no speed data');
+    const targets = container.querySelectorAll('.ui-day-chart-line-targets button');
+    expect(targets).toHaveLength(7);
+    expect([...targets].every(target => target.getAttribute('aria-label')?.includes('No WPM data'))).toBe(true);
+    expect(container.querySelectorAll('polyline, .ui-day-chart-line-targets span')).toHaveLength(0);
+    await act(async () => (targets[0] as HTMLButtonElement).focus());
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('No WPM data');
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('1 recording');
+  });
+
+  it('plots usable speed without an empty-state explanation', async () => {
+    await act(async () => root.render(
+      <DayChart kind="line" metric="wpm" days={days} ariaLabel="WPM trend" presentation="insights" />,
+    ));
+    expect(container.querySelector('.insights-empty-message')).toBeNull();
+    expect(container.querySelectorAll('.ui-day-chart-line-targets button')).toHaveLength(7);
+    expect(container.querySelectorAll('.ui-day-chart-line-targets span')).toHaveLength(6);
+    expect(container.querySelectorAll('polyline')).toHaveLength(1);
+    expect(container.querySelector('figure')?.getAttribute('aria-label')).toContain('speed axis');
+  });
+
   it('keeps both years visible across a calendar rollover and tolerates empty weeks', async () => {
     const weeks = [[day(0, { date: new Date(2026, 11, 27) })], [day(1, { date: new Date(2027, 0, 3) })]];
     await act(async () => root.render(

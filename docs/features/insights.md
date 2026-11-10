@@ -15,6 +15,11 @@ keyboard target and weekday slot. The accessible chart name states the speed
 range. Hover, focus and click show exact values; Escape and blur dismiss them
 without moving the plot.
 
+A week with recordings but no usable speed shows “No speed data for these
+days.” in the Speed plot. Its seven day targets remain available for exact
+recording counts and no-data labels; a week without recordings keeps the
+dictation invitation.
+
 The Last 8 weeks calendar includes its exact date range, month/weekday labels,
 five intensity levels and a matching Less/More legend. Levels are relative to
 the largest word count in the visible calendar: zero, up to 25%, up to 50%, up
@@ -39,7 +44,8 @@ Back to Home remains available and restores Home navigation focus.
 
 `visual-fixtures.html?state=insights` shows real populated components. Additional
 states are `insights-speed`, `insights-more`, `insights-empty` (zero persisted
-fixture statistics), and `insights-gap` (fourth recent day absent). Append
+fixture statistics), `insights-gap` (fourth recent day absent), and
+`insights-no-speed` (recordings without transcribed words). Append
 `appearance=light` or `appearance=dark`; use 1100×780 or 840×620 and scroll the
 compact content to its bottom. Screenshot capture requires no CSS/JS layer.
 Fixture lifetime totals and daily buckets are independently seeded synthetic
