@@ -11,6 +11,11 @@
 //! any candidate that differs anywhere else. Timeouts, an unavailable OS or
 //! model, and rejected answers all deliver the deterministic text. Nothing in
 //! this module logs, persists, or transmits transcript text.
+//!
+//! Issue #1081 (phase 1): the on-device engine cannot answer inside the 150 ms
+//! dictation budget on measured hardware, so `HOMOPHONE_ENGINE_ENABLED` gates
+//! the live dictation path off. A triggered pass records `unavailable` and
+//! delivers the deterministic text without calling the engine.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -461,8 +466,10 @@ impl HomophoneEngine for BackoffEngine {
         }
         let started = Instant::now();
         let mut result = self.engine.choose(instructions, prompt, budget, max_tokens);
-        // Count a late successful response as a timeout, like run_pass does.
-        if result.is_ok() && started.elapsed() > budget {
+        // Count any response that arrives after the budget as a timeout, like
+        // run_pass does. A late failure must not reach backoff accounting and
+        // reset the consecutive-failure streak (issue #1081).
+        if started.elapsed() > budget {
             result = Err(EngineError::Timeout);
         }
         self.state.lock_or_recover().observe(&result, (self.now)());
@@ -626,6 +633,18 @@ mod ffi {
     }
 }
 
+/// Issue #1081 (phase 1): the on-device FoundationModels engine cannot answer
+/// inside the 150 ms dictation budget on measured hardware. A prepared
+/// session's first response took 307–352 ms on an M4 and 309–337 ms on an M5
+/// Pro, and 0 of 26 probe responses finished within 150 ms; all 23 production
+/// generation calls in the baseline timed out. While this is `false`, the live
+/// dictation path returns [`EngineError::Unavailable`] before any
+/// `murmur_fm_choose` or `murmur_fm_prepare` call and delivers the
+/// deterministic text. Flip to `true` to re-enable generation and session
+/// preparation once the engine can answer in budget; the FoundationModels
+/// bridge itself stays intact for other callers.
+const HOMOPHONE_ENGINE_ENABLED: bool = false;
+
 /// Apple FoundationModels on-device engine (macOS 26+), via the in-process
 /// Swift bridge in `macos/FoundationModelsBridge.swift`.
 #[derive(Default)]
@@ -655,6 +674,9 @@ impl Drop for PreparedSession {
 #[cfg(target_os = "macos")]
 impl HomophoneEngine for FoundationModelsEngine {
     fn prewarm(&self) {
+        if !HOMOPHONE_ENGINE_ENABLED {
+            return;
+        }
         self.prepared.get_or_init(|| {
             let instructions = std::ffi::CString::new(INSTRUCTIONS).expect("static instructions");
             // SAFETY: the bridge copies instructions before returning and
@@ -677,6 +699,9 @@ impl HomophoneEngine for FoundationModelsEngine {
         budget: Duration,
         max_tokens: u32,
     ) -> Result<String, EngineError> {
+        if !HOMOPHONE_ENGINE_ENABLED {
+            return Err(EngineError::Unavailable);
+        }
         let instructions = std::ffi::CString::new(instructions).map_err(|_| EngineError::Failed)?;
         let prompt = std::ffi::CString::new(prompt).map_err(|_| EngineError::Failed)?;
         let mut answer: *mut std::os::raw::c_char = std::ptr::null_mut();
@@ -1021,6 +1046,67 @@ mod tests {
         let result = run_pass("Add it to the cue.", &[], &[], &SlowEngine);
         assert_eq!(result.outcome, PassOutcome::Timeout);
         assert_eq!(result.text, "Add it to the cue.");
+    }
+
+    #[test]
+    fn dictation_path_engine_returns_unavailable_before_generation() {
+        assert!(
+            !HOMOPHONE_ENGINE_ENABLED,
+            "dictation-path engine must stay disabled until the #1081 latency is resolved"
+        );
+        let engine = FoundationModelsEngine::default();
+        // No generation call: choose returns unavailable immediately, before
+        // any FoundationModels bridge call or budget wait.
+        assert_eq!(
+            engine.choose(
+                INSTRUCTIONS,
+                "Sentence: Add it to the [1].\n1: cue|queue",
+                ENGINE_BUDGET,
+                ANSWER_TOKENS_PER_WORD,
+            ),
+            Err(EngineError::Unavailable)
+        );
+        // A triggered pass records `unavailable` and delivers deterministic text.
+        let result = run_pass("Add it to the cue.", &[], &[], &engine);
+        assert_eq!(result.outcome, PassOutcome::Unavailable);
+        assert_eq!(result.text, "Add it to the cue.");
+        assert!(result.replacements.is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dictation_path_engine_prewarm_prepares_no_session() {
+        let engine = FoundationModelsEngine::default();
+        engine.prewarm();
+        assert!(engine.prepared.get().is_none());
+    }
+
+    #[test]
+    fn a_late_failure_is_counted_as_a_timeout() {
+        struct SlowFailingEngine;
+        impl HomophoneEngine for SlowFailingEngine {
+            fn choose(
+                &self,
+                _: &str,
+                _: &str,
+                budget: Duration,
+                _: u32,
+            ) -> Result<String, EngineError> {
+                std::thread::sleep(budget + Duration::from_millis(5));
+                Err(EngineError::Failed)
+            }
+        }
+        let engine = BackoffEngine {
+            engine: Arc::new(SlowFailingEngine),
+            state: Arc::new(Mutex::new(BackoffState::default())),
+            now: Box::new(Instant::now),
+        };
+        let result = run_pass("Add it to the cue.", &[], &[], &engine);
+        assert_eq!(result.outcome, PassOutcome::Timeout);
+        assert_eq!(result.text, "Add it to the cue.");
+        // A late failure is classified as a timeout, so it cannot reset the
+        // consecutive-failure streak.
+        assert_eq!(engine.state.lock().unwrap().consecutive_failures, 1);
     }
 
     #[test]

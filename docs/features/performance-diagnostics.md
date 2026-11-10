@@ -109,7 +109,13 @@ The contract never uses numeric zero as a missing-data sentinel.
   actual short duration, including a legitimate measured 0 ms after rounding;
   disabled/non-live runs use `notApplicable`. An unavailable timing uses the
   existing `unavailable { reason }` contract, never a synthetic zero. This row
-  is included in `transcriptTransform`, not additional time to add to it;
+  is included in `transcriptTransform`, not additional time to add to it. The
+  content-free `homophone_context.pass` event keeps the finer outcome
+  vocabulary (`not_triggered`, `unavailable`, `backoff`, `timeout`, and the
+  other pass outcomes), so the `unavailable` outcome of a triggered pass stays
+  distinct from a pass that never triggered. Since #1081 (phase 1) the dictation
+  path records `unavailable` immediately rather than waiting the budget, because
+  the on-device engine cannot answer in time on measured hardware;
 - optional file output;
 - clipboard/paste;
 - total post-stop processing;

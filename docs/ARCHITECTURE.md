@@ -71,7 +71,7 @@ The **transcript transform pipeline** (`transcript_transform.rs`) runs stages in
 1. `cleanup` — filler removal, capitalization
 2. `voice_commands` — typed replacements/snippets from the knowledge store
 3. `smart_correction` — vocabulary matcher (explicit aliases, register/cue-gated contextual variants, exact tier + optional fuzzy tier)
-4. `homophone_context` — opt-in live-only on-device spelling choices for flagged homophones; 150 ms optional fallback
+4. `homophone_context` — opt-in live-only spelling-choices stage for flagged homophones; 150 ms optional fallback. Since #1081 the on-device FoundationModels engine cannot answer inside the budget, so the dictation path records `unavailable` and delivers the deterministic text without invoking it
 5. `smart_formatting` — deterministic prose grammar, lists, same-utterance backtracking (live only)
 6. `spoken_structure` — punctuation, breaks, paired delimiters, symbols, and sentence-boundary editing (live only)
 7. `spoken_numbers` — English cardinals, times, dates, years, labels, and versions rendered under the frozen Mode register's prose or technical policy (live dictation)
