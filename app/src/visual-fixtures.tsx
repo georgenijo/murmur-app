@@ -34,7 +34,6 @@ import { MiddleTruncate } from './components/ui/middle-truncate';
 import { DashboardAction } from './components/ui/DashboardPrimitives';
 import { AnimatedDropdown, AnimatedDropdownTrigger, AnimatedDropdownContent, AnimatedDropdownItem, AnimatedDropdownSeparator } from './components/ui/animated-dropdown/animated-dropdown';
 import { FluidTooltip } from './components/ui/fluid-tooltip/fluid-tooltip';
-import { WorkspacePageHeader } from './components/ui/DashboardPrimitives';
 import { DiscoveryHintToast } from './components/DiscoveryHintToast';
 import { DEFAULT_SETTINGS, type Settings } from './lib/settings';
 import { AppearanceProvider } from './lib/hooks/useAppearance';
@@ -44,6 +43,7 @@ import { removeHistoryEntries, toggleHistoryEntryPinned, type HistoryEntry } fro
 import { dayKey, loadStats } from './lib/stats';
 import { sanitizeActivityStats } from './lib/activityStats';
 import { useMeetings } from './lib/hooks/useMeetings';
+import type { MeetingSession } from './lib/meetings';
 import { DEFAULT_THEME, OPENCODE_THEME, applyResolvedTheme, parseVsCodeThemeFile, resolveTheme, type ThemeConfigV1 } from './lib/appearance';
 import { VoiceIslandFixture } from './visual-fixtures/VoiceIslandFixture';
 import './styles.css';
@@ -175,7 +175,12 @@ const meetingFixture = {
 
 // A realistic backlog: many sessions across weeks, mostly untitled, with a long
 // retained-audio transcript and no review yet.
-const manyMeetings = requestedState === 'meetings-many';
+const meetingCapturePhase = requestedState === 'meetings-recording' ? 'recording' : requestedState === 'meetings-stopping' ? 'stopping' : requestedState === 'meetings-finishing' ? 'processing' : 'idle';
+const meetingCapturing = meetingCapturePhase !== 'idle';
+const meetingRecording = meetingCapturePhase === 'recording';
+const meetingDenied = requestedState === 'meetings-permission-denied';
+const meetingMenu = requestedState === 'meetings-export-menu' ? 'export-menu' : requestedState === 'meetings-more-menu' ? 'more-menu' : query.get('proposal');
+const manyMeetings = ['meetings-many', 'meetings-recording', 'meetings-stopping', 'meetings-finishing', 'meetings-permission-denied', 'meetings-export-menu', 'meetings-more-menu'].includes(requestedState);
 const manyMeetingLines = [
   'Thanks for jumping on. I wanted to walk through the launch checklist before Friday.',
   'Sounds good. I pulled the latest numbers this morning, so we can start there.',
@@ -190,7 +195,7 @@ const manyMeetingLines = [
   'Perfect. Anything else before we wrap?',
   'No, I think that covers it. Thanks everyone.',
 ];
-const manyMeetingSessions = Array.from({ length: 14 }, (_, index) => {
+const manyMeetingSessions: MeetingSession[] = Array.from({ length: 14 }, (_, index) => {
   const startedAtMs = Date.UTC(2026, 8, 4, 18, 0) - index * 19 * 60 * 60 * 1000;
   const titles: Record<number, string> = { 1: 'Launch checklist sync', 4: 'Design review', 9: 'Weekly planning' };
   return {
@@ -209,11 +214,15 @@ const manyMeetingSessions = Array.from({ length: 14 }, (_, index) => {
     errorCode: null,
   };
 });
+if (meetingCapturing) manyMeetingSessions.unshift({
+  ...manyMeetingSessions[0], id: 'meeting-live', startedAtMs: Date.now(), endedAtMs: null,
+  status: 'active', durationMs: 272_000, segmentCount: 3,
+});
 const manyMeetingDetail = (id: string) => {
   const session = manyMeetingSessions.find((candidate) => candidate.id === id) ?? manyMeetingSessions[0];
   return {
     session,
-    segments: manyMeetingLines.map((text, index) => ({
+    segments: (session.status === 'active' ? manyMeetingLines.slice(0, 3) : manyMeetingLines).map((text, index) => ({
       id: 500 + index, sessionId: session.id, speaker: index % 2 === 0 ? 'me' : 'them', remoteSpeakerId: null,
       sequence: index, startMs: 4_000 + index * 21_000, endMs: 4_000 + index * 21_000 + 15_000,
       status: 'final', text, audioAvailable: session.retainAudio, errorCode: null,
@@ -308,7 +317,7 @@ mockIPC((command, payload) => {
     if (command === 'request_system_audio_permission' || command === 'request_calendar_permission') return new Promise(() => {});
   }
   if (manyMeetings) {
-    if (command === 'get_system_audio_permission_status') return 'unknown';
+    if (command === 'get_system_audio_permission_status') return meetingDenied ? 'denied' : meetingCapturing ? 'granted' : 'unknown';
     if (command === 'list_meetings') {
       return { sessions: manyMeetingSessions, searchMatches: {}, total: manyMeetingSessions.length, offset: 0, limit: 50 };
     }
@@ -317,6 +326,7 @@ mockIPC((command, payload) => {
       return manyMeetingDetail(id);
     }
     if (command === 'get_meeting_audio_manifest') {
+      if (meetingCapturing) return { kind: 'unavailable', reason: 'notFinished' };
       return {
         kind: 'available', sessionId: 'meeting-0', durationMs: 12 * 60_000,
         chunks: [{ segmentId: 500, channel: 'me', startMs: 4_000, endMs: 19_000 }], nextCursor: null,
@@ -348,18 +358,26 @@ mockIPC((command, payload) => {
   if (command === 'configure_smart_auto_probe' || command === 'retry_smart_auto_probe') return 1;
   if (command === 'get_meeting_status') {
     return {
-      phase: 'idle',
-      sessionId: null,
-      elapsedMs: 0,
+      phase: meetingCapturePhase,
+      generation: meetingCapturing ? 1 : 0,
+      sessionId: meetingCapturing ? 'meeting-live' : null,
+      elapsedMs: meetingCapturing ? 272_000 : 0,
       chunksCommitted: 0,
-      microphoneActive: false,
-      systemAudioActive: false,
+      microphoneActive: meetingRecording,
+      systemAudioActive: meetingRecording,
       echoCancellation: { state: 'off' },
       errorCode: null,
     };
   }
   if (command === 'get_system_audio_permission_status') return 'granted';
   if (command === 'get_calendar_permission_status') return query.get('calendar') === 'denied' ? 'denied' : 'granted';
+  if (command === 'delete_meeting' && manyMeetings) {
+    document.documentElement.dataset.meetingDeletions = String(Number(document.documentElement.dataset.meetingDeletions ?? 0) + 1);
+    return;
+  }
+  if (command === 'get_meeting_calendar_events' && query.get('calendar') === 'empty') {
+    return new Promise((resolve) => setTimeout(() => resolve([]), Math.min(2000, Number(query.get('calendarDelay') ?? 0))));
+  }
   if (command === 'get_meeting_calendar_events') return [
     { selectionToken: 'first-event', title: 'Orion planning', attendees: ['Alex Example', 'Casey Example'], startMs: Date.UTC(2026, 7, 31, 14), endMs: Date.UTC(2026, 7, 31, 15) },
     { selectionToken: 'second-event', title: 'Design review', attendees: ['Jordan Example'], startMs: Date.UTC(2026, 7, 31, 14, 30), endMs: Date.UTC(2026, 7, 31, 15, 30) },
@@ -635,8 +653,19 @@ function VisualFixture() {
 
   React.useEffect(() => {
     if (requestedState.startsWith('meetings-review')) void meetings.select('meeting-fixture');
-    if (manyMeetings) void meetings.select('meeting-0');
+    if (manyMeetings) void meetings.select(meetingCapturing ? 'meeting-live' : 'meeting-0');
   }, [meetings.select]);
+
+  const openedMeetingMenu = React.useRef(false);
+  React.useEffect(() => {
+    if (!meetings.detail || openedMeetingMenu.current || !['export-menu', 'more-menu'].includes(meetingMenu ?? '')) return;
+    const frame = requestAnimationFrame(() => {
+      const selector = meetingMenu === 'more-menu' ? '.meeting-more' : '.meeting-header-actions button[aria-haspopup="menu"]';
+      document.querySelector<HTMLButtonElement>(selector)?.click();
+      openedMeetingMenu.current = true;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [meetings.detail]);
 
   if (requestedState === 'copy-diagnostics') return <div data-visual-ready="true" className="h-full overflow-auto bg-background text-on-surface">
     {query.get('panel') === 'runs' ? <RunsView runs={[]} loading={false} error={null} cleared={false} clearing={false} clearError={null} onRetry={() => {}}
@@ -739,12 +768,6 @@ function VisualFixture() {
               />
             ) : destination === 'meetings' ? (
               <section className="main-secondary-view" aria-labelledby="meetings-view-title">
-                <WorkspacePageHeader
-                  title="Notetaker"
-                  titleId="meetings-view-title"
-                  description="Local meeting transcripts with speaker separation"
-                  back={{ label: 'Back to Home', onActivate: backToHome }}
-                />
                 <MeetingsPanel meetings={meetings} playbackBusy={false} />
               </section>
             ) : (

@@ -1,5 +1,6 @@
-import { Pause, Play } from 'lucide-react';
+import { ChevronDown, Pause, Play } from 'lucide-react';
 import type { MeetingAudioController } from '../../lib/hooks/useMeetingAudio';
+import type { CSSProperties } from 'react';
 import { formatMeetingTimestamp } from '../../lib/meetings';
 
 interface MeetingAudioPlayerProps {
@@ -28,7 +29,7 @@ export function MeetingAudioPlayer({ audio, captureBusy }: MeetingAudioPlayerPro
           type="button"
           disabled={captureBusy}
           onClick={audio.retry}
-          className="meeting-header-action mt-2"
+          className="ui-form-button meeting-header-action mt-2"
         >
           Retry audio access
         </button>
@@ -68,12 +69,13 @@ export function MeetingAudioPlayer({ audio, captureBusy }: MeetingAudioPlayerPro
         aria-label="Playback position"
         aria-valuetext={`${formatMeetingTimestamp(positionMs)} of ${formatMeetingTimestamp(durationMs)}`}
         onChange={(event) => audio.seek(Number(event.target.value))}
+        style={{ '--meeting-progress': `${durationMs ? positionMs / durationMs * 100 : 0}%` } as CSSProperties}
         className="h-1.5 min-w-0 flex-1 cursor-pointer accent-primary disabled:cursor-not-allowed disabled:opacity-40"
       />
-      <span className="shrink-0 font-mono text-[11px] tabular-nums text-on-surface-variant">
+      <span className="meeting-audio-time shrink-0 tabular-nums text-on-surface-variant">
         {formatMeetingTimestamp(positionMs)} / {formatMeetingTimestamp(durationMs)}
       </span>
-      <select
+      <span className="meeting-channel-select"><select
         aria-label="Playback channel"
         title="Playback channel"
         value={audio.channel}
@@ -89,7 +91,7 @@ export function MeetingAudioPlayer({ audio, captureBusy }: MeetingAudioPlayerPro
         <option value="all">Both channels</option>
         <option value="me">Me only</option>
         <option value="them">Them only</option>
-      </select>
+      </select><ChevronDown aria-hidden="true" className="meeting-channel-chevron h-3.5 w-3.5" /></span>
       {captureBusy && (
         <p role="status" className="meeting-audio-note">
           Playback is paused while Murmur records or processes a request.

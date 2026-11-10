@@ -1,10 +1,10 @@
-import { noDefaultButtonKeyDown } from '../../lib/defaultButton';
 import { MEETING_SEARCH_FIELD_LABELS } from '../../lib/meetings';
-import { Fragment, useEffect, useRef, useState } from 'react';
-import { Search, Trash2 } from 'lucide-react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Search } from 'lucide-react';
 import { echoCancellationNotice, formatMeetingDuration, meetingErrorMessage, formatMeetingTimestamp } from '../../lib/meetings';
 import { historyDayKey, historyDayLabel } from '../../lib/history';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
+import { meetingCapturePresentation } from './meetingCapturePresentation';
 import { MeetingReviewWorkspace } from './MeetingReviewWorkspace';
 import { useMeetingAudio } from '../../lib/hooks/useMeetingAudio';
 import {
@@ -12,6 +12,7 @@ import {
   AnimatedDropdownContent,
   AnimatedDropdownTrigger,
 } from '@/components/ui/animated-dropdown/animated-dropdown';
+import { Button } from '../ui/FormControls';
 import HoldToDeleteButton from '@/components/ui/hold-to-delete-button/hold-to-delete-button';
 
 interface MeetingsPanelProps {
@@ -24,22 +25,28 @@ const SEARCH_DEBOUNCE_MS = 250;
 
 function phaseLabel(phase: ReturnType<typeof useMeetings>['status']['phase']): string {
   if (phase === 'starting') return 'Connecting both channels…';
-  if (phase === 'recording') return 'Recording meeting';
+  if (phase === 'recording') return 'Recording';
   if (phase === 'stopping') return 'Stopping capture…';
   if (phase === 'processing') return 'Finishing pending transcript chunks…';
   if (phase === 'failed') return 'Meeting stopped';
-  return 'Ready for a meeting';
+  return 'Meeting capture is idle';
 }
 
 const meetingTime = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 
 export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
   const [query, setQuery] = useState(meetings.appliedQuery);
+  const statusRef = useRef<HTMLDivElement>(null);
+  const phaseRef = useRef<HTMLDivElement>(null);
+  const sourcesRef = useRef<HTMLDivElement>(null);
+  const [statusWrapped, setStatusWrapped] = useState(false);
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const armedDeleteSessionRef = useRef<string | null>(null);
   const [listMenuOpen, setListMenuOpen] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const active = ['starting', 'recording', 'stopping'].includes(meetings.status.phase);
   const processing = meetings.status.phase === 'processing';
@@ -53,12 +60,13 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
   const visibleSegments = meetings.detail?.segments ?? (
     meetings.status.sessionId ? meetings.liveSegments.filter((segment) => segment.sessionId === meetings.status.sessionId) : []
   );
-  const failure = meetingErrorMessage(meetings.status.errorCode);
+  const failure = meetings.permission === 'denied' && meetings.status.errorCode === 'system_audio_permission_denied' ? null : meetingErrorMessage(meetings.status.errorCode);
   const echoCancellationStatus = echoCancellationNotice(meetings.status.echoCancellation);
   const sessions = meetings.page.sessions;
   const { refresh, appliedQuery } = meetings;
 
   useEffect(() => () => {
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
     if (timerRef.current) clearTimeout(timerRef.current);
   }, []);
 
@@ -87,16 +95,33 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
     }
   };
 
+  // Cancellation and activation can arrive in one React batch. The ref is
+  // authoritative immediately; state only renders the confirmation label.
+  const setDeleteConfirmation = useCallback((sessionId: string | null) => {
+    armedDeleteSessionRef.current = sessionId;
+    setConfirmDelete(sessionId);
+  }, []);
+
+  const disarmDelete = useCallback(() => {
+    setDeleteConfirmation(null);
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+    deleteTimerRef.current = null;
+  }, [setDeleteConfirmation]);
+
+  useEffect(() => {
+    disarmDelete();
+  }, [meetings.detail?.session.id, captureBusy, disarmDelete]);
+
   const deleteSelected = async () => {
     const id = meetings.detail?.session.id;
     if (!id) return;
-    if (confirmDelete !== id) {
-      setConfirmDelete(id);
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => setConfirmDelete(null), 4000);
+    if (armedDeleteSessionRef.current !== id) {
+      setDeleteConfirmation(id);
+      if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+      deleteTimerRef.current = setTimeout(disarmDelete, 4000);
       return;
     }
-    setConfirmDelete(null);
+    disarmDelete();
     meetingAudio.invalidate();
     if (await meetings.remove(id)) {
       showNotice('Meeting deleted from this Mac.');
@@ -113,66 +138,63 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
 
   const showPermissionHint = meetings.permission !== 'granted' && meetings.permission !== 'unsupported' && !active && !processing;
   const detail = meetings.detail;
+  const detailCapture = detail ? meetingCapturePresentation(detail.session.id, meetings.status) : null;
+
+  const denied = meetings.permission === 'denied' && !active && !processing;
+  const empty = !meetings.loading && sessions.length === 0 && !appliedQuery && !detail && !active && !processing;
+  useLayoutEffect(() => {
+    const status = statusRef.current;
+    const phase = phaseRef.current;
+    const sources = sourcesRef.current;
+    if (!status || !phase || !sources) return;
+    const syncWrapped = () => setStatusWrapped(sources.getBoundingClientRect().top >= phase.getBoundingClientRect().bottom);
+    syncWrapped();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(syncWrapped);
+    observer.observe(status);
+    observer.observe(phase);
+    observer.observe(sources);
+    return () => observer.disconnect();
+  }, [denied]);
+
+  const startAction = denied ? (
+    <Button size="sm" onClick={() => void meetings.start()} className="meetings-start">Start meeting</Button>
+  ) : (
+    <button type="button" disabled={processing || meetings.status.phase === 'stopping'}
+      onClick={() => void (active ? meetings.stop() : meetings.start())}
+      className="ui-dashboard-action meetings-start" data-action="primary" data-tone={active ? 'danger' : 'default'}>
+      {meetings.status.phase === 'stopping' ? 'Stopping…' : active ? 'Stop meeting' : processing ? 'Finishing…' : 'Start meeting'}
+    </button>
+  );
 
   return (
     <div className="meetings-panel flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div className="meetings-statusbar">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${
-              meetings.status.phase === 'recording' ? 'animate-pulse bg-error' : processing ? 'animate-pulse bg-warning' : 'bg-success'
-            }`} />
-            <p className="truncate text-sm font-semibold text-on-surface">{phaseLabel(meetings.status.phase)}</p>
-            {meetings.status.elapsedMs > 0 && (
-              <span className="font-mono text-xs tabular-nums text-on-surface-variant">
-                {formatMeetingTimestamp(meetings.status.elapsedMs)}
-              </span>
-            )}
-          </div>
-          <p className="meetings-statusbar-detail" title={CHANNEL_EXPLAINER}>
-            <span className={meetings.status.microphoneActive ? 'text-primary' : ''}>
-              <span aria-hidden="true">● </span>Microphone · Me
-            </span>
-            <span className={meetings.status.systemAudioActive ? 'text-success' : ''}>
-              <span aria-hidden="true">● </span>System Audio · Them
-            </span>
-            <span className="ui-visually-hidden">{CHANNEL_EXPLAINER}</span>
-            {showPermissionHint && (
-              <span className="meetings-permission-hint">
-                <span>System Audio access is requested only when you explicitly check it or start a meeting.</span>
-                <button
-                  type="button"
-                  disabled={permissionBusy}
-                  onClick={() => void requestPermission()}
-                  className="font-semibold text-primary hover:underline disabled:opacity-50"
-                >
-                  {permissionBusy ? 'Waiting…' : 'Check access'}
-                </button>
-              </span>
-            )}
-          </p>
+      <header className="meetings-page-header">
+        <h1 id="meetings-view-title">Notetaker</h1>
+        {!empty && startAction}
+        {denied && <button type="button" className="ui-dashboard-action" data-action="primary" onClick={() => void meetings.openSystemAudioPreferences()}>Open System Settings…</button>}
+      </header>
+      <div ref={statusRef} className="meetings-statusbar" data-denied={denied} data-wrapped={statusWrapped}>
+        <div ref={phaseRef} className="meetings-phase">
+          <span aria-hidden="true" className="meetings-phase-dot" data-phase={denied ? 'denied' : meetings.status.phase} />
+          <p>{denied ? "Screen & System Audio Recording is off. Murmur can't capture what other people say until you allow it." : phaseLabel(meetings.status.phase)}</p>
+          {!denied && meetings.status.elapsedMs > 0 && <span className="meetings-elapsed">{formatMeetingTimestamp(meetings.status.elapsedMs)}</span>}
         </div>
-        <button
-          type="button"
-          disabled={processing || meetings.status.phase === 'stopping'}
-          onClick={() => void (active ? meetings.stop() : meetings.start())}
-          className="ui-dashboard-action shrink-0"
-          data-action={active ? 'secondary' : 'primary'}
-          data-tone="default"
-        >
-          {active ? 'Stop meeting' : processing ? 'Finishing…' : 'Start meeting'}
-        </button>
+        {!denied && <div ref={sourcesRef} className="meetings-statusbar-detail" title={CHANNEL_EXPLAINER}>
+          <span className="meetings-source" data-channel="me" data-active={meetings.status.microphoneActive}><span aria-hidden="true" className="meetings-source-dot" />Microphone (Me)</span>
+          <span className="meetings-source" data-channel="them" data-active={meetings.status.systemAudioActive}><span aria-hidden="true" className="meetings-source-dot" />System audio (Them)</span>
+          <span className="ui-visually-hidden">{CHANNEL_EXPLAINER}</span>
+          {showPermissionHint && <span className="meetings-permission-hint">
+            <span><span aria-hidden="true" className="meetings-source-dot" />Mac audio access not checked</span>
+            <Button size="xs" disabled={permissionBusy} onClick={() => void requestPermission()} className="meetings-check-access">{permissionBusy ? 'Waiting…' : 'Check access'}</Button>
+          </span>}
+        </div>}
       </div>
       {(failure || meetings.error || echoCancellationStatus || notice) && (
         <div className="meetings-alerts">
           {(failure || meetings.error) && (
             <div role="alert" className="dialog-toast flex items-center gap-2 border-error/25 bg-error/10 px-3 py-2 text-xs text-error">
               <span className="min-w-0 flex-1">{failure ?? meetings.error}</span>
-              {meetings.permission === 'denied' && (
-                <button type="button" onClick={() => void meetings.openSystemAudioPreferences()} className="shrink-0 font-semibold underline">
-                  Open settings…
-                </button>
-              )}
             </div>
           )}
           {echoCancellationStatus && (
@@ -184,7 +206,11 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
         </div>
       )}
 
-      <div className="meetings-split">
+      {empty ? <section className="meetings-first-meeting"><div>
+        <h2>Record your first meeting</h2>
+        <p>Capture your microphone and Mac audio in a transcript saved on this Mac.</p>
+        {startAction}
+      </div></section> : <div className="meetings-split">
         <aside className="meetings-list-column" aria-label="Saved meetings">
           <div className="meetings-list-toolbar">
             <label className="meetings-search">
@@ -236,6 +262,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
             {sessions.map((session, index) => {
               const showDay = index === 0 || historyDayKey(session.startedAtMs) !== historyDayKey(sessions[index - 1].startedAtMs);
               const selected = detail?.session.id === session.id;
+              const capture = meetingCapturePresentation(session.id, meetings.status);
               const matches = meetings.page.searchMatches[session.id] ?? [];
               return (
                 <Fragment key={session.id}>
@@ -244,19 +271,19 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
                     type="button"
                     onClick={() => void meetings.select(session.id)}
                     aria-pressed={selected}
-                    className="meetings-row"
+                    className="meetings-row" data-live={capture !== null}
                   >
                     <span className="meetings-row-title" data-untitled={!session.title}>
-                      <span className="meetings-row-title-text">{session.title || 'Untitled meeting'}</span>
-                      {session.status !== 'complete' && (
+                      <span className="meetings-row-title-text" title={session.title || `Meeting · ${meetingTime(session.startedAtMs)}`}>{session.title || `Meeting · ${meetingTime(session.startedAtMs)}`}</span>
+                      {session.status !== 'complete' && session.status !== 'active' && (
                         <span className="meetings-row-status" data-status={session.status}>{session.status}</span>
                       )}
                     </span>
-                    <span className="meetings-row-time">{meetingTime(session.startedAtMs)}</span>
+                    {session.title && <span className="meetings-row-time">{meetingTime(session.startedAtMs)}</span>}
                     <span className="meetings-row-preview">
-                      {session.preview || `${session.segmentCount} transcript ${session.segmentCount === 1 ? 'segment' : 'segments'}`}
+                      {capture ? <>{capture.phase === 'recording' && <span className="meetings-live-dot" aria-hidden="true" />}{capture.summary}</> : session.preview || `${session.segmentCount} transcript ${session.segmentCount === 1 ? 'segment' : 'segments'}`}
                     </span>
-                    <span className="meetings-row-duration">{formatMeetingDuration(session.durationMs)}</span>
+                    {!capture && <span className="meetings-row-duration">{formatMeetingDuration(session.durationMs)}</span>}
                     {matches.length > 0 && (
                       <span className="meetings-row-matches">
                         Matches: {matches.map((field) => MEETING_SEARCH_FIELD_LABELS[field]).join(', ')}
@@ -269,7 +296,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
             {meetings.hasMore && (
               <button
                 type="button"
-                className="meeting-header-action my-2 w-full justify-center"
+                className="ui-form-button meeting-header-action my-2 w-full justify-center"
                 aria-label="Load more meetings"
                 disabled={meetings.loading || meetings.loadingMore || query.trim() !== appliedQuery}
                 onClick={() => void meetings.loadMore()}
@@ -291,26 +318,13 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
               captureBusy={captureBusy}
               meetingAudio={meetingAudio}
               onNotice={showNotice}
-              headerMeta={[
-                new Date(detail.session.startedAtMs).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }),
-                formatMeetingDuration(detail.session.durationMs),
-                detail.session.retainAudio ? 'Audio kept' : 'Transcript only',
-              ].join(' · ')}
-              headerActions={(
-                <button
-                  type="button"
-                  disabled={active && meetings.status.sessionId === detail.session.id}
-                  onClick={() => void deleteSelected()} onKeyDown={noDefaultButtonKeyDown}
-                  className="meeting-header-action"
-                  data-tone="danger"
-                  data-confirming={confirmDelete === detail.session.id}
-                  aria-label={confirmDelete === detail.session.id ? 'Confirm delete…' : 'Delete meeting…'}
-                  title={confirmDelete === detail.session.id ? undefined : 'Delete meeting…'}
-                >
-                  <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
-                  {confirmDelete === detail.session.id ? 'Confirm delete…' : <span className="ui-visually-hidden">Delete</span>}
-                </button>
-              )}
+              headerMeta={detailCapture
+                ? detailCapture.summary
+                : [detail.session.title ? new Date(detail.session.startedAtMs).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : null,
+                  formatMeetingDuration(detail.session.durationMs), detail.session.retainAudio ? 'Audio kept' : 'Transcript only'].filter(Boolean).join(' · ')}
+              onDelete={() => void deleteSelected()}
+              onDisarmDelete={disarmDelete}
+              confirmingDelete={confirmDelete === detail.session.id}
             />
           ) : (
             <div className="grid h-full place-items-center p-8 text-center">
@@ -323,7 +337,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
             </div>
           )}
         </section>
-      </div>
+      </div>}
     </div>
   );
 }

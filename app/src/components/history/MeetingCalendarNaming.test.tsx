@@ -66,6 +66,15 @@ describe('MeetingCalendarNaming', () => {
     expect(container.querySelector('input[type="radio"]')).toBeNull();
   });
 
+  it('focuses Cancel when no overlapping events are returned', async () => {
+    calendar.getMeetingCalendarEvents.mockResolvedValue([]);
+    await render();
+    await click('Name from calendar…');
+    expect(button('Apply event').disabled).toBe(true);
+    expect(document.activeElement).toBe(button('Cancel calendar lookup'));
+    expect(onApply).not.toHaveBeenCalled();
+  });
+
   it('requests new access only after a click and falls back to manual naming on denial', async () => {
     calendar.getCalendarPermissionStatus.mockResolvedValue('notDetermined');
     calendar.requestCalendarPermission.mockResolvedValue('denied');

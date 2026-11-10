@@ -1,5 +1,8 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
+import { ChevronDown } from 'lucide-react';
+import { MeetingHeaderActions } from './MeetingHeaderActions';
+import { meetingCapturePresentation } from './meetingCapturePresentation';
 import { MeetingMetadataEditor } from './MeetingMetadataEditor';
 import {
   formatBundleSize,
@@ -23,8 +26,9 @@ interface MeetingReviewWorkspaceProps {
   onNotice: (message: string) => void;
   /** Session facts shown under the meeting title. */
   headerMeta?: string;
-  /** Header actions owned by the panel, such as Delete. */
-  headerActions?: ReactNode;
+  onDelete?: () => void;
+  onDisarmDelete?: () => void;
+  confirmingDelete?: boolean;
 }
 
 interface WorkspaceActivation {
@@ -56,7 +60,7 @@ function TranscriptRow({ segment, labels, remoteSpeakers, onPlay, playbackDisabl
           className="meeting-transcript-time"
           data-playable="true"
         >
-          ▶ {formatMeetingTimestamp(segment.startMs)}
+          <span className="meeting-segment-play" aria-hidden="true">▶</span>{formatMeetingTimestamp(segment.startMs)}
         </button>
       ) : (
         <span className="meeting-transcript-time">{formatMeetingTimestamp(segment.startMs)}</span>
@@ -73,11 +77,13 @@ function TranscriptRow({ segment, labels, remoteSpeakers, onPlay, playbackDisabl
   );
 }
 
-export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetingAudio, onNotice, headerMeta, headerActions }: MeetingReviewWorkspaceProps) {
+export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetingAudio, onNotice, headerMeta, onDelete, onDisarmDelete, confirmingDelete }: MeetingReviewWorkspaceProps) {
   const detail = meetings.detail!;
+  const capture = meetingCapturePresentation(detail.session.id, meetings.status);
   const activeWorkspace = useRef<WorkspaceActivation | null>(null);
   const [labelDrafts, setLabelDrafts] = useState<Partial<MeetingSpeakerLabels>>({});
   const [remoteSpeakerDrafts, setRemoteSpeakerDrafts] = useState<Partial<Record<number, string>>>({});
+  const speakersRef = useRef<HTMLDetailsElement>(null);
   const [format, setFormat] = useState<MeetingReviewExportFormat>('markdown');
   const captions = format === 'srt' || format === 'vtt';
   const [bundlePlan, setBundlePlan] = useState<{ sessionId: string; preview: MeetingBundlePreview } | null>(null);
@@ -147,19 +153,20 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
     }
   };
 
-  const copy = async () => {
+  const copy = async (selectedFormat: MeetingReviewExportFormat = 'markdown') => {
     const activation = activeWorkspace.current;
     const sessionId = detail.session.id;
-    if (await meetings.copy(sessionId, format) && isCurrentWorkspace(activation)) {
-      onNotice(`Meeting ${captions ? 'captions' : 'transcript'} copied as ${format}.`);
+    if (await meetings.copy(sessionId, selectedFormat) && isCurrentWorkspace(activation)) {
+      onNotice(`Meeting ${selectedFormat === 'srt' || selectedFormat === 'vtt' ? 'captions' : 'transcript'} copied as ${selectedFormat}.`);
     }
   };
 
-  const exportReview = async () => {
+  const exportReview = async (selectedFormat: MeetingReviewExportFormat) => {
+    setFormat(selectedFormat);
     const activation = activeWorkspace.current;
     const sessionId = detail.session.id;
-    const path = await meetings.exportReview(sessionId, detail.session.startedAtMs, format);
-    if (path && isCurrentWorkspace(activation)) onNotice(`Meeting ${captions ? 'captions' : 'transcript'} exported as ${format}.`);
+    const path = await meetings.exportReview(sessionId, detail.session.startedAtMs, selectedFormat);
+    if (path && isCurrentWorkspace(activation)) onNotice(`Meeting ${selectedFormat === 'srt' || selectedFormat === 'vtt' ? 'captions' : 'transcript'} exported as ${selectedFormat}.`);
   };
 
   const planBundle = async () => {
@@ -197,7 +204,13 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
         onApplyCalendar={meetings.applyCalendarEvent}
         onNotice={onNotice}
         meta={headerMeta}
-        actions={headerActions}
+        renderActions={(rename, calendar, calendarDisabled) => <MeetingHeaderActions
+          active={detail.session.status === 'active'} busy={captureBusy} calendarDisabled={calendarDisabled}
+          retainedAudio={detail.session.retainAudio} bundleBusy={bundleBusy} confirmingDelete={confirmingDelete}
+          onRename={rename} onCalendar={calendar} onDelete={onDelete} onDisarmDelete={onDisarmDelete}
+          onSpeakers={() => { if (speakersRef.current) { speakersRef.current.open = true; speakersRef.current.querySelector('input')?.focus(); } }}
+          onCopy={(value) => void copy(value)} onExport={(value) => void exportReview(value)} onBundle={() => void planBundle()}
+        />}
       />
 
       {detail.session.retainAudio && meetingAudio ? (
@@ -208,24 +221,16 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
         </p>
       ) : null}
 
-      <div className="meeting-export-bar" role="group" aria-label="Copy or export">
-        <label className="meeting-export-format">Format
-          <select aria-label="Meeting transcript export format" value={format} onChange={(event) => {
-            const option = MEETING_EXPORT_FORMATS.find((candidate) => candidate.value === event.target.value);
-            if (option) setFormat(option.value);
-          }}>
-            {MEETING_EXPORT_FORMATS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select>
-        </label>
-        <button type="button" disabled={captions && detail.session.status === 'active'} onClick={() => void copy()} className="meeting-header-action">{captions ? 'Copy captions' : 'Copy transcript'}</button>
-        <button type="button" disabled={captions && detail.session.status === 'active'} onClick={() => void exportReview()} className="meeting-header-action">Export…</button>
-        {detail.session.retainAudio && (
-          <button type="button" disabled={detail.session.status === 'active' || captureBusy || bundleBusy} onClick={() => void planBundle()} className="meeting-header-action">Export with audio…</button>
-        )}
-      </div>
-
       {bundlePlan && bundlePlan.sessionId === detail.session.id && (
         <section aria-label="Export with audio" className="meeting-quiet-note leading-relaxed">
+          <label className="meeting-export-format">Format
+            <select aria-label="Meeting audio bundle format" value={format} disabled={bundleBusy} onChange={(event) => {
+              const option = MEETING_EXPORT_FORMATS.find((candidate) => candidate.value === event.target.value);
+              if (option) setFormat(option.value);
+            }}>
+              {MEETING_EXPORT_FORMATS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
           <p role="status">
             The .zip holds the {captions ? 'captions' : 'transcript'} as {format}, {bundlePlan.preview.audioSegments} audio segments ({formatBundleSize(bundlePlan.preview.audioBytes)}), and a manifest. Audio is saved exactly as recorded.
           </p>
@@ -240,14 +245,14 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
             </p>
           )}
           <div className="mt-2 flex gap-2">
-            <button type="button" disabled={bundleBusy || captureBusy || bundlePlan.preview.audioBytes > bundlePlan.preview.maxAudioBytes} onClick={() => void exportBundle()} className="meeting-header-action" data-tone="accent">Choose location…</button>
-            <button type="button" disabled={bundleBusy} onClick={() => setBundlePlan(null)} className="meeting-header-action">Cancel</button>
+            <button type="button" disabled={bundleBusy || captureBusy || bundlePlan.preview.audioBytes > bundlePlan.preview.maxAudioBytes} onClick={() => void exportBundle()} className="ui-form-button meeting-header-action" data-tone="accent">Choose location…</button>
+            <button type="button" disabled={bundleBusy} onClick={() => setBundlePlan(null)} className="ui-form-button meeting-header-action">Cancel</button>
           </div>
         </section>
       )}
 
       {captions && <p className="meeting-quiet-note" role="status">{detail.session.status === 'active'
-        ? 'Stop this meeting before exporting captions.'
+        ? capture?.phase === 'recording' ? 'Stop this meeting before exporting captions.' : capture?.footer ?? 'Captions will be available when this meeting finishes.'
         : 'One caption per recorded speech segment, with saved speaker names. Untranscribed sections are marked. Review notes are not included.'}</p>}
 
       <section className="meeting-transcript" aria-labelledby="meeting-transcript-title">
@@ -255,25 +260,25 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
           <h3 id="meeting-transcript-title">Transcript</h3>
           <span className="meeting-transcript-count">{segments.length} {segments.length === 1 ? 'segment' : 'segments'}</span>
           <span className="flex-1" />
-          <details className="meeting-speakers">
-            <summary className="meeting-header-action">Speakers: {speakerSummary}</summary>
+          <details ref={speakersRef} className="meeting-speakers">
+            <summary className="ui-form-button meeting-header-action">Speakers: {speakerSummary}<ChevronDown aria-hidden="true" className="h-3.5 w-3.5" /></summary>
             <div className="meeting-speakers-panel">
               <div className="flex flex-wrap items-end gap-2">
-                <label className="min-w-32 flex-1 text-[11px] font-semibold text-on-surface">Me channel
+                <label className="min-w-32 flex-1 text-(length:--ui-font-caption) font-semibold text-on-surface">Me channel
                   <input aria-label="Me speaker label" value={labels.me} maxLength={80} onChange={(event) => setLabelDrafts((current) => ({ ...current, me: event.target.value }))} className="meeting-field mt-1" />
                 </label>
-                <label className="min-w-32 flex-1 text-[11px] font-semibold text-on-surface">Them channel
+                <label className="min-w-32 flex-1 text-(length:--ui-font-caption) font-semibold text-on-surface">Them channel
                   <input aria-label="Them speaker label" value={labels.them} maxLength={80} onChange={(event) => setLabelDrafts((current) => ({ ...current, them: event.target.value }))} className="meeting-field mt-1" />
                 </label>
-                {<button type="button" onClick={() => void saveLabels()} className="meeting-header-action" data-tone="accent">Save labels</button>}
+                {<button type="button" onClick={() => void saveLabels()} className="ui-form-button meeting-header-action" data-tone="accent">Save labels</button>}
               </div>
               {remoteSpeakers.length > 0 && (
                 <div className="mt-3 border-t border-[var(--ui-hairline)] pt-3">
                   <h4 className="text-xs font-semibold text-on-surface">Remote speakers</h4>
-                  <p className="mt-1 text-[11px] text-on-surface-variant">Names apply only to this meeting. Uncertain passages remain {labels.them}.</p>
+                  <p className="mt-1 text-(length:--ui-font-caption) text-on-surface-variant">Names apply only to this meeting. Uncertain passages remain {labels.them}.</p>
                   <div className="mt-2 grid gap-2 sm:grid-cols-2">
                     {remoteSpeakers.map((speaker) => (
-                      <label key={speaker.speakerId} className="text-[11px] font-semibold text-on-surface">
+                      <label key={speaker.speakerId} className="text-(length:--ui-font-caption) font-semibold text-on-surface">
                         Speaker {speaker.speakerId}
                         <span className="mt-1 flex gap-2">
                           <input
@@ -286,7 +291,7 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
                             }))}
                             className="meeting-field min-w-0 flex-1"
                           />
-                          <button type="button" onClick={() => void saveRemoteSpeaker(speaker)} className="meeting-header-action" data-tone="accent">Save</button>
+                          <button type="button" onClick={() => void saveRemoteSpeaker(speaker)} className="ui-form-button meeting-header-action" data-tone="accent">Save</button>
                         </span>
                       </label>
                     ))}
@@ -296,7 +301,8 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
             </div>
           </details>
         </div>
-        {segments.length === 0 ? <p className="py-8 text-center text-xs text-on-surface-variant">No speech segments were saved.</p> : segments.map((segment) => <TranscriptRow key={segment.id} segment={segment} labels={labels} remoteSpeakers={remoteSpeakers} onPlay={detail.session.retainAudio && meetingAudio && segment.audioAvailable ? () => meetingAudio.playSegment({ speaker: segment.speaker, startMs: segment.startMs }) : undefined} playbackDisabled={captureBusy || meetingAudio?.status === 'loading' || meetingAudio?.status === 'buffering' || meetingAudio?.status === 'unavailable' || meetingAudio?.status === 'error'} />)}
+        {segments.length === 0 ? <p className="py-8 text-center text-xs text-on-surface-variant">{capture?.footer ?? 'No speech segments were saved.'}</p> : segments.map((segment) => <TranscriptRow key={segment.id} segment={segment} labels={labels} remoteSpeakers={remoteSpeakers} onPlay={detail.session.retainAudio && meetingAudio && segment.audioAvailable ? () => meetingAudio.playSegment({ speaker: segment.speaker, startMs: segment.startMs }) : undefined} playbackDisabled={captureBusy || meetingAudio?.status === 'loading' || meetingAudio?.status === 'buffering' || meetingAudio?.status === 'unavailable' || meetingAudio?.status === 'error'} />)}
+        {segments.length > 0 && capture && <p className="meeting-listening" role="status">{capture.footer}</p>}
       </section>
     </div>
   );

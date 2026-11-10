@@ -92,7 +92,7 @@ Use these before creating a feature-local control or surface.
 | Metadata | Time/source only; word count and duration stay out of transcript rows |
 | Copy | The non-interactive card surface copies its full transcript; Space does the same when focused |
 | Correct & Teach | Compact muted action on the newest entry only |
-| Secondary pages | Insights and Notetaker use one page header with a visible Back action that returns focus to Home navigation |
+| Secondary pages | Insights uses a page header with a Back action. Notetaker uses a title/capture header with sidebar navigation; see the Notetaker contract below |
 | Charts | Tooltip, plot, and axis are separate regions; each day is keyboard reachable, hover/focus/click share exact values, Escape or blur dismisses, tooltips never move the plot, and heatmaps expose date-range/month/weekday labels; Insights exposes daily values in assistive-technology tables, while other heatmaps retain the Daily values disclosure |
 
 ## Input contracts
@@ -378,3 +378,20 @@ and error text utilities) receive shared geometry/focus and retain their own
 paint at rest, on hover and when armed. Computed-style coverage exercises actual
 meeting deletion, mode deletion, knowledge actions and General setup/reset
 buttons in both appearances.
+
+### Notetaker redesign
+
+The Notetaker title and capture action share a 32px header. Its status area is
+57px high at standard widths and 75px at window widths of 900px or less,
+independent of permission/capture state. Idle markers are neutral; only live
+source flags use their semantic channel colors. The three source/access markers
+share an 8px dot. Check access has a 24px visual height and 28px pointer target.
+
+The list is 264px wide, or 208px in compact windows. Detail headings use
+16/22px; the page title uses 18/24px. Copy, Export, More, Speakers, the player,
+and transcript rules share the detail pane's right edge. Secondary actions use
+the shared FormControls appearance; feature styles own geometry only. Compact
+headers reserve a separate action row and give Copy a labelled 28px icon target.
+The player is 40px high. Transcript rows reserve 56px for time and 48px for the
+speaker, separated by 8px gaps, with 8px vertical insets. Play glyphs reveal on
+hover or keyboard focus in an absolute slot, keeping timestamps aligned.
