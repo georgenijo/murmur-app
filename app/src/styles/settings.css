@@ -561,8 +561,8 @@
 .ui-select-trigger:disabled, .ui-form-input:disabled, .ui-form-button:disabled { opacity: var(--ui-disabled-opacity); cursor: not-allowed; }
 .ui-form-button, .settings-workspace .settings-quiet-btn, .settings-workspace .settings-back-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px; height: var(--ui-control-standard); flex: none;
-  padding: 0 calc(12px - 1px); border: 1px solid var(--ui-control-border); border-radius: var(--ui-radius-control);
-  background: var(--ui-control-bg); color: var(--murmur-on-surface); box-shadow: var(--ui-control-shadow); font-size: 14px; line-height: 20px; font-weight: 500; border-color: var(--ui-control-border);
+  padding: 0 calc(12px - 1px); border-width: 1px; border-style: solid; border-radius: var(--ui-radius-control);
+  font-size: 14px; line-height: 20px; font-weight: 500;
 }
 .ui-form-button[data-size='sm'] { height: var(--ui-control-compact); padding-inline: calc(10px - 1px); }
 .ui-form-button[data-size='xs'] { height: var(--ui-control-xs); padding-inline: calc(8px - 1px); }
@@ -581,7 +581,9 @@
 /* Legacy panes use native action elements. Keep their behavior while giving
    bordered actions the same geometry as the shared Base UI button. */
 .settings-workspace button:is([class*='px-3'][class*='py-'], [class*='px-4'][class*='py-'], [class*='px-2'][class*='py-']):not([role]):not(.settings-nav-item):not(.settings-setting-row):not(.settings-card):not(.settings-hub-card > button):not(.settings-mode-row):not(.settings-segmented-btn):not(.settings-search-result):not([aria-expanded]) {
-  min-height: var(--ui-control-standard); height: var(--ui-control-standard); padding: 0 calc(12px - 1px); border-width: 1px; border-style: solid; border-radius: var(--ui-radius-control); font-size: 14px; line-height: 20px; font-weight: 500; border-color: var(--ui-control-border);
+  min-height: var(--ui-control-standard); height: var(--ui-control-standard); padding: 0 calc(12px - 1px); border-width: 1px; border-style: solid; border-radius: var(--ui-radius-control); font-size: 14px; line-height: 20px; font-weight: 500;
+  /* Paint only legacy controls; shared-family and danger colors have their own owner. */
+  &:not(:where(.ui-secondary-button, .ui-form-button, .settings-quiet-btn, .settings-back-btn, .text-error, [data-tone="danger"], [data-confirming="true"])) { border-color: var(--ui-control-border); }
 }
 .settings-workspace button:is([class*='px-3'][class*='py-'], [class*='px-4'][class*='py-'], [class*='px-2'][class*='py-']):not([role]):not(.settings-nav-item):not(.settings-setting-row):not(.settings-card):not(.settings-hub-card > button):not(.settings-mode-row):not(.settings-segmented-btn):not(.settings-search-result):not([aria-expanded]):active:not(:disabled) { transform: scale(var(--ui-button-press-scale)); }
 

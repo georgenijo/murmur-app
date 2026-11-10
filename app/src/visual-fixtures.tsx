@@ -49,6 +49,7 @@ import './styles.css';
 
 const query = new URLSearchParams(window.location.search);
 const requestedState = query.get('state') ?? 'idle';
+const homeFixture = query.get('proposal') ?? requestedState;
 const copyFixture = requestedState === 'settings-copy';
 const copyKnowledge = [
   { id: 'copy-command', payload: { kind: 'replacement_rule', source: 'insert greeting', replacement: 'Hello, team' }, enabled: true, scope: { kind: 'global' }, provenance: 'manual', voiceCommand: { commandType: 'text_replacement', allowClipboardRead: false }, createdAtMs: 1, updatedAtMs: 2, revision: 1 },
@@ -701,12 +702,13 @@ function VisualFixture() {
               </section>
             ) : (
               <HomeDashboard
-                historyEntries={historyEntries}
+                historyEntries={homeFixture === 'home-empty' ? [] : historyEntries}
                 onClearHistory={() => setHistoryEntries([])}
                 onDeleteHistoryEntries={(targets) => setHistoryEntries((current) => removeHistoryEntries(current, targets))}
                 onUpdateHistoryEntry={() => {}}
                 onToggleHistoryPinned={(entry) => setHistoryEntries((current) => toggleHistoryEntryPinned(current, entry).entries)}
                 onTranscribeFile={() => {}}
+                microphonePermission={homeFixture === 'home-mic-denied' ? 'denied' : 'granted'}
                 status={status}
                 initialized
                 recordingDuration={12}
@@ -717,11 +719,6 @@ function VisualFixture() {
                 onRecord={() => {}}
                 onStop={() => {}}
                 onOpenInsights={() => setDestination('insights')}
-                discovery={query.get('checklist') === 'hidden' ? undefined : {
-                  completed: ['meeting', 'correction'],
-                  onAction: () => {},
-                  onDismiss: () => {},
-                }}
               />
             )}
           </div>

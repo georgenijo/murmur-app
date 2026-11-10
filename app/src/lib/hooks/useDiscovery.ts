@@ -2,23 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import {
   DISCOVERY_CHANGED_EVENT,
-  dismissDiscoveryChecklist,
   dismissDiscoveryHint,
-  discoveryEvidence,
   enqueueDiscoveryHint,
   loadDiscoveryState,
-  reopenDiscoveryChecklist,
-  syncDiscoveryEvidence,
   type DiscoveryHintId,
 } from '../discovery';
 import type { HistoryEntry } from '../history';
-import { SITE_MODE_BROWSERS, type Settings } from '../settings';
-import { loadStats } from '../stats';
+import { SITE_MODE_BROWSERS } from '../settings';
 
 interface UseDiscoveryOptions {
   enabled: boolean;
-  settings: Settings;
-  statsVersion: number;
   historyEntries: HistoryEntry[];
 }
 
@@ -34,17 +27,13 @@ function isSecondTapExpired(value: unknown): boolean {
     && value.reason === 'second_tap_expired';
 }
 
-export function useDiscovery({ enabled, settings, statsVersion, historyEntries }: UseDiscoveryOptions) {
+export function useDiscovery({ enabled, historyEntries }: UseDiscoveryOptions) {
   const [state, setState] = useState(loadDiscoveryState);
   const newestHistoryId = historyEntries[historyEntries.length - 1]?.id ?? null;
   const newestHistoryIdRef = useRef(newestHistoryId);
   const browserIds = useMemo(
     () => new Set<string>(SITE_MODE_BROWSERS.map((browser) => browser.bundleId)),
     [],
-  );
-  const evidence = useMemo(
-    () => discoveryEvidence(settings, loadStats()),
-    [settings.appProfiles, statsVersion],
   );
 
   useEffect(() => {
@@ -53,10 +42,6 @@ export function useDiscovery({ enabled, settings, statsVersion, historyEntries }
     return () => window.removeEventListener(DISCOVERY_CHANGED_EVENT, refresh);
   }, []);
 
-  useEffect(() => {
-    if (!enabled) return;
-    setState(syncDiscoveryEvidence(evidence));
-  }, [enabled, evidence]);
 
   useEffect(() => {
     const previousId = newestHistoryIdRef.current;
@@ -94,9 +79,7 @@ export function useDiscovery({ enabled, settings, statsVersion, historyEntries }
     };
   }, [browserIds, enabled]);
 
-  const dismissChecklist = useCallback(() => setState(dismissDiscoveryChecklist()), []);
-  const reopenChecklist = useCallback(() => setState(reopenDiscoveryChecklist()), []);
   const dismissHint = useCallback((id: DiscoveryHintId) => setState(dismissDiscoveryHint(id)), []);
 
-  return { state, dismissChecklist, reopenChecklist, dismissHint };
+  return { state, dismissHint };
 }

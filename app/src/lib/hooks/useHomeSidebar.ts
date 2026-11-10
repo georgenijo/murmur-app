@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 
-// T3's max-md breakpoint and 16rem / 3rem geometry at the app's 16px root.
+// T3's max-md breakpoint and 13rem / 3rem geometry at the app's 16px root.
 export const HOME_SIDEBAR_QUERY = '(max-width: 767px)';
-export const HOME_SIDEBAR_MIN = 256;
+export const HOME_SIDEBAR_MIN = 208;
 export const HOME_SIDEBAR_MAX = 384;
 export const HOME_SIDEBAR_RAIL = 48;
 const clamp = (width: number) => Math.max(HOME_SIDEBAR_MIN, Math.min(HOME_SIDEBAR_MAX, width));

@@ -1,0 +1,98 @@
+/* One-class specificity beats the global element font reset, while consumer
+   geometry and explicit tones remain authoritative.
+   Danger consumers inherit shared geometry/focus, never neutral paint (including utilities). */
+[class]:where(
+  .ui-secondary-button,
+  .ui-dashboard-action[data-action="secondary"],
+  .ui-form-button:not([data-variant="primary"]):not([data-variant="ghost"]),
+  .meeting-header-action,
+  .settings-workspace .settings-quiet-btn,
+  .settings-workspace .settings-back-btn,
+  .settings-window-header button,
+  [aria-label="About Murmur"] .dialog-pill-btn,
+  .main-first-run .dialog-pill-btn:not([data-default-button]):not(.text-on-primary),
+  [aria-labelledby="update-dialog-title"] .dialog-pill-btn:not([data-default-button])
+) {
+  border-radius: var(--ui-radius-control);
+  font-family: var(--ui-font-sans);
+  font-weight: 500;
+}
+[class]:where(
+  .ui-secondary-button,
+  .ui-dashboard-action[data-action="secondary"],
+  .ui-form-button:not([data-variant="primary"]):not([data-variant="ghost"]),
+  .meeting-header-action,
+  .settings-workspace .settings-quiet-btn,
+  .settings-workspace .settings-back-btn,
+  .settings-window-header button,
+  [aria-label="About Murmur"] .dialog-pill-btn,
+  .main-first-run .dialog-pill-btn:not([data-default-button]):not(.text-on-primary),
+  [aria-labelledby="update-dialog-title"] .dialog-pill-btn:not([data-default-button])
+):not(:where(
+  [data-tone="danger"], [data-confirming="true"], [data-variant="destructive"],
+  .settings-modes-danger, .text-error, .text-on-error-container
+)) {
+  border: 1px solid var(--murmur-on-surface-variant);
+  background: var(--ui-control-bg);
+  color: var(--murmur-on-surface);
+  box-shadow: var(--ui-control-shadow);
+}
+[class]:where(
+  .ui-secondary-button,
+  .ui-dashboard-action[data-action="secondary"],
+  .ui-form-button:not([data-variant="primary"]):not([data-variant="ghost"]),
+  .meeting-header-action,
+  .settings-workspace .settings-quiet-btn,
+  .settings-workspace .settings-back-btn,
+  .settings-window-header button,
+  [aria-label="About Murmur"] .dialog-pill-btn,
+  .main-first-run .dialog-pill-btn:not([data-default-button]):not(.text-on-primary),
+  [aria-labelledby="update-dialog-title"] .dialog-pill-btn:not([data-default-button])
+):not(:where(
+  [data-tone="danger"], [data-confirming="true"], [data-variant="destructive"],
+  .settings-modes-danger, .text-error, .text-on-error-container
+)):hover:not(:disabled):not([aria-disabled="true"]) { background: var(--ui-dashboard-hover); }
+[class]:where(
+  .ui-secondary-button,
+  .ui-dashboard-action[data-action="secondary"],
+  .ui-form-button:not([data-variant="primary"]):not([data-variant="ghost"]),
+  .meeting-header-action,
+  .settings-workspace .settings-quiet-btn,
+  .settings-workspace .settings-back-btn,
+  .settings-window-header button,
+  [aria-label="About Murmur"] .dialog-pill-btn,
+  .main-first-run .dialog-pill-btn:not([data-default-button]):not(.text-on-primary),
+  [aria-labelledby="update-dialog-title"] .dialog-pill-btn:not([data-default-button])
+):not(:where(
+  [data-tone="danger"], [data-confirming="true"], [data-variant="destructive"],
+  .settings-modes-danger, .text-error, .text-on-error-container
+)):active:not(:disabled):not([aria-disabled="true"]) { background: var(--ui-dashboard-pressed); }
+[class]:where(
+  .ui-secondary-button,
+  .ui-dashboard-action[data-action="secondary"],
+  .ui-form-button:not([data-variant="primary"]):not([data-variant="ghost"]),
+  .meeting-header-action,
+  .settings-workspace .settings-quiet-btn,
+  .settings-workspace .settings-back-btn,
+  .settings-window-header button,
+  [aria-label="About Murmur"] .dialog-pill-btn,
+  .main-first-run .dialog-pill-btn:not([data-default-button]):not(.text-on-primary),
+  [aria-labelledby="update-dialog-title"] .dialog-pill-btn:not([data-default-button])
+):is(:disabled, [aria-disabled="true"]) {
+  opacity: var(--ui-disabled-opacity);
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+[class]:where(
+  .ui-secondary-button,
+  .ui-dashboard-action[data-action="secondary"],
+  .ui-form-button:not([data-variant="primary"]):not([data-variant="ghost"]),
+  .meeting-header-action,
+  .settings-workspace .settings-quiet-btn,
+  .settings-workspace .settings-back-btn,
+  .settings-window-header button,
+  [aria-label="About Murmur"] .dialog-pill-btn,
+  .main-first-run .dialog-pill-btn:not([data-default-button]):not(.text-on-primary),
+  [aria-labelledby="update-dialog-title"] .dialog-pill-btn:not([data-default-button])
+):focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 2px; }

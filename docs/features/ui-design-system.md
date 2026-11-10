@@ -83,12 +83,12 @@ Use these before creating a feature-local control or surface.
 |------|----------|
 | Native chrome | Traffic lights, Home sidebar toggle, status, updates, and Settings share one row. The toggle starts after the zoom-compensated 80pt controls inset and never acts as a drag region; recording actions live in the dashboard. Collapsed Home and narrow Settings leave the header background unpainted; expanded header paint aligns with its sidebar |
 | Status | Minimum 72px; state changes do not remove its container. Home hides the title-bar chip because its talk card already states the dictation status |
-| Record | Home owns one talk card, at most 56px tall, with a single 36px Start/Stop button, a plain-language state title, and one short hint; title and hint never truncate at 880×720 or 1120×820. Transcribing a file lives in the history `···` menu |
-| Sidebar | App owns Home collapsed state, resizing, and a 256–384px expanded width. Below 768 CSS px Home defaults to a 48px icon rail; explicit expansion is available. The header owns its toggle and restores focus there when a focused resize separator disappears. Sidebar heading retains the brand. Settings uses the separate #848 contract below: 240px / 56px rail. Home contains Home, Notetaker, and Insights; selection is a surface state with no shadow, a vertically centred expanded marker, and no collapsed marker |
+| Record | Home owns one talk card with a single talk-row action and a passive month strip, a plain-language state title, and one short hint; title and hint never truncate at 880×720 or 1120×820. Transcribing a file lives in the history `···` menu |
+| Sidebar | App owns Home collapsed state, resizing, and a 208–384px expanded width. Below 768 CSS px Home defaults to a 48px icon rail; explicit expansion is available. The header owns its toggle and restores focus there when a focused resize separator disappears. Sidebar heading retains the brand. Settings uses the separate #848 contract below: 240px / 56px rail. Home contains Home, Notetaker, and Insights; selection is a surface state with no shadow, a vertically centred expanded marker, and no collapsed marker |
 | Customize | The gear and `⌘,` open General; Customize is an unordered set of independent destinations, and detail pages expose Back to Customize and restore the originating row's focus |
 | Content | Home uses the whole window with 24px desktop and 16px compact insets. Settings uses the 896px shell documented below |
 | Toolbar | 28px controls; one line holding the page title, search, the Filter menu, and `···` at 880×720 and wider, wrapping rather than clipping when narrower; no resting entry count |
-| History | 5px list gap; cards use an 8px vertical inset |
+| History | Home uses 28px above and 8px below day labels; rows use an 8px vertical inset, with aligned hover fills and within-day hairlines |
 | Metadata | Time/source only; word count and duration stay out of transcript rows |
 | Copy | The non-interactive card surface copies its full transcript; Space does the same when focused |
 | Correct & Teach | Compact muted action on the newest entry only |
@@ -342,3 +342,39 @@ The behavior layer, complete 22-pane before/after audit, search/permission
 boundaries, UI-only persistence contract and verification map are documented in
 [Settings progressive disclosure](settings-progressive-disclosure.md). Geometry
 continues to use the #848 measurements above.
+
+## Approved Home and secondary controls
+
+`styles/buttons.css` owns secondary-button paint for DashboardAction secondary,
+FormControls outline, meeting header actions, Settings quiet/back/header actions,
+and secondary dialog/model actions. New consumers can use `.ui-secondary-button`.
+Use this family rather than defining a local border or fill. It has a 1px
+`--murmur-on-surface-variant` border, `--ui-control-bg` fill, on-surface text,
+8px control radius and `--ui-control-shadow`. Hover/pressed use dashboard
+hover/pressed tokens. Disabled applies 0.64 opacity once, retaining resting
+paint with no shadow, transform or hover feedback. Focus is a 2px primary
+outline with a 2px offset. Keep 28px compact and 32px standard geometry.
+
+Home uses one scroll range and a 208px initial/minimum expanded sidebar.
+Its footer is the one-line “Audio and transcripts stay local.”; the icon rail
+retains the full accessible note. The talk row owns Start/Stop dictation and
+recording tint; its neutral border and passive month summary do not react to
+recording or hover. Empty Home omits the usage strip. Only confirmed microphone
+denial replaces the talk row with an inline recovery action; unknown and
+not-determined permission still allow the native first-use prompt.
+
+Home fixture states are `idle`, `recording`, `processing`, `home-empty`,
+`home-mic-denied`, and `home-sidebar-collapsed`. Use an actual pointer hover on
+the second transcript row for the row-action state; talk-row hover is exercised
+separately. Fixtures run without capture-time CSS or DOM rewriting. Verify each
+appearance at 1100×780 and 840×620; the combined native build remains the final
+manual acceptance gate.
+
+The shared secondary defaults use `[class]:where(...)` with specificity 0,1,0, keeping the element-level
+font reset below the shared defaults. Geometry
+rules must not assign a neutral border color to shared or destructive consumers. Explicit danger consumers
+(`data-tone="danger"`, confirming/destructive variants, `.settings-modes-danger`
+and error text utilities) receive shared geometry/focus and retain their own
+paint at rest, on hover and when armed. Computed-style coverage exercises actual
+meeting deletion, mode deletion, knowledge actions and General setup/reset
+buttons in both appearances.

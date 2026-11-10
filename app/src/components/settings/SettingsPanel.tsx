@@ -217,9 +217,6 @@ interface SettingsPanelProps {
   status: DictationStatus;
   onResetStats: () => void;
   onRerunSetup: () => void;
-  onDiscoveryChecklistReopen?: () => void;
-  onPageOpened?: (page: string) => void;
-  onModeBound?: () => void;
   accessibilityGranted: boolean | null;
   onCheckForUpdate: () => Promise<void>;
   onDownloadUpdate: () => void;
@@ -428,9 +425,6 @@ export const SettingsPanel = memo(function SettingsPanel({
   status,
   onResetStats,
   onRerunSetup,
-  onDiscoveryChecklistReopen,
-  onPageOpened,
-  onModeBound,
   accessibilityGranted,
   onCheckForUpdate,
   onDownloadUpdate,
@@ -450,8 +444,6 @@ export const SettingsPanel = memo(function SettingsPanel({
   const backgroundRef = useRef<HTMLDivElement>(null);
   const editorOpenerRef = useRef<HTMLElement | null>(null);
   const [appliedRequestToken, setAppliedRequestToken] = useState(pageRequest?.token);
-  const pageRequestPending = pageRequest !== null && pageRequest.token !== appliedRequestToken;
-  const pageVisible = settingsSurfaceActive && activeRef?.current !== false;
   const [diagnosticsWindowError, setDiagnosticsWindowError] = useState<string | null>(null);
   const [calendarSettingsError, setCalendarSettingsError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
@@ -474,10 +466,6 @@ export const SettingsPanel = memo(function SettingsPanel({
   useLayoutEffect(() => {
     onLatencyViewChange?.(latencyView);
   }, [latencyView, onLatencyViewChange]);
-  useEffect(() => {
-    if (!pageVisible || pageRequestPending) return;
-    onPageOpened?.(activeCat);
-  }, [activeCat, pageVisible, pageRequestPending, onPageOpened]);
   const searchResults = useMemo(() => {
     const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
     const query = normalize(searchQuery);
@@ -1435,7 +1423,6 @@ export const SettingsPanel = memo(function SettingsPanel({
                 onChange={onUpdateSettings}
                 onAddAppProfile={openAppProfileForMode}
                 initialSelectedId={modeSelectionId}
-                onModeBound={onModeBound}
               />
             </div>
           </SettingsSection>
@@ -1563,15 +1550,9 @@ export const SettingsPanel = memo(function SettingsPanel({
               <span aria-hidden="true" className="text-on-surface-variant">›</span>
             </button>
             <div data-setting-target="setup" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <button type="button" onClick={onRerunSetup} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Run setup assistant…</button>
+              <button type="button" onClick={onRerunSetup} className="ui-secondary-button w-full px-3 py-2 text-[length:var(--ui-font-caption)] font-medium transition-colors">Run setup assistant…</button>
               <p className="text-xs text-on-surface-variant">Re-check permissions and models</p>
             </div>
-            {onDiscoveryChecklistReopen && (
-              <div data-setting-target="discovery-checklist" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-                <button type="button" onClick={onDiscoveryChecklistReopen} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Show feature checklist</button>
-                <p className="text-xs text-on-surface-variant">Show the getting-started list on Home</p>
-              </div>
-            )}
             <SettingsRow targetId="overlay-placement" title="Recording overlay" description="Shown only while recording"
               onReset={settings.overlayPlacement !== DEFAULT_SETTINGS.overlayPlacement ? () => onUpdateSettings({ overlayPlacement: DEFAULT_SETTINGS.overlayPlacement }) : undefined}
               control={<Select aria-label="Recording overlay placement" value={settings.overlayPlacement}
@@ -1584,7 +1565,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 offset={settings.overlayVerticalOffset}
                 onCommit={(overlayVerticalOffset) => onUpdateSettings({ overlayVerticalOffset })}
               />
-              <button type="button" data-setting-target="reset-statistics" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}>{confirmReset ? 'Confirm reset…' : 'Reset statistics…'}</button>
+              <button type="button" data-setting-target="reset-statistics" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'ui-secondary-button'}`}>{confirmReset ? 'Confirm reset…' : 'Reset statistics…'}</button>
             </SettingsDisclosure>
             {!INTERNAL_BENCHMARK_BUILD && <div data-setting-target="updates" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <UpdateIndicator

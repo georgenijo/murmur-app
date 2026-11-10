@@ -15,9 +15,9 @@ describe('CommandPalette', () => {
   const selectedRow = () => container.querySelector('[aria-selected="true"]');
   const input = () => container.querySelector('input') as HTMLInputElement;
 
-  async function render(isOpen = true, onOpened?: () => void) {
+  async function render(isOpen = true) {
     await act(async () => {
-      root.render(<CommandPalette isOpen={isOpen} onClose={onClose} commands={commands} onOpened={onOpened} />);
+      root.render(<CommandPalette isOpen={isOpen} onClose={onClose} commands={commands} />);
     });
   }
 
@@ -73,13 +73,6 @@ describe('CommandPalette', () => {
     expect(document.activeElement).toBe(input());
   });
 
-  it('records completion only after the palette opens', async () => {
-    const onOpened = vi.fn();
-    await render(false, onOpened);
-    expect(onOpened).not.toHaveBeenCalled();
-    await render(true, onOpened);
-    expect(onOpened).toHaveBeenCalledOnce();
-  });
 
   it('shows contiguous default groups and executes the visible keyboard selection', async () => {
     const meeting = vi.fn();

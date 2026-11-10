@@ -302,7 +302,7 @@ function HistoryPanelComponent({
   }, [query, filter, dateFilter, pinnedFilter, visible]);
 
   return (
-    <div className="flex flex-1 flex-col overflow-hidden">
+    <div className="flex flex-1 flex-col overflow-hidden" data-empty={entries.length === 0}>
       <div className="shrink-0">
         <div className="history-toolbar">
           {title && <h2 id={titleId} className="history-title">{title}</h2>}
@@ -310,6 +310,7 @@ function HistoryPanelComponent({
             data-testid="history-search-shell"
             data-expanded="true"
             className="history-search"
+            aria-disabled={entries.length === 0}
           >
             <span className="pointer-events-none absolute inset-y-0 left-0 z-10 grid w-7 place-items-center text-on-surface-variant">
               <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
@@ -320,6 +321,8 @@ function HistoryPanelComponent({
               id={searchInputId}
               ref={searchRef}
               type="search"
+              disabled={entries.length === 0}
+              aria-disabled={entries.length === 0}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               onKeyDown={(event) => {
@@ -347,6 +350,7 @@ function HistoryPanelComponent({
           </div>
 
           <HistoryFilterMenu
+            disabled={entries.length === 0}
             filter={filter}
             dateFilter={dateFilter}
             pinnedFilter={pinnedFilter}
@@ -356,7 +360,7 @@ function HistoryPanelComponent({
             onClear={clearFilters}
           />
 
-          <AnimatedDropdown open={exportOpen} onOpenChange={setExportOpen}>
+          <AnimatedDropdown disabled={entries.length === 0} open={exportOpen} onOpenChange={setExportOpen}>
             <AnimatedDropdownTrigger className="history-export-trigger" aria-label="More history actions">
               <span aria-hidden="true" className="text-base leading-none">···</span>
             </AnimatedDropdownTrigger>
@@ -442,10 +446,9 @@ function HistoryPanelComponent({
 
       <div className="history-list">
         {entries.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center text-on-surface-variant">
-            <span className="mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-surface-container-low text-xl">◌</span>
-            <p className="text-sm font-medium text-on-surface">No transcription history yet</p>
-            <p className="mt-1 text-xs">Your private, local transcripts will appear here.</p>
+          <div className="home-history-empty">
+            <h2>No dictations yet</h2>
+            <p>Your dictations will appear here.</p>
           </div>
         ) : visible.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-10 text-on-surface-variant">
@@ -520,6 +523,7 @@ function HistoryPanelComponent({
                 >
                   <SmartOverflowAction
                     id="copy"
+                    ariaLabel={copiedId === entry.id ? 'Copied transcript' : 'Copy transcript'}
                     priority="primary"
                     icon={<Copy />}
                     onSelect={() => void handleCopy(entry)}

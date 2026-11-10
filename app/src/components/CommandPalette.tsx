@@ -6,7 +6,6 @@ interface CommandPaletteProps {
   isOpen: boolean;
   onClose: () => void;
   commands: PaletteCommand[];
-  onOpened?: () => void;
 }
 
 /**
@@ -16,7 +15,7 @@ interface CommandPaletteProps {
  * callback — so it stays a pure navigation surface and the caller keeps one
  * source of truth for what each command means.
  */
-export function CommandPalette({ isOpen, onClose, commands, onOpened }: CommandPaletteProps) {
+export function CommandPalette({ isOpen, onClose, commands }: CommandPaletteProps) {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -29,7 +28,6 @@ export function CommandPalette({ isOpen, onClose, commands, onOpened }: CommandP
 
   useEffect(() => {
     if (!isOpen) return;
-    onOpened?.();
     previouslyFocusedRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     restoreFocusRef.current = true;
@@ -50,7 +48,7 @@ export function CommandPalette({ isOpen, onClose, commands, onOpened }: CommandP
       previouslyFocusedRef.current = null;
       restoreFocusRef.current = false;
     };
-  }, [isOpen, onOpened]);
+  }, [isOpen]);
 
   useEffect(() => setSelected(0), [query]);
 

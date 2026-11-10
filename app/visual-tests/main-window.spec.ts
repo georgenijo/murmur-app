@@ -211,8 +211,8 @@ test('native default keeps the sidebar and one-column dashboard geometry', async
     history.boundingBox(),
   ]);
 
-  expect(sidebarBox?.width).toBe(256);
-  expect(mainBox?.width).toBe(1120 - 256 - 32);
+  expect(sidebarBox?.width).toBe(208);
+  expect(mainBox?.width).toBe(1120 - 208 - 32);
   // The month summary lives in the composer's footer strip, not a separate card.
   expect(monthBox!.y).toBeGreaterThan(talkBox!.y);
   expect(monthBox!.y + monthBox!.height).toBeLessThanOrEqual(talkBox!.y + talkBox!.height);
@@ -225,7 +225,7 @@ test('native default keeps the sidebar and one-column dashboard geometry', async
   await expect(page.locator('.home-history .history-date-label')).toHaveCount(14);
 });
 
-test('each history day renders as one grouped surface', async ({ page }) => {
+test('history rows share within-day hairlines', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
   const today = page.locator('.home-history .transcript-card').filter({ hasText: 'compact transcript' });
   const next = page.locator('.home-history .transcript-card').nth(1);
@@ -242,7 +242,7 @@ for (const size of [{ width: 1120, height: 820 }, { width: 880, height: 720 }] a
     await page.goto('/visual-fixtures.html?state=idle&appearance=light');
 
     const talk = page.locator('.home-talk');
-    await expect(talk).toContainText('Click to start talking');
+    await expect(talk).toContainText('Click to start dictating');
     // The prompt row stays one compact line; the footer strip adds one more.
     const promptBox = await page.getByTestId('home-record-button').boundingBox();
     expect(promptBox?.height).toBeLessThanOrEqual(56);
@@ -965,32 +965,16 @@ test('dashboard actions keep hover, focus, active, and disabled states in an imp
 test('the compact 720x560 home keeps actions and history reachable', async ({ page }) => {
   await page.setViewportSize({ width: 720, height: 560 });
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
-  await expect(page.getByRole('button', { name: 'Click to start talking' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start dictation', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'More history actions' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Your dictations' })).toBeVisible();
-  await expect(page.locator('.discovery-checklist-items li')).toHaveCount(5);
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-home-compact-720x560.png');
 });
 
-test('discovery checklist and contextual hint remain readable together', async ({ page }) => {
+test('contextual hint remains readable on Home', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=discovery-hint&appearance=light');
-  await expect(page.getByRole('heading', { name: 'Try what is ready when you are' })).toBeVisible();
   await expect(page.getByText('Use a mode for this site', { exact: true })).toBeVisible();
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-discovery-hint.png');
-});
-
-test('checklist feature names and pitches stay readable beside the Insights rail', async ({ page }) => {
-  for (const [width, height] of [[1120, 820], [880, 720], [720, 560]]) {
-    await page.setViewportSize({ width, height });
-    await page.goto('/visual-fixtures.html?state=idle&appearance=light');
-    const labels = page.locator('.discovery-checklist-items strong, .discovery-checklist-items small');
-    await expect(labels).toHaveCount(10);
-    const clipped = await labels.evaluateAll((elements) => elements
-      .filter((element) => element.scrollWidth > element.clientWidth + 1
-        || element.scrollHeight > element.clientHeight + 1)
-      .map((element) => element.textContent));
-    expect(clipped, `Checklist text at ${width}x${height}`).toEqual([]);
-  }
 });
 
 test('the compact 720x560 Insights view stacks analytics without horizontal clipping', async ({ page }) => {
@@ -1059,42 +1043,6 @@ for (const { appearance, width, height, label } of surfaceCases([{ width: 720, h
       await expect(chart.getByRole('table')).toBeVisible();
       await expect(chart.locator('tbody tr')).toHaveCount(56);
       await expect(chart.locator('tbody')).toContainText('760');
-    });
-  });
-}
-
-for (const { appearance, width, height, label } of surfaceCases()) {
-  test.describe(`Home setup ${label}`, () => {
-    test.use({ viewport: { width, height }, colorScheme: appearance });
-    test('Source-owned checklist copy fits beside pointer actions', async ({ page }) => {
-      await page.goto(`/visual-fixtures.html?state=idle&appearance=${appearance}`);
-      const checklist = page.locator('.discovery-checklist');
-      await expect(checklist).toBeVisible();
-      await expect(checklist.locator('li')).toHaveCount(5);
-      const labels = checklist.locator('strong, small');
-      for (const label of await labels.all()) {
-        const fit = await label.evaluate(element => ({
-          overflow: element.scrollWidth - element.clientWidth,
-          ellipsis: getComputedStyle(element).textOverflow,
-          before: getComputedStyle(element, '::before').content,
-          after: getComputedStyle(element, '::after').content,
-        }));
-        expect(fit.overflow).toBeLessThanOrEqual(1);
-        expect(fit.ellipsis).not.toBe('ellipsis');
-        expect(['none', 'normal']).toContain(fit.before);
-        expect(['none', 'normal']).toContain(fit.after);
-      }
-      for (const row of await checklist.locator('li').all()) {
-        const action = row.getByRole('button');
-        await action.scrollIntoViewIfNeeded();
-        const copyBounds = await row.locator('small').boundingBox();
-        const actionBounds = await action.boundingBox();
-        expect(copyBounds!.x + copyBounds!.width).toBeLessThanOrEqual(actionBounds!.x);
-        await expect(action).toBeInViewport();
-      }
-      await checklist.getByRole('button', { name: 'Dismiss Get more from Murmur' }).click();
-      // The fixture's dismiss callback is a no-op; component coverage verifies
-      // callback delivery, while this check establishes the pointer target fits.
     });
   });
 }

@@ -1,3 +1,4 @@
+import type { MicPermissionStatus } from '../../lib/dictation';
 import { defaultButtonKeyDown } from '../../lib/defaultButton';
 import { useMemo } from 'react';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
@@ -9,8 +10,6 @@ import { loadStats } from '../../lib/stats';
 import { HistoryPanel } from '../history/HistoryPanel';
 import { HomeRecordingBar } from './HomeRecordingBar';
 import { HomeInsightsRail } from './HomeInsightsRail';
-import { DiscoveryChecklist } from './DiscoveryChecklist';
-import type { ChecklistItemId } from '../../lib/discovery';
 
 interface HomeDashboardProps {
   historyEntries: HistoryEntry[];
@@ -23,6 +22,7 @@ interface HomeDashboardProps {
   onTeachLatestHandled?: () => void;
   onTranscribeFile: () => void;
   status: DictationStatus;
+  microphonePermission?: MicPermissionStatus;
   initialized: boolean;
   recordingDuration: number;
   audioLevel: number;
@@ -34,11 +34,6 @@ interface HomeDashboardProps {
   onRecord: () => void;
   onStop: () => void;
   onOpenInsights: () => void;
-  discovery?: {
-    completed: readonly ChecklistItemId[];
-    onAction: (id: ChecklistItemId) => void;
-    onDismiss: () => void;
-  };
 }
 
 export function HomeDashboard({
@@ -53,6 +48,7 @@ export function HomeDashboard({
   onTranscribeFile,
   status,
   initialized,
+  microphonePermission,
   recordingDuration,
   audioLevel,
   smartDestinationStatus = null,
@@ -63,7 +59,6 @@ export function HomeDashboard({
   onRecord,
   onStop,
   onOpenInsights,
-  discovery,
 }: HomeDashboardProps) {
   const stats = useMemo(() => loadStats(), [statsVersion]);
 
@@ -74,6 +69,7 @@ export function HomeDashboard({
           <HomeRecordingBar
             status={status}
             initialized={initialized}
+            microphonePermission={microphonePermission}
             recordingDuration={recordingDuration}
             audioLevel={audioLevel}
             smartDestinationStatus={smartDestinationStatus}
@@ -83,17 +79,9 @@ export function HomeDashboard({
             meetingPhase={meetings.status.phase}
             onRecord={onRecord}
             onStop={onStop}
-            footer={<HomeInsightsRail stats={stats} onOpenInsights={onOpenInsights} />}
+            footer={historyEntries.length > 0 ? <HomeInsightsRail stats={stats} onOpenInsights={onOpenInsights} /> : undefined}
           />
         </div>
-
-        {discovery && (
-          <DiscoveryChecklist
-            completed={discovery.completed}
-            onAction={discovery.onAction}
-            onDismiss={discovery.onDismiss}
-          />
-        )}
 
         <section className="home-history" aria-labelledby="recent-dictations-title">
           <HistoryPanel

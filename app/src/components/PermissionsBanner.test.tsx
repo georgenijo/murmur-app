@@ -47,6 +47,17 @@ describe('PermissionsBanner', () => {
     vi.restoreAllMocks();
   });
 
+  it('lets Home own mic-only denial while retaining other permission warnings', async () => {
+    mocks.invoke.mockImplementation(async (command: string) => command === 'check_accessibility_permission' ? true : 'granted');
+    await act(async () => root.render(<PermissionsBanner microphoneInHome />));
+    await settle();
+    expect(container.querySelector('[aria-label="Permission warning"]')).toBeNull();
+    mocks.invoke.mockImplementation(async (command: string) => command === 'check_accessibility_permission' ? false : 'granted');
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    await settle();
+    expect(container.querySelector('[aria-label="Permission warning"]')).not.toBeNull();
+  });
+
   it('keeps recovery details open when reset fails and permissions refresh', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     mocks.resetMicrophonePermission.mockRejectedValueOnce(new Error('reset failed'));

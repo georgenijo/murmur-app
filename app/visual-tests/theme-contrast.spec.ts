@@ -14,7 +14,7 @@ for (const theme of ['sonic', 'flat-dark', 'open-vsx-low-contrast', 'open-vsx-hi
     await expect(dayStart).toHaveAttribute('data-day-start', 'true');
     await expect(row).toHaveAttribute('data-day-start', 'false');
     const dayEnd = page.locator('.home-history .transcript-card[data-day-end="true"]').first();
-    const sample = (card: typeof row, edge: 'top' | 'bottom') => card.evaluate((element, side) => {
+    const sample = (card: typeof row) => card.evaluate((element) => {
       const css = getComputedStyle(element);
       const canvas = document.createElement('canvas');
       canvas.width = canvas.height = 1;
@@ -43,25 +43,33 @@ for (const theme of ['sonic', 'flat-dark', 'open-vsx-low-contrast', 'open-vsx-hi
         return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
       };
       const background = getComputedStyle(document.documentElement).getPropertyValue('--murmur-background');
-      const border = side === 'top' ? css.borderTopColor : css.borderBottomColor;
+      const divider = getComputedStyle(element, '::before');
       return {
         surfaceContrast: contrast(paint(background), paint(background, css.backgroundColor)),
-        borderContrast: contrast(paint(css.backgroundColor), paint(css.backgroundColor, border)),
-        radius: parseFloat(side === 'top' ? css.borderTopLeftRadius : css.borderBottomLeftRadius),
+        dividerContrast: contrast(paint(background), paint(background, divider.backgroundColor)),
+        borderWidth: parseFloat(css.borderTopWidth),
+        radius: parseFloat(css.borderTopLeftRadius),
         shadow: css.boxShadow,
       };
-    }, edge);
-    const top = await sample(dayStart, 'top');
-    const divider = await sample(row, 'top');
-    const bottom = await sample(dayEnd, 'bottom');
-    // The day surface stands off the page with a visible rounded outline; Home is flat, so no shadow.
-    expect(top.surfaceContrast).toBeGreaterThan(1.2);
-    expect(top.borderContrast).toBeGreaterThan(1.25);
+    });
+    const top = await sample(dayStart);
+    const divider = await sample(row);
+    const bottom = await sample(dayEnd);
+    // Space separates days; resting rows stay on the page without an outer border.
+    expect(top.surfaceContrast).toBe(1);
+    expect(top.borderWidth).toBe(0);
     expect(top.radius).toBeGreaterThanOrEqual(8);
     expect(bottom.radius).toBeGreaterThanOrEqual(8);
     expect(bottom.shadow).toBe('none');
     // Rows inside a day stay separated by a hairline divider.
-    expect(divider.borderContrast).toBeGreaterThan(1.1);
+    expect(divider.dividerContrast).toBeGreaterThan(1.1);
+    const labels = page.locator('.history-date-label');
+    const first = await labels.first().boundingBox();
+    const firstBody = await dayStart.locator('.transcript-body').boundingBox();
+    expect(firstBody!.y - first!.y - first!.height).toBe(8);
+    const later = await labels.nth(1).boundingBox();
+    const previousBody = await dayEnd.locator('.transcript-body').boundingBox();
+    expect(later!.y - previousBody!.y - previousBody!.height).toBe(28);
     const recording = page.locator('.home-talk');
     await expect(recording).toContainText('Listening');
     expect((await page.getByTestId('home-record-button').boundingBox())!.height).toBeLessThanOrEqual(56);
