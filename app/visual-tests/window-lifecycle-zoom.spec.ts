@@ -77,7 +77,7 @@ for (const appearance of ['light', 'dark']) {
   for (const workspace of ['Home expanded', 'Home collapsed', 'Settings', 'Diagnostics']) {
     for (const zoom of [0.5, 1, 1.1, 1.2]) {
       test(`${workspace} native chrome clearance at ${zoom} zoom (${appearance})`, async ({ page }) => {
-        await page.goto(`/visual-fixtures.html?state=${workspace.startsWith('Home') ? 'idle' : 'settings'}&appearance=${appearance}&checklist=hidden`);
+        await page.goto(`/visual-fixtures.html?state=${workspace.startsWith('Home') ? 'idle' : 'settings'}&appearance=${appearance}`);
         await expect(page.locator('[data-visual-ready="true"]')).toBeVisible();
         if (workspace === 'Diagnostics') {
           await page.evaluate(async () => {

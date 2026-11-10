@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { expectNativeChromeClearance } from './native-chrome';
 
-const fixture = (appearance = 'light', state = 'idle') => `/visual-fixtures.html?state=${state}&appearance=${appearance}&checklist=hidden`;
+const fixture = (appearance = 'light', state = 'idle') => `/visual-fixtures.html?state=${state}&appearance=${appearance}`;
 
 test.beforeEach(async ({ page }) => {
   await page.clock.setFixedTime(new Date('2026-09-04T20:00:00Z'));
@@ -14,7 +14,7 @@ for (const appearance of ['light', 'dark']) {
       await page.goto(fixture(appearance, state === 'collapsed' ? 'home-sidebar-collapsed' : 'idle'));
       const sidebar = page.getByRole('complementary', { name: 'Murmur navigation' });
       const collapsed = state !== 'expanded';
-      await expect(sidebar).toHaveCSS('width', collapsed ? '48px' : '256px');
+      await expect(sidebar).toHaveCSS('width', collapsed ? '48px' : '208px');
       await expect(sidebar).toHaveAttribute('data-collapsed', String(collapsed));
       await expect(page.locator('.ui-window-header').getByRole('button', { name: collapsed ? 'Expand sidebar' : 'Collapse sidebar' })).toHaveAttribute('aria-expanded', String(!collapsed));
       await expectNativeChromeClearance(page, page.locator('.ui-window-header'), 1, !collapsed);
@@ -55,7 +55,7 @@ test('T3 breakpoint collapses Home only and restores width and desktop preferenc
   const resize = page.getByRole('separator', { name: 'Sidebar width' });
   await resize.focus();
   await page.keyboard.press('ArrowRight');
-  await expect(sidebar).toHaveCSS('width', '272px');
+  await expect(sidebar).toHaveCSS('width', '224px');
   await page.getByRole('button', { name: 'Insights', exact: true }).click();
   const insights = page.getByRole('navigation', { name: 'Main destinations' }).getByRole('button', { name: 'Insights', exact: true });
   await insights.focus();
@@ -68,9 +68,9 @@ test('T3 breakpoint collapses Home only and restores width and desktop preferenc
   await expect(page.locator('[data-base-ui-portal] [data-current]')).toHaveText('Insights');
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Expand sidebar' }).click();
-  await expect(sidebar).toHaveCSS('width', '272px');
+  await expect(sidebar).toHaveCSS('width', '224px');
   await page.setViewportSize({ width: 768, height: 620 });
-  await expect(sidebar).toHaveCSS('width', '272px');
+  await expect(sidebar).toHaveCSS('width', '224px');
   await page.getByRole('button', { name: 'Collapse sidebar' }).click();
   await page.setViewportSize({ width: 720, height: 560 });
   await page.setViewportSize({ width: 840, height: 620 });
@@ -106,12 +106,12 @@ test('keyboard toggle, bounded separator and collapsed navigation keep accessibl
   await expect(page.locator('[data-base-ui-portal] [data-current]')).toHaveText('Insights');
   await page.getByRole('button', { name: 'Expand sidebar' }).focus();
   await page.keyboard.press('Space');
-  await expect(sidebar).toHaveCSS('width', '256px');
+  await expect(sidebar).toHaveCSS('width', '208px');
   await separator.focus();
   await expect(separator).toHaveAttribute('aria-orientation', 'vertical');
-  await expect(separator).toHaveAttribute('aria-valuemin', '256');
+  await expect(separator).toHaveAttribute('aria-valuemin', '208');
   await expect(separator).toHaveAttribute('aria-valuemax', '384');
-  for (const [key, width] of [['End', 384], ['ArrowRight', 384], ['Home', 256], ['ArrowLeft', 256], ['ArrowRight', 272], ['Shift+ArrowRight', 304], ['ArrowLeft', 288]] as const) {
+  for (const [key, width] of [['End', 384], ['ArrowRight', 384], ['Home', 208], ['ArrowLeft', 208], ['ArrowRight', 224], ['Shift+ArrowRight', 256], ['ArrowLeft', 240]] as const) {
     await page.keyboard.press(key);
     await expect(separator).toHaveAttribute('aria-valuenow', String(width));
     await expect(sidebar).toHaveCSS('width', `${width}px`);
@@ -134,11 +134,11 @@ test('pointer resizing clamps, commits, and rolls back on cancellation, lost cap
   await page.mouse.move(1000, 130);
   await expect(sidebar).toHaveCSS('width', '384px');
   await page.mouse.move(0, 130);
-  await expect(sidebar).toHaveCSS('width', '256px');
+  await expect(sidebar).toHaveCSS('width', '208px');
   await page.mouse.move(300, 130);
   await page.mouse.up();
   const committed = await sidebar.evaluate((el) => el.getBoundingClientRect().width);
-  expect(committed).toBeGreaterThan(256);
+  expect(committed).toBeGreaterThan(208);
   await page.getByRole('button', { name: 'Collapse sidebar' }).click();
   await page.getByRole('button', { name: 'Expand sidebar' }).click();
   await expect(sidebar).toHaveCSS('width', `${committed}px`);
@@ -161,7 +161,7 @@ test('default, minimum and small browser windows measure the real Home resize bo
     await page.setViewportSize({ width, height: width === 720 ? 560 : 620 });
     await page.goto(fixture());
     const sidebar = page.locator('.home-sidebar');
-    await expect(sidebar).toHaveCSS('width', width <= 767 ? '48px' : '256px');
+    await expect(sidebar).toHaveCSS('width', width <= 767 ? '48px' : '208px');
     if (width <= 767) await page.getByRole('button', { name: 'Expand sidebar' }).click();
     const separator = page.getByRole('separator', { name: 'Sidebar width' });
     await expect(separator).toHaveCSS('width', '8px');
@@ -169,7 +169,7 @@ test('default, minimum and small browser windows measure the real Home resize bo
     await expect(page.getByRole('button', { name: 'Collapse sidebar' })).toHaveCSS('width', '32px');
     await expect(sidebar.locator('.home-nav-icon').first()).toHaveCSS('width', '16px');
     await separator.focus();
-    for (const [key, expected] of [['End', 384], ['Home', 256]] as const) {
+    for (const [key, expected] of [['End', 384], ['Home', 208]] as const) {
       await page.keyboard.press(key);
       await expect(sidebar).toHaveCSS('width', `${expected}px`);
       const bounds = await page.locator('.main-dashboard-workspace').boundingBox();
@@ -202,7 +202,7 @@ test('a delayed initial narrow media notification preserves explicit expansion a
   await page.keyboard.press('End');
   await expect(sidebar).toHaveCSS('width', '384px');
   await page.keyboard.press('Home');
-  await expect(sidebar).toHaveCSS('width', '256px');
+  await expect(sidebar).toHaveCSS('width', '208px');
   // Deliver the query's initial notification after the user's expansion and
   // keyboard resize, exactly between the width check and workspace measurement.
   await page.evaluate(() => {
@@ -213,10 +213,10 @@ test('a delayed initial narrow media notification preserves explicit expansion a
     }
   });
   await expect(sidebar).toHaveAttribute('data-collapsed', 'false');
-  await expect(sidebar).toHaveCSS('width', '256px');
-  await expect(separator).toHaveAttribute('aria-valuenow', '256');
+  await expect(sidebar).toHaveCSS('width', '208px');
+  await expect(separator).toHaveAttribute('aria-valuenow', '208');
   const bounds = (await page.locator('.main-dashboard-workspace').boundingBox())!;
-  expect(bounds.x).toBe(256);
-  expect(bounds.width).toBe(464);
+  expect(bounds.x).toBe(208);
+  expect(bounds.width).toBe(512);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(720);
 });
