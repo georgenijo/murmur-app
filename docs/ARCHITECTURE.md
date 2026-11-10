@@ -365,8 +365,10 @@ trait TranscriptionBackend: Send + Sync {
 
 All backends take one authoritative final-after-stop pass; delivery happens exactly once.
 After confirmed delivery, Core ML shadow diagnostics compare VAD-filtered prefixes
-and optionally repeat the final recipe under immediate backend admission. This
-never supplies delivered text; only content-free evidence amends the completed
+after Idle and the captured delivery timestamp. Repeat decode is skipped with
+a bounded foreground-latency reason because the shared decoder is non-preemptible.
+Shadow work has no shared-backend capability and never supplies delivered text;
+only content-free evidence amends the completed
 run UUID. See [performance diagnostics](features/performance-diagnostics.md#early-final-shadow-measurement-1081-phase-3). Core ML and Whisper Tiny/Base also emit display-only partials. Whisper partials own a separate cancellable CPU context for the recording, leaving the final Metal context and runtime lock untouched.
 
 ### `keyboard.rs` — Keyboard Detection

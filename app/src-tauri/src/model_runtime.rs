@@ -1223,6 +1223,102 @@ mod tests {
             .is_model_loaded("fake-second"));
     }
 
+    // Exercise the production shadow measurement worker while each real
+    // foreground admission path acquires the shared fake backend. Test both
+    // an already-busy backend and a request arriving mid-shadow VAD work.
+    fn shadow_does_not_delay_foreground(reason: Option<PreparationReason>) {
+        use crate::shadow_measurement::{DeterminismStatus, PostDeliveryBoundary, ShadowAudio};
+        for initially_busy in [false, true] {
+            let manager = Arc::new(fake_manager(
+                Arc::new(AtomicUsize::new(0)),
+                Arc::new(AtomicUsize::new(0)),
+                None,
+            ));
+            manager
+                .prepare(None, "fake-translation", PreparationReason::Recording)
+                .unwrap();
+            let busy = initially_busy.then(|| manager.inner.lock_or_recover());
+            let (started_tx, started_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let now = std::time::Instant::now();
+            let shadow = thread::spawn(move || {
+                ShadowAudio {
+                    original: vec![0.0; 10_000],
+                    filtered: vec![0.0; 1_000],
+                    bounds: Some(vec![(0, 1_000)]),
+                    stamp: None,
+                    boundary: PostDeliveryBoundary {
+                        idle_observed_at: now,
+                        delivered_at: now,
+                    },
+                }
+                .measure(true, true, |_, _, _| {
+                    started_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    Some(true)
+                })
+            });
+            let started = started_rx.recv_timeout(Duration::from_secs(2));
+            drop(busy);
+            let (foreground_tx, foreground_rx) = std::sync::mpsc::channel();
+            let foreground = thread::spawn(move || {
+                let admitted = if let Some(reason) = reason {
+                    manager
+                        .with_ready_backend(None, "fake-translation", reason, |_| Ok(()))
+                        .is_ok()
+                } else {
+                    matches!(
+                        manager.try_with_ready_backend("fake-translation", || true, |_| Ok(())),
+                        Ok(Some(()))
+                    )
+                };
+                foreground_tx.send(admitted).unwrap();
+            });
+            let admitted = foreground_rx.recv_timeout(Duration::from_secs(2));
+            // Release and join even on failure, so regressions cannot hang tests.
+            let _ = release_tx.send(());
+            let result = shadow.join().unwrap();
+            foreground.join().unwrap();
+            assert!(
+                started.is_ok(),
+                "shadow must not acquire an existing foreground owner's backend"
+            );
+            assert!(
+                admitted.unwrap(),
+                "foreground must enter before shadow work is released"
+            );
+            assert_eq!(
+                result.determinism,
+                DeterminismStatus::SkippedForegroundLatencyRisk
+            );
+            assert_eq!(result.decode_matches, None);
+        }
+    }
+    #[test]
+    fn shadow_cannot_delay_new_dictation() {
+        shadow_does_not_delay_foreground(Some(PreparationReason::Pipeline));
+    }
+    #[test]
+    fn shadow_cannot_delay_file_transcription() {
+        shadow_does_not_delay_foreground(Some(PreparationReason::FileTranscription));
+    }
+    #[test]
+    fn shadow_cannot_delay_meeting_transcription() {
+        shadow_does_not_delay_foreground(Some(PreparationReason::Meeting));
+    }
+    #[test]
+    fn shadow_cannot_delay_recording_preparation() {
+        shadow_does_not_delay_foreground(Some(PreparationReason::Recording));
+    }
+    #[test]
+    fn shadow_cannot_delay_startup_preparation() {
+        shadow_does_not_delay_foreground(Some(PreparationReason::StartupWarm));
+    }
+    #[test]
+    fn shadow_cannot_delay_live_preview() {
+        shadow_does_not_delay_foreground(None);
+    }
+
     #[test]
     fn preview_never_loads_or_switches_models() {
         let manager = fake_manager(

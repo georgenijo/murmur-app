@@ -68,6 +68,7 @@ pub(crate) enum DeterminismStatus {
     DecodeFailed,
     UnsupportedBackend,
     NotAttempted,
+    SkippedForegroundLatencyRisk,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -112,6 +113,77 @@ impl Default for ShadowMeasurementV1 {
 /// Launch with MURMUR_SHADOW_DETERMINISM=1 to opt in. Default is strictly off.
 pub(crate) fn determinism_enabled(value: Option<&str>) -> bool {
     value == Some("1")
+}
+
+/// The shared final decoder cannot be preempted. Even an idle try-lock can
+/// delay a foreground request arriving just afterwards, so never admit a
+/// diagnostic repeat on this runtime. This policy needs no backend capability.
+pub(crate) fn repeat_status(enabled: bool, supported: bool) -> DeterminismStatus {
+    if !supported {
+        DeterminismStatus::UnsupportedBackend
+    } else if !enabled {
+        DeterminismStatus::Disabled
+    } else {
+        DeterminismStatus::SkippedForegroundLatencyRisk
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PostDeliveryBoundary {
+    pub idle_observed_at: Instant,
+    pub delivered_at: Instant,
+}
+impl PostDeliveryBoundary {
+    fn assert_precedes_setup(self, setup_at: Instant) {
+        debug_assert!(self.idle_observed_at <= self.delivered_at);
+        debug_assert!(self.delivered_at <= setup_at);
+    }
+}
+
+/// Already-owned PCM moves here after delivery timing and Idle; no copy and
+/// no text/hash is needed. The worker has only a VAD capability, never a shared
+/// model runtime or foreground-owner lock.
+pub(crate) struct ShadowAudio {
+    pub original: Vec<f32>,
+    pub filtered: Vec<f32>,
+    pub bounds: Option<Vec<(usize, usize)>>,
+    pub stamp: Option<StopStamp>,
+    pub boundary: PostDeliveryBoundary,
+}
+impl ShadowAudio {
+    pub fn measure(
+        self,
+        enabled: bool,
+        supported: bool,
+        mut filter: impl FnMut(&[f32], usize, &[f32]) -> Option<bool>,
+    ) -> ShadowMeasurementV1 {
+        self.boundary.assert_precedes_setup(Instant::now());
+        let mut result = ShadowMeasurementV1 {
+            press_sample: self.stamp.and_then(|s| s.press.sample).map(|s| s as u64),
+            preview_held_backend_at_press: self.stamp.map(|s| s.press.preview_held_backend),
+            determinism: repeat_status(enabled, supported),
+            ..Default::default()
+        };
+        if supported {
+            if let Some(bounds) = self.bounds {
+                result.trailing_silence_before_stop_ms =
+                    trailing_silence_ms(&bounds, self.original.len());
+                let press = self
+                    .stamp
+                    .and_then(|s| s.press.sample)
+                    .filter(|at| *at <= self.original.len());
+                result.trailing_silence_before_press_ms =
+                    press.and_then(|at| trailing_silence_ms(&bounds, at));
+                let pause = last_pause(&bounds, self.original.len());
+                result.pause_sample = pause.map(|at| at as u64);
+                result.press_input_matches =
+                    press.and_then(|at| filter(&self.original, at, &self.filtered));
+                result.pause_input_matches =
+                    pause.and_then(|at| filter(&self.original, at, &self.filtered));
+            }
+        }
+        result
+    }
 }
 
 /// Bounds are the same padded, clamped segments used to assemble final PCM.
@@ -263,6 +335,55 @@ mod tests {
         assert_eq!(
             prefix_matches_with(&samples, 3, &[], |_| Err("unavailable".into())),
             None
+        );
+    }
+
+    #[test]
+    fn shadow_setup_follows_delivery_and_idle_and_receives_moved_buffers() {
+        let original = vec![1.0; 10_000];
+        let filtered = vec![1.0; 1_000];
+        let original_ptr = original.as_ptr() as usize;
+        let filtered_ptr = filtered.as_ptr() as usize;
+        let idle_observed_at = Instant::now();
+        let delivered_at = Instant::now();
+        let result = std::thread::spawn(move || {
+            ShadowAudio {
+                original,
+                filtered,
+                bounds: Some(vec![(0, 1_000)]),
+                stamp: None,
+                boundary: PostDeliveryBoundary {
+                    idle_observed_at,
+                    delivered_at,
+                },
+            }
+            .measure(true, true, |original, _, filtered| {
+                let setup_at = Instant::now();
+                assert!(idle_observed_at <= delivered_at && delivered_at <= setup_at);
+                assert_eq!(
+                    original.as_ptr() as usize,
+                    original_ptr,
+                    "original PCM must move, not copy"
+                );
+                assert_eq!(
+                    filtered.as_ptr() as usize,
+                    filtered_ptr,
+                    "filtered PCM must move, not copy"
+                );
+                Some(true)
+            })
+        })
+        .join()
+        .unwrap();
+        assert_eq!(
+            result.determinism,
+            DeterminismStatus::SkippedForegroundLatencyRisk
+        );
+        assert_eq!(result.decode_matches, None);
+        assert_eq!(repeat_status(false, true), DeterminismStatus::Disabled);
+        assert_eq!(
+            repeat_status(true, false),
+            DeterminismStatus::UnsupportedBackend
         );
     }
 

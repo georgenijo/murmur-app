@@ -481,3 +481,14 @@ describe('shadow diagnostics contract', () => {
     expect(isPerformanceRunV1({ ...makeRun(), shadow: { ...shadow, determinism: 'compared', decodeMatches: true } })).toBe(true);
   });
 });
+
+it('accepts the bounded repeat skip reason and rejects a fabricated comparison', () => {
+  const shadow = {
+    schemaVersion: 1, pressSample: null, pauseSample: null,
+    trailingSilenceBeforePressMs: null, trailingSilenceBeforeStopMs: null,
+    pressInputMatches: false, pauseInputMatches: null, previewHeldBackendAtPress: false,
+    determinism: 'skippedForegroundLatencyRisk', decodeMatches: null,
+  };
+  expect(isPerformanceRunV1({ ...makeRun(), shadow })).toBe(true);
+  expect(isPerformanceRunV1({ ...makeRun(), shadow: { ...shadow, decodeMatches: false } })).toBe(false);
+});

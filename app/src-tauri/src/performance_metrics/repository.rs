@@ -7,7 +7,7 @@ use std::thread;
 use std::time::Duration;
 
 const DB_FILE: &str = "performance.sqlite3";
-const LATEST_DB_SCHEMA_VERSION: u32 = 7;
+const LATEST_DB_SCHEMA_VERSION: u32 = 8;
 pub(super) const MAX_COMPLETED_RUNS: usize = 200;
 const MAX_RESOURCE_SAMPLES: usize = 600;
 const BUSY_TIMEOUT: Duration = Duration::from_millis(25);
@@ -746,6 +746,10 @@ fn migrate(connection: &mut Connection) -> StoreResult<()> {
         // V7 adds the optional shadow companion and stop gesture stages.
         transaction
             .pragma_update(None, "user_version", 7)
+            .map_err(db_error)?;
+        // V8 adds the bounded foreground-latency skip reason.
+        transaction
+            .pragma_update(None, "user_version", 8)
             .map_err(db_error)?;
         transaction.commit().map_err(db_error)?;
     }
@@ -1586,6 +1590,64 @@ mod tests {
             .unwrap();
         assert_eq!(saved, payload);
         assert!(migrated.list(10).unwrap()[0].shadow.is_none());
+    }
+
+    #[test]
+    fn v7_migration_preserves_older_comparison_and_accepts_bounded_skip() {
+        use crate::shadow_measurement::{DeterminismStatus, ShadowMeasurementV1};
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("diagnostics");
+        let repo = PerformanceRepository::initialize(root.clone()).unwrap().0;
+        repo.begin(
+            PerformanceRunKindV1::Dictation,
+            correlation(79),
+            Vec::new(),
+            ContentFreeInputSummaryV1::default(),
+        )
+        .unwrap();
+        let run = repo
+            .complete(
+                &correlation(79),
+                RunOutcomeV1::Success,
+                Vec::new(),
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let mut shadow = ShadowMeasurementV1 {
+            determinism: DeterminismStatus::Compared,
+            decode_matches: Some(false),
+            ..Default::default()
+        };
+        repo.update_completed_shadow(&run.run_id, 79, &shadow)
+            .unwrap();
+        let connection = repo.open().unwrap();
+        let before: String = connection
+            .query_row("SELECT payload_json FROM completed_runs", [], |r| r.get(0))
+            .unwrap();
+        connection.pragma_update(None, "user_version", 7).unwrap();
+        drop(connection);
+        let migrated = PerformanceRepository::initialize(root).unwrap().0;
+        let after: String = migrated
+            .open()
+            .unwrap()
+            .query_row("SELECT payload_json FROM completed_runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(before, after);
+        assert_eq!(
+            migrated.get(&run.run_id).unwrap().unwrap().shadow.as_ref(),
+            Some(&shadow)
+        );
+        shadow.determinism = DeterminismStatus::SkippedForegroundLatencyRisk;
+        shadow.decode_matches = None;
+        migrated
+            .update_completed_shadow(&run.run_id, 79, &shadow)
+            .unwrap();
+        assert_eq!(
+            migrated.get(&run.run_id).unwrap().unwrap().shadow.as_ref(),
+            Some(&shadow)
+        );
     }
 
     #[test]

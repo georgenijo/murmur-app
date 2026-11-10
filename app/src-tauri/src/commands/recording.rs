@@ -1725,6 +1725,7 @@ mod clipboard_delivery_tests {
 }
 
 struct PipelineResult {
+    shadow: Option<PipelineShadowAudio>,
     text: String,
     timings: PipelineTimings,
     terminal: PipelineTerminal,
@@ -2449,124 +2450,49 @@ fn decode_final_transcript(
     )
 }
 
-/// Register only after confirmed delivery; run only after its completed UUID
-/// is durable. No shadow job touches recording state or supplies delivered text.
-#[allow(clippy::too_many_arguments)]
+/// Register only after Idle and captured delivery timing. Ownership moves into
+/// a worker that starts after the exact completed UUID is durable.
 fn register_shadow_measurement(
     app: &tauri::AppHandle,
     recording_id: u64,
     context: Arc<DictationContextSnapshot>,
-    original: &[f32],
-    filtered: Vec<f32>,
-    bounds: Option<Vec<(usize, usize)>>,
-    vad_trimmed: bool,
-    stamp: Option<crate::shadow_measurement::StopStamp>,
-    raw_text: &str,
+    audio: crate::shadow_measurement::ShadowAudio,
 ) {
     use crate::shadow_measurement as shadow;
-    use sha2::{Digest, Sha256};
     let Some(permit) = shadow::ShadowPermit::acquire() else {
         return;
     };
-    let original = original.to_vec();
-    let app = app.clone();
-    let performance = app.state::<State>().performance.clone();
-    static DETERMINISM: OnceLock<bool> = OnceLock::new();
-    let enabled = *DETERMINISM.get_or_init(|| {
-        shadow::determinism_enabled(std::env::var("MURMUR_SHADOW_DETERMINISM").ok().as_deref())
-    });
-    // The disabled switch performs no text hashing at all.
-    let expected_hash = (enabled
-        && transcriber::is_coreml_model(&context.transcription.model_name))
-    .then(|| Sha256::digest(raw_text.as_bytes()));
-    performance.register_shadow(
+    app.state::<State>().performance.register_shadow(
         recording_id,
         Box::new(move |metrics, run| {
             let _permit = permit;
-            let mut result = shadow::ShadowMeasurementV1 {
-                press_sample: stamp.and_then(|s| s.press.sample).map(|s| s as u64),
-                preview_held_backend_at_press: stamp.map(|s| s.press.preview_held_backend),
-                determinism: if enabled {
-                    shadow::DeterminismStatus::Pending
-                } else {
-                    shadow::DeterminismStatus::Disabled
-                },
-                ..Default::default()
-            };
-            let transcription = &context.transcription;
-            if !transcriber::is_coreml_model(&transcription.model_name) {
-                result.determinism = shadow::DeterminismStatus::UnsupportedBackend;
-            } else {
-                let state = app.state::<State>();
-                if enabled {
-                    // Try-lock only: this cannot queue, prepare, load or switch a model.
-                    let attempt = state.app_state.model_runtime.try_with_ready_backend(
-                        &transcription.model_name,
-                        || {
-                            state.app_state.recording_id.load(Ordering::SeqCst) == recording_id
-                                && !state.app_state.is_cancelled(recording_id)
-                                && state.app_state.dictation_status_if_uncontended()
-                                    == Some(DictationStatus::Idle)
-                        },
-                        |backend| {
-                            decode_final_transcript(
-                                backend,
-                                transcription,
-                                &filtered,
-                                &original,
-                                vad_trimmed,
-                                #[cfg(feature = "preview-decode-reuse")]
-                                None,
-                            )
-                        },
-                    );
-                    match attempt {
-                        Ok(Some(attempt)) => {
-                            result.decode_matches = Some(
-                                Some(Sha256::digest(attempt.text.as_bytes())) == expected_hash,
-                            );
-                            result.determinism = shadow::DeterminismStatus::Compared;
-                        }
-                        Ok(None) => {
-                            result.determinism =
-                                if state.app_state.recording_id.load(Ordering::SeqCst)
-                                    != recording_id
-                                    || state.app_state.is_cancelled(recording_id)
-                                {
-                                    shadow::DeterminismStatus::Superseded
-                                } else {
-                                    shadow::DeterminismStatus::BackendUnavailable
-                                }
-                        }
-                        Err(_) => result.determinism = shadow::DeterminismStatus::DecodeFailed,
-                    }
-                }
-                if let Some(bounds) = bounds {
-                    result.trailing_silence_before_stop_ms =
-                        shadow::trailing_silence_ms(&bounds, original.len());
-                    let press = stamp
-                        .and_then(|s| s.press.sample)
-                        .filter(|sample| *sample <= original.len());
-                    result.trailing_silence_before_press_ms =
-                        press.and_then(|at| shadow::trailing_silence_ms(&bounds, at));
-                    let pause = shadow::last_pause(&bounds, original.len());
-                    result.pause_sample = pause.map(|at| at as u64);
-                    if let Some(path) = vad::vad_model_path().filter(|p| p.exists()) {
-                        let path = path.to_string_lossy();
-                        let threshold =
-                            vad::threshold_for_sensitivity(transcription.vad_sensitivity);
-                        result.press_input_matches = press.and_then(|at| {
-                            shadow::prefix_matches(&path, &original, at, threshold, &filtered)
-                        });
-                        result.pause_input_matches = pause.and_then(|at| {
-                            shadow::prefix_matches(&path, &original, at, threshold, &filtered)
-                        });
-                    }
-                }
-            }
+            static DETERMINISM: OnceLock<bool> = OnceLock::new();
+            let enabled = *DETERMINISM.get_or_init(|| {
+                shadow::determinism_enabled(
+                    std::env::var("MURMUR_SHADOW_DETERMINISM").ok().as_deref(),
+                )
+            });
+            let supported = transcriber::is_coreml_model(&context.transcription.model_name);
+            let threshold = vad::threshold_for_sensitivity(context.transcription.vad_sensitivity);
+            let path = vad::vad_model_path().filter(|p| p.exists());
+            let result = audio.measure(enabled, supported, |original, at, filtered| {
+                shadow::prefix_matches(
+                    &path.as_ref()?.to_string_lossy(),
+                    original,
+                    at,
+                    threshold,
+                    filtered,
+                )
+            });
             let _ = metrics.amend_shadow(&run.run_id, recording_id, &result);
         }),
     );
+}
+
+struct PipelineShadowAudio {
+    filtered: Vec<f32>,
+    bounds: Option<Vec<(usize, usize)>>,
+    stamp: Option<crate::shadow_measurement::StopStamp>,
 }
 
 #[derive(Default)]
@@ -2623,6 +2549,7 @@ async fn run_transcription_pipeline(
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before VAD (recording_id={})", recording_id);
         return Ok(PipelineResult {
+            shadow: None,
             text: String::new(),
             timings: PipelineTimings::default(),
             terminal: PipelineTerminal::Cancelled(PerformanceStageV1::Vad),
@@ -2658,6 +2585,7 @@ async fn run_transcription_pipeline(
                         tracing::info!(target: "pipeline", "VAD detected no speech ({} samples, {:?}), skipping transcription",
                             samples.len(), t_vad.elapsed());
                         return Ok(PipelineResult {
+                            shadow: None,
                             text: String::new(),
                             timings: PipelineTimings {
                                 vad_ms: t_vad.elapsed().as_millis() as u64,
@@ -2698,6 +2626,7 @@ async fn run_transcription_pipeline(
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before transcription (recording_id={})", recording_id);
         return Ok(PipelineResult {
+            shadow: None,
             text: String::new(),
             timings: PipelineTimings {
                 vad_ms,
@@ -2855,6 +2784,7 @@ async fn run_transcription_pipeline(
         timings.transform_ms = transform_ms;
         timings.transform_stages = transform_stages;
         return Ok(PipelineResult {
+            shadow: None,
             text: String::new(),
             timings,
             terminal: PipelineTerminal::Cancelled(PerformanceStageV1::ClipboardPaste),
@@ -3107,6 +3037,7 @@ async fn run_transcription_pipeline(
                 timings.file_output_ms = file_output_ms;
                 timings.paste_ms = t_inject.elapsed().as_millis() as u64;
                 return Ok(PipelineResult {
+                    shadow: None,
                     text: String::new(),
                     timings,
                     terminal: PipelineTerminal::Cancelled(PerformanceStageV1::ClipboardPaste),
@@ -3210,25 +3141,19 @@ async fn run_transcription_pipeline(
     timings.transform_stages = transform_stages;
     timings.file_output_ms = file_output_ms;
     timings.paste_ms = paste_ms;
-    if measure_shadow && timings.delivery_confirmed && !text.trim().is_empty() {
-        register_shadow_measurement(
-            app_handle,
-            recording_id,
-            context.clone(),
-            samples,
-            samples_for_transcription,
-            speech_bounds,
-            vad_trimmed,
-            stop_stamp,
-            &history.raw_text,
-        );
-    }
+    let shadow = (measure_shadow && timings.delivery_confirmed && !text.trim().is_empty())
+        .then_some(PipelineShadowAudio {
+            filtered: samples_for_transcription,
+            bounds: speech_bounds,
+            stamp: stop_stamp,
+        });
     let terminal = if text.trim().is_empty() {
         PipelineTerminal::NoSpeech(backend_empty_error.unwrap_or(DictationErrorCode::EmptyOutput))
     } else {
         PipelineTerminal::Success
     };
     Ok(PipelineResult {
+        shadow,
         text,
         timings,
         terminal,
@@ -5982,6 +5907,7 @@ async fn stop_native_recording_for(
             return Err(error);
         }
     };
+    let idle_observed_at = std::time::Instant::now();
     let history = pipeline.history;
     let text = pipeline.text;
     let timings = pipeline.timings;
@@ -6057,6 +5983,24 @@ async fn stop_native_recording_for(
         hotkey_release,
         delivered_at,
     ));
+    let recording_secs = samples.len() / 16_000;
+    if let Some(shadow) = pipeline.shadow {
+        register_shadow_measurement(
+            &app_handle,
+            rid,
+            context.clone(),
+            crate::shadow_measurement::ShadowAudio {
+                original: samples,
+                filtered: shadow.filtered,
+                bounds: shadow.bounds,
+                stamp: shadow.stamp,
+                boundary: crate::shadow_measurement::PostDeliveryBoundary {
+                    idle_observed_at,
+                    delivered_at,
+                },
+            },
+        );
+    }
     performance_guard.finish(
         outcome,
         stages,
@@ -6069,7 +6013,6 @@ async fn stop_native_recording_for(
 
     // Broadcast transcription result to all windows (so the main window can update
     // its history even when recording was initiated from the overlay).
-    let recording_secs = samples.len() / 16_000;
     if !text.is_empty() {
         let teaching_context = crate::correct_and_teach::teaching_context(
             context.app.bundle_id.as_deref(),
