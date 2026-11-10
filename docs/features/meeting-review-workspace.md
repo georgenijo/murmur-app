@@ -47,7 +47,10 @@ when audio was retained, Export with audio. More contains Rename, Calendar
 naming, speaker editing, Copy as (a format submenu), and the existing two-step
 Delete action. Return is suppressed on the destructive menu item; repeated,
 composing, and modified Space cannot activate it. Two separate deliberate Space
-presses or pointer activations still arm and confirm deletion. Caption menu items
+presses or single pointer clicks still arm and confirm deletion. Multi-click
+events cannot confirm. Closing the menu or leaving the destructive item with
+keyboard focus or the pointer clears confirmation, as does switching sessions
+or starting capture. Reopening the menu always starts unarmed. Caption menu items
 stay unavailable during capture; ordinary transcript copy/export remain available. Bundle export still requires capture
 to finish and presents the existing size, format choice, and missing-audio disclosure.
 

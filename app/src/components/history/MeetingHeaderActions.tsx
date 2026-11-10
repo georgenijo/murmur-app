@@ -18,6 +18,7 @@ interface MeetingHeaderActionsProps {
   onExport: (format: MeetingReviewExportFormat) => void;
   onBundle: () => void;
   onDelete?: () => void;
+  onDisarmDelete?: () => void;
 }
 
 function Popup({ children, submenu = false, finalFocus }: { children: ReactNode; submenu?: boolean; finalFocus?: () => HTMLElement | boolean }) {
@@ -57,7 +58,10 @@ export function MeetingHeaderActions(props: MeetingHeaderActionsProps) {
         </>}
       </Popup>
     </Menu.Root>
-    {!props.busy && <Menu.Root onOpenChange={(open) => { if (open) focusAfterClose.current = null; }}>
+    {!props.busy && <Menu.Root onOpenChange={(open) => {
+      props.onDisarmDelete?.();
+      if (open) focusAfterClose.current = null;
+    }}>
       <Menu.Trigger ref={moreTriggerRef} aria-label="More meeting actions" className="ui-form-button meeting-header-action meeting-more">···</Menu.Trigger>
       <Popup finalFocus={() => {
         const workspace = actionsRef.current?.closest('.meeting-workspace');
@@ -71,7 +75,11 @@ export function MeetingHeaderActions(props: MeetingHeaderActionsProps) {
           <Popup submenu>{formats(props.onCopy)}</Popup>
         </Menu.SubmenuRoot>
         {props.onDelete && <><Menu.Separator className="ui-menu-separator" />
-          <Menu.Item className="ui-menu-item" data-variant="destructive" closeOnClick={false} onKeyDownCapture={guardDestructiveKey} onKeyUpCapture={guardDestructiveKey} onClick={props.onDelete}>{props.confirmingDelete ? 'Confirm delete…' : 'Delete meeting…'}</Menu.Item>
+          <Menu.Item className="ui-menu-item" data-variant="destructive" closeOnClick={false} onKeyDownCapture={guardDestructiveKey} onKeyUpCapture={guardDestructiveKey}
+            onBlur={props.onDisarmDelete} onPointerLeave={props.onDisarmDelete} onClick={(event) => {
+              if (event.detail > 1) return;
+              props.onDelete?.();
+            }}>{props.confirmingDelete ? 'Confirm delete…' : 'Delete meeting…'}</Menu.Item>
         </>}
       </Popup>
     </Menu.Root>}

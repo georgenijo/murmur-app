@@ -175,6 +175,34 @@ describe('MeetingsPanel retained audio deletion', () => {
     }
   });
 
+  it('shows Connecting only for the starting runtime session in the list and detail header', async () => {
+    const meetings = meetingsController(vi.fn());
+    meetings.detail = { ...detail, session: { ...detail.session, status: 'active' } };
+    meetings.page.sessions = [meetings.detail.session];
+    meetings.status = { ...meetings.status, phase: 'starting', sessionId: detail.session.id, elapsedMs: 0 };
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(container.querySelector('.meetings-row-preview')?.textContent).toBe('Connecting… · 0:00');
+    expect(container.querySelector('.meeting-detail-meta p')?.textContent).toBe('Connecting… · 0:00');
+    expect(container.querySelector('.meeting-transcript')?.textContent).toContain('Connecting both channels…');
+    expect(container.querySelector('.meeting-transcript')?.textContent).not.toContain('Listening…');
+  });
+
+  it('returns to saved list/header facts on failure even when persisted status is still active', async () => {
+    const meetings = meetingsController(vi.fn());
+    meetings.detail = { ...detail, session: { ...detail.session, status: 'active' } };
+    meetings.page.sessions = [meetings.detail.session];
+    meetings.status = { ...meetings.status, phase: 'failed', sessionId: detail.session.id, elapsedMs: 272_000, errorCode: 'worker_failed' };
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(container.querySelector('.meetings-row-preview')?.textContent).toBe(detail.session.preview);
+    expect(container.querySelector('.meetings-row-duration')?.textContent).toBe('4 sec');
+    expect(container.querySelector('.meeting-detail-meta p')?.textContent).toBe([
+      new Date(detail.session.startedAtMs).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }), '4 sec', 'Audio kept',
+    ].join(' · '));
+    expect(container.querySelector('.meetings-phase p')?.textContent).toBe('Meeting stopped');
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(container.querySelector('.meeting-listening')).toBeNull();
+  });
+
   it('does not present another persisted active session as recording', async () => {
     const meetings = meetingsController(vi.fn());
     meetings.detail = { ...detail, session: { ...detail.session, status: 'active' } };
@@ -262,6 +290,20 @@ describe('MeetingsPanel retained audio deletion', () => {
     await act(async () => item.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true, cancelable: true })));
     expect(remove).not.toHaveBeenCalled();
     await act(async () => item.click());
+    expect(remove).toHaveBeenCalledExactlyOnceWith(detail.session.id);
+  });
+
+  it('ignores a double-click confirmation but accepts a separate single click', async () => {
+    const remove = vi.fn().mockResolvedValue(true);
+    await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
+    await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => element.textContent === 'Delete meeting…')!;
+    await act(async () => item.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 })));
+    expect(item.textContent).toBe('Confirm delete…');
+    await act(async () => item.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 })));
+    expect(remove).not.toHaveBeenCalled();
+    expect(item.textContent).toBe('Confirm delete…');
+    await act(async () => item.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 })));
     expect(remove).toHaveBeenCalledExactlyOnceWith(detail.session.id);
   });
 

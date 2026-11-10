@@ -72,6 +72,66 @@ for (const appearance of ['light', 'dark']) {
     await expect(page.locator('html')).toHaveAttribute('data-meeting-deletions', '1');
   });
 
+  for (const dismissal of ['Escape', 'outside click', 'trigger toggle', 'another action']) {
+    test(`Notetaker disarms after ${dismissal} ${appearance}`, async ({ page }) => {
+      await page.goto(`/visual-fixtures.html?state=meetings-many&appearance=${appearance}`);
+      const more = page.locator('.meeting-more');
+      await more.click();
+      await page.getByRole('menuitem', { name: 'Delete meeting…', exact: true }).click();
+      await expect(page.getByRole('menuitem', { name: 'Confirm delete…', exact: true })).toBeVisible();
+      if (dismissal === 'Escape') await page.keyboard.press('Escape');
+      if (dismissal === 'outside click') {
+        // A real outside click hits Base UI's modal backdrop over the heading.
+        const heading = await page.getByRole('heading', { name: 'Notetaker', exact: true }).boundingBox();
+        await page.mouse.click(heading!.x + heading!.width / 2, heading!.y + heading!.height / 2);
+      }
+      if (dismissal === 'trigger toggle') await more.click();
+      if (dismissal === 'another action') await page.getByRole('menuitem', { name: 'Edit speakers…', exact: true }).click();
+      await expect(more).toHaveAttribute('aria-expanded', 'false');
+      await more.click();
+      // Check before the four-second arm timeout can hide a stale confirmation.
+      await expect(page.getByRole('menuitem', { name: 'Delete meeting…', exact: true })).toBeVisible({ timeout: 500 });
+      await page.getByRole('menuitem', { name: 'Delete meeting…', exact: true }).click();
+      await expect(page.getByRole('menuitem', { name: 'Confirm delete…', exact: true })).toBeVisible();
+      await expect(page.locator('html')).not.toHaveAttribute('data-meeting-deletions');
+    });
+  }
+
+  for (const movement of ['keyboard', 'pointer']) {
+    test(`Notetaker disarms on ${movement} item movement ${appearance}`, async ({ page }) => {
+      await page.goto(`/visual-fixtures.html?state=meetings-many&appearance=${appearance}`);
+      await page.locator('.meeting-more').click();
+      await page.getByRole('menuitem', { name: 'Delete meeting…', exact: true }).click();
+      const armed = page.getByRole('menuitem', { name: 'Confirm delete…', exact: true });
+      await expect(armed).toBeVisible();
+      if (movement === 'keyboard') {
+        await armed.focus();
+        await page.keyboard.press('ArrowUp');
+        await expect(page.getByRole('menuitem', { name: 'Copy as', exact: true })).toBeFocused();
+        await page.keyboard.press('ArrowDown');
+        await page.keyboard.press('Space');
+      } else {
+        await page.getByRole('menuitem', { name: 'Edit speakers…', exact: true }).hover();
+        await page.getByRole('menuitem', { name: 'Delete meeting…', exact: true }).click();
+      }
+      await expect(page.getByRole('menuitem', { name: 'Confirm delete…', exact: true })).toBeVisible();
+      await expect(page.locator('html')).not.toHaveAttribute('data-meeting-deletions');
+    });
+  }
+
+  test(`Notetaker double-click only arms ${appearance}`, async ({ page }) => {
+    await page.goto(`/visual-fixtures.html?state=meetings-many&appearance=${appearance}`);
+    await page.locator('.meeting-more').click();
+    await page.getByRole('menuitem', { name: 'Delete meeting…', exact: true }).dblclick();
+    const confirm = page.getByRole('menuitem', { name: 'Confirm delete…', exact: true });
+    await expect(confirm).toBeVisible();
+    await expect(page.locator('html')).not.toHaveAttribute('data-meeting-deletions');
+    // A new single-click sequence (detail 1), after the system multi-click window, confirms.
+    await page.waitForTimeout(600);
+    await confirm.click();
+    await expect(page.locator('html')).toHaveAttribute('data-meeting-deletions', '1');
+  });
+
   test(`Notetaker empty Calendar lookup focus ${appearance}`, async ({ page }) => {
     await page.goto(`/visual-fixtures.html?state=meetings-many&appearance=${appearance}&calendar=empty&calendarDelay=2000`);
     const more = page.locator('.meeting-more');

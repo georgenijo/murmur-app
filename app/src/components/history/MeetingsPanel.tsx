@@ -1,5 +1,5 @@
 import { MEETING_SEARCH_FIELD_LABELS } from '../../lib/meetings';
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Search } from 'lucide-react';
 import { echoCancellationNotice, formatMeetingDuration, meetingErrorMessage, formatMeetingTimestamp } from '../../lib/meetings';
 import { historyDayKey, historyDayLabel } from '../../lib/history';
@@ -45,6 +45,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [listMenuOpen, setListMenuOpen] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const active = ['starting', 'recording', 'stopping'].includes(meetings.status.phase);
   const processing = meetings.status.phase === 'processing';
@@ -64,6 +65,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
   const { refresh, appliedQuery } = meetings;
 
   useEffect(() => () => {
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
     if (timerRef.current) clearTimeout(timerRef.current);
   }, []);
 
@@ -92,16 +94,26 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
     }
   };
 
+  const disarmDelete = useCallback(() => {
+    setConfirmDelete(null);
+    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+    deleteTimerRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    disarmDelete();
+  }, [meetings.detail?.session.id, captureBusy, disarmDelete]);
+
   const deleteSelected = async () => {
     const id = meetings.detail?.session.id;
     if (!id) return;
     if (confirmDelete !== id) {
       setConfirmDelete(id);
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => setConfirmDelete(null), 4000);
+      if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
+      deleteTimerRef.current = setTimeout(disarmDelete, 4000);
       return;
     }
-    setConfirmDelete(null);
+    disarmDelete();
     meetingAudio.invalidate();
     if (await meetings.remove(id)) {
       showNotice('Meeting deleted from this Mac.');
@@ -303,6 +315,7 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
                 : [detail.session.title ? new Date(detail.session.startedAtMs).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : null,
                   formatMeetingDuration(detail.session.durationMs), detail.session.retainAudio ? 'Audio kept' : 'Transcript only'].filter(Boolean).join(' · ')}
               onDelete={() => void deleteSelected()}
+              onDisarmDelete={disarmDelete}
               confirmingDelete={confirmDelete === detail.session.id}
             />
           ) : (
