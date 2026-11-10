@@ -1,3 +1,4 @@
+use crate::performance_metrics::{delivery as dt, MeasurementV1 as M};
 pub(crate) mod authority;
 use arboard::Clipboard;
 use authority::{AttemptStop, PasteAttempt, PostDecision};
@@ -124,7 +125,7 @@ where
     W: FnMut() -> Result<Option<i64>, InjectionError>,
     C: FnMut(PasteboardChangeToken) -> bool,
 {
-    let initial_verification = verify();
+    let initial_verification = timed_verification(0, &mut verify);
     if !initial_verification.verified() {
         return refuse_after_clipboard_write(
             ClipboardOnlyReason::TargetChanged,
@@ -137,7 +138,7 @@ where
     let focused_state = focused_state();
     // AX can block while activation changes. Always classify the post-AX
     // target before deciding whether the observed field itself was editable.
-    let post_ax_verification = verify();
+    let post_ax_verification = timed_verification(1, &mut verify);
     if !post_ax_verification.verified() {
         return refuse_after_clipboard_write(
             ClipboardOnlyReason::TargetChanged,
@@ -156,7 +157,7 @@ where
     }
 
     let pasteboard_change = write_clipboard()?.map(PasteboardChangeToken);
-    let post_clipboard_verification = verify();
+    let post_clipboard_verification = timed_verification(2, &mut verify);
     // Inspect only the content-free change token, and do so before returning a
     // target result: an external clipboard write during verification means the
     // transcript is no longer proven ready regardless of target state.
@@ -185,6 +186,40 @@ where
     })
 }
 
+fn timed_verification(
+    index: usize,
+    verify: &mut impl FnMut() -> crate::frontmost::VerificationEvidence,
+) -> crate::frontmost::VerificationEvidence {
+    let retry = dt::is_retry();
+    let _timer = dt::Timer::new(if retry {
+        |r| &mut r.retry_target_verification.elapsed_us
+    } else {
+        match index {
+            0 => |r| &mut r.target_verification[0].elapsed_us,
+            1 => |r| &mut r.target_verification[1].elapsed_us,
+            _ => |r| &mut r.target_verification[2].elapsed_us,
+        }
+    });
+    let evidence = verify();
+    dt::record(|r| {
+        let field = if r.native_paste_retry_count > 0 {
+            &mut r.retry_target_verification
+        } else {
+            &mut r.target_verification[index]
+        };
+        field.lookup_retry_count = M::measured(evidence.retry_count);
+        field.outcome = M::measured(evidence.outcome);
+    });
+    evidence
+}
+
+fn wait_for_native_retry(wait: impl FnOnce()) {
+    // Entry is counted even when the subsequent safety checks refuse.
+    dt::record(|r| r.native_paste_retry_count = 1);
+    let _timer = dt::Timer::new(|r| &mut r.retry_wait_us);
+    wait();
+}
+
 fn retry_paste_if_safe<F, V, C, P>(
     mut focused_state: F,
     mut verify: V,
@@ -199,7 +234,7 @@ where
     P: FnMut() -> Result<PostDecision, String>,
 {
     let focused_state = focused_state();
-    let verification = verify();
+    let verification = timed_verification(0, &mut verify);
     let clipboard_current = pasteboard_unchanged();
     if let Some(reason) = authority.and_then(PasteAttempt::stop_reason) {
         return (InjectionOutcome::Stopped(reason), verification);
@@ -269,11 +304,31 @@ pub(crate) fn write_clipboard_text(text: &str) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 pub(crate) fn pasteboard_change_count() -> Option<i64> {
-    autoreleasepool(|_| {
+    let started = Instant::now();
+    let result = autoreleasepool(|_| {
         use objc2_app_kit::NSPasteboard;
 
         Some(NSPasteboard::generalPasteboard().changeCount() as i64)
-    })
+    });
+    let duration = dt::us(started);
+    if POST_BOUNDARY.with(std::cell::Cell::get) {
+        POST_PASTEBOARD.with(|p| {
+            let (count, elapsed) = p.get();
+            p.set((count + 1, elapsed + duration));
+        });
+    } else {
+        dt::record(|r| {
+            r.pasteboard_check_count += 1;
+            dt::add(&mut r.pasteboard_check_us, duration);
+        });
+    }
+    result
+}
+
+#[cfg(target_os = "macos")]
+thread_local! {
+    static POST_BOUNDARY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static POST_PASTEBOARD: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -290,6 +345,7 @@ fn authorized_clipboard_write(
     text: &str,
     authority: Option<&PasteAttempt>,
 ) -> Result<Option<i64>, InjectionError> {
+    let _timer = dt::Timer::new(|r| &mut r.clipboard_write_us);
     match authority {
         Some(attempt) => attempt
             .mutate(|| write_clipboard_text_with_change_count(text))
@@ -491,6 +547,7 @@ fn inject_with_destination(
     }
     let pasteboard_change = authorized_clipboard_write(text, authority)?;
     let accessible = is_accessibility_enabled();
+    dt::record(|r| r.accessibility = M::measured(accessible));
     let outcome = match pasteboard_change {
         None => InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::ClipboardChanged),
         Some(change) if pasteboard_change_count() != Some(change) => {
@@ -571,7 +628,9 @@ fn inject_text_with_policy(
         use std::time::Duration;
 
         // Check accessibility permission before attempting paste simulation (macOS only)
-        if !is_accessibility_enabled() {
+        let accessible = is_accessibility_enabled();
+        dt::record(|r| r.accessibility = M::measured(accessible));
+        if !accessible {
             authorized_clipboard_write(text, authority)?;
             tracing::warn!(target: "pipeline", "inject_text: accessibility permission not granted — text in clipboard only");
             return Ok(InjectionResult {
@@ -654,7 +713,8 @@ fn inject_text_with_policy(
             }),
             Err(first_err) => {
                 tracing::warn!(target: "pipeline", "inject_text: first paste attempt failed: {}, retrying in 100ms", first_err);
-                thread::sleep(Duration::from_millis(100));
+                // Count entry before waiting: a refused retry is still a retry.
+                wait_for_native_retry(|| thread::sleep(Duration::from_millis(100)));
 
                 let (retry_outcome, retry_verification) = retry_paste_if_safe(
                     || {
@@ -700,12 +760,31 @@ fn create_native_paste_events(
     use core_graphics::event::{CGEvent, CGEventFlags, KeyCode};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 
-    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
-        .map_err(|_| "could not create CGEvent source".to_string())?;
-    let key_down = CGEvent::new_keyboard_event(source.clone(), KeyCode::ANSI_V, true)
-        .map_err(|_| "could not create Cmd+V key-down event".to_string())?;
-    let key_up = CGEvent::new_keyboard_event(source, KeyCode::ANSI_V, false)
-        .map_err(|_| "could not create Cmd+V key-up event".to_string())?;
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).map_err(|_| {
+        dt::record(|r| {
+            if r.native_paste_retry_count == 0 {
+                r.first_failure = M::measured(dt::FirstFailure::SourceCreate);
+            }
+        });
+        "could not create CGEvent source".to_string()
+    })?;
+    let key_down =
+        CGEvent::new_keyboard_event(source.clone(), KeyCode::ANSI_V, true).map_err(|_| {
+            dt::record(|r| {
+                if r.native_paste_retry_count == 0 {
+                    r.first_failure = M::measured(dt::FirstFailure::KeyDownCreate);
+                }
+            });
+            "could not create Cmd+V key-down event".to_string()
+        })?;
+    let key_up = CGEvent::new_keyboard_event(source, KeyCode::ANSI_V, false).map_err(|_| {
+        dt::record(|r| {
+            if r.native_paste_retry_count == 0 {
+                r.first_failure = M::measured(dt::FirstFailure::KeyUpCreate);
+            }
+        });
+        "could not create Cmd+V key-up event".to_string()
+    })?;
     key_down.set_flags(CGEventFlags::CGEventFlagCommand);
     key_up.set_flags(CGEventFlags::CGEventFlagCommand);
     Ok((key_down, key_up))
@@ -729,13 +808,45 @@ fn post_paste_native_guarded(
     use std::thread;
     use std::time::Duration;
 
-    let (key_down, key_up) = create_native_paste_events()?;
-    let post = || {
+    crate::frontmost::clear_pending_focus_proof();
+    let construction_started = Instant::now();
+    let events = create_native_paste_events();
+    let construction_us = dt::us(construction_started);
+    let (key_down, key_up) = match events {
+        Ok(events) => events,
+        Err(error) => {
+            dt::record(|r| {
+                let p = if r.native_paste_retry_count > 0 {
+                    &mut r.retry_post
+                } else {
+                    &mut r.native_post
+                };
+                p.event_construction_us = M::measured(construction_us);
+                p.outcome = M::measured(dt::PostOutcome::ConstructionFailed);
+            });
+            return Err(error);
+        }
+    };
+    // Collect locally across proof/commit/post. Publish only after key-up so
+    // diagnostic locking cannot widen the final safety boundary.
+    let mut posted_at = None;
+    let mut down_us = None;
+    let mut hold_us = None;
+    let mut up_us = None;
+    let mut post = || {
+        let started = Instant::now();
+        posted_at = Some(started);
         key_down.post(CGEventTapLocation::HID);
+        down_us = Some(dt::us(started));
+        let started = Instant::now();
         // Always release the key, including when cancellation races the post.
         thread::sleep(Duration::from_millis(hold_ms));
+        hold_us = Some(dt::us(started));
+        let started = Instant::now();
         key_up.post(CGEventTapLocation::HID);
+        up_us = Some(dt::us(started));
     };
+    POST_BOUNDARY.with(|p| p.set(true));
     let posted = match authority {
         Some(attempt) => attempt.post(final_check, post),
         None => {
@@ -747,6 +858,39 @@ fn post_paste_native_guarded(
             }
         }
     };
+    POST_BOUNDARY.with(|p| p.set(false));
+    let (checks, elapsed) = POST_PASTEBOARD.with(|p| p.replace((0, 0)));
+    if checks > 0 {
+        dt::record(|r| {
+            r.pasteboard_check_count += checks;
+            dt::add(&mut r.pasteboard_check_us, elapsed);
+        });
+    }
+    if let Some(at) = posted_at {
+        dt::posted_at(at);
+    }
+    dt::record(|r| {
+        let p = if r.native_paste_retry_count > 0 {
+            &mut r.retry_post
+        } else {
+            &mut r.native_post
+        };
+        p.event_construction_us = M::measured(construction_us);
+        if let Some(value) = down_us {
+            p.key_down_post_us = M::measured(value);
+        }
+        if let Some(value) = hold_us {
+            p.key_hold_us = M::measured(value);
+        }
+        if let Some(value) = up_us {
+            p.key_up_post_us = M::measured(value);
+        }
+        p.outcome = M::measured(match posted {
+            PostDecision::Posted => dt::PostOutcome::Posted,
+            PostDecision::Refused => dt::PostOutcome::Refused,
+            PostDecision::Stopped(_) => dt::PostOutcome::Stopped,
+        });
+    });
     crate::frontmost::emit_pending_focus_proof();
     if !posted.is_posted() {
         return Ok(posted);
@@ -929,6 +1073,39 @@ fn is_non_editable_desktop_role(role: &str) -> bool {
 /// role yields `Unknown`, so the caller defaults to allowing the paste.
 #[cfg(target_os = "macos")]
 fn focused_field_state() -> FocusedFieldState {
+    let retry = dt::is_retry();
+    let _timer = dt::Timer::new(if retry {
+        |r| &mut r.retry_focus_query_us
+    } else {
+        |r| &mut r.focus_query_us
+    });
+    dt::record(|r| {
+        let q = if retry {
+            &mut r.retry_focus_query
+        } else {
+            &mut r.focus_query
+        };
+        q.transport = M::measured(dt::Transport::Native);
+    });
+    let state = focused_field_state_unmeasured();
+    dt::record(|r| {
+        let q = if retry {
+            &mut r.retry_focus_query
+        } else {
+            &mut r.focus_query
+        };
+        q.outcome = M::measured(match state {
+            FocusedFieldState::Editable => dt::FocusKind::Editable,
+            FocusedFieldState::NonEditable => dt::FocusKind::NonEditable,
+            FocusedFieldState::Secure => dt::FocusKind::Secure,
+            FocusedFieldState::Unknown => dt::FocusKind::Unknown,
+        });
+    });
+    state
+}
+
+#[cfg(target_os = "macos")]
+fn focused_field_state_unmeasured() -> FocusedFieldState {
     let role = match focused_role_native() {
         Ok(role) => {
             tracing::info!(target: "pipeline", "focused_field_state: native AX query completed");
@@ -957,6 +1134,14 @@ fn focused_field_state() -> FocusedFieldState {
         }
         Err(native_err) => {
             tracing::warn!(target: "pipeline", "focused_field_state: native AX query failed: {}; falling back to osascript", native_err);
+            dt::record(|r| {
+                let q = if r.native_paste_retry_count > 0 {
+                    &mut r.retry_focus_query
+                } else {
+                    &mut r.focus_query
+                };
+                q.transport = M::measured(dt::Transport::Osascript);
+            });
             match focused_role_osascript() {
                 Ok(role) => role,
                 Err(fallback_err) => {
@@ -1078,6 +1263,15 @@ fn focused_role_native() -> Result<String, String> {
         }
         let timeout_status =
             unsafe { AXUIElementSetMessagingTimeout(app, AX_QUERY_TIMEOUT_SECONDS) };
+        dt::record(|r| {
+            let q = if r.native_paste_retry_count > 0 {
+                &mut r.retry_focus_query
+            } else {
+                &mut r.focus_query
+            };
+            q.ax_status = M::measured(timeout_status);
+            q.timed_out |= timeout_status == -25204;
+        });
         if timeout_status != AX_SUCCESS {
             unsafe { CFRelease(app) };
             return Err(format!(
@@ -1099,6 +1293,15 @@ fn focused_role_native() -> Result<String, String> {
         let mut focused: CFTypeRef = std::ptr::null();
         let focused_status =
             unsafe { AXUIElementCopyAttributeValue(app, focused_attribute, &mut focused) };
+        dt::record(|r| {
+            let q = if r.native_paste_retry_count > 0 {
+                &mut r.retry_focus_query
+            } else {
+                &mut r.focus_query
+            };
+            q.ax_status = M::measured(focused_status);
+            q.timed_out |= focused_status == -25204;
+        });
         unsafe { CFRelease(focused_attribute) };
         unsafe { CFRelease(app) };
         if focused_status != AX_SUCCESS || focused.is_null() {
@@ -1112,6 +1315,15 @@ fn focused_role_native() -> Result<String, String> {
         }
         let timeout_status =
             unsafe { AXUIElementSetMessagingTimeout(focused, AX_QUERY_TIMEOUT_SECONDS) };
+        dt::record(|r| {
+            let q = if r.native_paste_retry_count > 0 {
+                &mut r.retry_focus_query
+            } else {
+                &mut r.focus_query
+            };
+            q.ax_status = M::measured(timeout_status);
+            q.timed_out |= timeout_status == -25204;
+        });
         if timeout_status != AX_SUCCESS {
             unsafe { CFRelease(focused) };
             return Err(format!(
@@ -1129,6 +1341,15 @@ fn focused_role_native() -> Result<String, String> {
         let mut role: CFTypeRef = std::ptr::null();
         let role_status =
             unsafe { AXUIElementCopyAttributeValue(focused, role_attribute, &mut role) };
+        dt::record(|r| {
+            let q = if r.native_paste_retry_count > 0 {
+                &mut r.retry_focus_query
+            } else {
+                &mut r.focus_query
+            };
+            q.ax_status = M::measured(role_status);
+            q.timed_out |= role_status == -25204;
+        });
         unsafe { CFRelease(role_attribute) };
         // Browser password inputs report AXTextField with an AXSecureTextField
         // subrole. Surface that as the secure role so the Smart destination
@@ -1293,6 +1514,74 @@ mod focus_tests {
         }
     }
 
+    #[test]
+    fn attribution_retains_each_verifier_on_refusal() {
+        for refused_at in 0..3 {
+            let timing = dt::DeliveryTiming::new(Instant::now());
+            let _scope = timing.bind();
+            let mut call = 0;
+            let result = first_paste_preflight(
+                || {
+                    let mut e = verification(if call == refused_at {
+                        VerificationOutcome::DifferentProcess
+                    } else {
+                        VerificationOutcome::Verified
+                    });
+                    e.retry_count = call as u64;
+                    call += 1;
+                    e
+                },
+                || FocusedFieldState::Editable,
+                || Ok(Some(7)),
+                |_| true,
+            )
+            .unwrap();
+            assert!(matches!(
+                result,
+                FirstPastePreflight::Refused {
+                    reason: ClipboardOnlyReason::TargetChanged,
+                    ..
+                }
+            ));
+            let record = timing.close();
+            for index in 0..3 {
+                let entry = &record.target_verification[index];
+                if index <= refused_at {
+                    assert!(entry.elapsed_us.value().is_some());
+                    assert_eq!(entry.lookup_retry_count, M::measured(index as u64));
+                } else {
+                    assert!(entry.elapsed_us.value().is_none());
+                }
+            }
+            assert!(record.to_post_us.value().is_none());
+        }
+    }
+    #[test]
+    fn refused_native_retry_is_counted_and_has_independent_target_evidence() {
+        let timing = dt::DeliveryTiming::new(Instant::now());
+        let _scope = timing.bind();
+        wait_for_native_retry(|| {});
+        let (outcome, _) = retry_paste_if_safe(
+            || FocusedFieldState::Editable,
+            || verification(VerificationOutcome::DifferentProcess),
+            || true,
+            || panic!("refused retry must not post"),
+            None,
+        );
+        assert_eq!(
+            outcome,
+            InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::TargetChanged)
+        );
+        let record = timing.close();
+        assert_eq!(record.native_paste_retry_count, 1);
+        assert!(record.retry_wait_us.value().is_some());
+        assert_eq!(
+            record.retry_target_verification.outcome,
+            M::measured(VerificationOutcome::DifferentProcess)
+        );
+        assert!(record.native_post.outcome.value().is_none());
+        assert!(record.retry_post.outcome.value().is_none());
+    }
     #[test]
     fn smart_refusal_distinguishes_a_revoked_target_from_a_changed_clipboard() {
         assert_eq!(

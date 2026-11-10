@@ -7,6 +7,7 @@
 //! at preparation and immediately before the single native Cmd+V post.
 
 use crate::frontmost::DeliveryTargetSnapshot;
+use crate::performance_metrics::{delivery as dt, MeasurementV1 as M};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -308,6 +309,7 @@ pub(crate) fn prepare(
     snapshot: &Snapshot,
     authority: Option<&crate::injector::authority::PasteAttempt>,
 ) -> PrepareOutcome {
+    let _validation = dt::Timer::new(|r| &mut r.smart_prepare_validation_us);
     trace_preparation(snapshot, native::prepare(snapshot, true, authority))
 }
 
@@ -321,6 +323,24 @@ pub(crate) fn prepare_focused(
 }
 
 fn trace_preparation(snapshot: &Snapshot, outcome: PrepareOutcome) -> PrepareOutcome {
+    dt::record(|r| {
+        if matches!(
+            r.preparation,
+            M::Measured {
+                value: dt::SmartOutcome::Timeout
+                    | dt::SmartOutcome::ReplyLost
+                    | dt::SmartOutcome::StaleOwner
+            }
+        ) {
+            return;
+        }
+        r.preparation = M::measured(match outcome {
+            PrepareOutcome::Ready => dt::SmartOutcome::Ready,
+            PrepareOutcome::WaitForActivation => dt::SmartOutcome::ActivationRequested,
+            PrepareOutcome::Refused => dt::SmartOutcome::Refused,
+            PrepareOutcome::RefusedClipboardOnly => dt::SmartOutcome::RefusedClipboardOnly,
+        })
+    });
     tracing::info!(target: "pipeline", event_code = "pipeline.paste_safety", phase_code = "preparation",
         route_code = snapshot.route_code(), outcome_code = match outcome {
             PrepareOutcome::Ready => "ready",
