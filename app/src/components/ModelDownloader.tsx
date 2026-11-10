@@ -1,4 +1,7 @@
 import { useState, useEffect, useRef, type ReactNode } from 'react';
+import { Check, CircleAlert, Cpu } from 'lucide-react';
+import { WindowHeader } from './ui/WindowHeader';
+import { StepHeading } from './onboarding/StepHeading';
 import { createPortal } from 'react-dom';
 import { listen } from '@tauri-apps/api/event';
 import { cn } from '../lib/sona-utils';
@@ -12,16 +15,15 @@ import {
   type ModelDownloadProgress,
 } from '../lib/modelDownload';
 import {
-  modelGuidanceSummary,
   modelMemoryWarning,
   useModelHardwareGuidance,
 } from '../lib/modelHardwareGuidance';
 
 const MODEL_DESCRIPTIONS: Record<string, string> = {
-  'parakeet-tdt-0.6b-v3-coreml': 'Fastest on Apple Silicon — multilingual, Apple Neural Engine',
-  'parakeet-tdt-0.6b-v2-fp16': 'Fast CPU fallback — English only',
-  'large-v3-turbo': 'Highest accuracy, slower (1-2 seconds)',
-  'base.en': 'Good balance of speed and accuracy',
+  'parakeet-tdt-0.6b-v3-coreml': 'Fastest transcription on Apple Silicon · Multilingual',
+  'parakeet-tdt-0.6b-v2-fp16': 'Fast transcription · English only',
+  'large-v3-turbo': 'Highest accuracy · Multilingual',
+  'base.en': 'Balanced speed and accuracy · English only',
 };
 
 /**
@@ -56,6 +58,7 @@ interface Props {
     disabled: boolean;
     onActivate: () => void;
     isNavigation: boolean;
+    isCancellation: boolean;
   }) => ReactNode;
   /**
    * Fixed host for progress, cancel, error, and memory notices. Embedders whose
@@ -224,8 +227,8 @@ export function ModelDownloadPanel({
     : selectedInstalled
     ? 'Continue'
     : downloadState.phase === 'error'
-    ? 'Retry download'
-    : 'Download';
+    ? 'Try again'
+    : `Download · ${MODELS.find((model) => model.name === selected)!.size}`;
   const activatePrimary = () => {
     if (selectedInstalled) {
       onComplete(selected);
@@ -234,164 +237,54 @@ export function ModelDownloadPanel({
     void handleDownload();
   };
 
-  const statusContent = (
-    <>
-      {selectedMemoryWarning && (
-        <div role="status" className="dialog-toast mb-4 border-warning/30 bg-warning/10 px-4 py-3 text-[length:var(--ui-font-caption)] text-on-surface">
-          {selectedMemoryWarning}
+  const action = {
+    label: isDownloading ? cancelling ? 'Cancelling…' : 'Cancel' : primaryLabel,
+    disabled: isDownloading && cancelling,
+    onActivate: isDownloading ? () => void handleCancel() : activatePrimary,
+    isNavigation: selectedInstalled,
+    isCancellation: isDownloading,
+  };
+  const statusContent = <>
+    {isDownloading && <div className="model-download-progress" aria-live="polite" aria-busy="true">
+      <p className="model-progress-label">{cancelling ? 'Cancelling…' : progressPercent === null ? modelDownloadLabel(progress!) : `Downloading · ${progressPercent}%`}</p>
+      <div className="model-progress-track">
+        <div role="progressbar" aria-label="Speech model download" aria-valuenow={progressPercent ?? undefined} aria-valuemin={0} aria-valuemax={100} aria-valuetext={progressPercent === null ? modelDownloadLabel(progress!) : undefined}
+          className={cn('model-progress-fill', progressPercent === null && 'model-download-indeterminate')}
+          style={progressPercent === null ? undefined : { width: `${progressPercent}%` }} />
+      </div>
+      {progress && progress.total > 0 && progressPercent !== null && <p className="model-progress-size">{(progress.received / 1024 / 1024).toFixed(1)} / {(progress.total / 1024 / 1024).toFixed(1)} MB</p>}
+    </div>}
+    {downloadState.phase === 'error' && <div role="alert" className="model-download-error"><CircleAlert size={18} aria-hidden="true" /><span>{downloadState.message}</span></div>}
+    {!renderPrimaryAction && <button type="button" onClick={action.onActivate} disabled={action.disabled} className={cn('model-download-action', isDownloading ? 'dialog-pill-btn' : 'first-run-primary')}>{action.label}</button>}
+    {isDownloading && <p className="model-download-help">You can cancel and choose another model.</p>}
+    {downloadState.phase === 'error' && selected === 'parakeet-tdt-0.6b-v3-coreml' && <div className="model-fallback-actions">
+      <button type="button" onClick={() => chooseFallback('base.en')} className="dialog-pill-btn">Use Whisper base</button>
+      <button type="button" onClick={() => chooseFallback('parakeet-tdt-0.6b-v2-fp16')} className="dialog-pill-btn">Use CPU Parakeet</button>
+    </div>}
+    {cancelError && <p role="alert" className="model-cancel-error">{cancelError}</p>}
+  </>;
+
+  return <div className="model-download-panel" data-downloading={isDownloading || undefined} data-embedded={!!renderPrimaryAction || undefined}>
+    <div className="model-options">
+      {offeredModels.map((model) => <button key={model.name} id={`download-model-${model.name}`} type="button" aria-pressed={selected === model.name}
+        aria-disabled={isDownloading} disabled={isDownloading} onClick={() => selectModel(model.name)} className="dialog-card model-option">
+        <div className="model-option-heading">
+          <span className="model-option-name">{model.label}
+            {hardwareGuidance?.recommendedModel === model.name && <span className="model-recommendation">Recommended for this Mac</span>}
+            {hardwareGuidance?.warnedModels.includes(model.name) && <span className="model-memory-tag">Higher memory</span>}
+          </span>
+          <span className="model-option-size">{installedModels?.[model.name] ? 'Installed' : model.size}</span>
         </div>
-      )}
-
-      {isDownloading && (
-        <div className="mb-4" aria-live="polite" aria-busy="true">
-          <div className="flex justify-between text-[length:var(--ui-font-caption)] text-on-surface-variant mb-1">
-            <span>{cancelling ? 'Cancelling…' : progress ? modelDownloadLabel(progress) : 'Starting…'}</span>
-            {progressPercent !== null ? (
-              <span>{progressPercent}%</span>
-            ) : (
-              <span>Working…</span>
-            )}
-          </div>
-          <div className="w-full h-2 overflow-hidden rounded-full bg-[var(--ui-tint-sunken)]">
-            <div
-              role="progressbar"
-              aria-valuenow={progressPercent ?? undefined}
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuetext={progressPercent === null ? 'Model installation in progress' : undefined}
-              className={cn(
-                'h-full rounded-full bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))]',
-                progressPercent === null ? 'model-download-indeterminate' : 'transition-all duration-200',
-              )}
-              style={progressPercent === null ? undefined : { width: `${progressPercent}%` }}
-            />
-          </div>
-          {progress && progress.total > 0 && progress.phase !== 'installing' && (
-            <p className="text-[length:var(--ui-font-caption)] text-on-surface-variant mt-1 text-right">
-              {(progress.received / 1024 / 1024).toFixed(1)} /{' '}
-              {(progress.total / 1024 / 1024).toFixed(1)} MB
-            </p>
-          )}
-        </div>
-      )}
-
-      {isDownloading && (
-        <div className="mb-4">
-          <button type="button" onClick={() => void handleCancel()} disabled={cancelling}
-            className="dialog-pill-btn px-4 py-2 text-[length:var(--ui-font-body)] text-on-surface disabled:opacity-50">
-            {cancelling ? 'Cancelling…' : 'Cancel download'}
-          </button>
-          <p className="mt-2 text-[length:var(--ui-font-caption)] text-on-surface-variant">Cancel to go back or choose another model. Retry resumes supported downloads.</p>
-          {cancelError && <p role="alert" className="mt-2 text-[length:var(--ui-font-body)] text-error">{cancelError}</p>}
-        </div>
-      )}
-
-      {downloadState.phase === 'error' && (
-        <div role="alert" className="dialog-toast mb-4 border-error/30 bg-error/10 px-4 py-3">
-          <p className="text-[length:var(--ui-font-body)] text-error">{downloadState.message}</p>
-          {selected === 'parakeet-tdt-0.6b-v3-coreml' && (
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => chooseFallback('base.en')}
-                className="dialog-pill-btn px-2.5 py-1.5 text-[length:var(--ui-font-caption)] text-on-surface hover:bg-surface-container"
-              >
-                Use Whisper base
-              </button>
-              <button
-                type="button"
-                onClick={() => chooseFallback('parakeet-tdt-0.6b-v2-fp16')}
-                className="dialog-pill-btn px-2.5 py-1.5 text-[length:var(--ui-font-caption)] text-on-surface hover:bg-surface-container"
-              >
-                Use CPU Parakeet
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-    </>
-  );
-
-  return (
-    <div>
-      {hardwareGuidance && (
-        <p className="mb-3 text-xs text-on-surface-variant" data-testid="model-guidance-summary">
-          {modelGuidanceSummary(hardwareGuidance)}
-        </p>
-      )}
-      <div className="space-y-2 mb-6">
-          {offeredModels.map((model) => (
-            <button
-              key={model.name}
-              id={`download-model-${model.name}`}
-              type="button"
-              aria-pressed={selected === model.name}
-              onClick={() => selectModel(model.name)}
-              disabled={isDownloading}
-              className={cn(
-                'dialog-card w-full px-4 py-3 text-left transition-colors',
-                selected === model.name
-                  ? 'border-primary/45 bg-[var(--ui-tint-accent-subtle)] shadow-[var(--ui-shadow-2)]'
-                  : 'hover:border-primary/30',
-                isDownloading ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer',
-              )}
-            >
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-sm font-medium text-on-surface">
-                  {model.label}
-                </span>
-                <span className="flex shrink-0 items-center gap-1.5">
-                  {hardwareGuidance?.recommendedModel === model.name && (
-                    <span className="rounded-full bg-[var(--ui-tint-accent-strong)] px-2 py-0.5 text-xs font-semibold text-on-surface">
-                      Recommended
-                    </span>
-                  )}
-                  {hardwareGuidance?.warnedModels.includes(model.name) && (
-                    <span className="rounded-full bg-warning/15 px-2 py-0.5 text-xs font-semibold text-warning">
-                      Higher memory
-                    </span>
-                  )}
-                  {installedModels?.[model.name] ? (
-                    <span className="rounded-full bg-[var(--ui-tint-accent-strong)] px-2 py-0.5 text-[11px] font-medium text-on-surface">
-                      Installed
-                    </span>
-                  ) : (
-                    <span className="text-xs text-on-surface-variant font-mono">
-                      {model.size}
-                    </span>
-                  )}
-                </span>
-              </div>
-              <p className="text-xs text-on-surface-variant mt-0.5">
-                {model.description}
-              </p>
-            </button>
-          ))}
-        </div>
-
-        {statusPortalTarget
-          ? createPortal(statusContent, statusPortalTarget)
-          : statusContent}
-
-        {/* An installed selection completes immediately — same path a finished
-            download takes — so nothing on disk is ever re-downloaded. */}
-        {renderPrimaryAction ? renderPrimaryAction({
-          label: primaryLabel,
-          disabled: isDownloading,
-          onActivate: activatePrimary,
-          isNavigation: selectedInstalled,
-        }) : (
-          <button
-            type="button"
-            onClick={activatePrimary}
-            disabled={isDownloading}
-            className="w-full rounded-[var(--ui-radius-pill)] bg-[linear-gradient(140deg,var(--murmur-primary),var(--murmur-primary-dim))] px-4 py-2.5 text-sm font-semibold text-on-primary shadow-[var(--ui-shadow-accent)] transition-colors hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {primaryLabel}
-          </button>
-        )}
+        <p>{model.name === 'parakeet-tdt-0.6b-v3-coreml' && hardwareGuidance?.chipTier !== 'unknown' && hardwareGuidance ? 'Fastest transcription on this Mac · Multilingual' : model.description}</p>
+        {selected === model.name && <Check className="model-selection" size={14} aria-hidden="true" />}
+      </button>)}
     </div>
-  );
+    {statusPortalTarget ? createPortal(statusContent, statusPortalTarget) : <div className="model-download-status">{statusContent}</div>}
+    {selectedMemoryWarning && (statusPortalTarget
+      ? createPortal(<p role="status" className="model-memory-warning">{selectedMemoryWarning}</p>, statusPortalTarget)
+      : <p role="status" className="model-memory-warning">{selectedMemoryWarning}</p>)}
+    {renderPrimaryAction?.(action)}
+  </div>;
 }
 
 /**
@@ -401,14 +294,10 @@ export function ModelDownloadPanel({
 export function ModelDownloader({ initialModel, onComplete }: Props) {
   const { installedModels, error, retry } = useInstalledModels();
   return (
-    <div className="h-full min-h-0 bg-background flex flex-col items-center justify-center p-8">
-      <div className="w-full max-w-md">
-        <h1 className="text-xl font-semibold tracking-[var(--ui-track-title,-0.01em)] text-on-surface mb-1">
-          Download a Model
-        </h1>
-        <p className="text-sm text-on-surface-variant mb-6">
-          A model file is required for transcription. Choose an installed model or download one.
-        </p>
+    <div className="model-downloader h-full min-h-0 bg-background flex flex-col items-center justify-center">
+      <WindowHeader showWordmark={false} />
+      <div className="model-downloader-column">
+        <StepHeading icon={Cpu} title="Speech model" subtitle="Download a local model once, then transcribe offline." />
         {error ? (
           <div role="alert">
             <p>Could not check installed models.</p>

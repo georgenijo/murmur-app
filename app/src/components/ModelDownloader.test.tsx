@@ -50,7 +50,7 @@ describe('ModelDownloadPanel', () => {
 
   const button = (label: string) => {
     const match = Array.from(container.querySelectorAll('button')).find(
-      (candidate) => candidate.textContent?.trim() === label,
+      (candidate) => label === 'Download' ? candidate.textContent?.trim().startsWith('Download ·') : candidate.textContent?.trim() === label,
     );
     expect(match, `Expected button "${label}"`).toBeDefined();
     return match!;
@@ -109,10 +109,11 @@ describe('ModelDownloadPanel', () => {
     mocks.invoke.mockReturnValue(pending.promise);
     try {
       await renderPanel({ initialModel: 'base.en', statusPortalTarget: statusHost });
-      await click('Download');
+      await act(async () => (statusHost.querySelector('button') as HTMLButtonElement).click());
+      await settle();
 
-      expect(container.textContent).not.toContain('Cancel download');
-      expect(statusHost.textContent).toContain('Cancel download');
+      expect(container.textContent).not.toContain('Cancel');
+      expect(statusHost.textContent).toContain('Cancel');
       expect(statusHost.querySelector('[role="progressbar"]')).not.toBeNull();
 
       await act(async () => mocks.listener?.({
@@ -201,7 +202,7 @@ describe('ModelDownloadPanel', () => {
 
     const alert = container.querySelector('[role="alert"]');
     expect(alert?.textContent).toContain('time limit');
-    expect(button('Retry download').hasAttribute('disabled')).toBe(false);
+    expect(button('Try again').hasAttribute('disabled')).toBe(false);
     expect(button('Use Whisper base')).toBeDefined();
     expect(onDownloadingChange.mock.calls).toEqual([[true], [false]]);
 
@@ -224,7 +225,7 @@ describe('ModelDownloadPanel', () => {
     expect(container.querySelector('[role="alert"]')?.textContent)
       .toContain('listener unavailable');
     expect(onDownloadingChange.mock.calls).toEqual([[true], [false]]);
-    expect(button('Retry download').hasAttribute('disabled')).toBe(false);
+    expect(button('Try again').hasAttribute('disabled')).toBe(false);
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
@@ -240,7 +241,7 @@ describe('ModelDownloadPanel', () => {
     };
     await renderPanel();
 
-    expect(container.textContent).toContain('recommended for Apple M1 with 8 GB RAM');
+    expect(container.textContent).toContain('Recommended for this Mac');
     expect(container.textContent?.match(/Higher memory/g)).toHaveLength(2);
     const warnedModel = container.querySelector('#download-model-large-v3-turbo') as HTMLButtonElement;
     expect(warnedModel.disabled).toBe(false);
@@ -260,7 +261,7 @@ describe('ModelDownloadPanel', () => {
     await renderPanel({ onDownloadingChange, onComplete });
     await click('Download');
     const requestId = mocks.invoke.mock.calls[0][1].requestId;
-    await click('Cancel download');
+    await click('Cancel');
     expect(mocks.invoke).toHaveBeenLastCalledWith('cancel_model_download', {
       modelName: 'parakeet-tdt-0.6b-v3-coreml', requestId,
     });
@@ -282,13 +283,13 @@ describe('ModelDownloadPanel', () => {
       ? Promise.reject('Installer termination is not yet confirmed') : download.promise);
     await renderPanel({ onDownloadingChange });
     await click('Download');
-    await click('Cancel download');
+    await click('Cancel');
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('termination');
     expect(onDownloadingChange.mock.calls).toEqual([[true]]);
     expect((container.querySelector('[id="download-model-base.en"]') as HTMLButtonElement).disabled).toBe(true);
     mocks.invoke.mockImplementation(() => Promise.resolve());
     await act(async () => download.reject('cancelled'));
-    await click('Cancel download');
+    await click('Cancel');
     expect(onDownloadingChange.mock.calls).toEqual([[true], [false]]);
   });
 
@@ -298,7 +299,7 @@ describe('ModelDownloadPanel', () => {
     const onComplete = vi.fn();
     await renderPanel({ onComplete });
     await click('Download');
-    await click('Cancel download');
+    await click('Cancel');
     expect(button('Download').disabled).toBe(false);
     await act(async () => listening.resolve(mocks.unlisten));
     expect(mocks.invoke).not.toHaveBeenCalled();
@@ -341,7 +342,7 @@ describe('ModelDownloadPanel', () => {
       expect(container.querySelector('[role="alert"]')).toBeNull();
       await act(async () => first.reject('Download stalled: no data received. Retry to resume.'));
       expect(container.textContent).toContain('stalled');
-      await act(async () => button('Retry download').click());
+      await act(async () => button('Try again').click());
       const secondRequest = mocks.invoke.mock.calls[1][1].requestId;
       expect(secondRequest).not.toBe(firstRequest);
       await act(async () => mocks.listener?.({ payload: { requestId: firstRequest, modelName: 'base.en', attemptId: 1, received: 99, total: 100 } }));
@@ -361,9 +362,26 @@ describe('ModelDownloadPanel', () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('need 1630 MB, available 100 MB');
     expect(onComplete).not.toHaveBeenCalled();
     expect(onDownloadingChange.mock.calls).toEqual([[true], [false]]);
-    expect(button('Retry download').disabled).toBe(false);
+    expect(button('Try again').disabled).toBe(false);
     await act(async () => (container.querySelector('[id="download-model-base.en"]') as HTMLButtonElement).click());
     expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('derives the estimated action size from selection and disables every option during a live attempt', async () => {
+    const download = deferred<void>();
+    mocks.invoke.mockReturnValue(download.promise);
+    await renderPanel();
+    expect(button('Download').textContent).toBe('Download · ~470 MB');
+    await act(async () => container.querySelector<HTMLButtonElement>('[id="download-model-base.en"]')!.click());
+    expect(button('Download').textContent).toBe('Download · ~150 MB');
+    await click('Download');
+    const options = [...container.querySelectorAll<HTMLButtonElement>('.model-option')];
+    expect(options.every((option) => option.disabled && option.getAttribute('aria-disabled') === 'true')).toBe(true);
+    expect(button('Cancel').disabled).toBe(false);
+    await act(async () => download.reject('Network unavailable.'));
+    expect(options.every((option) => !option.disabled)).toBe(true);
+    expect(button('Try again').disabled).toBe(false);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Network unavailable.');
   });
 
 });

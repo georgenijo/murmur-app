@@ -226,6 +226,9 @@ const manyMeetingDetail = (id: string) => {
   };
 };
 
+let fixtureDownloadDone: (() => void) | null = null;
+const fixturePermissionGrants = new Set<string>();
+
 mockIPC((command, payload) => {
   // #850 regression states use synthetic captures and record only invoked IDs.
   if (requestedState === 'copy-diagnostics') {
@@ -249,6 +252,38 @@ mockIPC((command, payload) => {
     if (command === 'delete_dictation_diagnostic_capture') {
       document.documentElement.setAttribute('data-copy-deleted-capture', String((payload as { captureId: string }).captureId));
       return;
+    }
+  }
+  // Deterministic native-boundary fixtures; the real picker owns all UI states.
+  if ((requestedState === 'first-run-model' || requestedState === 'first-run-onboarding') && command === 'get_model_hardware_guidance') return {
+    schemaVersion: 1, chip: 'Apple M4', chipTier: 'currentAppleSilicon', physicalMemoryGib: 24,
+    modelMemoryBudgetMib: 8192, recommendedModel: 'parakeet-tdt-0.6b-v3-coreml', warnedModels: [],
+  };
+  if ((requestedState === 'first-run-model' || requestedState === 'first-run-onboarding') && query.has('download')) {
+    if (command === 'download_model') {
+      if (query.get('download') === 'failed') throw 'The speech model could not be downloaded.';
+      const { modelName, requestId } = (payload ?? {}) as { modelName: string; requestId: string };
+      window.setTimeout(() => void emit('download-progress', {
+        modelName, requestId, attemptId: 1, received: 197.4 * 1024 * 1024, total: 470 * 1024 * 1024,
+        phase: query.get('download') === 'indeterminate' ? 'initializing' : 'downloading',
+      }), 80);
+      return new Promise<void>((resolve) => { fixtureDownloadDone = resolve; });
+    }
+    if (command === 'cancel_model_download') { fixtureDownloadDone?.(); fixtureDownloadDone = null; return; }
+  }
+  if (requestedState === 'first-run-onboarding' && query.has('permission')) {
+    const permission = query.get('permission');
+    if (command === 'check_microphone_permission_status') return fixturePermissionGrants.has('microphone') ? 'granted' : permission;
+    if (command === 'check_accessibility_permission') return fixturePermissionGrants.has('accessibility') || permission === 'granted';
+    if (command === 'get_system_audio_permission_status') return fixturePermissionGrants.has('systemAudio') || permission === 'granted' ? 'granted' : permission === 'denied' ? 'denied' : 'unknown';
+    if (command === 'get_calendar_permission_status') return fixturePermissionGrants.has('calendar') || permission === 'granted' ? 'granted' : permission === 'denied' ? 'denied' : 'notDetermined';
+    const requestedPermission = {
+      request_microphone_access: 'microphone', request_accessibility_permission: 'accessibility',
+      request_system_audio_permission: 'systemAudio', request_calendar_permission: 'calendar',
+    }[command];
+    if (requestedPermission) {
+      fixturePermissionGrants.add(requestedPermission);
+      return command === 'request_system_audio_permission' ? { permission: 'granted', needsRelaunch: false } : 'granted';
     }
   }
   if ((requestedState === 'copy-onboarding' || requestedState === 'first-run-model')
@@ -728,12 +763,12 @@ function VisualFixture() {
         isOpen={requestedState === 'palette'}
         onClose={() => {}}
         commands={[
-          { id: 'record', title: 'Start recording', section: 'Dictation', hint: '⇧ hold', run: () => {} },
+          { id: 'record', title: 'Start dictation', section: 'Dictation', hintPrefix: 'Hold', hint: '⇧ Left Shift', run: () => {} },
           { id: 'transcribe', title: 'Transcribe audio or video file…', section: 'Dictation', run: () => {} },
           { id: 'history', title: 'Search transcripts', section: 'History', hint: '⌘F', run: () => {} },
           { id: 'insights', title: 'Open Insights', section: 'Navigate', run: () => {} },
-          { id: 'settings', title: 'Open Settings', section: 'Navigate', hint: '⌘,', run: () => {} },
-          { id: 'logs', title: 'Open Performance workspace', section: 'Navigate', hint: '⌘L', run: () => {} },
+          { id: 'settings', title: 'Open settings', section: 'Navigate', hint: '⌘,', run: () => {} },
+          { id: 'logs', title: 'Open Performance Lab', section: 'Navigate', hint: '⌘L', run: () => {} },
         ]}
       />
       {requestedState === 'discovery-hint' && (

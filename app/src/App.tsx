@@ -1,3 +1,4 @@
+import { dictationKeyLabel } from './lib/settings';
 import { MeetingsPanel } from './components/history';
 import { useHomeSidebar } from './lib/hooks/useHomeSidebar';
 import { AppSurface } from './components/ui/AppSurface';
@@ -518,6 +519,13 @@ function App() {
     const meetingBusy = !['idle', 'failed'].includes(meetings.status.phase);
     const meetingCanStop = ['starting', 'recording'].includes(meetings.status.phase);
     const lastEntry = historyEntries[historyEntries.length - 1];
+    // Combined mode does not expose whether this recording began with a hold or
+    // double-tap. Do not promise a stop gesture without that ownership state.
+    const recordingGesture = status === 'starting' ? undefined
+      : status === 'recording'
+        ? settings.recordingMode === 'double_tap' ? 'Tap'
+          : settings.recordingMode === 'hold_down' ? 'Release' : undefined
+        : settings.recordingMode === 'double_tap' ? 'Double-tap' : 'Hold';
     const items: PaletteCommand[] = [
       ...(!meetingBusy ? [{
         id: 'recording-toggle',
@@ -525,7 +533,9 @@ function App() {
           ? 'Cancel microphone connection'
           : isRecording
             ? 'Stop recording'
-            : 'Start recording',
+            : 'Start dictation',
+        hintPrefix: recordingGesture,
+        hint: recordingGesture ? dictationKeyLabel(settings.doubleTapKey) : undefined,
         section: 'Recording',
         keywords: ['dictate', 'microphone', 'transcribe'],
         run: () => { void (isRecording ? handleStop() : handleStart()); },
@@ -659,6 +669,7 @@ function App() {
     return items;
   }, [
     status, historyEntries, settings.disabled, settings.pasteLastShortcut, settings.microphone,
+    settings.recordingMode, settings.doubleTapKey,
     settings.smartAutoMicrophoneEnabled, settings.smartAutoApprovedDeviceIds,
     settings.smartAutoPreferredDeviceIds, settings.smartAutoAllowContinuity,
     updateSettings, handleStart, handleStop,

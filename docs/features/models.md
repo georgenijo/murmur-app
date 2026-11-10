@@ -166,10 +166,22 @@ On first launch (the selected model is not present), a full-screen download view
 
 | Model | Description |
 |-------|-------------|
-| `parakeet-tdt-0.6b-v3-coreml` | "Fastest on Apple Silicon — multilingual, Apple Neural Engine" |
-| `parakeet-tdt-0.6b-v2-fp16` | "Fast CPU fallback — English only" |
-| `large-v3-turbo` | "Highest accuracy, slower (1-2 seconds)" |
-| `base.en` | "Good balance of speed and accuracy" |
+| `parakeet-tdt-0.6b-v3-coreml` | "Fastest transcription on Apple Silicon · Multilingual" |
+| `parakeet-tdt-0.6b-v2-fp16` | "Fast transcription · English only" |
+| `large-v3-turbo` | "Highest accuracy · Multilingual" |
+| `base.en` | "Balanced speed and accuracy · English only" |
+
+The standalone screen and wizard share the centered **Speech model** icon,
+heading, and offline sentence. Recommendations come from native hardware guidance;
+the selected row keeps an explicit check, and sizes use sans tabular numerals.
+The standalone Download / Cancel / Try again action reserves one fixed position
+below the cards. Download includes the selected catalog estimate, such as
+**Download · ~470 MB**; an installed model still uses Continue.
+While downloading, every card is disabled and exposes `aria-disabled`; only the
+unselected cards dim. The centered progress, measured byte count (when available),
+Cancel and error states use the existing correlated download transaction. Core ML
+continues to show indeterminate phases rather than fabricated byte progress.
+Native errors and explicit Core ML fallback actions remain available on failure.
 
 Default selection: `parakeet-tdt-0.6b-v3-coreml`. The gate (`App.tsx`) checks the currently selected model through the runtime manager. The downloader starts on that model when it is one of the curated choices and persists whichever model the user actually downloads. Selection is disabled only while an exact correlated attempt is live. Byte progress is shown for Murmur-managed downloads; FluidAudio setup is indeterminate because its Rust bridge does not expose byte progress, but it reports Preparing, Repairing, Initializing, and Validating phases. On terminal Core ML failure, Retry and explicit Whisper Base / CPU Parakeet fallbacks become immediately available.
 
@@ -194,7 +206,7 @@ onboarding; initialization success alone does not establish model readiness.
 
 ### Cancellation and disk space
 
-The setup panel exposes **Cancel download** during byte transfers, extraction,
+The setup panel exposes **Cancel** during byte transfers, extraction,
 and Core ML preparation. Back and model choices unlock after cancellation
 confirms termination. Unmounting also cancels its exact owner; late event,
 subscription, and completion callbacks cannot advance an abandoned panel.

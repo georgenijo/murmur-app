@@ -224,4 +224,15 @@ describe('CommandPalette', () => {
     expect(document.activeElement).toBe(trigger);
     trigger.remove();
   });
+  it('keeps the interaction verb outside the configured shortcut keycap', async () => {
+    commands[0] = { ...commands[0], title: 'Start dictation', hintPrefix: 'Hold', hint: '⇧ Left Shift' };
+    await render();
+    const row = rows()[0];
+    expect(row.textContent).toContain('Start dictation');
+    expect(row.querySelector('kbd')?.textContent).toBe('⇧ Left Shift');
+    expect(row.querySelector('.palette-binding > span')?.textContent).toBe('Hold');
+    await press('Enter');
+    expect(runs.record).toHaveBeenCalledOnce();
+  });
+
 });

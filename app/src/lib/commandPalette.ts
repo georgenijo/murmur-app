@@ -17,6 +17,8 @@ export interface PaletteCommand {
   keywords?: string[];
   /** Short right-hand hint, e.g. a keyboard shortcut or current state. */
   hint?: string;
+  /** Interaction verb outside the shortcut keycap (for example Hold). */
+  hintPrefix?: string;
   run: () => void | Promise<void>;
 }
 

@@ -331,3 +331,10 @@ an already-installed release as an available update.
 - `tauri-plugin-notification` — Native macOS notifications for background updates
 - `tauri-plugin-process` — App restart after install, `exit(0)` for forced update quit
 - `react-markdown` + `rehype-sanitize` — Release notes rendering
+
+The compact update dialog sizes to its release notes up to the viewport limit;
+long notes scroll inside it. The footer places Later (or Quit) before the primary
+action in DOM and keyboard order. Its icon tile uses semantic surface/foreground
+colors so it remains visible in both appearances. About, palette and updater
+share a blurred backdrop. Legacy “What's Changed” Markdown headings display as
+“What's new”; the sanitized release-note content and update callbacks are retained.
