@@ -90,7 +90,7 @@ function readDiscoveryState(): DiscoveryLoadResult {
   const legacy = read(LEGACY_STORAGE_KEY);
   const current = readState(stored);
   const previous = readState(legacy);
-  if (legacy !== null && !previous) removeLegacy();
+  if (!storageFailed && legacy !== null && !previous) removeLegacy();
   if (!current && !previous) return { state: null, storageFailed, cleanupFailed };
   const dismissedHints = unique([...(current?.dismissedHints ?? []), ...(previous?.dismissedHints ?? [])]);
   const state: DiscoveryStateV2 = {

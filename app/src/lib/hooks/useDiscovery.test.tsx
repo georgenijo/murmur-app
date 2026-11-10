@@ -144,15 +144,24 @@ describe('discovery storage failure matrix', () => {
     const failures: string[] = [];
     let cells = 0;
 
-    for (const dismissalKey of keys) {
+    for (const fixture of [
+      { name: DISCOVERY_STORAGE_KEY, dismissalKey: DISCOVERY_STORAGE_KEY },
+      { name: legacyKey, dismissalKey: legacyKey },
+      { name: 'unreadable legacy', dismissalKey: DISCOVERY_STORAGE_KEY },
+    ]) {
+      const { dismissalKey } = fixture;
       for (const operation of operations) {
         for (const path of ['function', 'hook'] as const) {
-          const label = `${dismissalKey} / ${operation.name} / ${path}`;
+          const label = `${fixture.name} / ${operation.name} / ${path}`;
           const exercise = async (fault: Fault, faultLabel: string) => {
             const context = `${label} / ${faultLabel}`;
             const storage = localStorage;
             storage.clear();
             for (const [index, key] of keys.entries()) {
+              if (fixture.name === 'unreadable legacy' && key === legacyKey) {
+                storage.setItem(key, 'not JSON');
+                continue;
+              }
               storage.setItem(key, JSON.stringify({ version: index === 0 ? 2 : 1,
                 pendingHints: key === dismissalKey ? ['browser_modes'] : ['browser_modes', 'double_tap_timing'],
                 dismissedHints: key === dismissalKey ? ['double_tap_timing'] : [],
@@ -183,7 +192,9 @@ describe('discovery storage failure matrix', () => {
                 throw new Error('injected read failure');
               }
               const value = read(key);
-              if (value !== null) for (const id of JSON.parse(value).dismissedHints) readableDismissals.add(id);
+              if (value !== null) {
+                try { for (const id of JSON.parse(value).dismissedHints) readableDismissals.add(id); } catch { /* Unreadable JSON contributes no known dismissal. */ }
+              }
               return value;
             });
             const writes = vi.spyOn(storage, 'setItem').mockImplementation((key, value) => {
