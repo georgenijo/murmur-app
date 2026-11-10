@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.63.0] - 2026-11-10
+
+<!-- Release notes generated using configuration in .github/release.yml at 50d3323d7f10e42021fd8e6d966823c9c1ee2c1e -->
+
+## What's Changed
+### Other Changes
+* UI redesign: Home, Notetaker, Insights, Settings, first run (integration) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1094
+* Implement approved Home, sidebar, and shared secondary controls by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1087
+* feat(ui): redesign first-run setup and auxiliary dialogs by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1088
+* Implement the approved Insights redesign by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1089
+* Redesign Settings with grouped rows and real theme previews by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1090
+* feat(ui): implement approved Notetaker redesign by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1091
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.62.2...v0.63.0
+
 ## [0.62.2] - 2026-11-10
 
 <!-- Release notes generated using configuration in .github/release.yml at d6f360c6db61fa5ee2ae2e51f6e86cfdfe8ddae5 -->
