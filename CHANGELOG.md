@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.63.1] - 2026-11-10
+
 ### Fixed
 
 - Allow meeting deletion when the app data root has a symlinked ancestor, while preserving no-follow rejection for the meeting-store root and audio directories.
