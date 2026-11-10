@@ -736,38 +736,40 @@ learned replacements remain authoritative: their output spans are protected, and
 already canonical vocabulary spellings are skipped. Multiword aliases continue
 through deterministic correction; this tier does not rewrite phrases.
 
-Recording start prepares a fresh, one-use FoundationModels session only when the
-frozen Smart Correction and homophone settings enable this tier. Preparation
-runs asynchronously with static instructions and no transcript. Its owner lives
-in that recording's immutable snapshot; stale work can publish only into that
-disposable owner. Generation consumes the session exactly once, so no prior
-transcript or response can enter another dictation. If preparation is still
-running, the tier refuses immediately rather than waiting behind it. Without a
-trigger there is no generation request; scanning still has a small CPU cost.
-[Apple's prewarm guidance](https://developer.apple.com/documentation/foundationmodels/languagemodelsession/prewarm%28promptprefix%3A%29)
-suggests at least a second before generation and makes no loading guarantee,
-particularly in the background. This is best effort, not evidence of sub-budget
-answers; the generation deadline remains unchanged. More than six flags or 1,200 characters skips
-inference. A fresh session chooses only among each flag's options, keeping its
-original on doubt; Rust rejects malformed answers and verifies that punctuation,
-spacing, and every unflagged token remain byte-identical. The Swift bridge waits
-at most 150 ms, cancels overdue work, and refuses another request until that task
-exits. Three consecutive timeouts or model-unavailable results pause inference
-and preparation for five minutes of monotonic time. The next eligible attempt
-then retries; an engine success resets the failure count (including an
-unchanged spelling). Other engine failures also break the consecutive streak.
-The cooldown is app-lifetime memory shared across recording sessions, resets
-on relaunch, and does not depend on wall-clock changes. It leaves deterministic
-text byte-for-byte unchanged. Content-free structured events
-`homophone_context.backoff_entered` / `homophone_context.backoff_exited` mark
-transitions; `homophone_context.pass` reports `outcome=backoff` for skipped
-inference. Unavailable models, errors, late answers and failed validation use the
-pipeline's optional-fallback policy and deliver deterministic text. Stage timing
-and pass outcomes/counts are content-free; neither prompt nor answer is logged.
-Performance runs persist the separate `homophoneContext` duration/outcome inside
-the aggregate transcript-transform span; timeout/backoff uses `fallback`, while
-a disabled tier is `notApplicable`. A measured sub-millisecond pass may be 0 ms;
-that is an actual measurement, never a missing-data sentinel.
+Live dictation currently reports this tier as **unavailable** (#1081), without
+preparing/prewarming a session or invoking FoundationModels generation. Prepared
+first responses measured 307–352 ms on M4 and 309–337 ms on M5 Pro; none of 26
+probe responses met the unchanged 150 ms delivery budget. The saved opt-in is
+preserved, and the existing settings description explains the unavailability.
+`LIVE_DICTATION_GENERATION_ENABLED` is the single code-level re-enable switch;
+the FoundationModels bridge remains usable by other callers.
+
+The bounded trigger scan still runs when enabled: no eligible token records
+`not_triggered`, while more than six flags or 1,200 characters records
+`bounded_skip`. An eligible pass promptly records `unavailable` and delivers
+the deterministic text byte-for-byte through the existing optional fallback.
+The gate sits outside adaptive backoff so repeated unavailable dictations stay
+`unavailable`, rather than becoming `backoff`.
+
+If generation is re-enabled, the recording-owned session and activation checks
+remain in place. The model chooses only among each flag's options; Rust rejects
+malformed answers and verifies punctuation, spacing and unflagged tokens remain
+byte-identical. The bridge cancels overdue work and refuses another request
+until it exits. Three consecutive timeouts or model-unavailable results pause
+inference and preparation for five minutes of monotonic app-lifetime time.
+Every response exceeding the budget, including an error, counts as a timeout
+before backoff accounting. Rejected, unavailable or failed answers retain the
+deterministic text.
+
+Content-free `homophone_context.pass` events retain the existing bounded
+`outcome`, `flagged`, `engine_us` and `budget_ms` fields. They distinguish
+`unavailable`, `not_triggered` and `backoff`; neither prompt nor answer is logged.
+Performance runs retain the existing `homophoneContext` duration and generic
+`fallback` outcome inside the aggregate transcript-transform span. A disabled
+or non-live tier is `notApplicable`. A measured sub-millisecond pass may be
+0 ms; that is a measurement, never a missing-data sentinel. No diagnostic field
+or outcome enum changed, so existing schema versions and older records remain
+unchanged.
 
 CI uses floating `macos-latest` (observed image 20261013.0424: macOS 26 ARM64,
 default Xcode 26.6 with macOS SDK 26.5). `canImport` gates the
