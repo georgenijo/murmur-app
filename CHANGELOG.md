@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
-- Allow meeting deletion when the app data root has a symlinked ancestor, while continuing to refuse symlinks inside the meeting store.
+- Allow meeting deletion when the app data root has a symlinked ancestor, while preserving no-follow rejection for the meeting-store root and audio directories.
 
 ## [0.63.0] - 2026-11-10
 

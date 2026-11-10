@@ -215,14 +215,42 @@ impl Drop for RecoveryCandidate {
     }
 }
 
+fn initialize_root(root: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let name = match root.components().next_back() {
+        Some(Component::Normal(name)) => name,
+        _ => return Err(storage_error()),
+    };
+    let parent = root
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).map_err(|_| storage_error())?;
+    let root = parent
+        .canonicalize()
+        .map_err(|_| storage_error())?
+        .join(name);
+    match fs::create_dir(&root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return Err(storage_error()),
+    }
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW_ANY | libc::O_CLOEXEC)
+        .open(&root)
+        .map_err(|_| storage_error())?;
+    Ok(root)
+}
+
 impl MeetingRepository {
     pub fn initialize(root: PathBuf) -> Result<(Self, InitializationOutcome), String> {
-        fs::create_dir_all(&root).map_err(|_| storage_error())?;
-        // The app-data location may be reached through a system or user-managed
-        // ancestor symlink (for example macOS `/tmp`). Resolve that trusted
-        // prefix once, then keep every later no-follow open rooted at the
-        // concrete meeting-store directory.
-        let root = root.canonicalize().map_err(|_| storage_error())?;
+        // The app-data location may have a system or user-managed symlinked
+        // ancestor (for example macOS `/tmp`). Resolve only that parent, then
+        // prove the meeting-store directory itself has no symlink before any
+        // lease or database operation can use it.
+        let root = initialize_root(&root)?;
         let lease = InitializationLease::acquire(&root)?;
         fs::create_dir_all(root.join("audio")).map_err(|_| storage_error())?;
         fs::create_dir_all(root.join("backups")).map_err(|_| storage_error())?;
@@ -1572,6 +1600,47 @@ mod tests {
         );
         assert!(repository.get_session("empty-session").is_ok());
         assert!(outside_audio.is_dir());
+    }
+
+    #[test]
+    fn initialization_refuses_symlinked_store_root_and_preserves_outside_data() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+        let outside_root = temp.path().join("outside-store");
+        let (outside, _) = MeetingRepository::initialize(outside_root.clone()).unwrap();
+        outside
+            .create_session("root-link", "base.en", "en", true, true)
+            .unwrap();
+        let audio = outside.root().join("audio/root-link/me-0.wav");
+        fs::create_dir_all(audio.parent().unwrap()).unwrap();
+        fs::write(&audio, b"synthetic audio").unwrap();
+        let segment = outside
+            .insert_pending_segment(
+                "root-link",
+                MeetingSpeaker::Me,
+                0,
+                0,
+                1_000,
+                "audio/root-link/me-0.wav",
+            )
+            .unwrap();
+        outside
+            .finalize_segment(segment, "synthetic", true)
+            .unwrap();
+        outside
+            .finish_session("root-link", MeetingSessionStatus::Complete, None)
+            .unwrap();
+
+        let store_root = temp.path().join("meetings");
+        symlink(&outside_root, &store_root).unwrap();
+
+        assert_eq!(
+            MeetingRepository::initialize(store_root).unwrap_err(),
+            storage_error()
+        );
+        assert!(outside.get_session("root-link").is_ok());
+        assert_eq!(fs::read(audio).unwrap(), b"synthetic audio");
     }
 
     fn final_segment(
