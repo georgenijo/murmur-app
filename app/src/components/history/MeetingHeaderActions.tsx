@@ -79,10 +79,7 @@ export function MeetingHeaderActions(props: MeetingHeaderActionsProps) {
         </Menu.SubmenuRoot>
         {props.onDelete && <><Menu.Separator className="ui-menu-separator" />
           <Menu.Item className="ui-menu-item" data-variant="destructive" closeOnClick={false} onKeyDownCapture={(event) => guardDestructiveKey(event, () => props.onDelete?.())}
-            onBlur={props.onDisarmDelete} onPointerLeave={props.onDisarmDelete} onClick={(event) => {
-              if (event.detail > 1) return;
-              props.onDelete?.();
-            }}>{props.confirmingDelete ? 'Confirm delete…' : 'Delete meeting…'}</Menu.Item>
+            onBlur={props.onDisarmDelete} onPointerLeave={props.onDisarmDelete} onClick={() => props.onDelete?.()}>{props.confirmingDelete ? 'Confirm delete…' : 'Delete meeting…'}</Menu.Item>
         </>}
       </Popup>
     </Menu.Root>}

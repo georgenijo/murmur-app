@@ -355,7 +355,7 @@ describe('MeetingsPanel retained audio deletion', () => {
     }
   });
 
-  it('ignores a double-click confirmation but accepts a separate single click', async () => {
+  it('confirms a second pointer activation, including a native double-click detail', async () => {
     const remove = vi.fn().mockResolvedValue(true);
     await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
     await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
@@ -363,9 +363,6 @@ describe('MeetingsPanel retained audio deletion', () => {
     await act(async () => item.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 })));
     expect(item.textContent).toBe('Confirm delete…');
     await act(async () => item.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 })));
-    expect(remove).not.toHaveBeenCalled();
-    expect(item.textContent).toBe('Confirm delete…');
-    await act(async () => item.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 })));
     expect(remove).toHaveBeenCalledExactlyOnceWith(detail.session.id);
   });
 
