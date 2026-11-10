@@ -719,12 +719,13 @@ impl HomophoneEngine for FoundationModelsEngine {
 const LIVE_DICTATION_GENERATION_ENABLED: bool = false;
 
 struct LiveDictationEngine {
+    enabled: bool,
     engine: Arc<dyn HomophoneEngine>,
 }
 
 impl HomophoneEngine for LiveDictationEngine {
     fn prewarm(&self) {
-        if LIVE_DICTATION_GENERATION_ENABLED {
+        if self.enabled {
             self.engine.prewarm();
         }
     }
@@ -736,7 +737,7 @@ impl HomophoneEngine for LiveDictationEngine {
         budget: Duration,
         max_tokens: u32,
     ) -> Result<String, EngineError> {
-        if !LIVE_DICTATION_GENERATION_ENABLED {
+        if !self.enabled {
             return Err(EngineError::Unavailable);
         }
         self.engine.choose(instructions, prompt, budget, max_tokens)
@@ -748,6 +749,7 @@ pub(crate) fn system_engine() -> Arc<dyn HomophoneEngine> {
     // Gate outside backoff: an intentionally unavailable pass must always
     // report unavailable, never accumulate failures and turn into backoff.
     Arc::new(LiveDictationEngine {
+        enabled: LIVE_DICTATION_GENERATION_ENABLED,
         engine: Arc::new(BackoffEngine {
             engine: Arc::new(FoundationModelsEngine::default()),
             state: STATE
@@ -816,6 +818,7 @@ mod tests {
     fn live_dictation_never_generates_or_prepares_and_reports_unavailable() {
         let (backoff, inner, _) = backoff_engine(vec![]);
         let engine = LiveDictationEngine {
+            enabled: LIVE_DICTATION_GENERATION_ENABLED,
             engine: Arc::new(backoff),
         };
         // Mirror repeated recording starts, beyond the cooldown threshold.
@@ -834,6 +837,22 @@ mod tests {
             run_pass("Hello world.", &[], &[], &engine).outcome,
             PassOutcome::NotTriggered
         );
+    }
+
+    #[test]
+    fn enabled_live_dictation_delegates_preparation_and_accepts_a_choice() {
+        let (backoff, inner, _) = backoff_engine(vec![Ok("1: queue".into())]);
+        let engine = LiveDictationEngine {
+            enabled: true,
+            engine: Arc::new(backoff),
+        };
+        engine.prewarm();
+        let result = run_pass("Add it to the cue.", &[], &[], &engine);
+        assert_eq!(result.outcome, PassOutcome::Accepted);
+        assert_eq!(result.text, "Add it to the queue.");
+        assert_eq!(result.flagged, 1);
+        assert_eq!(inner.prewarms.load(Ordering::SeqCst), 1);
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
