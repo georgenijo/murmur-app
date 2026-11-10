@@ -27,7 +27,7 @@ performance diagnostics removes only these runs and resource samples. It also
 advances a clear epoch so an operation that began before Clear cannot reinsert
 its old diagnostics when it eventually finishes.
 
-The database currently uses SQLite `user_version = 6`; the v2 migration adds
+The database currently uses SQLite `user_version = 9`; the v2 migration adds
 Voice Query support and the v3 migration adds the dictation `releaseToStop`
 and `releaseToPaste` stages, neither changing tables. Run and resource JSON records
 remain backward-compatible at `schemaVersion: 1`. V4 adds `homophoneContext`
@@ -131,8 +131,8 @@ chord press that ends the hold) publishes `hold-down-stop`, keyed by the live
 recording ID. The first release of a recording wins. The stop claims the stamp
 when it accepts the transition, only for its own recording and only within 10
 seconds, so a release that did not drive the stop is never attributed to a
-run. Toggle, overlay, and auto-stop
-stops, and historical records, have no release stages; they are omitted, never
+run. Toggle stops use the separate stop-press stages described below. Overlay,
+auto-stop, and historical records have no hold release stages; they are omitted, never
 shown as zero. The stamp is one instant and one generation ID, with no content.
 The Runs workspace shows nearest-rank p50/p90 of `totalProcessing` and
 `releaseToPaste` across retained successful dictations.
@@ -590,3 +590,186 @@ onboarding, unavailable Accessibility, missing settings, or a model without the
 catalog startup-warm policy may omit early listener/model milestones. Failures
 use the existing frontend path. There is no new SQLite run kind or retained
 content; the telemetry boundary permits only the fixed code and elapsed integer.
+
+## Early-final shadow measurement (#1081 phase 3)
+
+SQLite `user_version = 7` adds `stopPressToRelease`, `stopReleaseToCommand`, and
+an optional dictation `shadow` companion (`schemaVersion: 1`). The metadata-only
+6 → 7 migration preserves historical JSON bytes. Run JSON remains V1; old
+records may omit the companion and stages. The metadata-only 7 → 8 migration
+adds the bounded repeat-skip enum without
+rewriting historical JSON. The metadata-only 8 → 9 migration adds
+`notMeasuredInApp`, preserving historical comparisons and skipped states. Older
+builds refuse this database.
+
+Double-tap/Both-mode single-tap stops stamp native press and release instants.
+`stopPressToRelease` measures the gesture, and `stopReleaseToCommand` measures
+release through the webview to native stop entry. The pending press belongs to
+the detector and is cleared by reset, chords, excessive holds, or reconfiguration.
+Only an emitted stop publishes it; the accepted stop consumes it for the same
+generation within ten seconds. Only a resolved double-tap toggle stop attributes
+that stamp; an overlay, auto-stop, other stop, or matching hold release discards
+it without recording double-tap stages or press evidence. Hold-to-talk retains
+its existing release stages.
+The press reads a nonblocking retained-PCM sample count, without copying audio;
+contention records an unavailable (`null`) cursor. The count represents PCM
+already received at the host, not samples still buffered inside the helper.
+
+The companion records only numbers, booleans, and fixed enums:
+
+- `pressSample`, `pauseSample`: 16 kHz prefix endpoints, or null;
+- `trailingSilenceBeforePressMs`, `trailingSilenceBeforeStopMs`: silence after
+  the latest preceding padded full-clip VAD segment (zero within a segment);
+  before the first segment, measure from clip start, since complete VAD ranges
+  prove that prefix is silent. Missing VAD evidence remains null;
+- `pressInputMatches`, `pauseInputMatches`: byte-exact equality of separately
+  filtered prefixes against the final filtered PCM, or null when unavailable;
+- `previewHeldBackendAtPress`: whether display-only preview actually held the
+  shared backend at press, not whether a preview tick was merely scheduled;
+- `determinism`: `disabled`, `pending`, `compared`, `backendUnavailable`,
+  `superseded`, `decodeFailed`, `unsupportedBackend`, `notAttempted`,
+  `skippedForegroundLatencyRisk`, or `notMeasuredInApp`; all new live records
+  use `notMeasuredInApp`, and older comparison statuses stay readable;
+- `decodeMatches`: the in-memory hash comparison result only when `compared`.
+
+The pause endpoint is the first 300 ms point in the latest qualifying gap
+between padded speech segments, including trailing silence. Prefix VAD uses the
+same recording-start threshold and unchanged final PCM recipe. Full-clip bounds
+are recomputed in the worker, and used only if that PCM is byte-identical to the
+already-delivered final input; final VAD collects no shadow bounds. VAD-disabled,
+failed/missing VAD, absent clean press, and absent qualifying pause remain
+unavailable rather than becoming false or zero. This phase targets Core ML;
+Whisper and imported-file transcription are unchanged.
+
+All prefix passes run after confirmed delivery, off the pipeline, after the
+completed run UUID is durable. The pipeline returns its already-owned filtered
+PCM; after its Idle guard has dropped, the caller captures `delivered_at` and
+`totalProcessing`, then moves both original and filtered buffers into the shadow
+worker. There is no shadow PCM copy, text capture, or hashing. A boundary assertion
+and a move/ordering regression test keep shadow setup after the Idle observation
+and delivery timestamp. One process-wide shadow permit bounds retained audio/work.
+Runs without an admitted job still record `notMeasuredInApp`; completion starts
+with unavailable prefix evidence and a later atomic UPDATE fills it. Refresh
+Runs to read that amendment. Clear/pruning cannot recreate a row, and a reused recording ID cannot
+receive an old UUID's result. A quit before the amendment can leave the original
+unavailable prefix evidence. No shadow result changes delivered text or supplies a
+future decode.
+
+The Runs detail view renders the numeric/boolean shadow evidence and repeat
+status. False is shown as **No**, a missing measurement as **Unavailable**, and
+an absent historical companion as **Shadow evidence not recorded for this run**.
+Not measured in app, skipped, disabled, pending, not-attempted, unsupported, and
+older completed comparisons have separate labels; skipped work never appears
+as a failed or false comparison.
+
+Live determinism is **not measured in app**, regardless of environment or settings.
+The old `MURMUR_SHADOW_DETERMINISM` switch has no code path. Shadow work never
+acquires, waits for, holds, loads, or calls the transcription backend. The shared
+final decoder is non-preemptible, so even an idle admission could delay a later
+foreground request and is prohibited. The worker has only VAD capabilities.
+Concurrency tests hold shadow VAD work open and verify admission for dictation,
+file transcription, meetings, preview, model preparation, and other backend
+users, including an already-held backend. `decodeMatches` is always null on new
+live records. The moved PCM is dropped with its job.
+
+Determinism evidence is instead an ignored, developer-only Rust model test,
+compiled only into the macOS Apple Silicon test harness, never the app:
+
+```bash
+cd app/src-tauri
+cargo test synthetic_final_decode_is_deterministic -- --ignored --nocapture --test-threads=1
+```
+
+It requires the installed Parakeet Core ML and Silero models and macOS `say`.
+It generates 32 synthetic clips in a temporary directory: 16 short clips and 16
+clips whose VAD-filtered duration exceeds 15 seconds. It uses the app's final VAD
+recipe and `decode_final_transcript`, including its existing retry behavior. Each
+clip is decoded twice, with no warm-up before the first pair after model load.
+The test then unloads and reloads the model and repeats all pairs. It compares
+SHA-256 hashes in memory, requires nonempty successful decodes, and emits only
+counts/booleans; neither text nor hashes are printed or persisted. It accepts no
+user audio or external corpus path and removes generated audio on exit. This is
+evidence for those synthetic inputs, not a guarantee for every possible input.
+
+## Delivery attribution
+
+New dictation runs optionally carry `deliveryTiming` in the active/completed
+V1 envelope, with its own `schemaVersion: 1`. Historical JSON is unchanged and
+omits it. Durations use monotonic **microseconds**, wrapped in the existing
+measurement status contract; unavailable is never a numeric zero. The existing
+`clipboardPaste` stage and `inject timing` log retain their original meanings.
+`clipboardPaste` measures the whole delivery stage, not visible insertion.
+
+The companion separates accepted/actual route (normal, Smart current field,
+Smart handoff, or clipboard only), configured delay, permission, and final
+injection/refusal/error outcome. `acceptedRoute` describes the recording-start
+snapshot. `actualRoute` describes the preparation path: `ready` is
+`smartCurrent`, while `activationRequested` is `smartHandoff`, including a
+recording that started in the current field but switched away while speaking.
+Normal/clipboard fallbacks use the post-preparation snapshot. Without a
+confirmed Smart preparation path, the actual route is unavailable rather than
+inferred from the start flag. Historical rows retain their recorded values;
+there is no backfill or change to the schemaVersion 1 shape.
+
+Disabled auto-paste makes no accessibility-permission query and has no Rust
+permission cache. Its `accessibility` measurement remains unavailable: filling
+it would add an `AXIsProcessTrusted` call on the delivery path or substitute
+potentially stale UI state. Existing permission checks and their ordering are
+unchanged.
+
+Whole-phase fields distinguish preparation
+queue, delivery-owner lock wait and work; activation settling; injection queue,
+owner wait and work; cleanup; and receiver/outcome publication. `toPostUs` ends
+immediately before actual key-down posting and is unavailable if no post was
+observed before the record closed. A posted shortcut still is not insertion
+acknowledgment. Error, timeout and early-return paths close the record too.
+
+Native child measurements cover clipboard write, numeric pasteboard generation
+queries (including generation capture), focused-field query/transport/AX status,
+all three ordered target verifications with independent lookup retry counts,
+event construction, final live-focus proof/status, key-down, key hold and key-up.
+`nativePost` and `retryPost` separate event attempts; retry focus and target
+checks have their own fields. Each focus query's `axStatus` records the last
+attempted AX operation, including `AXSubrole` after a successful `AXRole` query;
+`timedOut` retains any timeout observed throughout that query. This applies to
+both the initial and retry query and does not change their role classification
+or fallback policy. The existing record shape and nested `schemaVersion: 1`
+are unchanged; historical rows remain readable.
+
+`nativePasteRetryCount` is incremented when the
+retry branch is entered, before its unchanged 100 ms wait, including a retry
+that subsequently refuses. It is distinct from native identity lookup retries.
+
+Smart child timers measure preparation validation (including its guarded
+activation work), insertion validation, post-settle, structural readback and
+restoration. Preparation, confirmation and rollback use bounded outcomes;
+timeout, cancellation and expiry remain explicit. Child timers are included in
+their parent phase; do not sum them again into the stage total. Clipboard write
+includes capturing its generation, so that first generation query also overlaps
+the pasteboard-query aggregate. A field not reached retains a status instead of
+inventing a zero. At timeout, open timers retain elapsed-so-far through sealing;
+metadata not yet returned remains unavailable. A finished final-focus proof
+retains its atomically frozen duration even if sealing happens before key-up
+publishes it. Freezing adds no accumulator lock between proof and posting.
+Posting progress is registered before that proof and published with atomic
+stores: sealing during key-down, the hold, or key-up preserves `toPostUs` and
+the elapsed time of the active key-event leaf. Completed leaves keep their
+measured durations. A partial key pair leaves the post outcome unavailable;
+only completion of key-up establishes `posted`, still without insertion
+acknowledgment. No schema fields or delivery checks change.
+Those partial durations do not claim that native IPC completed.
+
+Normal delivery verification and Smart preparation's process-only samples no longer query diagnostic-only `AXFocusedWindow` during
+verification. `windowDiagnostic: unavailableOffPath` and an unavailable duration
+make that absence explicit; its window relation is `unknown`. The fresh
+process-instance samples, all three normal verifier calls, secure-field policy, final
+live-focus proof and pasteboard equality remain authoritative. Smart's exact
+window/field checks are separate and unchanged.
+
+Each recording owns a distinct collector. Completion seals it before persistence
+into that recording's correlation, including when diagnostics initialization is
+still pending. Late main-thread callbacks cannot amend a sealed collector or a
+newer run; Clear/pruning cannot be undone by an update. Only numbers, booleans,
+measurement statuses and bounded enums enter this companion. No application or
+window strings, content, paths or native error text are accepted. This change
+does not establish a new paste p95 or a visible-insertion latency claim.

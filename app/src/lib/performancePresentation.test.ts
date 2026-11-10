@@ -97,6 +97,8 @@ describe('performance presentation semantics', () => {
 
   it('orders each run kind without inventing stage offsets', () => {
     expect(orderedStages(makeRun()).map(stage => stage.stage)).toEqual([
+      'stopPressToRelease',
+      'stopReleaseToCommand',
       'releaseToStop',
       'captureFinalization',
       'vad',

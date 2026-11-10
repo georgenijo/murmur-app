@@ -363,7 +363,15 @@ trait TranscriptionBackend: Send + Sync {
 - **Core ML (FluidAudio)** — Parakeet v3 on the ANE. Decoder state is reset between one-shot dictations. An empty result after VAD trimming retries once with the original unfiltered audio.
 - **Parakeet CPU (sherpa-onnx)** — English fallback, also the non-macOS path.
 
-All backends take one authoritative final-after-stop pass; delivery happens exactly once. Core ML and Whisper Tiny/Base also emit display-only partials. Whisper partials own a separate cancellable CPU context for the recording, leaving the final Metal context and runtime lock untouched.
+All backends take one authoritative final-after-stop pass; delivery happens exactly once.
+After confirmed delivery, Core ML shadow diagnostics compare VAD-filtered prefixes
+after Idle and the captured delivery timestamp. Full-clip shadow bounds are also
+recomputed there, with no bounds collection in final VAD. Live determinism always
+records `notMeasuredInApp`; an ignored developer-only model test measures repeat
+decode equality outside the app.
+Shadow work has no shared-backend capability and never supplies delivered text;
+only content-free evidence amends the completed
+run UUID. See [performance diagnostics](features/performance-diagnostics.md#early-final-shadow-measurement-1081-phase-3). Core ML and Whisper Tiny/Base also emit display-only partials. Whisper partials own a separate cancellable CPU context for the recording, leaving the final Metal context and runtime lock untouched.
 
 ### `keyboard.rs` — Keyboard Detection
 
@@ -380,9 +388,9 @@ Global modifier hotkeys recover when macOS disables the underlying event tap, an
 ### `injector.rs` — Text Injection
 
 1. **Clipboard** (always): `arboard`. Empty/whitespace-only text is skipped.
-2. **Auto-paste** (optional): waits the configured delay, then posts a native `CGEvent` Cmd+V key-down/key-up pair to `CGEventTapLocation::HID`. If the native path fails, it falls back to `osascript`. Retries once on failure; the whole operation is timeout-bounded. A typed, generation-gated delivery outcome distinguishes completed automatic paste, confirmed clipboard-only delivery, failed clipboard write, and an unconfirmed timeout. The overlay shows `⌘V` only for the confirmed clipboard-only case; detailed failures remain on `auto-paste-failed` for the main window.
+2. **Auto-paste** (optional): waits the configured delay, then posts a native `CGEvent` Cmd+V key-down/key-up pair to `CGEventTapLocation::HID`. Event-construction failure retries once; there is no paste-event AppleScript fallback; the whole operation is timeout-bounded. A typed, generation-gated delivery outcome distinguishes completed automatic paste, confirmed clipboard-only delivery, failed clipboard write, and an unconfirmed timeout. The overlay shows `⌘V` only for the confirmed clipboard-only case; detailed failures remain on `auto-paste-failed` for the main window.
 
-Focused-field role checks use native AX with a per-element messaging timeout and an osascript fallback, so a hung app can't stall the pipeline.
+Focused-field role checks use native AX with a per-element messaging timeout and a bounded osascript compatibility query. The content-free `deliveryTiming` performance companion separates queue, owner wait, work and native/Smart child timings. Normal delivery retains fresh process checks without diagnostic-only AX window IPC; Smart's exact-window checks remain mandatory.
 
 ### `telemetry.rs` — Structured Events
 
