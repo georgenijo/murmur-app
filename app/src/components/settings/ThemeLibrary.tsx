@@ -125,7 +125,8 @@ function ModePreview({ mode, options, selected, active, labels, open, onOpen, on
         aria-label={`Use ${labels.get(option.entry.id) ?? option.entry.label} for ${mode} mode${option.entry.id === selected.entry.id ? ', currently selected' : ''}`}
         aria-pressed={option.entry.id === selected.entry.id}
         onClick={event => { event.stopPropagation(); onChoose(option.entry); openerRef.current?.focus(); }}>
-        {labels.get(option.entry.id) ?? option.entry.label}
+        <span>{labels.get(option.entry.id) ?? option.entry.label}</span>
+        {option.entry.id === selected.entry.id && <span aria-hidden="true" className="settings-theme-option-check">✓</span>}
       </button>)}
     </div>}
   </div>;

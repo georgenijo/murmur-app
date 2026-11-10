@@ -245,32 +245,32 @@ in `styles/settings.css` map onto the active `--murmur-*` colors; Sonic,
 OpenCode, imported themes, library ownership, and appearance persistence remain
 owned by the appearance engine. No T3 palette is installed over a saved theme.
 The search-match colors below are the explicit highlight exception. Settings
-scopes the existing header paint-boundary token to its own 240/56px navigation;
+scopes the existing header paint-boundary token to its own 208/56px navigation;
 Home and native window lifecycle remain separate.
 
 | Tokens / component | Contract |
 |---|---|
-| `--settings-nav-width`, `--settings-nav-rail` | 240px; 56px below a 768px viewport; 1px end border |
+| `--settings-nav-width`, `--settings-nav-rail` | 208px; 56px below a 768px viewport; 1px end border |
 | `--settings-nav-group-pad`, `--settings-nav-group-gap`, `--settings-nav-item-gap` | 8px group inset, 16px between groups, 4px between items |
-| Navigation labels | 12px/500 group headings; muted role at 80%; 14/20/500 items, 32px tall, 8px radius, 10px horizontal inset, 8px icon gap, 16px icons; selected uses the card/foreground roles |
+| Navigation labels | 12px/500 group headings; muted role at 80%; 13/18/500 items, 32px tall, 8px radius, 10px horizontal inset, 8px icon gap, 16px icons; selected uses the card/foreground roles |
 | `--settings-search-radius` | Search is 32px tall with 6px corners; a labelled search button opens it from the narrow rail |
-| `--settings-content-max`, `--settings-content-x`, `--settings-content-top`, `--settings-content-bottom` | 896px maximum including padding; 24px horizontal (20px below 640px), 24px top, 48px bottom |
-| `--settings-section-gap`, `--settings-heading-gap`, `--settings-heading-height` | 32px between sections; 10px heading-to-card; heading 16/24/600, minimum 28px, horizontal inset 16px |
-| Page title | One H1 in the content top bar; section headings are H2. The existing #853 page-title contract remains 20/26/600 |
-| `--settings-card-border`, `--settings-card-bg`, `--settings-card-shadow` | 12px radius; 1px border at 60%; card role at 40%; `0 1px 2px rgb(0 0 0 / 5%)`; no card-body padding; plain groups have a 4px gap |
-| `--settings-row-pad`, `--settings-row-x`, `--settings-divider` | 12px vertical / 16px horizontal (12px below 640px); square row corners; subsequent rows have a 1px top divider at 50%, across the full interior card width |
-| `--settings-copy-gap`, `--settings-description-max` | Title 14/20/500; description 12/18/400, 4px below, max 672px, balanced wrapping, no clamp |
+| `--settings-content-max`, `--settings-content-x`, `--settings-content-top`, `--settings-content-bottom` | 728px maximum including padding (680px content), centered; 24px horizontal (20px below 640px), 24px top, 48px bottom |
+| `--settings-section-gap`, `--settings-heading-gap`, `--settings-heading-height` | 32px between legacy sections; 16px between named card groups; 10px legacy heading-to-card; group labels 11/16/500, muted, 16px horizontal inset and 6px below; legacy section-head wrappers retain their 28px minimum |
+| Page title | One H1 in the content top bar; section headings are H2. Settings uses 18/24/600 with a hairline bounded by the centered content column |
+| `--settings-card-border`, `--settings-card-bg`, `--settings-card-shadow` | 12px radius; 1px border using the muted foreground at 17%; card role at 40%; no shadow; no card-body padding; plain groups have a 4px gap |
+| `--settings-row-pad`, `--settings-row-x`, `--settings-divider` | 7px vertical / 16px horizontal (12px below 640px); 52px minimum row height; square interior row corners; subsequent rows have a 1px top divider using the same 17% hairline, across the full interior card width |
+| `--settings-copy-gap`, `--settings-description-max` | Title 13/18/500; description 12/16/400, 2px below, max 672px, pretty wrapping, no clamp |
 | `--settings-control-gap`, `--settings-control-min` | Grid `minmax(0,1fr) minmax(160px,auto)`, 32px gap; controls align right with 8px between them |
 | `--settings-control-max` | Picker content is bounded at 320px so long option labels and microphone disclosures cannot consume the copy column |
 | Narrow row | Named inline-size container query below 512px of row content; one column, 12px gap, full-width control area. This follows T3's padded container measurement rather than a viewport breakpoint |
-| `--settings-reset-size`, `--settings-reset-icon` | Reserved 20×20px slot; changed values show a 12px Undo in a 4px-radius ghost button with “Reset to default” tooltip. Resets call the existing owner handler, including shortcut/provider validation |
+| `--settings-reset-size`, `--settings-reset-icon` | Reserved 20×20px slot; changed values show a 12px Undo in a 28×28px, 4px-radius ghost button without changing the slot with “Reset to default” tooltip. Resets call the existing owner handler, including shortcut/provider validation |
 | `--ui-disabled-opacity`, `--settings-unavailable-bg` | Disabled rows 64% with muted copy; unavailable group uses muted surface at 20%, 12/18 notice and 14px warning icon; opacity applies once |
 | `--ui-switch-*` | Standard 30×18px / 14px knob / 2px inset / 12px travel; small 26×16 / 12 / 2 / 10. Primary when on, input when off, background knob; 200ms track and 150ms slide, pressed knob stretches to 110% |
 | `--ui-control-standard`, `--ui-control-compact`, `--ui-control-xs`, `--ui-select-min` | Select and button sizes 32/28/24px; select minimum 144px, 14px text/chevron (chevron 70%) |
 | `--ui-input-height`, `--ui-control-inset`, `--ui-control-border`, `--ui-control-bg` | Input 30px; inputs/selects use 11px horizontal inset, 8px radius, 1px input-role border; background role in light, input role at 32% in dark |
 | `--ui-control-shadow`, `--ui-control-focus` | 5% shadow-xs plus inner `0 1px` at black 4% (dark: `0 -1px` white 6%); focus border uses primary/ring and a 3px ring at 24% |
 | Buttons | 8px radius, 1px border, 14/20/500; standard/small/xs horizontal padding `calc(12px - 1px)` / `calc(10px - 1px)` / `calc(8px - 1px)`; pressed scale 0.97 |
-| `--ui-segment-*` | Segmented control 32px / 8px radius; selected background role and shadow-xs 10%, dark input role at 72% |
+| `--ui-segment-*` | Settings control: 34px sunken pill track, 2px padding and gap; 28px selected control with 8px radius, raised fill and `--ui-shadow-1`, matching Insights |
 | `--settings-search-pulse-*` | Destination pulses twice, 650ms ease-in-out, inset 2px primary ring at 70%; reduced motion suppresses the pulse |
 | `--settings-search-match-*` | Light `oklch(.915 .11 85)` / `oklch(.216 .028 77.4)`; dark `oklch(.55 .1 85)` / `oklch(.970 0 0)` |
 

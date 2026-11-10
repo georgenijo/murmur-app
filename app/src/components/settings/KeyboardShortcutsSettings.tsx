@@ -102,7 +102,7 @@ export function KeyboardShortcutsSettings({
                 <ShortcutBinding label={row.binding.label} state={row.binding.kind} />
                 <button
                   type="button"
-                  aria-label={`${row.binding.kind === 'off' ? 'Enable' : row.binding.kind === 'paused' ? 'View' : 'Configure'} in ${row.ownerLabel}`}
+                  aria-label={`Configure in ${row.ownerLabel}`}
                   onClick={() => onOpenOwner(row.destination)}
                   className="settings-quiet-btn settings-shortcut-configure"
                 >

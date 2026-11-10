@@ -401,7 +401,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
         onBusyChange={setCorpusBusy}
       />}
       {INTERNAL_BENCHMARK_BUILD && <section>
-        <h3 className="mb-2 text-sm font-semibold text-on-surface">Benchmark audio</h3>
+        <h3 className="settings-group-heading">Benchmark audio</h3>
         <div className="grid grid-cols-2 gap-1 rounded-lg bg-surface-container-low p-1">
           {([
             ['personal', 'Your voice', '20 verified recordings'],
@@ -433,7 +433,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
       <section>
         <div className="flex items-end justify-between gap-4 mb-3">
           <div>
-            <h3 className="text-sm font-semibold text-on-surface">Models</h3>
+            <h3 className="settings-group-heading">Models</h3>
             <p className="mt-0.5 text-xs text-on-surface-variant">
               {installedCount} installed. All tests run locally.
             </p>
@@ -492,7 +492,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
       </section>
 
       <section>
-        <h3 className="mb-2 text-sm font-semibold text-on-surface">Test length</h3>
+        <h3 className="settings-group-heading">Test length</h3>
         <div className="grid grid-cols-3 gap-1 p-1 bg-surface-container-low rounded-lg">
           {PRESETS.map((option) => (
             <button
@@ -561,7 +561,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
       </section>
 
       <section className="border-t border-outline-variant/30 pt-5">
-        <h3 className="text-sm font-semibold text-on-surface">Report export</h3>
+        <h3 className="settings-group-heading">Report export</h3>
         <p className="mt-0.5 text-xs text-on-surface-variant">
           Where saved reports are written, and whether every run is saved automatically. Configure before running.
         </p>
@@ -591,7 +591,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
         <section className="space-y-4 border-t border-outline-variant/30 pt-5">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h3 className="text-sm font-semibold text-on-surface">Results</h3>
+              <h3 className="settings-group-heading">Results</h3>
               <p className="mt-0.5 text-[11px] text-on-surface-variant">
                 {report.environment
                   ? `${report.environment.os}${report.environment.osVersion ? ` ${report.environment.osVersion}` : ''} / ${report.environment.chip ?? report.environment.hardwareModel ?? report.environment.architecture}${report.environment.memoryMb ? ` / ${Math.round(report.environment.memoryMb / 1024)} GB RAM` : ''}`

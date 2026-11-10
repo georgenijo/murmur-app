@@ -598,8 +598,21 @@ describe("AppearanceSettings", () => {
     expect(darkPreview.style.getPropertyValue('--preview-surface')).toBe(resolveTheme(midnight.theme, 'dark').tokens.surface);
     const choose = claudeCard.querySelector<HTMLButtonElement>('button[aria-label*="dark variant"]')!;
     await act(async () => choose.click());
+    const selectedVariant = claudeCard.querySelector<HTMLButtonElement>('.settings-theme-options button[aria-pressed="true"]')!;
+    expect(selectedVariant.querySelector('.settings-theme-option-check')?.textContent).toBe('✓');
     const dusk = claudeCard.querySelector<HTMLButtonElement>('button[aria-label="Use Dusk for dark mode"]')!;
+    expect(dusk.querySelector('.settings-theme-option-check')).toBeNull();
     await act(async () => dusk.click());
+    expect(document.activeElement).toBe(choose);
+    expect(choose.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => choose.click());
+    const selectedAgain = claudeCard.querySelector<HTMLButtonElement>('.settings-theme-options button[aria-pressed="true"]')!;
+    await act(async () => {
+      selectedAgain.focus();
+      selectedAgain.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(claudeCard.querySelector('.settings-theme-options')).toBeNull();
+    expect(document.activeElement).toBe(choose);
     expect(mocks.controller!.library.previewSelection).toHaveBeenCalledWith(dark.id, 'dark');
     expect(claudeCard.querySelector('button[aria-label*="dark variant"]')?.getAttribute("aria-pressed")).toBe("true");
     expect(claudeCard.querySelector('button[aria-label="Use Dusk Light for light mode"]')).not.toBeNull();

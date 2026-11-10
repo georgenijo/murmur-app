@@ -56,6 +56,8 @@ describe('KeyboardShortcutsSettings', () => {
     expect(container.querySelector('[data-shortcut-id="recording"] .settings-shortcut-state')?.textContent).toBe('Paused');
     expect(container.querySelector('[data-shortcut-id="paste-last"] .settings-shortcut-state')?.textContent).toBe('Off');
     expect(container.querySelector('[data-shortcut-id="paste-last"] kbd')).toBeNull();
+    expect(container.querySelector('[data-shortcut-id="recording"] button')?.getAttribute('aria-label')).toBe('Configure in Recording');
+    expect(container.querySelector('[data-shortcut-id="paste-last"] button')?.getAttribute('aria-label')).toBe('Configure in Delivery');
     expect(container.querySelectorAll('ul[aria-label="Main-window shortcuts"] kbd')).toHaveLength(4);
   });
 

@@ -698,12 +698,30 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   await expect(fixture).toHaveScreenshot('dark-settings-appearance.png');
 
   const cardHeight = await claudeCard.evaluate((element) => element.getBoundingClientRect().height);
-  await claudeCard.locator('button[aria-label^="Choose dark variant"]').click();
+  const chooser = claudeCard.locator('button[aria-label^="Choose dark variant"]');
+  // Settings reserves Return for default actions; Space activates the focused button.
+  await chooser.focus();
+  await page.keyboard.press('Space');
   const midnight = page.getByRole('button', { name: /Use .*Midnight.* for dark mode/ });
   await expect(midnight).toBeVisible();
   await expect.poll(() => claudeCard.evaluate((element) => element.getBoundingClientRect().height)).toBe(cardHeight);
-  await midnight.click();
+  const choices = claudeCard.getByRole('group', { name: 'Dark variants', exact: true });
+  await expect(choices.locator('button[aria-pressed="true"] .settings-theme-option-check')).toHaveText('✓');
+  await expect(midnight.locator('.settings-theme-option-check')).toHaveCount(0);
+  await midnight.focus();
+  await page.keyboard.press('Space');
+  await expect(chooser).toBeFocused();
+  await expect(chooser).toHaveAttribute('aria-expanded', 'false');
   await expect(claudeCard.locator('button[aria-label*="dark variant"][aria-label*="Midnight"]')).toBeVisible();
+  await page.keyboard.press('Space');
+  const selected = choices.locator('button[aria-pressed="true"]');
+  await expect(selected).toContainText('Midnight');
+  await expect(selected.locator('.settings-theme-option-check')).toHaveText('✓');
+  await selected.focus();
+  await page.keyboard.press('Escape');
+  await expect(choices).toHaveCount(0);
+  await expect(chooser).toBeFocused();
+  await expect(chooser).toHaveAttribute('aria-expanded', 'false');
   await expect.poll(() => claudeCard.evaluate((element) => element.getBoundingClientRect().height)).toBe(cardHeight);
 });
 
