@@ -80,7 +80,7 @@ not get empty Advanced buttons or invented settings.
 | Text & vocabulary → Vocabulary | Full-page scanned vocabulary | Sheet over Text; same bounded filter/sort workflow; close restores Vocabulary |
 | Text & vocabulary → Aliases | Full-page alias editor | Sheet over Text; saved values and explicit destructive confirmation unchanged; close restores Aliases |
 | Text & vocabulary → Knowledge | Full-page knowledge editor | Sheet over Text; nested confirmations/menus retain focus lifecycle; close restores Knowledge |
-| Text & vocabulary → Manage project scan | Full-page scan editor; displayed path wrapped | Sheet over Text (or the pane owning the enabled sidebar launch); middle-truncated path; scan/cancel/change handlers unchanged; close restores its actual caller |
+| Text & vocabulary → Manage project scan | Full-page scan editor; displayed path wrapped | Sheet over its Text & vocabulary owner; middle-truncated path; scan/cancel/change handlers unchanged; close restores its actual caller |
 
 Additional existing app-editor rows: manual bundle-ID entry is a remembered,
 lazy Advanced group owned by `app-overrides`; IDE roots and index actions fold

@@ -214,21 +214,20 @@ for (const appearance of ['light', 'dark']) {
     const modal = await page.evaluate(() => {
       const backdrop = document.querySelector<HTMLElement>('.settings-sheet-backdrop')!;
       const sheet = document.querySelector<HTMLElement>('.settings-editor-sheet')!;
-      const page = document.querySelector<HTMLElement>('.settings-workspace')!;
+      const tokenProbe = document.createElement('div');
+      tokenProbe.style.cssText = 'background:var(--ui-scrim);color:var(--ui-hairline-strong);box-shadow:var(--ui-shadow-3);border-color:var(--ui-hairline-strong)';
+      document.body.append(tokenProbe);
+      const tokenStyle = getComputedStyle(tokenProbe);
       const backdropStyle = getComputedStyle(backdrop);
       const sheetStyle = getComputedStyle(sheet);
-      return {
-        backdrop: backdropStyle.backgroundColor,
-        sheetBackground: sheetStyle.backgroundColor,
-        pageBackground: getComputedStyle(page).backgroundColor,
-        shadow: sheetStyle.boxShadow,
-        border: sheetStyle.borderTopColor,
-      };
+      const values = { backdrop: backdropStyle.backgroundColor, sheetBackground: sheetStyle.backgroundColor, shadow: sheetStyle.boxShadow, border: sheetStyle.borderTopColor, tokenBackdrop: tokenStyle.backgroundColor, tokenSurface: (() => { tokenProbe.style.background = 'var(--ui-tint-raised)'; return getComputedStyle(tokenProbe).backgroundColor; })(), tokenShadow: tokenStyle.boxShadow, tokenBorder: tokenStyle.borderTopColor };
+      tokenProbe.remove();
+      return values;
     });
-    expect(modal.backdrop).not.toBe('rgba(0, 0, 0, 0.3)');
-    expect(modal.shadow).not.toBe('none');
-    expect(modal.border).not.toBe(modal.sheetBackground);
-    expect(modal.sheetBackground).not.toBe(modal.pageBackground);
+    expect(modal.backdrop).toBe(modal.tokenBackdrop);
+    expect(modal.sheetBackground).toBe(modal.tokenSurface);
+    expect(modal.shadow).toBe(modal.tokenShadow);
+    expect(modal.border).toBe(modal.tokenBorder);
   });
 }
 
