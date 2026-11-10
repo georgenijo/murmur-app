@@ -15,9 +15,9 @@ describe('CommandPalette', () => {
   const selectedRow = () => container.querySelector('[aria-selected="true"]');
   const input = () => container.querySelector('input') as HTMLInputElement;
 
-  async function render(isOpen = true, onOpened?: () => void) {
+  async function render(isOpen = true) {
     await act(async () => {
-      root.render(<CommandPalette isOpen={isOpen} onClose={onClose} commands={commands} onOpened={onOpened} />);
+      root.render(<CommandPalette isOpen={isOpen} onClose={onClose} commands={commands} />);
     });
   }
 
@@ -73,13 +73,6 @@ describe('CommandPalette', () => {
     expect(document.activeElement).toBe(input());
   });
 
-  it('records completion only after the palette opens', async () => {
-    const onOpened = vi.fn();
-    await render(false, onOpened);
-    expect(onOpened).not.toHaveBeenCalled();
-    await render(true, onOpened);
-    expect(onOpened).toHaveBeenCalledOnce();
-  });
 
   it('shows contiguous default groups and executes the visible keyboard selection', async () => {
     const meeting = vi.fn();
@@ -231,4 +224,15 @@ describe('CommandPalette', () => {
     expect(document.activeElement).toBe(trigger);
     trigger.remove();
   });
+  it('keeps the interaction verb outside the configured shortcut keycap', async () => {
+    commands[0] = { ...commands[0], title: 'Start dictation', hintPrefix: 'Hold', hint: '⇧ Left Shift' };
+    await render();
+    const row = rows()[0];
+    expect(row.textContent).toContain('Start dictation');
+    expect(row.querySelector('kbd')?.textContent).toBe('⇧ Left Shift');
+    expect(row.querySelector('.palette-binding > span')?.textContent).toBe('Hold');
+    await press('Enter');
+    expect(runs.record).toHaveBeenCalledOnce();
+  });
+
 });

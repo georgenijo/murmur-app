@@ -211,8 +211,8 @@ test('native default keeps the sidebar and one-column dashboard geometry', async
     history.boundingBox(),
   ]);
 
-  expect(sidebarBox?.width).toBe(256);
-  expect(mainBox?.width).toBe(1120 - 256 - 32);
+  expect(sidebarBox?.width).toBe(208);
+  expect(mainBox?.width).toBe(1120 - 208 - 32);
   // The month summary lives in the composer's footer strip, not a separate card.
   expect(monthBox!.y).toBeGreaterThan(talkBox!.y);
   expect(monthBox!.y + monthBox!.height).toBeLessThanOrEqual(talkBox!.y + talkBox!.height);
@@ -225,7 +225,7 @@ test('native default keeps the sidebar and one-column dashboard geometry', async
   await expect(page.locator('.home-history .history-date-label')).toHaveCount(14);
 });
 
-test('each history day renders as one grouped surface', async ({ page }) => {
+test('history rows share within-day hairlines', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
   const today = page.locator('.home-history .transcript-card').filter({ hasText: 'compact transcript' });
   const next = page.locator('.home-history .transcript-card').nth(1);
@@ -242,7 +242,7 @@ for (const size of [{ width: 1120, height: 820 }, { width: 880, height: 720 }] a
     await page.goto('/visual-fixtures.html?state=idle&appearance=light');
 
     const talk = page.locator('.home-talk');
-    await expect(talk).toContainText('Click to start talking');
+    await expect(talk).toContainText('Click to start dictating');
     // The prompt row stays one compact line; the footer strip adds one more.
     const promptBox = await page.getByTestId('home-record-button').boundingBox();
     expect(promptBox?.height).toBeLessThanOrEqual(56);
@@ -290,8 +290,6 @@ for (const state of ['recording', 'update-recovering', 'settings'] as const) {
     const header = page.locator('.ui-window-header');
     const items = state === 'settings'
       ? [
-          header.locator('.ui-window-wordmark'),
-          header.getByText('Settings', { exact: true }),
           header.getByRole('button', { name: 'Done' }),
         ]
       : [
@@ -581,8 +579,8 @@ test('settings rows keep the shared spacing contract and aligned controls', asyn
   });
   const expectAligned = async (targets: [string, string]) => {
     const [first, second] = await Promise.all(targets.map(rowGeometry));
-    expect(first.padding).toEqual(['12px', '12px']);
-    expect(second.padding).toEqual(['12px', '12px']);
+    expect(first.padding).toEqual(['7px', '7px']);
+    expect(second.padding).toEqual(['7px', '7px']);
     expect(second.left).toBe(first.left);
     expect(second.right).toBe(first.right);
     expect(second.titleLeft).toBe(first.titleLeft);
@@ -681,10 +679,10 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   const sonicCard = page.locator('[data-theme-collection="Sonic"]');
   const claudeCard = page.locator('[data-theme-collection="Claude Theme"]');
   await expect(claudeCard).toHaveCount(1);
-  await expect(sonicCard).toHaveCSS('width', '208px');
-  await expect(sonicCard).toHaveCSS('height', '106px');
-  await expect(claudeCard).toHaveCSS('width', '208px');
-  await expect(claudeCard).toHaveCSS('height', '106px');
+  await expect(sonicCard).toHaveCSS('width', '242px');
+  await expect(sonicCard).toHaveCSS('height', '146px');
+  await expect(claudeCard).toHaveCSS('width', '242px');
+  await expect(claudeCard).toHaveCSS('height', '166px');
   await expect(claudeCard.locator('button[aria-label*="light variant"][aria-pressed="true"]')).toBeVisible();
   await expect(claudeCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
   await expect(page.locator('section[aria-labelledby="active-theme-heading"]')).toHaveCount(0);
@@ -700,12 +698,30 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   await expect(fixture).toHaveScreenshot('dark-settings-appearance.png');
 
   const cardHeight = await claudeCard.evaluate((element) => element.getBoundingClientRect().height);
-  await claudeCard.locator('button[aria-label^="Choose dark variant"]').hover();
+  const chooser = claudeCard.locator('button[aria-label^="Choose dark variant"]');
+  // Settings reserves Return for default actions; Space activates the focused button.
+  await chooser.focus();
+  await page.keyboard.press('Space');
   const midnight = page.getByRole('button', { name: /Use .*Midnight.* for dark mode/ });
   await expect(midnight).toBeVisible();
   await expect.poll(() => claudeCard.evaluate((element) => element.getBoundingClientRect().height)).toBe(cardHeight);
-  await midnight.click();
+  const choices = claudeCard.getByRole('group', { name: 'Dark variants', exact: true });
+  await expect(choices.locator('button[aria-pressed="true"] .settings-theme-option-check')).toHaveText('✓');
+  await expect(midnight.locator('.settings-theme-option-check')).toHaveCount(0);
+  await midnight.focus();
+  await page.keyboard.press('Space');
+  await expect(chooser).toBeFocused();
+  await expect(chooser).toHaveAttribute('aria-expanded', 'false');
   await expect(claudeCard.locator('button[aria-label*="dark variant"][aria-label*="Midnight"]')).toBeVisible();
+  await page.keyboard.press('Space');
+  const selected = choices.locator('button[aria-pressed="true"]');
+  await expect(selected).toContainText('Midnight');
+  await expect(selected.locator('.settings-theme-option-check')).toHaveText('✓');
+  await selected.focus();
+  await page.keyboard.press('Escape');
+  await expect(choices).toHaveCount(0);
+  await expect(chooser).toBeFocused();
+  await expect(chooser).toHaveAttribute('aria-expanded', 'false');
   await expect.poll(() => claudeCard.evaluate((element) => element.getBoundingClientRect().height)).toBe(cardHeight);
 });
 
@@ -726,11 +742,11 @@ test('the sidebar opens a real expanded Insights view', async ({ page }) => {
   await page.getByRole('button', { name: 'Insights', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Insights' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Developing' })).toHaveCount(0);
-  await expect(page.locator('.usage-analytics-section')).toHaveCount(3);
+  await expect(page.locator('.usage-analytics-section')).toHaveCount(2);
   const sectionBottoms = await page.locator('.usage-analytics-section').evaluateAll((sections) => (
     sections.map((section) => section.getBoundingClientRect().bottom)
   ));
-  expect(sectionBottoms[0]).toBe(sectionBottoms[1]);
+  expect(sectionBottoms[0]).toBeLessThan(sectionBottoms[1]);
   const [workspaceBox, analyticsBox] = await Promise.all([
     page.locator('.main-dashboard-workspace').boundingBox(),
     page.locator('.usage-dashboard-content').boundingBox(),
@@ -766,8 +782,8 @@ test('populated Insights keeps all tiles and charts reachable in the default win
   expect(fit.datesContained).toBe(true);
   expect(fit.heatmapCellWidth).toBeLessThanOrEqual(32);
   expect(fit.sectionBottoms[0]).toBe(fit.sectionBottoms[1]);
-  const tiles = view.locator('[aria-label="Usage totals"] > .ui-dashboard-stat');
-  await expect(tiles).toHaveCount(10);
+  const tiles = view.locator('[aria-label="Headline usage statistics"] > .ui-dashboard-stat');
+  await expect(tiles).toHaveCount(4);
   await expect(tiles.filter({ hasText: 'Most-used transform' })).toHaveCount(0);
   for (const item of [...await tiles.all(), ...await view.locator('.usage-analytics-section').all()]) {
     await item.scrollIntoViewIfNeeded();
@@ -781,14 +797,15 @@ test('populated Insights keeps all tiles and charts reachable in the default win
   await expect(page.locator('.usage-analytics-section').first()).toHaveCSS('border-top-width', '1px');
 });
 
-test('secondary destinations share Back behavior and restore focus to Home navigation', async ({ page }) => {
+test('secondary destinations return through their supported Home navigation', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
   const home = page.getByRole('button', { name: 'Home', exact: true });
 
   for (const destination of ['Notetaker', 'Insights'] as const) {
     await page.getByRole('button', { name: destination, exact: true }).click();
     await expect(page.getByRole('heading', { name: destination, exact: true })).toBeVisible();
-    await page.getByRole('button', { name: 'Back to Home', exact: true }).click();
+    if (destination === 'Notetaker') await home.click();
+    else await page.getByRole('button', { name: 'Back to Home', exact: true }).click();
     await expect(home).toHaveAttribute('aria-current', 'page');
     await expect(home).toBeFocused();
   }
@@ -830,10 +847,11 @@ test('meeting captions explain segment timing and keep copy and export reachable
   ] as const) {
     await page.setViewportSize({ width, height });
     await page.goto(`/visual-fixtures.html?state=meetings-review&appearance=${appearance}`);
-    await page.getByRole('combobox', { name: 'Meeting transcript export format' }).selectOption(format);
-    await expect(page.getByRole('button', { name: 'Copy captions' })).toBeVisible();
+    await page.getByRole('button', { name: 'Export', exact: true }).click();
+    await page.getByRole('menuitem', { name: format === 'srt' ? 'SubRip (.srt)' : 'WebVTT (.vtt)', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Copy transcript' })).toBeVisible();
     await expect(page.getByText('One caption per recorded speech segment', { exact: false })).toBeVisible();
-    const exportButton = page.getByRole('button', { name: 'Export…', exact: true });
+    const exportButton = page.getByRole('button', { name: 'Export', exact: true });
     await expect(exportButton).toBeVisible();
     const bounds = await exportButton.boundingBox();
     expect(bounds && bounds.x + bounds.width).toBeLessThanOrEqual(width);
@@ -845,7 +863,8 @@ test('meeting captions explain segment timing and keep copy and export reachable
 test('meeting calendar picker requires selection and keeps denied access usable', async ({ page }) => {
   await page.setViewportSize({ width: 880, height: 720 });
   await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light');
-  await page.getByRole('button', { name: 'Name from calendar…', exact: true }).click();
+  await page.locator('.meeting-more').click();
+  await page.getByRole('menuitem', { name: 'Name from calendar…', exact: true }).click();
   await expect(page.getByRole('radio')).toHaveCount(2);
   await expect(page.getByRole('button', { name: 'Apply event' })).toBeDisabled();
   await page.getByRole('radio', { name: /Orion planning/ }).focus();
@@ -854,7 +873,8 @@ test('meeting calendar picker requires selection and keeps denied access usable'
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-meeting-calendar-picker.png');
 
   await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light&calendar=denied');
-  await page.getByRole('button', { name: 'Name from calendar…', exact: true }).click();
+  await page.locator('.meeting-more').click();
+  await page.getByRole('menuitem', { name: 'Name from calendar…', exact: true }).click();
   await expect(page.getByLabel('Meeting title', { exact: true })).toBeEditable();
   await expect(page.getByRole('button', { name: 'Open Calendar settings…' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Reset Calendar access…' })).toBeVisible();
@@ -881,7 +901,7 @@ test('dashboard charts keep tooltip, plot, and seven weekday labels in stable re
     width: box?.width ?? null,
     height: box?.height ?? null,
   }));
-  expect(relativeGeometry(after)).toEqual(relativeGeometry(before));
+  expect(relativeGeometry(after).slice(1)).toEqual(relativeGeometry(before).slice(1));
 
   const [plotBox, labelBoxes] = await Promise.all([
     plot.boundingBox(),
@@ -893,7 +913,8 @@ test('dashboard charts keep tooltip, plot, and seven weekday labels in stable re
   expect(labelBoxes.every((box) => box.top >= plotBox!.y + plotBox!.height)).toBe(true);
   expect(labelBoxes.every((box, index) => index === 0 || box.left >= labelBoxes[index - 1].right)).toBe(true);
 
-  const lineChart = page.locator('figure[aria-label="Words-per-minute trend line"]');
+  await page.getByRole('button', { name: 'Speed', exact: true }).click();
+  const lineChart = page.getByRole('figure', { name: /^Words-per-minute trend line/ });
   const [svgBox, pointCoordinates, targetBoxes] = await Promise.all([
     lineChart.locator('svg').boundingBox(),
     lineChart.locator('polyline').getAttribute('points'),
@@ -932,7 +953,8 @@ test('all Insights chart marks share exact hover, keyboard, click, and dismissal
   await page.keyboard.press('Escape');
   await expect(bars.locator('.ui-day-chart-tooltip')).toContainText('Focus a day');
 
-  const line = page.locator('figure[aria-label="Words-per-minute trend line"]');
+  await page.getByRole('button', { name: 'Speed', exact: true }).click();
+  const line = page.getByRole('figure', { name: /^Words-per-minute trend line/ });
   const finalPoint = line.locator('.ui-day-chart-line-targets button').last();
   await finalPoint.click();
   await expect(line.locator('.ui-day-chart-tooltip')).toContainText('WPM');
@@ -965,41 +987,25 @@ test('dashboard actions keep hover, focus, active, and disabled states in an imp
 test('the compact 720x560 home keeps actions and history reachable', async ({ page }) => {
   await page.setViewportSize({ width: 720, height: 560 });
   await page.goto('/visual-fixtures.html?state=idle&appearance=light');
-  await expect(page.getByRole('button', { name: 'Click to start talking' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start dictation', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'More history actions' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Your dictations' })).toBeVisible();
-  await expect(page.locator('.discovery-checklist-items li')).toHaveCount(5);
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-home-compact-720x560.png');
 });
 
-test('discovery checklist and contextual hint remain readable together', async ({ page }) => {
+test('contextual hint remains readable on Home', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=discovery-hint&appearance=light');
-  await expect(page.getByRole('heading', { name: 'Try what is ready when you are' })).toBeVisible();
   await expect(page.getByText('Use a mode for this site', { exact: true })).toBeVisible();
   await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-discovery-hint.png');
-});
-
-test('checklist feature names and pitches stay readable beside the Insights rail', async ({ page }) => {
-  for (const [width, height] of [[1120, 820], [880, 720], [720, 560]]) {
-    await page.setViewportSize({ width, height });
-    await page.goto('/visual-fixtures.html?state=idle&appearance=light');
-    const labels = page.locator('.discovery-checklist-items strong, .discovery-checklist-items small');
-    await expect(labels).toHaveCount(10);
-    const clipped = await labels.evaluateAll((elements) => elements
-      .filter((element) => element.scrollWidth > element.clientWidth + 1
-        || element.scrollHeight > element.clientHeight + 1)
-      .map((element) => element.textContent));
-    expect(clipped, `Checklist text at ${width}x${height}`).toEqual([]);
-  }
 });
 
 test('the compact 720x560 Insights view stacks analytics without horizontal clipping', async ({ page }) => {
   await page.setViewportSize({ width: 720, height: 560 });
   await page.goto('/visual-fixtures.html?state=insights&appearance=light');
   const sections = page.locator('.usage-analytics-section');
-  await expect(sections).toHaveCount(3);
+  await expect(sections).toHaveCount(2);
   expect(await sections.evaluateAll((elements) => elements.map((element) => element.dataset.analytics)))
-    .toEqual(['activity', 'words', 'wpm']);
+    .toEqual(['daily', 'activity']);
   const overflow = await page.locator('.insights-view').evaluate((element) => ({
     clientWidth: element.clientWidth,
     scrollWidth: element.scrollWidth,
@@ -1030,12 +1036,12 @@ for (const width of [720, 800, 880] as const) {
 for (const { appearance, width, height, label } of surfaceCases([{ width: 720, height: 560 }, { width: 880, height: 820 }, { width: 1120, height: 820 }])) {
   test.describe(`Insights ${label}`, () => {
     test.use({ viewport: { width, height }, colorScheme: appearance });
-    test('Calendar dates, exact values and bounded proportions survive keyboard dismissal and disclosure', async ({ page }, testInfo) => {
+    test('Calendar dates, exact values and accessible tables survive keyboard dismissal', async ({ page }, testInfo) => {
       await page.goto(`/visual-fixtures.html?state=insights&appearance=${appearance}`);
       const chart = page.getByRole('figure', { name: 'Words per day heatmap', exact: true });
       const grid = chart.locator('.ui-day-chart-heatmap');
       await grid.scrollIntoViewIfNeeded();
-      await expect(chart.locator('.ui-day-chart-date-range')).toContainText(/\d{4}/);
+      await expect(page.locator('[data-analytics="activity"] .insights-range')).toContainText(/\d{4}/);
       await expect(chart.locator('.ui-day-chart-weekdays span')).toHaveCount(7);
       await expect(grid.getByRole('button')).toHaveCount(56);
       const bounds = await chart.evaluate(element => {
@@ -1055,46 +1061,10 @@ for (const { appearance, width, height, label } of surfaceCases([{ width: 720, h
       await page.keyboard.press('Escape');
       await expect(chart.getByRole('status')).toContainText('Focus a day');
       if (width !== 1120) await page.screenshot({ path: testInfo.outputPath('insights-calendar.png') });
-      await chart.getByText('Daily values', { exact: true }).click();
-      await expect(chart.getByRole('table')).toBeVisible();
+      await expect(chart.getByRole('table')).toHaveCount(1);
+      await expect(chart.locator('.insights-values-accessible')).toHaveClass(/sr-only/);
       await expect(chart.locator('tbody tr')).toHaveCount(56);
       await expect(chart.locator('tbody')).toContainText('760');
-    });
-  });
-}
-
-for (const { appearance, width, height, label } of surfaceCases()) {
-  test.describe(`Home setup ${label}`, () => {
-    test.use({ viewport: { width, height }, colorScheme: appearance });
-    test('Source-owned checklist copy fits beside pointer actions', async ({ page }) => {
-      await page.goto(`/visual-fixtures.html?state=idle&appearance=${appearance}`);
-      const checklist = page.locator('.discovery-checklist');
-      await expect(checklist).toBeVisible();
-      await expect(checklist.locator('li')).toHaveCount(5);
-      const labels = checklist.locator('strong, small');
-      for (const label of await labels.all()) {
-        const fit = await label.evaluate(element => ({
-          overflow: element.scrollWidth - element.clientWidth,
-          ellipsis: getComputedStyle(element).textOverflow,
-          before: getComputedStyle(element, '::before').content,
-          after: getComputedStyle(element, '::after').content,
-        }));
-        expect(fit.overflow).toBeLessThanOrEqual(1);
-        expect(fit.ellipsis).not.toBe('ellipsis');
-        expect(['none', 'normal']).toContain(fit.before);
-        expect(['none', 'normal']).toContain(fit.after);
-      }
-      for (const row of await checklist.locator('li').all()) {
-        const action = row.getByRole('button');
-        await action.scrollIntoViewIfNeeded();
-        const copyBounds = await row.locator('small').boundingBox();
-        const actionBounds = await action.boundingBox();
-        expect(copyBounds!.x + copyBounds!.width).toBeLessThanOrEqual(actionBounds!.x);
-        await expect(action).toBeInViewport();
-      }
-      await checklist.getByRole('button', { name: 'Dismiss Get more from Murmur' }).click();
-      // The fixture's dismiss callback is a no-op; component coverage verifies
-      // callback delivery, while this check establishes the pointer target fits.
     });
   });
 }

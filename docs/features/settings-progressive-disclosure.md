@@ -18,8 +18,8 @@ settles, the clip releases overflow so existing select menus remain usable.
 Closing immediately applies `inert` and `aria-hidden`, disables pointer input,
 and restores contained focus to the owner. The clip remains during exit.
 
-The Settings scroll pane always reserves its scrollbar width, including in
-WKWebView. Advanced row widths and toggle insets stay constant during folding;
+The Settings scroll pane uses an automatic scrollbar gutter. The centered
+content column and title hairline share the same width and insets. Advanced row widths and toggle insets stay constant during folding;
 the clipped controls use a compositor layer while animating. Collapse follows
 the fold's visible height when the current scroll position would become invalid.
 If the collapsed page is shorter than the viewport, temporary trailing space
@@ -37,10 +37,18 @@ paths, model/provider credentials, or permission state enter this document.
 Storage failure retains session state. Per-pane Advanced state survives a
 normal app relaunch independently of backend preferences.
 
-The title, descriptions, card/row geometry, narrow container query, reset
-handlers and disabled contract remain #848's: 240/56 navigation, 12/16 row
-insets, 14/20 titles, 12/18 descriptions, 32px column gap, 512px stacking
-boundary with 12px gap, and 8px controls / 12px cards. Descriptions wrap.
+The approved Settings redesign uses 208/56px navigation and a centered 728px
+shell (680px content plus 24px side insets). Group labels share 11/16px muted,
+medium-weight typography. Rows use 7/16px insets and a 52px minimum height,
+13/18px titles, and 12/16px descriptions separated by 2px. The 32px control
+column gap, 512px stacking boundary, and 8px controls / 12px cards remain.
+General groups Startup, Dictation, and Maintenance; Setup assistant and Updates
+are trailing actions, with the installed version under Updates. Advanced lives
+in Maintenance with a description of calibration and statistics reset. The
+shortcut index shares one binding column across global and window shortcuts,
+with Hold outside the cap,
+owner-specific Configure actions, and explicit Paused/Off states when applicable.
+
 Existing Select/microphone values retain end ellipsis. The project-scan,
 IDE-root, shared-output and Performance Lab paths use `MiddleTruncate`.
 Editable executable/environment path fields remain editable inputs.

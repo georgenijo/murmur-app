@@ -16,6 +16,7 @@ import {
 } from '@/components/ui/animated-dropdown/animated-dropdown';
 
 interface HistoryFilterMenuProps {
+  disabled?: boolean;
   filter: HistoryFilter;
   dateFilter: HistoryDateFilter;
   pinnedFilter: HistoryPinnedFilter;
@@ -52,6 +53,7 @@ export function historyFilterLabel(filter: HistoryFilter, dateFilter: HistoryDat
 }
 
 export function HistoryFilterMenu({
+  disabled = false,
   filter,
   dateFilter,
   pinnedFilter,
@@ -65,7 +67,7 @@ export function HistoryFilterMenu({
   const names = activeFilterNames(filter, dateFilter, pinnedFilter).join(' · ');
 
   return (
-    <AnimatedDropdown>
+    <AnimatedDropdown disabled={disabled}>
       <AnimatedDropdownTrigger
         className={active ? 'history-filter-trigger history-filter-trigger-active' : 'history-filter-trigger'}
         aria-label={active ? `Filter transcripts: ${label}${label === names ? '' : `, ${names}`}` : 'Filter transcripts'}

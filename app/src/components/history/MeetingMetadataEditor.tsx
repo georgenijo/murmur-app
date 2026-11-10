@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Pencil } from 'lucide-react';
 import type { MeetingSession, SaveMeetingMetadataRequest } from '../../lib/meetings';
 import { MeetingCalendarNaming } from './MeetingCalendarNaming';
 
@@ -12,10 +13,11 @@ interface MeetingMetadataEditorProps {
   meta?: string;
   /** Extra header actions, such as Delete, placed after the naming actions. */
   actions?: ReactNode;
+  renderActions?: (rename: () => void, calendar: () => void, calendarDisabled: boolean) => ReactNode;
 }
 
 /** Meeting detail header: title, facts, and naming actions in one block. */
-export function MeetingMetadataEditor({ session, disabled, onSave, onApplyCalendar, onNotice, meta, actions }: MeetingMetadataEditorProps) {
+export function MeetingMetadataEditor({ session, disabled, onSave, onApplyCalendar, onNotice, meta, actions, renderActions }: MeetingMetadataEditorProps) {
   const [draft, setDraft] = useState<{ title: string; attendees: string } | null>(null);
   const title = draft?.title ?? session.title ?? '';
   const attendees = draft?.attendees ?? session.attendees.join('\n');
@@ -46,6 +48,7 @@ export function MeetingMetadataEditor({ session, disabled, onSave, onApplyCalend
     }
   };
 
+  const fallbackTitle = `Meeting · ${new Date(session.startedAtMs).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })} · ${new Date(session.startedAtMs).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
   const titleSource = session.titleSource === 'calendar'
     ? 'Named from calendar'
     : session.titleSource === 'generated'
@@ -66,14 +69,19 @@ export function MeetingMetadataEditor({ session, disabled, onSave, onApplyCalend
               <textarea value={attendees} maxLength={20100} rows={2} onChange={(event) => setDraft({ ...draft, attendees: event.target.value })} className="meeting-field mt-1 resize-y" />
             </label>
             <div className="flex gap-2">
-              <button type="submit" className="meeting-header-action" data-tone="accent">{saving ? 'Saving…' : 'Save details'}</button>
-              <button type="button" onClick={() => setDraft(null)} className="meeting-header-action">Cancel naming</button>
+              <button type="submit" className="ui-form-button meeting-header-action" data-tone="accent">{saving ? 'Saving…' : 'Save details'}</button>
+              <button type="button" onClick={() => setDraft(null)} className="ui-form-button meeting-header-action">Cancel naming</button>
             </div>
           </fieldset>
         </form>
       ) : (
         <>
-          <h3 className="meeting-detail-title" data-untitled={!session.title}>{session.title || 'Untitled meeting'}</h3>
+          <div className="meeting-detail-heading">
+          <h3><button type="button" disabled={disabled || applyingCalendar} onClick={beginEdit}
+            className="meeting-detail-title" data-untitled={!session.title} title={session.title || fallbackTitle}
+            aria-label={session.title ? `Rename ${session.title}` : 'Name meeting'}>
+            {session.title || fallbackTitle}<Pencil aria-hidden="true" className="meeting-title-pencil h-3 w-3" />
+          </button></h3>
           {(meta || session.attendees.length > 0 || titleSource) && (
             <div className="meeting-detail-meta">
               {meta && <p>{meta}</p>}
@@ -86,7 +94,7 @@ export function MeetingMetadataEditor({ session, disabled, onSave, onApplyCalend
               )}
             </div>
           )}
-          <button type="button" disabled={disabled || applyingCalendar} onClick={beginEdit} className="meeting-header-action">{session.title ? 'Rename' : 'Name meeting'}</button>
+          </div>
         </>
       )}
       <MeetingCalendarNaming
@@ -103,6 +111,7 @@ export function MeetingMetadataEditor({ session, disabled, onSave, onApplyCalend
         }}
         onManualNaming={beginEdit}
         onNotice={onNotice}
+        renderTrigger={renderActions ? (calendar, calendarDisabled) => renderActions(beginEdit, calendar, calendarDisabled) : undefined}
       />
       {actions}
     </section>

@@ -144,7 +144,7 @@ describe('Murmur layout contracts', () => {
     expect(css).toContain('--ui-dashboard-shadow: var(--ui-shadow-2);');
     expect(css).toMatch(/\.ui-main-nav-item\[aria-current="page"\]\s*\{[^}]*background:\s*var\(--ui-tint-raised\);[^}]*\}/s);
     expect(css).toMatch(/\.ui-main-nav-item\[aria-current="page"\]\s*\{[^}]*box-shadow:\s*none;[^}]*\}/s);
-    expect(css).toMatch(/\.ui-dashboard-action:disabled\s*\{[^}]*cursor:\s*not-allowed;[^}]*color:\s*var\(--ui-dashboard-disabled\);/s);
+    expect(css).toMatch(/\.ui-dashboard-action:disabled:not\(\[data-action="secondary"\]\)\s*\{[^}]*cursor:\s*not-allowed;[^}]*color:\s*var\(--ui-dashboard-disabled\);/s);
   });
 
   it('keeps copy feedback outside the transcript layout', () => {
@@ -155,7 +155,7 @@ describe('Murmur layout contracts', () => {
       /\.home-history \.transcript-text\s*\{[^}]*padding-right:\s*0;/s,
     );
     expect(css).toMatch(
-      /\.home-history \.transcript-actions\s*\{[^}]*grid-column:\s*3;[^}]*opacity:\s*0;/s,
+      /\.home-history \.transcript-actions\s*\{[^}]*position:\s*absolute;[^}]*width:\s*var\(--ui-history-actions-width\);[^}]*opacity:\s*0;/s,
     );
   });
 

@@ -60,6 +60,7 @@ describe('MeetingsPanel retained audio deletion', () => {
   let root: Root;
 
   beforeEach(() => {
+    audioMocks.controller = audioController(vi.fn());
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -91,6 +92,127 @@ describe('MeetingsPanel retained audio deletion', () => {
     meetings.appliedQuery = '';
     await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
     expect(container.textContent).toContain('No meeting transcripts yet.');
+  });
+
+  it('shows one first-meeting action without an empty list or detail pane', async () => {
+    const meetings = meetingsController(vi.fn());
+    meetings.page = { sessions: [], searchMatches: {}, total: 0, offset: 0, limit: 50 };
+    meetings.detail = null;
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(container.textContent).toContain('Record your first meeting');
+    expect(container.querySelector('input[type="search"]')).toBeNull();
+    expect(container.querySelector('.meetings-split')).toBeNull();
+    const starts = [...container.querySelectorAll('button')].filter((button) => button.textContent === 'Start meeting');
+    expect(starts).toHaveLength(1);
+    await act(async () => starts[0].click());
+    expect(meetings.start).toHaveBeenCalledOnce();
+    expect(container.querySelector('.meetings-phase-dot')?.getAttribute('data-phase')).toBe('idle');
+  });
+
+  it('offers System Settings and an enabled retry when Mac audio access is denied', async () => {
+    const meetings = meetingsController(vi.fn());
+    meetings.permission = 'denied';
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(container.textContent).toContain('Screen & System Audio Recording is off.');
+    expect(container.querySelector('.meetings-statusbar-detail')).toBeNull();
+    const recovery = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Open System Settings…')!;
+    expect(recovery.dataset.action).toBe('primary');
+    await act(async () => recovery.click());
+    expect(meetings.openSystemAudioPreferences).toHaveBeenCalledOnce();
+    const retry = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Start meeting')!;
+    expect(retry.disabled).toBe(false);
+    await act(async () => retry.click());
+    expect(meetings.start).toHaveBeenCalledOnce();
+  });
+
+  it('checks access only on activation and uses real recording state in all three timers', async () => {
+    const meetings = meetingsController(vi.fn());
+    meetings.permission = 'unknown';
+    meetings.requestPermission = vi.fn().mockResolvedValue('granted');
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(meetings.requestPermission).not.toHaveBeenCalled();
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Check access')!.click());
+    expect(meetings.requestPermission).toHaveBeenCalledOnce();
+    meetings.status = { ...meetings.status, phase: 'recording', sessionId: detail.session.id, elapsedMs: 272_000, microphoneActive: true, systemAudioActive: true };
+    meetings.detail = { ...detail, session: { ...detail.session, title: null, status: 'active' } };
+    meetings.page.sessions = [meetings.detail.session];
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(container.querySelector('.meetings-elapsed')?.textContent).toBe('4:32');
+    expect(container.querySelector('.meetings-row-preview')?.textContent).toBe('Recording · 4:32');
+    expect(container.querySelector('.meeting-detail-meta p')?.textContent).toBe('Recording · 4:32');
+    expect(container.querySelector('.meeting-more')).toBeNull();
+    expect(container.querySelector('.meeting-detail-title')?.hasAttribute('disabled')).toBe(true);
+    await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === 'Stop meeting')!.click());
+    expect(meetings.stop).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])('follows capture through recording, stopping, processing and saved state (empty=%s)', async (empty) => {
+    const meetings = meetingsController(vi.fn());
+    const session = { ...detail.session, status: 'active' as const };
+    meetings.detail = { ...detail, session, segments: empty ? [] : detail.segments };
+    meetings.page.sessions = [session];
+    for (const [phase, summary, footer] of [
+      ['recording', 'Recording · 4:32', 'Listening…'],
+      ['stopping', 'Stopping… · 4:32', 'Stopping capture…'],
+      ['processing', 'Finishing… · 4:32', 'Finishing pending transcript chunks…'],
+      ['idle', null, null],
+    ] as const) {
+      // Keep persisted status active even after idle, as it can lag the runtime receipt.
+      meetings.status = { ...meetings.status, phase, sessionId: phase === 'idle' ? null : session.id, elapsedMs: 272_000 };
+      await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+      expect(container.querySelector('.meetings-row-preview')?.textContent).toBe(summary ?? session.preview);
+      expect(container.querySelector('.meeting-detail-meta p')?.textContent).toBe(summary ?? [new Date(session.startedAtMs).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }), '4 sec', 'Audio kept'].join(' · '));
+      const transcript = container.querySelector('.meeting-transcript')!;
+      if (footer) expect(transcript.textContent).toContain(footer);
+      else {
+        expect(transcript.textContent).not.toContain('Listening…');
+        expect(transcript.textContent).not.toContain('Stopping capture…');
+        expect(transcript.textContent).not.toContain('Finishing pending');
+        expect(container.querySelector('.meetings-row-duration')).not.toBeNull();
+        if (empty) expect(transcript.textContent).toContain('No speech segments were saved.');
+      }
+      if (phase !== 'recording') expect(transcript.textContent).not.toContain('Listening…');
+    }
+  });
+
+  it('shows Connecting only for the starting runtime session in the list and detail header', async () => {
+    const meetings = meetingsController(vi.fn());
+    meetings.detail = { ...detail, session: { ...detail.session, status: 'active' } };
+    meetings.page.sessions = [meetings.detail.session];
+    meetings.status = { ...meetings.status, phase: 'starting', sessionId: detail.session.id, elapsedMs: 0 };
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(container.querySelector('.meetings-row-preview')?.textContent).toBe('Connecting… · 0:00');
+    expect(container.querySelector('.meeting-detail-meta p')?.textContent).toBe('Connecting… · 0:00');
+    expect(container.querySelector('.meeting-transcript')?.textContent).toContain('Connecting both channels…');
+    expect(container.querySelector('.meeting-transcript')?.textContent).not.toContain('Listening…');
+  });
+
+  it('returns to saved list/header facts on failure even when persisted status is still active', async () => {
+    const meetings = meetingsController(vi.fn());
+    meetings.detail = { ...detail, session: { ...detail.session, status: 'active' } };
+    meetings.page.sessions = [meetings.detail.session];
+    meetings.status = { ...meetings.status, phase: 'failed', sessionId: detail.session.id, elapsedMs: 272_000, errorCode: 'worker_failed' };
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(container.querySelector('.meetings-row-preview')?.textContent).toBe(detail.session.preview);
+    expect(container.querySelector('.meetings-row-duration')?.textContent).toBe('4 sec');
+    expect(container.querySelector('.meeting-detail-meta p')?.textContent).toBe([
+      new Date(detail.session.startedAtMs).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }), '4 sec', 'Audio kept',
+    ].join(' · '));
+    expect(container.querySelector('.meetings-phase p')?.textContent).toBe('Meeting stopped');
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+    expect(container.querySelector('.meeting-listening')).toBeNull();
+  });
+
+  it('does not present another persisted active session as recording', async () => {
+    const meetings = meetingsController(vi.fn());
+    meetings.detail = { ...detail, session: { ...detail.session, status: 'active' } };
+    meetings.page.sessions = [meetings.detail.session];
+    meetings.status = { ...meetings.status, phase: 'recording', sessionId: 'another-meeting', elapsedMs: 999_000 };
+    await act(async () => root.render(<MeetingsPanel meetings={meetings} playbackBusy={false} />));
+    expect(container.querySelector('.meetings-row-preview')?.textContent).toBe(detail.session.preview);
+    expect(container.querySelector('.meeting-detail-meta p')?.textContent).not.toContain('Recording');
+    expect(container.querySelector('.meeting-detail-meta p')?.textContent).not.toContain('16:39');
+    expect(container.querySelector('.meeting-transcript')?.textContent).not.toContain('Listening…');
   });
 
   it('exposes a named load-more button with loading and search-pending states', async () => {
@@ -147,6 +269,167 @@ describe('MeetingsPanel retained audio deletion', () => {
     expect(title?.nextElementSibling?.textContent).toBe('interrupted');
   });
 
+  it('confirms deletion with separate plain Space or Enter presses', async () => {
+    const press = async (item: HTMLElement, key: ' ' | 'Enter') => {
+      const down = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      const up = new KeyboardEvent('keyup', { key, bubbles: true, cancelable: true });
+      await act(async () => {
+        item.dispatchEvent(down);
+        item.dispatchEvent(up);
+      });
+      expect(down.defaultPrevented).toBe(true);
+      return down;
+    };
+
+    for (const key of [' ', 'Enter'] as const) {
+      const remove = vi.fn().mockResolvedValue(true);
+      await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
+      await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+      await press([...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => element.textContent === 'Delete meeting…')!, key);
+      expect([...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => element.textContent === 'Confirm delete…')).toBeDefined();
+      await press([...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => element.textContent === 'Confirm delete…')!, key);
+      expect(remove).toHaveBeenCalledExactlyOnceWith(detail.session.id);
+      await act(async () => root.render(<div />));
+    }
+  });
+
+  it('blocks held, composing and modified keyboard activation before the destructive menu item can click', async () => {
+    const remove = vi.fn();
+    await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
+    await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => element.textContent === 'Delete meeting…')!;
+    for (const options of [
+      { key: 'Enter', repeat: true }, { key: 'Enter', isComposing: true },
+      { key: ' ', isComposing: true }, { key: ' ', repeat: true }, { key: ' ', shiftKey: true },
+    ]) {
+      const event = new KeyboardEvent('keydown', { ...options, bubbles: true, cancelable: true });
+      await act(async () => item.dispatchEvent(event));
+      expect(event.defaultPrevented).toBe(true);
+      expect(item.textContent).toBe('Delete meeting…');
+      expect(remove).not.toHaveBeenCalled();
+    }
+    // Arm deliberately; a held Return must also be inert while armed.
+    await act(async () => item.click());
+    expect(item.textContent).toBe('Confirm delete…');
+    await act(async () => item.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true, cancelable: true })));
+    expect(remove).not.toHaveBeenCalled();
+    await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 501)); });
+    await act(async () => item.click());
+    expect(remove).toHaveBeenCalledExactlyOnceWith(detail.session.id);
+  });
+
+  it('disarms synchronously before a departure, re-entry and click in the same batch', async () => {
+    const remove = vi.fn().mockResolvedValue(true);
+    await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
+    await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => element.textContent === 'Delete meeting…')!;
+    await act(async () => item.click());
+    expect(item.textContent).toBe('Confirm delete…');
+
+    await act(async () => {
+      // Do not yield or flush React between these events: the click still has
+      // the prior render's handler when the pointer-departure update is queued.
+      item.dispatchEvent(new MouseEvent('pointerout', { bubbles: true, relatedTarget: document.body }));
+      item.dispatchEvent(new MouseEvent('pointerover', { bubbles: true, relatedTarget: document.body }));
+      item.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 }));
+      expect(remove).not.toHaveBeenCalled();
+    });
+
+    expect(remove).not.toHaveBeenCalled();
+    expect(item.textContent).toBe('Confirm delete…');
+  });
+
+  it('disarms the destructive confirmation after four seconds', async () => {
+    vi.useFakeTimers();
+    try {
+      const remove = vi.fn().mockResolvedValue(true);
+      await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
+      await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+      const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => element.textContent === 'Delete meeting…')!;
+      await act(async () => item.click());
+      expect(item.textContent).toBe('Confirm delete…');
+      await act(async () => vi.advanceTimersByTime(4_000));
+      expect(item.textContent).toBe('Delete meeting…');
+      expect(remove).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('requires a fresh pointer confirmation after the macOS double-click window', async () => {
+    vi.useFakeTimers();
+    try {
+      const remove = vi.fn().mockResolvedValue(true);
+      await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
+      await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+      const item = () => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => /(?:Delete meeting|Confirm delete)…/.test(element.textContent ?? ''))!;
+      const pointerClick = async (detail: number) => {
+        await act(async () => item().dispatchEvent(new Event('pointerdown', { bubbles: true })));
+        await act(async () => item().dispatchEvent(new MouseEvent('click', { bubbles: true, detail })));
+      };
+      await pointerClick(1);
+      expect(item().textContent).toBe('Confirm delete…');
+      await pointerClick(2);
+      await pointerClick(3);
+      expect(item().textContent).toBe('Confirm delete…');
+      expect(remove).not.toHaveBeenCalled();
+      await act(async () => vi.advanceTimersByTime(501));
+      await pointerClick(3);
+      expect(remove).toHaveBeenCalledExactlyOnceWith(detail.session.id);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses monotonic time for the pointer confirmation window despite wall-clock changes', async () => {
+    vi.useFakeTimers();
+    try {
+      const remove = vi.fn().mockResolvedValue(true);
+      const start = new Date('2026-11-10T12:00:00Z');
+      vi.setSystemTime(start);
+      await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
+      await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+      const item = () => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => /(?:Delete meeting|Confirm delete)…/.test(element.textContent ?? ''))!;
+      const pointerClick = async (detail: number) => {
+        await act(async () => item().dispatchEvent(new Event('pointerdown', { bubbles: true })));
+        await act(async () => item().dispatchEvent(new MouseEvent('click', { bubbles: true, detail })));
+      };
+
+      await pointerClick(1);
+      expect(item().textContent).toBe('Confirm delete…');
+      vi.setSystemTime(new Date(start.getTime() + 60_000));
+      await pointerClick(2);
+      vi.setSystemTime(new Date(start.getTime() - 60_000));
+      await pointerClick(3);
+      expect(item().textContent).toBe('Confirm delete…');
+      expect(remove).not.toHaveBeenCalled();
+
+      await act(async () => vi.advanceTimersByTime(501));
+      await pointerClick(4);
+      expect(remove).toHaveBeenCalledExactlyOnceWith(detail.session.id);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('re-arms after the four-second timeout instead of deleting', async () => {
+    vi.useFakeTimers();
+    try {
+      const remove = vi.fn().mockResolvedValue(true);
+      await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
+      await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+      const item = () => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => /(?:Delete meeting|Confirm delete)…/.test(element.textContent ?? ''))!;
+      await act(async () => item().click());
+      await act(async () => vi.advanceTimersByTime(4_000));
+      expect(item().textContent).toBe('Delete meeting…');
+      await act(async () => item().click());
+      expect(item().textContent).toBe('Confirm delete…');
+      expect(remove).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('invalidates local playback before deleting the selected meeting', async () => {
     const order: string[] = [];
     const remove = vi.fn(async () => {
@@ -159,13 +442,15 @@ describe('MeetingsPanel retained audio deletion', () => {
     ));
 
     const click = async (label: string) => {
-      const button = [...container.querySelectorAll('button')].find(
+      const button = [...document.querySelectorAll<HTMLElement>('button, [role="menuitem"]')].find(
         (candidate) => candidate.textContent?.trim() === label,
       );
       if (!button) throw new Error(`Missing ${label} button`);
       await act(async () => button.click());
     };
-    await click('Delete');
+    await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
+    await click('Delete meeting…');
+    await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 501)); });
     await click('Confirm delete…');
 
     expect(order).toEqual(['invalidate', 'remove']);

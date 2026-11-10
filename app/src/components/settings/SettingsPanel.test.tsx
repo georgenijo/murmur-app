@@ -2,7 +2,6 @@ import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, type Settings } from '../../lib/settings';
-import { SettingsSurfaceActiveContext } from './SettingsSurfaceContext';
 import type { ModelHardwareGuidance } from '../../lib/modelHardwareGuidance';
 import {
   SETTINGS_CATEGORIES,
@@ -151,7 +150,7 @@ describe('SettingsPanel information architecture', () => {
     isOpen = true,
     settings: Settings = DEFAULT_SETTINGS,
     pageRequest: SettingsPageRequest | null = null,
-    extras: Pick<Parameters<typeof SettingsPanel>[0], 'onDiscoveryChecklistReopen' | 'onPageOpened' | 'activeRef'> = {},
+    extras: Pick<Parameters<typeof SettingsPanel>[0], 'activeRef'> = {},
   ) {
     void isOpen;
     return root.render(
@@ -378,57 +377,10 @@ describe('SettingsPanel information architecture', () => {
     expect(browserSites?.closest('details')).toBeNull();
   });
 
-  it.each([1, 2])('credits a retained page when Settings becomes visible with request %i', async (token) => {
-    const activeRef = { current: false };
-    const onPageOpened = vi.fn();
-    const renderVisiblePanel = (visible: boolean, requestToken: number) => root.render(
-      <SettingsSurfaceActiveContext.Provider value={visible}>
-        <SettingsPanel
-          settings={DEFAULT_SETTINGS}
-          onUpdateSettings={onUpdateSettings}
-          initialized
-          status="idle"
-          onResetStats={vi.fn()}
-          onRerunSetup={vi.fn()}
-          accessibilityGranted
-          onCheckForUpdate={vi.fn(async () => {})}
-          onDownloadUpdate={vi.fn()}
-          onRestartUpdate={vi.fn()}
-          onOpenUpdate={vi.fn()}
-          updateStatus={{ phase: 'idle' }}
-          configureError={null}
-          pageRequest={{ page: 'shortcuts', token: requestToken }}
-          onPageOpened={onPageOpened}
-          activeRef={activeRef}
-        />
-      </SettingsSurfaceActiveContext.Provider>,
-    );
-    await act(async () => renderVisiblePanel(false, 1));
-    expect(onPageOpened).not.toHaveBeenCalled();
-
-    activeRef.current = true;
-    await act(async () => renderVisiblePanel(true, token));
-    expect(container.querySelector('h1')?.textContent).toBe('Keyboard shortcuts');
-    expect(onPageOpened).toHaveBeenCalledExactlyOnceWith('shortcuts');
-  });
-
-  it('reopens the feature checklist from General and reports rendered pages', async () => {
-    const onDiscoveryChecklistReopen = vi.fn();
-    const onPageOpened = vi.fn();
-    await act(async () => renderPanel(true, DEFAULT_SETTINGS, null, {
-      onDiscoveryChecklistReopen,
-      onPageOpened,
-    }));
-    expect(onPageOpened).toHaveBeenCalledWith('general');
-    const show = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Show feature checklist') as HTMLButtonElement;
-    await act(async () => show.click());
-    expect(onDiscoveryChecklistReopen).toHaveBeenCalledOnce();
-
-    const shortcuts = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Keyboard shortcuts')) as HTMLButtonElement;
-    await act(async () => shortcuts.click());
-    expect(onPageOpened).toHaveBeenCalledWith('shortcuts');
+  it('groups General settings into Startup, Dictation and Maintenance', async () => {
+    await act(async () => renderPanel(true));
+    expect(Array.from(container.querySelectorAll('.settings-group-heading')).map(node => node.textContent))
+      .toEqual(['Startup', 'Dictation', 'Maintenance']);
   });
 
   it('routes an empty Mode binding through app creation and returns to binding', async () => {

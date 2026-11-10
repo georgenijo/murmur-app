@@ -18,7 +18,7 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
 
   const button = (label: string) => {
     const result = Array.from(container.querySelectorAll('button')).find(
-      (candidate) => candidate.textContent?.trim() === label,
+      (candidate) => label === 'Download' ? candidate.textContent?.trim().startsWith('Download ·') : candidate.textContent?.trim() === label,
     );
     expect(result, `Button: ${label}`).toBeDefined();
     return result!;
@@ -117,7 +117,7 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
       ['Continue', 'Accessibility access'],
       ['Continue', 'System audio access'],
       ['Skip meetings for now', 'Calendar access'],
-      ['Skip Calendar for now', 'Transcription model'],
+      ['Skip Calendar for now', 'Speech model'],
       ['Continue', 'Recording shortcut'],
       ['Continue', "You're all set"],
     ];
@@ -352,7 +352,7 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     await click('Continue');
     expect(container.querySelector('[data-fresh="true"]')?.textContent).toBe('Allowed');
     await advance(900);
-    expectStep(step === 'systemAudio' ? 'Calendar access' : 'Transcription model');
+    expectStep(step === 'systemAudio' ? 'Calendar access' : 'Speech model');
   });
 
   it.each(['systemAudio', 'calendar'] as const)('does not auto-advance an already granted optional %s entry probe', async step => {

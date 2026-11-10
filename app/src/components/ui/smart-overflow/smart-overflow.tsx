@@ -27,6 +27,8 @@ import { cn } from "@/lib/sona-utils";
 export interface SmartOverflowActionProps {
   /** Stable identifier used for layout, focus recovery, and React rendering. */
   id: string;
+  /** Accessible name when a caller renders an icon-only action. */
+  ariaLabel?: string;
   /** Visible label and optional rich content for the action. */
   children: ReactNode;
   /** Optional icon shown before the action label. @default undefined */
@@ -272,6 +274,7 @@ export default function SmartOverflow({
                 disabled={disabled || action.disabled}
                 data-slot="smart-overflow-action"
                 data-action-id={action.id}
+                aria-label={action.ariaLabel}
                 initial={
                   shouldReduceMotion ? false : { opacity: 0, scale: 0.98 }
                 }

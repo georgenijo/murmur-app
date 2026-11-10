@@ -1,0 +1,136 @@
+/* First-run assistant and the shared speech-model picker. */
+.onboarding-flow, .model-downloader { --ui-font-onboarding-title: 22px; --ui-font-meta: 11px; }
+.onboarding-outer { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 20px 24px 88px; }
+.onboarding-frame { width: min(620px, 100%); height: min(var(--ui-onboarding-frame-height), 100%); min-height: 0; display: flex; flex-direction: column; }
+.onboarding-content { --ui-onboarding-step-offset: var(--ui-onboarding-step-distance); animation: onboarding-step-in var(--ui-onboarding-step-duration) ease-out both; flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 24px 0 12px; }
+/* Setup steps scroll by trackpad or wheel without a visible scrollbar. */
+.onboarding-content { scrollbar-width: none; }
+.onboarding-content::-webkit-scrollbar { display: none; width: 0; height: 0; }
+.onboarding-heading { margin-bottom: 20px; text-align: center; }
+.onboarding-icon { display: flex; align-items: center; justify-content: center; width: var(--ui-onboarding-hero-size); height: var(--ui-onboarding-hero-size); border-radius: var(--ui-onboarding-hero-radius); background: color-mix(in srgb, var(--murmur-primary) 12%, transparent); color: var(--murmur-primary); margin: 0 auto 16px; }
+.onboarding-icon svg { width: var(--ui-onboarding-icon-size); height: var(--ui-onboarding-icon-size); }
+.onboarding-heading h1 { font-size: var(--ui-font-onboarding-title); line-height: 28px; letter-spacing: -0.01em; font-weight: 600; color: var(--murmur-on-surface); margin: 0 0 12px; outline: none; }
+.onboarding-heading p, .onboarding-copy { font-size: var(--ui-font-label); line-height: 18px; color: var(--murmur-on-surface-variant); }
+.onboarding-heading p { max-width: var(--ui-onboarding-copy-width); margin: 8px auto 0; }
+.onboarding-copy { margin-top: 10px; text-align: center; }
+.onboarding-shortcut .onboarding-copy { text-align: left; }
+.onboarding-permission-card { display: flex; align-items: center; gap: 12px; min-height: var(--ui-onboarding-card-height); padding: 12px 16px; font-size: var(--ui-font-body); color: var(--murmur-on-surface-variant); }
+.onboarding-permission-label { flex: 1; color: var(--murmur-on-surface); font-weight: var(--ui-weight-label); }
+.onboarding-permission-state { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: var(--ui-radius-pill); background: var(--murmur-surface-container); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
+.onboarding-permission-state[data-tone='success'] { color: var(--murmur-success); background: color-mix(in srgb, var(--murmur-success) 10%, transparent); }
+.onboarding-permission-state[data-tone='error'] { color: var(--murmur-error); background: color-mix(in srgb, var(--murmur-error) 10%, transparent); }
+.onboarding-permission-state[data-fresh='true'] svg { animation: onboarding-check-in var(--ui-onboarding-check-duration) ease-out both; }
+.onboarding-spinner { animation: onboarding-spin 1s linear infinite; }
+.onboarding-content[data-direction='back'] { --ui-onboarding-step-offset: calc(-1 * var(--ui-onboarding-step-distance)); }
+@keyframes onboarding-step-in { from { opacity: 0; transform: translateX(var(--ui-onboarding-step-offset)); } to { opacity: 1; transform: translateX(0); } }
+@keyframes onboarding-check-in { from { opacity: 0; transform: scale(.7); } to { opacity: 1; transform: scale(1); } }
+@keyframes onboarding-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-content { --ui-onboarding-step-offset: var(--ui-onboarding-step-distance); animation: none; }
+  .onboarding-permission-state[data-fresh='true'] svg, .onboarding-spinner { animation: none; }
+}
+.onboarding-status { min-height: 24px; display: flex; align-items: center; gap: 8px; font-size: var(--ui-font-body); color: var(--murmur-on-surface-variant); }
+.onboarding-status[data-tone='success'] svg { color: var(--murmur-success); }
+.onboarding-status[data-tone='error'] svg { color: var(--murmur-error); }
+.onboarding-error { margin-top: 12px; font-size: var(--ui-font-body); }
+.onboarding-link { display: block; margin-left: auto; margin-right: auto; margin-top: 12px; color: var(--murmur-on-surface-variant); text-decoration: underline; font-size: var(--ui-font-caption); }
+.onboarding-link:hover { color: var(--murmur-on-surface); }
+/* Download/install status lives outside the scrolling model list so it stays
+   visible in the wizard's fixed-height frame. */
+.onboarding-model-status { flex: none; display: flex; flex-direction: column; gap: 8px; padding-top: 8px; }
+.onboarding-model-status:empty { display: none; }
+.onboarding-model-status > * { margin: 0; }
+.onboarding-actions { flex: none; padding-top: 12px; }
+.onboarding-nav { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.onboarding-nav-end { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.onboarding-shortcut { padding: 16px; }
+.onboarding-content > .onboarding-label { text-align: center; }
+.onboarding-label { font-size: var(--ui-font-body); font-weight: 600; color: var(--murmur-on-surface); margin: 12px 0 8px; }
+.onboarding-shortcut .onboarding-label:first-child { margin-top: 0; }
+.onboarding-segmented { display: flex; background: var(--ui-tint-sunken); }
+.onboarding-segmented button { flex: 1; color: var(--murmur-on-surface-variant); }
+.onboarding-segmented button[data-selected='true'] { color: var(--murmur-on-surface); }
+.onboarding-summary { overflow: hidden; }
+.onboarding-summary-row { display: grid; grid-template-columns: 16px 100px 1fr; gap: 8px; padding: 8px 12px; font-size: var(--ui-font-caption); color: var(--murmur-on-surface-variant); }
+.onboarding-summary-row + .onboarding-summary-row { border-top: 1px solid var(--ui-hairline); }
+.onboarding-summary-row strong { color: var(--murmur-on-surface); font-weight: 600; }
+.onboarding-flow { position: relative; font-family: var(--ui-font-sans); }
+/* Welcome is centered against the full surface; keep native chrome above its wrapper. */
+.onboarding-flow > .ui-window-header { position: relative; z-index: 1; }
+.onboarding-flow button { min-width: 28px; min-height: 28px; font-size: var(--ui-font-label); line-height: 18px; border-radius: var(--ui-radius-control); box-shadow: none; }
+.onboarding-flow .onboarding-nav button[data-variant='primary'] { background: var(--murmur-primary); color: var(--murmur-on-primary); }
+.onboarding-flow[data-step='welcome'] .onboarding-outer { position: absolute; inset: 0 0 48px; padding: 24px; }
+.onboarding-flow[data-step='welcome'] .onboarding-frame { height: auto; max-height: 100%; }
+.onboarding-flow[data-step='welcome'] .onboarding-content { display: flex; flex: none; flex-direction: column; align-items: center; width: 100%; max-width: 440px; margin-inline: auto; padding: 0; overflow-y: auto; text-align: center; }
+.onboarding-flow[data-step='welcome'] .onboarding-heading { width: 100%; margin: 0; }
+.onboarding-flow[data-step='welcome'] .onboarding-heading p { margin: 0; }
+.onboarding-flow[data-step='welcome'] .onboarding-copy { margin: 12px 0 0; }
+.onboarding-flow[data-step='welcome'] .onboarding-icon { background: transparent; }
+.onboarding-flow[data-step='welcome'] .onboarding-nav { justify-content: center; margin: 32px 0 0; padding: 0; }
+.onboarding-flow[data-step='welcome'] .onboarding-nav-end { margin: 0; }
+.onboarding-flow[data-step='welcome'] .onboarding-nav button { min-width: 160px; height: 36px; }
+.onboarding-flow[data-step='welcome'] .onboarding-actions { display: none; }
+.murmur-hero-mark { display: flex; align-items: center; justify-content: center; width: 64px; height: 64px; }
+.murmur-hero-mark .home-brand-mark { flex: none; transform: scale(2.46153846); }
+.onboarding-stages { position: absolute; bottom: 32px; left: 0; right: 0; display: flex; align-items: center; justify-content: center; gap: 20px; margin: 0; padding: 0 24px; list-style: none; }
+.onboarding-stages li { display: flex; align-items: center; gap: 5px; position: relative; font-size: var(--ui-font-caption); line-height: 16px; white-space: nowrap; color: var(--murmur-on-surface-variant); }
+.onboarding-stages li:not(:last-child)::after { content: ''; position: absolute; height: 1px; width: 10px; right: -15px; background: var(--ui-hairline-strong); }
+.onboarding-stages li[aria-current] { color: var(--murmur-on-surface); font-weight: 600; }
+.onboarding-permission-allow { height: 28px; padding: 0 10px; white-space: nowrap; }
+.onboarding-permission-card:has(.onboarding-permission-allow) .onboarding-permission-state { padding-inline: 0; background: transparent; }
+.onboarding-nav { margin-top: 20px; }
+.onboarding-flow button:focus-visible, .model-downloader button:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 2px; }
+.model-downloader { position: relative; padding: 32px; }
+.model-downloader > .ui-window-header { position: absolute; inset: 0 0 auto; z-index: 1; }
+/* Keep the complete focus indicator within the scrolling column without narrowing cards. */
+.onboarding-content .model-option:focus-visible { outline-offset: -4px; }
+.model-downloader-column { flex-shrink: 0; width: 100%; max-width: 620px; }
+.model-download-panel { font-size: var(--ui-font-label); line-height: 18px; }
+.model-options { display: flex; flex-direction: column; gap: 8px; }
+.model-option { position: relative; width: 100%; padding: 10px 40px 10px 16px; text-align: left; border-color: var(--ui-hairline); box-shadow: none; cursor: pointer; transition: border-color 120ms ease; }
+.model-option:not(:disabled):hover { border-color: color-mix(in srgb, var(--murmur-primary) 30%, var(--ui-hairline)); }
+.model-option[aria-pressed='true'] { border-color: color-mix(in srgb, var(--murmur-primary) 55%, var(--ui-hairline)); background: var(--ui-tint-accent-subtle); }
+.model-option-heading { display: grid; grid-template-columns: minmax(0,1fr) 64px; align-items: center; gap: 12px; }
+.model-option-name { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--murmur-on-surface); font-size: var(--ui-font-label); line-height: 18px; font-weight: 500; }
+.model-recommendation, .model-memory-tag { border-radius: var(--ui-radius-pill); padding: 2px 8px; font-size: var(--ui-font-meta); line-height: 16px; font-weight: 500; background: var(--ui-tint-accent-strong); white-space: nowrap; }
+.model-memory-tag { background: color-mix(in srgb,var(--murmur-warning) 15%,transparent); color: var(--murmur-warning); }
+.model-option-size { text-align: right; font-size: var(--ui-font-caption); line-height: 16px; font-variant-numeric: tabular-nums; color: var(--murmur-on-surface-variant); }
+.model-option p { margin-top: 2px; font-size: var(--ui-font-caption); line-height: 16px; color: var(--murmur-on-surface-variant); }
+.model-selection { position: absolute; right: 14px; top: 13px; color: var(--murmur-primary); }
+.model-option:disabled { pointer-events: none; cursor: not-allowed; opacity: 1; }
+.model-option:disabled:not([aria-pressed='true']) { opacity: .45; }
+.model-download-status { position: relative; height: 144px; font-variant-numeric: tabular-nums; }
+.model-download-progress { padding-top: 8px; }
+.model-progress-label { text-align: center; margin: 0 0 6px; font-size: var(--ui-font-caption); line-height: 16px; color: var(--murmur-on-surface-variant); }
+.model-progress-track { height: 4px; border-radius: 2px; overflow: hidden; background: var(--murmur-surface-container); box-shadow: 0 0 0 1px var(--murmur-on-surface-variant); }
+.model-progress-fill { height: 100%; background: var(--murmur-primary); transition: width 200ms ease; }
+.model-progress-size { text-align: center; margin: 6px 0 0; font-size: var(--ui-font-caption); line-height: 16px; color: var(--murmur-on-surface-variant); }
+.model-download-action { position: absolute; top: 64px; left: 50%; transform: translateX(-50%); width: 168px; min-width: 168px; height: 36px; padding: 0 12px; font-size: var(--ui-font-label); line-height: 18px; font-weight: 500; border-radius: var(--ui-radius-control); white-space: nowrap; }
+.model-download-action:active { transform: translateX(-50%); }
+.first-run-primary { background: var(--murmur-primary); color: var(--murmur-on-primary); border: 0; box-shadow: none; }
+.model-download-action:disabled { opacity: .5; cursor: not-allowed; }
+.model-download-help { position: absolute; top: 108px; left: 0; right: 0; text-align: center; margin: 0; font-size: var(--ui-font-caption); line-height: 16px; color: var(--murmur-on-surface-variant); }
+.model-download-error { display: flex; gap: 8px; align-items: center; justify-content: center; min-height: 40px; padding-top: 12px; font-size: var(--ui-font-caption); line-height: 16px; color: var(--murmur-error); overflow-wrap: anywhere; }
+.model-download-error svg { flex: none; }
+.model-fallback-actions { position: absolute; top: 108px; left: 0; right: 0; display: flex; justify-content: center; gap: 8px; }
+.model-fallback-actions button { min-height: 32px; padding: 0 12px; font-size: var(--ui-font-caption); }
+.model-memory-warning { color: var(--murmur-warning); font-size: var(--ui-font-caption); line-height: 18px; margin-top: 8px; }
+.model-cancel-error { padding-top: 128px; color: var(--murmur-error); font-size: var(--ui-font-caption); line-height: 18px; overflow-wrap: anywhere; }
+.model-download-status:has(.model-cancel-error) { height: auto; min-height: 144px; }
+.model-download-panel[data-embedded] .model-download-status:empty { display: none; }
+.onboarding-model-status { text-align: center; }
+.onboarding-model-status .model-download-help { position: static; }
+.onboarding-model-status .model-cancel-error { padding-top: 0; }
+.onboarding-flow[data-step='model'] .onboarding-nav { margin-top: 0; }
+.onboarding-flow[data-step='model'] .onboarding-model-primary-action { width: 153px; min-width: 153px; }
+@media (max-height: 660px) {
+  .model-downloader { padding: 24px; }
+  .onboarding-flow[data-step='model'] .onboarding-outer { padding-top: 0; }
+  .onboarding-flow[data-step='model'] .onboarding-content { padding-block: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .model-option, .model-progress-fill { transition: none; }
+}
+
+.model-download-error { max-height: 56px; overflow-y: auto; }
+.onboarding-model-status .model-fallback-actions { position: static; margin-top: 8px; }

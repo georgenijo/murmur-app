@@ -6,10 +6,14 @@ permissions were a dismissible banner.
 
 ## Flow
 
-Eight steps share a fixed frame with progress and a step caption at the top,
-a scrollable content region, and a pinned bottom navigation row. Back stays
+Eight steps share a fixed frame with a scrollable content region and a pinned
+bottom navigation row. A named stage row stays 32px above the window bottom:
+Welcome, Permissions (the four permission steps), Speech model, Shortcut, Ready.
+Its completed checks indicate navigation progress, not permission grants.
+Welcome centers the existing waveform mark, local-storage copy, and Get started
+action in one block. The window header retains its drag region without a wordmark. Back stays
 left, while an optional Skip and the primary action stay right. Back remains visible but disabled while a model download is
-active, because leaving the step cannot cancel the underlying download safely:
+active, until its exact native download owner confirms cancellation or completion:
 
 1. **Welcome** — explains that dictation runs on this Mac, saved history and retained meeting audio stay local.
 2. **Microphone** — fires the *native* macOS permission dialog in-app via the
@@ -42,13 +46,23 @@ active, because leaving the step cannot cancel the underlying download safely:
    restores Back, Retry, and one-click Whisper Base / CPU Parakeet fallbacks.
    Download/install status, Cancel, memory notices, and terminal errors render
    in a fixed footer above the navigation row, so they stay visible while the
-   model list scrolls inside the wizard's fixed-height frame.
+   model list scrolls inside the wizard's fixed-height frame. The right action
+   becomes Cancel during an active download, with Back disabled until it settles.
 7. **Hotkey** — chooses Hold / Double-tap / Both and a trigger key. The grouped
    picker contains Left Shift, Left Option, Right Control, and F1 through F20.
    Selecting a function key explains the macOS Fn and standard-function-key
    setting and notes that Murmur does not suppress the key's normal action.
 8. **Done** — live summary of the checks plus a quick-start card derived from
    the selected recording mode and trigger key.
+
+Permission rows also expose an inline **Allow…** action while access is missing.
+It uses the same native handler as the footer: microphone requests TCC unless
+denied (then opens System Settings), Accessibility requests and opens its pane,
+System Audio requests capture unless denied, and Calendar requests access unless
+denied. Granted rows show Allowed with no Allow button. Waiting actions are
+disabled; unsupported/restricted permissions retain their explanatory state
+without offering a request that cannot succeed. The existing footer actions,
+reset paths, skip choices, polling, and microphone arrival prompt remain.
 
 ## Permission-state handling
 
@@ -129,29 +143,21 @@ Settings → General → **Run setup assistant…** clears the flag and relaunch
 wizard — the recovery path when a user revokes a permission and wants a guided
 re-grant instead of spelunking through System Settings.
 
-## Post-setup discovery
+## Contextual hints after setup
 
-The wizard remains eight steps. After it finishes, Home shows a dismissible
-**Get more from Murmur** checklist for features that are useful after the first
-dictation: Command Palette, an app-bound Mode, meeting capture, Correct and Teach, and Keyboard Shortcuts. Settings →
-General can reopen the checklist.
+The wizard remains eight steps. Home goes directly to dictation and history.
+Three once-only hints respond to an expired double-tap window, a new history
+entry, and an existing teaching context identifying an allow-listed browser.
+The local record stores fixed hint IDs, without transcript, selection, site,
+window-title or meeting content. Dismissed hints stay dismissed after relaunch.
+Both setup-assistant entry points reset hint state.
 
-Meeting and correction rows read the durable local activity
-counters. A Mode row
-requires an explicit `modeId` on an app profile; the built-in default Mode does
-not count. Command Palette and Keyboard Shortcuts complete only after their
-views open. Completing setup records the current evidence as a baseline, so a
-fresh setup cycle starts with every row incomplete. Existing installs without
-a discovery record keep credit for prior local usage and explicit
-configuration.
-
-Four event-driven hints are queued once: an expired double-tap window, the
-first new history entry, a dictation whose existing teaching context identifies
-an allow-listed browser, and a meeting entering post-stop processing. The
-stored record contains fixed hint IDs only. It never stores transcript text,
-selected text, site data, window titles, or meeting IDs. Dismissed hints do not
-return after relaunch. Both Run Setup Assistant entry points clear the
-checklist, evidence baseline, and hint state.
+`murmur_discovery_v2` preserves validated pending/dismissed hint IDs from the
+legacy v1 record, filtering unknown IDs individually. Invalid v2 data falls back
+to v1; valid dismissals from both versions are preserved. Retired progress fields
+are ignored. Recoverable v1 data is removed only after v2 is written successfully;
+unreadable old JSON is removed. Migration can be retried safely.
+No native settings or registered commands changed.
 
 ## Files
 
@@ -159,8 +165,26 @@ checklist, evidence baseline, and hint state.
 |------|---------|
 | `app/src/components/onboarding/OnboardingFlow.tsx` | The wizard |
 | `app/src/lib/onboarding.ts` | Completion-flag persistence |
-| `app/src/lib/discovery.ts` | Checklist evidence, dismissal, and once-only hint persistence |
-| `app/src/lib/hooks/useDiscovery.ts` | Existing-event listeners and live evidence updates |
-| `app/src/components/home/DiscoveryChecklist.tsx` | Home checklist |
+| `app/src/lib/discovery.ts` | Once-only hint persistence and legacy migration |
+| `app/src/lib/hooks/useDiscovery.ts` | Existing-event hint listeners |
 | `app/src/components/ModelDownloader.tsx` | `ModelDownloadPanel` extracted for reuse |
 | `app/src-tauri/src/commands/permissions.rs` | `request_microphone_access` (block2 completion handler) |
+
+## Visual fixture controls
+
+`visual-fixtures.html?state=first-run-onboarding` reproduces Welcome; use its real
+Get started / Skip / Continue controls to reach Permissions and Speech model.
+`permission=unknown|granted|denied` controls native-boundary permission responses;
+inline Allow requests resolve through those mocked commands and subsequent polls.
+`state=first-run-model` shows the standalone gate. Add
+`download=progress|indeterminate|failed`, then press Download to exercise the real
+picker's progress, cancel, failure, retry, and explicit fallback branches. These
+are deterministic fixture signals, not actual downloads or OS permission grants.
+Both first-run fixtures provide an explicit Apple M4 hardware-guidance response;
+production uses the native hardware probe. All states support `appearance=light`
+and `appearance=dark`, at 1100×780 and 840×620, without injected CSS or DOM edits.
+
+The native title bar stays above Welcome's centered wrapper. Every wizard step
+and the standalone model gate retain hit-testable native drag regions without
+moving the approved content. Model cards use an inset keyboard focus outline
+inside the scrolling wizard column, including the first and last choices.

@@ -103,8 +103,10 @@ describe('HistoryPanel', () => {
 
   it('keeps the empty state when there is no history', async () => {
     await render({ entries: [] });
-    expect(container.textContent).toContain('No transcription history yet');
-    expect(searchInput()).not.toBeNull();
+    expect(container.textContent).toContain('No dictations yet');
+    expect(searchInput().disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="Filter transcripts"]')?.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="More history actions"]')?.disabled).toBe(true);
     expect(container.textContent).not.toMatch(/\d+ entr/);
     expect(container.querySelector('.history-filtered-note')).toBeNull();
   });

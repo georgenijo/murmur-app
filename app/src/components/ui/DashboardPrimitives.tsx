@@ -217,7 +217,7 @@ export interface DashboardStatItem {
 }
 
 interface DashboardStatGroupProps {
-  kind: 'rows' | 'tiles';
+  kind: 'rows' | 'tiles' | 'headline' | 'details';
   items: readonly DashboardStatItem[];
   ariaLabel: string;
 }

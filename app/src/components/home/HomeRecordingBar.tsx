@@ -1,4 +1,6 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
+import { openMicrophoneSettings, type MicPermissionStatus } from '../../lib/dictation';
+import { DashboardAction } from '../ui/DashboardPrimitives';
 import { Mic, Square } from 'lucide-react';
 import {
   dictationKeyLabel,
@@ -26,6 +28,7 @@ interface HomeRecordingBarProps {
   onStop: () => void;
   /** Status strip under the prompt row, like a composer's model/agent bar. */
   footer?: ReactNode;
+  microphonePermission?: MicPermissionStatus;
 }
 
 function timer(seconds: number): string {
@@ -50,7 +53,10 @@ export function HomeRecordingBar({
   onRecord,
   onStop,
   footer,
+  microphonePermission = 'unknown',
 }: HomeRecordingBarProps) {
+  const [recoveryError, setRecoveryError] = useState(false);
+  const micDenied = microphonePermission === 'denied';
   const isCapturing = status === 'starting' || status === 'recording';
   const busy = status === 'processing' || status === 'recovering';
   const meetingBusy = meetingPhase !== 'idle' && meetingPhase !== 'failed';
@@ -82,22 +88,37 @@ export function HomeRecordingBar({
     title = 'Getting ready…';
     hint = 'This takes a moment the first time';
   } else {
-    title = 'Click to start talking';
+    title = 'Click to start dictating';
     const gesture = recordingMode === 'double_tap' ? 'double-tap' : recordingMode === 'both' ? 'hold or double-tap' : 'hold';
     hint = <>or {gesture} <Shortcut triggerKey={triggerKey} /> in any app</>;
   }
 
   const waiting = busy || meetingBusy || !initialized;
+  const showMicRecovery = micDenied && !isCapturing && !busy;
 
   return (
-    <section className="home-talk" aria-label="Dictation controls" data-state={isCapturing ? 'capturing' : waiting ? 'waiting' : 'ready'}>
-      <button
+    <section className="home-talk" aria-label="Dictation controls" data-state={isCapturing ? 'capturing' : showMicRecovery || waiting ? 'waiting' : 'ready'}>
+      {showMicRecovery ? (
+        <div className="home-mic-recovery">
+          <button type="button" className="home-talk-action" disabled aria-disabled="true" aria-label="Start dictation — microphone access required">
+            <span className="home-talk-button" aria-hidden="true"><Mic className="home-talk-icon" strokeWidth={2.2} /></span>
+          </button>
+          <div className="home-mic-recovery-copy">
+            <p role="status"><span className="home-warning-dot" aria-hidden="true" />Murmur can't hear you. Allow microphone access in System Settings.</p>
+            <DashboardAction variant="primary" onActivate={() => {
+              setRecoveryError(false);
+              void openMicrophoneSettings().catch(() => setRecoveryError(true));
+            }}>Open System Settings…</DashboardAction>
+            {recoveryError && <p role="alert">Couldn’t open System Settings. Open Privacy &amp; Security → Microphone.</p>}
+          </div>
+        </div>
+      ) : <button
         type="button"
         data-testid="home-record-button"
         className="home-talk-action"
         onClick={() => void (isCapturing ? onStop() : onRecord())}
         disabled={waiting}
-        aria-label={status === 'recording' ? `Click to stop recording, ${timer(recordingDuration)}` : status === 'starting' ? 'Click to cancel recording' : title}
+        aria-label={isCapturing ? 'Stop dictation' : waiting ? title : 'Start dictation'}
       >
         <span className="home-talk-button" aria-hidden="true">
           {isCapturing
@@ -129,7 +150,7 @@ export function HomeRecordingBar({
             ) : hint}
           </span>
         </span>
-      </button>
+      </button>}
       {footer && <div className="home-talk-footer">{footer}</div>}
     </section>
   );

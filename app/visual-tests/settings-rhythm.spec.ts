@@ -20,7 +20,7 @@ for (const { path, state } of pages) {
       await page.goto(`/visual-fixtures.html?state=${state}&appearance=light`);
       await page.getByRole('navigation', { name: 'Settings pages' }).getByRole('button', { name: path[0], exact: true }).click();
       if (path[1]) await page.locator('main').getByRole('button', { name: new RegExp(`^${path[1]}`) }).first().click();
-      await expect(page.locator('.settings-card-body')).toBeVisible();
+      await expect(page.locator('.settings-card-body').first()).toBeVisible();
       if (expanded) {
         for (let pass = 0; pass < 3; pass++) {
           const owners = page.locator('.settings-setting-row:has(+ .settings-dependent-branch) [role=switch][aria-checked=false]:not([data-disabled])');
@@ -31,7 +31,7 @@ for (const { path, state } of pages) {
       // A toggle can return before React and :has() layout settle on macOS.
       // Retry the same geometry contract until the revealed rows finish rendering.
       await expect(async () => {
-        const result = await page.locator('.settings-card-body').evaluate(body => {
+        const result = await page.locator('.settings-card-body').evaluateAll(bodies => bodies.map(body => {
           const failures: string[] = [];
           const card = body.getBoundingClientRect();
           const cardStyle = getComputedStyle(body);
@@ -40,16 +40,17 @@ for (const { path, state } of pages) {
             const style = getComputedStyle(row);
             const bounds = row.getBoundingClientRect();
             const branch = row.classList.contains('settings-dependent-branch');
+            const groupedAdvanced = row.matches('.settings-groups .settings-advanced');
             const advancedRows = row.matches('.settings-advanced:has(> .settings-advanced-rows)');
             const label = row.textContent?.trim().slice(0, 40);
-            if (style.paddingTop !== (branch ? '0px' : '12px') || style.paddingBottom !== (branch || advancedRows ? '0px' : '12px')) failures.push(`${label}: vertical padding ${style.paddingTop}/${style.paddingBottom}`);
-            // Advanced keeps its trailing 12px on the toggle in both states,
+            if (style.paddingTop !== (branch || groupedAdvanced ? '0px' : '7px') || style.paddingBottom !== (branch || groupedAdvanced || advancedRows ? '0px' : '7px')) failures.push(`${label}: vertical padding ${style.paddingTop}/${style.paddingBottom}`);
+            // Advanced keeps its trailing 7px on the toggle in both states,
             // so row width and spacing do not change at animation boundaries.
-            if (advancedRows && getComputedStyle(row.querySelector('.settings-advanced-toggle')!).marginBottom !== '12px') failures.push(`${label}: Advanced toggle spacing`);
+            if (advancedRows && getComputedStyle(row.querySelector('.settings-advanced-toggle')!).marginBottom !== '7px') failures.push(`${label}: Advanced toggle spacing`);
             if (style.paddingLeft !== (branch ? '0px' : '16px') || style.paddingRight !== (branch ? '0px' : '16px')) failures.push(`${label}: horizontal padding ${style.paddingLeft}/${style.paddingRight}`);
-            if (style.borderRadius !== '0px') failures.push(`${label}: rounded row ${style.borderRadius}`);
+            if (style.borderRadius !== '0px' && !row.matches('button:last-child')) failures.push(`${label}: rounded row ${style.borderRadius}`);
             if (Math.abs(bounds.width - (card.width - 2)) > .1) failures.push(`${label}: inset divider (${bounds.width}/${card.width})`);
-            if (i > 0 && style.borderTopWidth !== (branch ? '0px' : '1px')) failures.push(`${label}: divider ${style.borderTopWidth}`);
+            if (i > 0 && style.borderTopWidth !== (branch || groupedAdvanced ? '0px' : '1px')) failures.push(`${label}: divider ${style.borderTopWidth}`);
           });
           for (const disclosure of body.querySelectorAll('.settings-advanced:has(> .settings-advanced-toggle[aria-expanded="true"])')) {
             const toggle = disclosure.querySelector('.settings-advanced-toggle')!.getBoundingClientRect();
@@ -62,15 +63,17 @@ for (const { path, state } of pages) {
               if (Math.abs(bounds.left - (card.left + 1)) > .1 || Math.abs(bounds.right - (card.right - 1)) > .1) failures.push(`${label}: Advanced row edges`);
               if (row.classList.contains('settings-dependent-branch')) continue;
               if (Math.abs(bounds.left + parseFloat(style.paddingLeft) - toggle.left) > .1) failures.push(`${label}: Advanced content inset`);
-              if (style.paddingTop !== '12px' || style.paddingBottom !== '12px' || style.borderTopWidth !== '1px') failures.push(`${label}: Advanced row rhythm`);
+              if (style.paddingTop !== '7px' || style.paddingBottom !== '7px' || style.borderTopWidth !== '1px') failures.push(`${label}: Advanced row rhythm`);
             }
             const last = rows.lastElementChild?.getBoundingClientRect();
             if (last && Math.abs(last.bottom - disclosure.getBoundingClientRect().bottom) > .1) failures.push('Advanced trailing inset');
           }
           return { failures, count: body.children.length };
-        });
-        expect(result.count).toBeGreaterThan(0);
-        expect(result.failures).toEqual([]);
+        }));
+        for (const card of result) {
+          expect(card.count).toBeGreaterThan(0);
+          expect(card.failures).toEqual([]);
+        }
       }).toPass({ timeout: 5_000 });
     });
   }

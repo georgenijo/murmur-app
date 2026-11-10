@@ -33,7 +33,7 @@ for (const appearance of ['light', 'dark']) {
       await expect(page.locator('main')).toBeAttached();
       if (path[0] === 'Appearance') await expect(page.getByRole('button', { name: 'Use OpenCode theme', exact: true })).toBeVisible();
       if (path.length === 1 && path[0] === 'Customize') {
-        for (const row of await page.locator('.settings-hub-card > button').all()) expect((await row.boundingBox())!.height).toBeGreaterThanOrEqual(66);
+        for (const row of await page.locator('.settings-hub-card > button').all()) expect((await row.boundingBox())!.height).toBeGreaterThanOrEqual(52);
       }
       if (process.env.E848_BEFORE) await page.screenshot({ path: `${process.env.E848_BEFORE}/${name}.png` });
       else await expect(page).toHaveScreenshot(`${name}.png`);

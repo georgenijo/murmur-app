@@ -37,7 +37,7 @@ describe('AboutModal lifecycle', () => {
       await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey, bubbles: true })));
       expect(document.activeElement).toBe(close);
     }
-    expect(dialog.textContent).toContain('including Whisper and Parakeet');
+    expect(dialog.textContent).toContain('Private dictation and meeting transcription.');
     expect(dialog.textContent).toContain('Audio and transcripts stay on this Mac');
     await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
     expect(container.querySelector('[role="dialog"]')).toBeNull();

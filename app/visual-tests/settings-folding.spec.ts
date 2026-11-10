@@ -141,9 +141,9 @@ test('folds use the requested timing, preserve values, and immediately exclude c
   await expect(child).not.toBeChecked();
   const childRow = branch.locator('[data-setting-target=cleanup-filler]');
   await expect(childRow).toHaveCSS('border-top-width', '1px');
-  await expect(childRow).toHaveCSS('padding', '12px 16px');
-  await expect(childRow.locator('.settings-row-title')).toHaveCSS('font-size', '14px');
-  await expect(childRow.locator('.settings-row-title')).toHaveCSS('line-height', '20px');
+  await expect(childRow).toHaveCSS('padding', '7px 16px');
+  await expect(childRow.locator('.settings-row-title')).toHaveCSS('font-size', '13px');
+  await expect(childRow.locator('.settings-row-title')).toHaveCSS('line-height', '18px');
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await cleanup.uncheck();
   expect(parseFloat(await branch.evaluate(el => getComputedStyle(el).transitionDuration))).toBeLessThan(.001);

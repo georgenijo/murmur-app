@@ -118,7 +118,7 @@ describe('Sonic Canvas component details', () => {
     });
 
     const header = container.querySelector('header');
-    expect(header?.textContent).toContain('Murmur');
+    expect(header?.querySelector('.settings-window-title')?.textContent).toBe('Settings');
     expect(header?.textContent).toContain('Settings');
     expect(header?.textContent).not.toContain('Recovering');
     expect(container.querySelector('[data-testid="main-status-chip"]')).toBeNull();

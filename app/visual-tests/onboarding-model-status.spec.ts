@@ -17,13 +17,13 @@ for (const { appearance, width, height, label } of surfaceCases()) {
         await page.locator('button[data-ui-button][data-variant="primary"]').click();
       }
 
-      await expect(page.getByRole('heading', { name: 'Transcription model', exact: true })).toBeVisible();
-      await page.getByRole('button', { name: 'Download', exact: true }).click();
+      await expect(page.getByRole('heading', { name: 'Speech model', exact: true })).toBeVisible();
+      await page.getByRole('button', { name: /^Download ·/ }).click();
 
       const status = page.locator('.onboarding-model-status');
-      await expect(status.getByRole('button', { name: 'Cancel download' })).toBeVisible();
+      await expect(page.getByRole('navigation', { name: 'Setup step actions' }).getByRole('button', { name: 'Cancel', exact: true })).toBeVisible();
       await expect(status.getByRole('progressbar')).toBeVisible();
-      await expect(status).toContainText('Downloading…');
+      await expect(status).toContainText('Downloading');
 
       const statusBox = await status.boundingBox();
       const contentBox = await page.locator('.onboarding-content').boundingBox();

@@ -27,7 +27,7 @@ function isMicHardDenied(status: MicPermissionStatus): boolean {
   return status === 'denied';
 }
 
-export function PermissionsBanner() {
+export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHome?: boolean }) {
   const [permissions, setPermissions] = useState<PermissionStatus>({
     microphone: 'unknown',
     accessibility: 'unknown',
@@ -147,7 +147,7 @@ export function PermissionsBanner() {
   const micOk = !micDenied;
   const allGranted = micOk && permissions.accessibility === 'granted' && !systemAudioDenied;
 
-  if (dismissed || allGranted || checking) {
+  if (dismissed || allGranted || checking || (microphoneInHome && micDenied && permissions.accessibility === 'granted' && !systemAudioDenied)) {
     return null;
   }
 

@@ -163,12 +163,12 @@ for (const appearance of ['light', 'dark']) {
         await expect(page.locator('.settings-nav-item[aria-current="page"]')).toHaveText(state === 'settings-general' ? 'General' : 'Appearance');
       }
       if (state === 'settings-general') {
-        await expect(page.locator('.settings-page-title')).toHaveCSS('font-size', '20px');
-        await expect(page.locator('.settings-page-title')).toHaveCSS('line-height', '26px');
+        await expect(page.locator('.settings-page-title')).toHaveCSS('font-size', '18px');
+        await expect(page.locator('.settings-page-title')).toHaveCSS('line-height', '24px');
         await expect(page.locator('.settings-page-title')).toHaveCSS('font-weight', '600');
       }
       if (state === 'settings-appearance') await expect(page.locator('[data-theme-collection="Sonic"]')).toBeVisible();
-      if (state === 'settings-general') await expect(page.locator('.settings-card')).toHaveCSS('border-radius', '12px');
+      if (state === 'settings-general') await expect(page.locator('.settings-card').first()).toHaveCSS('border-radius', '12px');
       if (state === 'menu') await page.getByRole('button', { name: /^Filter transcripts/ }).click();
       await expect(page).toHaveScreenshot(`${appearance}-${state}.png`);
     });

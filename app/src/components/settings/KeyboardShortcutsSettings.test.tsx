@@ -40,4 +40,25 @@ describe('KeyboardShortcutsSettings', () => {
     expect(container.textContent).not.toMatch(/Selected-text|Correct last dictation/i);
   });
 
+  it('keeps Hold outside the keycap and routes Configure to its owner', async () => {
+    await render({ ...DEFAULT_SETTINGS, recordingMode: 'hold_down', doubleTapKey: 'shift_l' });
+    const row = container.querySelector('[data-shortcut-id="recording"]')!;
+    expect(row.querySelector('.settings-shortcut-hold')?.textContent).toBe('Hold');
+    expect(row.querySelector('kbd')?.textContent).toBe('⇧ Left Shift');
+    const button = row.querySelector('button')!;
+    expect(button.getAttribute('aria-label')).toBe('Configure in Recording');
+    await act(async () => button.click());
+    expect(onOpenOwner).toHaveBeenCalledWith({ shortcutId: 'recording', page: 'recording', target: 'trigger-key' });
+  });
+
+  it('keeps paused and unassigned shortcuts explicit without redundant On badges', async () => {
+    await render({ ...DEFAULT_SETTINGS, disabled: true, pasteLastShortcut: null });
+    expect(container.querySelector('[data-shortcut-id="recording"] .settings-shortcut-state')?.textContent).toBe('Paused');
+    expect(container.querySelector('[data-shortcut-id="paste-last"] .settings-shortcut-state')?.textContent).toBe('Off');
+    expect(container.querySelector('[data-shortcut-id="paste-last"] kbd')).toBeNull();
+    expect(container.querySelector('[data-shortcut-id="recording"] button')?.getAttribute('aria-label')).toBe('Configure in Recording');
+    expect(container.querySelector('[data-shortcut-id="paste-last"] button')?.getAttribute('aria-label')).toBe('Configure in Delivery');
+    expect(container.querySelectorAll('ul[aria-label="Main-window shortcuts"] kbd')).toHaveLength(4);
+  });
+
 });
