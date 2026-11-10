@@ -1806,8 +1806,15 @@ impl DictationPerformanceBeginCoordinator {
         );
     }
 
-    fn abort(&self, recording_id: u64) {
+    fn abort(
+        &self,
+        recording_id: u64,
+        performance: &crate::performance_metrics::PerformanceMetrics,
+    ) {
         self.entries.lock_or_recover().remove(&recording_id);
+        // Retract the deferral slot first. A pipeline registering after this
+        // removal must persist (and release its job), never defer into a dead run.
+        performance.discard_shadow(recording_id);
     }
 
     fn request_completion(
@@ -1852,6 +1859,7 @@ impl DictationPerformanceBeginCoordinator {
         &self,
         recording_id: u64,
         succeeded: bool,
+        performance: &crate::performance_metrics::PerformanceMetrics,
     ) -> Option<DictationPerformanceBeginResolution> {
         let mut entries = self.entries.lock_or_recover();
         let (completion, latest_stage) = match entries.get_mut(&recording_id) {
@@ -1880,11 +1888,18 @@ impl DictationPerformanceBeginCoordinator {
             })
         } else {
             entries.remove(&recording_id);
+            drop(entries);
+            // Cleanup follows failed resolution, closing the register/defer race.
+            performance.discard_shadow(recording_id);
             None
         }
     }
 
-    fn finish_completion(&self, recording_id: u64) {
+    fn finish_completion(
+        &self,
+        recording_id: u64,
+        performance: &crate::performance_metrics::PerformanceMetrics,
+    ) {
         let mut entries = self.entries.lock_or_recover();
         let should_remove = match entries.get(&recording_id) {
             Some(DictationPerformanceBeginState::Completing(claimed)) => {
@@ -1897,6 +1912,10 @@ impl DictationPerformanceBeginCoordinator {
         };
         if should_remove {
             entries.remove(&recording_id);
+            drop(entries);
+            // Completion already consumed its job; discard any late registration
+            // arriving between that consumption and removal of the claim.
+            performance.discard_shadow(recording_id);
         }
     }
 
@@ -1913,7 +1932,6 @@ impl DictationPerformanceBeginCoordinator {
         }
     }
 
-    #[cfg(test)]
     fn completion_is_claimed(&self, recording_id: u64) -> bool {
         matches!(
             self.entries.lock_or_recover().get(&recording_id),
@@ -1939,14 +1957,20 @@ impl DictationPerformanceBeginCoordinator {
 
 struct DictationPerformanceBeginRegistration<'a> {
     coordinator: &'a DictationPerformanceBeginCoordinator,
+    performance: &'a crate::performance_metrics::PerformanceMetrics,
     recording_id: u64,
     armed: bool,
 }
 
 impl<'a> DictationPerformanceBeginRegistration<'a> {
-    fn new(coordinator: &'a DictationPerformanceBeginCoordinator, recording_id: u64) -> Self {
+    fn new(
+        coordinator: &'a DictationPerformanceBeginCoordinator,
+        recording_id: u64,
+        performance: &'a crate::performance_metrics::PerformanceMetrics,
+    ) -> Self {
         Self {
             coordinator,
+            performance,
             recording_id,
             armed: true,
         }
@@ -1960,7 +1984,7 @@ impl<'a> DictationPerformanceBeginRegistration<'a> {
 impl Drop for DictationPerformanceBeginRegistration<'_> {
     fn drop(&mut self) {
         if self.armed {
-            self.coordinator.abort(self.recording_id);
+            self.coordinator.abort(self.recording_id, self.performance);
         }
     }
 }
@@ -1997,7 +2021,7 @@ fn flush_dictation_performance_begin(
     }
     if let Some(completion) = resolution.completion {
         if persist_dictation_performance_completion(performance, recording_id, completion).is_ok() {
-            coordinator.finish_completion(recording_id);
+            coordinator.finish_completion(recording_id, performance);
         }
     }
 }
@@ -2010,7 +2034,7 @@ fn spawn_dictation_performance_completion(
     drop(tauri::async_runtime::spawn_blocking(move || {
         if persist_dictation_performance_completion(&performance, recording_id, completion).is_ok()
         {
-            dictation_performance_begins().finish_completion(recording_id);
+            dictation_performance_begins().finish_completion(recording_id, &performance);
         }
     }));
 }
@@ -2033,6 +2057,14 @@ fn complete_dictation_performance(
         DictationPerformanceCompletionAction::Persist(completion) => {
             spawn_dictation_performance_completion(performance.clone(), recording_id, completion);
         }
+        DictationPerformanceCompletionAction::AlreadyCompleting
+            if dictation_performance_begins().completion_is_claimed(recording_id) =>
+        {
+            // A terminal outcome already owns completion, possibly after a
+            // failed persistence attempt. This ignored request must not retain
+            // a job registered after that attempt consumed its earlier slot.
+            performance.discard_shadow(recording_id);
+        }
         DictationPerformanceCompletionAction::Deferred
         | DictationPerformanceCompletionAction::AlreadyCompleting => {}
     }
@@ -2047,17 +2079,14 @@ fn spawn_native_dictation_performance_begin(
     drop(tauri::async_runtime::spawn_blocking(move || {
         let coordinator = dictation_performance_begins();
         let mut registration =
-            DictationPerformanceBeginRegistration::new(coordinator, recording_id);
+            DictationPerformanceBeginRegistration::new(coordinator, recording_id, &performance);
         let result =
             performance.begin_dictation_diagnosed_at(recording_id, runtimes, started_at_ms);
         let succeeded = result.is_ok();
-        if !succeeded {
-            performance.discard_shadow(recording_id);
-        }
         if let Err(error) = &result {
             emit_performance_store_begin_failure(recording_id, error);
         }
-        if let Some(resolution) = coordinator.resolve_begin(recording_id, succeeded) {
+        if let Some(resolution) = coordinator.resolve_begin(recording_id, succeeded, &performance) {
             flush_dictation_performance_begin(coordinator, &performance, recording_id, resolution);
         }
         registration.disarm();
@@ -5358,7 +5387,7 @@ pub async fn start_native_recording(
         origin,
         gesture,
     ) {
-        dictation_performance_begins().abort(rid);
+        dictation_performance_begins().abort(rid, &state.performance);
         tracing::error!(target: "audio", "start_native_recording: audio failed: {}", error);
         state.app_state.clear_active_context(rid);
         let mut dictation = state.app_state.dictation.lock_or_recover();
@@ -5493,7 +5522,7 @@ pub async fn start_native_recording(
             }));
         }
         (NativeStartContextAction::Superseded, status) => {
-            dictation_performance_begins().abort(rid);
+            dictation_performance_begins().abort(rid, &state.performance);
             emit_dictation_terminal(
                 &state,
                 rid,
@@ -6737,8 +6766,143 @@ pub(crate) mod tests {
         panic!("timed out waiting for {expected} completed diagnostics runs");
     }
 
+    fn register_pending_shadow_permit(
+        performance: &crate::performance_metrics::PerformanceMetrics,
+        recording_id: u64,
+    ) {
+        let permit = crate::shadow_measurement::ShadowPermit::acquire()
+            .expect("the previous run must have released its shadow permit");
+        performance.register_shadow(
+            recording_id,
+            Box::new(move |_, _| {
+                let _permit = permit;
+                panic!("an abandoned run must never execute its shadow job");
+            }),
+        );
+    }
+
+    #[test]
+    fn failed_begin_releases_shadow_registered_before_failed_resolution() {
+        let coordinator = DictationPerformanceBeginCoordinator::default();
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
+        let recording_id = 536_010;
+        coordinator.register(recording_id);
+        // Reproduce the old failed-begin worker's early discard, then let the
+        // pipeline register and defer completion before begin failure resolves.
+        performance.discard_shadow(recording_id);
+        register_pending_shadow_permit(&performance, recording_id);
+        assert!(matches!(
+            coordinator.request_completion(recording_id, failed_capture_completion()),
+            DictationPerformanceCompletionAction::Deferred
+        ));
+        assert!(coordinator
+            .resolve_begin(recording_id, false, &performance)
+            .is_none());
+        assert!(!coordinator.begin_is_pending(recording_id));
+        let next = crate::shadow_measurement::ShadowPermit::acquire();
+        assert!(
+            next.is_some(),
+            "failed begin must release the abandoned job's global permit"
+        );
+        drop(next);
+        // The opposite ordering also releases: once failure has retracted the
+        // deferral entry, a late pipeline must try persistence, not defer.
+        register_pending_shadow_permit(&performance, recording_id);
+        let late = match coordinator.request_completion(recording_id, failed_capture_completion()) {
+            DictationPerformanceCompletionAction::Persist(completion) => completion,
+            _ => panic!("a late completion cannot defer after failed begin"),
+        };
+        assert!(
+            persist_dictation_performance_completion(&performance, recording_id, late).is_err()
+        );
+        assert!(crate::shadow_measurement::ShadowPermit::acquire().is_some());
+    }
+
+    #[test]
+    fn abort_releases_pending_shadow_with_or_without_deferred_completion() {
+        for deferred in [false, true] {
+            let coordinator = DictationPerformanceBeginCoordinator::default();
+            let performance = crate::performance_metrics::PerformanceMetrics::default();
+            let recording_id = 536_011;
+            coordinator.register(recording_id);
+            register_pending_shadow_permit(&performance, recording_id);
+            if deferred {
+                assert!(matches!(
+                    coordinator.request_completion(recording_id, failed_capture_completion()),
+                    DictationPerformanceCompletionAction::Deferred
+                ));
+            }
+            coordinator.abort(recording_id, &performance);
+            assert!(!coordinator.begin_is_pending(recording_id));
+            assert!(crate::shadow_measurement::ShadowPermit::acquire().is_some());
+        }
+    }
+
+    #[test]
+    fn completed_run_releases_shadow_registered_after_persistence() {
+        let root = tempfile::tempdir().unwrap();
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
+        performance
+            .initialize(root.path().to_path_buf(), None)
+            .unwrap();
+        let coordinator = DictationPerformanceBeginCoordinator::default();
+        let recording_id = 536_012;
+        coordinator.register(recording_id);
+        performance
+            .begin_dictation(recording_id, Vec::new())
+            .unwrap();
+        coordinator
+            .resolve_begin(recording_id, true, &performance)
+            .unwrap();
+        let completion =
+            match coordinator.request_completion(recording_id, failed_capture_completion()) {
+                DictationPerformanceCompletionAction::Persist(completion) => completion,
+                _ => panic!("ready begin must claim completion"),
+            };
+        persist_dictation_performance_completion(&performance, recording_id, completion).unwrap();
+        register_pending_shadow_permit(&performance, recording_id);
+        coordinator.finish_completion(recording_id, &performance);
+        assert!(crate::shadow_measurement::ShadowPermit::acquire().is_some());
+    }
+
+    #[test]
+    fn ignored_terminal_releases_late_shadow_after_persistence_failure() {
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
+        let coordinator = dictation_performance_begins();
+        let recording_id = 536_013;
+        coordinator.register(recording_id);
+        coordinator
+            .resolve_begin(recording_id, true, &performance)
+            .unwrap();
+        let first = failed_capture_completion();
+        let original_outcome = first.outcome.clone();
+        let claimed = match coordinator.request_completion(recording_id, first) {
+            DictationPerformanceCompletionAction::Persist(completion) => completion,
+            _ => panic!("ready begin must claim completion"),
+        };
+        assert!(
+            persist_dictation_performance_completion(&performance, recording_id, claimed).is_err()
+        );
+        register_pending_shadow_permit(&performance, recording_id);
+        complete_dictation_performance(
+            &performance,
+            recording_id,
+            RunOutcomeV1::NoSpeech,
+            Vec::new(),
+            None,
+            None,
+        );
+        assert_eq!(
+            coordinator.claimed_outcome(recording_id),
+            Some(original_outcome)
+        );
+        assert!(crate::shadow_measurement::ShadowPermit::acquire().is_some());
+        coordinator.finish_completion(recording_id, &performance);
+    }
+
     #[test]
     fn terminal_before_diagnostics_begin_is_deferred_and_keeps_first_outcome() {
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
         let coordinator = DictationPerformanceBeginCoordinator::default();
         let recording_id = 536_001;
         coordinator.register(recording_id);
@@ -6763,7 +6927,7 @@ pub(crate) mod tests {
         ));
 
         let resolution = coordinator
-            .resolve_begin(recording_id, true)
+            .resolve_begin(recording_id, true, &performance)
             .expect("the first terminal waits for begin");
         let pending = resolution.completion.expect("queued terminal outcome");
         assert!(matches!(
@@ -6774,7 +6938,7 @@ pub(crate) mod tests {
             }
         ));
         assert!(coordinator.begin_is_pending(recording_id));
-        coordinator.finish_completion(recording_id);
+        coordinator.finish_completion(recording_id, &performance);
         assert!(!coordinator.begin_is_pending(recording_id));
     }
 
@@ -6811,12 +6975,12 @@ pub(crate) mod tests {
             .begin_dictation(recording_id, Vec::new())
             .expect("begin delayed diagnostics row");
         let resolution = coordinator
-            .resolve_begin(recording_id, true)
+            .resolve_begin(recording_id, true, &performance)
             .expect("queued terminal outcome");
         let pending = resolution.completion.expect("queued terminal completion");
         persist_dictation_performance_completion(&performance, recording_id, pending)
             .expect("persist queued terminal");
-        coordinator.finish_completion(recording_id);
+        coordinator.finish_completion(recording_id, &performance);
 
         let runs = wait_for_completed_runs(&performance, 1);
         assert_eq!(runs.len(), 1);
@@ -6831,10 +6995,13 @@ pub(crate) mod tests {
 
     #[test]
     fn terminal_after_diagnostics_begin_can_persist_immediately() {
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
         let coordinator = DictationPerformanceBeginCoordinator::default();
         let recording_id = 536_003;
         coordinator.register(recording_id);
-        assert!(coordinator.resolve_begin(recording_id, true).is_some());
+        assert!(coordinator
+            .resolve_begin(recording_id, true, &performance)
+            .is_some());
         assert!(coordinator.begin_is_pending(recording_id));
         let claimed =
             match coordinator.request_completion(recording_id, failed_capture_completion()) {
@@ -6871,7 +7038,7 @@ pub(crate) mod tests {
                 ..
             })
         ));
-        coordinator.finish_completion(recording_id);
+        coordinator.finish_completion(recording_id, &performance);
         assert!(!coordinator.begin_is_pending(recording_id));
     }
 
@@ -6909,7 +7076,7 @@ pub(crate) mod tests {
             .begin_dictation(recording_id, Vec::new())
             .expect("begin delayed diagnostics row");
         let resolution = coordinator
-            .resolve_begin(recording_id, true)
+            .resolve_begin(recording_id, true, &performance)
             .expect("native terminal waits for begin");
         flush_dictation_performance_begin(coordinator, &performance, recording_id, resolution);
 
@@ -6927,17 +7094,23 @@ pub(crate) mod tests {
 
     #[test]
     fn begin_registration_cleans_up_if_worker_unwinds() {
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
         let coordinator = DictationPerformanceBeginCoordinator::default();
         let recording_id = 536_005;
         coordinator.register(recording_id);
+        register_pending_shadow_permit(&performance, recording_id);
 
         let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _registration =
-                DictationPerformanceBeginRegistration::new(&coordinator, recording_id);
+            let _registration = DictationPerformanceBeginRegistration::new(
+                &coordinator,
+                recording_id,
+                &performance,
+            );
             panic!("forced begin worker unwind");
         }));
 
         assert!(unwind.is_err());
+        assert!(crate::shadow_measurement::ShadowPermit::acquire().is_some());
         assert!(!coordinator.begin_is_pending(recording_id));
         assert!(matches!(
             coordinator.request_completion(recording_id, failed_capture_completion()),
@@ -6963,7 +7136,7 @@ pub(crate) mod tests {
             .expect("begin delayed diagnostics row");
         assert_eq!(active.started_at_ms, requested_at_ms);
         let resolution = coordinator
-            .resolve_begin(recording_id, true)
+            .resolve_begin(recording_id, true, &performance)
             .expect("successful delayed begin");
         assert_eq!(resolution.latest_stage, Some(PerformanceStageV1::Vad));
         flush_dictation_performance_begin(&coordinator, &performance, recording_id, resolution);
