@@ -1,3 +1,4 @@
+pub(crate) mod delivery_timing;
 pub(crate) mod production;
 mod repository;
 mod types;
@@ -15,6 +16,8 @@ pub(crate) struct PerformanceMetrics {
     inner: Arc<Mutex<PerformanceMetricsInner>>,
     operation_lock: Arc<Mutex<()>>,
     production: Arc<Mutex<production::ProductionAccumulator>>,
+    /// Finished delivery timings waiting for their dictation run to complete.
+    delivery_timing: Arc<Mutex<delivery_timing::DeliveryTimingStore>>,
 }
 
 impl Default for PerformanceMetrics {
@@ -23,6 +26,7 @@ impl Default for PerformanceMetrics {
             inner: Arc::new(Mutex::new(PerformanceMetricsInner::default())),
             operation_lock: Arc::new(Mutex::new(())),
             production: Arc::new(Mutex::new(production::ProductionAccumulator::default())),
+            delivery_timing: Arc::new(Mutex::new(delivery_timing::DeliveryTimingStore::default())),
         }
     }
 }
@@ -154,6 +158,21 @@ impl PerformanceMetrics {
             self.schedule_production_persistence(id);
         }
     }
+    /// Hold one dictation's finished delivery timing until its run completes.
+    /// Keyed by the recording id, which never repeats, so a late callback for
+    /// an older recording cannot reach a newer recording's run. The first
+    /// record for a recording wins.
+    pub(crate) fn record_delivery_timing(
+        &self,
+        recording_id: u64,
+        timing: delivery_timing::DeliveryTimingV1,
+    ) {
+        self.delivery_timing
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(recording_id, timing);
+    }
+
     fn schedule_production_persistence(&self, id: u64) {
         let metrics = self.clone();
         drop(tauri::async_runtime::spawn_blocking(move || {
@@ -444,20 +463,41 @@ impl PerformanceMetrics {
                         } else {
                             None
                         };
-                    if production.is_some() {
+                    let delivery_timing =
+                        if let RunCorrelationV1::Dictation { recording_id } = correlation {
+                            self.delivery_timing
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .get(*recording_id)
+                        } else {
+                            None
+                        };
+                    if production.is_some() || delivery_timing.is_some() {
+                        // One transaction carries both optional companions.
                         repository.update_active(correlation, |active| {
-                            active.production = production.clone()
+                            if production.is_some() {
+                                active.production = production.clone();
+                            }
+                            if delivery_timing.is_some() {
+                                active.delivery_timing = delivery_timing.clone();
+                            }
                         })?;
                     }
                     let completed =
                         repository.complete(correlation, outcome, stages, input, runtimes)?;
-                    if let (RunCorrelationV1::Dictation { recording_id }, Some(run)) =
-                        (correlation, &completed)
-                    {
-                        self.production
+                    if let RunCorrelationV1::Dictation { recording_id } = correlation {
+                        // The run is closed, or its row was already gone: either
+                        // way this recording's timing has nothing left to join.
+                        self.delivery_timing
                             .lock()
                             .unwrap_or_else(|p| p.into_inner())
-                            .completed(*recording_id, run);
+                            .remove(*recording_id);
+                        if let Some(run) = &completed {
+                            self.production
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .completed(*recording_id, run);
+                        }
                     }
                     Ok(completed)
                 });
@@ -564,6 +604,10 @@ impl PerformanceMetrics {
                 .and_then(|repository| repository.clear());
             self.observe(result)?;
             self.production
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
+            self.delivery_timing
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .clear();
@@ -1519,5 +1563,169 @@ mod production_persistence_tests {
             .unwrap()
             .active_snapshot(5)
             .is_none());
+    }
+}
+
+#[cfg(test)]
+mod delivery_timing_persistence_tests {
+    use super::delivery_timing::{DeliveryOutcomeV1, DeliveryRouteV1, DeliveryTimingRecorder};
+    use super::*;
+
+    fn metrics() -> (tempfile::TempDir, PerformanceMetrics) {
+        let temp = tempfile::tempdir().unwrap();
+        let metrics = PerformanceMetrics::default();
+        metrics
+            .initialize(temp.path().join("diagnostics"), None)
+            .unwrap();
+        (temp, metrics)
+    }
+
+    /// One delivery that decided `outcome` and published its record.
+    fn deliver(metrics: &PerformanceMetrics, id: u64, outcome: DeliveryOutcomeV1) {
+        let recorder =
+            DeliveryTimingRecorder::begin(metrics.clone(), id, DeliveryRouteV1::NormalPaste);
+        recorder.collector().close(outcome);
+        recorder.finish();
+    }
+
+    fn complete(metrics: &PerformanceMetrics, id: u64) -> PerformanceRunV1 {
+        metrics
+            .complete(
+                &RunCorrelationV1::Dictation { recording_id: id },
+                RunOutcomeV1::Success,
+                Vec::new(),
+                Some(ContentFreeInputSummaryV1::audio(250)),
+                None,
+            )
+            .unwrap()
+            .unwrap()
+    }
+
+    fn pending_records(metrics: &PerformanceMetrics, id: u64) -> bool {
+        metrics.delivery_timing.lock().unwrap().get(id).is_some()
+    }
+
+    #[test]
+    fn a_delivery_timing_joins_its_dictation_run_and_survives_the_store() {
+        let (_temp, metrics) = metrics();
+        metrics.begin_dictation(1, Vec::new()).unwrap();
+        deliver(&metrics, 1, DeliveryOutcomeV1::AutoPasted);
+        assert!(pending_records(&metrics, 1));
+
+        let run = complete(&metrics, 1);
+        let timing = run.delivery_timing.as_ref().expect("delivery timing joins");
+        assert_eq!(timing.outcome, DeliveryOutcomeV1::AutoPasted);
+        assert_eq!(timing.accepted_route, DeliveryRouteV1::NormalPaste);
+        // The run is closed, so nothing is left waiting for it.
+        assert!(!pending_records(&metrics, 1));
+
+        let stored = metrics.list(10).unwrap().runs;
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0], run);
+        let value = serde_json::to_value(&stored[0]).unwrap();
+        assert_eq!(value["deliveryTiming"]["schemaVersion"], 1);
+        assert_eq!(value["deliveryTiming"]["outcome"], "autoPasted");
+        // The existing stage list is untouched by the new record.
+        assert_eq!(stored[0].stages.len(), 31);
+        assert_eq!(
+            metrics.get(&run.run_id).unwrap().unwrap().delivery_timing,
+            run.delivery_timing
+        );
+    }
+
+    #[test]
+    fn runs_without_a_delivery_stay_valid_and_omit_the_key() {
+        let (_temp, metrics) = metrics();
+        metrics.begin_dictation(2, Vec::new()).unwrap();
+        let run = complete(&metrics, 2);
+        assert!(run.delivery_timing.is_none());
+
+        // A historical row has no `deliveryTiming` key at all: it must read back
+        // unchanged, and a run without a delivery must not write one.
+        let value = serde_json::to_value(&run).unwrap();
+        assert!(value.get("deliveryTiming").is_none());
+        let decoded: PerformanceRunV1 = serde_json::from_value(value).unwrap();
+        assert_eq!(decoded, run);
+        assert!(metrics.list(10).unwrap().runs[0].delivery_timing.is_none());
+    }
+
+    #[test]
+    fn an_unfinished_delivery_is_published_incomplete_when_the_run_completes() {
+        let (_temp, metrics) = metrics();
+        metrics.begin_dictation(3, Vec::new()).unwrap();
+        {
+            // The delivery block returned early: the recorder drops unclosed.
+            let _abandoned =
+                DeliveryTimingRecorder::begin(metrics.clone(), 3, DeliveryRouteV1::SmartTarget);
+        }
+        let run = complete(&metrics, 3);
+        let timing = run
+            .delivery_timing
+            .expect("an incomplete record still joins");
+        assert_eq!(timing.outcome, DeliveryOutcomeV1::Incomplete);
+        assert_eq!(timing.accepted_route, DeliveryRouteV1::SmartTarget);
+    }
+
+    #[test]
+    fn a_late_record_for_an_older_recording_cannot_attach_to_a_newer_run() {
+        let (_temp, metrics) = metrics();
+        metrics.begin_dictation(4, Vec::new()).unwrap();
+        let older = complete(&metrics, 4);
+        assert!(older.delivery_timing.is_none());
+
+        metrics.begin_dictation(5, Vec::new()).unwrap();
+        // Recording 4's delivery finishes after its run closed and after
+        // recording 5 began. Recording 5 delivers normally.
+        deliver(&metrics, 4, DeliveryOutcomeV1::TimedOut);
+        deliver(&metrics, 5, DeliveryOutcomeV1::ClipboardOnlyTargetChanged);
+        let newer = complete(&metrics, 5);
+        assert_eq!(
+            newer.delivery_timing.map(|timing| timing.outcome),
+            Some(DeliveryOutcomeV1::ClipboardOnlyTargetChanged)
+        );
+
+        // A run that has no delivery of its own never inherits the stale one.
+        metrics.begin_dictation(6, Vec::new()).unwrap();
+        assert!(complete(&metrics, 6).delivery_timing.is_none());
+        let stored = metrics.list(10).unwrap().runs;
+        assert_eq!(stored.len(), 3);
+        assert_eq!(
+            stored
+                .iter()
+                .filter(|run| run.delivery_timing.is_some())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn clearing_diagnostics_discards_a_record_that_never_joined_a_run() {
+        let (_temp, metrics) = metrics();
+        metrics.begin_dictation(7, Vec::new()).unwrap();
+        deliver(&metrics, 7, DeliveryOutcomeV1::AutoPasted);
+        metrics.clear().unwrap();
+        assert!(!pending_records(&metrics, 7));
+
+        // A recording id reused after a clear starts from nothing.
+        metrics.begin_dictation(7, Vec::new()).unwrap();
+        assert!(complete(&metrics, 7).delivery_timing.is_none());
+    }
+
+    #[test]
+    fn a_file_transcription_never_carries_a_delivery_timing() {
+        let (_temp, metrics) = metrics();
+        metrics.begin_file_transcription(8, Vec::new()).unwrap();
+        deliver(&metrics, 8, DeliveryOutcomeV1::AutoPasted);
+        let run = metrics
+            .complete(
+                &RunCorrelationV1::FileTranscription { file_run_id: 8 },
+                RunOutcomeV1::Success,
+                Vec::new(),
+                Some(ContentFreeInputSummaryV1::audio(250)),
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(run.delivery_timing.is_none());
     }
 }

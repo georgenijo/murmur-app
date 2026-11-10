@@ -731,7 +731,13 @@ pub(crate) fn capture_delivery_target_snapshot() -> DeliveryTargetSnapshot {
             return DeliveryTargetSnapshot::Incomplete;
         }
         let process_instance = ProcessInstanceToken(launch_interval.to_bits());
-        let window_token = ax_window_token(process_id);
+        // Diagnostic evidence only. Attributed on its own so a slow lookup made
+        // inside a Smart-destination validation is visible in the delivery
+        // timing record (inert outside a delivery callback).
+        let window_token = crate::performance_metrics::delivery_timing::time(
+            crate::performance_metrics::delivery_timing::Step::SnapshotWindowLookup,
+            || ax_window_token(process_id),
+        );
         let after = app_transition_snapshot();
         if before != after {
             return DeliveryTargetSnapshot::Incomplete;
@@ -790,8 +796,14 @@ fn delivery_mismatch_from_partial_identity(
 
 /// First delivery-time sample. Unlike accepted-start capture, transition churn
 /// is diagnostic here: preserve the complete tuple and latest generations, then
-/// let the tuple-only final sample decide whether identity stayed stable across
-/// the optional AX window lookup.
+/// let the tuple-only final sample decide whether identity stayed stable between
+/// the two samples.
+///
+/// This sample carries no focused-window token. The window relation is
+/// diagnostic only and never an input to a delivery decision, so the
+/// `AXFocusedWindow` lookup it used to make (up to one 25 ms AX timeout, three
+/// times per delivery, before the paste) is taken once after the decision by
+/// [`delivery_window_relation`] instead.
 #[cfg(target_os = "macos")]
 fn capture_delivery_verification_first_snapshot(
     expected: &DeliveryTargetIdentity,
@@ -837,7 +849,7 @@ fn capture_delivery_verification_first_snapshot(
             bundle_id,
             process_id,
             process_instance,
-            window_token: ax_window_token(process_id),
+            window_token: None,
             transitions: app_transition_snapshot(),
         })
     })
@@ -945,9 +957,9 @@ where
     }
 }
 
-/// Delivery-time native sample with a final tuple re-check after optional AX
-/// window evidence. Start capture intentionally does not use this: its contract
-/// is exactly one retained NSRunningApplication sample at acceptance.
+/// Delivery-time native sample with a final tuple re-check. Start capture
+/// intentionally does not use this: its contract is exactly one retained
+/// NSRunningApplication sample at acceptance.
 fn capture_current_delivery_target_snapshot(
     expected: &DeliveryTargetIdentity,
 ) -> DeliveryTargetSnapshot {
@@ -1099,6 +1111,71 @@ fn unavailable_verification_evidence(
     }
 }
 
+/// Relation between the focused window frozen with the delivery target and the
+/// one observed later. A missing token on either side is `Unknown`.
+fn window_relation_from_tokens(
+    expected: Option<WindowToken>,
+    current: Option<WindowToken>,
+) -> WindowRelation {
+    match (expected, current) {
+        (Some(expected), Some(current)) if expected == current => WindowRelation::Same,
+        (Some(_), Some(_)) => WindowRelation::Different,
+        _ => WindowRelation::Unknown,
+    }
+}
+
+/// Whether [`delivery_window_relation`] has anything to compare. A target
+/// frozen without a focused-window token (no accessible window at acceptance)
+/// can only ever read `unknown`, so no lookup is made for it.
+pub(crate) fn delivery_window_relation_needs_lookup(expected: &DeliveryTargetSnapshot) -> bool {
+    matches!(
+        expected,
+        DeliveryTargetSnapshot::Complete(identity) if identity.window_token.is_some()
+    )
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn delivery_window_relation_with(
+    expected: &DeliveryTargetSnapshot,
+    lookup: impl FnOnce(i32) -> Option<WindowToken>,
+) -> WindowRelation {
+    let DeliveryTargetSnapshot::Complete(identity) = expected else {
+        return WindowRelation::Unknown;
+    };
+    if identity.window_token.is_none() {
+        return WindowRelation::Unknown;
+    }
+    window_relation_from_tokens(identity.window_token, lookup(identity.process_id))
+}
+
+/// The single focused-window lookup of a delivery, taken after the delivery
+/// decision. The relation is diagnostic evidence only: it is never an input to
+/// verification, the secure-field policy, or the final live-focus proof, which
+/// is why it is sampled once here instead of inside each target verification.
+/// Callers make it only when [`delivery_window_relation_needs_lookup`] says it
+/// can differ from `unknown`.
+#[cfg(target_os = "macos")]
+pub(crate) fn delivery_window_relation(expected: &DeliveryTargetSnapshot) -> WindowRelation {
+    delivery_window_relation_with(expected, ax_window_token)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn delivery_window_relation(_expected: &DeliveryTargetSnapshot) -> WindowRelation {
+    WindowRelation::Unknown
+}
+
+impl VerificationEvidence {
+    /// Attach the diagnostic window relation. Only a verified same-process
+    /// target has a window to compare; every other outcome keeps `unknown`,
+    /// which the telemetry schema requires for several of them.
+    pub(crate) fn with_window_relation(mut self, relation: WindowRelation) -> Self {
+        if self.verified() {
+            self.window_relation = relation;
+        }
+        self
+    }
+}
+
 fn classify_delivery_target(
     expected: &DeliveryTargetIdentity,
     current: Option<&DeliveryTargetIdentity>,
@@ -1116,11 +1193,8 @@ fn classify_delivery_target(
     let same_process = expected.process_id == current.process_id;
     let same_process_instance =
         same_application && same_process && expected.process_instance == current.process_instance;
-    let window_relation = match (expected.window_token, current.window_token) {
-        (Some(expected), Some(current)) if expected == current => WindowRelation::Same,
-        (Some(_), Some(_)) => WindowRelation::Different,
-        _ => WindowRelation::Unknown,
-    };
+    // Never an input to `outcome` below.
+    let window_relation = window_relation_from_tokens(expected.window_token, current.window_token);
     let outcome = if !same_application {
         VerificationOutcome::DifferentApplication
     } else if !same_process {
@@ -1833,7 +1907,124 @@ mod tests {
     }
 
     #[test]
-    fn current_capture_rechecks_tuple_after_window_lookup() {
+    fn window_relation_maps_tokens_and_treats_missing_evidence_as_unknown() {
+        let same = Some(WindowToken(7));
+        assert_eq!(
+            window_relation_from_tokens(same, Some(WindowToken(7))),
+            WindowRelation::Same
+        );
+        assert_eq!(
+            window_relation_from_tokens(same, Some(WindowToken(8))),
+            WindowRelation::Different
+        );
+        assert_eq!(
+            window_relation_from_tokens(same, None),
+            WindowRelation::Unknown
+        );
+        assert_eq!(
+            window_relation_from_tokens(None, Some(WindowToken(7))),
+            WindowRelation::Unknown
+        );
+        assert_eq!(
+            window_relation_from_tokens(None, None),
+            WindowRelation::Unknown
+        );
+    }
+
+    #[test]
+    fn window_relation_is_never_an_input_to_the_delivery_decision() {
+        let expected = delivery_target("com.example.Editor", 41, 100, Some(7));
+        for current_token in [None, Some(7), Some(8)] {
+            let current = delivery_target("com.example.Editor", 41, 100, current_token);
+            let evidence = classify_delivery_target(&expected, Some(&current), 999, true);
+            assert_eq!(evidence.outcome, VerificationOutcome::Verified);
+            assert!(evidence.same_application);
+            assert!(evidence.same_process);
+            assert!(evidence.same_process_instance);
+        }
+
+        // The later diagnostic relation can describe a verified target and
+        // changes nothing about the decision it annotates.
+        let current = delivery_target("com.example.Editor", 41, 100, None);
+        let verified = classify_delivery_target(&expected, Some(&current), 999, true);
+        assert_eq!(verified.window_relation, WindowRelation::Unknown);
+        for relation in [
+            WindowRelation::Unknown,
+            WindowRelation::Same,
+            WindowRelation::Different,
+        ] {
+            let annotated = verified.with_window_relation(relation);
+            assert_eq!(annotated.window_relation, relation);
+            assert_eq!(
+                VerificationEvidence {
+                    window_relation: verified.window_relation,
+                    ..annotated
+                },
+                verified,
+                "the relation is the only field the annotation may change"
+            );
+            assert!(annotated.verified());
+        }
+
+        // A refused target never takes a relation, whatever the sample says.
+        let browser = delivery_target("com.example.Browser", 42, 200, Some(7));
+        let refused = classify_delivery_target(&expected, Some(&browser), 999, true);
+        assert_eq!(refused.outcome, VerificationOutcome::DifferentApplication);
+        let annotated = refused.with_window_relation(WindowRelation::Same);
+        assert_eq!(annotated.window_relation, refused.window_relation);
+        assert_eq!(annotated.outcome, VerificationOutcome::DifferentApplication);
+        let stale = classify_delivery_target(&expected, Some(&current), 999, false)
+            .with_window_relation(WindowRelation::Different);
+        assert_eq!(stale.outcome, VerificationOutcome::StaleOwner);
+        assert_eq!(stale.window_relation, WindowRelation::Unknown);
+    }
+
+    #[test]
+    fn window_relation_lookup_is_skipped_without_a_frozen_window() {
+        let without_window =
+            DeliveryTargetSnapshot::Complete(delivery_target("com.example.Editor", 41, 100, None));
+        for snapshot in [
+            without_window,
+            DeliveryTargetSnapshot::SelfTarget,
+            DeliveryTargetSnapshot::Incomplete,
+        ] {
+            assert!(!delivery_window_relation_needs_lookup(&snapshot));
+            let relation = delivery_window_relation_with(&snapshot, |_| {
+                panic!("a target without a frozen window must not be looked up")
+            });
+            assert_eq!(relation, WindowRelation::Unknown);
+        }
+    }
+
+    #[test]
+    fn window_relation_lookup_is_one_query_of_the_frozen_process() {
+        let snapshot = DeliveryTargetSnapshot::Complete(delivery_target(
+            "com.example.Editor",
+            41,
+            100,
+            Some(7),
+        ));
+        assert!(delivery_window_relation_needs_lookup(&snapshot));
+        for (observed, relation) in [
+            (Some(WindowToken(7)), WindowRelation::Same),
+            (Some(WindowToken(8)), WindowRelation::Different),
+            (None, WindowRelation::Unknown),
+        ] {
+            let lookups = Cell::new(0);
+            let looked_up_process = Cell::new(0);
+            let result = delivery_window_relation_with(&snapshot, |process_id| {
+                lookups.set(lookups.get() + 1);
+                looked_up_process.set(process_id);
+                observed
+            });
+            assert_eq!(result, relation);
+            assert_eq!(lookups.get(), 1);
+            assert_eq!(looked_up_process.get(), 41);
+        }
+    }
+
+    #[test]
+    fn current_capture_rechecks_the_tuple_before_accepting_the_first_sample() {
         let expected = delivery_target("com.example.Editor", 41, 100, Some(7));
         let first = DeliveryTargetSnapshot::Complete(expected.clone());
         let mut final_same_identity = delivery_target("com.example.Editor", 41, 100, None);

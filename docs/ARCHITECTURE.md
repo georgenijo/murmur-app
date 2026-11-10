@@ -278,7 +278,7 @@ stay local and never reach logs or telemetry. See
 | `microphone_preview.rs` | Capture-only microphone-test state, VAD analysis, level accumulation, and quiet or clipping classification |
 | `model_artifact.rs` | Size and prefix validation that rejects HTML, JSON, and Git LFS responses masquerading as downloaded model binaries |
 | `coreml_installer.rs` | Same-signed killable Core ML install worker/supervisor: bounded phases, hard deadline, confirmed process-group cleanup |
-| `performance_metrics/` | SQLite run history, stage timings, resource samples, retention |
+| `performance_metrics/` | SQLite run history, stage timings, resource samples, retention, and the content-free delivery-tail attribution (`delivery_timing.rs`) |
 | `platform/` | macOS CPU/resource metrics seam |
 | `resource_monitor.rs` | CPU/RSS sampling, 1s heartbeat, idle-timeout enforcement |
 | `smart_formatting.rs` | Deterministic prose formatting and same-utterance backtracking |

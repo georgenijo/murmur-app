@@ -188,7 +188,14 @@ and any other value requires `start`);
 `activation_changed`, `space_changed`, `current_is_self`, and
 `ownership_current`. The window/activation/Space fields are diagnostics only:
 same-process-instance window changes remain eligible, while any identity
-mismatch or ambiguity fails closed. Verification prefers the sample frozen at
+mismatch or ambiguity fails closed. `window_relation_code` is `unknown` unless
+the delivery verified a same-process target that had a focused window at
+acceptance; it comes from one lookup taken after the delivery decision, and the
+event is emitted after that decision has been handed to the pipeline, so
+correlate it by `recording_id` rather than by log position. The run record's
+`deliveryTiming.windowDiagnosticUs` times that lookup (see
+[Delivery tail attribution](../features/performance-diagnostics.md#delivery-tail-attribution)).
+Verification prefers the sample frozen at
 the accepted stop transition and falls back to the recording-start sample
 whenever the stop sample is not a complete identity; `anchor_code` reports that
 choice and never relaxes an outcome. A self-owned anchored target is

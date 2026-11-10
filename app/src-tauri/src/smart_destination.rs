@@ -7,6 +7,7 @@
 //! at preparation and immediately before the single native Cmd+V post.
 
 use crate::frontmost::DeliveryTargetSnapshot;
+use crate::performance_metrics::delivery_timing::{self, Step};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -308,7 +309,10 @@ pub(crate) fn prepare(
     snapshot: &Snapshot,
     authority: Option<&crate::injector::authority::PasteAttempt>,
 ) -> PrepareOutcome {
-    trace_preparation(snapshot, native::prepare(snapshot, true, authority))
+    let outcome = delivery_timing::time(Step::PrepareValidation, || {
+        native::prepare(snapshot, true, authority)
+    });
+    trace_preparation(snapshot, outcome)
 }
 
 /// Explicit retries require a currently focused field and never activate a
@@ -317,7 +321,10 @@ pub(crate) fn prepare_focused(
     snapshot: &Snapshot,
     authority: Option<&crate::injector::authority::PasteAttempt>,
 ) -> PrepareOutcome {
-    trace_preparation(snapshot, native::prepare(snapshot, false, authority))
+    let outcome = delivery_timing::time(Step::PrepareValidation, || {
+        native::prepare(snapshot, false, authority)
+    });
+    trace_preparation(snapshot, outcome)
 }
 
 fn trace_preparation(snapshot: &Snapshot, outcome: PrepareOutcome) -> PrepareOutcome {

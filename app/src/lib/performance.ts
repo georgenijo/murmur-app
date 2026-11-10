@@ -175,6 +175,112 @@ export interface ProductionRunV1 {
   };
 }
 
+/**
+ * Content-free attribution of the dictation delivery tail (#1081). Every
+ * `*Us` value is a monotonic microsecond measurement and every `*Count` an
+ * attempt count, both behind `MeasurementV1`: `notApplicable` means the
+ * delivery never reached that step, `unavailable` means it was dispatched but
+ * had not reported when the record closed, and a measured zero is a real zero.
+ * Absent on historical runs and on dictations that never reached delivery.
+ */
+export type DeliveryRouteV1 =
+  | 'disabled'
+  | 'clipboardOnly'
+  | 'normalPaste'
+  | 'smartTarget';
+
+export type DeliveryOutcomeV1 =
+  | 'autoPasted'
+  | 'noText'
+  | 'clipboardOnlyAutoPasteDisabled'
+  | 'clipboardOnlyAccessibilityDenied'
+  | 'clipboardOnlyTargetChanged'
+  | 'clipboardOnlyFocusNotEditable'
+  | 'clipboardOnlyClipboardChanged'
+  | 'clipboardOnlyPasteFailed'
+  | 'clipboardOnlySmartTargetUnavailable'
+  | 'stoppedCancelled'
+  | 'stoppedExpired'
+  | 'stoppedAlreadyCommitted'
+  | 'stoppedOperationInFlight'
+  | 'clipboardWriteFailed'
+  | 'cancelledBeforeInjection'
+  | 'senderDropped'
+  | 'timedOut'
+  | 'dispatchFailed'
+  | 'incomplete';
+
+export type DeliverySmartPrepareOutcomeV1 =
+  | 'notRun'
+  | 'ready'
+  | 'waitForActivation'
+  | 'refused'
+  | 'refusedClipboardOnly'
+  | 'ownerNotCurrent'
+  | 'senderDropped'
+  | 'timedOut'
+  | 'dispatchFailed';
+
+export interface DeliveryCallbackV1 {
+  /** Time the main-thread callback waited in the queue before it started. */
+  queueWaitUs: MeasurementV1<number>;
+  /** Time spent waiting for the dictation ownership lock. */
+  ownerWaitUs: MeasurementV1<number>;
+  /** Work done while owning delivery. */
+  workUs: MeasurementV1<number>;
+}
+
+export interface DeliveryVerificationV1 {
+  elapsedUs: MeasurementV1<number>;
+  lookupRetryCount: MeasurementV1<number>;
+}
+
+export interface DeliveryInjectV1 {
+  focusedFieldQueryUs: MeasurementV1<number>;
+  clipboardWriteUs: MeasurementV1<number>;
+  beforeFocusVerification: DeliveryVerificationV1;
+  afterFocusVerification: DeliveryVerificationV1;
+  afterClipboardVerification: DeliveryVerificationV1;
+  eventConstructionUs: MeasurementV1<number>;
+  /** Live-focus proof and pasteboard-generation check just before key events. */
+  finalFocusProofUs: MeasurementV1<number>;
+  /** Key-down, hold and key-up block. */
+  keyEventUs: MeasurementV1<number>;
+  nativePasteRetryCount: MeasurementV1<number>;
+  nativePasteRetryWaitUs: MeasurementV1<number>;
+}
+
+export interface DeliverySmartV1 {
+  prepareOutcome: DeliverySmartPrepareOutcomeV1;
+  activationWaitUs: MeasurementV1<number>;
+  prepareValidationUs: MeasurementV1<number>;
+  insertValidationUs: MeasurementV1<number>;
+  settleUs: MeasurementV1<number>;
+  readbackUs: MeasurementV1<number>;
+  restoreUs: MeasurementV1<number>;
+  cleanupUs: MeasurementV1<number>;
+  /** Already counted inside the preparation, insertion and cleanup steps. */
+  snapshotWindowLookupUs: MeasurementV1<number>;
+}
+
+export interface DeliveryTimingV1 {
+  schemaVersion: 1;
+  acceptedRoute: DeliveryRouteV1;
+  deliveryRoute: DeliveryRouteV1;
+  outcome: DeliveryOutcomeV1;
+  /** Delivery start to the moment the outcome was observed. */
+  outcomeUs: MeasurementV1<number>;
+  /** Delivery start to the end of the delivery block. */
+  totalUs: MeasurementV1<number>;
+  configuredDelayUs: MeasurementV1<number>;
+  prepareCallback: DeliveryCallbackV1;
+  injectionCallback: DeliveryCallbackV1;
+  inject: DeliveryInjectV1;
+  /** The one diagnostic focused-window lookup, taken after the decision. */
+  windowDiagnosticUs: MeasurementV1<number>;
+  smart: DeliverySmartV1;
+}
+
 export interface ResourceRangeV1<T> {
   start: MeasurementV1<T>;
   average: MeasurementV1<T>;
@@ -261,6 +367,8 @@ export interface PerformanceRunV1 {
     stderrPresent: boolean;
   };
   production?: ProductionRunV1 | null;
+  /** Delivery-tail attribution; absent on historical runs. */
+  deliveryTiming?: DeliveryTimingV1 | null;
 }
 
 export interface PerformanceRunListV1 {
@@ -384,6 +492,43 @@ const productionCaptureFailureKinds = new Set<string>([
   'permission_prompt_timeout', 'termination_unconfirmed', 'worker_panicked',
   'signature_invalid',
 ]);
+const deliveryRoutes = new Set<string>([
+  'disabled', 'clipboardOnly', 'normalPaste', 'smartTarget',
+]);
+const deliveryOutcomes = new Set<string>([
+  'autoPasted', 'noText', 'clipboardOnlyAutoPasteDisabled',
+  'clipboardOnlyAccessibilityDenied', 'clipboardOnlyTargetChanged',
+  'clipboardOnlyFocusNotEditable', 'clipboardOnlyClipboardChanged',
+  'clipboardOnlyPasteFailed', 'clipboardOnlySmartTargetUnavailable',
+  'stoppedCancelled', 'stoppedExpired', 'stoppedAlreadyCommitted',
+  'stoppedOperationInFlight', 'clipboardWriteFailed', 'cancelledBeforeInjection',
+  'senderDropped', 'timedOut', 'dispatchFailed', 'incomplete',
+]);
+const deliverySmartPrepareOutcomes = new Set<string>([
+  'notRun', 'ready', 'waitForActivation', 'refused', 'refusedClipboardOnly',
+  'ownerNotCurrent', 'senderDropped', 'timedOut', 'dispatchFailed',
+]);
+const deliveryCallbackKeys = ['queueWaitUs', 'ownerWaitUs', 'workUs'] as const;
+const deliveryVerificationKeys = ['elapsedUs', 'lookupRetryCount'] as const;
+const deliveryVerificationPoints = [
+  'beforeFocusVerification', 'afterFocusVerification', 'afterClipboardVerification',
+] as const;
+const deliveryInjectMeasurementKeys = [
+  'focusedFieldQueryUs', 'clipboardWriteUs', 'eventConstructionUs', 'finalFocusProofUs',
+  'keyEventUs', 'nativePasteRetryCount', 'nativePasteRetryWaitUs',
+] as const;
+const deliverySmartMeasurementKeys = [
+  'activationWaitUs', 'prepareValidationUs', 'insertValidationUs', 'settleUs',
+  'readbackUs', 'restoreUs', 'cleanupUs', 'snapshotWindowLookupUs',
+] as const;
+const deliveryTimingKeys = [
+  'schemaVersion', 'acceptedRoute', 'deliveryRoute', 'outcome', 'outcomeUs', 'totalUs',
+  'configuredDelayUs', 'prepareCallback', 'injectionCallback', 'inject',
+  'windowDiagnosticUs', 'smart',
+] as const;
+const deliveryTimingMeasurementKeys = [
+  'outcomeUs', 'totalUs', 'configuredDelayUs', 'windowDiagnosticUs',
+] as const;
 
 function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const actual = Object.keys(value).sort();
@@ -695,6 +840,48 @@ function isProductionGestureV1(value: unknown): value is ProductionGestureV1 {
     && durations.every(key => isMeasurementV1(value[key], isNonNegativeSafeInteger));
 }
 
+function hasCountMeasurements(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  return isRecord(value)
+    && hasExactKeys(value, keys)
+    && keys.every(key => isMeasurementV1(value[key], isNonNegativeSafeInteger));
+}
+
+function isDeliveryInjectV1(value: unknown): value is DeliveryInjectV1 {
+  return isRecord(value)
+    && hasExactKeys(value, [...deliveryInjectMeasurementKeys, ...deliveryVerificationPoints])
+    && deliveryInjectMeasurementKeys.every(key =>
+      isMeasurementV1(value[key], isNonNegativeSafeInteger))
+    && deliveryVerificationPoints.every(key =>
+      hasCountMeasurements(value[key], deliveryVerificationKeys));
+}
+
+function isDeliverySmartV1(value: unknown): value is DeliverySmartV1 {
+  return isRecord(value)
+    && hasExactKeys(value, ['prepareOutcome', ...deliverySmartMeasurementKeys])
+    && typeof value.prepareOutcome === 'string'
+    && deliverySmartPrepareOutcomes.has(value.prepareOutcome)
+    && deliverySmartMeasurementKeys.every(key =>
+      isMeasurementV1(value[key], isNonNegativeSafeInteger));
+}
+
+function isDeliveryTimingV1(value: unknown): value is DeliveryTimingV1 {
+  return isRecord(value)
+    && hasExactKeys(value, deliveryTimingKeys)
+    && value.schemaVersion === 1
+    && typeof value.acceptedRoute === 'string'
+    && deliveryRoutes.has(value.acceptedRoute)
+    && typeof value.deliveryRoute === 'string'
+    && deliveryRoutes.has(value.deliveryRoute)
+    && typeof value.outcome === 'string'
+    && deliveryOutcomes.has(value.outcome)
+    && deliveryTimingMeasurementKeys.every(key =>
+      isMeasurementV1(value[key], isNonNegativeSafeInteger))
+    && hasCountMeasurements(value.prepareCallback, deliveryCallbackKeys)
+    && hasCountMeasurements(value.injectionCallback, deliveryCallbackKeys)
+    && isDeliveryInjectV1(value.inject)
+    && isDeliverySmartV1(value.smart);
+}
+
 function isRunCorrelation(value: unknown, kind: PerformanceRunKindV1): value is RunCorrelationV1 {
   if (!isRecord(value) || value.kind !== kind) return false;
   switch (kind) {
@@ -721,6 +908,7 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
   ];
   if ('queryProcess' in value) expectedKeys.push('queryProcess');
   if ('production' in value) expectedKeys.push('production');
+  if ('deliveryTiming' in value) expectedKeys.push('deliveryTiming');
   if (!hasExactKeys(value, expectedKeys)
     || value.schemaVersion !== 1
     || typeof value.runId !== 'string'
@@ -741,7 +929,10 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
     || ('queryProcess' in value && !isQueryProcess(value.queryProcess))
     || ('production' in value
       && value.production !== null
-      && !isProductionRunV1(value.production))) {
+      && !isProductionRunV1(value.production))
+    || ('deliveryTiming' in value
+      && value.deliveryTiming !== null
+      && !isDeliveryTimingV1(value.deliveryTiming))) {
     return false;
   }
   const stages = new Set(value.stages.map(stage => isRecord(stage) ? stage.stage : undefined));

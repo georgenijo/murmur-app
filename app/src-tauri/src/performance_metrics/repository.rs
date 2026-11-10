@@ -266,6 +266,7 @@ impl PerformanceRepository {
             clear_epoch,
             query_process: None,
             production,
+            delivery_timing: None,
         };
         insert_active(&transaction, &active)?;
         transaction.commit().map_err(db_error)?;
@@ -450,6 +451,7 @@ impl PerformanceRepository {
             follow_ups: Vec::new(),
             query_process: active.query_process,
             production: active.production,
+            delivery_timing: active.delivery_timing,
         };
         let payload = serde_json::to_string(&run).map_err(|_| invalid_record())?;
         let (correlation_kind, correlation_id) = run.correlation.storage_parts();

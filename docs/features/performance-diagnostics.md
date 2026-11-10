@@ -40,7 +40,10 @@ homophoneContext rows. V6 adds the optional stream-open split and
 `helperPreparation` capture fields in a 5 → 6 metadata step with the same
 byte-preserving guarantees. Older builds refuse the newer database. A
 database created by a newer Murmur build is preserved and treated as unavailable rather than rewritten. Unknown
-record versions are not decoded as V1.
+record versions are not decoded as V1. The optional `deliveryTiming` companion
+([#1081](https://github.com/georgenijo/murmur-app/issues/1081)) changes no table
+and leaves `user_version` at 6; see
+[Delivery tail attribution](#delivery-tail-attribution) for why that is safe.
 
 SQLite failures use a bounded taxonomy: `busyLocked`, `storageFull`,
 `readOnly`, `io`, `corruptIntegrity`, `schemaMigration`, `invalidRecord`, or
@@ -72,7 +75,10 @@ quarantined evidence, and a healthy database is never quarantined.
 - catalog-backed model, backend, accelerator, and warm/cold state;
 - typed stage measurements;
 - content-free audio duration or bounded size/token fields;
-- scoped resource summaries.
+- scoped resource summaries;
+- for dictation runs that reached delivery, an optional `deliveryTiming`
+  attribution of the clipboard/paste stage (see
+  [Delivery tail attribution](#delivery-tail-attribution)).
 
 Retired Voice Query records may carry `queryProcess` with only an integer
 exit code (or unavailable) and a boolean `stderrPresent`. Old V1 rows omit the
@@ -111,7 +117,10 @@ The contract never uses numeric zero as a missing-data sentinel.
   existing `unavailable { reason }` contract, never a synthetic zero. This row
   is included in `transcriptTransform`, not additional time to add to it;
 - optional file output;
-- clipboard/paste;
+- clipboard/paste: one wall-clock stage covering the configured delay,
+  main-thread queueing, the clipboard write, target verification, and the key
+  events. The optional `deliveryTiming` companion attributes it to named
+  sub-steps (see [Delivery tail attribution](#delivery-tail-attribution));
 - total post-stop processing;
 - `releaseToStop`: native hotkey release → `stop_native_recording_for` entry,
   the rdev → `hold-down-stop` → webview → IPC hop that `totalProcessing` never
@@ -145,6 +154,9 @@ The Runs workspace shows nearest-rank p50/p90 of `totalProcessing` and
 The new build reads older diagnostic records. Older builds do not recognize
 the added stage in new records; downgrading does not provide forward-compatible
 diagnostic history. This does not change dictation or meeting history formats.
+`deliveryTiming` is a different kind of addition: it is an optional top-level key
+that the V1 run and active-run envelopes (which do not deny unknown fields) simply
+ignore in a build that predates it.
 
 ## Resource scopes
 
@@ -172,6 +184,9 @@ selected/proposed/replaced text, clipboard contents, paths or filenames, bundle
 IDs, window titles, selected context, project/profile names, raw stderr, or
 free-form native error messages. Retired Voice Query records retain stderr presence
 only. Errors are stable enums. Text-related sizes are bounded buckets.
+The `deliveryTiming` companion holds only microsecond durations, integer counts,
+and bounded route and outcome enums: no target identity, window token or title,
+application or bundle name, path, or text.
 Database contents are never uploaded. When a dictation diagnostics row still
 cannot begin after its bounded retry, one content-free structured event reports
 only `operation`, the safe error class, attempt count, and `recording_id`. The
@@ -561,6 +576,150 @@ preserves tables and historical V1 JSON; v3 → v5 applies both additive steps.
 Run and companion `schemaVersion` remain 1. Rust and TypeScript accept absent
 historical `gesture` fields and validate all durations/statuses when present.
 The 5 → 6 step does the same for the stream-open split and `helperPreparation`.
+
+## Delivery tail attribution
+
+`clipboardPaste` is one wall-clock number. It spans the configured focus-settle
+delay, main-thread queueing, the dictation-ownership wait, the clipboard write,
+three target verifications, the focused-field query, the final live-focus proof,
+the key events, and Smart-destination validation, so a slow value cannot say which
+of them spent the time. Dictation runs that reach delivery therefore carry an
+optional, content-free `deliveryTiming` record
+([#1081](https://github.com/georgenijo/murmur-app/issues/1081)). It is written
+for the normal paste route, the Smart-destination route, and every refusal, error,
+and timeout exit, so a slow paste is attributable to a named sub-step from the run
+record alone.
+
+### Record contract
+
+- `deliveryTiming` is optional on `ActiveRunV1` and `PerformanceRunV1`. The
+  collected record is written onto the active run just before it completes, so
+  the completed row carries it. It is absent on historical rows and on dictations
+  that never entered delivery (empty text, or a failure before delivery). Rust
+  and TypeScript accept the absence; neither reads it as zero or as a failure.
+- Its own `schemaVersion` is `1`. Unknown nested keys and other versions fail
+  closed in both languages instead of being read as version 1.
+- Every duration is a monotonic **microsecond** integer capped at 2^53 − 1 so
+  JavaScript reads it exactly. Counts are plain integers. Each value uses the
+  run's `MeasurementV1` wrapper: `measured`, `notApplicable`, or `unavailable`
+  with a reason. Zero is a measurement, never a stand-in for "missing".
+- The `inject timing` log fields, the pipeline's paste timing, and the
+  `clipboardPaste` stage are unchanged, and historical values are not
+  reinterpreted. The record explains the stage; it does not replace it. Paste
+  Last (an explicit retry outside the recording pipeline) records nothing.
+
+| Field | Meaning |
+|-------|---------|
+| `schemaVersion` | `1` |
+| `acceptedRoute`, `deliveryRoute` | `disabled`, `normalPaste`, `clipboardOnly`, or `smartTarget`: the route fixed when the recording was accepted and the one actually used (they differ after a Smart preparation fallback) |
+| `outcome` | `autoPasted`, `noText`, `clipboardOnlyAutoPasteDisabled`, `clipboardOnlyAccessibilityDenied`, `clipboardOnlyTargetChanged`, `clipboardOnlyFocusNotEditable`, `clipboardOnlyClipboardChanged`, `clipboardOnlyPasteFailed`, `clipboardOnlySmartTargetUnavailable`, `stoppedCancelled`, `stoppedExpired`, `stoppedAlreadyCommitted`, `stoppedOperationInFlight`, `clipboardWriteFailed`, `cancelledBeforeInjection`, `senderDropped`, `timedOut`, `dispatchFailed`, or `incomplete` |
+| `outcomeUs` | Delivery start to the moment the outcome was observed |
+| `totalUs` | Delivery start to the end of the delivery block. Always measured; the difference from `outcomeUs` is bookkeeping after the outcome, still inside the stage |
+| `configuredDelayUs` | The configured focus-settle sleep, which runs off the main thread |
+| `prepareCallback`, `injectionCallback` | `queueWaitUs` (dispatch to the callback starting on the main thread), `ownerWaitUs` (waiting for the dictation ownership lock), and `workUs` (work done while owning delivery) for each dispatched main-thread callback. The prepare callback exists only on the Smart route |
+| `inject.focusedFieldQueryUs` | The focused-field role/editability query (normal route) |
+| `inject.clipboardWriteUs` | Every clipboard write the delivery makes, including one that precedes a refusal (both routes) |
+| `inject.beforeFocusVerification`, `afterFocusVerification`, `afterClipboardVerification` | `elapsedUs` and `lookupRetryCount` of the three target verifications in execution order: before the focused-field query, after it, and after the clipboard write (normal route) |
+| `inject.eventConstructionUs` | Building the Command-modified `V` events (both routes) |
+| `inject.finalFocusProofUs` | The live-focus proof and the pasteboard-generation check made immediately before the key events, whether or not they hold (both routes) |
+| `inject.keyEventUs` | The key-down, hold, and key-up block |
+| `inject.nativePasteRetryCount`, `inject.nativePasteRetryWaitUs` | Native paste retries after event-construction failure, and the 100 ms wait before each. Measured as zero when the events were constructed without a retry |
+| `windowDiagnosticUs` | The single diagnostic focused-window lookup, taken after the delivery decision (see below) |
+| `smart.prepareOutcome` | `notRun`, `ready`, `waitForActivation`, `refused`, `refusedClipboardOnly`, `ownerNotCurrent`, `senderDropped`, `timedOut`, or `dispatchFailed` |
+| `smart.activationWaitUs` | The fixed 300 ms wait after a preparation that requested app activation |
+| `smart.prepareValidationUs`, `smart.insertValidationUs` | Smart destination validation during preparation and during insertion |
+| `smart.settleUs`, `smart.readbackUs`, `smart.restoreUs` | The post-handoff settle, field read-back, and focus restore (media or switched-app handoffs only) |
+| `smart.cleanupUs` | Guarded abort or rollback of a prepared destination |
+| `smart.snapshotWindowLookupUs` | Focused-window lookups made while capturing Smart delivery-target snapshots. They are already inside the other Smart steps and are reported separately because no delivery decision reads them |
+
+### Measurement states
+
+- `notApplicable`: the path never reached the step. Every `smart.*` step except
+  `prepareOutcome` is `notApplicable` while Smart destination is off, the three
+  verifications and the focused-field query are `notApplicable` on the Smart
+  route (its own field checks run inside `insertValidationUs`), and
+  `finalFocusProofUs` and `keyEventUs` are `notApplicable` after a refusal that
+  stopped before the key post.
+- `unavailable` with `dependencyPending`: the step was dispatched but had not
+  reported when the record closed. An injection callback that never ran before
+  its two-second receiver bound reads this way on all three callback fields, as
+  does a window diagnostic that had not finished.
+- `measured`: includes `0`.
+
+A step that runs more than once in a delivery accumulates (saturating at the
+bound above). The verification that a native-paste retry makes joins
+`afterClipboardVerification`, and `nativePasteRetryCount` says that it happened.
+
+The fields are not additive. `workUs` contains the clipboard write, the
+verifications, and the key events; the Smart steps contain
+`snapshotWindowLookupUs`; and `configuredDelayUs` and `activationWaitUs` run off
+the main thread, outside both callbacks. Use the fields to find the step that
+dominates, not to reconstruct `totalUs`.
+
+### Closing and stale callbacks
+
+Each delivery owns one collector. It is handed only to the callbacks that
+delivery dispatches, accepts steps until the outcome is decided (the first
+decision wins), and accepts nothing once its record is built. Every exit closes
+it: each injector outcome, a cancelled or non-owning callback, a dropped reply, a
+timeout, a failed dispatch, and any early return or unwind (a record that was
+never closed explicitly is published as `incomplete`).
+
+A main-thread turn that runs late, for example after the two-second receiver
+timeout, therefore finds its own delivery's collector closed and changes
+nothing. It cannot alter a finished record, and it cannot reach a newer
+recording's record because nothing global names a collector. The finished record
+is published into a small recording-id-keyed store (at most eight records, first
+record for a recording wins), merged into that recording's run when it completes,
+and then removed, so a record can only attach to the run with the same recording
+id.
+
+### Window diagnostic
+
+The focused-window token (a hash of `AXFocusedWindow`) and the
+`unknown`/`same`/`different` relation derived from it are **diagnostic only**.
+No verification outcome, secure-field refusal, live-focus proof,
+pasteboard-generation check, or Smart refusal reads them. Delivery-target
+verification still samples bundle, PID, process-instance token, and transition
+generations three times, and the final live-focus proof is unchanged.
+
+Before #1081 each of the normal route's three target verifications also made an
+`AXFocusedWindow` lookup, each bounded only by the 25 ms Accessibility timeout,
+before the paste. Now:
+
+- The verification samples on the delivery path carry no window token.
+- After the verified decision has been sent to the pipeline, the injection
+  callback makes at most one lookup of the frozen process's focused window,
+  compares it with the token frozen at acceptance, and then emits
+  `pipeline.delivery_target_verified`. No lookup is made when the delivery was
+  refused or when no focused window was frozen at acceptance, because the
+  relation could only be `unknown`.
+- The lookup is timed as `windowDiagnosticUs`. It runs while the pipeline carries
+  on, so a record built before it reports reads `unavailable` with
+  `dependencyPending` (an explicit "not reported", never zero).
+- `window_relation_code` is therefore `unknown` unless the delivery verified a
+  same-process target that had a frozen window. A refused delivery's current
+  process is not the frozen target, so a window comparison there described
+  nothing useful and drove no decision.
+
+The Smart route's snapshot captures still look up the focused window; that
+primitive also serves the acceptance and stop captures. Those lookups are left
+in place and attributed on their own as `smart.snapshotWindowLookupUs`, so that
+removing the redundant ones can be decided from measured values. No live Smart
+comparison reads the token: they compare process identity only, and the one
+whole-snapshot equality compares the frozen acceptance snapshot with a clone of
+itself.
+
+### Compatibility and scope
+
+The V1 run and active-run envelopes do not deny unknown fields, so a build that
+predates `deliveryTiming` reads these rows and ignores the key; `user_version`
+stays 6. The earlier v4–v6 bumps covered companions inside the strictly decoded
+`production` schema, which older builds would have rejected.
+
+The record contains only durations, counts, and bounded route and outcome
+enums. It adds no latency target: this change does not claim a
+`clipboardPaste` p95 under 40 ms or any other bound.
 
 ## Launch milestones
 

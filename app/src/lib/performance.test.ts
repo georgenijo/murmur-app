@@ -7,6 +7,7 @@ import {
   isResourceSampleV1,
   measuredValue,
   PERFORMANCE_STAGES_V1,
+  type DeliveryTimingV1,
   type MeasurementV1,
 } from './performance';
 
@@ -354,6 +355,204 @@ describe('performance contracts', () => {
       kind: 'dictation',
       correlation: { kind: 'dictation', recordingId: 9 },
     })).toBe(false);
+  });
+
+  describe('delivery timing attribution', () => {
+    const measured = (value: number): MeasurementV1<number> => ({ status: 'measured', value });
+    const notApplicable: MeasurementV1<number> = { status: 'notApplicable' };
+    const pending: MeasurementV1<number> = { status: 'unavailable', reason: 'dependencyPending' };
+    const idleCallback = { queueWaitUs: notApplicable, ownerWaitUs: notApplicable, workUs: notApplicable };
+    const idleVerification = { elapsedUs: notApplicable, lookupRetryCount: notApplicable };
+
+    function normalPasteTiming(): DeliveryTimingV1 {
+      return {
+        schemaVersion: 1,
+        acceptedRoute: 'normalPaste',
+        deliveryRoute: 'normalPaste',
+        outcome: 'autoPasted',
+        outcomeUs: measured(48_210),
+        totalUs: measured(48_900),
+        configuredDelayUs: measured(0),
+        prepareCallback: idleCallback,
+        injectionCallback: {
+          queueWaitUs: measured(1_240),
+          ownerWaitUs: measured(35),
+          workUs: measured(46_700),
+        },
+        inject: {
+          focusedFieldQueryUs: measured(3_100),
+          clipboardWriteUs: measured(900),
+          beforeFocusVerification: { elapsedUs: measured(2_400), lookupRetryCount: measured(0) },
+          afterFocusVerification: { elapsedUs: measured(2_300), lookupRetryCount: measured(0) },
+          afterClipboardVerification: { elapsedUs: measured(2_500), lookupRetryCount: measured(1) },
+          eventConstructionUs: measured(150),
+          finalFocusProofUs: measured(2_200),
+          keyEventUs: measured(3_300),
+          nativePasteRetryCount: measured(0),
+          nativePasteRetryWaitUs: measured(0),
+        },
+        windowDiagnosticUs: pending,
+        smart: {
+          prepareOutcome: 'notRun',
+          activationWaitUs: notApplicable,
+          prepareValidationUs: notApplicable,
+          insertValidationUs: notApplicable,
+          settleUs: notApplicable,
+          readbackUs: notApplicable,
+          restoreUs: notApplicable,
+          cleanupUs: notApplicable,
+          snapshotWindowLookupUs: notApplicable,
+        },
+      };
+    }
+
+    function smartTimingRefusal(): DeliveryTimingV1 {
+      return {
+        ...normalPasteTiming(),
+        acceptedRoute: 'smartTarget',
+        deliveryRoute: 'smartTarget',
+        outcome: 'clipboardOnlySmartTargetUnavailable',
+        prepareCallback: { queueWaitUs: measured(900), ownerWaitUs: measured(12), workUs: measured(8_000) },
+        // The Smart route never runs the normal-route preflight verifications.
+        inject: {
+          ...normalPasteTiming().inject,
+          focusedFieldQueryUs: notApplicable,
+          beforeFocusVerification: idleVerification,
+          afterFocusVerification: idleVerification,
+          afterClipboardVerification: idleVerification,
+        },
+        windowDiagnosticUs: notApplicable,
+        smart: {
+          prepareOutcome: 'ready',
+          activationWaitUs: measured(300_000),
+          prepareValidationUs: measured(6_400),
+          insertValidationUs: measured(5_100),
+          settleUs: measured(0),
+          readbackUs: notApplicable,
+          restoreUs: notApplicable,
+          cleanupUs: measured(1_800),
+          snapshotWindowLookupUs: measured(2_900),
+        },
+      };
+    }
+
+    const withTiming = (deliveryTiming: unknown) => ({ ...makeRun(), deliveryTiming });
+    // Replace one nested value and keep everything else valid.
+    const changed = (change: (timing: Record<string, any>) => void) => {
+      const timing = JSON.parse(JSON.stringify(normalPasteTiming()));
+      change(timing);
+      return withTiming(timing);
+    };
+
+    it('accepts the record on the normal and Smart routes, and runs without it', () => {
+      expect(isPerformanceRunV1(makeRun())).toBe(true);
+      expect(isPerformanceRunV1(withTiming(normalPasteTiming()))).toBe(true);
+      expect(isPerformanceRunV1(withTiming(smartTimingRefusal()))).toBe(true);
+      // Same tolerance as `production`: the backend omits the key, never nulls it.
+      expect(isPerformanceRunV1(withTiming(null))).toBe(true);
+    });
+
+    it('keeps measured zero distinct from not-applicable and pending', () => {
+      const zero = withTiming({ ...normalPasteTiming(), windowDiagnosticUs: measured(0) });
+      expect(isPerformanceRunV1(zero)).toBe(true);
+      expect(measuredValue(normalPasteTiming().windowDiagnosticUs)).toBeNull();
+      expect(measuredValue(normalPasteTiming().smart.activationWaitUs)).toBeNull();
+      expect(measuredValue(measured(0))).toBe(0);
+      expect(isPerformanceRunV1(changed(timing => {
+        timing.inject.keyEventUs = { status: 'unavailable', reason: 'sampleFailed' };
+      }))).toBe(true);
+    });
+
+    it('accepts every bounded route, outcome and Smart preparation code', () => {
+      for (const route of ['disabled', 'clipboardOnly', 'normalPaste', 'smartTarget']) {
+        expect(isPerformanceRunV1(changed(timing => {
+          timing.acceptedRoute = route;
+          timing.deliveryRoute = route;
+        }))).toBe(true);
+      }
+      for (const outcome of [
+        'autoPasted', 'noText', 'clipboardOnlyAutoPasteDisabled',
+        'clipboardOnlyAccessibilityDenied', 'clipboardOnlyTargetChanged',
+        'clipboardOnlyFocusNotEditable', 'clipboardOnlyClipboardChanged',
+        'clipboardOnlyPasteFailed', 'clipboardOnlySmartTargetUnavailable',
+        'stoppedCancelled', 'stoppedExpired', 'stoppedAlreadyCommitted',
+        'stoppedOperationInFlight', 'clipboardWriteFailed', 'cancelledBeforeInjection',
+        'senderDropped', 'timedOut', 'dispatchFailed', 'incomplete',
+      ]) {
+        expect(isPerformanceRunV1(changed(timing => { timing.outcome = outcome; }))).toBe(true);
+      }
+      for (const prepareOutcome of [
+        'notRun', 'ready', 'waitForActivation', 'refused', 'refusedClipboardOnly',
+        'ownerNotCurrent', 'senderDropped', 'timedOut', 'dispatchFailed',
+      ]) {
+        expect(isPerformanceRunV1(changed(timing => {
+          timing.smart.prepareOutcome = prepareOutcome;
+        }))).toBe(true);
+      }
+    });
+
+    it('rejects another schema version and values outside the bounded vocabularies', () => {
+      expect(isPerformanceRunV1(changed(timing => { timing.schemaVersion = 2; }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => { timing.schemaVersion = '1'; }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => { timing.acceptedRoute = 'terminal'; }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => { timing.deliveryRoute = 'Safari'; }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => { timing.outcome = 'pasted into Mail'; }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => { timing.smart.prepareOutcome = 'activated'; }))).toBe(false);
+    });
+
+    it('rejects undeclared keys at every level, so content cannot ride along', () => {
+      const secret = 'dictated words and window title';
+      expect(isPerformanceRunV1(changed(timing => { timing.text = secret; }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => { timing.prepareCallback.windowTitle = secret; }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => { timing.injectionCallback.bundleId = secret; }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => { timing.inject.clipboard = secret; }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => {
+        timing.inject.afterClipboardVerification.processName = secret;
+      }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => { timing.smart.path = secret; }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => {
+        timing.windowDiagnosticUs = { status: 'measured', value: 1, title: secret };
+      }))).toBe(false);
+    });
+
+    it('rejects missing required keys instead of reading them as zero', () => {
+      expect(isPerformanceRunV1(changed(timing => { delete timing.windowDiagnosticUs; }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => { delete timing.smart; }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => { delete timing.inject.keyEventUs; }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => {
+        delete timing.inject.beforeFocusVerification.lookupRetryCount;
+      }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => { delete timing.injectionCallback.ownerWaitUs; }))).toBe(false);
+    });
+
+    it('requires every duration and count to be a non-negative safe integer measurement', () => {
+      for (const value of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN, '12']) {
+        expect(isPerformanceRunV1(changed(timing => {
+          timing.totalUs = { status: 'measured', value };
+        }))).toBe(false);
+        expect(isPerformanceRunV1(changed(timing => {
+          timing.inject.nativePasteRetryCount = { status: 'measured', value };
+        }))).toBe(false);
+        expect(isPerformanceRunV1(changed(timing => {
+          timing.inject.afterFocusVerification.lookupRetryCount = { status: 'measured', value };
+        }))).toBe(false);
+        expect(isPerformanceRunV1(changed(timing => {
+          timing.smart.cleanupUs = { status: 'measured', value };
+        }))).toBe(false);
+      }
+      expect(isPerformanceRunV1(changed(timing => {
+        timing.totalUs = { status: 'measured', value: Number.MAX_SAFE_INTEGER };
+      }))).toBe(true);
+      // A bare number is not a measurement: a zero must say it was measured.
+      expect(isPerformanceRunV1(changed(timing => { timing.outcomeUs = 0; }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => { timing.inject.clipboardWriteUs = null; }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => {
+        timing.injectionCallback.workUs = { status: 'unavailable', reason: 'because' };
+      }))).toBe(false);
+      expect(isPerformanceRunV1(changed(timing => {
+        timing.windowDiagnosticUs = { status: 'notApplicable', value: 0 };
+      }))).toBe(false);
+    });
   });
 
   it('rejects undeclared content recursively at every performance-run boundary', () => {

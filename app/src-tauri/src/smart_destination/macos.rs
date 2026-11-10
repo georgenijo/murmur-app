@@ -9,6 +9,7 @@ use super::{
     PrepareOutcome, Snapshot,
 };
 use crate::frontmost::{DeliveryTargetIdentity, DeliveryTargetSnapshot};
+use crate::performance_metrics::delivery_timing::{self, Step};
 use objc2::rc::autoreleasepool;
 use objc2_app_kit::NSRunningApplication;
 use std::cell::{Cell, RefCell};
@@ -744,16 +745,20 @@ pub(super) fn insert(
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.reconcile_observer_epochs();
-            let valid = state.frozen.get(token).is_some_and(|frozen| {
-                frozen.revision == *revision
-                    && frozen.destination_identity == *identity
-                    && frozen.stage == CapabilityStage::Prepared
-                    && generation_is_current(frozen.generation)
-                    && validate_frozen_candidate(&state, frozen)
+            let valid = delivery_timing::time(Step::InsertValidation, || {
+                state.frozen.get(token).is_some_and(|frozen| {
+                    frozen.revision == *revision
+                        && frozen.destination_identity == *identity
+                        && frozen.stage == CapabilityStage::Prepared
+                        && generation_is_current(frozen.generation)
+                        && validate_frozen_candidate(&state, frozen)
+                })
             });
             if !valid {
                 if let Some(frozen) = state.frozen.remove(token) {
-                    rollback_before_post(&frozen, Some(pasteboard_change));
+                    delivery_timing::time(Step::Cleanup, || {
+                        rollback_before_post(&frozen, Some(pasteboard_change))
+                    });
                 }
                 return InsertOutcome::Refused;
             }
@@ -774,25 +779,34 @@ pub(super) fn insert(
                 state.invalidate_candidate();
                 return InsertOutcome::Refused;
             }
-            let character_count_before =
-                copy_number_attribute(frozen.field.as_element(), "AXNumberOfCharacters");
+            let character_count_before = delivery_timing::time(Step::InsertValidation, || {
+                copy_number_attribute(frozen.field.as_element(), "AXNumberOfCharacters")
+            });
 
             let ready_to_post = crate::injector::authority::validated_side_effect(
-                || validate_exact_field(&frozen, expected_range)
-                    && (!frozen.hands_off()
-                        || frozen.prepared_character_count == character_count_before),
+                || {
+                    delivery_timing::time(Step::InsertValidation, || {
+                        validate_exact_field(&frozen, expected_range)
+                            && (!frozen.hands_off()
+                                || frozen.prepared_character_count == character_count_before)
+                    })
+                },
                 || crate::injector::simulate_smart_paste_native_guarded(authority, || {
                     // All field AX work and event construction precede the live
                     // systemwide focus query. Cancellation remains nonblocking;
                     // commitment follows the bounded query and clipboard check.
-                    generation_is_current(frozen.generation)
-                        && destination_is_active(&frozen)
-                        && generation_is_current(frozen.generation)
-                        && crate::injector::pasteboard_change_count() == Some(pasteboard_change)
+                    delivery_timing::time(Step::FinalFocusProof, || {
+                        generation_is_current(frozen.generation)
+                            && destination_is_active(&frozen)
+                            && generation_is_current(frozen.generation)
+                            && crate::injector::pasteboard_change_count() == Some(pasteboard_change)
+                    })
                 }).is_ok_and(|decision| decision.is_posted()),
             );
             if !ready_to_post {
-                rollback_before_post(&frozen, Some(pasteboard_change));
+                delivery_timing::time(Step::Cleanup, || {
+                    rollback_before_post(&frozen, Some(pasteboard_change))
+                });
                 state.invalidate_candidate();
                 return InsertOutcome::Refused;
             }
@@ -801,12 +815,16 @@ pub(super) fn insert(
             // Delivery into the current app has nothing to decide, so it skips
             // the settle.
             if verifies_after_post(frozen.route, frozen.switched_away_from.is_some()) {
-                let _ = sleep_within_budget(POST_SETTLE);
-                let range_after = copy_attribute(frozen.field.as_element(), "AXSelectedTextRange")
-                    .ok()
-                    .and_then(|value| decode_range(value.as_type()));
-                let character_count_after =
-                    copy_number_attribute(frozen.field.as_element(), "AXNumberOfCharacters");
+                let _ = delivery_timing::time(Step::Settle, || sleep_within_budget(POST_SETTLE));
+                let (range_after, character_count_after) =
+                    delivery_timing::time(Step::Readback, || {
+                        (
+                            copy_attribute(frozen.field.as_element(), "AXSelectedTextRange")
+                                .ok()
+                                .and_then(|value| decode_range(value.as_type())),
+                            copy_number_attribute(frozen.field.as_element(), "AXNumberOfCharacters"),
+                        )
+                    });
                 let confirmed = delivery_is_confirmed(
                     expected_range,
                     inserted_length,
@@ -825,12 +843,14 @@ pub(super) fn insert(
                 tracing::info!(target: "pipeline", event_code = "pipeline.paste_safety", phase_code = "confirmation",
                     outcome_code = if confirmed { "structurally_confirmed" } else { "unconfirmed" }, "Paste safety decision");
                 if confirmed {
-                    maybe_restore_media_after_post(
-                        &frozen,
-                        range_after.expect("confirmed range is present"),
-                        character_count_after.expect("confirmed count is present"),
-                        pasteboard_change,
-                    );
+                    delivery_timing::time(Step::Restore, || {
+                        maybe_restore_media_after_post(
+                            &frozen,
+                            range_after.expect("confirmed range is present"),
+                            character_count_after.expect("confirmed count is present"),
+                            pasteboard_change,
+                        )
+                    });
                 }
             }
             if !verifies_after_post(frozen.route, frozen.switched_away_from.is_some()) {

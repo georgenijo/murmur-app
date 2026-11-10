@@ -611,6 +611,11 @@ pub struct PerformanceRunV1 {
     pub query_process: Option<QueryProcessSummaryV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub production: Option<super::production::ProductionRunV1>,
+    /// Content-free attribution of the post-transcription delivery tail. Absent on historical
+    /// records and on dictations that never reached delivery, so the V1 envelope stays
+    /// backward compatible: older readers ignore the key and older rows deserialize without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_timing: Option<super::delivery_timing::DeliveryTimingV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -630,6 +635,8 @@ pub(crate) struct ActiveRunV1 {
     pub query_process: Option<QueryProcessSummaryV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub production: Option<super::production::ProductionRunV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_timing: Option<super::delivery_timing::DeliveryTimingV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

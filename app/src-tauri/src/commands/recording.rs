@@ -4,6 +4,10 @@ use crate::dictation_diagnostics::DictationCaptureCompletion;
 use crate::dictation_telemetry::{DictationErrorCode, DictationTerminalOutcome};
 use crate::microphone_auto::SmartAutoRequest;
 use crate::model_runtime::{self, PreparationReason};
+use crate::performance_metrics::delivery_timing::{
+    self, Callback as DeliveryCallback, DeliveryOutcomeV1, DeliveryRouteV1, DeliveryTimingRecorder,
+    SmartPrepareOutcomeV1, Step as DeliveryStep,
+};
 use crate::performance_metrics::{
     AcceleratorV1, ContentFreeInputSummaryV1, ModelWarmStateV1, PerformanceRunGuard,
     PerformanceStageV1, PerformanceStoreError, RunCorrelationV1, RunOutcomeV1, RuntimeBackendV1,
@@ -1421,19 +1425,28 @@ fn destination_application_name(
 /// Processing state. The dictation lock stays held through `operation`, making
 /// cancellation/supersession atomic with the clipboard write and optional
 /// paste that the main-thread callback performs.
+///
+/// Inside a delivery callback, the wait for the lock and the work done while
+/// holding it are attributed separately in the delivery timing record. Both
+/// calls are inert anywhere else.
 fn with_current_delivery_owner<T>(
     app_state: &AppState,
     recording_id: u64,
     operation: impl FnOnce() -> T,
 ) -> Option<T> {
+    let lock_started = std::time::Instant::now();
     let dictation = app_state.dictation.lock_or_recover();
+    delivery_timing::record_owner_wait(lock_started.elapsed());
     delivery_event_recording_id(
         recording_id,
         app_state.recording_id.load(Ordering::SeqCst),
         app_state.is_cancelled(recording_id),
         dictation.status,
     )?;
-    Some(operation())
+    let work_started = std::time::Instant::now();
+    let result = operation();
+    delivery_timing::record_callback_work(work_started.elapsed());
+    Some(result)
 }
 
 /// Run a generation-owned best-effort side effect even after Processing has
@@ -2766,6 +2779,19 @@ async fn run_transcription_pipeline(
             smart_destination.clone(),
         );
         let accepted_route = smart_destination.route_code();
+        // Content-free attribution of this delivery (#1081). Each step reports
+        // to this delivery's own collector, which is closed with the outcome
+        // and published once on every exit path when `delivery_timing` drops,
+        // so a late main-thread callback can only reach this recording's record.
+        let delivery_timing = DeliveryTimingRecorder::begin(
+            app_handle
+                .try_state::<State>()
+                .map(|state| state.performance.clone())
+                .unwrap_or_default(),
+            recording_id,
+            DeliveryRouteV1::of(&smart_destination),
+        );
+        let delivery_collector = delivery_timing.collector();
         let mut recovery_smart_destination = smart_destination.clone();
         let mut recovery_target = smart_destination
             .identity()
@@ -2775,7 +2801,9 @@ async fn run_transcription_pipeline(
         // activation/Space notification callbacks can advance their
         // content-free counters before target verification runs.
         if effective_auto_paste && paste_delay_ms > 0 && injector::is_accessibility_enabled() {
+            let delay_started = std::time::Instant::now();
             tokio::time::sleep(std::time::Duration::from_millis(paste_delay_ms)).await;
+            delivery_collector.record(DeliveryStep::ConfiguredDelay, delay_started.elapsed());
         }
         // Activation and insertion are separate main-thread turns: AppKit
         // refreshes its active-application state only after this turn returns.
@@ -2795,25 +2823,44 @@ async fn run_transcription_pipeline(
             ));
             let _cancel_preparation = injector::authority::CancelOnDrop(&preparation_authority);
             let worker_authority = preparation_authority.clone();
-            app_handle
-                .run_on_main_thread(move || {
-                    if sender.is_closed() || !worker_authority.is_current() {
-                        return;
-                    }
-                    let state = prepare_app.state::<State>();
-                    let outcome =
-                        with_current_delivery_owner(&state.app_state, recording_id, || {
-                            crate::smart_destination::prepare(&preparing, Some(&worker_authority))
-                        });
-                    let _ = sender.send(outcome);
-                })
-                .map_err(|error| error.to_string())?;
+            let prepare_timing = Arc::clone(&delivery_collector);
+            delivery_collector.dispatch_callback(DeliveryCallback::Prepare);
+            let prepare_dispatched_at = std::time::Instant::now();
+            if let Err(error) = app_handle.run_on_main_thread(move || {
+                let _timing_scope =
+                    prepare_timing.enter_callback(DeliveryCallback::Prepare, prepare_dispatched_at);
+                if sender.is_closed() || !worker_authority.is_current() {
+                    return;
+                }
+                let state = prepare_app.state::<State>();
+                let outcome = with_current_delivery_owner(&state.app_state, recording_id, || {
+                    crate::smart_destination::prepare(&preparing, Some(&worker_authority))
+                });
+                let _ = sender.send(outcome);
+            }) {
+                delivery_collector.set_prepare_outcome(SmartPrepareOutcomeV1::DispatchFailed);
+                delivery_collector.close(DeliveryOutcomeV1::DispatchFailed);
+                return Err(error.to_string());
+            }
             match tokio::time::timeout(std::time::Duration::from_secs(1), receiver).await {
-                Ok(Ok(Some(crate::smart_destination::PrepareOutcome::Ready))) => {}
+                Ok(Ok(Some(crate::smart_destination::PrepareOutcome::Ready))) => {
+                    delivery_collector.set_prepare_outcome(SmartPrepareOutcomeV1::Ready);
+                }
                 Ok(Ok(Some(crate::smart_destination::PrepareOutcome::WaitForActivation))) => {
+                    delivery_collector
+                        .set_prepare_outcome(SmartPrepareOutcomeV1::WaitForActivation);
+                    let activation_started = std::time::Instant::now();
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    delivery_collector
+                        .record(DeliveryStep::ActivationWait, activation_started.elapsed());
                 }
                 outcome => {
+                    delivery_collector.set_prepare_outcome(match &outcome {
+                        Ok(Ok(Some(prepared))) => SmartPrepareOutcomeV1::of(*prepared),
+                        Ok(Ok(None)) => SmartPrepareOutcomeV1::OwnerNotCurrent,
+                        Ok(Err(_)) => SmartPrepareOutcomeV1::SenderDropped,
+                        Err(_) => SmartPrepareOutcomeV1::TimedOut,
+                    });
                     // Only a delivered `Refused` proves nothing was activated
                     // and no handoff refusal is pending. A timeout or lost
                     // reply may hide a late clipboard-only decision.
@@ -2840,6 +2887,7 @@ async fn run_transcription_pipeline(
             }
         }
         let delivery_route = smart_destination.route_code();
+        delivery_collector.set_delivery_route(DeliveryRouteV1::of(&smart_destination));
         let (tx, rx) =
             tokio::sync::oneshot::channel::<Option<Result<injector::InjectionResult, String>>>();
         let injection_app_handle = app_handle.clone();
@@ -2849,42 +2897,70 @@ async fn run_transcription_pipeline(
         ));
         let _cancel_injection = injector::authority::CancelOnDrop(&injection_authority);
         let worker_authority = injection_authority.clone();
-        app_handle
-            .run_on_main_thread(move || {
-                let state = injection_app_handle.state::<State>();
-                let attempt = with_current_delivery_owner(&state.app_state, recording_id, || {
-                    injector::inject_with_destination_authorized(
-                        &text_to_inject,
-                        effective_auto_paste,
-                        paste_delay_ms,
-                        &delivery_target,
-                        &smart_destination,
-                        Some(&worker_authority),
-                    )
-                });
-                crate::smart_destination::abort(&smart_destination, None);
-                match &attempt {
-                    Some(Ok(result)) => {
-                        if let Some(evidence) = result.verification {
-                            emit_delivery_target_verification(
-                                recording_id,
-                                delivery_anchor,
-                                stop_sample,
-                                evidence,
-                            );
-                        }
-                    }
-                    None => emit_delivery_target_verification(
-                        recording_id,
-                        delivery_anchor,
-                        stop_sample,
-                        crate::frontmost::verify_delivery_target(&delivery_target, false),
-                    ),
-                    Some(Err(_)) => {}
-                }
-                let _ = tx.send(attempt);
-            })
-            .map_err(|e| format!("Failed to dispatch to main thread: {}", e))?;
+        let injection_timing = Arc::clone(&delivery_collector);
+        delivery_collector.dispatch_callback(DeliveryCallback::Injection);
+        let injection_dispatched_at = std::time::Instant::now();
+        if let Err(error) = app_handle.run_on_main_thread(move || {
+            let _timing_scope = injection_timing
+                .enter_callback(DeliveryCallback::Injection, injection_dispatched_at);
+            let state = injection_app_handle.state::<State>();
+            let attempt = with_current_delivery_owner(&state.app_state, recording_id, || {
+                injector::inject_with_destination_authorized(
+                    &text_to_inject,
+                    effective_auto_paste,
+                    paste_delay_ms,
+                    &delivery_target,
+                    &smart_destination,
+                    Some(&worker_authority),
+                )
+            });
+            let cleanup_started = std::time::Instant::now();
+            crate::smart_destination::abort(&smart_destination, None);
+            if matches!(
+                smart_destination,
+                crate::smart_destination::Snapshot::Target { .. }
+            ) {
+                delivery_timing::record(DeliveryStep::Cleanup, cleanup_started.elapsed());
+            }
+            // The decision goes to the pipeline first. The window relation is
+            // diagnostic evidence that no delivery decision reads, so its one
+            // focused-window lookup and the verification event follow the reply
+            // instead of delaying it.
+            let recorded_evidence = match &attempt {
+                Some(Ok(result)) => result.verification,
+                Some(Err(_)) | None => None,
+            };
+            let not_owner = attempt.is_none();
+            let wants_window_diagnostic = recorded_evidence
+                .is_some_and(|evidence| evidence.verified())
+                && crate::frontmost::delivery_window_relation_needs_lookup(&delivery_target);
+            if wants_window_diagnostic {
+                injection_timing.begin_window_diagnostic();
+            }
+            let _ = tx.send(attempt);
+            let evidence = recorded_evidence.or_else(|| {
+                not_owner.then(|| crate::frontmost::verify_delivery_target(&delivery_target, false))
+            });
+            if let Some(evidence) = evidence {
+                let evidence = if wants_window_diagnostic {
+                    let lookup_started = std::time::Instant::now();
+                    let relation = crate::frontmost::delivery_window_relation(&delivery_target);
+                    injection_timing.end_window_diagnostic(lookup_started.elapsed());
+                    evidence.with_window_relation(relation)
+                } else {
+                    evidence
+                };
+                emit_delivery_target_verification(
+                    recording_id,
+                    delivery_anchor,
+                    stop_sample,
+                    evidence,
+                );
+            }
+        }) {
+            delivery_collector.close(DeliveryOutcomeV1::DispatchFailed);
+            return Err(format!("Failed to dispatch to main thread: {}", error));
+        }
         let paste_hint = if cfg!(target_os = "macos") {
             "Text is in your clipboard -- press Cmd+V to paste manually."
         } else {
@@ -2895,6 +2971,7 @@ async fn run_transcription_pipeline(
             .await
         {
             Ok(Ok(Some(Ok(result)))) => {
+                delivery_collector.close(DeliveryOutcomeV1::of_injection(result.outcome));
                 injection_outcome_code = result.outcome.code();
                 if !matches!(
                     result.outcome,
@@ -2945,6 +3022,7 @@ async fn run_transcription_pipeline(
                 confirmed_delivery_outcome(result.outcome)
             }
             Ok(Ok(Some(Err(e)))) => {
+                delivery_collector.close(DeliveryOutcomeV1::ClipboardWriteFailed);
                 tracing::error!(target: "pipeline", "Text injection failed before clipboard delivery: {}", e);
                 injection_outcome_code = "clipboard_write_failed";
                 emit_auto_paste_failure_if_current(
@@ -2956,6 +3034,7 @@ async fn run_transcription_pipeline(
                 DictationDeliveryOutcome::ClipboardWriteFailed
             }
             Ok(Ok(None)) => {
+                delivery_collector.close(DeliveryOutcomeV1::CancelledBeforeInjection);
                 tracing::info!(
                     target: "pipeline",
                     recording_id,
@@ -2974,6 +3053,7 @@ async fn run_transcription_pipeline(
                 });
             }
             Ok(Err(_)) => {
+                delivery_collector.close(DeliveryOutcomeV1::SenderDropped);
                 app_handle
                     .state::<State>()
                     .delivery_recovery
@@ -2988,6 +3068,7 @@ async fn run_transcription_pipeline(
                 DictationDeliveryOutcome::Unconfirmed
             }
             Err(_) => {
+                delivery_collector.close(DeliveryOutcomeV1::TimedOut);
                 app_handle
                     .state::<State>()
                     .delivery_recovery
@@ -3061,6 +3142,9 @@ async fn run_transcription_pipeline(
                     });
             });
         }
+        // Publish this delivery's attribution for the run record. Every early
+        // exit above publishes it from the recorder's drop instead.
+        delivery_timing.finish();
     }
     let paste_ms = t_inject.elapsed().as_millis() as u64;
     tracing::info!(target: "pipeline", "inject (clipboard + paste): {:?}", t_inject.elapsed());

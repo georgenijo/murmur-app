@@ -18,7 +18,7 @@ When `auto_paste` is enabled in settings:
 2. Re-check that the exact `recording_id` still owns delivery. A stale completion stops here without writing or pasting, so it cannot overwrite a newer recording's delivery state.
 3. Check `AXIsProcessTrusted()` under that ownership fence. If accessibility is not granted, write the transcript to the clipboard and stop.
 4. Verify the anchored target against the current native frontmost identity. The anchor is the sample frozen at the accepted stop transition when that sample is a complete identity, and otherwise the recording-start sample; a self-owned, incomplete, mismatched, or absent stop sample never makes delivery more permissive than the start-anchored behavior it replaces. The anchored target must be complete and external to Murmur, and the current bundle, PID, and process-instance evidence must identify that same process instance. A temporarily unavailable native lookup may be retried only within the bounded verifier; it never changes the frozen target or tries a different process.
-5. Fail closed to clipboard-only for a different application, different process, process relaunch, partial identity mismatch, unavailable/incomplete identity, or self-owned anchored target. Contradictory native PID or launch-instance evidence is terminal even when an unbundled process withholds its bundle identity; a later sample cannot erase it. Moving to a different window in the same exact process instance remains eligible. Window relation, application activation, and Space changes are diagnostic facts only and never override identity verification. Every current refusal writes the transcript before returning clipboard-only.
+5. Fail closed to clipboard-only for a different application, different process, process relaunch, partial identity mismatch, unavailable/incomplete identity, or self-owned anchored target. Contradictory native PID or launch-instance evidence is terminal even when an unbundled process withholds its bundle identity; a later sample cannot erase it. Moving to a different window in the same exact process instance remains eligible. Window relation, application activation, and Space changes are diagnostic facts only and never override identity verification. The window relation is therefore not sampled inside any of the three verifications in steps 4, 7, and 9: each still takes its own fresh process-identity sample, and the one diagnostic focused-window lookup follows the delivery decision (see [Delivery-target diagnostics](#delivery-target-diagnostics-and-privacy)). Every current refusal writes the transcript before returning clipboard-only.
 6. Query the verified process's focused element role with the native macOS Accessibility API. Native AX timeout (`-25204`) remains `Unknown` without launching the compatibility query. A no-value result (`-25212`) does the same for non-Finder apps; Finder retains the bounded System Events role query so its desktop/file-view guard remains effective. Other native failures may also use that compatibility query. Skip auto-paste only when the role is on the confirmed non-editable denylist and the recording's frozen delivery target is Finder, where a stray Cmd+V drops a `.textClipping`. For any other delivery target a denylisted role is treated as `Unknown`, because web-backed editors such as Meta's Muse can report roles like `AXScrollArea` for a working input. Unknown roles still allow paste.
 7. Verify the exact target again because the Accessibility query may have blocked while focus changed.
 8. Write the transcript to `NSPasteboard` and capture only its numeric `changeCount` generation. Clipboard contents are never read back.
@@ -26,6 +26,8 @@ When `auto_paste` is enabled in settings:
 10. Construct Command-modified `V` events, then check the attempt deadline/cancellation, exact frontmost process instance and pasteboard generation again at the key-post boundary, after all blocking AX queries. Post key-down and key-up through the CoreGraphics HID event tap. There is no AppleScript paste fallback.
 11. If native event construction fails, wait 100ms, re-check the focused role, exact target, and unchanged pasteboard generation, then make one native retry only when all three remain safe.
 12. Report a typed delivery outcome: automatic paste posted, confirmed clipboard-only, clipboard write failed, or delivery unconfirmed.
+
+Each delivery also writes a content-free `deliveryTiming` record onto its performance run, on the normal and Smart routes and on every refusal, error, and timeout path. It separates the delay in step 1, main-thread queueing and ownership waits (step 2), the focused-field query (step 6), the clipboard write (step 8), each of the three verifications with its lookup retry count (steps 4, 7, and 9), the final live-focus proof and key-event block (step 10), the native retry count and wait (step 11), and the Smart validation steps below, so a slow paste can be attributed to a named step. It observes the sequence without changing it: no check is reordered, shortened, or skipped, the 100ms retry delay and the Accessibility timeouts are unchanged, and the delivered text and outcomes are identical. See [Delivery tail attribution](performance-diagnostics.md#delivery-tail-attribution).
 
 ### Smart destination (macOS, opt-in)
 
@@ -189,7 +191,7 @@ The clipboard write (`arboard::set_text()` → `NSPasteboard`) is synchronous, s
 
 ### Configurable Delay
 
-The paste delay is configurable via a range slider in the settings panel (0–500ms, step 10ms). The slider appears when auto-paste is enabled. The value is sent to the Rust backend via `configure_dictation` and clamped to the 0–500 range. This configured delay is one component of the broader **Clipboard / paste** performance stage, which also measures the clipboard write, target/focus safety queries, Cmd+V event, and small dispatch overhead.
+The paste delay is configurable via a range slider in the settings panel (0–500ms, step 10ms). The slider appears when auto-paste is enabled. The value is sent to the Rust backend via `configure_dictation` and clamped to the 0–500 range. This configured delay is one component of the broader **Clipboard / paste** performance stage, which also measures the clipboard write, target/focus safety queries, Cmd+V event, and small dispatch overhead. The run's `deliveryTiming.configuredDelayUs` reports the delay on its own, so it can be told apart from the rest of the stage.
 
 ### Retry Behavior
 
@@ -239,7 +241,17 @@ Each auto-paste delivery that reaches target verification emits its final struct
 - the booleans `same_application`, `same_process`,
   `same_process_instance`, `activation_changed`, `space_changed`,
   `current_is_self`, and `ownership_current`; and
-- `window_relation_code`: `unknown`, `same`, or `different`.
+- `window_relation_code`: `unknown`, `same`, or `different`. It is diagnostic
+  evidence only. It is `unknown` unless the delivery verified a same-process
+  target that had a focused window at acceptance, in which case it compares that
+  frozen window with one lookup taken after the delivery decision, so the lookup
+  never delays the paste. Its elapsed time is the run record's
+  `windowDiagnosticUs`.
+
+The event is emitted from the injection callback after the delivery decision has
+been handed to the pipeline, and after that lookup, rather than before the
+decision. Its fields are unchanged; correlate it by `recording_id`, not by its
+position among neighboring log lines.
 
 The equality booleans are positive proof: `false` does not invent an inequality
 when native metadata was unavailable. `partial_identity_mismatch` records the

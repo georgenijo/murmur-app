@@ -66,7 +66,7 @@ The snapshot contains only typed values used by the live pipeline:
 
 ### Frontmost-app sampling
 
-At the accepted `Idle -> Starting` transition, live dictation takes exactly one native macOS `NSWorkspace` sample. A complete bundle, PID, and launch-instance token from that retained `NSRunningApplication` object become both the immutable profile identity and the private delivery target. The optional focused-window token and content-free activation/Space counters come from the same boundary. This work runs under recording ownership and is included in request-to-first-PCM timing.
+At the accepted `Idle -> Starting` transition, live dictation takes exactly one native macOS `NSWorkspace` sample. A complete bundle, PID, and launch-instance token from that retained `NSRunningApplication` object become both the immutable profile identity and the private delivery target. The optional focused-window token and content-free activation/Space counters come from the same boundary. The window token is diagnostic evidence only: delivery makes one comparison against it after its decision is made, and no delivery decision reads it. This work runs under recording ownership and is included in request-to-first-PCM timing.
 
 Live dictation does not retry this start sample or adopt a later application. An unavailable, partial, changing, or self-owned sample resolves an unmatched global-only context; app-specific IDE/context reads remain disabled and auto-paste later fails closed. No System Events fallback can choose a live recording's profile or paste destination. Literal AppleScript `missing value` is normalized to unavailable in the regression seam rather than treated as a bundle identifier.
 

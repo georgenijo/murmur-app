@@ -1,4 +1,5 @@
 pub(crate) mod authority;
+use crate::performance_metrics::delivery_timing::{self, Step, VerificationPoint};
 use arboard::Clipboard;
 use authority::{AttemptStop, PasteAttempt, PostDecision};
 #[cfg(target_os = "macos")]
@@ -286,11 +287,13 @@ fn write_clipboard_text_with_change_count(text: &str) -> Result<Option<i64>, Str
     Ok(pasteboard_change_count())
 }
 
+/// Every clipboard write a delivery makes, including the one that precedes a
+/// refusal, is attributed to the run record's `clipboardWriteUs`.
 fn authorized_clipboard_write(
     text: &str,
     authority: Option<&PasteAttempt>,
 ) -> Result<Option<i64>, InjectionError> {
-    match authority {
+    delivery_timing::time(Step::ClipboardWrite, || match authority {
         Some(attempt) => attempt
             .mutate(|| write_clipboard_text_with_change_count(text))
             .map_err(InjectionError::Stopped)?
@@ -298,7 +301,58 @@ fn authorized_clipboard_write(
         None => {
             write_clipboard_text_with_change_count(text).map_err(InjectionError::ClipboardWrite)
         }
+    })
+}
+
+/// Attributes each target verification of one delivery to the check it is.
+///
+/// `first_paste_preflight` verifies three times, always in this order: before
+/// the focused-field query, after it, and after the clipboard write. A refusal
+/// stops the sequence early. A native-paste retry verifies once more; that
+/// check accumulates into the last point, and `nativePasteRetryCount` in the
+/// run record says it happened.
+#[derive(Default)]
+struct VerificationClock {
+    calls: u8,
+}
+
+impl VerificationClock {
+    fn point(&mut self) -> VerificationPoint {
+        let point = match self.calls {
+            0 => VerificationPoint::BeforeFocus,
+            1 => VerificationPoint::AfterFocus,
+            _ => VerificationPoint::AfterClipboard,
+        };
+        self.calls = self.calls.saturating_add(1);
+        point
     }
+
+    fn verify(
+        &mut self,
+        verify: impl FnOnce() -> crate::frontmost::VerificationEvidence,
+    ) -> crate::frontmost::VerificationEvidence {
+        let point = self.point();
+        let started = Instant::now();
+        let evidence = verify();
+        delivery_timing::record_verification(point, started.elapsed(), evidence.retry_count);
+        evidence
+    }
+}
+
+/// The proof that must hold immediately before the key events are posted: the
+/// live focused application is still the delivery target, and then the
+/// pasteboard generation still equals the one Murmur's write produced. The
+/// generation is consulted only after the live-focus proof passes, as before.
+/// The wall time of both is attributed to `finalFocusProofUs` whether or not
+/// the proof holds.
+fn timed_final_check(
+    target_is_active: impl FnOnce() -> bool,
+    pasteboard_unchanged: impl FnOnce() -> bool,
+) -> bool {
+    let started = Instant::now();
+    let proven = target_is_active() && pasteboard_unchanged();
+    delivery_timing::record(Step::FinalFocusProof, started.elapsed());
+    proven
 }
 
 fn smart_refusal_reason(
@@ -588,16 +642,22 @@ fn inject_text_with_policy(
         // `focused_field_state` for the false-negative bias.
         let mut focus_ms = 0_u64;
         let mut clipboard_ms = 0_u64;
+        let mut verification_clock = VerificationClock::default();
         let target_is_finder = delivery_target_is_finder(delivery_target);
         let preflight = first_paste_preflight(
-            || crate::frontmost::verify_delivery_target(delivery_target, true),
+            || {
+                verification_clock
+                    .verify(|| crate::frontmost::verify_delivery_target(delivery_target, true))
+            },
             || {
                 let started = Instant::now();
                 let state = secure_field_policy(
                     scope_non_editable_to_finder(focused_field_state(), target_is_finder),
                     refuse_secure,
                 );
-                focus_ms = started.elapsed().as_millis() as u64;
+                let elapsed = started.elapsed();
+                focus_ms = elapsed.as_millis() as u64;
+                delivery_timing::record(Step::FocusedFieldQuery, elapsed);
                 state
             },
             || {
@@ -644,9 +704,13 @@ fn inject_text_with_policy(
 
         // Simulate paste keystroke, retry once on failure
         let key_event_started = Instant::now();
+        // The live-focus proof and pasteboard generation equality that must hold
+        // immediately before the key events are posted.
         let final_check = || {
-            crate::frontmost::delivery_target_is_active(delivery_target)
-                && pasteboard_change_count() == Some(expected_pasteboard_change.0)
+            timed_final_check(
+                || crate::frontmost::delivery_target_is_active(delivery_target),
+                || pasteboard_change_count() == Some(expected_pasteboard_change.0),
+            )
         };
         let outcome = match post_paste_native_guarded(3, authority, final_check) {
             Ok(decision) => post_decision_outcome(decision, || {
@@ -654,7 +718,9 @@ fn inject_text_with_policy(
             }),
             Err(first_err) => {
                 tracing::warn!(target: "pipeline", "inject_text: first paste attempt failed: {}, retrying in 100ms", first_err);
+                let retry_wait_started = Instant::now();
                 thread::sleep(Duration::from_millis(100));
+                delivery_timing::record_native_paste_retry(retry_wait_started.elapsed());
 
                 let (retry_outcome, retry_verification) = retry_paste_if_safe(
                     || {
@@ -663,10 +729,16 @@ fn inject_text_with_policy(
                             scope_non_editable_to_finder(focused_field_state(), target_is_finder),
                             refuse_secure,
                         );
-                        focus_ms = focus_ms.saturating_add(started.elapsed().as_millis() as u64);
+                        let elapsed = started.elapsed();
+                        focus_ms = focus_ms.saturating_add(elapsed.as_millis() as u64);
+                        delivery_timing::record(Step::FocusedFieldQuery, elapsed);
                         state
                     },
-                    || crate::frontmost::verify_delivery_target(delivery_target, true),
+                    || {
+                        verification_clock.verify(|| {
+                            crate::frontmost::verify_delivery_target(delivery_target, true)
+                        })
+                    },
                     // Content-free NSPasteboard generation equality proves
                     // nothing else wrote the clipboard after Murmur. Never
                     // read arbitrary clipboard content on this path.
@@ -729,12 +801,15 @@ fn post_paste_native_guarded(
     use std::thread;
     use std::time::Duration;
 
-    let (key_down, key_up) = create_native_paste_events()?;
+    let (key_down, key_up) =
+        delivery_timing::time(Step::EventConstruction, create_native_paste_events)?;
     let post = || {
+        let started = Instant::now();
         key_down.post(CGEventTapLocation::HID);
         // Always release the key, including when cancellation races the post.
         thread::sleep(Duration::from_millis(hold_ms));
         key_up.post(CGEventTapLocation::HID);
+        delivery_timing::record(Step::KeyEvent, started.elapsed());
     };
     let posted = match authority {
         Some(attempt) => attempt.post(final_check, post),
@@ -1274,6 +1349,11 @@ mod focus_tests {
     use crate::frontmost::{
         VerificationEvidence, VerificationOutcome, VerificationSource, WindowRelation,
     };
+    use crate::performance_metrics::delivery_timing::{
+        Callback as DeliveryCallback, DeliveryOutcomeV1, DeliveryRouteV1, DeliveryTimingCollector,
+        DeliveryTimingV1,
+    };
+    use crate::performance_metrics::MeasurementV1;
     use std::cell::Cell;
 
     fn verification(outcome: VerificationOutcome) -> VerificationEvidence {
@@ -1639,6 +1719,310 @@ mod focus_tests {
         assert_eq!(verify_calls.get(), 1);
         assert_eq!(clipboard_checks.get(), 1);
         assert_eq!(paste_posts.get(), 0);
+    }
+
+    fn ran(measurement: &MeasurementV1<u64>) -> bool {
+        matches!(measurement, MeasurementV1::Measured { .. })
+    }
+
+    fn never_ran(measurement: &MeasurementV1<u64>) -> bool {
+        *measurement == MeasurementV1::NotApplicable
+    }
+
+    /// Drives `first_paste_preflight` the way `inject_text_with_policy` wires it
+    /// inside the injection callback: every verification through a
+    /// `VerificationClock`, and the focused-field query and clipboard write each
+    /// attributed to their own step. Native lookups are fixtures, so no real
+    /// clipboard or Accessibility call is made.
+    fn timed_preflight(
+        verifications: Vec<VerificationEvidence>,
+        focused: FocusedFieldState,
+        pasteboard_unchanged: bool,
+    ) -> (FirstPastePreflight, DeliveryTimingV1) {
+        let collector = DeliveryTimingCollector::new(DeliveryRouteV1::NormalPaste);
+        collector.dispatch_callback(DeliveryCallback::Injection);
+        let result = {
+            let _scope = collector.enter_callback(DeliveryCallback::Injection, Instant::now());
+            let mut clock = VerificationClock::default();
+            let mut verifications = std::collections::VecDeque::from(verifications);
+            first_paste_preflight(
+                || clock.verify(|| verifications.pop_front().expect("bounded verification")),
+                || delivery_timing::time(Step::FocusedFieldQuery, || focused),
+                || delivery_timing::time(Step::ClipboardWrite, || Ok(Some(7))),
+                |_| pasteboard_unchanged,
+            )
+            .expect("preflight result")
+        };
+        let outcome = match &result {
+            FirstPastePreflight::Ready { .. } => InjectionOutcome::AutoPasted,
+            FirstPastePreflight::Refused { reason, .. } => InjectionOutcome::ClipboardOnly(*reason),
+        };
+        collector.close(DeliveryOutcomeV1::of_injection(outcome));
+        (result, collector.finish().expect("first finish"))
+    }
+
+    fn verification_with_retries(
+        outcome: VerificationOutcome,
+        retry_count: u64,
+    ) -> VerificationEvidence {
+        VerificationEvidence {
+            retry_count,
+            ..verification(outcome)
+        }
+    }
+
+    #[test]
+    fn the_verification_clock_names_the_three_preflight_checks_then_accumulates_a_retry() {
+        let mut clock = VerificationClock::default();
+        assert_eq!(clock.point(), VerificationPoint::BeforeFocus);
+        assert_eq!(clock.point(), VerificationPoint::AfterFocus);
+        assert_eq!(clock.point(), VerificationPoint::AfterClipboard);
+        // The verification a native-paste retry makes joins the last point; the
+        // run record's nativePasteRetryCount says that it happened.
+        assert_eq!(clock.point(), VerificationPoint::AfterClipboard);
+        assert_eq!(clock.point(), VerificationPoint::AfterClipboard);
+    }
+
+    #[test]
+    fn timing_never_changes_a_preflight_decision_and_names_the_checks_each_path_ran() {
+        use VerificationOutcome::{DifferentApplication, Verified};
+        struct Case {
+            name: &'static str,
+            verifications: Vec<VerificationEvidence>,
+            focused: FocusedFieldState,
+            pasteboard_unchanged: bool,
+            /// `None` is a preflight that allows the paste.
+            refusal: Option<ClipboardOnlyReason>,
+            /// Lookup retries for each verification that ran, in order.
+            verification_retries: [Option<u64>; 3],
+            focused_field_query: bool,
+            clipboard_write: bool,
+        }
+        let cases = [
+            Case {
+                name: "target already gone before the focused-field query",
+                verifications: vec![verification_with_retries(DifferentApplication, 2)],
+                focused: FocusedFieldState::Editable,
+                pasteboard_unchanged: true,
+                refusal: Some(ClipboardOnlyReason::TargetChanged),
+                verification_retries: [Some(2), None, None],
+                focused_field_query: false,
+                clipboard_write: true,
+            },
+            Case {
+                name: "target switched during the focused-field query",
+                verifications: vec![
+                    verification_with_retries(Verified, 0),
+                    verification_with_retries(DifferentApplication, 1),
+                ],
+                focused: FocusedFieldState::Editable,
+                pasteboard_unchanged: true,
+                refusal: Some(ClipboardOnlyReason::TargetChanged),
+                verification_retries: [Some(0), Some(1), None],
+                focused_field_query: true,
+                clipboard_write: true,
+            },
+            Case {
+                name: "focused field is not editable",
+                verifications: vec![
+                    verification_with_retries(Verified, 0),
+                    verification_with_retries(Verified, 1),
+                ],
+                focused: FocusedFieldState::NonEditable,
+                pasteboard_unchanged: true,
+                refusal: Some(ClipboardOnlyReason::FocusNotEditable),
+                verification_retries: [Some(0), Some(1), None],
+                focused_field_query: true,
+                clipboard_write: true,
+            },
+            Case {
+                name: "target switched during the clipboard write",
+                verifications: vec![
+                    verification_with_retries(Verified, 0),
+                    verification_with_retries(Verified, 1),
+                    verification_with_retries(DifferentApplication, 3),
+                ],
+                focused: FocusedFieldState::Editable,
+                pasteboard_unchanged: true,
+                refusal: Some(ClipboardOnlyReason::TargetChanged),
+                verification_retries: [Some(0), Some(1), Some(3)],
+                focused_field_query: true,
+                clipboard_write: true,
+            },
+            Case {
+                name: "pasteboard generation changed after Murmur wrote it",
+                verifications: vec![
+                    verification_with_retries(Verified, 0),
+                    verification_with_retries(Verified, 0),
+                    verification_with_retries(Verified, 2),
+                ],
+                focused: FocusedFieldState::Editable,
+                pasteboard_unchanged: false,
+                refusal: Some(ClipboardOnlyReason::ClipboardChanged),
+                verification_retries: [Some(0), Some(0), Some(2)],
+                focused_field_query: true,
+                clipboard_write: true,
+            },
+            Case {
+                name: "every check holds",
+                verifications: vec![
+                    verification_with_retries(Verified, 0),
+                    verification_with_retries(Verified, 1),
+                    verification_with_retries(Verified, 2),
+                ],
+                focused: FocusedFieldState::Editable,
+                pasteboard_unchanged: true,
+                refusal: None,
+                verification_retries: [Some(0), Some(1), Some(2)],
+                focused_field_query: true,
+                clipboard_write: true,
+            },
+        ];
+
+        for case in cases {
+            let (result, timing) =
+                timed_preflight(case.verifications, case.focused, case.pasteboard_unchanged);
+            match (&result, case.refusal) {
+                (FirstPastePreflight::Ready { .. }, None) => {}
+                (FirstPastePreflight::Refused { reason, .. }, Some(expected)) => {
+                    assert_eq!(*reason, expected, "{}", case.name)
+                }
+                _ => panic!("{}: the preflight decision changed", case.name),
+            }
+
+            let points = [
+                &timing.inject.before_focus_verification,
+                &timing.inject.after_focus_verification,
+                &timing.inject.after_clipboard_verification,
+            ];
+            for (index, (point, expected)) in points
+                .into_iter()
+                .zip(case.verification_retries)
+                .enumerate()
+            {
+                match expected {
+                    Some(retries) => {
+                        assert!(ran(&point.elapsed_us), "{} #{index}", case.name);
+                        assert_eq!(
+                            point.lookup_retry_count,
+                            MeasurementV1::measured(retries),
+                            "{} #{index}",
+                            case.name
+                        );
+                    }
+                    None => {
+                        assert!(never_ran(&point.elapsed_us), "{} #{index}", case.name);
+                        assert!(
+                            never_ran(&point.lookup_retry_count),
+                            "{} #{index}",
+                            case.name
+                        );
+                    }
+                }
+            }
+            assert_eq!(
+                ran(&timing.inject.focused_field_query_us),
+                case.focused_field_query,
+                "{}",
+                case.name
+            );
+            assert_eq!(
+                ran(&timing.inject.clipboard_write_us),
+                case.clipboard_write,
+                "{}",
+                case.name
+            );
+            // Nothing after the preflight ran.
+            assert!(
+                never_ran(&timing.inject.final_focus_proof_us),
+                "{}",
+                case.name
+            );
+            assert!(never_ran(&timing.inject.key_event_us), "{}", case.name);
+        }
+    }
+
+    #[test]
+    fn the_final_proof_still_refuses_lost_focus_or_a_changed_pasteboard_and_is_timed_either_way() {
+        for (name, focus_held, pasteboard_held, expected, generation_consulted) in [
+            ("both hold", true, true, InjectionOutcome::AutoPasted, true),
+            (
+                "focus moved to another application",
+                false,
+                true,
+                InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::TargetChanged),
+                false,
+            ),
+            (
+                "pasteboard generation changed",
+                true,
+                false,
+                InjectionOutcome::ClipboardOnly(ClipboardOnlyReason::ClipboardChanged),
+                true,
+            ),
+        ] {
+            let collector = DeliveryTimingCollector::new(DeliveryRouteV1::NormalPaste);
+            collector.dispatch_callback(DeliveryCallback::Injection);
+            let generation_checks = Cell::new(0);
+            let key_posts = Cell::new(0);
+            let outcome = {
+                let _scope = collector.enter_callback(DeliveryCallback::Injection, Instant::now());
+                let attempt = PasteAttempt::new(std::time::Duration::from_secs(1), 1);
+                let decision = attempt.post(
+                    || {
+                        timed_final_check(
+                            || focus_held,
+                            || {
+                                generation_checks.set(generation_checks.get() + 1);
+                                pasteboard_held
+                            },
+                        )
+                    },
+                    || key_posts.set(key_posts.get() + 1),
+                );
+                post_decision_outcome(decision, || pasteboard_held)
+            };
+            collector.close(DeliveryOutcomeV1::of_injection(outcome));
+            let timing = collector.finish().expect("first finish");
+
+            assert_eq!(outcome, expected, "{name}");
+            assert_eq!(
+                key_posts.get(),
+                u32::from(expected == InjectionOutcome::AutoPasted),
+                "{name}: the key posts only when the proof holds"
+            );
+            assert_eq!(
+                generation_checks.get(),
+                u32::from(generation_consulted),
+                "{name}: the generation is consulted only after the focus proof passes"
+            );
+            assert!(ran(&timing.inject.final_focus_proof_us), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_refused_delivery_leaves_the_post_preflight_steps_not_applicable() {
+        // The one-shot clipboard write precedes every refusal; the key posts and
+        // the native-paste retry never happen, so they read as not applicable.
+        let (_, timing) = timed_preflight(
+            vec![verification_with_retries(
+                VerificationOutcome::DifferentApplication,
+                0,
+            )],
+            FocusedFieldState::Editable,
+            true,
+        );
+        assert!(ran(&timing.inject.clipboard_write_us));
+        assert!(never_ran(&timing.inject.event_construction_us));
+        assert!(never_ran(&timing.inject.key_event_us));
+        assert_eq!(
+            timing.inject.native_paste_retry_count,
+            MeasurementV1::NotApplicable
+        );
+        assert_eq!(
+            timing.outcome,
+            DeliveryOutcomeV1::ClipboardOnlyTargetChanged
+        );
     }
 
     #[test]
