@@ -377,6 +377,12 @@ describe('SettingsPanel information architecture', () => {
     expect(browserSites?.closest('details')).toBeNull();
   });
 
+  it('groups General settings into Startup, Dictation and Maintenance', async () => {
+    await act(async () => renderPanel(true));
+    expect(Array.from(container.querySelectorAll('.settings-group-heading')).map(node => node.textContent))
+      .toEqual(['Startup', 'Dictation', 'Maintenance']);
+  });
+
   it('routes an empty Mode binding through app creation and returns to binding', async () => {
     const customMode = {
       id: 'mode.focus', name: 'Focus', builtIn: false, enabled: true,

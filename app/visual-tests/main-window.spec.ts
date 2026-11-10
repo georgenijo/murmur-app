@@ -290,8 +290,6 @@ for (const state of ['recording', 'update-recovering', 'settings'] as const) {
     const header = page.locator('.ui-window-header');
     const items = state === 'settings'
       ? [
-          header.locator('.ui-window-wordmark'),
-          header.getByText('Settings', { exact: true }),
           header.getByRole('button', { name: 'Done' }),
         ]
       : [
@@ -581,8 +579,8 @@ test('settings rows keep the shared spacing contract and aligned controls', asyn
   });
   const expectAligned = async (targets: [string, string]) => {
     const [first, second] = await Promise.all(targets.map(rowGeometry));
-    expect(first.padding).toEqual(['12px', '12px']);
-    expect(second.padding).toEqual(['12px', '12px']);
+    expect(first.padding).toEqual(['7px', '7px']);
+    expect(second.padding).toEqual(['7px', '7px']);
     expect(second.left).toBe(first.left);
     expect(second.right).toBe(first.right);
     expect(second.titleLeft).toBe(first.titleLeft);
@@ -681,10 +679,10 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   const sonicCard = page.locator('[data-theme-collection="Sonic"]');
   const claudeCard = page.locator('[data-theme-collection="Claude Theme"]');
   await expect(claudeCard).toHaveCount(1);
-  await expect(sonicCard).toHaveCSS('width', '208px');
-  await expect(sonicCard).toHaveCSS('height', '106px');
-  await expect(claudeCard).toHaveCSS('width', '208px');
-  await expect(claudeCard).toHaveCSS('height', '106px');
+  await expect(sonicCard).toHaveCSS('width', '242px');
+  await expect(sonicCard).toHaveCSS('height', '146px');
+  await expect(claudeCard).toHaveCSS('width', '242px');
+  await expect(claudeCard).toHaveCSS('height', '166px');
   await expect(claudeCard.locator('button[aria-label*="light variant"][aria-pressed="true"]')).toBeVisible();
   await expect(claudeCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
   await expect(page.locator('section[aria-labelledby="active-theme-heading"]')).toHaveCount(0);
@@ -700,12 +698,30 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   await expect(fixture).toHaveScreenshot('dark-settings-appearance.png');
 
   const cardHeight = await claudeCard.evaluate((element) => element.getBoundingClientRect().height);
-  await claudeCard.locator('button[aria-label^="Choose dark variant"]').hover();
+  const chooser = claudeCard.locator('button[aria-label^="Choose dark variant"]');
+  // Settings reserves Return for default actions; Space activates the focused button.
+  await chooser.focus();
+  await page.keyboard.press('Space');
   const midnight = page.getByRole('button', { name: /Use .*Midnight.* for dark mode/ });
   await expect(midnight).toBeVisible();
   await expect.poll(() => claudeCard.evaluate((element) => element.getBoundingClientRect().height)).toBe(cardHeight);
-  await midnight.click();
+  const choices = claudeCard.getByRole('group', { name: 'Dark variants', exact: true });
+  await expect(choices.locator('button[aria-pressed="true"] .settings-theme-option-check')).toHaveText('✓');
+  await expect(midnight.locator('.settings-theme-option-check')).toHaveCount(0);
+  await midnight.focus();
+  await page.keyboard.press('Space');
+  await expect(chooser).toBeFocused();
+  await expect(chooser).toHaveAttribute('aria-expanded', 'false');
   await expect(claudeCard.locator('button[aria-label*="dark variant"][aria-label*="Midnight"]')).toBeVisible();
+  await page.keyboard.press('Space');
+  const selected = choices.locator('button[aria-pressed="true"]');
+  await expect(selected).toContainText('Midnight');
+  await expect(selected.locator('.settings-theme-option-check')).toHaveText('✓');
+  await selected.focus();
+  await page.keyboard.press('Escape');
+  await expect(choices).toHaveCount(0);
+  await expect(chooser).toBeFocused();
+  await expect(chooser).toHaveAttribute('aria-expanded', 'false');
   await expect.poll(() => claudeCard.evaluate((element) => element.getBoundingClientRect().height)).toBe(cardHeight);
 });
 

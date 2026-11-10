@@ -117,7 +117,7 @@ describe("AppearanceSettings", () => {
       "Use dark mode",
     ]);
     expect(radios[0].getAttribute("aria-checked")).toBe("true");
-    expect(radios[0].textContent).toBe("✓System");
+    expect(radios[0].textContent).toBe("System");
     expect(container.textContent).not.toContain("Active");
     expect(container.querySelector('[aria-labelledby="active-theme-heading"]')).toBeNull();
 
@@ -190,13 +190,13 @@ describe("AppearanceSettings", () => {
     await act(async () => root.render(<AppearanceSettings />));
     expect(
       container.querySelector('[role="radio"][aria-checked="true"]')?.textContent,
-    ).toBe("✓System");
+    ).toBe("System");
 
     mocks.controller!.document.mode = "dark";
     await act(async () => root.render(<AppearanceSettings />));
     expect(
       container.querySelector('[role="radio"][aria-checked="true"]')?.textContent,
-    ).toBe("✓Dark");
+    ).toBe("Dark");
     expect(container.textContent).not.toContain("Active");
   });
 
@@ -545,7 +545,7 @@ describe("AppearanceSettings", () => {
     );
   });
 
-  it("collapses imported collections into one fixed-height card with direct radial variants", async () => {
+  it("renders resolved previews and lets a collection choose each mode variant", async () => {
     const collection = { id: "open-vsx:h1dr0n.claude-theme", label: "Claude Theme" };
     const entry = (
       id: string,
@@ -591,10 +591,29 @@ describe("AppearanceSettings", () => {
     expect(container.querySelectorAll('button[aria-label="Use Claude Theme theme"]')).toHaveLength(1);
     const claudeCard = container.querySelector('[data-theme-collection="Claude Theme"]')!;
     const sonicCard = container.querySelector('[data-theme-collection="Sonic"]')!;
-    expect(sonicCard.classList.contains("h-26.5")).toBe(true);
-    expect(claudeCard.classList.contains("h-26.5")).toBe(true);
-    expect(sonicCard.querySelector('[role="group"]')?.classList.contains("h-17")).toBe(true);
-    expect(claudeCard.querySelector('[role="group"]')?.classList.contains("h-17")).toBe(true);
+    expect(sonicCard.querySelectorAll('.settings-theme-preview')).toHaveLength(2);
+    expect(claudeCard.querySelectorAll('.settings-theme-preview')).toHaveLength(2);
+    expect(claudeCard.querySelector('.settings-theme-mode-status')?.textContent).toContain('Used for light and dark');
+    const darkPreview = claudeCard.querySelector('.settings-theme-mode:nth-child(2) .settings-theme-preview') as HTMLElement;
+    expect(darkPreview.style.getPropertyValue('--preview-surface')).toBe(resolveTheme(midnight.theme, 'dark').tokens.surface);
+    const choose = claudeCard.querySelector<HTMLButtonElement>('button[aria-label*="dark variant"]')!;
+    await act(async () => choose.click());
+    const selectedVariant = claudeCard.querySelector<HTMLButtonElement>('.settings-theme-options button[aria-pressed="true"]')!;
+    expect(selectedVariant.querySelector('.settings-theme-option-check')?.textContent).toBe('✓');
+    const dusk = claudeCard.querySelector<HTMLButtonElement>('button[aria-label="Use Dusk for dark mode"]')!;
+    expect(dusk.querySelector('.settings-theme-option-check')).toBeNull();
+    await act(async () => dusk.click());
+    expect(document.activeElement).toBe(choose);
+    expect(choose.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => choose.click());
+    const selectedAgain = claudeCard.querySelector<HTMLButtonElement>('.settings-theme-options button[aria-pressed="true"]')!;
+    await act(async () => {
+      selectedAgain.focus();
+      selectedAgain.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(claudeCard.querySelector('.settings-theme-options')).toBeNull();
+    expect(document.activeElement).toBe(choose);
+    expect(mocks.controller!.library.previewSelection).toHaveBeenCalledWith(dark.id, 'dark');
     expect(claudeCard.querySelector('button[aria-label*="dark variant"]')?.getAttribute("aria-pressed")).toBe("true");
     expect(claudeCard.querySelector('button[aria-label="Use Dusk Light for light mode"]')).not.toBeNull();
     expect(claudeCard.querySelector('button[aria-label="Use Claude Theme theme"]')?.getAttribute("aria-pressed")).toBe("true");

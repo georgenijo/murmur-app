@@ -23,7 +23,7 @@ async function snap(page: Page, locator: Locator, name: string) {
 for (const appearance of ['dark', 'light'] as const) {
   test(`${appearance} General Advanced rows sit inside the card inset with row spacing`, async ({ page }) => {
     await open(page, appearance, 'settings', 'General');
-    const card = page.locator('.settings-card').filter({ has: page.locator('[data-setting-target="overlay-placement"]') });
+    const card = page.locator('.settings-card').filter({ has: page.locator('.settings-advanced') });
     const toggle = card.locator('.settings-advanced-toggle');
     await toggle.click();
     const calibration = page.locator('[data-setting-target="overlay-calibration"]');
@@ -90,7 +90,7 @@ for (const appearance of ['dark', 'light'] as const) {
     expect(wrapper.height).toBeGreaterThanOrEqual(40);
     expect(t.height).toBeGreaterThanOrEqual(20);
     expect(Math.abs(t.x - r.x)).toBeLessThanOrEqual(1);
-    await expect(toggle).toHaveCSS('font-size', '14px');
+    await expect(toggle).toHaveCSS('font-size', '13px');
     await expect(toggle.locator('svg')).toHaveCount(1);
     await snap(page, page.locator('.settings-card').filter({ has: toggle }), `advanced-toggle-${appearance}`);
     const closed = await toggle.locator('svg').evaluate((e) => getComputedStyle(e).transform);

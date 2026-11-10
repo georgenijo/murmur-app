@@ -1,5 +1,5 @@
 import { save } from '@tauri-apps/plugin-dialog';
-import { useMemo, useState, type MouseEvent as ReactMouseEvent, type Ref } from 'react';
+import { useMemo, useState, useRef, type MouseEvent as ReactMouseEvent, type Ref, type CSSProperties } from 'react';
 import {
   availableThemeId,
   BUILTIN_THEME_LIBRARY_ENTRIES,
@@ -19,23 +19,6 @@ interface Props {
   onImport: () => void;
   onCustomize: (opener: HTMLButtonElement) => void;
   createThemeRef?: Ref<HTMLButtonElement>;
-}
-
-function SunIcon({ className = 'h-3 w-3' }: { className?: string }) {
-  return (
-    <svg aria-hidden="true" className={className} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
-    </svg>
-  );
-}
-
-function MoonIcon({ className = 'h-3 w-3' }: { className?: string }) {
-  return (
-    <svg aria-hidden="true" className={className} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-      <path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z" />
-    </svg>
-  );
 }
 
 function DownloadIcon() {
@@ -79,23 +62,14 @@ function CopyIcon() {
   );
 }
 
-function ThemeOrb({ tokens, mode, small = false }: { tokens: MurmurTokens; mode: ResolvedAppearance; small?: boolean }) {
-  return (
-    <span
-      aria-hidden="true"
-      className={`${small ? 'h-9 w-9 scale-[0.55]' : 'h-9 w-9'} block shrink-0 rounded-full border-2 border-surface-container-lowest`}
-      style={{
-        backgroundColor: tokens.background,
-        backgroundImage: [
-          `radial-gradient(circle at 35% 70%, ${tokens.primary} 0%, transparent 62%)`,
-          `radial-gradient(circle at 75% 25%, ${tokens['surface-container-highest']} 0%, transparent 58%)`,
-        ].join(', '),
-        boxShadow: mode === 'dark'
-          ? `inset 0 0 0 1px ${tokens['on-surface-variant']}, 0 1px 3px ${tokens.background}`
-          : `inset 0 0 0 1px ${tokens['outline-variant']}, 0 1px 3px ${tokens['on-surface-variant']}`,
-      }}
-    />
-  );
+/** Preview the resolved palette, including imported per-mode colors. */
+function ThemePreview({ tokens }: { tokens: MurmurTokens }) {
+  const style = Object.fromEntries(['surface', 'surface-container-low', 'on-surface', 'on-surface-variant', 'primary', 'outline-variant']
+    .map(key => [`--preview-${key}`, tokens[key as keyof MurmurTokens]])) as CSSProperties;
+  return <span aria-hidden="true" className="settings-theme-preview" style={style}>
+    <span className="settings-theme-preview-sidebar" />
+    <span className="settings-theme-preview-copy"><i /><i /><i /><b /></span>
+  </span>;
 }
 
 function shortVariantLabels(entries: readonly ThemeLibraryEntryV1[]) {
@@ -117,110 +91,45 @@ interface ModeOption {
   tokens: MurmurTokens;
 }
 
-function ModePreview({
-  mode,
-  options,
-  selected,
-  active,
-  labels,
-  open,
-  offset,
-  showLabel,
-  onOpen,
-  onChoose,
-}: {
+function ModePreview({ mode, options, selected, active, labels, open, onOpen, onChoose }: {
   mode: ResolvedAppearance;
   options: readonly ModeOption[];
   selected: ModeOption;
   active: boolean;
   labels: ReadonlyMap<string, string>;
   open: boolean;
-  offset: number;
-  showLabel: boolean;
   onOpen: () => void;
   onChoose: (entry: ThemeLibraryEntryV1) => void;
 }) {
+  const openerRef = useRef<HTMLButtonElement>(null);
   const modeLabel = mode === 'light' ? 'Light' : 'Dark';
   const selectedLabel = labels.get(selected.entry.id) ?? selected.entry.label;
-  const displayLabel = selectedLabel.split(/\s+/)[0] ?? selectedLabel;
-  const preview = (
-    <>
-      <span className="relative block h-9 w-9">
-        <ThemeOrb tokens={selected.tokens} mode={mode} />
-        <span className="pointer-events-none absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full border border-(--ui-hairline-strong) bg-background text-on-surface shadow-(--ui-shadow-1)">
-          {mode === 'light' ? <SunIcon className="h-2.5 w-2.5" /> : <MoonIcon className="h-2.5 w-2.5" />}
-        </span>
-      </span>
-    </>
-  );
-  return (
-    <>
-      <button
-        type="button"
-        aria-label={options.length > 1
-          ? `Choose ${mode} variant, ${options.length} options, currently ${selectedLabel}`
-          : `Use ${selectedLabel} for ${mode} mode`}
-        aria-pressed={active}
-        title={options.length > 1
-          ? `${modeLabel}: ${selectedLabel} · hover for variants`
-          : `Use ${selectedLabel} for ${mode} mode`}
-        onClick={(event) => {
-          event.stopPropagation();
-          onChoose(selected.entry);
-        }}
-        onFocus={onOpen}
-        onMouseEnter={onOpen}
-        className="absolute left-1/2 top-1 z-20 flex h-11 w-11 items-center justify-center rounded-full outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-primary"
-        style={{ transform: `translateX(calc(-50% + ${offset}px))` }}
-      >
-        {preview}
-      </button>
-      {showLabel && (
-        <span
-          className="pointer-events-none absolute left-1/2 top-13 inline-flex h-4 max-w-17 -translate-x-1/2 items-center gap-1 text-[length:var(--ui-font-caption)] font-medium leading-4 text-on-surface"
-          style={{ marginLeft: offset }}
-        >
-          <span className="truncate">{displayLabel}</span>
-          {options.length > 1 && (
-            <span className="shrink-0 rounded-full bg-surface-container-high px-1 text-[length:var(--ui-font-caption)] leading-4 text-on-surface-variant">
-              +{options.length - 1}
-            </span>
-          )}
-        </span>
-      )}
-      {options.length > 1 && options.map((option, index) => {
-        const progress = index / (options.length - 1) - 0.5;
-        const childOffsetX = offset + progress * 44;
-        const childOffsetY = Math.abs(progress) * 7;
-        const optionActive = option.entry.id === selected.entry.id;
-        const optionLabel = labels.get(option.entry.id) ?? option.entry.label;
-        return (
-          <button
-            type="button"
-            key={`${mode}-${option.entry.id}`}
-            aria-label={`Use ${optionLabel} for ${mode} mode${optionActive ? ', currently selected' : ''}`}
-            aria-pressed={optionActive}
-            title={`Use ${optionLabel} for ${mode} mode`}
-            onClick={(event) => {
-              event.stopPropagation();
-              onChoose(option.entry);
-            }}
-            onFocus={onOpen}
-            onMouseEnter={onOpen}
-            className={`absolute left-1/2 top-0 z-30 flex h-6 w-6 items-center justify-center overflow-hidden rounded-full bg-background shadow-sm outline-none transition-[transform,opacity] duration-200 focus-visible:ring-2 focus-visible:ring-primary ${optionActive ? 'ring-2 ring-primary' : 'ring-1 ring-on-surface-variant'}`}
-            style={{
-              opacity: open ? 1 : 0,
-              pointerEvents: open ? 'auto' : 'none',
-              transform: `translate(calc(-50% + ${open ? childOffsetX : offset}px), ${open ? childOffsetY : 20}px) scale(${open ? 1 : 0.55})`,
-              transitionDelay: open ? `${index * 35}ms` : '0ms',
-            }}
-          >
-            <ThemeOrb tokens={option.tokens} mode={mode} small />
-          </button>
-        );
-      })}
-    </>
-  );
+  return <div className="settings-theme-mode">
+    <button ref={openerRef} type="button" className="settings-theme-variant"
+      aria-label={options.length > 1
+        ? `Choose ${mode} variant, ${options.length} options, currently ${selectedLabel}`
+        : `Use ${selectedLabel} for ${mode} mode`}
+      aria-pressed={active}
+      aria-expanded={options.length > 1 ? open : undefined}
+      onClick={event => {
+        event.stopPropagation();
+        if (options.length > 1) onOpen();
+        else onChoose(selected.entry);
+      }}>
+      <ThemePreview tokens={selected.tokens} />
+      <span className="settings-theme-caption">{modeLabel}</span>
+    </button>
+    {options.length > 1 && open && <div className="settings-theme-options" role="group" aria-label={`${modeLabel} variants`}
+      onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onOpen(); openerRef.current?.focus(); } }}>
+      {options.map(option => <button type="button" key={option.entry.id}
+        aria-label={`Use ${labels.get(option.entry.id) ?? option.entry.label} for ${mode} mode${option.entry.id === selected.entry.id ? ', currently selected' : ''}`}
+        aria-pressed={option.entry.id === selected.entry.id}
+        onClick={event => { event.stopPropagation(); onChoose(option.entry); openerRef.current?.focus(); }}>
+        <span>{labels.get(option.entry.id) ?? option.entry.label}</span>
+        {option.entry.id === selected.entry.id && <span aria-hidden="true" className="settings-theme-option-check">✓</span>}
+      </button>)}
+    </div>}
+  </div>;
 }
 
 function ActionButton({ label, onClick, children, danger = false, disabled = false }: {
@@ -240,7 +149,7 @@ function ActionButton({ label, onClick, children, danger = false, disabled = fal
         event.stopPropagation();
         onClick(event);
       }}
-      className={`grid h-6 w-6 place-items-center rounded-md outline-none hover:bg-surface-container focus-visible:ring-2 focus-visible:ring-primary ${danger ? 'text-on-surface-variant hover:text-error' : 'text-on-surface-variant hover:text-on-surface'}`}
+      className={`settings-theme-action grid place-items-center rounded-md outline-none hover:bg-surface-container focus-visible:ring-2 focus-visible:ring-primary ${danger ? 'text-on-surface-variant hover:text-error' : 'text-on-surface-variant hover:text-on-surface'}`}
     >
       {children}
     </button>
@@ -288,7 +197,7 @@ function CollectionCard({
   const dark = groups.find((group) => group.mode === 'dark')?.selected.entry ?? null;
   const ids = new Set(entries.map((entry) => entry.id));
   const activeNow = ids.has(selection[resolvedAppearance]);
-  const showVariantLabels = new Set(entries.map((entry) => entry.id)).size > 1;
+  const selectedModes = groups.filter(group => selection[group.mode] === group.selected.entry.id).map(group => group.mode);
   const exportEntry = groups.find((group) => group.mode === 'dark')?.selected.entry
     ?? groups[0]?.selected.entry;
   const applyPair = () => onApplyPair(light, dark);
@@ -302,17 +211,12 @@ function CollectionCard({
       data-theme-collection={label}
       data-active={activeNow ? "true" : undefined}
       onClick={handleCardClick}
-      className={`h-26.5 w-52 max-w-full cursor-pointer overflow-hidden rounded-(--ui-radius-card) border bg-surface-container-lowest shadow-(--ui-shadow-1) transition-colors hover:bg-surface-container-low ${
-        activeNow
-          ? 'border-primary ring-2 ring-primary/35'
-          : 'border-(--ui-hairline-strong)'
-      }`}
+      className={`settings-theme-collection ${activeNow ? 'settings-theme-active' : ''}`}
     >
       <div
         role="group"
         aria-label={`${label} light and dark styles`}
-        className="relative h-17"
-        onMouseLeave={() => setRadialOpen(null)}
+        className="settings-theme-previews"
         onBlurCapture={(event) => {
           const next = event.relatedTarget;
           if (!(next instanceof Node) || !event.currentTarget.contains(next)) setRadialOpen(null);
@@ -321,8 +225,7 @@ function CollectionCard({
           if (event.key === 'Escape') setRadialOpen(null);
         }}
       >
-        {groups.map((group, index) => {
-          const offset = groups.length === 1 ? 0 : index === 0 ? -36 : 36;
+        {groups.map((group) => {
           return (
             <ModePreview
               key={group.mode}
@@ -332,9 +235,7 @@ function CollectionCard({
               active={selection[group.mode] === group.selected.entry.id}
               labels={labels}
               open={radialOpen === group.mode}
-              offset={offset}
-              showLabel={showVariantLabels}
-              onOpen={() => setRadialOpen(group.mode)}
+              onOpen={() => setRadialOpen(current => current === group.mode ? null : group.mode)}
               onChoose={(entry) => {
                 onApplyMode(entry, group.mode);
                 setRadialOpen(null);
@@ -343,7 +244,7 @@ function CollectionCard({
           );
         })}
       </div>
-      <div className="flex h-9 items-center gap-2 px-2.5 pb-2 pt-1">
+      <div className="settings-theme-footer">
         <button
           type="button"
           aria-label={`Use ${label} theme`}
@@ -352,10 +253,10 @@ function CollectionCard({
             event.stopPropagation();
             applyPair();
           }}
-          className="block min-w-0 flex-1 truncate rounded-sm text-left text-sm font-medium text-on-surface outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="block min-w-0 flex-1 truncate rounded-sm text-left text-[length:var(--ui-font-label)] font-medium text-on-surface outline-none focus-visible:ring-2 focus-visible:ring-primary"
           title={label}
         >
-          {label}
+          {activeNow && <span aria-hidden="true" className="settings-theme-check">✓</span>}{label}
         </button>
         {(onCustomize || onDuplicate || onExport || onRemove) && (
           <div className="flex shrink-0 items-center gap-0.5">
@@ -369,6 +270,9 @@ function CollectionCard({
             {onRemove && <ActionButton label={`Remove ${label}`} onClick={onRemove} danger><TrashIcon /></ActionButton>}
           </div>
         )}
+        {selectedModes.length > 0 && <p className="settings-theme-mode-status">
+          {selectedModes.length === 2 ? 'Used for light and dark' : `Used for ${selectedModes[0]}`}
+        </p>}
       </div>
     </article>
   );
@@ -489,11 +393,11 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize, createThemeRef }
   });
 
   return (
-    <section aria-labelledby="themes-heading" className="space-y-2">
-      <div className="flex min-h-8 flex-wrap items-center justify-between gap-3 pt-1">
-        <h2 id="themes-heading" className="text-sm font-medium text-on-surface">Themes</h2>
+    <section aria-labelledby="themes-heading" className="settings-theme-library">
+      <div className="settings-theme-header">
+        <h2 id="themes-heading" className="settings-group-heading">Themes</h2>
         <div className="flex items-center gap-2">
-          <button ref={createThemeRef} type="button" onClick={event => onCustomize(event.currentTarget)} className="settings-quiet-btn inline-flex h-7 items-center gap-1 px-2.5 text-xs text-on-surface">
+          <button ref={createThemeRef} type="button" onClick={event => onCustomize(event.currentTarget)} className="settings-quiet-btn inline-flex h-7 items-center gap-1 px-2.5 text-[length:var(--ui-font-caption)] text-on-surface">
             <span aria-hidden="true">＋</span> Create theme
           </button>
           <div
@@ -511,17 +415,17 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize, createThemeRef }
               onKeyDown={(event) => {
                 if (event.key === 'Escape') setImportMenuOpen(false);
               }}
-              className="settings-quiet-btn inline-flex h-7 items-center gap-1 px-2.5 text-xs text-on-surface"
+              className="settings-quiet-btn inline-flex h-7 items-center gap-1 px-2.5 text-[length:var(--ui-font-caption)] text-on-surface"
             >
               <DownloadIcon /> Import theme
             </button>
             {importMenuOpen && (
               <div role="menu" className="dialog-popover absolute right-0 top-9 z-40 w-44 overflow-hidden p-1">
-                <button type="button" role="menuitem" onClick={() => { setImportMenuOpen(false); onImport(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-on-surface hover:bg-surface-container">
+                <button type="button" role="menuitem" onClick={() => { setImportMenuOpen(false); onImport(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[length:var(--ui-font-caption)] text-on-surface hover:bg-surface-container">
                   <DownloadIcon /> Import file
                 </button>
-                <button type="button" role="menuitem" onClick={() => { setImportMenuOpen(false); onBrowse(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-on-surface hover:bg-surface-container">
-                  <span aria-hidden="true" className="text-sm">⌕</span> Browse Open VSX
+                <button type="button" role="menuitem" onClick={() => { setImportMenuOpen(false); onBrowse(); }} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[length:var(--ui-font-caption)] text-on-surface hover:bg-surface-container">
+                  <span aria-hidden="true" className="text-[length:var(--ui-font-label)]">⌕</span> Browse Open VSX
                 </button>
               </div>
             )}
@@ -529,7 +433,7 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize, createThemeRef }
         </div>
       </div>
 
-      <div className="flex flex-wrap items-start gap-2">
+      <div className="settings-card settings-appearance-themes"><div className="settings-theme-grid">
         <CollectionCard
           label="Sonic"
           entries={sonicEntries}
@@ -588,21 +492,23 @@ export function ThemeLibrary({ onBrowse, onImport, onCustomize, createThemeRef }
         ))}
       </div>
 
+      </div>
+
       {removeTarget && (
-        <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-5 backdrop-blur-[2px]" onMouseDown={(event) => { if (event.target === event.currentTarget) setRemoveTarget(null); }}>
+        <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-5 settings-theme-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setRemoveTarget(null); }}>
           <div role="dialog" aria-modal="true" aria-labelledby="remove-theme-title" className="dialog-popover w-full max-w-sm p-5">
-            <h2 id="remove-theme-title" className="text-base font-semibold text-on-surface">Remove {removeTarget.label}?</h2>
-            <p className="mt-1 text-xs text-on-surface-variant">Every imported variant in this collection will be removed. You can import it again later.</p>
+            <h2 id="remove-theme-title" className="text-[length:var(--ui-font-title)] font-semibold text-on-surface">Remove {removeTarget.label}?</h2>
+            <p className="mt-1 text-[length:var(--ui-font-caption)] text-on-surface-variant">Every imported variant in this collection will be removed. You can import it again later.</p>
             <div className="mt-4 flex justify-end gap-2">
-              <button type="button" onClick={() => setRemoveTarget(null)} className="settings-quiet-btn px-3 py-1.5 text-xs text-on-surface">Cancel</button>
-              <button type="button" onClick={() => { const target = removeTarget; setRemoveTarget(null); void appearance.library.remove(target.ids).catch((cause) => setError(String(cause))); }} className="rounded-lg border border-error bg-error/10 px-3 py-1.5 text-xs font-medium text-error">Remove</button>
+              <button type="button" onClick={() => setRemoveTarget(null)} className="settings-quiet-btn px-3 py-1.5 text-[length:var(--ui-font-caption)] text-on-surface">Cancel</button>
+              <button type="button" onClick={() => { const target = removeTarget; setRemoveTarget(null); void appearance.library.remove(target.ids).catch((cause) => setError(String(cause))); }} className="rounded-lg border border-error bg-error/10 px-3 py-1.5 text-[length:var(--ui-font-caption)] font-medium text-error">Remove</button>
             </div>
           </div>
         </div>
       )}
 
       {(error || appearance.library.error) && (
-        <p role="alert" className="rounded-lg border border-error bg-error/10 px-3 py-2 text-xs text-error">{error ?? appearance.library.error}</p>
+        <p role="alert" className="rounded-lg border border-error bg-error/10 px-3 py-2 text-[length:var(--ui-font-caption)] text-error">{error ?? appearance.library.error}</p>
       )}
     </section>
   );

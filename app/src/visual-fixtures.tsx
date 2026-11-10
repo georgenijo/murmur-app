@@ -740,6 +740,8 @@ function VisualFixture() {
             ? { page: query.get('page') ?? 'recording', target: query.get('target') ?? undefined, token: 849 }
             : copyFixture
             ? (copyRequestReady ? { page: query.get('page') ?? 'general', editorTab: (query.get('editor') ?? undefined) as SettingsEditorTab | undefined, token: 850 } : null)
+            : requestedState.startsWith('settings-smart-auto')
+              ? { page: 'recording', target: 'microphone', token: 1 }
             : requestedState === 'settings-general'
               ? { page: 'general', token: 1 }
               : requestedState === 'settings-appearance'

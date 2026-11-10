@@ -93,11 +93,11 @@ function ColorControl({
         <div>
           <label
             htmlFor={`appearance-${label.toLowerCase()}`}
-            className="text-sm font-medium text-on-surface"
+            className="text-[length:var(--ui-font-label)] font-medium text-on-surface"
           >
             {label}
           </label>
-          <p className="mt-1 text-xs text-on-surface-variant">{description}</p>
+          <p className="mt-1 text-[length:var(--ui-font-caption)] text-on-surface-variant">{description}</p>
         </div>
         <input
           aria-label={`${label} color picker`}
@@ -124,20 +124,20 @@ function ColorControl({
             }
           }}
           spellCheck={false}
-          className="w-32 rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2.5 py-1.5 font-mono text-xs text-on-surface outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="w-32 rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2.5 py-1.5 text-[length:var(--ui-font-caption)] text-on-surface outline-none focus-visible:ring-2 focus-visible:ring-primary"
         />
         {value && (
           <button
             type="button"
             onClick={() => onCommit(undefined)}
-            className="rounded-md px-2 py-1 text-xs font-medium text-on-surface-variant hover:bg-surface-container"
+            className="rounded-md px-2 py-1 text-[length:var(--ui-font-caption)] font-medium text-on-surface-variant hover:bg-surface-container"
           >
             Clear override
           </button>
         )}
       </div>
       {error && (
-        <p role="alert" className="mt-1 text-xs text-error">
+        <p role="alert" className="mt-1 text-[length:var(--ui-font-caption)] text-error">
           {error}
         </p>
       )}
@@ -156,7 +156,7 @@ function ThemeEditorDialog({ onClose, contentRef, children, restoreFocus }: {
     contentRef.current = dialogRef.current;
     return () => { contentRef.current = null; };
   }, [contentRef, dialogRef]);
-  return <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-5 backdrop-blur-[2px]"
+  return <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-5 settings-theme-backdrop"
     onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
     <div ref={dialogRef} role="dialog" tabIndex={-1} onKeyDown={defaultButtonKeyDown} aria-modal="true"
       aria-labelledby="theme-editor-title" className="dialog-popover flex max-h-[86vh] w-full max-w-lg flex-col overflow-hidden p-5">
@@ -277,11 +277,11 @@ export function AppearanceSettings() {
   };
 
   return (
-    <div className="space-y-3">
-      <fieldset>
+    <div className="settings-appearance">
+      <fieldset className="settings-card settings-appearance-mode">
         <legend className="sr-only">Color scheme</legend>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <span id="appearance-mode-label" className="text-sm font-medium text-on-surface">Color scheme</span>
+        <div className="settings-setting-row flex flex-wrap items-center justify-between gap-3">
+          <span id="appearance-mode-label" className="text-[length:var(--ui-font-label)] font-medium text-on-surface">Color scheme</span>
           <div
             role="radiogroup"
             aria-labelledby="appearance-mode-label"
@@ -323,7 +323,6 @@ export function AppearanceSettings() {
                 className="settings-segmented-btn px-3 outline-none focus-visible:ring-2 focus-visible:ring-primary"
               >
                 <span className="inline-flex items-center gap-1.5">
-                  {selected && <span aria-hidden="true">✓</span>}
                   <span>{option.label}</span>
                 </span>
               </button>
@@ -343,7 +342,7 @@ export function AppearanceSettings() {
       {(localError || appearance.error) && (
         <p
           role="alert"
-          className="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"
+          className="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-[length:var(--ui-font-caption)] text-error"
         >
           {localError ?? appearance.error}
         </p>
@@ -354,7 +353,7 @@ export function AppearanceSettings() {
           restoreFocus={() => editorOpenerRef.current?.isConnected ? editorOpenerRef.current : createThemeRef.current}>
             <div className="flex shrink-0 items-start justify-between gap-4">
               <div>
-                <h2 id="theme-editor-title" className="text-base font-semibold text-on-surface">Create theme</h2>
+                <h2 id="theme-editor-title" className="text-[length:var(--ui-font-title)] font-semibold text-on-surface">Create theme</h2>
               </div>
               <button type="button" aria-label="Close theme editor" onClick={() => setCustomEditorOpen(false)} className="rounded-md px-2 py-1 text-on-surface-variant hover:bg-surface-container">✕</button>
             </div>
@@ -384,8 +383,8 @@ export function AppearanceSettings() {
 
               <div>
                 <div className="flex items-center justify-between">
-                  <label htmlFor="appearance-contrast" className="text-sm font-medium text-on-surface">Contrast</label>
-                  <span className="text-xs tabular-nums text-on-surface-variant">{contrastDraft > 0 ? "+" : ""}{contrastDraft}</span>
+                  <label htmlFor="appearance-contrast" className="text-[length:var(--ui-font-label)] font-medium text-on-surface">Contrast</label>
+                  <span className="text-[length:var(--ui-font-caption)] tabular-nums text-on-surface-variant">{contrastDraft > 0 ? "+" : ""}{contrastDraft}</span>
                 </div>
                 <input
                   id="appearance-contrast"
@@ -410,7 +409,7 @@ export function AppearanceSettings() {
               </div>
 
               {selectedAdjustments.length > 0 && (
-                <div role="status" className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+                <div role="status" className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[length:var(--ui-font-caption)] text-warning">
                   <p className="font-medium">Adjusted for accessibility</p>
                   <ul className="mt-1 list-disc space-y-0.5 pl-4">
                     {selectedAdjustments.map((adjustment, index) => <li key={index}>{adjustmentText(adjustment, appearance.document.theme)}</li>)}
@@ -420,10 +419,10 @@ export function AppearanceSettings() {
             </div>
 
             <div className="mt-5 flex shrink-0 items-center justify-between gap-3 border-t border-outline-variant pt-4">
-              <button type="button" disabled={appearance.busy} onClick={() => runControllerAction(appearance.reset())} className="rounded-lg px-3 py-1.5 text-xs font-medium text-on-surface-variant hover:bg-surface-container hover:text-on-surface disabled:opacity-50">Reset to Sonic</button>
+              <button type="button" disabled={appearance.busy} onClick={() => runControllerAction(appearance.reset())} className="rounded-lg px-3 py-1.5 text-[length:var(--ui-font-caption)] font-medium text-on-surface-variant hover:bg-surface-container hover:text-on-surface disabled:opacity-50">Reset to Sonic</button>
               <div className="flex gap-2">
-                <button type="button" disabled={appearance.busy} onClick={() => void exportTheme()} className="rounded-(--ui-radius-pill) border border-(--ui-hairline) px-3 py-1.5 text-xs font-medium text-on-surface hover:bg-surface-container disabled:opacity-50">Export</button>
-                <button type="button" onClick={finishEditor} data-default-button className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-medium text-on-primary hover:bg-primary-dim">Done</button>
+                <button type="button" disabled={appearance.busy} onClick={() => void exportTheme()} className="rounded-(--ui-radius-pill) border border-(--ui-hairline) px-3 py-1.5 text-[length:var(--ui-font-caption)] font-medium text-on-surface hover:bg-surface-container disabled:opacity-50">Export</button>
+                <button type="button" onClick={finishEditor} data-default-button className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-[length:var(--ui-font-caption)] font-medium text-on-primary hover:bg-primary-dim">Done</button>
               </div>
             </div>
         </ThemeEditorDialog>
