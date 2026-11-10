@@ -88,6 +88,12 @@ were mapped to the actual recording-mode/timing, sound-cue, model, and optional
 local-model controls above; no unrelated toggles, mappings or sound sets were
 introduced. The behavior adaptation does not import Hex's visual dimensions.
 
+Resolve homophones retains its saved preference and folding behavior. Its
+existing description and search detail now state that on-device correction is
+currently unavailable because responses exceed the dictation time budget
+(#1081); deterministic spelling is retained. This does not disable the saved
+setting or introduce a new status surface.
+
 ## Search and capability boundaries
 
 `settingsDisclosureRouting.ts` lists Advanced targets and dependent owners.

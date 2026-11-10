@@ -1,3 +1,4 @@
+pub(crate) mod delivery;
 pub(crate) mod production;
 mod repository;
 mod types;
@@ -454,6 +455,7 @@ impl PerformanceMetrics {
         self.observe(result).map(|_| ())
     }
 
+    #[cfg(test)]
     pub(crate) fn complete(
         &self,
         correlation: &RunCorrelationV1,
@@ -461,6 +463,19 @@ impl PerformanceMetrics {
         stages: Vec<StageTimingV1>,
         input: Option<ContentFreeInputSummaryV1>,
         runtimes: Option<Vec<RuntimeIdentityV1>>,
+    ) -> Result<Option<PerformanceRunV1>, String> {
+        self.complete_with_delivery(correlation, outcome, stages, input, runtimes, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn complete_with_delivery(
+        &self,
+        correlation: &RunCorrelationV1,
+        outcome: RunOutcomeV1,
+        stages: Vec<StageTimingV1>,
+        input: Option<ContentFreeInputSummaryV1>,
+        runtimes: Option<Vec<RuntimeIdentityV1>>,
+        delivery: Option<delivery::DeliveryTimingV1>,
     ) -> Result<Option<PerformanceRunV1>, String> {
         let run = {
             let _operation_guard = self
@@ -484,8 +499,14 @@ impl PerformanceMetrics {
                             active.production = production.clone()
                         })?;
                     }
-                    let completed =
-                        repository.complete(correlation, outcome, stages, input, runtimes)?;
+                    let completed = repository.complete_with_delivery(
+                        correlation,
+                        outcome,
+                        stages,
+                        input,
+                        runtimes,
+                        delivery,
+                    )?;
                     if let (RunCorrelationV1::Dictation { recording_id }, Some(run)) =
                         (correlation, &completed)
                     {
@@ -547,6 +568,7 @@ impl PerformanceMetrics {
             correlation,
             current_stage: stage,
             finished: false,
+            delivery: None,
         }
     }
 
@@ -695,9 +717,13 @@ pub(crate) struct PerformanceRunGuard {
     correlation: RunCorrelationV1,
     current_stage: PerformanceStageV1,
     finished: bool,
+    delivery: Option<delivery::DeliveryTiming>,
 }
 
 impl PerformanceRunGuard {
+    pub(crate) fn set_delivery(&mut self, timing: delivery::DeliveryTiming) {
+        self.delivery = Some(timing);
+    }
     pub(crate) fn enter(&mut self, stage: PerformanceStageV1) {
         self.current_stage = stage;
         let _ = self.metrics.set_current_stage(&self.correlation, stage);
@@ -715,9 +741,14 @@ impl PerformanceRunGuard {
         input: Option<ContentFreeInputSummaryV1>,
         runtimes: Option<Vec<RuntimeIdentityV1>>,
     ) -> Result<Option<PerformanceRunV1>, String> {
-        let run = self
-            .metrics
-            .complete(&self.correlation, outcome, stages, input, runtimes)?;
+        let run = self.metrics.complete_with_delivery(
+            &self.correlation,
+            outcome,
+            stages,
+            input,
+            runtimes,
+            self.delivery.as_ref().map(delivery::DeliveryTiming::close),
+        )?;
         self.finished = true;
         Ok(run)
     }
@@ -728,7 +759,7 @@ impl Drop for PerformanceRunGuard {
         if self.finished {
             return;
         }
-        let _ = self.metrics.complete(
+        let _ = self.metrics.complete_with_delivery(
             &self.correlation,
             RunOutcomeV1::Failed {
                 stage: self.current_stage,
@@ -737,6 +768,7 @@ impl Drop for PerformanceRunGuard {
             Vec::new(),
             None,
             None,
+            self.delivery.as_ref().map(delivery::DeliveryTiming::close),
         );
     }
 }
@@ -755,6 +787,46 @@ mod tests {
             .initialize(temp.path().join("diagnostics"), None)
             .unwrap();
         (temp, metrics)
+    }
+
+    #[test]
+    fn delivery_closes_on_guard_error_and_cannot_amend_a_newer_run() {
+        let (_temp, metrics) = metrics();
+        metrics.begin_dictation(71, Vec::new()).unwrap();
+        let old = delivery::DeliveryTiming::new(std::time::Instant::now());
+        {
+            let mut guard = metrics.guard(
+                RunCorrelationV1::Dictation { recording_id: 71 },
+                PerformanceStageV1::ClipboardPaste,
+            );
+            guard.set_delivery(old.clone());
+            old.update(|r| delivery::set_outcome(r, delivery::Outcome::Timeout));
+        }
+        metrics.begin_dictation(72, Vec::new()).unwrap();
+        {
+            let _late = old.bind();
+            delivery::record(|r| delivery::set_outcome(r, delivery::Outcome::AutoPasted));
+        }
+        let run = metrics.list(10).unwrap().runs.remove(0);
+        assert_eq!(
+            run.delivery_timing.unwrap().outcome,
+            MeasurementV1::measured(delivery::Outcome::Timeout)
+        );
+        let current = metrics
+            .complete(
+                &RunCorrelationV1::Dictation { recording_id: 72 },
+                RunOutcomeV1::Success,
+                Vec::new(),
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        assert!(current.delivery_timing.is_none());
+        assert!(serde_json::to_value(current)
+            .unwrap()
+            .get("deliveryTiming")
+            .is_none());
     }
 
     #[test]

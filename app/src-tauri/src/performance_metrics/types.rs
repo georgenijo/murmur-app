@@ -615,6 +615,8 @@ pub struct PerformanceRunV1 {
     pub query_process: Option<QueryProcessSummaryV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub production: Option<super::production::ProductionRunV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_timing: Option<super::delivery::DeliveryTimingV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -634,6 +636,8 @@ pub(crate) struct ActiveRunV1 {
     pub query_process: Option<QueryProcessSummaryV1>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub production: Option<super::production::ProductionRunV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_timing: Option<super::delivery::DeliveryTimingV1>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

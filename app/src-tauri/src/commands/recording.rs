@@ -4,6 +4,7 @@ use crate::dictation_diagnostics::DictationCaptureCompletion;
 use crate::dictation_telemetry::{DictationErrorCode, DictationTerminalOutcome};
 use crate::microphone_auto::SmartAutoRequest;
 use crate::model_runtime::{self, PreparationReason};
+use crate::performance_metrics::{delivery as dt, MeasurementV1 as DeliveryMeasurement};
 use crate::performance_metrics::{
     AcceleratorV1, ContentFreeInputSummaryV1, ModelWarmStateV1, PerformanceRunGuard,
     PerformanceStageV1, PerformanceStoreError, RunCorrelationV1, RunOutcomeV1, RuntimeBackendV1,
@@ -1439,6 +1440,28 @@ fn with_current_delivery_owner<T>(
     Some(operation())
 }
 
+fn with_current_delivery_owner_timed<T>(
+    app_state: &AppState,
+    recording_id: u64,
+    preparing: bool,
+    operation: impl FnOnce() -> T,
+) -> Option<T> {
+    let wait = dt::Timer::new(if preparing {
+        |r| &mut r.prepare_owner_wait_us
+    } else {
+        |r| &mut r.inject_owner_wait_us
+    });
+    let dictation = app_state.dictation.lock_or_recover();
+    drop(wait);
+    delivery_event_recording_id(
+        recording_id,
+        app_state.recording_id.load(Ordering::SeqCst),
+        app_state.is_cancelled(recording_id),
+        dictation.status,
+    )?;
+    Some(operation())
+}
+
 /// Run a generation-owned best-effort side effect even after Processing has
 /// completed. Holding the dictation lock through the operation prevents a new
 /// recording from advancing the generation between the ownership check and a
@@ -1765,6 +1788,7 @@ fn emit_performance_store_begin_failure(recording_id: u64, error: &PerformanceSt
 
 #[derive(Clone)]
 struct DictationPerformanceCompletion {
+    delivery_timing: Option<Box<dt::DeliveryTimingV1>>,
     outcome: RunOutcomeV1,
     stages: Vec<StageTimingV1>,
     input: Option<ContentFreeInputSummaryV1>,
@@ -2001,12 +2025,13 @@ fn persist_dictation_performance_completion(
     completion: DictationPerformanceCompletion,
 ) -> Result<(), String> {
     performance
-        .complete(
+        .complete_with_delivery(
             &RunCorrelationV1::Dictation { recording_id },
             completion.outcome,
             completion.stages,
             completion.input,
             completion.runtimes,
+            completion.delivery_timing.map(|value| *value),
         )
         .map(|_| ())
 }
@@ -2048,7 +2073,29 @@ fn complete_dictation_performance(
     input: Option<ContentFreeInputSummaryV1>,
     runtimes: Option<Vec<RuntimeIdentityV1>>,
 ) {
+    complete_dictation_performance_with_delivery(
+        performance,
+        recording_id,
+        outcome,
+        stages,
+        input,
+        runtimes,
+        None,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn complete_dictation_performance_with_delivery(
+    performance: &crate::performance_metrics::PerformanceMetrics,
+    recording_id: u64,
+    outcome: RunOutcomeV1,
+    stages: Vec<StageTimingV1>,
+    input: Option<ContentFreeInputSummaryV1>,
+    runtimes: Option<Vec<RuntimeIdentityV1>>,
+    delivery_timing: Option<dt::DeliveryTimingV1>,
+) {
     let completion = DictationPerformanceCompletion {
+        delivery_timing: delivery_timing.map(Box::new),
         outcome,
         stages,
         input,
@@ -2099,6 +2146,7 @@ struct NativeDictationPerformanceGuard {
     recording_id: u64,
     current_stage: PerformanceStageV1,
     buffered_stages: Vec<StageTimingV1>,
+    delivery: Option<dt::DeliveryTiming>,
     finished: bool,
 }
 
@@ -2113,6 +2161,7 @@ impl NativeDictationPerformanceGuard {
             recording_id,
             current_stage: stage,
             buffered_stages: Vec::new(),
+            delivery: None,
             finished: false,
         };
         guard.track_current_stage();
@@ -2159,13 +2208,14 @@ impl NativeDictationPerformanceGuard {
             }
         }
         self.finished = true;
-        complete_dictation_performance(
+        complete_dictation_performance_with_delivery(
             &self.performance,
             self.recording_id,
             outcome,
             stages,
             input,
             runtimes,
+            self.delivery.as_ref().map(dt::DeliveryTiming::close),
         );
     }
 }
@@ -2175,7 +2225,7 @@ impl Drop for NativeDictationPerformanceGuard {
         if self.finished {
             return;
         }
-        complete_dictation_performance(
+        complete_dictation_performance_with_delivery(
             &self.performance,
             self.recording_id,
             RunOutcomeV1::Failed {
@@ -2185,11 +2235,13 @@ impl Drop for NativeDictationPerformanceGuard {
             std::mem::take(&mut self.buffered_stages),
             None,
             None,
+            self.delivery.as_ref().map(dt::DeliveryTiming::close),
         );
     }
 }
 
 trait DictationPerformanceStageRecorder {
+    fn set_delivery(&mut self, timing: dt::DeliveryTiming);
     fn enter(&mut self, stage: PerformanceStageV1);
 }
 
@@ -2222,12 +2274,18 @@ fn native_start_context_action(
 }
 
 impl DictationPerformanceStageRecorder for PerformanceRunGuard {
+    fn set_delivery(&mut self, timing: dt::DeliveryTiming) {
+        PerformanceRunGuard::set_delivery(self, timing);
+    }
     fn enter(&mut self, stage: PerformanceStageV1) {
         PerformanceRunGuard::enter(self, stage);
     }
 }
 
 impl DictationPerformanceStageRecorder for NativeDictationPerformanceGuard {
+    fn set_delivery(&mut self, timing: dt::DeliveryTiming) {
+        self.delivery = Some(timing);
+    }
     fn enter(&mut self, stage: PerformanceStageV1) {
         NativeDictationPerformanceGuard::enter(self, stage);
     }
@@ -2855,6 +2913,9 @@ async fn run_transcription_pipeline(
     // Phase: Text injection (clipboard write + optional verified native paste)
     let t_inject = std::time::Instant::now();
     performance_guard.enter(PerformanceStageV1::ClipboardPaste);
+    let delivery_timing = dt::DeliveryTiming::new(t_inject);
+    performance_guard.set_delivery(delivery_timing.clone());
+    let _close_delivery = dt::CloseOnDrop(delivery_timing.clone());
     if !text.is_empty() {
         let text_to_inject = text.clone();
         let paste_delay_ms = delivery.paste_delay_ms;
@@ -2870,6 +2931,11 @@ async fn run_transcription_pipeline(
             smart_destination.clone(),
         );
         let accepted_route = smart_destination.route_code();
+        delivery_timing.update(|r| {
+            r.accepted_route =
+                DeliveryMeasurement::measured(dt::accepted_route(&smart_destination));
+            r.configured_delay_ms = paste_delay_ms;
+        });
         let mut recovery_smart_destination = smart_destination.clone();
         let mut recovery_target = smart_destination
             .identity()
@@ -2879,7 +2945,9 @@ async fn run_transcription_pipeline(
         // activation/Space notification callbacks can advance their
         // content-free counters before target verification runs.
         if effective_auto_paste && paste_delay_ms > 0 && injector::is_accessibility_enabled() {
+            let delay_timer = delivery_timing.timer(|r| &mut r.configured_delay_elapsed_us);
             tokio::time::sleep(std::time::Duration::from_millis(paste_delay_ms)).await;
+            drop(delay_timer);
         }
         // Activation and insertion are separate main-thread turns: AppKit
         // refreshes its active-application state only after this turn returns.
@@ -2899,25 +2967,62 @@ async fn run_transcription_pipeline(
             ));
             let _cancel_preparation = injector::authority::CancelOnDrop(&preparation_authority);
             let worker_authority = preparation_authority.clone();
+            let prepare_timing = delivery_timing.clone();
+            let prepare_queue = delivery_timing.timer(|r| &mut r.prepare_queue_us);
+            delivery_timing.update(|r| {
+                let unavailable = DeliveryMeasurement::Unavailable {
+                    reason: crate::performance_metrics::UnavailableReasonV1::NoSamples,
+                };
+                r.prepare_queue_us = unavailable.clone();
+                r.prepare_owner_wait_us = unavailable.clone();
+                r.prepare_work_us = unavailable;
+            });
             app_handle
                 .run_on_main_thread(move || {
+                    let _timing_scope = prepare_timing.bind();
+                    drop(prepare_queue);
                     if sender.is_closed() || !worker_authority.is_current() {
                         return;
                     }
                     let state = prepare_app.state::<State>();
-                    let outcome =
-                        with_current_delivery_owner(&state.app_state, recording_id, || {
+                    let outcome = with_current_delivery_owner_timed(
+                        &state.app_state,
+                        recording_id,
+                        true,
+                        || {
+                            let _work = dt::Timer::new(|r| &mut r.prepare_work_us);
                             crate::smart_destination::prepare(&preparing, Some(&worker_authority))
-                        });
+                        },
+                    );
                     let _ = sender.send(outcome);
                 })
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    delivery_timing.update(|r| dt::set_outcome(r, dt::Outcome::DispatchFailed));
+                    error.to_string()
+                })?;
             match tokio::time::timeout(std::time::Duration::from_secs(1), receiver).await {
                 Ok(Ok(Some(crate::smart_destination::PrepareOutcome::Ready))) => {}
                 Ok(Ok(Some(crate::smart_destination::PrepareOutcome::WaitForActivation))) => {
+                    let activation_timer = delivery_timing.timer(|r| &mut r.activation_wait_us);
                     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    drop(activation_timer);
                 }
                 outcome => {
+                    delivery_timing.update(|r| {
+                        use crate::smart_destination::PrepareOutcome as P;
+                        r.preparation = DeliveryMeasurement::measured(match outcome {
+                            Err(_) => {
+                                r.timed_out = true;
+                                dt::SmartOutcome::Timeout
+                            }
+                            Ok(Err(_)) => dt::SmartOutcome::ReplyLost,
+                            Ok(Ok(None)) => dt::SmartOutcome::StaleOwner,
+                            Ok(Ok(Some(P::RefusedClipboardOnly))) => {
+                                dt::SmartOutcome::RefusedClipboardOnly
+                            }
+                            _ => dt::SmartOutcome::Refused,
+                        });
+                    });
                     // Only a delivered `Refused` proves nothing was activated
                     // and no handoff refusal is pending. A timeout or lost
                     // reply may hide a late clipboard-only decision.
@@ -2926,7 +3031,10 @@ async fn run_transcription_pipeline(
                         Ok(Ok(Some(crate::smart_destination::PrepareOutcome::Refused)))
                     );
                     let abandoned = smart_destination.clone();
+                    let abort_timing = delivery_timing.clone();
                     let _ = app_handle.run_on_main_thread(move || {
+                        let _scope = abort_timing.bind();
+                        let _cleanup = dt::Timer::new(|r| &mut r.cleanup_us);
                         crate::smart_destination::abort(&abandoned, None);
                     });
                     (smart_destination, delivery_target) = smart_prepare_fallback(
@@ -2944,8 +3052,14 @@ async fn run_transcription_pipeline(
             }
         }
         let delivery_route = smart_destination.route_code();
-        let (tx, rx) =
-            tokio::sync::oneshot::channel::<Option<Result<injector::InjectionResult, String>>>();
+        delivery_timing.update(|r| {
+            r.actual_route =
+                dt::actual_route(&smart_destination, effective_auto_paste, &r.preparation)
+        });
+        let (tx, rx) = tokio::sync::oneshot::channel::<(
+            Option<Result<injector::InjectionResult, String>>,
+            std::time::Instant,
+        )>();
         let injection_app_handle = app_handle.clone();
         let injection_authority = Arc::new(injector::authority::PasteAttempt::new(
             std::time::Duration::from_secs(2),
@@ -2953,20 +3067,33 @@ async fn run_transcription_pipeline(
         ));
         let _cancel_injection = injector::authority::CancelOnDrop(&injection_authority);
         let worker_authority = injection_authority.clone();
+        let inject_timing = delivery_timing.clone();
+        let inject_queue = delivery_timing.timer(|r| &mut r.inject_queue_us);
         app_handle
             .run_on_main_thread(move || {
+                let _timing_scope = inject_timing.bind();
+                drop(inject_queue);
                 let state = injection_app_handle.state::<State>();
-                let attempt = with_current_delivery_owner(&state.app_state, recording_id, || {
-                    injector::inject_with_destination_authorized(
-                        &text_to_inject,
-                        effective_auto_paste,
-                        paste_delay_ms,
-                        &delivery_target,
-                        &smart_destination,
-                        Some(&worker_authority),
-                    )
-                });
-                crate::smart_destination::abort(&smart_destination, None);
+                let attempt = with_current_delivery_owner_timed(
+                    &state.app_state,
+                    recording_id,
+                    false,
+                    || {
+                        let _work = dt::Timer::new(|r| &mut r.inject_work_us);
+                        injector::inject_with_destination_authorized(
+                            &text_to_inject,
+                            effective_auto_paste,
+                            paste_delay_ms,
+                            &delivery_target,
+                            &smart_destination,
+                            Some(&worker_authority),
+                        )
+                    },
+                );
+                {
+                    let _cleanup = dt::Timer::new(|r| &mut r.cleanup_us);
+                    crate::smart_destination::abort(&smart_destination, None);
+                }
                 match &attempt {
                     Some(Ok(result)) => {
                         if let Some(evidence) = result.verification {
@@ -2986,19 +3113,27 @@ async fn run_transcription_pipeline(
                     ),
                     Some(Err(_)) => {}
                 }
-                let _ = tx.send(attempt);
+                let _ = tx.send((attempt, std::time::Instant::now()));
             })
-            .map_err(|e| format!("Failed to dispatch to main thread: {}", e))?;
+            .map_err(|e| {
+                delivery_timing.update(|r| dt::set_outcome(r, dt::Outcome::DispatchFailed));
+                format!("Failed to dispatch to main thread: {}", e)
+            })?;
         let paste_hint = if cfg!(target_os = "macos") {
             "Text is in your clipboard -- press Cmd+V to paste manually."
         } else {
             "Text is in your clipboard -- press Ctrl+V to paste manually."
         };
         let mut injection_outcome_code = "unconfirmed";
-        let delivery_outcome = match tokio::time::timeout(std::time::Duration::from_secs(2), rx)
-            .await
-        {
-            Ok(Ok(Some(Ok(result)))) => {
+        let received = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
+        let receiver_started = match &received {
+            Ok(Ok((_, sent_at))) => *sent_at,
+            _ => std::time::Instant::now(),
+        };
+        let delivery_outcome = match received {
+            Ok(Ok((Some(Ok(result)), _))) => {
+                delivery_timing
+                    .update(|r| dt::set_outcome(r, dt::injection_outcome(result.outcome)));
                 injection_outcome_code = result.outcome.code();
                 if !matches!(
                     result.outcome,
@@ -3048,7 +3183,8 @@ async fn run_transcription_pipeline(
                 }
                 confirmed_delivery_outcome(result.outcome)
             }
-            Ok(Ok(Some(Err(e)))) => {
+            Ok(Ok((Some(Err(e)), _))) => {
+                delivery_timing.update(|r| dt::set_outcome(r, dt::Outcome::ClipboardWriteFailed));
                 tracing::error!(target: "pipeline", "Text injection failed before clipboard delivery: {}", e);
                 injection_outcome_code = "clipboard_write_failed";
                 emit_auto_paste_failure_if_current(
@@ -3059,7 +3195,12 @@ async fn run_transcription_pipeline(
                 );
                 DictationDeliveryOutcome::ClipboardWriteFailed
             }
-            Ok(Ok(None)) => {
+            Ok(Ok((None, _))) => {
+                delivery_timing.update(|r| {
+                    dt::set_outcome(r, dt::Outcome::StaleOwner);
+                    r.receiver_and_outcome_us =
+                        DeliveryMeasurement::measured(dt::us(receiver_started));
+                });
                 tracing::info!(
                     target: "pipeline",
                     recording_id,
@@ -3083,6 +3224,7 @@ async fn run_transcription_pipeline(
                     .state::<State>()
                     .delivery_recovery
                     .forget_through(recording_id);
+                delivery_timing.update(|r| dt::set_outcome(r, dt::Outcome::ReplyLost));
                 tracing::warn!(target: "pipeline", "Text injection sender dropped");
                 emit_auto_paste_failure_if_current(
                     app_handle,
@@ -3097,6 +3239,7 @@ async fn run_transcription_pipeline(
                     .state::<State>()
                     .delivery_recovery
                     .forget_through(recording_id);
+                delivery_timing.update(|r| dt::set_outcome(r, dt::Outcome::Timeout));
                 tracing::warn!(target: "pipeline", "Text injection timed out");
                 emit_auto_paste_failure_if_current(
                     app_handle,
@@ -3138,6 +3281,9 @@ async fn run_transcription_pipeline(
                 );
             }
         }
+        delivery_timing.update(|r| {
+            r.receiver_and_outcome_us = DeliveryMeasurement::measured(dt::us(receiver_started))
+        });
         // Opt-in mirror to NotchPill: best-effort local file write. It runs
         // *after* the clipboard write so disk I/O can never delay the primary
         // output path, and off the pipeline thread so it stays out of paste_ms.
@@ -3166,6 +3312,9 @@ async fn run_transcription_pipeline(
                     });
             });
         }
+    }
+    if text.is_empty() {
+        delivery_timing.update(|r| dt::set_outcome(r, dt::Outcome::NoText));
     }
     let paste_ms = t_inject.elapsed().as_millis() as u64;
     tracing::info!(target: "pipeline", "inject (clipboard + paste): {:?}", t_inject.elapsed());
@@ -5457,7 +5606,8 @@ pub async fn start_native_recording(
         session_overrides,
     );
     // Install the resource in the immutable recording snapshot before publishing
-    // it. Preparation starts only after this generation wins Activate below.
+    // it. The live-dictation engine currently refuses generation and preparation
+    // (#1081); if re-enabled, preparation waits for Activate below.
     if context.transformations.correction_enabled
         && context.transformations.homophone_context_enabled
     {
@@ -5565,7 +5715,8 @@ pub async fn start_native_recording(
     );
     if let Some(engine) = &context.homophone_engine {
         // Still under recording_transition and after the exact-owner Activate
-        // check. Swift returns immediately; async publication is confined to
+        // check. The #1081 live-dictation gate makes this a no-op while the
+        // engine is unavailable. If re-enabled, async publication is confined to
         // this context's disposable owner, never app-wide recording state.
         engine.prewarm();
     }
@@ -6750,8 +6901,41 @@ pub(crate) mod tests {
         assert!(try_begin_dictation_partial(&app_state, 7));
     }
 
+    #[test]
+    fn delivery_snapshot_survives_completion_before_diagnostics_begin() {
+        let temp = tempfile::tempdir().unwrap();
+        let performance = crate::performance_metrics::PerformanceMetrics::default();
+        performance
+            .initialize(temp.path().join("diagnostics"), None)
+            .unwrap();
+        let coordinator = DictationPerformanceBeginCoordinator::default();
+        let recording_id = 891;
+        coordinator.register(recording_id);
+        let timing = dt::DeliveryTiming::new(std::time::Instant::now());
+        timing.update(|r| dt::set_outcome(r, dt::Outcome::TargetChanged));
+        let mut completion = failed_capture_completion();
+        completion.delivery_timing = Some(Box::new(timing.close()));
+        assert!(matches!(
+            coordinator.request_completion(recording_id, completion),
+            DictationPerformanceCompletionAction::Deferred
+        ));
+        performance
+            .begin_dictation(recording_id, Vec::new())
+            .unwrap();
+        let resolution = coordinator
+            .resolve_begin(recording_id, true, &performance)
+            .unwrap();
+        flush_dictation_performance_begin(&coordinator, &performance, recording_id, resolution);
+        let run = performance.list(10).unwrap().runs.remove(0);
+        assert_eq!(
+            run.delivery_timing.unwrap().outcome,
+            DeliveryMeasurement::measured(dt::Outcome::TargetChanged)
+        );
+    }
+
     fn failed_capture_completion() -> DictationPerformanceCompletion {
         DictationPerformanceCompletion {
+            delivery_timing: None,
             outcome: RunOutcomeV1::Failed {
                 stage: PerformanceStageV1::CaptureFinalization,
                 error_code: StableRunErrorV1::AudioCaptureFailed,
@@ -6925,6 +7109,7 @@ pub(crate) mod tests {
             coordinator.request_completion(
                 recording_id,
                 DictationPerformanceCompletion {
+                    delivery_timing: None,
                     outcome: RunOutcomeV1::Cancelled {
                         stage: PerformanceStageV1::CaptureFinalization,
                     },
@@ -7028,6 +7213,7 @@ pub(crate) mod tests {
             coordinator.request_completion(
                 recording_id,
                 DictationPerformanceCompletion {
+                    delivery_timing: None,
                     outcome: RunOutcomeV1::Cancelled {
                         stage: PerformanceStageV1::CaptureFinalization,
                     },

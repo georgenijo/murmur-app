@@ -9,6 +9,7 @@ use super::{
     PrepareOutcome, Snapshot,
 };
 use crate::frontmost::{DeliveryTargetIdentity, DeliveryTargetSnapshot};
+use crate::performance_metrics::{delivery as dt, MeasurementV1 as M};
 use objc2::rc::autoreleasepool;
 use objc2_app_kit::NSRunningApplication;
 use std::cell::{Cell, RefCell};
@@ -585,7 +586,7 @@ pub(super) fn prepare(
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.reconcile_observer_epochs();
-            let current = crate::frontmost::capture_delivery_target_snapshot();
+            let current = crate::frontmost::capture_delivery_identity_snapshot();
             // A current-app destination whose application is no longer in
             // front: the user switched away while speaking.
             let switched_away = allow_activation
@@ -652,7 +653,7 @@ pub(super) fn prepare(
             // front must still be the one that was judged.
             if switched_away
                 && !same_process(
-                    &crate::frontmost::capture_delivery_target_snapshot(),
+                    &crate::frontmost::capture_delivery_identity_snapshot(),
                     &current,
                 )
             {
@@ -744,6 +745,7 @@ pub(super) fn insert(
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.reconcile_observer_epochs();
+            let validation = dt::Timer::new(|r| &mut r.smart_insert_validation_us);
             let valid = state.frozen.get(token).is_some_and(|frozen| {
                 frozen.revision == *revision
                     && frozen.destination_identity == *identity
@@ -751,6 +753,7 @@ pub(super) fn insert(
                     && generation_is_current(frozen.generation)
                     && validate_frozen_candidate(&state, frozen)
             });
+            drop(validation);
             if !valid {
                 if let Some(frozen) = state.frozen.remove(token) {
                     rollback_before_post(&frozen, Some(pasteboard_change));
@@ -765,6 +768,7 @@ pub(super) fn insert(
             };
             state.frozen.clear();
 
+            let validation = dt::Timer::new(|r| &mut r.smart_insert_validation_us);
             let Some(expected_range) = decode_range(frozen.range.as_type()) else {
                 state.invalidate_candidate();
                 return InsertOutcome::Refused;
@@ -777,10 +781,13 @@ pub(super) fn insert(
             let character_count_before =
                 copy_number_attribute(frozen.field.as_element(), "AXNumberOfCharacters");
 
+            drop(validation);
             let ready_to_post = crate::injector::authority::validated_side_effect(
-                || validate_exact_field(&frozen, expected_range)
-                    && (!frozen.hands_off()
-                        || frozen.prepared_character_count == character_count_before),
+                || {
+                    let _validation = dt::Timer::new(|r| &mut r.smart_insert_validation_us);
+                    validate_exact_field(&frozen, expected_range)
+                        && (!frozen.hands_off() || frozen.prepared_character_count == character_count_before)
+                },
                 || crate::injector::simulate_smart_paste_native_guarded(authority, || {
                     // All field AX work and event construction precede the live
                     // systemwide focus query. Cancellation remains nonblocking;
@@ -801,7 +808,11 @@ pub(super) fn insert(
             // Delivery into the current app has nothing to decide, so it skips
             // the settle.
             if verifies_after_post(frozen.route, frozen.switched_away_from.is_some()) {
-                let _ = sleep_within_budget(POST_SETTLE);
+                {
+                    let _settle = dt::Timer::new(|r| &mut r.smart_post_settle_us);
+                    let _ = sleep_within_budget(POST_SETTLE);
+                }
+                let readback = dt::Timer::new(|r| &mut r.smart_readback_us);
                 let range_after = copy_attribute(frozen.field.as_element(), "AXSelectedTextRange")
                     .ok()
                     .and_then(|value| decode_range(value.as_type()));
@@ -824,6 +835,8 @@ pub(super) fn insert(
                     );
                 tracing::info!(target: "pipeline", event_code = "pipeline.paste_safety", phase_code = "confirmation",
                     outcome_code = if confirmed { "structurally_confirmed" } else { "unconfirmed" }, "Paste safety decision");
+                drop(readback);
+                dt::record(|r| r.confirmation = M::measured(if confirmed { dt::SmartOutcome::StructurallyConfirmed } else { dt::SmartOutcome::Unconfirmed }));
                 if confirmed {
                     maybe_restore_media_after_post(
                         &frozen,
@@ -834,6 +847,7 @@ pub(super) fn insert(
                 }
             }
             if !verifies_after_post(frozen.route, frozen.switched_away_from.is_some()) {
+                dt::record(|r| r.confirmation = M::measured(dt::SmartOutcome::NotObserved));
                 tracing::info!(target: "pipeline", event_code = "pipeline.paste_safety", phase_code = "confirmation",
                     outcome_code = "not_observed", "Paste safety decision");
             }
@@ -924,7 +938,7 @@ fn freeze_candidate(
 
 fn validate_frozen_for_prepare(state: &State, frozen: &Frozen) -> bool {
     if !same_process(
-        &crate::frontmost::capture_delivery_target_snapshot(),
+        &crate::frontmost::capture_delivery_identity_snapshot(),
         &frozen.expected_foreground,
     ) || !process_is_running(
         &frozen.expected_foreground,
@@ -1099,7 +1113,9 @@ fn maybe_restore_media(
     expected_count: usize,
     pasteboard_change: i64,
 ) {
+    let _restore = dt::Timer::new(|r| &mut r.smart_restore_us);
     if !frozen.hands_off() || frozen.activation_before.is_none() {
+        dt::record(|r| r.rollback = M::measured(dt::SmartOutcome::NotObserved));
         return;
     }
     let (return_to, return_launch_token_bits) = frozen.return_target();
@@ -1137,6 +1153,13 @@ fn maybe_restore_media(
             set_attribute(app.as_element(), "AXFrontmost", unsafe { kCFBooleanTrue }) == AX_SUCCESS
         },
     );
+    dt::record(|r| {
+        r.rollback = M::measured(if restored {
+            dt::SmartOutcome::Restored
+        } else {
+            dt::SmartOutcome::Refused
+        })
+    });
     tracing::info!(target: "pipeline", event_code = "pipeline.paste_safety", phase_code = "rollback",
         outcome_code = if restored { "restored" } else { "refused" }, "Paste safety decision");
 }
@@ -1975,11 +1998,15 @@ fn with_ax_budget<T>(budget: Duration, operation: impl FnOnce() -> T) -> T {
 }
 
 fn ax_budget_open() -> bool {
-    AX_DEADLINE.with(|deadline| {
+    let open = AX_DEADLINE.with(|deadline| {
         deadline
             .get()
             .is_none_or(|deadline| Instant::now() < deadline)
-    })
+    });
+    if !open {
+        dt::record(|r| r.expired = true);
+    }
+    open
 }
 
 fn sleep_within_budget(duration: Duration) -> bool {
@@ -1989,6 +2016,7 @@ fn sleep_within_budget(duration: Duration) -> bool {
             .is_none_or(|deadline| Instant::now() + duration <= deadline)
     });
     if !allowed {
+        dt::record(|r| r.expired = true);
         return false;
     }
     thread::sleep(duration);

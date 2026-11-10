@@ -1034,25 +1034,13 @@ mod tests {
 
     #[test]
     fn homophone_engine_failure_is_reported_as_optional_fallback() {
-        struct Unavailable;
-        impl crate::homophone_context::HomophoneEngine for Unavailable {
-            fn choose(
-                &self,
-                _: &str,
-                _: &str,
-                _: Duration,
-                _: u32,
-            ) -> Result<String, crate::homophone_context::EngineError> {
-                Err(crate::homophone_context::EngineError::Unavailable)
-            }
-        }
         let context = live_context(TranscriptStageConfig {
             smart_correction_enabled: true,
             homophone_context_enabled: true,
             ..TranscriptStageConfig::verbatim()
         });
-        let mut resources = TranscriptTransformResources::empty();
-        resources.homophone_engine = Some(Arc::new(Unavailable));
+        // Exercise the production default engine with the user setting on.
+        let resources = TranscriptTransformResources::empty();
         let output = transform_transcript("the cue".into(), &context, resources).unwrap();
         assert_eq!(output.text, "the cue");
         let report = output

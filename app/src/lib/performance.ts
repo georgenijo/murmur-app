@@ -1,3 +1,4 @@
+import { isDeliveryTimingV1, type DeliveryTimingV1 } from './deliveryTiming';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
@@ -264,6 +265,7 @@ export interface PerformanceRunV1 {
   };
   production?: ProductionRunV1 | null;
   shadow?: ShadowMeasurementV1 | null;
+  deliveryTiming?: DeliveryTimingV1;
 }
 
 export interface PerformanceRunListV1 {
@@ -753,6 +755,7 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
   if ('queryProcess' in value) expectedKeys.push('queryProcess');
   if ('production' in value) expectedKeys.push('production');
   if ('shadow' in value) expectedKeys.push('shadow');
+  if ('deliveryTiming' in value) expectedKeys.push('deliveryTiming');
   if (!hasExactKeys(value, expectedKeys)
     || value.schemaVersion !== 1
     || typeof value.runId !== 'string'
@@ -770,6 +773,7 @@ export function isPerformanceRunV1(value: unknown): value is PerformanceRunV1 {
     || !value.runtimes.every(isRuntime)
     || !value.stages.every(isStageTiming)
     || !value.followUps.every(isFollowUp)
+    || ('deliveryTiming' in value && !isDeliveryTimingV1(value.deliveryTiming))
     || ('queryProcess' in value && !isQueryProcess(value.queryProcess))
     || ('shadow' in value && value.shadow !== null && !isShadowMeasurementV1(value.shadow))
     || ('production' in value
