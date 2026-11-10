@@ -316,13 +316,17 @@ pub(crate) enum Step {
     SnapshotWindowLookup,
 }
 
-/// Counts reported with a step.
+/// Retry counts reported with a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Counter {
-    BeforeFocusLookupRetries,
-    AfterFocusLookupRetries,
-    AfterClipboardLookupRetries,
-    NativePasteRetries,
+    /// Lookup retries taken by the verification before the focused-field query.
+    BeforeFocusLookup,
+    /// Lookup retries taken by the verification after the focused-field query.
+    AfterFocusLookup,
+    /// Lookup retries taken by the verification after the clipboard write.
+    AfterClipboardLookup,
+    /// Native paste retries, taken only after event construction fails.
+    NativePaste,
 }
 
 /// The three target verifications of the normal route, in execution order.
@@ -344,9 +348,9 @@ impl VerificationPoint {
 
     fn counter(self) -> Counter {
         match self {
-            Self::BeforeFocus => Counter::BeforeFocusLookupRetries,
-            Self::AfterFocus => Counter::AfterFocusLookupRetries,
-            Self::AfterClipboard => Counter::AfterClipboardLookupRetries,
+            Self::BeforeFocus => Counter::BeforeFocusLookup,
+            Self::AfterFocus => Counter::AfterFocusLookup,
+            Self::AfterClipboard => Counter::AfterClipboardLookup,
         }
     }
 }
@@ -494,10 +498,10 @@ impl State {
 
     fn counter(&mut self, counter: Counter) -> &mut Slot {
         match counter {
-            Counter::BeforeFocusLookupRetries => &mut self.before_focus_lookup_retries,
-            Counter::AfterFocusLookupRetries => &mut self.after_focus_lookup_retries,
-            Counter::AfterClipboardLookupRetries => &mut self.after_clipboard_lookup_retries,
-            Counter::NativePasteRetries => &mut self.native_paste_retries,
+            Counter::BeforeFocusLookup => &mut self.before_focus_lookup_retries,
+            Counter::AfterFocusLookup => &mut self.after_focus_lookup_retries,
+            Counter::AfterClipboardLookup => &mut self.after_clipboard_lookup_retries,
+            Counter::NativePaste => &mut self.native_paste_retries,
         }
     }
 
@@ -817,7 +821,7 @@ pub(crate) fn record_callback_work(elapsed: Duration) {
 /// One native paste retry and the wait before it.
 pub(crate) fn record_native_paste_retry(wait: Duration) {
     if let Some((collector, _)) = current() {
-        collector.record_count(Counter::NativePasteRetries, 1);
+        collector.record_count(Counter::NativePaste, 1);
         collector.record(Step::NativePasteRetryWait, wait);
     }
 }
