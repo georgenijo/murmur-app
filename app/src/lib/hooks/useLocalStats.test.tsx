@@ -127,7 +127,7 @@ describe('main local stats completion ownership', () => {
       updateStats('one two three four', 2, 'builtin.technical');
       emit('delivery-retry-feedback', { kind: 'auto_pasted' });
     });
-    expect(container.textContent).toContain('Technical');
+    expect(container.querySelector('[data-stats="headline"]')?.textContent).toContain('Last dictation');
     expect(loadStats().activity.recordingsByMode).toEqual({ 'builtin.technical': 1 });
     await act(async () => resetStats());
     await act(async () => {
@@ -135,7 +135,7 @@ describe('main local stats completion ownership', () => {
     expect(loadStats().activity.transforms.runs).toBe(0);
     expect(loadStats().activity.transforms.approved).toBe(0);
     expect(loadStats().activity.pasteLastUses).toBe(0);
-    expect(container.textContent).toContain('None yet');
+    expect(container.querySelector('[data-stats="headline"]')?.textContent).toContain('No dictations yet');
   });
 
   it('drops listeners on unmount and does not count restored historical statuses', async () => {

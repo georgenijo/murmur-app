@@ -1,24 +1,32 @@
 import { useMemo } from 'react';
+import { ChevronRight } from 'lucide-react';
 import { loadStats } from '../../lib/stats';
 import { ASSUMED_TYPING_WPM, getActivityInsights } from '../../lib/activityStats';
-import { BUILTIN_MODES, type MurmurMode } from '../../lib/settings';
+import type { MurmurMode } from '../../lib/settings';
 import { getUsageOverview } from '../../lib/homeDashboard';
 import { UsageDashboard } from '../UsageDashboard';
-import { DashboardStatGroup, WorkspacePageHeader } from '../ui/DashboardPrimitives';
+import { DashboardStatGroup, WorkspacePageHeader, type DashboardStatItem } from '../ui/DashboardPrimitives';
+import '../../styles/insights.css';
 
 interface InsightsViewProps {
   statsVersion: number;
+  initialMetric?: 'words' | 'wpm';
+  defaultMoreOpen?: boolean;
   modes?: readonly MurmurMode[];
   onBackToHome: () => void;
 }
 
-export function InsightsView({ statsVersion, modes = [], onBackToHome }: InsightsViewProps) {
+export function InsightsView({ statsVersion, onBackToHome, initialMetric = 'words', defaultMoreOpen = false }: InsightsViewProps) {
   const stats = useMemo(() => loadStats(), [statsVersion]);
   const usage = useMemo(() => getUsageOverview(stats), [stats]);
   const activity = useMemo(() => getActivityInsights(stats), [stats]);
-  const modeName = activity.mostUsedModeId === null ? 'None yet'
-    : [...BUILTIN_MODES, ...modes].find((mode) => mode.id === activity.mostUsedModeId)?.name ?? 'Removed mode';
   const minutes = (value: number) => value.toLocaleString(undefined, { maximumFractionDigits: 1 });
+  const unit = (value: string | number, suffix: string) => <>{value}<span className="insights-stat-unit">{suffix}</span></>;
+  const samples = stats.wpmSamples.length;
+  const details: DashboardStatItem[] = [];
+  if (Math.round(activity.dictationMinutes * 10) > 0) details.push({ id: 'dictation-time', label: 'Total dictation time', value: `${minutes(activity.dictationMinutes)} min`, detail: '· All time' });
+  if (stats.activity.corrections.taught > 0) details.push({ id: 'corrections', label: 'Corrections taught', value: stats.activity.corrections.taught.toLocaleString(), detail: `· ${stats.activity.corrections.proposed.toLocaleString()} proposed` });
+  if (activity.month.meetings > 0) details.push({ id: 'meetings', label: 'Meetings this month', value: activity.month.meetings.toLocaleString(), detail: `· ${minutes(activity.month.meetingMinutes)} minutes` });
 
   return (
     <div className="insights-view">
@@ -28,25 +36,23 @@ export function InsightsView({ statsVersion, modes = [], onBackToHome }: Insight
         description="Your usage patterns, computed on this Mac and never uploaded"
         back={{ label: 'Back to Home', onActivate: onBackToHome }}
       />
-
       <DashboardStatGroup
-        kind="tiles"
-        ariaLabel="Usage totals"
+        kind="headline"
+        ariaLabel="Headline usage statistics"
         items={[
-          { id: 'words', label: 'Total words', value: usage.totalWords.toLocaleString(), detail: 'all time' },
-          { id: 'wpm', label: 'Average speed', value: usage.averageWpm || '—', detail: 'wpm' },
-          { id: 'recordings', label: 'Recordings', value: usage.totalRecordings.toLocaleString(), detail: `${usage.recordingsThisMonth.toLocaleString()} this month` },
-          { id: 'streak', label: 'Current streak', value: usage.currentStreak, detail: usage.currentStreak === 1 ? 'day' : 'days' },
-          { id: 'dictation-time', label: 'Total dictation time', value: `${minutes(activity.dictationMinutes)} min`, detail: 'all time' },
-          { id: 'typing-time', label: 'Estimated typing time saved', value: `${minutes(activity.typingMinutesSaved)} min`, detail: `At ${ASSUMED_TYPING_WPM} typing wpm, minus dictation time` },
-          { id: 'mode', label: 'Most-used mode', value: modeName, detail: `${activity.mostUsedModeRecordings.toLocaleString()} recordings` },
-          { id: 'meetings', label: 'Meetings this month', value: activity.month.meetings.toLocaleString(), detail: `${minutes(activity.month.meetingMinutes)} minutes` },
-          { id: 'corrections', label: 'Corrections taught', value: stats.activity.corrections.taught.toLocaleString(), detail: `${stats.activity.corrections.proposed.toLocaleString()} proposed` },
-          { id: 'paste-last', label: 'Paste last', value: stats.activity.pasteLastUses.toLocaleString(), detail: 'successful uses' },
+          { id: 'words', label: 'Total words', value: usage.totalWords.toLocaleString(), detail: 'All time' },
+          { id: 'wpm', label: 'Average speed', value: samples ? unit(usage.averageWpm, 'wpm') : '–', detail: samples === 0 ? usage.totalRecordings > 0 ? 'No speed samples yet' : 'No dictations yet' : samples === 1 ? 'Last dictation' : `Last ${samples} dictations` },
+          { id: 'recordings', label: 'Dictations', value: usage.totalRecordings.toLocaleString(), detail: 'All time' },
+          { id: 'typing-time', label: 'Estimated typing time saved', value: usage.totalRecordings ? unit(Math.round(activity.typingMinutesSaved).toLocaleString(), 'min') : '–', detail: `All time · vs typing at ${ASSUMED_TYPING_WPM} wpm` },
         ]}
       />
-
-      <UsageDashboard statsVersion={statsVersion} displayMode="page" />
+      <UsageDashboard statsVersion={statsVersion} displayMode="page" initialMetric={initialMetric} />
+      {details.length > 0 && (
+        <details className="insights-more-statistics" open={defaultMoreOpen || undefined}>
+          <summary><ChevronRight aria-hidden="true" />More statistics</summary>
+          <DashboardStatGroup kind="details" ariaLabel="More usage statistics" items={details} />
+        </details>
+      )}
     </div>
   );
 }
