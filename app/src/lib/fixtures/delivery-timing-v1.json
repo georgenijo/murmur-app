@@ -1,0 +1,294 @@
+{
+  "schemaVersion": 1,
+  "acceptedRoute": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "actualRoute": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "outcome": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "configuredDelayMs": 0,
+  "accessibility": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "stageTotalUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "toPostUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "configuredDelayElapsedUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "prepareQueueUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "prepareOwnerWaitUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "prepareWorkUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "activationWaitUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "injectQueueUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "injectOwnerWaitUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "injectWorkUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "cleanupUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "receiverAndOutcomeUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "clipboardWriteUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "pasteboardCheckUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "pasteboardCheckCount": 0,
+  "focusQueryUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "focusQuery": {
+    "outcome": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "transport": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "axStatus": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "timedOut": false
+  },
+  "targetVerification": [
+    {
+      "phase": "beforeFocus",
+      "elapsedUs": {
+        "status": "unavailable",
+        "reason": "noSamples"
+      },
+      "lookupRetryCount": {
+        "status": "unavailable",
+        "reason": "noSamples"
+      },
+      "outcome": {
+        "status": "unavailable",
+        "reason": "noSamples"
+      }
+    },
+    {
+      "phase": "afterFocus",
+      "elapsedUs": {
+        "status": "unavailable",
+        "reason": "noSamples"
+      },
+      "lookupRetryCount": {
+        "status": "unavailable",
+        "reason": "noSamples"
+      },
+      "outcome": {
+        "status": "unavailable",
+        "reason": "noSamples"
+      }
+    },
+    {
+      "phase": "afterClipboard",
+      "elapsedUs": {
+        "status": "unavailable",
+        "reason": "noSamples"
+      },
+      "lookupRetryCount": {
+        "status": "unavailable",
+        "reason": "noSamples"
+      },
+      "outcome": {
+        "status": "unavailable",
+        "reason": "noSamples"
+      }
+    }
+  ],
+  "retryTargetVerification": {
+    "phase": "beforeFocus",
+    "elapsedUs": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "lookupRetryCount": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "outcome": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    }
+  },
+  "windowDiagnosticUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "windowDiagnostic": "unavailableOffPath",
+  "nativePost": {
+    "eventConstructionUs": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "finalFocusProofUs": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "finalFocusProof": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "finalFocusAxStatus": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "keyDownPostUs": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "keyHoldUs": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "keyUpPostUs": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "outcome": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    }
+  },
+  "retryPost": {
+    "eventConstructionUs": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "finalFocusProofUs": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "finalFocusProof": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "finalFocusAxStatus": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "keyDownPostUs": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "keyHoldUs": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "keyUpPostUs": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "outcome": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    }
+  },
+  "nativePasteRetryCount": 0,
+  "firstFailure": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "retryWaitUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "retryFocusQueryUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "retryFocusQuery": {
+    "outcome": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "transport": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "axStatus": {
+      "status": "unavailable",
+      "reason": "noSamples"
+    },
+    "timedOut": false
+  },
+  "smartPrepareValidationUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "smartInsertValidationUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "smartPostSettleUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "smartReadbackUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "smartRestoreUs": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "preparation": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "confirmation": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "rollback": {
+    "status": "unavailable",
+    "reason": "noSamples"
+  },
+  "timedOut": false,
+  "cancelled": false,
+  "expired": false
+}

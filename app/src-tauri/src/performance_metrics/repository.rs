@@ -265,6 +265,7 @@ impl PerformanceRepository {
             input,
             clear_epoch,
             query_process: None,
+            delivery_timing: None,
             production,
         };
         insert_active(&transaction, &active)?;
@@ -380,6 +381,19 @@ impl PerformanceRepository {
         input: Option<ContentFreeInputSummaryV1>,
         runtimes: Option<Vec<RuntimeIdentityV1>>,
     ) -> StoreResult<Option<PerformanceRunV1>> {
+        self.complete_with_delivery(correlation, outcome, stages, input, runtimes, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn complete_with_delivery(
+        &self,
+        correlation: &RunCorrelationV1,
+        outcome: RunOutcomeV1,
+        stages: Vec<StageTimingV1>,
+        input: Option<ContentFreeInputSummaryV1>,
+        runtimes: Option<Vec<RuntimeIdentityV1>>,
+        delivery: Option<super::delivery::DeliveryTimingV1>,
+    ) -> StoreResult<Option<PerformanceRunV1>> {
         retry_operation(PerformanceStoreOperationV1::Complete, || {
             self.complete_once(
                 correlation,
@@ -387,10 +401,12 @@ impl PerformanceRepository {
                 stages.clone(),
                 input.clone(),
                 runtimes.clone(),
+                delivery.clone(),
             )
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn complete_once(
         &self,
         correlation: &RunCorrelationV1,
@@ -398,6 +414,7 @@ impl PerformanceRepository {
         stages: Vec<StageTimingV1>,
         input: Option<ContentFreeInputSummaryV1>,
         runtimes: Option<Vec<RuntimeIdentityV1>>,
+        delivery: Option<super::delivery::DeliveryTimingV1>,
     ) -> StoreResult<Option<PerformanceRunV1>> {
         let mut connection = self.open()?;
         let transaction = connection.transaction().map_err(db_error)?;
@@ -412,6 +429,9 @@ impl PerformanceRepository {
             return Ok(None);
         }
 
+        if let Some(delivery) = delivery {
+            active.delivery_timing = Some(delivery);
+        }
         merge_stages(&mut active.stages, stages);
         active.stages = canonical_stages(active.stages);
         if let Some(input) = input {
@@ -450,6 +470,7 @@ impl PerformanceRepository {
             follow_ups: Vec::new(),
             query_process: active.query_process,
             production: active.production,
+            delivery_timing: active.delivery_timing,
         };
         let payload = serde_json::to_string(&run).map_err(|_| invalid_record())?;
         let (correlation_kind, correlation_id) = run.correlation.storage_parts();

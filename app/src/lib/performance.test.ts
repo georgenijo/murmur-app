@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import deliveryTimingFixture from './fixtures/delivery-timing-v1.json';
 import { makeRun } from '../components/log-viewer/testFixtures';
 import {
   isMeasurementV1,
@@ -462,4 +463,166 @@ describe('performance contracts', () => {
       followUps: [{ ...run.followUps[0], answer: privateValue }],
     })).toBe(false);
   });
+
+  // Adapted from trial PR #1093 (Sonnet), 9db3f505, for our schema.
+  describe('delivery timing attribution', () => {
+    type Path = string[];
+    type TestObject = Record<string, unknown>;
+    const measured = (value: unknown) => ({ status: 'measured', value });
+    const withTiming = (deliveryTiming: unknown) => ({ ...makeRun(), deliveryTiming });
+    const at = (timing: unknown, path: Path): TestObject => path.reduce(
+      (value, key) => (value as TestObject)[key], timing,
+    ) as TestObject;
+    const changed = (path: Path, value: unknown) => {
+      const timing = structuredClone(deliveryTimingFixture);
+      at(timing, path.slice(0, -1))[path[path.length - 1]] = value;
+      return withTiming(timing);
+    };
+    const objects: Path[] = [];
+    const visit = (value: unknown, path: Path) => {
+      if (typeof value !== 'object' || value === null) return;
+      if (!Array.isArray(value)) objects.push(path);
+      for (const [key, child] of Object.entries(value)) visit(child, [...path, key]);
+    };
+    visit(deliveryTimingFixture, []);
+    const durationPaths = objects.filter(path => path[path.length - 1]?.endsWith('Us'));
+    const verificationPaths = [
+      ...[0, 1, 2].map(i => ['targetVerification', String(i)]),
+      ['retryTargetVerification'],
+    ];
+    const focusPaths = [['focusQuery'], ['retryFocusQuery']];
+    const postPaths = [['nativePost'], ['retryPost']];
+
+    it('accepts Smart refusal records and historical absence, but rejects a null companion', () => {
+      expect(isPerformanceRunV1(withTiming({
+        ...deliveryTimingFixture,
+        acceptedRoute: measured('smartHandoff'),
+        actualRoute: measured('clipboardOnly'),
+        outcome: measured('smartTargetUnavailable'),
+        preparation: measured('refusedClipboardOnly'),
+      }))).toBe(true);
+      expect(isPerformanceRunV1(makeRun())).toBe(true);
+      expect(isPerformanceRunV1(withTiming(null))).toBe(false);
+      expect(isPerformanceRunV1(changed(['schemaVersion'], '1'))).toBe(false);
+    });
+
+    it('preserves measurement states and measured zero through the run guard', () => {
+      for (const path of durationPaths) {
+        for (const measurement of [
+          measured(0), { status: 'notApplicable' },
+          ...['unsupportedPlatform', 'sampleFailed', 'noSamples', 'dependencyPending']
+            .map(reason => ({ status: 'unavailable', reason })),
+        ]) {
+          expect(isPerformanceRunV1(changed(path, measurement)), path.join('.')).toBe(true);
+          expect(measuredValue(measurement as MeasurementV1<number>))
+            .toBe(measurement.status === 'measured' ? 0 : null);
+        }
+        for (const invalid of [
+          0, null, { status: 'pending' }, { status: 'measured' },
+          { status: 'unavailable', reason: 'because' },
+          { status: 'notApplicable', value: 0 },
+          { status: 'measured', value: 0, title: 'synthetic forbidden content' },
+        ]) expect(isPerformanceRunV1(changed(path, invalid)), path.join('.')).toBe(false);
+      }
+    });
+
+    it('accepts only the bounded vocabularies on initial and retry records', () => {
+      const vocabularies: [Path[], string[]][] = [
+        [[['acceptedRoute'], ['actualRoute']], ['normal', 'smartCurrent', 'smartHandoff', 'clipboardOnly']],
+        [[['outcome']], ['noText', 'autoPasted', 'autoPasteDisabled', 'accessibilityDenied',
+          'targetChanged', 'focusNotEditable', 'clipboardChanged', 'pasteFailed',
+          'smartTargetUnavailable', 'cancelled', 'expired', 'alreadyCommitted',
+          'operationInFlight', 'staleOwner', 'clipboardWriteFailed', 'dispatchFailed',
+          'replyLost', 'timeout', 'earlyExit']],
+        [[['preparation'], ['confirmation'], ['rollback']], ['ready', 'activationRequested',
+          'refused', 'refusedClipboardOnly', 'structurallyConfirmed', 'unconfirmed',
+          'notObserved', 'restored', 'timeout', 'replyLost', 'staleOwner']],
+        [focusPaths.map(p => [...p, 'outcome']), ['editable', 'nonEditable', 'secure', 'unknown']],
+        [focusPaths.map(p => [...p, 'transport']), ['native', 'osascript']],
+        [verificationPaths.map(p => [...p, 'outcome']), ['verified', 'differentApplication',
+          'differentProcess', 'processRelaunched', 'partialIdentityMismatch', 'lookupUnavailable',
+          'startIdentityIncomplete', 'startTargetIsSelf', 'staleOwner']],
+        [postPaths.map(p => [...p, 'finalFocusProof']), ['liveMatch', 'liveMismatch',
+          'identityMismatch', 'frontmostFallbackMatch', 'frontmostFallbackMismatch']],
+        [postPaths.map(p => [...p, 'outcome']), ['posted', 'refused', 'stopped', 'constructionFailed']],
+        [[['firstFailure']], ['sourceCreate', 'keyDownCreate', 'keyUpCreate']],
+      ];
+      for (const [paths, values] of vocabularies) for (const path of paths) {
+        for (const value of values) {
+          expect(isPerformanceRunV1(changed(path, measured(value))), path.join('.')).toBe(true);
+        }
+        for (const invalid of ['synthetic arbitrary content', '', 0, null, {}]) {
+          expect(isPerformanceRunV1(changed(path, measured(invalid))), path.join('.')).toBe(false);
+        }
+      }
+      expect(isPerformanceRunV1(changed(['windowDiagnostic'], 'unavailableOffPath'))).toBe(true);
+      expect(isPerformanceRunV1(changed(['windowDiagnostic'], 'synthetic window title'))).toBe(false);
+      for (const phase of ['beforeFocus', 'afterFocus', 'afterClipboard']) {
+        expect(isPerformanceRunV1(changed(['retryTargetVerification', 'phase'], phase))).toBe(true);
+      }
+      for (const path of verificationPaths) {
+        expect(isPerformanceRunV1(changed([...path, 'phase'], 'arbitrary'))).toBe(false);
+      }
+      expect(isPerformanceRunV1(changed(['targetVerification'], deliveryTimingFixture.targetVerification.slice(1)))).toBe(false);
+      expect(isPerformanceRunV1(changed(['targetVerification'], [...deliveryTimingFixture.targetVerification, deliveryTimingFixture.targetVerification[0]]))).toBe(false);
+    });
+
+    it('rejects nested content and missing keys at every object boundary', () => {
+      for (const path of objects) {
+        const timing = structuredClone(deliveryTimingFixture);
+        at(timing, path).windowTitle = 'synthetic forbidden content';
+        expect(isPerformanceRunV1(withTiming(timing)), path.join('.')).toBe(false);
+        for (const key of Object.keys(at(deliveryTimingFixture, path))) {
+          const incomplete = structuredClone(deliveryTimingFixture);
+          delete at(incomplete, path)[key];
+          expect(isPerformanceRunV1(withTiming(incomplete)), [...path, key].join('.')).toBe(false);
+        }
+      }
+    });
+
+    it('requires safe integer durations and counts, retaining bounded retry counts', () => {
+      const lookupPaths = verificationPaths.map(p => [...p, 'lookupRetryCount']);
+      for (const path of [...durationPaths, ...lookupPaths]) {
+        for (const value of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN, '12']) {
+          expect(isPerformanceRunV1(changed(path, measured(value))), path.join('.')).toBe(false);
+        }
+        expect(isPerformanceRunV1(changed(path, measured(0))), path.join('.')).toBe(true);
+      }
+      for (const path of durationPaths) {
+        expect(isPerformanceRunV1(changed(path, measured(Number.MAX_SAFE_INTEGER))), path.join('.')).toBe(true);
+      }
+      for (const path of lookupPaths) {
+        expect(isPerformanceRunV1(changed(path, measured(2)))).toBe(true);
+        expect(isPerformanceRunV1(changed(path, measured(3)))).toBe(false);
+      }
+      for (const key of ['configuredDelayMs', 'pasteboardCheckCount', 'nativePasteRetryCount']) {
+        for (const value of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN, '12', measured(0)]) {
+          expect(isPerformanceRunV1(changed([key], value)), key).toBe(false);
+        }
+      }
+      expect(isPerformanceRunV1(changed(['nativePasteRetryCount'], 1))).toBe(true);
+      expect(isPerformanceRunV1(changed(['nativePasteRetryCount'], 2))).toBe(false);
+    });
+
+    it('keeps signed AX status distinct from unsigned durations and requires real booleans', () => {
+      for (const path of [
+        ...focusPaths.map(p => [...p, 'axStatus']),
+        ...postPaths.map(p => [...p, 'finalFocusAxStatus']),
+      ]) {
+        for (const value of [-2147483648, -25204, 0, 2147483647]) {
+          expect(isPerformanceRunV1(changed(path, measured(value)))).toBe(true);
+        }
+        for (const value of [-2147483649, 2147483648, 1.5, Number.NaN, '0']) {
+          expect(isPerformanceRunV1(changed(path, measured(value)))).toBe(false);
+        }
+      }
+      for (const path of [['timedOut'], ['cancelled'], ['expired'], ...focusPaths.map(p => [...p, 'timedOut'])]) {
+        for (const value of [true, false]) expect(isPerformanceRunV1(changed(path, value))).toBe(true);
+        for (const value of [0, 'true', null]) expect(isPerformanceRunV1(changed(path, value))).toBe(false);
+      }
+      for (const value of [true, false]) expect(isPerformanceRunV1(changed(['accessibility'], measured(value)))).toBe(true);
+      for (const value of [0, 'true', null]) expect(isPerformanceRunV1(changed(['accessibility'], measured(value)))).toBe(false);
+    });
+  });
+
 });

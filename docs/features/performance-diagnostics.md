@@ -590,3 +590,86 @@ onboarding, unavailable Accessibility, missing settings, or a model without the
 catalog startup-warm policy may omit early listener/model milestones. Failures
 use the existing frontend path. There is no new SQLite run kind or retained
 content; the telemetry boundary permits only the fixed code and elapsed integer.
+
+## Delivery attribution
+
+New dictation runs optionally carry `deliveryTiming` in the active/completed
+V1 envelope, with its own `schemaVersion: 1`. Historical JSON is unchanged and
+omits it. Durations use monotonic **microseconds**, wrapped in the existing
+measurement status contract; unavailable is never a numeric zero. The existing
+`clipboardPaste` stage and `inject timing` log retain their original meanings.
+`clipboardPaste` measures the whole delivery stage, not visible insertion.
+
+The companion separates accepted/actual route (normal, Smart current field,
+Smart handoff, or clipboard only), configured delay, permission, and final
+injection/refusal/error outcome. `acceptedRoute` describes the recording-start
+snapshot. `actualRoute` describes the preparation path: `ready` is
+`smartCurrent`, while `activationRequested` is `smartHandoff`, including a
+recording that started in the current field but switched away while speaking.
+Normal/clipboard fallbacks use the post-preparation snapshot. Without a
+confirmed Smart preparation path, the actual route is unavailable rather than
+inferred from the start flag. Historical rows retain their recorded values;
+there is no backfill or change to the schemaVersion 1 shape.
+
+Disabled auto-paste makes no accessibility-permission query and has no Rust
+permission cache. Its `accessibility` measurement remains unavailable: filling
+it would add an `AXIsProcessTrusted` call on the delivery path or substitute
+potentially stale UI state. Existing permission checks and their ordering are
+unchanged.
+
+Whole-phase fields distinguish preparation
+queue, delivery-owner lock wait and work; activation settling; injection queue,
+owner wait and work; cleanup; and receiver/outcome publication. `toPostUs` ends
+immediately before actual key-down posting and is unavailable if no post was
+observed before the record closed. A posted shortcut still is not insertion
+acknowledgment. Error, timeout and early-return paths close the record too.
+
+Native child measurements cover clipboard write, numeric pasteboard generation
+queries (including generation capture), focused-field query/transport/AX status,
+all three ordered target verifications with independent lookup retry counts,
+event construction, final live-focus proof/status, key-down, key hold and key-up.
+`nativePost` and `retryPost` separate event attempts; retry focus and target
+checks have their own fields. Each focus query's `axStatus` records the last
+attempted AX operation, including `AXSubrole` after a successful `AXRole` query;
+`timedOut` retains any timeout observed throughout that query. This applies to
+both the initial and retry query and does not change their role classification
+or fallback policy. The existing record shape and nested `schemaVersion: 1`
+are unchanged; historical rows remain readable.
+
+`nativePasteRetryCount` is incremented when the
+retry branch is entered, before its unchanged 100 ms wait, including a retry
+that subsequently refuses. It is distinct from native identity lookup retries.
+
+Smart child timers measure preparation validation (including its guarded
+activation work), insertion validation, post-settle, structural readback and
+restoration. Preparation, confirmation and rollback use bounded outcomes;
+timeout, cancellation and expiry remain explicit. Child timers are included in
+their parent phase; do not sum them again into the stage total. Clipboard write
+includes capturing its generation, so that first generation query also overlaps
+the pasteboard-query aggregate. A field not reached retains a status instead of
+inventing a zero. At timeout, open timers retain elapsed-so-far through sealing;
+metadata not yet returned remains unavailable. A finished final-focus proof
+retains its atomically frozen duration even if sealing happens before key-up
+publishes it. Freezing adds no accumulator lock between proof and posting.
+Posting progress is registered before that proof and published with atomic
+stores: sealing during key-down, the hold, or key-up preserves `toPostUs` and
+the elapsed time of the active key-event leaf. Completed leaves keep their
+measured durations. A partial key pair leaves the post outcome unavailable;
+only completion of key-up establishes `posted`, still without insertion
+acknowledgment. No schema fields or delivery checks change.
+Those partial durations do not claim that native IPC completed.
+
+Normal delivery verification and Smart preparation's process-only samples no longer query diagnostic-only `AXFocusedWindow` during
+verification. `windowDiagnostic: unavailableOffPath` and an unavailable duration
+make that absence explicit; its window relation is `unknown`. The fresh
+process-instance samples, all three normal verifier calls, secure-field policy, final
+live-focus proof and pasteboard equality remain authoritative. Smart's exact
+window/field checks are separate and unchanged.
+
+Each recording owns a distinct collector. Completion seals it before persistence
+into that recording's correlation, including when diagnostics initialization is
+still pending. Late main-thread callbacks cannot amend a sealed collector or a
+newer run; Clear/pruning cannot be undone by an update. Only numbers, booleans,
+measurement statuses and bounded enums enter this companion. No application or
+window strings, content, paths or native error text are accepted. This change
+does not establish a new paste p95 or a visible-insertion latency claim.

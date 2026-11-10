@@ -9,6 +9,8 @@
 #![cfg_attr(feature = "internal-benchmark", allow(dead_code))]
 
 #[cfg(target_os = "macos")]
+use crate::performance_metrics::{delivery as dt, MeasurementV1 as M};
+#[cfg(target_os = "macos")]
 use objc2::rc::autoreleasepool;
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -102,8 +104,9 @@ pub(crate) struct DeliveryTargetMismatch {
     transitions: AppTransitionSnapshot,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum VerificationOutcome {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum VerificationOutcome {
     Verified,
     DifferentApplication,
     DifferentProcess,
@@ -501,6 +504,11 @@ pub(crate) fn delivery_target_is_active(expected: &DeliveryTargetSnapshot) -> bo
     let DeliveryTargetSnapshot::Complete(expected) = expected else {
         return false;
     };
+    let proof_timer = dt::Timer::new(if dt::is_retry() {
+        |r| &mut r.retry_post.final_focus_proof_us
+    } else {
+        |r| &mut r.native_post.final_focus_proof_us
+    });
     let mut live_code = "not_attempted";
     let mut ax_status = 0;
     let mut live_elapsed_us = 0_u64;
@@ -526,17 +534,20 @@ pub(crate) fn delivery_target_is_active(expected: &DeliveryTargetSnapshot) -> bo
         live_code,
         ax_status,
         live_elapsed_us,
+        timer: proof_timer.stopped(),
+        proof,
     }));
     proof.allows_paste()
 }
 
 #[cfg(target_os = "macos")]
-#[derive(Clone, Copy)]
 struct FocusProofRecord {
     outcome_code: &'static str,
     live_code: &'static str,
     ax_status: i32,
     live_elapsed_us: u64,
+    timer: dt::StoppedTimer,
+    proof: FocusProof,
 }
 
 #[cfg(target_os = "macos")]
@@ -545,12 +556,38 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+#[cfg(target_os = "macos")]
+pub(crate) fn clear_pending_focus_proof() {
+    PENDING_FOCUS_PROOF.take();
+}
+
 /// Emit the final focus proof recorded on this thread, if any.
 #[cfg(target_os = "macos")]
 pub(crate) fn emit_pending_focus_proof() {
     let Some(record) = PENDING_FOCUS_PROOF.take() else {
         return;
     };
+    drop(record.timer);
+    dt::record(|r| {
+        let p = if r.native_paste_retry_count > 0 {
+            &mut r.retry_post
+        } else {
+            &mut r.native_post
+        };
+        p.final_focus_proof = M::measured(match record.proof {
+            FocusProof::LiveMatch => dt::Proof::LiveMatch,
+            FocusProof::LiveMismatch => dt::Proof::LiveMismatch,
+            FocusProof::IdentityMismatch => dt::Proof::IdentityMismatch,
+            FocusProof::FrontmostFallbackMatch => dt::Proof::FrontmostFallbackMatch,
+            FocusProof::FrontmostFallbackMismatch => dt::Proof::FrontmostFallbackMismatch,
+        });
+        if matches!(
+            record.live_code,
+            "answered" | "ax_error" | "slow" | "wrong_type"
+        ) {
+            p.final_focus_ax_status = M::measured(record.ax_status);
+        }
+    });
     tracing::info!(
         target: "pipeline",
         event_code = "pipeline.paste_safety",
@@ -699,6 +736,18 @@ pub(crate) fn delivery_target_is_active(_expected: &DeliveryTargetSnapshot) -> b
 /// object. If activation or Space changes during that sample, fail closed.
 #[cfg(target_os = "macos")]
 pub(crate) fn capture_delivery_target_snapshot() -> DeliveryTargetSnapshot {
+    capture_delivery_snapshot(true)
+}
+
+/// Smart preparation uses this only for process identity. The mandatory
+/// field/window/document checks live in smart_destination and remain fresh.
+#[cfg(target_os = "macos")]
+pub(crate) fn capture_delivery_identity_snapshot() -> DeliveryTargetSnapshot {
+    capture_delivery_snapshot(false)
+}
+
+#[cfg(target_os = "macos")]
+fn capture_delivery_snapshot(include_window_diagnostic: bool) -> DeliveryTargetSnapshot {
     autoreleasepool(|_| {
         use objc2_app_kit::NSWorkspace;
 
@@ -731,7 +780,9 @@ pub(crate) fn capture_delivery_target_snapshot() -> DeliveryTargetSnapshot {
             return DeliveryTargetSnapshot::Incomplete;
         }
         let process_instance = ProcessInstanceToken(launch_interval.to_bits());
-        let window_token = ax_window_token(process_id);
+        let window_token = include_window_diagnostic
+            .then(|| ax_window_token(process_id))
+            .flatten();
         let after = app_transition_snapshot();
         if before != after {
             return DeliveryTargetSnapshot::Incomplete;
@@ -749,6 +800,11 @@ pub(crate) fn capture_delivery_target_snapshot() -> DeliveryTargetSnapshot {
 
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn capture_delivery_target_snapshot() -> DeliveryTargetSnapshot {
+    DeliveryTargetSnapshot::Incomplete
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn capture_delivery_identity_snapshot() -> DeliveryTargetSnapshot {
     DeliveryTargetSnapshot::Incomplete
 }
 
@@ -790,8 +846,7 @@ fn delivery_mismatch_from_partial_identity(
 
 /// First delivery-time sample. Unlike accepted-start capture, transition churn
 /// is diagnostic here: preserve the complete tuple and latest generations, then
-/// let the tuple-only final sample decide whether identity stayed stable across
-/// the optional AX window lookup.
+/// retain the tuple-only final sample as a fresh mandatory identity check.
 #[cfg(target_os = "macos")]
 fn capture_delivery_verification_first_snapshot(
     expected: &DeliveryTargetIdentity,
@@ -837,7 +892,9 @@ fn capture_delivery_verification_first_snapshot(
             bundle_id,
             process_id,
             process_instance,
-            window_token: ax_window_token(process_id),
+            // Window evidence never authorizes normal delivery. Do not perform
+            // diagnostic-only AX IPC on any delivery verification.
+            window_token: None,
             transitions: app_transition_snapshot(),
         })
     })
@@ -851,8 +908,7 @@ fn capture_delivery_verification_first_snapshot(
 }
 
 /// Capture only the native process tuple, without an AX window lookup. Used as
-/// the final half of delivery verification so a focus change during the first
-/// sample's optional AX query cannot be hidden by delayed workspace observers.
+/// the final half of delivery verification; both samples remain mandatory.
 #[cfg(target_os = "macos")]
 fn capture_delivery_process_snapshot(expected: &DeliveryTargetIdentity) -> DeliveryTargetSnapshot {
     autoreleasepool(|_| {
@@ -945,8 +1001,7 @@ where
     }
 }
 
-/// Delivery-time native sample with a final tuple re-check after optional AX
-/// window evidence. Start capture intentionally does not use this: its contract
+/// Delivery-time native sample with a final fresh tuple re-check. Start capture intentionally does not use this: its contract
 /// is exactly one retained NSRunningApplication sample at acceptance.
 fn capture_current_delivery_target_snapshot(
     expected: &DeliveryTargetIdentity,
@@ -1817,6 +1872,24 @@ mod tests {
     }
 
     #[test]
+    fn omitting_diagnostic_window_preserves_every_identity_outcome() {
+        let expected = delivery_target("com.example.Editor", 41, 100, Some(7));
+        for (bundle, pid, instance) in [
+            ("com.example.Editor", 41, 100),
+            ("com.example.Other", 42, 200),
+            ("com.example.Editor", 42, 100),
+            ("com.example.Editor", 41, 200),
+        ] {
+            let with_window = delivery_target(bundle, pid, instance, Some(8));
+            let without_window = delivery_target(bundle, pid, instance, None);
+            let before = classify_delivery_target(&expected, Some(&with_window), 999, true);
+            let after = classify_delivery_target(&expected, Some(&without_window), 999, true);
+            assert_eq!(before.outcome, after.outcome);
+            assert_eq!(before.verified(), after.verified());
+            assert_eq!(after.window_relation, WindowRelation::Unknown);
+        }
+    }
+    #[test]
     fn delivery_verification_allows_same_process_in_a_different_window() {
         let expected = delivery_target("com.example.Editor", 41, 100, Some(7));
         let mut current = delivery_target("com.example.Editor", 41, 100, Some(8));
@@ -1833,7 +1906,7 @@ mod tests {
     }
 
     #[test]
-    fn current_capture_rechecks_tuple_after_window_lookup() {
+    fn current_capture_retains_both_fresh_process_samples() {
         let expected = delivery_target("com.example.Editor", 41, 100, Some(7));
         let first = DeliveryTargetSnapshot::Complete(expected.clone());
         let mut final_same_identity = delivery_target("com.example.Editor", 41, 100, None);
