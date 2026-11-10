@@ -412,7 +412,7 @@ describe('SettingsPanel information architecture', () => {
     expect(onPageOpened).toHaveBeenCalledExactlyOnceWith('shortcuts');
   });
 
-  it('reopens the feature checklist from General and reports rendered pages', async () => {
+  it('removes the feature checklist from General and reports rendered pages', async () => {
     const onDiscoveryChecklistReopen = vi.fn();
     const onPageOpened = vi.fn();
     await act(async () => renderPanel(true, DEFAULT_SETTINGS, null, {
@@ -420,10 +420,10 @@ describe('SettingsPanel information architecture', () => {
       onPageOpened,
     }));
     expect(onPageOpened).toHaveBeenCalledWith('general');
-    const show = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Show feature checklist') as HTMLButtonElement;
-    await act(async () => show.click());
-    expect(onDiscoveryChecklistReopen).toHaveBeenCalledOnce();
+    expect(container.querySelector('[data-setting-target="discovery-checklist"]')).toBeNull();
+    expect(onDiscoveryChecklistReopen).not.toHaveBeenCalled();
+    expect(Array.from(container.querySelectorAll('.settings-group-heading')).map(node => node.textContent))
+      .toEqual(['Startup', 'Dictation', 'Maintenance']);
 
     const shortcuts = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .find((button) => button.textContent?.includes('Keyboard shortcuts')) as HTMLButtonElement;

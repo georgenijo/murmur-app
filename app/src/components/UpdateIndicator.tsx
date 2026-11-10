@@ -52,7 +52,7 @@ export function UpdateIndicator({ status, onOpen, onRetryCheck, onDownload, onRe
         className={cn(
           'relative flex items-center justify-center gap-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-wait aria-disabled:cursor-wait',
           compact ? 'ui-icon-button bg-surface-container-low hover:bg-surface-container'
-            : 'w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium transition-colors hover:bg-surface-container',
+            : 'ui-form-button settings-update-action',
           failed ? 'text-error' : available || ready ? 'text-primary' : 'text-on-surface-variant',
         )}
       >

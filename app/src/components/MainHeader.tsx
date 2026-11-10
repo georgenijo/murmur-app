@@ -87,10 +87,10 @@ export function MainHeader({
 
   return (
     <WindowHeader
-      contextLabel={mode === 'settings' ? 'Settings' : undefined}
       className={mode === 'settings' ? 'settings-window-header' : ''}
-      showWordmark={mode === 'settings'}
+      showWordmark={false}
     >
+      {mode === 'settings' && <span className="settings-window-title">Settings</span>}
       {mode === 'main' && sidebar && (
         <button ref={sidebar.toggleRef} type="button" className="ui-icon-button home-sidebar-toggle"
           aria-label={sidebar.collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
@@ -153,7 +153,7 @@ export function MainHeader({
         <button
           type="button"
           onClick={onOpenSettings}
-          className="min-w-16 h-[30px] rounded-[var(--ui-radius-pill,999px)] border border-[var(--ui-hairline,var(--murmur-outline-variant))] bg-[var(--ui-tint-raised,var(--murmur-surface-container-lowest))] px-4 text-[length:var(--ui-font-label)] font-semibold text-on-surface shadow-[var(--ui-shadow-1)] transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="ui-form-button settings-done"
         >
           Done
         </button>

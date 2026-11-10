@@ -8,7 +8,7 @@ for (const size of [{ width: 1120, height: 820 }, { width: 880, height: 720 }, {
       const sidebar = page.locator(state === 'settings' ? '.settings-sidebar' : '.home-sidebar');
       const before = await sidebar.boundingBox();
       expect(before).not.toBeNull();
-      expect(before!.width).toBe(state === 'settings' ? (size.width < 768 ? 56 : 240) : (size.width < 768 ? 48 : 256));
+      expect(before!.width).toBe(state === 'settings' ? (size.width < 768 ? 56 : 208) : (size.width < 768 ? 48 : 256));
       expect(before!.y + before!.height).toBe(size.height);
       if (state !== 'settings') for (const label of ['Home', 'Notetaker', 'Insights']) {
         const button = await sidebar.getByRole('button', { name: label, exact: true }).boundingBox();
@@ -45,7 +45,7 @@ test('resizing preserves independent Home and Settings sidebar geometry', async 
     await page.goto(`/visual-fixtures.html?state=${state}&checklist=hidden`);
     for (const width of [1120, 760, 761, 720, 1120]) {
       await page.setViewportSize({ width, height: 560 });
-      await expect(page.locator(state === 'settings' ? '.settings-sidebar' : '.home-sidebar')).toHaveCSS('width', state === 'settings' ? (width < 768 ? '56px' : '240px') : (width < 768 ? '48px' : '256px'));
+      await expect(page.locator(state === 'settings' ? '.settings-sidebar' : '.home-sidebar')).toHaveCSS('width', state === 'settings' ? (width < 768 ? '56px' : '208px') : (width < 768 ? '48px' : '256px'));
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
       expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBe(560);
     }

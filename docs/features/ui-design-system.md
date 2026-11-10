@@ -84,9 +84,9 @@ Use these before creating a feature-local control or surface.
 | Native chrome | Traffic lights, Home sidebar toggle, status, updates, and Settings share one row. The toggle starts after the zoom-compensated 80pt controls inset and never acts as a drag region; recording actions live in the dashboard. Collapsed Home and narrow Settings leave the header background unpainted; expanded header paint aligns with its sidebar |
 | Status | Minimum 72px; state changes do not remove its container. Home hides the title-bar chip because its talk card already states the dictation status |
 | Record | Home owns one talk card, at most 56px tall, with a single 36px Start/Stop button, a plain-language state title, and one short hint; title and hint never truncate at 880×720 or 1120×820. Transcribing a file lives in the history `···` menu |
-| Sidebar | App owns Home collapsed state, resizing, and a 256–384px expanded width. Below 768 CSS px Home defaults to a 48px icon rail; explicit expansion is available. The header owns its toggle and restores focus there when a focused resize separator disappears. Sidebar heading retains the brand. Settings uses the separate #848 contract below: 240px / 56px rail. Home contains Home, Notetaker, and Insights; selection is a surface state with no shadow, a vertically centred expanded marker, and no collapsed marker |
+| Sidebar | App owns Home collapsed state, resizing, and a 256–384px expanded width. Below 768 CSS px Home defaults to a 48px icon rail; explicit expansion is available. The header owns its toggle and restores focus there when a focused resize separator disappears. Sidebar heading retains the brand. Settings uses 208px navigation / a 56px compact rail. Home contains Home, Notetaker, and Insights; selection is a surface state with no shadow, a vertically centred expanded marker, and no collapsed marker |
 | Customize | The gear and `⌘,` open General; Customize is an unordered set of independent destinations, and detail pages expose Back to Customize and restore the originating row's focus |
-| Content | Home uses the whole window with 24px desktop and 16px compact insets. Settings uses the 896px shell documented below |
+| Content | Home uses the whole window with 24px desktop and 16px compact insets. Settings uses a centered 728px shell with 680px of content |
 | Toolbar | 28px controls; one line holding the page title, search, the Filter menu, and `···` at 880×720 and wider, wrapping rather than clipping when narrower; no resting entry count |
 | History | 5px list gap; cards use an 8px vertical inset |
 | Metadata | Time/source only; word count and duration stay out of transcript rows |
@@ -342,3 +342,15 @@ The behavior layer, complete 22-pane before/after audit, search/permission
 boundaries, UI-only persistence contract and verification map are documented in
 [Settings progressive disclosure](settings-progressive-disclosure.md). Geometry
 continues to use the #848 measurements above.
+
+### Approved Settings redesign
+
+Settings uses one muted 11/16px section-heading style and grouped cards on
+General, Shortcuts, and Appearance; other pages retain their content with the
+same shared row/card/control-column geometry. The page title is 18/24px and its
+hairline is bounded by the centered content column. The window title is centered
+independently of navigation width. Done consumes the shared secondary button.
+Settings' segmented control is local CSS: a 34px sunken pill track, 2px padding,
+28px selected surface with an 8px radius and `--ui-shadow-1`, matching Insights.
+The redesign's browser fixture evidence covers 1100×780 and 840×620 in both
+appearances. Native verification remains a separate integration requirement.

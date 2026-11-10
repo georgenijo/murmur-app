@@ -65,8 +65,8 @@ for (const appearance of ['light', 'dark'] as const) {
     await page.getByRole('radio', { name: new RegExp(appearance, 'i') }).click();
 
     const card = page.locator('[data-theme-collection="OpenCode"]');
-    await expect(card).toHaveCSS('width', '208px');
-    await expect(card).toHaveCSS('height', '106px');
+    await expect(card).toHaveCSS('width', '242px');
+    await expect(card).toHaveCSS('height', '166px');
     await expect(card.getByRole('button', { name: 'Use OpenCode for light mode' })).toBeVisible();
     await expect(card.getByRole('button', { name: 'Use OpenCode for dark mode' })).toBeVisible();
     await expect(card.getByRole('button', { name: 'Export OpenCode' })).toBeVisible();

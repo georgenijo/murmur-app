@@ -70,7 +70,7 @@ import { SettingsBranch } from './SettingsBranch';
 import { SettingsEditorsWindow, type SettingsEditorTab } from './SettingsEditorsWindow';
 import { CustomizationHub, type CustomizationDestination } from './CustomizationHub';
 import { useSettingsSurfaceActive } from './SettingsSurfaceContext';
-import { SettingsCallout, SettingsDisclosure } from './SettingsLayout';
+import { SettingsCallout, SettingsDisclosure, SettingsGroup } from './SettingsLayout';
 import {
   DiagnosticsWorkspace,
   type DiagnosticsTab,
@@ -428,7 +428,6 @@ export const SettingsPanel = memo(function SettingsPanel({
   status,
   onResetStats,
   onRerunSetup,
-  onDiscoveryChecklistReopen,
   onPageOpened,
   onModeBound,
   accessibilityGranted,
@@ -1547,61 +1546,54 @@ export const SettingsPanel = memo(function SettingsPanel({
             <div data-setting-target="appearance"><AppearanceSettings /></div>
           </SettingsSection>
 
-          <SettingsSection hideHeading pageId="general" activePage={activeCat} title="General">
-            {!INTERNAL_BENCHMARK_BUILD && <SettingToggle targetId="launch-login" title="Launch at login" description="Start Murmur automatically when you log in" checked={settings.launchAtLogin} defaultChecked={DEFAULT_SETTINGS.launchAtLogin} onChange={() => onUpdateSettings({ launchAtLogin: !settings.launchAtLogin })} />}
-            <button
-              ref={generalShortcutsButtonRef}
-              type="button"
-              data-setting-target="shortcuts"
-              onClick={() => openPage('shortcuts')}
-              className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            >
-              <span className="settings-title-description">
-                <span className="block text-sm font-medium text-on-surface">Keyboard shortcuts</span>
-                <span className="mt-0.5 block text-xs leading-relaxed text-on-surface-variant">See global and main-window shortcuts in one place</span>
-              </span>
-              <span aria-hidden="true" className="text-on-surface-variant">›</span>
-            </button>
-            <div data-setting-target="setup" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <button type="button" onClick={onRerunSetup} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Run setup assistant…</button>
-              <p className="text-xs text-on-surface-variant">Re-check permissions and models</p>
+          <SettingsSection hideHeading card={false} pageId="general" activePage={activeCat} title="General">
+            <div className="settings-groups">
+              <SettingsGroup title="Startup">
+                {!INTERNAL_BENCHMARK_BUILD && <SettingToggle targetId="launch-login" title="Launch at login" description="Start Murmur automatically when you log in" checked={settings.launchAtLogin} defaultChecked={DEFAULT_SETTINGS.launchAtLogin} onChange={() => onUpdateSettings({ launchAtLogin: !settings.launchAtLogin })} />}
+                <button
+                  ref={generalShortcutsButtonRef}
+                  type="button"
+                  data-setting-target="shortcuts"
+                  onClick={() => openPage('shortcuts')}
+                  className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <span className="settings-title-description">
+                    <span className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">Keyboard shortcuts</span>
+                    <span className="mt-0.5 block text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">See global and main-window shortcuts in one place</span>
+                  </span>
+                  <span aria-hidden="true" className="text-on-surface-variant">›</span>
+                </button>
+              </SettingsGroup>
+              <SettingsGroup title="Dictation">
+                <SettingsRow targetId="overlay-placement" title="Recording overlay" description="Shown only while recording"
+                  onReset={settings.overlayPlacement !== DEFAULT_SETTINGS.overlayPlacement ? () => onUpdateSettings({ overlayPlacement: DEFAULT_SETTINGS.overlayPlacement }) : undefined}
+                  control={<Select aria-label="Recording overlay placement" value={settings.overlayPlacement}
+                    onChange={(overlayPlacement) => onUpdateSettings({ overlayPlacement })}
+                    items={[{ value: 'notch', label: 'Notch island' }, { value: 'floating_pill', label: 'Floating pill' }]} />} />
+                <SettingToggle targetId="overlay-live-words" title="Live words" description="Preview words as you speak" checked={settings.overlayLiveWords} defaultChecked={DEFAULT_SETTINGS.overlayLiveWords} onChange={() => onUpdateSettings({ overlayLiveWords: !settings.overlayLiveWords })} />
+              </SettingsGroup>
+              <SettingsGroup title="Maintenance">
+                <SettingsRow targetId="setup" title="Setup assistant" description="Re-check permissions and models"
+                  control={<Button size="sm" aria-label="Open setup assistant" onClick={onRerunSetup}>Open…</Button>} />
+                {!INTERNAL_BENCHMARK_BUILD && <SettingsRow targetId="updates" title="Updates" description={version ? `Murmur v${version}` : undefined}
+                  control={<UpdateIndicator variant="settings" status={updateStatus}
+                    onRetryCheck={() => void onCheckForUpdate()} onDownload={onDownloadUpdate}
+                    onRestart={onRestartUpdate} onOpen={onOpenUpdate} />} />}
+                <SettingsDisclosure title="Advanced" description="Overlay calibration and statistics reset" layout="stack">
+                  <OverlayCalibrationControl
+                    targetId="overlay-calibration"
+                    offset={settings.overlayVerticalOffset}
+                    onCommit={(overlayVerticalOffset) => onUpdateSettings({ overlayVerticalOffset })}
+                  />
+                  <button type="button" data-setting-target="reset-statistics" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-[length:var(--ui-font-caption)] font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}>{confirmReset ? 'Confirm reset…' : 'Reset statistics…'}</button>
+                </SettingsDisclosure>
+                {INTERNAL_BENCHMARK_BUILD && (
+                  <SettingsCallout tone="accent" title="Internal benchmark build">
+                    Automatic updates, launch at login, and diagnostic log shipping are disabled.
+                  </SettingsCallout>
+                )}
+              </SettingsGroup>
             </div>
-            {onDiscoveryChecklistReopen && (
-              <div data-setting-target="discovery-checklist" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-                <button type="button" onClick={onDiscoveryChecklistReopen} className="w-full rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant transition-colors hover:bg-surface-container hover:text-primary">Show feature checklist</button>
-                <p className="text-xs text-on-surface-variant">Show the getting-started list on Home</p>
-              </div>
-            )}
-            <SettingsRow targetId="overlay-placement" title="Recording overlay" description="Shown only while recording"
-              onReset={settings.overlayPlacement !== DEFAULT_SETTINGS.overlayPlacement ? () => onUpdateSettings({ overlayPlacement: DEFAULT_SETTINGS.overlayPlacement }) : undefined}
-              control={<Select aria-label="Recording overlay placement" value={settings.overlayPlacement}
-                onChange={(overlayPlacement) => onUpdateSettings({ overlayPlacement })}
-                items={[{ value: 'notch', label: 'Notch island' }, { value: 'floating_pill', label: 'Floating pill' }]} />} />
-            <SettingToggle targetId="overlay-live-words" title="Live words" description="Preview words as you speak" checked={settings.overlayLiveWords} defaultChecked={DEFAULT_SETTINGS.overlayLiveWords} onChange={() => onUpdateSettings({ overlayLiveWords: !settings.overlayLiveWords })} />
-            <SettingsDisclosure title="Advanced" layout="stack">
-              <OverlayCalibrationControl
-                targetId="overlay-calibration"
-                offset={settings.overlayVerticalOffset}
-                onCommit={(overlayVerticalOffset) => onUpdateSettings({ overlayVerticalOffset })}
-              />
-              <button type="button" data-setting-target="reset-statistics" aria-label={confirmReset ? 'Confirm reset statistics' : 'Reset statistics'} onClick={resetStats} className={`w-full rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${confirmReset ? 'border-error/40 bg-error/10 text-error' : 'border-outline-variant/30 bg-surface-container-lowest text-on-surface-variant hover:bg-surface-container hover:text-primary'}`}>{confirmReset ? 'Confirm reset…' : 'Reset statistics…'}</button>
-            </SettingsDisclosure>
-            {!INTERNAL_BENCHMARK_BUILD && <div data-setting-target="updates" className="settings-field rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <UpdateIndicator
-                variant="settings"
-                status={updateStatus}
-                onRetryCheck={() => void onCheckForUpdate()}
-                onDownload={onDownloadUpdate}
-                onRestart={onRestartUpdate}
-                onOpen={onOpenUpdate}
-              />
-            </div>}
-            {INTERNAL_BENCHMARK_BUILD && (
-              <SettingsCallout tone="accent" title="Internal benchmark build">
-                Automatic updates, launch at login, and diagnostic log shipping are disabled.
-              </SettingsCallout>
-            )}
-            {version && <p className="text-center text-xs text-on-surface-variant">Murmur v{version}</p>}
           </SettingsSection>
         </div>
         )}

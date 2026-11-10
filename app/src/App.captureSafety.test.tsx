@@ -110,7 +110,7 @@ async function click(label: string) {
 async function rerun(entry: 'settings' | 'palette') {
   if (entry === 'settings') {
     await shortcut(',');
-    await click('Run setup assistant…');
+    await click('Open…');
   } else {
     await shortcut('k');
     const command = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'))

@@ -59,15 +59,13 @@ function globalShortcutRows(settings: Settings): readonly GlobalShortcutRow[] {
   ];
 }
 
-function StatusBadge({ state }: { state: GlobalShortcutRow['binding']['kind'] }) {
-  const label = state === 'on' ? 'On' : state === 'paused' ? 'Paused' : 'Off';
-  return (
-    <span
-      className={`rounded-(--ui-radius-pill) px-2 py-0.5 text-xs font-semibold ${state === 'on' ? 'bg-success/10 text-success' : 'bg-surface-container-high text-on-surface-variant'}`}
-    >
-      {label}
-    </span>
-  );
+function ShortcutBinding({ label, state = 'on' }: { label: string | null; state?: GlobalShortcutRow['binding']['kind'] }) {
+  const hold = label?.startsWith('Hold ');
+  return <span className="settings-shortcut-binding">
+    {state !== 'on' && <span className="settings-shortcut-state">{state === 'paused' ? 'Paused' : 'Off'}</span>}
+    {hold && <span className="settings-shortcut-hold">Hold</span>}
+    {label && <kbd className="settings-shortcut-key">{hold ? label.slice(5) : label}</kbd>}
+  </span>;
 }
 
 export function KeyboardShortcutsSettings({
@@ -87,34 +85,28 @@ export function KeyboardShortcutsSettings({
     >
       <div data-setting-target="shortcuts" className="settings-stack">
         {settings.disabled && (
-          <p role="status" className="settings-callout text-xs leading-relaxed text-on-surface" data-tone="accent">
+          <p role="status" className="settings-callout text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface" data-tone="accent">
             Murmur is disabled, so recording shortcuts are paused. Paste last remains available, and every saved binding is shown below.
           </p>
         )}
         <section aria-labelledby="global-shortcuts-title">
-          <h2 id="global-shortcuts-title" className="mb-2 text-sm font-semibold text-on-surface">Global shortcuts</h2>
+          <h2 id="global-shortcuts-title" className="settings-group-heading">Global shortcuts</h2>
           <ul className="settings-card overflow-hidden" aria-label="Global shortcuts">
             {globalRows.map((row) => (
               <li
                 key={row.destination.shortcutId}
                 data-shortcut-id={row.destination.shortcutId}
-                className="flex min-h-16 items-center gap-4 border-b border-outline-variant/15 px-4 py-3 last:border-b-0"
+                className="settings-shortcut-row"
               >
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-on-surface">{row.label}</span>
-                    <StatusBadge state={row.binding.kind} />
-                  </span>
-                  <span className="mt-1 block text-xs text-on-surface-variant">
-                    {row.binding.label ?? 'Not assigned'}
-                  </span>
-                </span>
+                <span className="settings-shortcut-label">{row.label}</span>
+                <ShortcutBinding label={row.binding.label} state={row.binding.kind} />
                 <button
                   type="button"
+                  aria-label={`${row.binding.kind === 'off' ? 'Enable' : row.binding.kind === 'paused' ? 'View' : 'Configure'} in ${row.ownerLabel}`}
                   onClick={() => onOpenOwner(row.destination)}
-                  className="settings-quiet-btn shrink-0 px-3 py-1.5 text-xs font-medium text-on-surface"
+                  className="settings-quiet-btn settings-shortcut-configure"
                 >
-                  {row.binding.kind === 'off' ? 'Enable' : row.binding.kind === 'paused' ? 'View' : 'Configure'} in {row.ownerLabel}
+                  Configure…
                 </button>
               </li>
             ))}
@@ -122,23 +114,21 @@ export function KeyboardShortcutsSettings({
         </section>
 
         <section aria-labelledby="window-shortcuts-title">
-          <h2 id="window-shortcuts-title" className="mb-2 text-sm font-semibold text-on-surface">Main-window shortcuts</h2>
+          <h2 id="window-shortcuts-title" className="settings-group-heading">Main-window shortcuts</h2>
+          <p className="settings-shortcuts-context">Available while the main window is active</p>
           <ul className="settings-card overflow-hidden" aria-label="Main-window shortcuts">
             {MAIN_WINDOW_SHORTCUTS.map((shortcut) => (
               <li
                 key={shortcut.action}
-                className="flex min-h-14 items-center gap-4 border-b border-outline-variant/15 px-4 py-3 last:border-b-0"
+                className="settings-shortcut-row"
               >
-                <span className="min-w-0 flex-1 text-sm font-medium text-on-surface">{shortcut.label}</span>
-                <StatusBadge state="on" />
-                <kbd className="min-w-12 rounded-md border border-outline-variant/30 bg-surface-container-lowest px-2 py-1 text-center text-xs font-semibold text-on-surface">
-                  {shortcut.binding}
-                </kbd>
+                <span className="settings-shortcut-label">{shortcut.label}</span>
+                <ShortcutBinding label={shortcut.binding} />
               </li>
             ))}
           </ul>
-          <p className="mt-2 text-xs leading-relaxed text-on-surface-variant">
-            Control works in place of Command outside text fields. Main-window shortcuts are built in and available while the main window is focused.
+          <p className="mt-2 text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
+            Control works in place of Command outside text fields.
           </p>
         </section>
       </div>

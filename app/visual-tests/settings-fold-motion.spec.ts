@@ -11,7 +11,7 @@ for (const fold of ['advanced', 'microphone'] as const) {
       const toggle = page.locator(selector);
       const pane = page.getByTestId('settings-content');
       await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-      await expect(pane).toHaveCSS('overflow-y', 'scroll');
+      await expect(pane).toHaveCSS('overflow-y', 'auto');
       // Exercise the WebKit fallback independently of scrollbar-gutter support.
       await pane.evaluate(el => { el.style.scrollbarGutter = 'auto'; });
       const sample = async () => page.evaluate(async selector => {

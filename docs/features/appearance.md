@@ -343,3 +343,15 @@ surface-container-highest to `#3c3c3c`, primary-dim to `#8eacff`, and error to
 `#ff9a95`. All other roles retain their mapped values. No emergency Sonic
 fallback is needed. The OpenCode tests assert every resulting CSS role and
 both contrast matrices, alongside real card selection and duplication flows.
+
+## Settings presentation
+
+Color scheme uses a grouped row and a 34px pill track with 28px selected
+controls. The Themes heading and Create theme / Import theme actions sit above
+one grouped card. Each collection shows Light and Dark interface miniatures
+from its resolved semantic palette, rather than decorative color orbs. Selection
+is indicated by both the accent outline and a check beside the collection name.
+The caption reports the actual per-mode ownership (Used for light, dark, or both).
+Collections with multiple variants expose named choices from their mode preview;
+Escape closes the choices and returns focus to the preview. Import, export,
+duplication, removal, and the theme editor retain their existing controllers.
