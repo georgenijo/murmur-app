@@ -46,6 +46,7 @@ export function MeetingHeaderActions(props: MeetingHeaderActionsProps) {
   const moreTriggerRef = useRef<HTMLButtonElement>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
   const focusAfterClose = useRef<string | null>(null);
+  const deletePointerActivationRef = useRef(false);
   const formats = (action: MeetingHeaderActionsProps['onCopy']) => MEETING_EXPORT_FORMATS.map((format) => (
     <Menu.Item key={format.value} className="ui-menu-item" disabled={props.active && (format.value === 'srt' || format.value === 'vtt')} onClick={() => action(format.value)}>{format.label}</Menu.Item>
   ));
@@ -78,8 +79,17 @@ export function MeetingHeaderActions(props: MeetingHeaderActionsProps) {
           <Popup submenu>{formats(props.onCopy)}</Popup>
         </Menu.SubmenuRoot>
         {props.onDelete && <><Menu.Separator className="ui-menu-separator" />
-          <Menu.Item className="ui-menu-item" data-variant="destructive" closeOnClick={false} onKeyDownCapture={(event) => guardDestructiveKey(event, () => props.onDelete?.())}
-            onBlur={props.onDisarmDelete} onPointerLeave={props.onDisarmDelete} onClick={() => props.onDelete?.()}>{props.confirmingDelete ? 'Confirm delete…' : 'Delete meeting…'}</Menu.Item>
+          <Menu.Item className="ui-menu-item" data-variant="destructive" closeOnClick={false} onKeyDownCapture={(event) => {
+            deletePointerActivationRef.current = false;
+            guardDestructiveKey(event, () => props.onDelete?.());
+          }}
+            onPointerDownCapture={() => {
+              deletePointerActivationRef.current = true;
+              requestAnimationFrame(() => { deletePointerActivationRef.current = false; });
+            }}
+            onBlur={() => {
+              if (!deletePointerActivationRef.current) props.onDisarmDelete?.();
+            }} onPointerLeave={props.onDisarmDelete} onClick={() => props.onDelete?.()}>{props.confirmingDelete ? 'Confirm delete…' : 'Delete meeting…'}</Menu.Item>
         </>}
       </Popup>
     </Menu.Root>}

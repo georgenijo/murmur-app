@@ -360,8 +360,10 @@ describe('MeetingsPanel retained audio deletion', () => {
     await act(async () => root.render(<MeetingsPanel meetings={meetingsController(remove)} playbackBusy={false} />));
     await act(async () => container.querySelector<HTMLButtonElement>('.meeting-more')!.click());
     const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((element) => element.textContent === 'Delete meeting…')!;
+    await act(async () => item.dispatchEvent(new Event('pointerdown', { bubbles: true })));
     await act(async () => item.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 })));
     expect(item.textContent).toBe('Confirm delete…');
+    await act(async () => item.dispatchEvent(new Event('pointerdown', { bubbles: true })));
     await act(async () => item.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 2 })));
     expect(remove).toHaveBeenCalledExactlyOnceWith(detail.session.id);
   });
