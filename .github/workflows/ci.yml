@@ -301,6 +301,17 @@ jobs:
           # evicts main's and the release build's caches.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      - name: Refresh sherpa-onnx native libraries
+        # rust-cache prunes files under target/sherpa-onnx-prebuilt but keeps
+        # the build-script fingerprint. On a partial hit Cargo can reuse that
+        # fingerprint while recompiling the crate, leaving its native libs
+        # missing. Remove the empty directories too: the build script treats
+        # an existing lib directory as a complete download.
+        run: |
+          cd app/src-tauri
+          rm -rf target/sherpa-onnx-prebuilt
+          cargo clean -p sherpa-onnx-sys
+
       - name: Build capture isolation helpers
         # PR CI compiles the Swift agent with warnings as errors and builds the
         # Rust worker protocol.
