@@ -41,6 +41,7 @@ test('focused speed tooltip stays centred through sidebar breakpoint resizing', 
   const point = mark.locator('span');
   for (const width of [880, 750, 880]) {
     await page.setViewportSize({ width, height: 620 });
+    await expect(page.locator('.home-sidebar')).toHaveAttribute('data-collapsed', String(width < 768));
     await expect.poll(async () => {
       const [t, p] = await Promise.all([tooltip.boundingBox(), point.boundingBox()]);
       if (!t || !p) return Infinity;
