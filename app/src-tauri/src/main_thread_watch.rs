@@ -17,9 +17,9 @@
 //! logs spans over [`LOG_SPAN_MIN_US`], and joins each dictation paste's
 //! main-thread wait to the spans that overlapped it.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -110,60 +110,97 @@ impl Span {
     }
 }
 
+/// Single-producer, single-consumer ring: the main thread is the only
+/// producer and the reporter thread the only consumer. The producer never
+/// blocks or allocates: a full ring drops the record and counts it.
 struct Ring {
-    slots: Box<[Span]>,
-    head: usize,
-    len: usize,
-    dropped: u64,
+    slots: Box<[UnsafeCell<Span>]>,
+    /// Next slot the producer writes; only the producer stores it.
+    tail: AtomicUsize,
+    /// Next slot the consumer reads; only the consumer stores it.
+    head: AtomicUsize,
+    dropped: AtomicU64,
 }
+
+// SAFETY: a slot is written only by the single producer while it lies
+// outside `head..tail`, and read only by the single consumer once it lies
+// inside; the Release/Acquire pairs on `tail` and `head` order those accesses.
+unsafe impl Sync for Ring {}
 
 impl Ring {
     fn new() -> Self {
         Self {
-            slots: vec![Span::EMPTY; RING_CAPACITY].into_boxed_slice(),
-            head: 0,
-            len: 0,
-            dropped: 0,
+            slots: (0..RING_CAPACITY)
+                .map(|_| UnsafeCell::new(Span::EMPTY))
+                .collect(),
+            tail: AtomicUsize::new(0),
+            head: AtomicUsize::new(0),
+            dropped: AtomicU64::new(0),
         }
     }
 
-    fn push(&mut self, span: Span) {
+    /// Producer side. Wait-free; returns `false` when the record was dropped.
+    fn push(&self, span: Span) -> bool {
         let capacity = self.slots.len();
-        let index = (self.head + self.len) % capacity;
-        self.slots[index] = span;
-        if self.len == capacity {
-            self.head = (self.head + 1) % capacity;
-            self.dropped += 1;
-        } else {
-            self.len += 1;
+        let tail = self.tail.load(Ordering::Relaxed);
+        let head = self.head.load(Ordering::Acquire);
+        if tail.wrapping_sub(head) >= capacity {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            return false;
         }
+        // SAFETY: see `impl Sync for Ring`; this slot is outside head..tail.
+        unsafe { *self.slots[tail % capacity].get() = span };
+        self.tail.store(tail.wrapping_add(1), Ordering::Release);
+        true
     }
 
-    fn drain_into(&mut self, out: &mut Vec<Span>) -> u64 {
+    /// Consumer side. Returns the number of records dropped since last drain.
+    fn drain_into(&self, out: &mut Vec<Span>) -> u64 {
         let capacity = self.slots.len();
-        for offset in 0..self.len {
-            out.push(self.slots[(self.head + offset) % capacity]);
+        let mut head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Acquire);
+        while head != tail {
+            // SAFETY: see `impl Sync for Ring`; this slot is inside head..tail.
+            out.push(unsafe { *self.slots[head % capacity].get() });
+            head = head.wrapping_add(1);
         }
-        self.head = 0;
-        self.len = 0;
-        std::mem::take(&mut self.dropped)
+        self.head.store(tail, Ordering::Release);
+        self.dropped.swap(0, Ordering::Relaxed)
     }
 }
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static EPOCH: OnceLock<(Instant, u64)> = OnceLock::new();
-static RING: OnceLock<Mutex<Ring>> = OnceLock::new();
+static RING: OnceLock<Ring> = OnceLock::new();
 static PENDING_PASTES: Mutex<Vec<Arc<PasteState>>> = Mutex::new(Vec::new());
 /// Start of the run-loop busy span in progress (µs since epoch), or 0 while
 /// the main thread is waiting. Read by the reporter for an unclosed span.
 static BUSY_SINCE_US: AtomicU64 = AtomicU64::new(0);
-/// The last few live-preview hides that ran: (recording id, start µs).
-static PREVIEW_HIDES: Mutex<[(u64, u64); 8]> = Mutex::new([(0, 0); 8]);
+/// One recent live-preview hide. Written only on the main thread, read by the
+/// reporter; `id` is cleared while `at` changes so a reader never pairs an id
+/// with another hide's time.
+struct HideSlot {
+    id: AtomicU64,
+    at: AtomicU64,
+}
+
+impl HideSlot {
+    const fn new() -> Self {
+        Self {
+            id: AtomicU64::new(0),
+            at: AtomicU64::new(0),
+        }
+    }
+}
+
+const PREVIEW_HIDE_SLOTS: usize = 8;
+/// The last few live-preview hides that ran.
+static PREVIEW_HIDES: [HideSlot; PREVIEW_HIDE_SLOTS] =
+    [const { HideSlot::new() }; PREVIEW_HIDE_SLOTS];
+static PREVIEW_HIDE_NEXT: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
     static IS_MAIN: Cell<bool> = const { Cell::new(false) };
-    static COMMAND_NAMES: RefCell<std::collections::HashSet<&'static str>> =
-        RefCell::new(std::collections::HashSet::new());
 }
 
 fn epoch() -> &'static (Instant, u64) {
@@ -189,12 +226,13 @@ fn is_main() -> bool {
     IS_MAIN.with(Cell::get)
 }
 
+/// Main thread only: the ring has a single producer. Never blocks.
 fn record(span: Span) {
-    if !ENABLED.load(Ordering::Relaxed) {
+    if !ENABLED.load(Ordering::Relaxed) || !is_main() {
         return;
     }
     if let Some(ring) = RING.get() {
-        ring.lock().unwrap_or_else(|p| p.into_inner()).push(span);
+        ring.push(span);
     }
 }
 
@@ -296,12 +334,197 @@ pub(crate) fn run_event_label(event: &tauri::RunEvent) -> &'static str {
     }
 }
 
-const MAX_COMMAND_NAMES: usize = 512;
-const MAX_COMMAND_NAME_LEN: usize = 64;
+const MAX_LABEL_LEN: usize = 64;
+
+/// Every command in `lib.rs`'s `generate_handler!`, sorted, as static labels.
+/// A test keeps this in step with `lib.rs`, so instrumentation never interns
+/// or allocates a name on the main thread.
+const COMMAND_LABELS: &[&str] = &[
+    "apply_meeting_calendar_event",
+    "arm_next_dictation_diagnostic_capture",
+    "cancel_audio_initialization",
+    "cancel_benchmark",
+    "cancel_code_vocab_scan",
+    "cancel_microphone_preview",
+    "cancel_microphone_startup_benchmark",
+    "cancel_model_download",
+    "cancel_native_recording",
+    "check_accessibility_permission",
+    "check_microphone_permission",
+    "check_microphone_permission_status",
+    "check_model_exists",
+    "check_smart_turn",
+    "check_specific_model_exists",
+    "clear_event_history",
+    "clear_history_blob",
+    "clear_ide_context",
+    "clear_logs",
+    "clear_performance_diagnostics",
+    "clear_stats_blob",
+    "clear_temporary_mode_override",
+    "clear_theme_library_blob",
+    "configure_dictation",
+    "configure_meeting_suggestions",
+    "configure_smart_auto_probe",
+    "confirm_learned_correction",
+    "cycle_mode",
+    "delete_all_knowledge",
+    "delete_all_meetings",
+    "delete_dictation_diagnostic_capture",
+    "delete_knowledge",
+    "delete_meeting",
+    "disarm_next_dictation_diagnostic_capture",
+    "discard_learned_correction_proposal",
+    "dismiss_meeting_suggestion",
+    "download_model",
+    "download_smart_turn_model",
+    "export_knowledge_to_file",
+    "get_app_disabled",
+    "get_audio_input_inventory",
+    "get_benchmark_activity",
+    "get_benchmark_models",
+    "get_calendar_permission_status",
+    "get_capture_health_history",
+    "get_diarization_model_status",
+    "get_dictation_diagnostic_capture",
+    "get_dictation_diagnostic_capture_status",
+    "get_event_history",
+    "get_ide_context_status",
+    "get_knowledge",
+    "get_knowledge_store_status",
+    "get_log_contents",
+    "get_meeting",
+    "get_meeting_audio_capture_busy",
+    "get_meeting_audio_manifest",
+    "get_meeting_bundle_preview",
+    "get_meeting_calendar_events",
+    "get_meeting_review_export",
+    "get_meeting_status",
+    "get_meeting_store_status",
+    "get_meeting_suggestion",
+    "get_microphone_preview_status",
+    "get_mode_runtime_status",
+    "get_model_hardware_guidance",
+    "get_model_runtime_catalog",
+    "get_model_runtime_status",
+    "get_overlay_geometry",
+    "get_performance_resource_window",
+    "get_performance_run",
+    "get_performance_store_health",
+    "get_resource_usage",
+    "get_smart_auto_microphone_status",
+    "get_status",
+    "get_system_audio_permission_status",
+    "get_update_install_environment",
+    "hide_overlay",
+    "import_knowledge_from_file",
+    "init_dictation",
+    "inspect_knowledge_import",
+    "is_notchpill_installed",
+    "list_audio_devices",
+    "list_dictation_diagnostic_captures",
+    "list_knowledge",
+    "list_meetings",
+    "list_performance_runs",
+    "list_running_applications",
+    "load_history_blob",
+    "load_settings_blob",
+    "load_stats_blob",
+    "load_theme_library_blob",
+    "log_frontend",
+    "open_benchmark_output_folder",
+    "open_calendar_preferences",
+    "open_system_audio_preferences",
+    "open_system_preferences",
+    "patch_overlay_setting",
+    "preview_vocabulary_aliases",
+    "preview_voice_command",
+    "probe_browser_site",
+    "process_audio",
+    "propose_learned_correction",
+    "propose_specific_learned_correction",
+    "prune_meetings",
+    "read_meeting_audio_range",
+    "read_modes_file",
+    "read_theme_file",
+    "recover_performance_store",
+    "refresh_ide_context",
+    "remove_diarization_model",
+    "remove_model",
+    "remove_smart_turn_model",
+    "rename_meeting_remote_speaker",
+    "request_accessibility_permission",
+    "request_calendar_permission",
+    "request_microphone_access",
+    "request_microphone_permission",
+    "request_system_audio_permission",
+    "reset_accessibility_permission",
+    "reset_calendar_permission",
+    "reset_microphone_permission",
+    "resolve_knowledge",
+    "retry_knowledge_store",
+    "retry_last_delivery",
+    "retry_smart_auto_probe",
+    "run_benchmark",
+    "run_microphone_startup_benchmark",
+    "save_benchmark_report",
+    "save_history_blob",
+    "save_meeting_bundle_export",
+    "save_meeting_metadata",
+    "save_meeting_review",
+    "save_meeting_review_export",
+    "save_microphone_startup_benchmark_report",
+    "save_settings_blob",
+    "save_stats_blob",
+    "save_text_export",
+    "save_theme_library_blob",
+    "scan_code_vocab",
+    "set_app_disabled",
+    "set_fn_capture_input",
+    "set_keyboard_recording",
+    "set_knowledge_enabled",
+    "set_live_words_material",
+    "set_next_recording_mode",
+    "set_overlay_expanded",
+    "set_overlay_material",
+    "set_overlay_vertical_offset",
+    "set_paste_last_shortcut",
+    "set_tray_update_available",
+    "show_diagnostics_window",
+    "show_dictation_preview",
+    "show_main_window",
+    "show_overlay",
+    "smart_turn_model_status",
+    "start_keyboard_listener",
+    "start_meeting",
+    "start_microphone_preview",
+    "start_native_recording",
+    "stop_keyboard_listener",
+    "stop_meeting",
+    "stop_microphone_preview",
+    "stop_native_recording",
+    "sync_window_chrome",
+    "transcribe_file",
+    "update_keyboard_key",
+    "update_microphone_preview_vad_sensitivity",
+    "update_tray_icon",
+    "updater_canary",
+    "upload_dictation_diagnostic_capture",
+    "upsert_knowledge",
+    "verify_microphone_preview_signal",
+    "write_theme_file",
+];
+
+/// The static label for a registered command name; no allocation or copy.
+fn command_label(name: &str) -> &'static str {
+    COMMAND_LABELS
+        .binary_search(&name)
+        .map(|index| COMMAND_LABELS[index])
+        .unwrap_or("command.other")
+}
 
 /// Record the run time of every Tauri command the invoke handler executes on
-/// the main thread. Only names the handler accepted are interned, so labels
-/// are registered command identifiers, never caller-supplied text.
+/// the main thread, labelled from the static [`COMMAND_LABELS`] table.
 pub(crate) fn instrument_invoke_handler<R, H>(
     handler: H,
 ) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static
@@ -313,91 +536,55 @@ where
         if !ENABLED.load(Ordering::Relaxed) || !is_main() {
             return handler(invoke);
         }
-        let name = invoke.message.command();
-        let known = COMMAND_NAMES.with(|names| names.borrow().get(name).copied());
-        let mut copy = [0u8; MAX_COMMAND_NAME_LEN];
-        let copied = if known.is_none() && name.len() <= MAX_COMMAND_NAME_LEN {
-            copy[..name.len()].copy_from_slice(name.as_bytes());
-            Some(name.len())
-        } else {
-            None
-        };
+        let label = command_label(invoke.message.command());
         let start = now_us();
         let handled = handler(invoke);
         let end = now_us();
-        let label = known
-            .or_else(|| {
-                let len = copied.filter(|_| handled)?;
-                let name = std::str::from_utf8(&copy[..len]).ok()?;
-                intern_command_name(name)
-            })
-            .unwrap_or("command.other");
         record_simple(Kind::Command, label, start, end, 0);
         handled
     }
 }
 
-fn intern_command_name(name: &str) -> Option<&'static str> {
-    if !is_safe_label(name) {
-        return None;
-    }
-    COMMAND_NAMES.with(|names| {
-        let mut names = names.borrow_mut();
-        if let Some(existing) = names.get(name) {
-            return Some(*existing);
-        }
-        if names.len() >= MAX_COMMAND_NAMES {
-            return None;
-        }
-        let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
-        names.insert(leaked);
-        Some(leaked)
-    })
-}
-
 /// Labels are static identifiers: lowercase ASCII, digits, `_`, `.`.
 pub(crate) fn is_safe_label(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= MAX_COMMAND_NAME_LEN
+        && value.len() <= MAX_LABEL_LEN
         && value
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.')
 }
 
-/// Record that the live-preview hide for `recording_id` started now. Called
-/// on the main thread inside the hide job; overwrites the oldest entry.
+/// Record that the live-preview hide for `recording_id` started now. Main
+/// thread only (the single writer); lock-free, overwrites the oldest slot.
 pub(crate) fn note_preview_hide(recording_id: u64) {
-    if !ENABLED.load(Ordering::Relaxed) {
+    if !ENABLED.load(Ordering::Relaxed) || !is_main() || recording_id == 0 {
         return;
     }
     let start = now_us();
-    let mut hides = PREVIEW_HIDES.lock().unwrap_or_else(|p| p.into_inner());
-    let slot = hides
+    let index = PREVIEW_HIDE_NEXT.fetch_add(1, Ordering::Relaxed) % PREVIEW_HIDE_SLOTS;
+    let slot = &PREVIEW_HIDES[index];
+    slot.id.store(0, Ordering::SeqCst);
+    slot.at.store(start, Ordering::SeqCst);
+    slot.id.store(recording_id, Ordering::SeqCst);
+}
+
+/// The latest recorded hide start for `recording_id`, if any.
+fn latest_preview_hide(recording_id: u64) -> Option<u64> {
+    PREVIEW_HIDES
         .iter()
-        .position(|(id, _)| *id == recording_id)
-        .unwrap_or_else(|| {
-            hides
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, (_, at))| *at)
-                .map(|(index, _)| index)
-                .unwrap_or(0)
-        });
-    hides[slot] = (recording_id, start);
+        .filter_map(|slot| {
+            let before = slot.id.load(Ordering::SeqCst);
+            let at = slot.at.load(Ordering::SeqCst);
+            let after = slot.id.load(Ordering::SeqCst);
+            (before == recording_id && after == recording_id).then_some(at)
+        })
+        .max()
 }
 
 /// Where the preview hide for this paste ran: before the paste was queued,
 /// while it waited, after it started, or not at all.
 fn preview_hide_order(recording_id: u64, queued_us: u64, started_us: u64) -> &'static str {
-    let hides = PREVIEW_HIDES.lock().unwrap_or_else(|p| p.into_inner());
-    classify_preview_hide(
-        hides
-            .iter()
-            .find(|(id, _)| *id == recording_id)
-            .map(|(_, at)| *at),
-        queued_us,
-        started_us,
-    )
+    classify_preview_hide(latest_preview_hide(recording_id), queued_us, started_us)
 }
 
 fn classify_preview_hide(hide_us: Option<u64>, queued_us: u64, started_us: u64) -> &'static str {
@@ -486,7 +673,7 @@ pub(crate) fn install() {
     }
     let _ = epoch();
     IS_MAIN.with(|flag| flag.set(true));
-    let _ = RING.set(Mutex::new(Ring::new()));
+    let _ = RING.set(Ring::new());
     #[cfg(target_os = "macos")]
     let observers_installed = runloop::install();
     #[cfg(not(target_os = "macos"))]
@@ -538,10 +725,7 @@ impl Reporter {
             return;
         };
         self.scratch.clear();
-        let dropped = ring
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .drain_into(&mut self.scratch);
+        let dropped = ring.drain_into(&mut self.scratch);
         self.dropped += dropped;
         let now = now_us();
         let drained = std::mem::take(&mut self.scratch);
@@ -1046,8 +1230,10 @@ mod tests {
 
     pub(super) fn enable_for_test() -> std::sync::MutexGuard<'static, ()> {
         let guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _ = RING.set(Mutex::new(Ring::new()));
+        let _ = RING.set(Ring::new());
         ENABLED.store(true, Ordering::Release);
+        // The test thread is the ring's single producer for this test.
+        IS_MAIN.with(|flag| flag.set(true));
         drain_ring();
         guard
     }
@@ -1055,7 +1241,7 @@ mod tests {
     pub(super) fn drain_ring() -> Vec<Span> {
         let mut out = Vec::new();
         if let Some(ring) = RING.get() {
-            ring.lock().unwrap().drain_into(&mut out);
+            ring.drain_into(&mut out);
         }
         out
     }
@@ -1071,16 +1257,75 @@ mod tests {
     }
 
     #[test]
-    fn ring_overwrites_oldest_and_counts_drops() {
-        let mut ring = Ring::new();
+    fn a_full_ring_drops_new_records_without_blocking() {
+        let ring = Ring::new();
         for i in 0..(RING_CAPACITY as u64 + 3) {
             ring.push(span(Kind::Job, "a", i, i + 1));
         }
         let mut out = Vec::new();
         assert_eq!(ring.drain_into(&mut out), 3);
         assert_eq!(out.len(), RING_CAPACITY);
-        assert_eq!(out[0].start_us, 3);
+        assert_eq!(out[0].start_us, 0);
+        assert!(ring.push(span(Kind::Job, "b", 7, 8)));
+        out.clear();
         assert_eq!(ring.drain_into(&mut out), 0);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].label, "b");
+    }
+
+    #[test]
+    fn the_ring_hands_records_across_threads_in_order() {
+        let ring = std::sync::Arc::new(Ring::new());
+        let producer = {
+            let ring = ring.clone();
+            std::thread::spawn(move || {
+                let mut pushed = 0u64;
+                while pushed < 20_000 {
+                    if ring.push(span(Kind::Job, "a", pushed, pushed + 1)) {
+                        pushed += 1;
+                    } else {
+                        std::thread::yield_now();
+                    }
+                }
+            })
+        };
+        let mut seen = Vec::new();
+        while seen.len() < 20_000 {
+            ring.drain_into(&mut seen);
+        }
+        producer.join().unwrap();
+        assert!(seen.iter().enumerate().all(|(i, s)| s.start_us == i as u64));
+    }
+
+    #[test]
+    fn off_main_threads_never_record() {
+        let _guard = enable_for_test();
+        std::thread::spawn(|| record_simple(Kind::Job, "off.main", 1, 2, 0))
+            .join()
+            .unwrap();
+        assert!(drain_ring().iter().all(|s| s.label != "off.main"));
+    }
+
+    #[test]
+    fn command_labels_match_the_registered_handler_exactly() {
+        let lib_rs = include_str!("lib.rs");
+        let start = lib_rs
+            .find("tauri::generate_handler![")
+            .expect("generate_handler! in lib.rs")
+            + "tauri::generate_handler![".len();
+        let end = start + lib_rs[start..].find(']').expect("handler end");
+        let mut registered: Vec<&str> = lib_rs[start..end]
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| entry.rsplit("::").next().unwrap_or(entry))
+            .collect();
+        registered.sort_unstable();
+        assert_eq!(COMMAND_LABELS, registered.as_slice());
+        assert!(COMMAND_LABELS.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(COMMAND_LABELS.iter().all(|label| is_safe_label(label)));
+        assert_eq!(command_label("get_status"), "get_status");
+        assert_eq!(command_label("plugin:window|show"), "command.other");
     }
 
     #[test]
@@ -1149,13 +1394,17 @@ mod tests {
     fn preview_hides_keep_the_latest_per_recording() {
         let _guard = enable_for_test();
         note_preview_hide(91);
+        let first = latest_preview_hide(91).expect("recorded");
+        std::thread::sleep(Duration::from_millis(1));
         note_preview_hide(91);
+        assert!(latest_preview_hide(91).expect("recorded") > first);
         for id in 100..110 {
             note_preview_hide(id);
         }
-        let hides = PREVIEW_HIDES.lock().unwrap();
-        assert!(hides.iter().any(|(id, _)| *id == 109));
-        assert_eq!(hides.iter().filter(|(id, _)| *id == 109).count(), 1);
+        assert!(latest_preview_hide(109).is_some());
+        // Eight slots: the oldest hides age out.
+        assert!(latest_preview_hide(91).is_none());
+        assert!(latest_preview_hide(0).is_none());
     }
 
     #[test]

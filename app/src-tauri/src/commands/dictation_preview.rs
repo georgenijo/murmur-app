@@ -183,8 +183,11 @@ impl HideOwnership {
         }
     }
 
-    pub(crate) fn ticker_started(&self, recording_id: u64) {
-        self.ticker.store(recording_id, Ordering::SeqCst);
+    /// Record the ticker's generation. Recording ids only grow, so a stale
+    /// generation resuming late is refused atomically instead of replacing
+    /// its successor's registration.
+    pub(crate) fn ticker_started(&self, recording_id: u64) -> bool {
+        recording_id > 0 && self.ticker.fetch_max(recording_id, Ordering::SeqCst) <= recording_id
     }
 
     /// Called under the dictation lock at the accepted stop transition, before
@@ -206,8 +209,10 @@ impl HideOwnership {
 
 static OWNERSHIP: HideOwnership = HideOwnership::new();
 
-pub(crate) fn note_ticker_started(recording_id: u64) {
-    OWNERSHIP.ticker_started(recording_id);
+/// Register the ticker for `recording_id`; `false` for an older generation.
+/// Called under the dictation lock (see `register_partial_ticker_locked`).
+pub(crate) fn note_ticker_started(recording_id: u64) -> bool {
+    OWNERSHIP.ticker_started(recording_id)
 }
 
 /// The partial ticker's exit: hide unless a stop handed the hide to delivery.
@@ -402,17 +407,29 @@ mod tests {
         let ownership = HideOwnership::new();
         // No ticker ran: there is no preview to hide and delivery claims nothing.
         assert!(!ownership.claim_for_delivery(5));
-        ownership.ticker_started(7);
+        assert!(ownership.ticker_started(7));
         // Cancelled or interrupted while recording: no stop claim, ticker hides.
         assert!(ownership.ticker_should_hide(7));
         // Accepted stop: delivery claims, the ticker leaves the hide to it.
         assert!(ownership.claim_for_delivery(7));
         assert!(!ownership.ticker_should_hide(7));
         // A successor's ticker never inherits the old claim.
-        ownership.ticker_started(8);
+        assert!(ownership.ticker_started(8));
         assert!(ownership.ticker_should_hide(8));
         assert!(!ownership.claim_for_delivery(7));
         assert!(!ownership.claim_for_delivery(0));
+    }
+
+    #[test]
+    fn a_stale_ticker_registration_cannot_replace_its_successor() {
+        let ownership = HideOwnership::new();
+        assert!(ownership.ticker_started(8));
+        // Generation 7's ready callback resumes after 8 registered.
+        assert!(!ownership.ticker_started(7));
+        // 8's stop still claims the hide, so its ticker leaves it to delivery.
+        assert!(ownership.claim_for_delivery(8));
+        assert!(!ownership.ticker_should_hide(8));
+        assert!(!ownership.ticker_started(0));
     }
 
     #[test]

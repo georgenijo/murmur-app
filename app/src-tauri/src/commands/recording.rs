@@ -211,7 +211,30 @@ fn emit_dictation_partial_tick(recording_id: u64, outcome: &'static str, sample_
     );
 }
 
-fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
+/// Register `recording_id`'s partial ticker as the preview hide's ticker side.
+/// The caller holds the dictation lock: the stop transition claims the hide
+/// under the same lock, so registration either precedes that claim or sees
+/// the recording already stopped and refuses. Older generations never
+/// replace a newer registration.
+fn register_partial_ticker_locked(
+    app_state: &AppState,
+    dictation: &crate::state::DictationState,
+    recording_id: u64,
+) -> bool {
+    recording_id > 0
+        && app_state.recording_id.load(Ordering::SeqCst) == recording_id
+        && dictation.status == DictationStatus::Recording
+        && !app_state.is_cancelled(recording_id)
+        && crate::commands::dictation_preview::note_ticker_started(recording_id)
+}
+
+/// Spawn the live-preview ticker. `register` runs under the dictation lock
+/// (see [`register_partial_ticker_locked`]); no ticker runs if it refuses.
+fn spawn_dictation_partial_ticker(
+    app: tauri::AppHandle,
+    recording_id: u64,
+    register: impl FnOnce() -> bool,
+) {
     let Some(context) = app.state::<State>().app_state.active_context(recording_id) else {
         return;
     };
@@ -219,6 +242,9 @@ fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
     let whisper = transcriber::whisper::supports_live_preview(model);
     if !whisper && !transcriber::is_coreml_model(model) {
         emit_dictation_partial_tick(recording_id, "unsupported_model", 0);
+        return;
+    }
+    if !register() {
         return;
     }
     #[cfg(feature = "preview-decode-reuse")]
@@ -235,7 +261,6 @@ fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
         PARTIAL_INTERVAL
     };
     let preview: WhisperPreview = Arc::new(Mutex::new(None));
-    crate::commands::dictation_preview::note_ticker_started(recording_id);
     drop(tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(interval).await;
@@ -1640,6 +1665,38 @@ mod clipboard_delivery_tests {
             12,
             false,
             DictationStatus::Idle,
+        ));
+    }
+
+    #[test]
+    fn a_partial_ticker_registers_only_while_its_recording_is_live() {
+        // Ids above any other test's, since the ticker registration only grows.
+        let app_state = AppState::default();
+        app_state.recording_id.store(9_000_001, Ordering::SeqCst);
+        let mut dictation = app_state.dictation.lock_or_recover();
+        dictation.status = DictationStatus::Recording;
+        // A stale generation is refused even while the lock shows Recording.
+        assert!(!register_partial_ticker_locked(
+            &app_state, &dictation, 9_000_000
+        ));
+        assert!(register_partial_ticker_locked(
+            &app_state, &dictation, 9_000_001
+        ));
+        // A ready callback that resumes after the stop transition is refused:
+        // the stop already claimed (or declined) the hide under this lock.
+        app_state.recording_id.store(9_000_002, Ordering::SeqCst);
+        dictation.status = DictationStatus::Processing;
+        assert!(!register_partial_ticker_locked(
+            &app_state, &dictation, 9_000_002
+        ));
+        dictation.status = DictationStatus::Recording;
+        assert!(register_partial_ticker_locked(
+            &app_state, &dictation, 9_000_002
+        ));
+        // The predecessor resuming now cannot overwrite its successor.
+        app_state.recording_id.store(9_000_001, Ordering::SeqCst);
+        assert!(!register_partial_ticker_locked(
+            &app_state, &dictation, 9_000_001
         ));
     }
 
@@ -4881,10 +4938,13 @@ pub(crate) fn handle_audio_lifecycle(
             });
         },
     );
-    if became_ready
-        && dictation_partial_is_current(&partial_app.state::<State>().app_state, recording_id)
-    {
-        spawn_dictation_partial_ticker(partial_app, recording_id);
+    if became_ready {
+        let register_app = partial_app.clone();
+        spawn_dictation_partial_ticker(partial_app, recording_id, move || {
+            let state = register_app.state::<State>();
+            let dictation = state.app_state.dictation.lock_or_recover();
+            register_partial_ticker_locked(&state.app_state, &dictation, recording_id)
+        });
     }
 }
 
@@ -5332,7 +5392,9 @@ fn publish_recording_ready_if_audio_ready(
         context_to_status_emit_ms = context_ready_at.elapsed().as_millis() as u64,
         "recording status emitted after context ready"
     );
-    spawn_dictation_partial_ticker(app_handle.clone(), recording_id);
+    spawn_dictation_partial_ticker(app_handle.clone(), recording_id, || {
+        register_partial_ticker_locked(&state.app_state, &dictation, recording_id)
+    });
     true
 }
 
