@@ -89,7 +89,7 @@ labeled there.
 ## Evidence and reproducibility
 
 The disposable public-API probe and three-run results are in
-[`spikes/354-metal-metrics`](../../spikes/354-metal-metrics/RESULTS.md). The
+`spikes/354-metal-metrics` (removed in the repo cleanup; see git history before 23ed8a73). The
 probe proves timestamp/counter overhead and `currentAllocatedSize` behavior only
 for work it owns. It explicitly does not prove access through Murmur's pinned
 runtimes.

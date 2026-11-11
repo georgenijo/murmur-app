@@ -861,7 +861,7 @@ direct-child ADR
 
 **Status:** provisional — kill/packaging implementation landed; signed/notarized interactive TCC evidence is an external release gate
 
-**References:** issue #407; ADR [`2026-07-30-capture-helper-phase-0.md`](2026-07-30-capture-helper-phase-0.md); evidence matrix [`../evidence/407-capture-helper-phase-0.json`](../evidence/407-capture-helper-phase-0.json)
+**References:** issue #407; ADR [`2026-07-30-capture-helper-phase-0.md`](2026-07-30-capture-helper-phase-0.md); evidence matrix `docs/evidence/407-capture-helper-phase-0.json` (removed in the repo cleanup; see git history before 23ed8a73)
 
 ---
 
@@ -933,7 +933,7 @@ contract without giving user-controlled colors an accessibility escape hatch.
 
 **References:** issue #377;
 [`docs/features/appearance.md`](../features/appearance.md);
-[`docs/draft/theme-engine-converged-plan.md`](../draft/theme-engine-converged-plan.md).
+`docs/draft/theme-engine-converged-plan.md` (removed in the repo cleanup; see git history before 23ed8a73).
 
 ---
 
@@ -957,7 +957,7 @@ contract without giving user-controlled colors an accessibility escape hatch.
 
 **Status:** active
 
-**References:** issue #354; parent #350; ADR [`2026-07-22-accelerator-diagnostics-metrics.md`](2026-07-22-accelerator-diagnostics-metrics.md); disposable probe `spikes/354-metal-metrics`.
+**References:** issue #354; parent #350; ADR [`2026-07-22-accelerator-diagnostics-metrics.md`](2026-07-22-accelerator-diagnostics-metrics.md); disposable probe `spikes/354-metal-metrics` (removed in the repo cleanup; see git history before 23ed8a73).
 
 ---
 
