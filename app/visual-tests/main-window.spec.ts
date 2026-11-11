@@ -1337,3 +1337,22 @@ test('Insights tooltips follow the hovered speed point and heatmap cell', async 
     expect(new Set(positions.map(position => `${position.x},${position.y}`)).size).toBe(3);
   }
 });
+
+test('cumulative update notes retain version and category hierarchy compactly', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=update-dialog-cumulative&appearance=light');
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('heading', { name: /What.s (Changed|new)/ })).toHaveCount(0);
+  await expect(dialog.locator('h1')).toHaveCount(2);
+  await expect(dialog.locator('h3')).toHaveCount(2);
+  await expect(dialog.getByText('Full Changelog', { exact: false })).toHaveCount(2);
+  const gaps = await dialog.locator('h1').first().evaluate(h => {
+    const category = h.nextElementSibling!;
+    const list = category.nextElementSibling!;
+    const items = list.querySelectorAll('li');
+    const a = h.getBoundingClientRect(), b = category.getBoundingClientRect(), c = items[0].getBoundingClientRect(), d = items[1].getBoundingClientRect();
+    return { heading: b.top - a.bottom, bullet: c.top - b.bottom, items: d.top - c.bottom };
+  });
+  expect(gaps.heading).toBeLessThanOrEqual(gaps.items + 5);
+  expect(gaps.bullet).toBeLessThanOrEqual(gaps.items + 5);
+  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-update-dialog-cumulative.png');
+});

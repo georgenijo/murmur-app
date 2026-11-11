@@ -42,3 +42,16 @@ for (const appearance of ['light', 'dark'] as const) {
     });
   }
 }
+
+for (const size of [{ width: 840, height: 620 }, { width: 880, height: 720 }, { width: 1100, height: 780 }]) {
+  for (const state of ['idle', 'home-mic-denied', 'processing']) {
+    test(`month summary remains fully visible in ${state} at ${size.width}x${size.height}`, async ({ page }) => {
+      await page.setViewportSize(size);
+      await page.goto(`/visual-fixtures.html?state=${state}&appearance=light`);
+      const summary = page.locator('.home-month-stat-value');
+      await expect(summary).toBeVisible();
+      expect(await summary.evaluate(el => el.scrollWidth <= el.clientWidth && el.scrollHeight <= el.clientHeight)).toBe(true);
+      await expect(summary).toContainText('dictations');
+    });
+  }
+}

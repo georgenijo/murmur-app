@@ -1233,9 +1233,10 @@ textarea {
 /* Passive month summary stays neutral while the talk row responds to input. */
 .home-talk-footer {
   display: flex;
-  min-width: min(100%, 22rem);
+  min-width: 0;
+  max-width: 100%;
   align-items: center;
-  flex: 1 1 22rem;
+  flex: 1 0 max-content;
   background: transparent;
   padding: 0.1875rem var(--ui-space-3) 0.1875rem var(--ui-space-6);
 }
@@ -1312,7 +1313,7 @@ textarea {
   justify-content: space-between;
   gap: var(--ui-space-4);
 }
-.home-month-stat-value { min-width: 0; overflow: hidden; color: var(--murmur-on-surface-variant); font-family: var(--ui-font-sans); font-variant-numeric: tabular-nums; font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); text-overflow: ellipsis; white-space: nowrap; }
+.home-month-stat-value { min-width: 0; color: var(--murmur-on-surface-variant); font-family: var(--ui-font-sans); font-variant-numeric: tabular-nums; font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); overflow-wrap: anywhere; }
 .home-month-stat-label { margin-right: var(--ui-space-5); }
 .home-history .history-search kbd { border-radius: var(--home-radius-key); }
 .home-history .transcript-meta .rounded-full { border-radius: var(--ui-radius-control); }
