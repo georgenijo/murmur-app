@@ -163,33 +163,6 @@
   background: var(--settings-tint-sunken);
 }
 
-.settings-hub-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.settings-hub-card {
-  border-radius: var(--settings-radius-card);
-  border: 1px solid var(--settings-hairline);
-  background: var(--settings-tint-raised);
-  box-shadow: var(--settings-shadow-1);
-  overflow: hidden;
-  transition: box-shadow 150ms ease, border-color 150ms ease, transform 150ms ease;
-}
-
-.settings-hub-card:hover,
-.settings-hub-card:focus-within {
-  box-shadow: var(--settings-shadow-2);
-  border-color: color-mix(in srgb, var(--murmur-primary) 45%, transparent);
-}
-
-@media (hover: hover) {
-  .settings-hub-card:hover {
-    transform: translateY(-1px);
-  }
-}
-
 .settings-workspace ul[role='listbox'] {
   border-radius: var(--ui-radius-popover, 0.5rem);
   border: 1px solid var(--ui-popover-border);
@@ -401,7 +374,6 @@
   .settings-back-btn,
   .settings-quiet-btn,
   .settings-segmented-btn,
-  .settings-hub-card,
   .settings-mode-row,
   .settings-workspace button[role='combobox'],
   .settings-workspace input[type],
@@ -462,7 +434,7 @@
 .settings-page-head { margin-bottom: var(--settings-heading-gap); padding-inline: 16px; min-height: var(--settings-heading-height); }
 .settings-section-title { font-size: var(--ui-font-settings-group); line-height: var(--ui-leading-micro); font-weight: 500; color: var(--murmur-on-surface-variant); }
 .settings-page-subtitle { margin-top: 4px; font-size: 12px; line-height: 18px; }
-.settings-card, .settings-hub-card { border: 1px solid var(--settings-card-border); border-radius: 12px; background: var(--settings-card-bg); box-shadow: var(--settings-card-shadow); }
+.settings-card { border: 1px solid var(--settings-card-border); border-radius: 12px; background: var(--settings-card-bg); box-shadow: var(--settings-card-shadow); }
 .settings-card .settings-card { border-radius: 12px; }
 .settings-card-body { padding: 0; margin: 0; }
 .settings-group-plain { display: flex; flex-direction: column; gap: 4px; }
@@ -603,12 +575,12 @@
 .settings-sidebar :is(nav, .settings-nav-tools) > * { margin-block: 0; }
 /* Legacy panes use native action elements. Keep their behavior while giving
    bordered actions the same geometry as the shared Base UI button. */
-.settings-workspace button:is([class*='px-3'][class*='py-'], [class*='px-4'][class*='py-'], [class*='px-2'][class*='py-']):not([role]):not(.settings-nav-item):not(.settings-setting-row):not(.settings-card):not(.settings-hub-card > button):not(.settings-mode-row):not(.settings-segmented-btn):not(.settings-search-result):not([aria-expanded]) {
+.settings-workspace button:is([class*='px-3'][class*='py-'], [class*='px-4'][class*='py-'], [class*='px-2'][class*='py-']):not([role]):not(.settings-nav-item):not(.settings-setting-row):not(.settings-card):not(.settings-mode-row):not(.settings-segmented-btn):not(.settings-search-result):not([aria-expanded]) {
   min-height: var(--ui-control-standard); height: var(--ui-control-standard); padding: 0 calc(12px - 1px); border-width: 1px; border-style: solid; border-radius: var(--ui-radius-control); font-size: 14px; line-height: 20px; font-weight: 500;
   /* Paint only legacy controls; shared-family and danger colors have their own owner. */
   &:not(:where(.ui-secondary-button, .ui-form-button, .settings-quiet-btn, .settings-back-btn, .text-error, [data-tone="danger"], [data-confirming="true"])) { border-color: var(--ui-control-border); }
 }
-.settings-workspace button:is([class*='px-3'][class*='py-'], [class*='px-4'][class*='py-'], [class*='px-2'][class*='py-']):not([role]):not(.settings-nav-item):not(.settings-setting-row):not(.settings-card):not(.settings-hub-card > button):not(.settings-mode-row):not(.settings-segmented-btn):not(.settings-search-result):not([aria-expanded]):active:not(:disabled) { transform: scale(var(--ui-button-press-scale)); }
+.settings-workspace button:is([class*='px-3'][class*='py-'], [class*='px-4'][class*='py-'], [class*='px-2'][class*='py-']):not([role]):not(.settings-nav-item):not(.settings-setting-row):not(.settings-card):not(.settings-mode-row):not(.settings-segmented-btn):not(.settings-search-result):not([aria-expanded]):active:not(:disabled) { transform: scale(var(--ui-button-press-scale)); }
 
 .settings-title-description > p { font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); text-wrap: pretty; max-width: var(--settings-description-max); margin-top: var(--settings-copy-gap); }
 .ui-switch-thumb { transform: translateX(0); transform-origin: left center; transition: transform var(--ui-switch-knob-duration), scale 100ms; }
@@ -628,11 +600,6 @@
 }
 
 .settings-workspace :is(button, input, select, textarea):disabled { opacity: var(--ui-disabled-opacity); }
-.settings-hub-card > button { min-height: 0; height: auto; padding: var(--settings-row-pad) var(--settings-row-x); }
-.settings-hub-card > button:hover { background: transparent; }
-.settings-hub-card > button > .min-w-0 > :first-child { font-size: 14px; line-height: 20px; font-weight: 500; }
-.settings-hub-card > button > .min-w-0 > :nth-child(2) { margin-top: var(--settings-copy-gap); font-size: 12px; line-height: 18px; text-wrap: balance; }
-
 @media (prefers-reduced-motion: reduce) {
   .settings-dependent-branch { transition: none !important; }
 }

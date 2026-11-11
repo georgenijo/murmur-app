@@ -230,7 +230,7 @@ describe('SettingsPanel information architecture', () => {
       ) as HTMLButtonElement;
       expect(back).toBeDefined();
       await act(async () => back.click());
-      expect(container.querySelector('h1')?.textContent).toBe('Customize Murmur');
+      expect(container.querySelector('h1')?.textContent).toBe('Customize');
       expect(document.activeElement).toBe(hubButton(label));
     }
   });
@@ -238,9 +238,9 @@ describe('SettingsPanel information architecture', () => {
   it('presents Customize as independent named destinations rather than numbered steps', async () => {
     await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'customize', token: 1 }));
     const list = container.querySelector('[aria-label="Customization destinations"]')!;
-    expect(list.tagName).toBe('UL');
+    expect(list.tagName).toBe('DIV');
     expect(list.children).toHaveLength(4);
-    expect(Array.from(list.children).every(element => element.tagName === 'LI')).toBe(true);
+    expect(Array.from(list.children).every(element => element.tagName === 'BUTTON')).toBe(true);
     expect(list.textContent).not.toMatch(/0[1-5]/);
   });
 
@@ -281,7 +281,7 @@ describe('SettingsPanel information architecture', () => {
     expect(onUpdateSettings).not.toHaveBeenCalled();
     const back = container.querySelector<HTMLButtonElement>('.settings-back-btn')!;
     await act(async () => back.click());
-    expect(container.querySelector('h1')?.textContent).toBe('Customize Murmur');
+    expect(container.querySelector('h1')?.textContent).toBe('Customize');
     expect(document.activeElement).toBe(commandsRow());
   });
 
@@ -894,7 +894,7 @@ describe('SettingsPanel information architecture', () => {
     ) as HTMLButtonElement;
     await act(async () => aiModels.click());
     const speechModel = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Speech-to-text') && button.textContent?.includes('Configure'),
+      (button) => button.textContent?.includes('Speech-to-text') && button.classList.contains('settings-setting-row'),
     ) as HTMLButtonElement;
     await act(async () => speechModel.click());
 

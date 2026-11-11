@@ -374,11 +374,11 @@ test('customization hub stays legible and restores focus at native and narrow wi
   await page.getByRole('navigation', { name: 'Settings pages' }).getByRole('button', { name: 'Customize', exact: true }).click();
 
   const fixture = page.locator('[data-visual-ready="true"]');
-  const customizationList = page.getByRole('list', { name: 'Customization destinations' });
+  const customizationList = page.locator('[aria-label="Customization destinations"]');
   const voiceCommands = customizationList.getByRole('button').filter({ hasText: 'Voice commands' });
-  await expect(page.getByRole('heading', { name: 'Customize Murmur' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Customize' })).toBeVisible();
   await expect(customizationList.getByRole('button')).toHaveCount(4);
-  expect(await customizationList.evaluate(element => element.tagName)).toBe('UL');
+  expect(await customizationList.evaluate(element => element.tagName)).toBe('DIV');
   for (const label of ['Text & vocabulary', 'Voice commands', 'App overrides', 'Modes']) {
     await expect(customizationList.getByRole('button', { name: new RegExp(`^${label}`) })).toHaveCount(1);
   }
@@ -391,7 +391,7 @@ test('customization hub stays legible and restores focus at native and narrow wi
   await expect(voiceCommands).toBeFocused();
 
   await page.setViewportSize({ width: 720, height: 560 });
-  await expect(page.getByRole('heading', { name: 'Customize Murmur', level: 1 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Customize', level: 1 })).toBeVisible();
   await expect(fixture).toHaveScreenshot('light-settings-customization-hub-narrow.png');
 });
 

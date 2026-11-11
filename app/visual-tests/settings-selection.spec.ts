@@ -35,7 +35,7 @@ for (const appearance of appearances) {
       const customize = navigation.getByRole('button', { name: 'Customize', exact: true });
       await customize.click();
       await expect(customize).toHaveAttribute('aria-current', 'page');
-      await expect(page.getByRole('heading', { name: 'Customize Murmur', exact: true, level: 1 })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Customize', exact: true, level: 1 })).toBeVisible();
 
       const customizeIcon = customize.locator('svg').evaluate((svg) => svg.innerHTML);
       const modesIcon = navigation.getByRole('button', { name: 'Modes', exact: true }).locator('svg').evaluate((svg) => svg.innerHTML);

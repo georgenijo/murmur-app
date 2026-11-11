@@ -899,7 +899,7 @@ export const SettingsPanel = memo(function SettingsPanel({
       ?? SETTINGS_TOOLS.find((tool) => tool.id === page)?.label
       ?? page;
   };
-  const pageTitle = searchQuery ? 'Search' : ({ customize: 'Customize Murmur', 'ai-transcription': 'Speech-to-text',
+  const pageTitle = searchQuery ? 'Search' : ({ customize: 'Customize', 'ai-transcription': 'Speech-to-text',
       shortcuts: 'Keyboard shortcuts' } as Record<string, string>)[activeCat]
       ?? searchPageLabel(activeCat);
   return (
@@ -1244,18 +1244,19 @@ export const SettingsPanel = memo(function SettingsPanel({
           </SettingsSection>
 
           <SettingsSection hideHeading pageId="ai" activePage={activeCat} title="AI & models">
-            <button
-              type="button"
-              onClick={() => openPage('ai-transcription')}
-              className="flex w-full items-center gap-4 px-1 py-1 text-left hover:text-primary"
-            >
-              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-surface-container-high text-primary"><SettingsNavIcon icon="recording" /></span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-semibold text-on-surface">Speech-to-text</span>
-                <span className="mt-0.5 block truncate text-xs text-on-surface-variant">{selectedRuntime?.label ?? AVAILABLE_MODEL_OPTIONS.find((option) => option.value === settings.model)?.label ?? settings.model} · {selectedRuntime?.installState ?? 'Local model'}</span>
-              </span>
-              <span className="text-xs font-semibold text-on-surface-variant">Configure <span aria-hidden="true">›</span></span>
-            </button>
+            <SettingsGroup>
+              <button
+                type="button"
+                onClick={() => openPage('ai-transcription')}
+                className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              >
+                <span className="settings-title-description">
+                  <span className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">Speech-to-text</span>
+                  <span className="mt-0.5 block text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">{selectedRuntime?.label ?? AVAILABLE_MODEL_OPTIONS.find((option) => option.value === settings.model)?.label ?? settings.model} · {selectedRuntime?.installState ?? 'Local model'}</span>
+                </span>
+                <span aria-hidden="true" className="text-on-surface-variant">›</span>
+              </button>
+            </SettingsGroup>
 
           </SettingsSection>
 

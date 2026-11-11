@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef } from 'react';
+import { SettingsGroup } from './SettingsLayout';
 
 export type CustomizationDestination = 'text' | 'commands' | 'styles' | 'modes';
 
@@ -43,36 +44,30 @@ export function CustomizationHub({ focusDestination, onOpen }: CustomizationHubP
 
   return (
     <section aria-label="Customize Murmur">
-
-      <ul
-        role="list"
-        aria-label="Customization destinations"
-        className="settings-hub-list mt-6"
-      >
+      <SettingsGroup>
+        <div aria-label="Customization destinations">
         {DESTINATIONS.map((destination) => (
-          <li key={destination.id} className="settings-hub-card">
             <button
+              key={destination.id}
               ref={(node) => {
                 if (node) rowRefs.current[destination.id] = node;
                 else delete rowRefs.current[destination.id];
               }}
               type="button"
               onClick={(event) => onOpen(destination.id, event.currentTarget)}
-              className="group flex min-h-[76px] w-full items-center gap-4 px-4 py-3 text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:bg-surface-container-low focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+              className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-semibold text-on-surface">{destination.title}</span>
-                <span className="mt-1 block text-xs leading-relaxed text-on-surface-variant">
+              <span className="settings-title-description">
+                <span className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">{destination.title}</span>
+                <span className="mt-0.5 block text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
                   {destination.description}
                 </span>
               </span>
-              <span aria-hidden="true" className="text-lg text-on-surface-variant transition-transform group-hover:translate-x-0.5 group-hover:text-on-surface">
-                ›
-              </span>
+              <span aria-hidden="true" className="text-on-surface-variant">›</span>
             </button>
-          </li>
         ))}
-      </ul>
+        </div>
+      </SettingsGroup>
     </section>
   );
 }
