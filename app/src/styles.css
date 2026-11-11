@@ -1414,7 +1414,7 @@ textarea {
 .meeting-speakers > summary::-webkit-details-marker { display: none; }
 .meeting-speakers-panel { position: absolute; top: calc(100% + var(--ui-space-3)); right: 0; z-index: 20; width: min(28rem, 100%); border: 1px solid var(--ui-hairline); border-radius: var(--ui-radius-popover); background: var(--murmur-surface-container-lowest); padding: var(--ui-space-6); box-shadow: var(--ui-shadow-3); }
 .meeting-claim-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-3); margin-bottom: var(--ui-space-4); border-radius: var(--ui-radius-control); background: var(--ui-tint-sunken); padding: var(--ui-space-4) var(--ui-space-5); }
-.meeting-transcript-row { display: grid; scroll-margin: 5rem; grid-template-columns: 56px minmax(48px, max-content) minmax(0, 1fr); align-items: start; gap: 8px; padding: 8px 0; font-size: var(--ui-font-label); line-height: var(--ui-leading-label); }
+.meeting-transcript-row { display: grid; scroll-margin: 5rem; grid-template-columns: 56px var(--meeting-speaker-column, 48px) minmax(0, 1fr); align-items: start; gap: 8px; padding: 8px 0; font-size: var(--ui-font-label); line-height: var(--ui-leading-label); }
 .meeting-transcript-row + .meeting-transcript-row { border-top: 1px solid var(--ui-hairline); }
 .meeting-transcript-row[data-selected="true"] { background: var(--ui-tint-accent-subtle); }
 .meeting-transcript-row:focus-visible { border-radius: var(--ui-radius-control); background: color-mix(in srgb, var(--murmur-primary) 10%, transparent); outline: 2px solid var(--murmur-primary); }

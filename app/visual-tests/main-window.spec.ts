@@ -857,25 +857,33 @@ test('meeting transcripts and speaker labels remain usable at normal and narrow 
   await page.mouse.move(0, 0);
   await expect(fixture).toHaveScreenshot('light-meeting-review.png');
 
-  const speaker = page.locator('.meeting-transcript-speaker').first();
-  await speaker.evaluate((element) => { element.textContent = 'Alexandria'; });
-  const speakerLayout = await speaker.evaluate((element) => {
+  await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light&speaker-labels=long');
+  const rows = page.locator('.meeting-transcript-row');
+  const speakers = page.locator('.meeting-transcript-speaker');
+  await expect(rows).toHaveCount(3);
+  const speakerLayout = await speakers.last().evaluate((element) => {
     const style = getComputedStyle(element);
     return {
+      height: element.getBoundingClientRect().height,
+      lineHeight: parseFloat(style.lineHeight),
       clientWidth: element.clientWidth,
       scrollWidth: element.scrollWidth,
       textOverflow: style.textOverflow,
       whiteSpace: style.whiteSpace,
     };
   });
-  expect(speakerLayout.clientWidth).toBeGreaterThan(48);
+  const textStarts = await rows.evaluateAll((elements) => elements.map((row) => (
+    row.lastElementChild!.getBoundingClientRect().left
+  )));
+  expect(new Set(textStarts.map((left) => Math.round(left * 100) / 100)).size).toBe(1);
+  expect(speakerLayout.height).toBeGreaterThan(speakerLayout.lineHeight * 1.5);
   expect(speakerLayout.clientWidth).toBeLessThanOrEqual(120);
   expect(speakerLayout.scrollWidth).toBe(speakerLayout.clientWidth);
   expect(speakerLayout.textOverflow).not.toBe('ellipsis');
   expect(speakerLayout.whiteSpace).not.toBe('nowrap');
 
   await page.setViewportSize({ width: 720, height: 560 });
-  await page.reload();
+  await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light');
   await expect(page.getByRole('button', { name: 'Copy transcript' })).toBeVisible();
   await page.mouse.move(0, 0);
   await expect(fixture).toHaveScreenshot('light-meeting-review-narrow.png');
