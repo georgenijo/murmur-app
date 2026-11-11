@@ -209,16 +209,16 @@ describe('OnboardingFlow', () => {
 
   const goToModelStep = async () => {
     await goToSystemAudioStep();
-    await clickButton('Skip meetings for now');
+    await clickButton('Skip for now');
     expect(container.querySelector('h1')?.textContent).toContain('Calendar access');
-    await clickButton('Skip Calendar for now');
+    await clickButton('Skip for now');
     expect(container.querySelector('h1')?.textContent).toContain('Speech model');
     await settle();
   };
 
   const goToCalendarStep = async () => {
     await goToSystemAudioStep();
-    await clickButton('Skip meetings for now');
+    await clickButton('Skip for now');
     expect(container.querySelector('h1')?.textContent).toContain('Calendar access');
     await settle();
   };
@@ -270,13 +270,13 @@ describe('OnboardingFlow', () => {
 
     await clickButton('Continue');
     expectProgress(4);
-    expectNavigation('Continue', 'Skip meetings for now');
+    expectNavigation('Continue', 'Skip for now');
 
-    await clickButton('Skip meetings for now');
+    await clickButton('Skip for now');
     expectProgress(5);
-    expectNavigation('Continue', 'Skip Calendar for now');
+    expectNavigation('Continue', 'Skip for now');
 
-    await clickButton('Skip Calendar for now');
+    await clickButton('Skip for now');
     expectProgress(6);
     expectNavigation('Continue');
 
@@ -311,17 +311,17 @@ describe('OnboardingFlow', () => {
 
     await clickButton('Skip for now');
     expect(container.querySelector('h1')?.textContent).toContain('System audio access');
-    navigation = expectNavigation('Continue', 'Skip meetings for now');
+    navigation = expectNavigation('Continue', 'Skip for now');
     expect(navigation.actionButtons[0].disabled).toBe(false);
     expect(navigation.actionButtons[1].disabled).toBe(false);
 
-    await clickButton('Skip meetings for now');
+    await clickButton('Skip for now');
     expect(container.querySelector('h1')?.textContent).toContain('Calendar access');
-    navigation = expectNavigation('Continue', 'Skip Calendar for now');
+    navigation = expectNavigation('Continue', 'Skip for now');
     expect(navigation.actionButtons[0].disabled).toBe(false);
     expect(navigation.actionButtons[1].disabled).toBe(false);
 
-    await clickButton('Skip Calendar for now');
+    await clickButton('Skip for now');
     expect(container.querySelector('h1')?.textContent).toContain('Speech model');
   });
 
@@ -345,7 +345,7 @@ describe('OnboardingFlow', () => {
     mocks.checkAccessibilityPermission.mockResolvedValue(false);
     await renderFlow();
     await clickButton('Get started');
-    for (const skip of ['Skip for now', 'Skip for now', 'Skip meetings for now', 'Skip Calendar for now']) {
+    for (const skip of ['Skip for now', 'Skip for now', 'Skip for now', 'Skip for now']) {
       const heading = container.querySelector('h1')!;
       expect(document.activeElement).toBe(heading);
       expect(container.querySelector('button[data-default-button]')).toBeNull();
@@ -445,8 +445,8 @@ describe('OnboardingFlow', () => {
 
     await clickButton('Continue');
     await clickButton('Continue');
-    await clickButton('Skip meetings for now');
-    await clickButton('Skip Calendar for now');
+    await clickButton('Skip for now');
+    await clickButton('Skip for now');
     await clickButton('Continue');
 
     await clickButton('Double-tap');
@@ -470,8 +470,8 @@ describe('OnboardingFlow', () => {
     await clickButton('Get started');
     await clickButton('Continue');
     await clickButton('Continue');
-    await clickButton('Skip meetings for now');
-    await clickButton('Skip Calendar for now');
+    await clickButton('Skip for now');
+    await clickButton('Skip for now');
     await clickButton('Continue');
 
     await act(async () => container.querySelector<HTMLButtonElement>('[role="combobox"]')!.click());
@@ -528,7 +528,7 @@ describe('OnboardingFlow', () => {
     await clickButton('Continue');
     expect(mocks.getCalendarPermissionStatus).not.toHaveBeenCalled();
 
-    await clickButton('Skip meetings for now');
+    await clickButton('Skip for now');
     expect(mocks.getCalendarPermissionStatus).toHaveBeenCalledTimes(1);
     expect(mocks.requestCalendarPermission).not.toHaveBeenCalled();
     expect(mocks.getMeetingCalendarEvents).not.toHaveBeenCalled();
@@ -555,7 +555,7 @@ describe('OnboardingFlow', () => {
   it('skips Calendar without requesting access or reading events', async () => {
     await goToCalendarStep();
 
-    await clickButton('Skip Calendar for now');
+    await clickButton('Skip for now');
     await act(async () => window.dispatchEvent(new Event('focus')));
     await settle();
 
@@ -588,7 +588,7 @@ describe('OnboardingFlow', () => {
 
     await clickButton('Continue');
     expect(getButton('Continue').disabled).toBe(true);
-    await clickButton('Skip Calendar for now');
+    await clickButton('Skip for now');
     await clickButton('Back');
     expect(getButton('Continue').disabled).toBe(true);
 
@@ -607,7 +607,7 @@ describe('OnboardingFlow', () => {
 
     await clickButton('Reset Calendar permission…');
     expect(getButton('Reset Calendar permission…').disabled).toBe(true);
-    await clickButton('Skip Calendar for now');
+    await clickButton('Skip for now');
     await clickButton('Back');
     expect(getButton('Reset Calendar permission…').disabled).toBe(true);
 
@@ -633,39 +633,35 @@ describe('OnboardingFlow', () => {
     expect(mocks.requestCalendarPermission).not.toHaveBeenCalled();
     expect(mocks.getMeetingCalendarEvents).not.toHaveBeenCalled();
   });
-  it('requests microphone access from the inline Allow action and hides it after a grant', async () => {
+  it('uses the single footer action for microphone access and keeps the card informational', async () => {
     mocks.checkMicrophonePermissionStatus.mockResolvedValue('notDetermined');
     await renderFlow();
     await clickButton('Get started');
-    const allow = container.querySelector<HTMLButtonElement>('[aria-label="Allow microphone access"]');
-    expect(allow).not.toBeNull();
-    await act(async () => allow!.click());
+    expect(container.querySelector('.onboarding-permission-allow')).toBeNull();
+    await clickButton('Continue');
     expect(mocks.requestMicrophoneAccess).toHaveBeenCalledOnce();
     mocks.checkMicrophonePermissionStatus.mockResolvedValue('granted');
     await act(async () => window.dispatchEvent(new Event('focus')));
     await settle();
-    expect(container.querySelector('[aria-label="Allow microphone access"]')).toBeNull();
     expect(container.querySelector('.onboarding-permission-state')?.textContent).toBe('Allowed');
   });
 
-  it('requests Accessibility from its inline action', async () => {
+  it('does not duplicate the Accessibility permission action inside its card', async () => {
     mocks.checkAccessibilityPermission.mockResolvedValue(false);
     await renderFlow();
     await clickButton('Get started');
     await clickButton('Continue');
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Allow accessibility access"]')!.click());
+    expect(container.querySelector('.onboarding-permission-allow')).toBeNull();
+    await clickButton('Open System Settings…');
     expect(mocks.requestAccessibilityPermission).toHaveBeenCalledOnce();
   });
 
-  it('requests optional system audio and Calendar from their inline actions', async () => {
+  it('uses consistent skip labels without inline optional-permission actions', async () => {
     await goToSystemAudioStep();
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Allow system audio access"]')!.click());
-    expect(mocks.requestSystemAudioPermission).toHaveBeenCalledOnce();
-    expect(container.querySelector('[aria-label="Allow system audio access"]')).toBeNull();
-    await clickButton('Continue');
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Allow calendar access"]')!.click());
-    expect(mocks.requestCalendarPermission).toHaveBeenCalledOnce();
-    expect(container.querySelector('[aria-label="Allow calendar access"]')).toBeNull();
+    expect(container.querySelector('.onboarding-permission-allow')).toBeNull();
+    await clickButton('Skip for now');
+    expect(container.querySelector('h1')?.textContent).toBe('Calendar access');
+    expect(container.querySelector('.onboarding-permission-allow')).toBeNull();
   });
 
 });
