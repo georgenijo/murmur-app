@@ -154,7 +154,7 @@ function CommandEditor({ entry, duplicate, profiles, onClose, onSaved, restoreFo
     setContent((current) => `${current}{{${variable}}}`);
   };
 
-  const inputClass = 'mt-1';
+  const inputClass = 'mt-1 w-full';
   return (
     <div className="dialog-backdrop fixed inset-0 z-50 flex items-center justify-center p-6" onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose(); }}>
       <div ref={dialogRef} tabIndex={-1} role="dialog" onKeyDown={defaultButtonKeyDown} aria-modal="true" aria-labelledby="voice-command-editor-title" className="dialog-popover flex max-h-[88vh] w-full max-w-[620px] flex-col overflow-hidden p-5">

@@ -807,6 +807,7 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => details.click());
     expect(container.textContent).toContain('Zoom, Teams, Slack, Webex, FaceTime');
     expect(container.textContent).toContain('never reads URLs or window titles');
+    expect(container.textContent).toContain('Nothing records until you accept a meeting suggestion.');
   });
 
   it('accepts a direct Keyboard Shortcuts page request for command-palette navigation', async () => {

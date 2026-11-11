@@ -125,10 +125,12 @@ describe('KnowledgeManager', () => {
   it('creates each type and exposes explicit visibility controls', async () => {
     await act(async () => button(container, 'Create knowledge…').click());
     expect(container.querySelector('[aria-label="Heard phrase"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Heard phrase"]')?.className).toContain('w-full');
     await choose(container, 'Knowledge type', 'Vocabulary term');
     expect(container.querySelector('[aria-label="Written form"]')).not.toBeNull();
     await choose(container, 'Knowledge type', 'Snippet');
     expect(container.querySelector('[aria-label="Snippet body"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Snippet body"]')?.className).toContain('w-full');
     await act(async () => (container.querySelector<HTMLButtonElement>('[aria-label="Knowledge visibility"]')!).click());
     expect(document.body.textContent).toContain('One project in one app');
     await act(async () => (container.querySelector<HTMLButtonElement>('[aria-label="Knowledge visibility"]')!).click());

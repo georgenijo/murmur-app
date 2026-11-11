@@ -47,6 +47,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const onKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
       if (event.key === 'Escape') {
         event.preventDefault();
         onCloseRef.current();
@@ -137,7 +138,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
     if (!saving) void submit();
   };
 
-  const inputClass = 'mt-1';
+  const inputClass = 'mt-1 w-full';
 
   return (
     <div

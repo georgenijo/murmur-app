@@ -523,6 +523,10 @@ export const SettingsPanel = memo(function SettingsPanel({
     if (!targetRequest) return;
     if (revealedTargetRef.current === targetRequest) return;
     const id = visibleTargetId!;
+    if (id === 'meeting-calendar' && settings.meetingSuggestionsEnabled && !calendarDetailsOpen) {
+      setCalendarDetailsOpen(true);
+      return;
+    }
     if (ADVANCED_TARGETS[activeCat]?.includes(id) && !advancedOpen) {
       setAdvancedOpen(true);
       return;
@@ -1466,6 +1470,9 @@ export const SettingsPanel = memo(function SettingsPanel({
                 <SettingsDisclosure title="Calendar details" layout="stack" targetId="meeting-calendar" open={calendarDetailsOpen} onOpenChange={setCalendarDetailsOpen}>
                   <p className="text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
                     Supports Zoom, Teams, Slack, Webex, FaceTime, and browsers. Murmur never reads URLs or window titles.
+                  </p>
+                  <p className="text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
+                    Nothing records until you accept a meeting suggestion.
                   </p>
                   <button
                     type="button"

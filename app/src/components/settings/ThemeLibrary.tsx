@@ -150,16 +150,18 @@ function ModePreview({ mode, options, selected, assigned, showingNow, labels, op
   </div>;
 }
 
-function ActionButton({ label, onClick, children, danger = false, disabled = false }: {
+function ActionButton({ label, onClick, children, danger = false, disabled = false, buttonRef }: {
   label: string;
   onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void;
   children: React.ReactNode;
   danger?: boolean;
   disabled?: boolean;
+  buttonRef?: Ref<HTMLButtonElement>;
 }) {
   return (
     <button
       type="button"
+      ref={buttonRef}
       disabled={disabled}
       aria-label={label}
       title={label}
@@ -203,6 +205,11 @@ function CollectionCard({
 }) {
   const [radialOpen, setRadialOpen] = useState<ResolvedAppearance | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const actionsTriggerRef = useRef<HTMLButtonElement>(null);
+  const closeActions = (restoreFocus = false) => {
+    setActionsOpen(false);
+    if (restoreFocus) requestAnimationFrame(() => actionsTriggerRef.current?.focus());
+  };
   const labels = shortVariantLabels(entries);
   const groups = (['light', 'dark'] as const).flatMap((mode) => {
     const options = entries
@@ -310,14 +317,14 @@ function CollectionCard({
         {hasActions && isSingleVariant && (
           <div className="settings-theme-action-menu" onBlurCapture={(event) => {
             const next = event.relatedTarget;
-            if (!(next instanceof Node) || !event.currentTarget.contains(next)) setActionsOpen(false);
+            if (!(next instanceof Node) || !event.currentTarget.contains(next)) closeActions();
           }} onKeyDown={(event) => {
             if (event.key === 'Escape') {
               event.stopPropagation();
-              setActionsOpen(false);
+              closeActions(true);
             }
           }}>
-            <ActionButton label={`Theme actions for ${label}`} onClick={() => setActionsOpen((open) => !open)}>
+            <ActionButton buttonRef={actionsTriggerRef} label={`Theme actions for ${label}`} onClick={() => setActionsOpen((open) => !open)}>
               <MoreIcon />
             </ActionButton>
             {actionsOpen && (
