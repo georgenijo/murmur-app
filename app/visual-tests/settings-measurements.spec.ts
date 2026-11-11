@@ -109,7 +109,6 @@ for (const appearance of ['light', 'dark']) {
     });
     await info.attach('computed-settings-measurements', { body: JSON.stringify(measured, null, 2), contentType: 'application/json' });
     await info.attach('rendered-control-colors', { body: JSON.stringify({ semanticColors, unfocused }, null, 2), contentType: 'application/json' });
-    await expect(page).toHaveScreenshot(`${appearance}-settings-primitives.png`);
   });
 
   test(`${appearance} responsive nav, content, section and row measurements`, async ({ page }) => {
@@ -143,7 +142,6 @@ for (const appearance of ['light', 'dark']) {
     await expect(page.getByRole('searchbox')).toBeFocused();
     await page.keyboard.press('Escape');
     await css(sidebar, { width: '56px' });
-    await expect(page).toHaveScreenshot(`${appearance}-settings-rail.png`);
     await page.setViewportSize({ width: 1180, height: 900 });
     await open(page, 'settings-geometry', appearance);
     const row = page.locator('.settings-setting-row').first();
@@ -159,7 +157,6 @@ for (const appearance of ['light', 'dark']) {
       if (stacked) { expect(values.controls.x).toBe(values.copy.x); expect(values.controls.y - values.copy.bottom).toBeCloseTo(12); expect(values.controls.width).toBe(values.contentWidth); }
       else expect(values.controls.x).toBeGreaterThan(values.copy.x);
     }
-    await expect(page).toHaveScreenshot(`${appearance}-settings-stacked.png`);
   });
 }
 

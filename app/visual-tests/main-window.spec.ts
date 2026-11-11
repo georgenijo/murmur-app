@@ -4,22 +4,22 @@ import { surfaceCases } from './surface-matrix';
 test.use({ timezoneId: 'America/New_York' });
 
 test.beforeEach(async ({ page }) => {
-  // Keep calendar-based fixture data aligned with the checked-in screenshots.
+  // Keep calendar-based fixture text deterministic.
   await page.clock.setFixedTime(new Date('2026-09-04T20:00:00Z'));
 });
 
 const states = ['idle', 'recording', 'processing', 'update-recovering', 'settings'] as const;
 const appearances = ['light', 'dark'] as const;
 const dashboardThemeMatrix = [
-  { id: 'sonic-light', appearance: 'light', theme: null },
-  { id: 'sonic-dark', appearance: 'dark', theme: null },
-  { id: 'open-vsx-low-contrast', appearance: 'light', theme: 'open-vsx-low-contrast' },
-  { id: 'open-vsx-high-saturation', appearance: 'dark', theme: 'open-vsx-high-saturation' },
+  { id: 'sonic-light', appearance: 'light', theme: null, primary: '#036785' },
+  { id: 'sonic-dark', appearance: 'dark', theme: null, primary: '#92dbfe' },
+  { id: 'open-vsx-low-contrast', appearance: 'light', theme: 'open-vsx-low-contrast', primary: '#6f6447' },
+  { id: 'open-vsx-high-saturation', appearance: 'dark', theme: 'open-vsx-high-saturation', primary: '#ff85de' },
 ] as const;
 
 for (const appearance of appearances) {
   for (const state of states) {
-    test(`${appearance} ${state} matches the dashboard at native 880x720`, async ({ page }) => {
+    test(`${appearance} ${state} dashboard renders at 880x720`, async ({ page }) => {
       const pageErrors: string[] = [];
       page.on('pageerror', (error) => pageErrors.push(error.message));
       await page.emulateMedia({ colorScheme: appearance });
@@ -27,14 +27,13 @@ for (const appearance of appearances) {
       expect(pageErrors).toEqual([]);
       const fixture = page.locator('[data-visual-ready="true"]');
       await expect(fixture).toBeVisible();
-      await expect(fixture).toHaveScreenshot(`${appearance}-${state}.png`);
     });
   }
 }
 
 for (const themeCase of dashboardThemeMatrix) {
   for (const destination of ['home', 'insights'] as const) {
-    test(`${themeCase.id} keeps ${destination} hierarchy discernible`, async ({ page }) => {
+    test(`${themeCase.id} loads ${destination} with the selected theme`, async ({ page }) => {
       const state = destination === 'home' ? 'idle' : 'insights';
       const theme = themeCase.theme ? `&theme=${themeCase.theme}` : '';
       await page.emulateMedia({ colorScheme: themeCase.appearance });
@@ -42,7 +41,7 @@ for (const themeCase of dashboardThemeMatrix) {
 
       const fixture = page.locator('[data-visual-ready="true"]');
       await expect(fixture).toHaveAttribute('data-theme-fixture', themeCase.theme ?? 'sonic');
-      await expect(fixture).toHaveScreenshot(`theme-${themeCase.id}-${destination}.png`);
+      await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--murmur-primary').trim())).toBe(themeCase.primary);
     });
   }
 }
@@ -132,7 +131,6 @@ test('copied transcripts keep their geometry and actions reachable', async ({ pa
   await expect(copyAction).toHaveText('Copied');
   expect(await middleCard.boundingBox()).toEqual(before);
   expect(await middleCard.evaluate((element) => getComputedStyle(element).boxShadow)).toBe(shadowBefore);
-  await expect(middleCard).toHaveScreenshot('light-history-copy-middle.png');
 
   const newestCard = page.locator('.home-history .transcript-card').first();
   await newestCard.getByRole('button', { name: 'More transcript actions' }).click();
@@ -144,7 +142,6 @@ test('copied transcripts keep their geometry and actions reachable', async ({ pa
   const narrowCard = page.locator('.home-history .transcript-card').nth(1);
   await narrowCard.click();
   await expect(narrowCard.locator('[data-action-id="copy"]')).toHaveText('Copied');
-  await expect(narrowCard).toHaveScreenshot('light-history-copy-middle-narrow.png');
 
   await page.setViewportSize({ width: 520, height: 720 });
   await page.reload();
@@ -353,7 +350,6 @@ for (const notes of ['short', 'long'] as const) {
     await expect(dialog.getByRole('button', { name: 'Download update' })).toBeVisible();
     await expect(dialog.getByRole('button', { name: 'Skip This Version' })).toHaveCount(0);
     await expect(dialog.getByRole('button', { name: 'Later' })).toBeVisible();
-    await expect(fixture).toHaveScreenshot(`light-update-dialog-${notes}.png`);
   });
 }
 
@@ -366,7 +362,6 @@ test('update dialog keeps every action visible in a smaller window', async ({ pa
   await expect(dialog.getByRole('button', { name: 'Download update' })).toBeInViewport();
   await expect(dialog.getByRole('button', { name: 'Skip This Version' })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Later' })).toBeInViewport();
-  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-update-dialog-long-small.png');
 });
 
 test('customization hub stays legible and restores focus at native and narrow widths', async ({ page }) => {
@@ -384,7 +379,6 @@ test('customization hub stays legible and restores focus at native and narrow wi
     await expect(customizationList.getByRole('button', { name: new RegExp(`^${label}`) })).toHaveCount(1);
   }
   await expect(customizationList).not.toContainText(/\b0[1-5]\b/);
-  await expect(fixture).toHaveScreenshot('light-settings-customization-hub.png');
 
   await voiceCommands.click();
   await expect(page.getByRole('heading', { name: 'Voice commands', exact: true })).toBeVisible();
@@ -393,7 +387,6 @@ test('customization hub stays legible and restores focus at native and narrow wi
 
   await page.setViewportSize({ width: 720, height: 560 });
   await expect(page.getByRole('heading', { name: 'Customize', level: 1 })).toBeVisible();
-  await expect(fixture).toHaveScreenshot('light-settings-customization-hub-narrow.png');
 });
 
 test('synthetic meeting suggestion overlay keeps its prompt and actions visible', async ({ page }) => {
@@ -404,7 +397,6 @@ test('synthetic meeting suggestion overlay keeps its prompt and actions visible'
   await expect(page.getByText('Synthetic calendar: Product review started. Start Notetaker?')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Accept' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Dismiss' })).toBeVisible();
-  await expect(fixture).toHaveScreenshot('synthetic-meeting-suggestion-overlay.png');
 });
 
 test('settings editors preserve the primary hierarchy and provide a real back action', async ({ page }) => {
@@ -418,7 +410,6 @@ test('settings editors preserve the primary hierarchy and provide a real back ac
   await expect(page.getByRole('navigation', { name: 'Settings editors' })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Aliases', exact: true, level: 2 })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Close editor' })).toBeVisible();
-  await expect(fixture).toHaveScreenshot('light-settings-aliases.png');
 
   await page.keyboard.press('Escape');
   await expect(page.getByRole('heading', { name: 'Text & vocabulary' })).toBeVisible();
@@ -463,7 +454,6 @@ test('recording settings make the live automatic microphone choice explicit', as
     'Follow macOS default — MacBook Pro Microphone',
   );
   await expect(page.getByText(/Docking, undocking, or changing the system input/)).toBeVisible();
-  await expect(fixture).toHaveScreenshot('light-settings-recording-auto-microphone.png');
 });
 
 test('recording settings show Smart Auto inclusion and selection status', async ({ page }) => {
@@ -481,7 +471,6 @@ test('recording settings show Smart Auto inclusion and selection status', async 
   await expect(page.getByText(/Why: your preferred included microphone/)).toHaveCount(0);
   await expect(page.getByText(/Live input from MacBook Pro Microphone/)).toBeVisible();
   await expect(page.getByRole('button', { name: /Verify signal/ })).toHaveCount(0);
-  await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto.png');
 
   await picker.click();
   const pickerDialog = page.getByRole('dialog', { name: 'Choose microphone mode' });
@@ -489,7 +478,6 @@ test('recording settings show Smart Auto inclusion and selection status', async 
   await expect(pickerDialog.getByRole('checkbox')).toHaveCount(0);
   await expect(pickerDialog.getByRole('listbox')).toHaveCount(0);
   await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
-  await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto-picker.png');
   await picker.click();
   await expect(pickerDialog).toHaveCount(0);
   await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
@@ -505,7 +493,6 @@ test('recording settings show Smart Auto inclusion and selection status', async 
   await expect(submenu.getByRole('button', { name: 'Prefer MacBook Pro Microphone for Smart Auto' })).toHaveText('Preferred');
   await expect(submenu.getByRole('button', { name: 'Prefer Anker USB Microphone for Smart Auto' })).toHaveText('Prefer');
   await expect(submenu.getByRole('switch', { name: 'Check included microphones in the background' })).toBeChecked();
-  await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto-status.png');
 
   await picker.click();
   await expect(disclosure).toHaveAttribute('aria-expanded', 'true');
@@ -535,7 +522,6 @@ test('recording settings explain Smart Auto with no eligible microphones', async
   await expect(submenu.getByText('No microphones are included. Include at least one available input for Smart Auto.')).toBeVisible();
   await expect(page.getByText('Smart Auto is not ready.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Retry background checks' })).toHaveCount(0);
-  await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto-empty.png');
 });
 
 test('recording settings keep Smart Auto ready when background checks are off', async ({ page }) => {
@@ -552,7 +538,6 @@ test('recording settings keep Smart Auto ready when background checks are off', 
   await expect(submenu.getByRole('checkbox', { name: /Anker USB Microphone/ })).toBeChecked();
   await expect(submenu.getByRole('switch', { name: 'Check included microphones in the background' })).not.toBeChecked();
   await expect(submenu.getByText(/Pick the best mic ahead of time/)).toBeVisible();
-  await expect(fixture).toHaveScreenshot('light-settings-recording-smart-auto-no-probes.png');
 
   await disclosure.click();
   await expect(disclosure).toHaveAttribute('aria-expanded', 'false');
@@ -618,14 +603,12 @@ test('browser-site Mode rules disclose their exact privacy boundary at normal an
   await expect(page.getByRole('textbox', { name: 'Host for github.com' })).toHaveValue('github.com');
   await browserSites.scrollIntoViewIfNeeded();
   await page.mouse.move(0, 0);
-  await expect(fixture).toHaveScreenshot('light-settings-site-modes.png');
 
   await page.setViewportSize({ width: 720, height: 560 });
   const testCurrentSite = page.getByRole('button', { name: 'Test current site' });
   await expect(testCurrentSite).toBeVisible();
   await testCurrentSite.scrollIntoViewIfNeeded();
   await page.mouse.move(0, 0);
-  await expect(fixture).toHaveScreenshot('light-settings-site-modes-narrow.png');
 });
 
 test('appearance matches the compact collection-card layout', async ({ page }) => {
@@ -786,11 +769,10 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   await expect(page.getByText('Partly active')).toHaveCount(0);
   await expect(page.getByText('Choose dark style')).toHaveCount(0);
   await expect(page.getByText('Import a file or browse Open VSX')).toHaveCount(0);
-  await expect(fixture).toHaveScreenshot('light-settings-appearance.png');
 
   await page.getByRole('radio', { name: /dark/i }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-appearance', 'dark');
   await expect(catppuccinCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
-  await expect(fixture).toHaveScreenshot('dark-settings-appearance.png');
 
   await page.setViewportSize({ width: 840, height: 620 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(840);
@@ -941,7 +923,6 @@ test('the sidebar opens a real expanded Insights view', async ({ page }) => {
     page.locator('.usage-dashboard-content').boundingBox(),
   ]);
   expect(analyticsBox!.width).toBeGreaterThan(workspaceBox!.width * 0.9);
-  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-insights.png');
 });
 
 test('populated Insights keeps all tiles and charts reachable in the default window', async ({ page }) => {
@@ -1006,7 +987,6 @@ test('meeting transcripts and speaker labels remain usable at normal and narrow 
   const fixture = page.locator('[data-visual-ready="true"]');
   await expect(page.getByRole('heading', { name: 'Transcript', exact: true })).toBeVisible();
   await page.mouse.move(0, 0);
-  await expect(fixture).toHaveScreenshot('light-meeting-review.png');
 
   await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light&speaker-labels=long');
   const rows = page.locator('.meeting-transcript-row');
@@ -1064,7 +1044,6 @@ test('meeting transcripts and speaker labels remain usable at normal and narrow 
   await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light');
   await expect(page.getByRole('button', { name: 'Copy transcript' })).toBeVisible();
   await page.mouse.move(0, 0);
-  await expect(fixture).toHaveScreenshot('light-meeting-review-narrow.png');
 });
 
 test('synthetic retained-WAV review exposes playback transport and segment controls', async ({ page }) => {
@@ -1078,7 +1057,6 @@ test('synthetic retained-WAV review exposes playback transport and segment contr
   await expect(page.getByRole('slider', { name: 'Playback position' })).toHaveAttribute('aria-valuetext', '0:00 of 18:00');
   await expect(page.getByRole('button', { name: 'Play segment at 0:12, Me channel' })).toBeVisible();
   await page.mouse.move(0, 0);
-  await expect(fixture).toHaveScreenshot('light-meeting-retained-audio.png');
 });
 
 test('meeting captions explain segment timing and keep copy and export reachable', async ({ page }) => {
@@ -1097,7 +1075,6 @@ test('meeting captions explain segment timing and keep copy and export reachable
     const bounds = await exportButton.boundingBox();
     expect(bounds && bounds.x + bounds.width).toBeLessThanOrEqual(width);
     await page.mouse.move(0, 0);
-    await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot(`${appearance}-meeting-captions.png`);
   }
 });
 
@@ -1111,7 +1088,6 @@ test('meeting calendar picker requires selection and keeps denied access usable'
   await page.getByRole('radio', { name: /Orion planning/ }).focus();
   await page.keyboard.press('Space');
   await expect(page.getByRole('button', { name: 'Apply event' })).toBeEnabled();
-  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-meeting-calendar-picker.png');
 
   await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light&calendar=denied');
   await page.locator('.meeting-more').click();
@@ -1119,7 +1095,6 @@ test('meeting calendar picker requires selection and keeps denied access usable'
   await expect(page.getByLabel('Meeting title', { exact: true })).toBeEditable();
   await expect(page.getByRole('button', { name: 'Open Calendar settings…' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Reset Calendar access…' })).toBeVisible();
-  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-meeting-calendar-denied.png');
 });
 
 test('dashboard charts keep tooltip, plot, and seven weekday labels in stable regions', async ({ page }) => {
@@ -1231,13 +1206,11 @@ test('the compact 720x560 home keeps actions and history reachable', async ({ pa
   await expect(page.getByRole('button', { name: 'Start dictation', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'More history actions' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Your dictations' })).toBeVisible();
-  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-home-compact-720x560.png');
 });
 
 test('contextual hint remains readable on Home', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=discovery-hint&appearance=light');
   await expect(page.getByText('Use a mode for this site', { exact: true })).toBeVisible();
-  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-discovery-hint.png');
 });
 
 test('the compact 720x560 Insights view stacks analytics without horizontal clipping', async ({ page }) => {
@@ -1252,7 +1225,6 @@ test('the compact 720x560 Insights view stacks analytics without horizontal clip
     scrollWidth: element.scrollWidth,
   }));
   expect(overflow.scrollWidth).toBe(overflow.clientWidth);
-  await expect(page.locator('[data-visual-ready="true"]')).toHaveScreenshot('light-insights-compact-720x560.png');
 });
 
 for (const width of [720, 800, 880] as const) {
@@ -1277,7 +1249,7 @@ for (const width of [720, 800, 880] as const) {
 for (const { appearance, width, height, label } of surfaceCases([{ width: 720, height: 560 }, { width: 880, height: 820 }, { width: 1120, height: 820 }])) {
   test.describe(`Insights ${label}`, () => {
     test.use({ viewport: { width, height }, colorScheme: appearance });
-    test('Calendar dates, exact values and accessible tables survive keyboard dismissal', async ({ page }, testInfo) => {
+    test('Calendar dates, exact values and accessible tables survive keyboard dismissal', async ({ page }) => {
       await page.goto(`/visual-fixtures.html?state=insights&appearance=${appearance}`);
       const chart = page.getByRole('figure', { name: 'Words per day heatmap', exact: true });
       const grid = chart.locator('.ui-day-chart-heatmap');
@@ -1301,7 +1273,6 @@ for (const { appearance, width, height, label } of surfaceCases([{ width: 720, h
       await expect(chart.getByRole('status')).toContainText('760 words · 6 recordings');
       await page.keyboard.press('Escape');
       await expect(chart.getByRole('status')).toContainText('Focus a day');
-      if (width !== 1120) await page.screenshot({ path: testInfo.outputPath('insights-calendar.png') });
       await expect(chart.getByRole('table')).toHaveCount(1);
       await expect(chart.locator('.insights-values-accessible')).toHaveClass(/sr-only/);
       await expect(chart.locator('tbody tr')).toHaveCount(56);

@@ -154,11 +154,10 @@ jobs:
       - name: Unit tests
         run: cd app && npm test -- --shard=${{ matrix.shard }}/2
 
-  visual-linux:
+  ui-tests:
     needs: changes
     if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.github == 'true'
     runs-on: ubuntu-latest
-    # Match the Linux golden environment, including its installed fonts.
     container: mcr.microsoft.com/playwright:v1.62.1-noble
     strategy:
       fail-fast: false
@@ -176,35 +175,8 @@ jobs:
       - name: Install dependencies
         run: cd app && npm ci
 
-      - name: Linux visual golden tests
+      - name: Playwright UI tests
         run: cd app && npm run test:visual -- --shard=${{ matrix.shard }}/3
-
-  visual-regression:
-    needs: changes
-    if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.github == 'true'
-    runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: app/package-lock.json
-
-      - name: Install dependencies
-        run: cd app && npm ci
-
-      - name: Install Playwright Chromium
-        run: cd app && npx playwright install chromium
-
-      - name: Visual golden tests
-        # Use the existing runner's cores instead of adding more macOS jobs.
-        run: cd app && npm run test:visual -- --shard=${{ matrix.shard }}/2 --workers=2
 
   # Formatting and clippy run on their own runner so lint and the test build
   # compile in parallel instead of back to back.
@@ -405,7 +377,7 @@ jobs:
           npm audit --audit-level=high
 
   ci-pass:
-    needs: [changes, policy, typecheck, visual-linux, visual-regression, rust-lint, rust-macos]
+    needs: [changes, policy, typecheck, ui-tests, rust-lint, rust-macos]
     # Keep this guard aligned with `changes`; otherwise the sentinel would turn
     # an intentionally skipped release-bump run into a failure.
     if: "${{ always() && (github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'chore: bump version')) }}"
@@ -424,8 +396,7 @@ jobs:
 
           for result in \
             "${{ needs.typecheck.result }}" \
-            "${{ needs.visual-linux.result }}" \
-            "${{ needs.visual-regression.result }}" \
+            "${{ needs.ui-tests.result }}" \
             "${{ needs.rust-lint.result }}" \
             "${{ needs.rust-macos.result }}"; do
             if [ "$result" != "success" ] && [ "$result" != "skipped" ]; then

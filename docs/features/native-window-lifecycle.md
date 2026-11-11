@@ -3,8 +3,6 @@
 Main and Diagnostics default to 1100×780 logical pixels, with an 840×620
 minimum. Playwright measures the real Settings layout at that minimum in both
 schemes: content scrolls vertically, while pane controls stay within the window.
-The separate minimum-size goldens are Darwin browser evidence, not native or
-Linux evidence.
 
 `--ui-window-header-height` remains the sole header-height source. The renderer
 measures it through layout, including rem/calc values, and sends the result to
@@ -101,6 +99,5 @@ in both schemes, drive the production bridge to 50%, check actual content and
 inset layout in CSS coordinates converted to window points, change the CSS
 inset token, and check reset/120%. The 50% case doubles the CSS viewport to
 represent the native window's fixed point size; it does not operate a native
-webview or establish native traffic-light clickability. Existing goldens are
-unchanged. The lead's native delta is the 50% header flow and mixed-scale restore
+webview or establish native traffic-light clickability. The lead's native delta is the 50% header flow and mixed-scale restore
 cases above; review recheck is limited to S2/S3 behavior, with no approval claim.

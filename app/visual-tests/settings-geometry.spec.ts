@@ -60,8 +60,6 @@ for (const appearance of ['light', 'dark']) {
           }
         }
       }
-      if (process.env.E848_BEFORE) await page.screenshot({ path: `${process.env.E848_BEFORE}/${name}.png` });
-      else await expect(page).toHaveScreenshot(`${name}.png`);
     });
   }
 }

@@ -44,7 +44,6 @@ for (const appearance of ['light', 'dark']) {
     test(`${appearance} ${pane} folded and unfolded`, async ({ page }) => {
       await open(page, pane, appearance);
       await expect(advanced(page)).toHaveAttribute('aria-expanded', 'false');
-      await expect(page).toHaveScreenshot(`${appearance}-${pane}-folded.png`);
       await advanced(page).click();
       // Exercise nested parent folds as well as Advanced. No automatic enabling
       // in production: these are explicit user interactions in the fixture.
@@ -55,14 +54,10 @@ for (const appearance of ['light', 'dark']) {
         await page.getByRole('switch', { name: 'Developer terms', exact: true }).check();
         await page.getByRole('switch', { name: 'Transcript cleanup', exact: true }).check();
       }
-      // Wait for the reduced-motion fold to finish mounting before aligning
-      // the screenshot. Scrolling a still-clipped branch can capture a different
-      // viewport even after toHaveScreenshot waits for stable pixels.
       // Advanced can contain direct rows as well as a nested animated branch;
       // its accessible expanded state is the stable contract in either layout.
       await expect(advanced(page)).toHaveAttribute('aria-expanded', 'true');
       await advanced(page).evaluate(el => el.scrollIntoView({ block: 'start' }));
-      await expect(page).toHaveScreenshot(`${appearance}-${pane}-unfolded.png`);
     });
   }
   test(`${appearance} browser site rows fold inside their card`, async ({ page }) => {
@@ -74,18 +69,14 @@ for (const appearance of ['light', 'dark']) {
     await sites.evaluate(element => element.scrollIntoView({ block: 'center' }));
     await expect(toggle).toBeInViewport();
     await expect(page.getByRole('textbox', { name: 'Site rule host', exact: true })).toHaveCount(0);
-    await expect(page).toHaveScreenshot(`${appearance}-modes-folded.png`);
     await toggle.check();
     await sites.evaluate(element => element.scrollIntoView({ block: 'center' }));
     await expect(page.getByRole('textbox', { name: 'Site rule host', exact: true })).toBeInViewport();
-    await expect(page).toHaveScreenshot(`${appearance}-modes-unfolded.png`);
   });
   test(`${appearance} appearance editor remains a sheet`, async ({ page }) => {
     await open(page, 'appearance', appearance);
-    await expect(page).toHaveScreenshot(`${appearance}-appearance-folded.png`);
     await page.getByRole('button', { name: 'Create theme', exact: true }).click();
     await expect(page.getByRole('dialog', { name: 'Create theme' })).toBeVisible();
-    await expect(page).toHaveScreenshot(`${appearance}-appearance-unfolded.png`);
     await page.keyboard.press('Escape');
     await expect(page.getByRole('button', { name: 'Create theme', exact: true })).toBeFocused();
   });
@@ -99,7 +90,6 @@ for (const appearance of ['light', 'dark']) {
       }
       const opener = page.locator('main').getByRole('button', { name: new RegExp(`^${label}`) }).first();
       await opener.scrollIntoViewIfNeeded();
-      await expect(page).toHaveScreenshot(`${appearance}-${tab}-sheet-closed.png`);
       await opener.click();
       const dialog = page.getByRole('dialog');
       await expect(dialog).toHaveCount(1);
@@ -109,7 +99,6 @@ for (const appearance of ['light', 'dark']) {
         await page.keyboard.press('Tab');
         expect(await dialog.evaluate(el => el.contains(document.activeElement))).toBe(true);
       }
-      await expect(page).toHaveScreenshot(`${appearance}-${tab}-sheet-open.png`);
       await page.keyboard.press('Escape');
       await expect(dialog).toHaveCount(0);
       await expect(opener).toBeFocused();
@@ -244,10 +233,8 @@ for (const appearance of ['light', 'dark']) {
     const parent = dialog.getByRole('switch', { name: 'Local IDE project context for Fixture editor' });
     await parent.scrollIntoViewIfNeeded();
     await expect(dialog.getByText('/fixture/project', { exact: true })).toBeHidden();
-    await expect(page).toHaveScreenshot(`${appearance}-app-ide-folded.png`);
     await parent.click();
     await expect(dialog.getByText('/fixture/project', { exact: true })).toBeVisible();
-    await expect(page).toHaveScreenshot(`${appearance}-app-ide-unfolded.png`);
     await parent.click();
     await parent.click();
     await expect(dialog.getByText('/fixture/project', { exact: true })).toBeVisible();

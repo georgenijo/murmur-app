@@ -64,8 +64,8 @@ were already using—cleaned up, copied, and ready to send.
 ## The app gets out of your way
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="app/visual-tests/main-window.spec.ts-snapshots/dark-recording-darwin.png">
-  <img src="app/visual-tests/main-window.spec.ts-snapshots/light-recording-darwin.png" alt="Murmur recording in the transcript history workspace" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/dark-recording-darwin.png">
+  <img src="docs/images/light-recording-darwin.png" alt="Murmur recording in the transcript history workspace" width="100%">
 </picture>
 
 The main window is a searchable transcript workspace, not a giant Record
