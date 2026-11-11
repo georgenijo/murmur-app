@@ -138,15 +138,6 @@
   color: var(--murmur-on-surface);
 }
 
-.settings-meter-card {
-  margin-top: 12px;
-  border-radius: var(--settings-radius-control);
-  border: 1px solid var(--settings-hairline);
-  background: var(--settings-tint-raised);
-  box-shadow: var(--settings-shadow-1);
-  padding: 12px 14px;
-}
-
 .settings-meter-track {
   background: var(--settings-tint-sunken);
 }
@@ -280,14 +271,14 @@
 
 .settings-microphone-choice {
   display: flex;
-  min-height: 2.5rem;
+  min-height: var(--ui-control-standard);
   cursor: pointer;
   align-items: center;
-  gap: 0.625rem;
+  gap: var(--ui-space-4);
   border-radius: var(--ui-radius-control);
-  padding: 0.375rem 0.5rem;
+  padding: var(--ui-space-3) var(--ui-space-4);
   color: var(--murmur-on-surface);
-  font-size: 0.875rem;
+  font-size: var(--ui-font-label);
 }
 
 .settings-microphone-choice:hover {
@@ -300,18 +291,18 @@
   flex: 1;
   cursor: pointer;
   align-items: center;
-  gap: 0.625rem;
+  gap: var(--ui-space-4);
 }
 
 .settings-microphone-preference {
   display: grid;
-  min-width: 3.75rem;
-  height: 1.75rem;
+  min-width: 60px;
+  height: var(--ui-control-compact);
   flex: none;
   place-items: center;
   border-radius: 999px;
   color: var(--murmur-primary);
-  font-size: 0.6875rem;
+  font-size: var(--ui-font-micro);
   line-height: var(--ui-leading-micro);
   font-weight: 600;
 }
@@ -322,7 +313,7 @@
 
 .settings-microphone-preference:disabled {
   cursor: not-allowed;
-  opacity: 0.35;
+  opacity: var(--ui-disabled-opacity);
 }
 
 .settings-microphone-choice input[type='radio'],
@@ -335,9 +326,9 @@
   flex: none;
   border-radius: 999px;
   background: color-mix(in srgb, var(--murmur-primary) 12%, transparent);
-  padding: 0.1rem 0.4rem;
+  padding: var(--ui-space-1) var(--ui-space-3);
   color: var(--murmur-primary);
-  font-size: 0.625rem;
+  font-size: var(--ui-font-micro);
   font-weight: 600;
 }
 
@@ -345,9 +336,9 @@
   flex: none;
   border-radius: 999px;
   background: var(--murmur-surface-container-high);
-  padding: 0.1rem 0.4rem;
+  padding: var(--ui-space-1) var(--ui-space-3);
   color: var(--murmur-on-surface-variant);
-  font-size: 0.625rem;
+  font-size: var(--ui-font-micro);
   font-weight: 600;
 }
 

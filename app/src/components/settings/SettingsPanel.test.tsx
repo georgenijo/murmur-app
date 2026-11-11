@@ -636,17 +636,17 @@ describe('SettingsPanel information architecture', () => {
     const soundSwitch = container.querySelector('[role="switch"][aria-label="Sound cues"]') as HTMLElement;
     await act(async () => soundSwitch.click());
     expect(onUpdateSettings).toHaveBeenCalledWith({ soundCuesEnabled: false });
-    const volumeLabel = Array.from(container.querySelectorAll('label')).find(
-      (label) => label.textContent?.includes('Volume'),
-    ) as HTMLLabelElement;
-    const slider = volumeLabel.querySelector('input[type="range"]') as HTMLInputElement;
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Sound cue volume"]')!;
     const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => {
       valueSetter.call(slider, '70');
       slider.dispatchEvent(new Event('input', { bubbles: true }));
     });
     expect(onUpdateSettings).toHaveBeenCalledWith({ soundCueVolume: 70 });
-    const success = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'success') as HTMLButtonElement;
+    for (const cue of ['start', 'stop', 'success', 'failure']) {
+      expect(container.querySelector(`[aria-label="Preview ${cue} sound"]`)).not.toBeNull();
+    }
+    const success = container.querySelector<HTMLButtonElement>('[aria-label="Preview success sound"]')!;
     await act(async () => success.click());
     expect(soundCueMock).toHaveBeenCalledWith('success', 45);
     const meetingSwitch = container.querySelector('[role="switch"][aria-label="Meeting cues"]') as HTMLElement;

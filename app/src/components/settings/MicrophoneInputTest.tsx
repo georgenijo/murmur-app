@@ -176,7 +176,7 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
             className="ui-popover max-h-[min(26rem,var(--available-height))] w-(--anchor-width) p-2 motion-reduce:duration-0"
           >
             <fieldset>
-              <legend className="px-2 py-1 text-[11px] font-semibold uppercase tracking-wider text-on-surface-variant">Input mode</legend>
+              <legend className="px-2 py-1 text-[length:var(--ui-font-micro)] font-medium text-on-surface-variant">Input mode</legend>
               <label className="settings-microphone-choice">
                 <input ref={smartAutoActive ? selectedRadioRef : undefined} type="radio" name="microphone-mode" checked={smartAutoActive} disabled={disabled} readOnly onClick={selectSmartAuto} />
                 <span><span className="block font-medium">Smart Auto</span><span className="block text-xs text-on-surface-variant">Choose from microphones you allow</span></span>
@@ -188,7 +188,7 @@ function MicrophonePicker({ microphone, devices, defaultInputId, disabled, smart
               {manualDevices.map((device) => (
                 <label key={`manual-${device.id}`} className="settings-microphone-choice">
                   <input ref={!smartAutoActive && microphone === device.id ? selectedRadioRef : undefined} type="radio" name="microphone-mode" checked={!smartAutoActive && microphone === device.id} disabled={disabled} readOnly onClick={() => selectManual(device.id)} />
-                  <span><span className="block font-medium">{deviceLabel(device)}</span><span className="block text-xs text-on-surface-variant">Use only this microphone</span></span>
+                  <span className="block font-medium">{deviceLabel(device)}</span>
                 </label>
               ))}
             </fieldset>
@@ -862,8 +862,10 @@ export function MicrophoneInputTest({
           />
         </SettingsBranch>
       )}
-      <div className="settings-meter-card">
-        <div className="flex items-center gap-3">
+      <SettingsRow
+        title="Live input level"
+        description={actionError || vadError || status.message ? undefined : helperText}
+        control={<div className="flex items-center gap-3">
           <div
             ref={meterRef}
             role="meter"
@@ -877,10 +879,9 @@ export function MicrophoneInputTest({
             <div ref={fillRef} className="h-full w-0 rounded-full bg-on-surface-variant/35 transition-colors" />
             <div ref={peakRef} className="absolute inset-y-0 left-0 w-0.5 bg-on-surface" aria-hidden="true" />
           </div>
-        </div>
-        <p className={`mt-2 text-[length:var(--ui-font-caption)] ${actionError || vadError || status.message ? 'text-error' : 'text-on-surface-variant'}`} role={actionError || vadError || status.message ? 'alert' : undefined}>
-          {helperText}
-        </p>
+        </div>}
+      >
+        {(actionError || vadError || status.message) && <p role="alert" className="text-error">{helperText}</p>}
         {suspensionReason !== null && status.previewId === null && monitoringActive && (
           <Button
             type="button"
@@ -892,7 +893,7 @@ export function MicrophoneInputTest({
             Retry microphone preview
           </Button>
         )}
-      </div>
+      </SettingsRow>
     </div>
   );
 }

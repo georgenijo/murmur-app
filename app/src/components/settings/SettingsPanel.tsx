@@ -175,16 +175,13 @@ function VadSensitivitySlider({
   useEffect(() => setDraft(value), [value]);
   const commit = (next: number) => { if (next !== value) onCommit(next); };
   return (
-    <div className="settings-field">
-      <div className="flex items-center justify-between">
-        <label htmlFor={id} className="text-xs text-on-surface-variant">Sensitivity</label>
-        <span className="text-xs font-medium text-on-surface">{draft === 0 ? 'Off' : `${draft}%`}</span>
-      </div>
+    <>
+      <label htmlFor={id} className="sr-only">Sensitivity</label>
       <input
         type="range"
-        min={0}
-        max={100}
-        step={5}
+        min="0"
+        max="100"
+        step="5"
         id={id}
         value={draft}
         aria-valuetext={draft === 0 ? 'Off' : `${draft} percent`}
@@ -198,8 +195,7 @@ function VadSensitivitySlider({
         onBlur={(event) => commit(Number(event.currentTarget.value))}
         className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
       />
-      <p className="text-xs text-on-surface-variant">Higher keeps more audio. Off is fastest.</p>
-    </div>
+    </>
   );
 }
 
@@ -1101,6 +1097,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             <SettingsRow
               title={<>Voice detection</>}
               targetId="voice-detection"
+              description={previewVadSensitivity === 0 ? 'Off · Responds fastest' : `${previewVadSensitivity}% sensitivity · Higher keeps more audio`}
               disabled={isRecording}
               onReset={settings.vadSensitivity !== DEFAULT_SETTINGS.vadSensitivity ? () => onUpdateSettings({ vadSensitivity: DEFAULT_SETTINGS.vadSensitivity }) : undefined}
               control={<VadSensitivitySlider
@@ -1199,31 +1196,37 @@ export const SettingsPanel = memo(function SettingsPanel({
                 onChange={() => onUpdateSettings({ soundCuesEnabled: !settings.soundCuesEnabled })}
               />
               <SettingsBranch open={settings.soundCuesEnabled}>
-                <label data-setting-target="sound-volume" className="block text-[length:var(--ui-font-caption)] font-medium text-on-surface-variant">
-                  Volume · {settings.soundCueVolume}%
-                  <input
-                    className="mt-2 block w-full accent-primary"
+                <SettingsRow
+                  targetId="sound-volume"
+                  title="Volume"
+                  description={`${settings.soundCueVolume}%`}
+                  control={<input
+                    className="w-full accent-primary"
                     type="range"
                     min="0"
                     max="100"
                     step="5"
                     value={settings.soundCueVolume}
+                    aria-label="Sound cue volume"
                     onChange={(event) => onUpdateSettings({ soundCueVolume: Number(event.target.value) })}
-                  />
-                </label>
-                <div className="flex flex-wrap gap-2" aria-label="Preview sound cues">
-                  {(['start', 'stop', 'success', 'failure'] as const).map((cue: SoundCue) => (
-                    <Button
-                      key={cue}
-                      type="button"
-                      onClick={() => playSoundCue(cue, settings.soundCueVolume)}
-                      size="sm"
-                      className="capitalize"
-                    >
-                      {cue}
-                    </Button>
-                  ))}
-                </div>
+                  />}
+                />
+                <SettingsRow title="Preview" description="Play each local cue">
+                  <div className="mt-2 flex flex-wrap gap-2" aria-label="Preview sound cues">
+                    {(['start', 'stop', 'success', 'failure'] as const).map((cue: SoundCue) => (
+                      <Button
+                        key={cue}
+                        type="button"
+                        onClick={() => playSoundCue(cue, settings.soundCueVolume)}
+                        size="sm"
+                        aria-label={`Preview ${cue} sound`}
+                        className="capitalize"
+                      >
+                        {cue}
+                      </Button>
+                    ))}
+                  </div>
+                </SettingsRow>
                 <SettingToggle
                   targetId="meeting-cues" title="Meeting cues"
                   description="Also play cues during meeting capture"

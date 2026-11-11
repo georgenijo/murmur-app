@@ -608,12 +608,12 @@ test('settings rows keep the shared spacing contract and aligned controls', asyn
 test('browser-site Mode rules disclose their exact privacy boundary at normal and narrow widths', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings-site-modes&appearance=light');
   await page.getByRole('button', { name: 'Modes', exact: true }).click();
-  await page.getByRole('button', { name: /Technical Built-in/ }).click();
+  await page.getByRole('button', { name: /^Technical/ }).click();
 
   const fixture = page.locator('[data-visual-ready="true"]');
   const browserSites = page.getByText('Browser sites', { exact: true });
   await expect(page.getByRole('switch', { name: 'Use browser site mode rules' })).toBeChecked();
-  await expect(page.getByText(/never reads page text or history/)).toBeVisible();
+  await expect(page.getByText(/page text and history stay unread/)).toBeVisible();
   await expect(page.getByRole('textbox', { name: 'Host for github.com' })).toHaveValue('github.com');
   await browserSites.scrollIntoViewIfNeeded();
   await page.mouse.move(0, 0);
