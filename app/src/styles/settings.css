@@ -469,6 +469,7 @@
 .settings-rows > * { padding: var(--settings-row-pad) var(--settings-row-x); border-radius: 0; }
 .settings-rows > * + * { border-top: 1px solid var(--settings-divider); }
 .settings-setting-row { container: settings-row / inline-size; min-width: 0; min-height: var(--settings-row-height); }
+.settings-setting-row:not(:has(.settings-row-description)) { min-height: var(--ui-control-standard); }
 .settings-setting-row[data-compact] { min-height: var(--ui-control-standard); }
 .settings-setting-row:hover { background: transparent; }
 .settings-row-layout[data-align='start'] { align-items: start; }
@@ -753,6 +754,7 @@
 
 .settings-microphone-disclosure { min-height: 28px; }
 .settings-microphone-input .settings-title-description { display: contents; }
+.settings-microphone-input .settings-row-layout { row-gap: var(--settings-copy-gap); }
 .settings-microphone-input .settings-row-title { grid-column: 1; grid-row: 1; }
 .settings-microphone-input .settings-row-controls { grid-column: 2; grid-row: 1; }
 .settings-microphone-input .settings-row-title ~ p { grid-column: 1 / -1; grid-row: 2; }
