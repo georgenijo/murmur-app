@@ -590,6 +590,7 @@
 .settings-modes-list > .settings-mode-row + .settings-mode-row { border-top: 1px solid var(--settings-divider); }
 .settings-modes-list > .settings-mode-row:not([aria-pressed='true']):hover { background: var(--murmur-surface-container-low); }
 .settings-modes-list > .settings-mode-row:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: -2px; }
+.settings-destination-list > li + li { border-top: 1px solid var(--settings-divider); }
 .settings-mode-row-name { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--ui-font-body); line-height: var(--ui-leading-body); font-weight: 500; }
 .settings-mode-row-status { display: block; font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); color: var(--murmur-on-surface-variant); }
 .settings-mode-row-check { width: 16px; height: 16px; flex: none; color: var(--murmur-primary); stroke-width: 1.75; }
@@ -708,6 +709,7 @@
 .settings-microphone-input .settings-row-controls { grid-column: 2; grid-row: 1; }
 .settings-microphone-input .settings-row-title ~ p { grid-column: 1 / -1; grid-row: 2; }
 .settings-microphone-input .settings-row-title ~ p:not(:first-child) { margin-top: var(--settings-copy-gap); }
+.settings-microphone-input > .settings-setting-row + .settings-setting-row { border-top: 1px solid var(--settings-divider); }
 @container settings-row (width < 512px) {
   .settings-microphone-input .settings-row-title,
   .settings-microphone-input .settings-row-controls,

@@ -45,7 +45,7 @@ export function CustomizationHub({ focusDestination, onOpen }: CustomizationHubP
   return (
     <section aria-label="Customize Murmur">
       <SettingsGroup>
-        <ul aria-label="Customization destinations" className="m-0 list-none p-0">
+        <ul aria-label="Customization destinations" className="settings-destination-list m-0 list-none p-0">
           {DESTINATIONS.map((destination) => (
             <li key={destination.id}>
               <button
