@@ -501,8 +501,8 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
               data-selected={preset === option.id}
               className="settings-segmented-btn h-auto min-w-0 whitespace-normal px-2 py-2"
             >
-              <span className="block text-xs font-semibold">{option.label}</span>
-              <span className="block mt-0.5 text-[10px] whitespace-normal leading-tight">{presetDetail(INTERNAL_BENCHMARK_BUILD ? corpusSource : 'bundled', option.id)}</span>
+              <span className="block text-[length:var(--ui-font-caption)] font-semibold">{option.label}</span>
+              <span className="mt-0.5 block text-[length:var(--ui-font-micro)] whitespace-normal leading-tight">{presetDetail(INTERNAL_BENCHMARK_BUILD ? corpusSource : 'bundled', option.id)}</span>
             </button>
           ))}
         </div>
@@ -557,7 +557,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
         )}
       </section>
 
-      <section>
+      <section data-performance-section className="border-t border-outline-variant/30 pt-5">
         <h3 className="m-0 text-[length:var(--ui-font-settings-group)] leading-[length:var(--ui-leading-micro)] font-medium text-on-surface-variant">Report export</h3>
         <p className="mt-0.5 text-xs text-on-surface-variant">
           Where saved reports are written, and whether every run is saved automatically. Configure before running.
@@ -585,7 +585,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
       </section>
 
       {report && !running && !microphoneBenchmarkRunning && (
-        <section className="space-y-4">
+        <section data-performance-section className="space-y-4 border-t border-outline-variant/30 pt-5">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h3 className="m-0 text-[length:var(--ui-font-settings-group)] leading-[length:var(--ui-leading-micro)] font-medium text-on-surface-variant">Results</h3>

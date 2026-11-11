@@ -712,6 +712,9 @@
 .settings-microphone-input .settings-row-title ~ p:not(:first-child) { margin-top: var(--settings-copy-gap); }
 .settings-live-input-level-row { margin-top: var(--settings-row-pad); border-top: 1px solid var(--settings-divider); }
 .settings-live-input-level-control { width: 160px; max-width: 100%; }
+.settings-workspace [data-setting-target='diagnostics'].settings-card { border-color: transparent; background: transparent; }
+.settings-workspace [aria-labelledby='microphone-startup-heading'] { border-color: transparent; padding-block: 0; }
+.settings-workspace [data-performance-section] { border-color: transparent; padding-top: 0; }
 @container settings-row (width < 512px) {
   .settings-microphone-input .settings-row-title,
   .settings-microphone-input .settings-row-controls,

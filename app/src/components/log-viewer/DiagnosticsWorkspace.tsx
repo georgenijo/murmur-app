@@ -161,7 +161,7 @@ export function DiagnosticsWorkspace({
                     setTab(id);
                   }
                 }}
-                className={`shrink-0 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-[background-color,box-shadow,color] ${
+                className={`shrink-0 rounded-lg px-2.5 py-1.5 text-[length:var(--ui-font-caption)] font-medium transition-[background-color,box-shadow,color] ${
                   tab === id
                     ? 'bg-surface-container-lowest text-on-surface shadow-sm'
                     : 'text-on-surface-variant hover:text-on-surface'
@@ -239,7 +239,7 @@ export function DiagnosticsWorkspace({
                   }))}
                   placeholder="All"
                   aria-label={`Filter by ${CORRELATION_FIELD_LABELS[correlation.field]}`}
-                  className="w-28 font-[family-name:var(--ui-font-mono)] text-[length:var(--ui-font-caption)]"
+                  className="w-28 text-[length:var(--ui-font-caption)]"
                 />
               </label>
               <LevelFilter active={activeLevels} onToggle={toggleLevel} />
@@ -259,7 +259,7 @@ export function DiagnosticsWorkspace({
           className="flex-1 overflow-y-auto font-mono text-xs"
         >
           {filteredEvents.length === 0 ? (
-            <div className="flex h-32 items-center justify-center font-sans text-sm text-on-surface-variant">
+            <div className="flex h-32 items-center justify-center font-sans text-[length:var(--ui-font-body)] text-on-surface-variant">
               No events to display
             </div>
           ) : (
