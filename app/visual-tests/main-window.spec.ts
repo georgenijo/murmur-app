@@ -857,6 +857,23 @@ test('meeting transcripts and speaker labels remain usable at normal and narrow 
   await page.mouse.move(0, 0);
   await expect(fixture).toHaveScreenshot('light-meeting-review.png');
 
+  const speaker = page.locator('.meeting-transcript-speaker').first();
+  await speaker.evaluate((element) => { element.textContent = 'Alexandria'; });
+  const speakerLayout = await speaker.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      textOverflow: style.textOverflow,
+      whiteSpace: style.whiteSpace,
+    };
+  });
+  expect(speakerLayout.clientWidth).toBeGreaterThan(48);
+  expect(speakerLayout.clientWidth).toBeLessThanOrEqual(120);
+  expect(speakerLayout.scrollWidth).toBe(speakerLayout.clientWidth);
+  expect(speakerLayout.textOverflow).not.toBe('ellipsis');
+  expect(speakerLayout.whiteSpace).not.toBe('nowrap');
+
   await page.setViewportSize({ width: 720, height: 560 });
   await page.reload();
   await expect(page.getByRole('button', { name: 'Copy transcript' })).toBeVisible();

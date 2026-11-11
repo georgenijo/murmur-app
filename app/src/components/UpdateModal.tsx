@@ -198,7 +198,7 @@ export function UpdateModal({
           )}
 
           {status.phase === 'preparing' && (
-            <p className="text-center text-on-surface">Preparing the download…</p>
+            <p className="text-left text-on-surface">Preparing the download…</p>
           )}
 
           {status.phase === 'downloading' && (
@@ -229,13 +229,13 @@ export function UpdateModal({
           )}
 
           {status.phase === 'ready' && (
-            <p className="text-center text-on-surface">
+            <p className="text-left text-on-surface">
               Restart Murmur to install the downloaded update.
             </p>
           )}
 
           {status.phase === 'restarting' && (
-            <p className="text-center text-on-surface">
+            <p className="text-left text-on-surface">
               Installing the update and restarting…
             </p>
           )}

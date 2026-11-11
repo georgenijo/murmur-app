@@ -53,3 +53,22 @@ for (const width of [640, 880]) {
     expect(checkBounds!.y).toBe(settingsBounds!.y);
   });
 }
+
+test('update dialog keeps its quiet shared hairline and left-aligned status copy', async ({ page }) => {
+  await page.goto('/visual-fixtures.html?state=update-ready&appearance=dark');
+  const dialog = page.getByRole('dialog', { name: 'Ready to restart', exact: true });
+  const actions = dialog.locator('.update-dialog-actions');
+  await dialog.focus();
+  await expect(dialog).toHaveCSS('outline-style', 'none');
+  await expect(actions).toHaveCSS('border-top-width', '0px');
+  await expect(dialog.locator('.update-dialog-body > p')).toHaveCSS('text-align', 'left');
+  const borderMatchesSharedStrongHairline = await dialog.evaluate((element) => {
+    const probe = document.createElement('div');
+    probe.style.border = '1px solid var(--ui-hairline-strong)';
+    element.append(probe);
+    const match = getComputedStyle(element).borderColor === getComputedStyle(probe).borderColor;
+    probe.remove();
+    return match;
+  });
+  expect(borderMatchesSharedStrongHairline).toBe(true);
+});
