@@ -169,16 +169,19 @@ def test_isolated_canary_verifies_installed_bundle_and_clears_dry_run(monkeypatc
     monkeypatch.setattr(canary, "prepare_isolated_profile", lambda root: (root / "home", root / "models"))
     environments = []
 
+    launches = 0
+
     def launch(*args, **kwargs):
+        nonlocal launches
+        launches += 1
         environments.append(kwargs["env"])
         result = passing_result()
-        if transient_busy:
+        if transient_busy and launches == 1:
             result.update(status="failed", error="Updater check already in progress.")
         (tmp_path / "result.json").write_text(json.dumps(result))
         return SimpleNamespace(pid=123, poll=lambda: None)
 
     monkeypatch.setattr(canary.subprocess, "Popen", launch)
-    monkeypatch.setattr(canary.time, "sleep", lambda seconds: (tmp_path / "result.json").write_text(json.dumps(passing_result())))
     stopped = []
     monkeypatch.setattr(canary, "terminate_and_collect_stderr", lambda process: stopped.append(process.pid))
     args = SimpleNamespace(tag="v0.31.4", repository="owner/repo", root=str(tmp_path),
@@ -188,7 +191,8 @@ def test_isolated_canary_verifies_installed_bundle_and_clears_dry_run(monkeypatc
     else:
         with pytest.raises(canary.CanaryError, match="installed bundle version"):
             canary.run_remote(args)
-    assert stopped == [123]
+    assert stopped == [123] * launches
+    assert launches == (2 if transient_busy else 1)
     assert environments[0]["HOME"] == str(tmp_path / "home")
     assert environments[0]["CFFIXED_USER_HOME"] == str(tmp_path / "home")
     assert "MURMUR_UPDATER_CANARY_DRY_RUN" not in environments[0]
@@ -222,24 +226,58 @@ def test_isolated_profile_rejects_corrupt_model(monkeypatch, tmp_path):
     assert not (tmp_path / "models/ggml-tiny.en.bin").exists()
 
 
-def test_busy_result_cannot_pass_or_extend_canary_deadline(monkeypatch, tmp_path):
+def test_busy_result_restarts_source_before_accepting_complete_result(monkeypatch, tmp_path):
+    app = tmp_path / "App"
+    (app / "Contents").mkdir(parents=True)
+    with (app / "Contents/Info.plist").open("wb") as stream:
+        plistlib.dump({"CFBundleShortVersionString": "0.31.4"}, stream)
     monkeypatch.setattr(canary, "previous_release", lambda repo, tag: "v0.31.3")
-    monkeypatch.setattr(canary, "install_previous_bundle", lambda *args, **kwargs: (tmp_path / "App", "unused"))
+    monkeypatch.setattr(canary, "install_previous_bundle", lambda *args, **kwargs: (app, "unused"))
+    launches = 0
 
     def launch(*args, **kwargs):
+        nonlocal launches
+        launches += 1
         result = passing_result()
-        result.update(status="failed", error="Updater check already in progress.")
+        if launches == 1:
+            result.update(status="failed", error=canary.BUSY_CHECK_ERROR)
         (tmp_path / "result.json").write_text(json.dumps(result))
         return SimpleNamespace(pid=123, poll=lambda: None)
 
     monkeypatch.setattr(canary.subprocess, "Popen", launch)
     stopped = []
     monkeypatch.setattr(canary, "terminate_and_collect_stderr", lambda process: stopped.append(process.pid) or "")
-    ticks = iter([0, 0, 2])
+    ticks = iter([0, 0, 0, 2])
     monkeypatch.setattr(canary.time, "monotonic", lambda: next(ticks))
     monkeypatch.setattr(canary.time, "sleep", lambda seconds: None)
     args = SimpleNamespace(tag="v0.31.4", repository="owner/repo", root=str(tmp_path),
                            dry_run=False, isolated=False, timeout=1)
-    with pytest.raises(canary.CanaryError, match="timed out"):
+    assert canary.run_remote(args) == 0
+    assert launches == 2
+    assert stopped == [123, 123]
+
+
+def test_busy_result_fails_after_bounded_source_restarts(monkeypatch, tmp_path):
+    monkeypatch.setattr(canary, "previous_release", lambda repo, tag: "v0.31.3")
+    monkeypatch.setattr(canary, "install_previous_bundle", lambda *args, **kwargs: (tmp_path / "App", "unused"))
+    launches = 0
+
+    def launch(*args, **kwargs):
+        nonlocal launches
+        launches += 1
+        result = passing_result()
+        result.update(status="failed", error=canary.BUSY_CHECK_ERROR)
+        (tmp_path / "result.json").write_text(json.dumps(result))
+        return SimpleNamespace(pid=123, poll=lambda: None)
+
+    monkeypatch.setattr(canary.subprocess, "Popen", launch)
+    monkeypatch.setattr(canary.time, "monotonic", lambda: 0)
+    stopped = []
+    monkeypatch.setattr(canary, "terminate_and_collect_stderr", lambda process: stopped.append(process.pid) or "")
+    args = SimpleNamespace(tag="v0.31.4", repository="owner/repo", root=str(tmp_path),
+                           dry_run=False, isolated=False, timeout=1)
+
+    with pytest.raises(canary.CanaryError, match="every startup attempt"):
         canary.run_remote(args)
-    assert stopped == [123]
+    assert launches == canary.MAX_BUSY_START_ATTEMPTS
+    assert stopped == [123] * canary.MAX_BUSY_START_ATTEMPTS

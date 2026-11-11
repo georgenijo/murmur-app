@@ -34,6 +34,11 @@ SCHEMA_VERSION = 1
 STAGES = ("discover", "policy", "download", "signatureVerify", "install", "relaunch")
 PASS = "passed"
 PENDING = "pending"
+BUSY_CHECK_ERROR = "Updater check already in progress."
+# The canary source is an already-published client. Some shipped versions can
+# race their ordinary focus-triggered background check with the canary startup.
+# Retrying the fresh process is bounded and never relaxes the final result gate.
+MAX_BUSY_START_ATTEMPTS = 5
 RESULT_FIELDS = ("schemaVersion", "status", "checkedVersion", "offeredVersion", "forced", "dryRun", "stages", "error")
 CANARY_MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-tiny.en.bin"
 CANARY_MODEL_SHA256 = "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f"
@@ -293,8 +298,18 @@ def run_remote(args: argparse.Namespace) -> int:
     if args.dry_run:
         environment["MURMUR_UPDATER_CANARY_DRY_RUN"] = "1"
     print(shlex.join([f"MURMUR_UPDATER_CANARY={result_path}", *(["MURMUR_UPDATER_CANARY_DRY_RUN=1"] if args.dry_run else []), *command]), flush=True)
-    process = subprocess.Popen(command, env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
-    cleaned_up = False
+    def launch_source() -> subprocess.Popen[bytes]:
+        return subprocess.Popen(
+            command,
+            env=environment,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+
+    process = launch_source()
+    process_is_stopped = False
+    start_attempt = 1
     try:
         deadline = time.monotonic() + args.timeout
         while time.monotonic() < deadline:
@@ -303,13 +318,32 @@ def run_remote(args: argparse.Namespace) -> int:
                     result = json.loads(result_path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError):
                     result = None
-                # Shipped clients can start the hook twice as setup settles.
-                # The duplicate reports "busy" while the original real update
-                # is still running. Wait for its final result; this state can
-                # never satisfy the gate or extend the existing deadline.
+                # A shipped source can race its focus-triggered ordinary
+                # background check with canary startup. The ordinary check has
+                # no canary writer, so this marker cannot be overwritten by a
+                # final canary result. Restart a bounded number of fresh source
+                # processes; the deadline and the complete result gate remain
+                # unchanged.
                 if (isinstance(result, dict) and result.get("status") == "failed"
-                        and result.get("error") == "Updater check already in progress."):
-                    result = None
+                        and result.get("error") == BUSY_CHECK_ERROR):
+                    if start_attempt >= MAX_BUSY_START_ATTEMPTS:
+                        raise CanaryError(
+                            "canary source reported a competing updater check on every "
+                            f"startup attempt ({start_attempt}/{MAX_BUSY_START_ATTEMPTS})"
+                        )
+                    print(
+                        "Canary diagnostic: source reported a competing updater check "
+                        f"on startup attempt {start_attempt}/{MAX_BUSY_START_ATTEMPTS}; "
+                        "restarting the shipped source.",
+                        flush=True,
+                    )
+                    terminate_and_collect_stderr(process)
+                    process_is_stopped = True
+                    result_path.unlink(missing_ok=True)
+                    start_attempt += 1
+                    process = launch_source()
+                    process_is_stopped = False
+                    continue
                 if isinstance(result, dict) and result.get("status") in ("passed", "failed", "dry-run"):
                     if args.dry_run:
                         evaluate_dry_run_result(result, previous_version, expected_version)
@@ -319,16 +353,21 @@ def run_remote(args: argparse.Namespace) -> int:
                             installed = plistlib.load(info).get("CFBundleShortVersionString")
                         if installed != expected_version:
                             raise CanaryError(f"installed bundle version {installed!r} does not match {expected_version}")
+                    print(
+                        f"Canary diagnostic: complete result from startup attempt "
+                        f"{start_attempt}/{MAX_BUSY_START_ATTEMPTS}.",
+                        flush=True,
+                    )
                     print(json.dumps(result, sort_keys=True), flush=True)
                     return 0
             if process.poll() is not None and not result_path.exists():
                 break
             time.sleep(2)
         stderr = terminate_and_collect_stderr(process)
-        cleaned_up = True
+        process_is_stopped = True
         raise CanaryError(f"timed out waiting for {result_path}; {stderr[-1000:]}")
     finally:
-        if not cleaned_up:
+        if not process_is_stopped:
             terminate_and_collect_stderr(process)
 
 
