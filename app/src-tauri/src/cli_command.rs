@@ -113,9 +113,9 @@ impl CliLexicon {
     ) -> Self {
         let mut aliases = Vec::new();
 
-        // Existing custom voice-command pairs are user-approved. Only atom-like
-        // replacements are useful as lexicon entries; sentences remain owned by
-        // the voice-command stage that runs before this formatter.
+        // Approved mappings are supplied by the caller (live dictation passes
+        // none; the evaluation harness passes its fixture aliases). Only
+        // atom-like replacements are useful as lexicon entries.
         for (spoken, written) in approved_mappings {
             if is_shell_atom(written) {
                 add_alias(&mut aliases, spoken, written);

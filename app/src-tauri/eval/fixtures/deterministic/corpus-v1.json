@@ -51,16 +51,6 @@
   },
   {
     "fixtureVersion": 1,
-    "id": "bulleted-list-custom-command",
-    "tier": "deterministic",
-    "provenance": {"kind": "curatedSynthetic", "source": "Issue #267 list corpus", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
-    "input": {"rawAsr": "Packing list new line bullet charger new line bullet cable", "expectedRawAsr": ["Packing list new line bullet charger new line bullet cable"]},
-    "context": {"stages": {"voiceCommands": true}, "resources": {"voiceCommands": [{"id": "bullet", "phrase": "bullet", "commandType": "text_replacement", "content": "-", "allowClipboardRead": false, "appScoped": false}]}},
-    "expected": {"finalText": "Packing list\n- charger\n- cable", "deliveredText": "Packing list\n- charger\n- cable", "stages": [{"name": "voice_commands", "outcome": "applied", "changed": true}, {"name": "spoken_structure", "outcome": "applied", "changed": true}]},
-    "timing": {"rawAsrMs": 20, "transformMs": 1, "deliveryMs": 1}
-  },
-  {
-    "fixtureVersion": 1,
     "id": "spoken-punctuation-and-paragraph",
     "tier": "deterministic",
     "provenance": {"kind": "curatedSynthetic", "source": "Issue #267 punctuation corpus", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
@@ -138,16 +128,6 @@
     "context": {"bundleId": "com.todesktop.230313mzl4w4u92", "matchedProfile": "cursor", "stages": {"ideContext": true}, "resources": {"ideSymbols": ["OverlayWidget"], "ideFiles": ["src/recording.rs"]}},
     "expected": {"finalText": "@src/recording.rs and OverlayWidget", "deliveredText": "@src/recording.rs and OverlayWidget", "stages": [{"name": "ide_context", "outcome": "applied", "changed": true}]},
     "timing": {"rawAsrMs": 19, "transformMs": 2, "deliveryMs": 1}
-  },
-  {
-    "fixtureVersion": 1,
-    "id": "fixed-clock-and-fake-clipboard",
-    "tier": "deterministic",
-    "provenance": {"kind": "curatedSynthetic", "source": "Voice Commands 2.0 deterministic runtime seam", "containsRealUserData": false, "deletion": "Delete this JSON entry and any generated local reports."},
-    "input": {"rawAsr": "insert standup", "expectedRawAsr": ["insert standup"]},
-    "context": {"fixedNow": "2026-07-20T09:07:00-04:00", "clipboardText": "fixture-only note", "stages": {"voiceCommands": true}, "resources": {"voiceCommands": [{"id": "standup", "phrase": "insert standup", "commandType": "snippet", "content": "Standup {{date}} {{time}}: {{clipboard}}", "allowClipboardRead": true, "appScoped": false}]}},
-    "expected": {"finalText": "Standup 2026-07-20 09:07: fixture-only note", "deliveredText": "Standup 2026-07-20 09:07: fixture-only note", "stages": [{"name": "voice_commands", "outcome": "applied", "changed": true}]},
-    "timing": {"rawAsrMs": 12, "transformMs": 1, "deliveryMs": 1}
   },
   {
     "fixtureVersion": 1,

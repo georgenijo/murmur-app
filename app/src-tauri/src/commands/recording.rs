@@ -699,22 +699,10 @@ fn cached_code_vocab_prompt(
 /// snapshot.
 pub(crate) fn resolve_live_context(
     app_state: &AppState,
-    knowledge: &crate::knowledge_store::KnowledgeStore,
     app_identity: &crate::frontmost::FrontmostAppIdentity,
     delivery_target: &crate::frontmost::DeliveryTargetSnapshot,
 ) -> Arc<DictationContextSnapshot> {
     let bundle_id = app_identity.bundle_id.as_deref();
-    let repository_voice_commands = match knowledge.voice_commands_for_context(bundle_id) {
-        Ok(entries) => Some(crate::voice_commands::commands_from_knowledge(entries)),
-        Err(error) => {
-            tracing::warn!(
-                target: "pipeline",
-                error = %error,
-                "knowledge-backed voice commands unavailable; using legacy configuration"
-            );
-            None
-        }
-    };
     loop {
         let code_vocab = resolve_code_vocab_prompt(app_state, bundle_id);
         let dictation = app_state.dictation.lock_or_recover();
@@ -757,7 +745,6 @@ pub(crate) fn resolve_live_context(
             correction_matcher,
             ide_context_index,
             vocabulary_version,
-            voice_commands: repository_voice_commands.clone(),
         });
         context.app.process_id = app_identity.process_id;
         context.app.delivery_target = delivery_target.clone();
@@ -794,12 +781,10 @@ fn select_recording_destination(
 /// profile resolved for one app together with routing state for another.
 fn resolve_recording_context(
     app_state: &AppState,
-    knowledge: &crate::knowledge_store::KnowledgeStore,
     destination: RecordingDestination,
 ) -> Arc<DictationContextSnapshot> {
     let app_identity = crate::frontmost::profile_identity_from_delivery_target(&destination.target);
-    let mut context =
-        resolve_live_context(app_state, knowledge, &app_identity, &destination.target);
+    let mut context = resolve_live_context(app_state, &app_identity, &destination.target);
     Arc::make_mut(&mut context).app.smart_destination = destination.smart_destination;
     context
 }
@@ -877,12 +862,10 @@ pub(crate) fn rebuild_correction_matcher(
             }
         }
     }
-    let knowledge = app_state.knowledge_replacements.lock_or_recover().clone();
     let matcher = crate::vocabulary_alias::CorrectionMatcherSet::build_with_contextual_code_terms(
         &terms,
         &dictation.vocabulary_entries,
         &dictation.app_profiles,
-        &knowledge,
         dictation.correction_fuzzy,
         // Gate the std* abbrev builtins on the dev-context (code-vocab) signal.
         code_enabled,
@@ -2294,12 +2277,11 @@ fn transcript_stage_timing(
     use crate::transcript_transform::{
         StageOutcome, CLEANUP_STAGE, CLI_COMMAND_STAGE, HOMOPHONE_CONTEXT_STAGE, IDE_CONTEXT_STAGE,
         SMART_CORRECTION_STAGE, SMART_FORMATTING_STAGE, SPOKEN_NUMBERS_STAGE,
-        SPOKEN_STRUCTURE_STAGE, VOICE_COMMANDS_STAGE,
+        SPOKEN_STRUCTURE_STAGE,
     };
 
     let stage = match report.stage {
         CLEANUP_STAGE => PerformanceStageV1::Cleanup,
-        VOICE_COMMANDS_STAGE => PerformanceStageV1::VoiceCommands,
         SMART_CORRECTION_STAGE => PerformanceStageV1::SmartCorrection,
         HOMOPHONE_CONTEXT_STAGE => PerformanceStageV1::HomophoneContext,
         SMART_FORMATTING_STAGE => PerformanceStageV1::SmartFormatting,
@@ -2765,11 +2747,6 @@ async fn run_transcription_pipeline(
     // Post-recognition transformation is backend-neutral and ordered in one
     // authoritative entry point. Its stage config and resources come from the
     // immutable recording-start snapshot rather than mutable app settings.
-    let custom_commands: Vec<(String, String)> = transformations
-        .voice_commands
-        .iter()
-        .map(|command| (command.phrase.clone(), command.content.clone()))
-        .collect();
     let transform_context = crate::transcript_transform::TranscriptContext {
         session_id: app_state.next_transcript_session_id(),
         source: crate::transcript_transform::TranscriptSource::Live,
@@ -2779,7 +2756,6 @@ async fn run_transcription_pipeline(
             cleanup_enabled: transformations.cleanup_enabled,
             cleanup_remove_filler: transformations.cleanup_remove_filler,
             cleanup_capitalize: transformations.cleanup_capitalize,
-            voice_commands_enabled: context.enabled_command_groups.built_in_voice_commands,
             smart_correction_enabled: transformations.correction_enabled,
             homophone_context_enabled: transformations.homophone_context_enabled,
             smart_formatting_enabled: transformations.smart_formatting_enabled,
@@ -2790,17 +2766,12 @@ async fn run_transcription_pipeline(
             text_register: transformations.text_register,
         },
     };
-    let cli_lexicon = crate::cli_command::CliLexicon::from_context(
-        transcription.prompt.as_deref(),
-        &custom_commands,
-    );
+    let cli_lexicon =
+        crate::cli_command::CliLexicon::from_context(transcription.prompt.as_deref(), &[]);
     let transform_resources = crate::transcript_transform::TranscriptTransformResources {
-        custom_commands,
-        voice_commands: transformations.voice_commands.clone(),
         correction_matcher: transformations.correction_matcher.clone(),
         cli_lexicon,
         ide_context_index: transformations.ide_context_index.clone(),
-        voice_command_runtime: None,
         homophone_engine: context.homophone_engine.clone(),
     };
     let transform_started = std::time::Instant::now();
@@ -3423,7 +3394,7 @@ pub async fn process_audio(
         }));
     }
     let destination = select_recording_destination(&delivery_target, smart_destination);
-    let context = resolve_recording_context(&state.app_state, &state.knowledge, destination);
+    let context = resolve_recording_context(&state.app_state, destination);
     if smart_enabled {
         emit_smart_destination(
             &app_handle,
@@ -3571,7 +3542,6 @@ pub async fn get_status(state: tauri::State<'_, State>) -> Result<serde_json::Va
 struct ConfigurationLogMetadata {
     option_count: u64,
     app_profile_count: u64,
-    voice_command_count: u64,
     custom_vocabulary_present: bool,
     vocabulary_entry_count: u64,
     output_directory_present: bool,
@@ -3585,10 +3555,6 @@ impl ConfigurationLogMetadata {
                 .get("appProfiles")
                 .and_then(serde_json::Value::as_array)
                 .map_or(0, |profiles| profiles.len() as u64),
-            voice_command_count: options
-                .get("voiceCommands")
-                .and_then(serde_json::Value::as_array)
-                .map_or(0, |commands| commands.len() as u64),
             custom_vocabulary_present: options
                 .get("customVocabulary")
                 .and_then(serde_json::Value::as_str)
@@ -3623,15 +3589,11 @@ fn parse_writing_style(value: Option<&serde_json::Value>) -> Option<crate::state
 }
 
 struct StagedVocabularyConfiguration {
-    voice_commands: Option<Vec<crate::state::VoiceCommand>>,
     entries: Option<Vec<crate::state::VocabularyEntry>>,
 }
 
 impl StagedVocabularyConfiguration {
     fn commit(self, dictation: &mut crate::state::DictationState) {
-        if let Some(voice_commands) = self.voice_commands {
-            dictation.voice_command_pairs = voice_commands;
-        }
         if let Some(entries) = self.entries {
             dictation.custom_vocabulary =
                 crate::vocabulary_alias::prompt_terms(&entries, None, &dictation.app_profiles);
@@ -3657,35 +3619,7 @@ fn legacy_vocabulary_entries(value: &str) -> Vec<crate::state::VocabularyEntry> 
 fn stage_vocabulary_configuration(
     options: &serde_json::Value,
     dictation: &crate::state::DictationState,
-    repository_commands: &[crate::state::VoiceCommand],
 ) -> Result<StagedVocabularyConfiguration, String> {
-    let voice_commands = options
-        .get("voiceCommands")
-        .and_then(serde_json::Value::as_array)
-        .map(|pairs| {
-            pairs
-                .iter()
-                .filter_map(|pair| {
-                    let phrase = pair
-                        .get("phrase")
-                        .and_then(serde_json::Value::as_str)?
-                        .trim()
-                        .to_string();
-                    if phrase.is_empty() {
-                        return None;
-                    }
-                    let replacement = pair
-                        .get("replacement")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("")
-                        .to_string();
-                    Some(crate::state::VoiceCommand {
-                        phrase,
-                        replacement,
-                    })
-                })
-                .collect::<Vec<_>>()
-        });
     let entries = options
         .get("vocabularyEntries")
         .map(|value| {
@@ -3700,25 +3634,10 @@ fn stage_vocabulary_configuration(
                 .map(legacy_vocabulary_entries)
         });
 
-    let mut effective_commands = voice_commands
-        .as_deref()
-        .unwrap_or(&dictation.voice_command_pairs)
-        .to_vec();
-    for command in repository_commands {
-        if !effective_commands.iter().any(|existing| {
-            crate::knowledge_store::normalize_key(&existing.phrase)
-                == crate::knowledge_store::normalize_key(&command.phrase)
-        }) {
-            effective_commands.push(command.clone());
-        }
-    }
     let effective_entries = entries.as_deref().unwrap_or(&dictation.vocabulary_entries);
-    crate::vocabulary_alias::validate_entries(effective_entries, &effective_commands)?;
+    crate::vocabulary_alias::validate_entries(effective_entries)?;
 
-    Ok(StagedVocabularyConfiguration {
-        voice_commands,
-        entries,
-    })
+    Ok(StagedVocabularyConfiguration { entries })
 }
 
 pub(crate) fn sanitize_app_profiles(
@@ -3793,47 +3712,11 @@ pub async fn configure_dictation(
         target: "pipeline",
         option_count = log_metadata.option_count,
         app_profile_count = log_metadata.app_profile_count,
-        voice_command_count = log_metadata.voice_command_count,
         custom_vocabulary_present = log_metadata.custom_vocabulary_present,
         vocabulary_entry_count = log_metadata.vocabulary_entry_count,
         output_directory_present = log_metadata.output_directory_present,
         "configure_dictation"
     );
-
-    if let Some(pairs) = options
-        .get("voiceCommands")
-        .and_then(serde_json::Value::as_array)
-    {
-        let legacy = pairs
-            .iter()
-            .filter_map(|pair| {
-                let phrase = pair.get("phrase")?.as_str()?.trim();
-                if phrase.is_empty() {
-                    return None;
-                }
-                Some((
-                    phrase.to_string(),
-                    pair.get("replacement")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
-                ))
-            })
-            .collect::<Vec<_>>();
-        match state.knowledge.migrate_legacy_voice_commands(&legacy) {
-            Ok(inserted) if inserted > 0 => tracing::info!(
-                target: "pipeline",
-                migrated_voice_command_count = inserted,
-                "legacy Voice Commands migrated to personal knowledge"
-            ),
-            Ok(_) => {}
-            Err(error) => tracing::warn!(
-                target: "pipeline",
-                error = %error,
-                "legacy Voice Command migration unavailable; retaining compatibility state"
-            ),
-        }
-    }
 
     let model = options
         .get("model")
@@ -3850,23 +3733,9 @@ pub async fn configure_dictation(
         }
     }
 
-    let repository_commands = state
-        .knowledge
-        .all_voice_commands()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|entry| {
-            let (phrase, replacement, _) = entry.payload.storage_parts();
-            crate::state::VoiceCommand {
-                phrase,
-                replacement,
-            }
-        })
-        .collect::<Vec<_>>();
     let mut dictation = state.app_state.dictation.lock_or_recover();
     let backend_change_can_apply_now = dictation.status == DictationStatus::Idle;
-    let staged_vocabulary =
-        stage_vocabulary_configuration(&options, &dictation, &repository_commands)?;
+    let staged_vocabulary = stage_vocabulary_configuration(&options, &dictation)?;
 
     let mut model_change_guard = if model
         .as_deref()
@@ -3887,8 +3756,7 @@ pub async fn configure_dictation(
         None
     };
 
-    // Command phrases and vocabulary aliases form one conflict domain. Commit
-    // them together only after the combined requested state has validated.
+    // Commit vocabulary only after the requested entries have validated.
     staged_vocabulary.commit(&mut dictation);
 
     let model_changed = if let Some(m) = model {
@@ -5385,7 +5253,7 @@ pub async fn start_native_recording(
         &state.app_state,
         app_identity.bundle_id.as_deref(),
     );
-    let mut context = resolve_recording_context(&state.app_state, &state.knowledge, destination);
+    let mut context = resolve_recording_context(&state.app_state, destination);
     // Install the resource in the immutable recording snapshot before publishing
     // it. The live-dictation engine currently refuses generation and preparation
     // (#1081); if re-enabled, preparation waits for Activate below.
@@ -5998,14 +5866,6 @@ async fn stop_native_recording_for(
     // Broadcast transcription result to all windows (so the main window can update
     // its history even when recording was initiated from the overlay).
     if !text.is_empty() {
-        let teaching_context = crate::correct_and_teach::teaching_context(
-            context.app.bundle_id.as_deref(),
-            context
-                .matched_profile
-                .as_ref()
-                .map(|profile| profile.label.as_str()),
-            context.teaching_project_root.as_deref(),
-        );
         let history = history.expect("non-empty completed transcription has history metadata");
         let _ = app_handle.emit(
             "transcription-complete",
@@ -6014,7 +5874,6 @@ async fn stop_native_recording_for(
                 "text": text,
                 "rawText": history.raw_text,
                 "duration": recording_secs,
-                "teachingContext": teaching_context,
                 "interrupted": interruption,
                 "recording": {
                     "recordingId": rid,
@@ -6153,11 +6012,10 @@ pub fn cancel_audio_initialization(reason: String) -> Result<(), String> {
 #[tauri::command]
 pub async fn preview_vocabulary_aliases(
     entries: Vec<crate::state::VocabularyEntry>,
-    voice_commands: Vec<crate::state::VoiceCommand>,
     text: String,
     cli_formatting: bool,
 ) -> Result<String, String> {
-    crate::vocabulary_alias::validate_entries(&entries, &voice_commands)?;
+    crate::vocabulary_alias::validate_entries(&entries)?;
     let matchers =
         crate::vocabulary_alias::CorrectionMatcherSet::build(&[], &entries, &[], false, false);
     let corrected = matchers.select(None).apply(&text);
@@ -6618,12 +6476,10 @@ pub(crate) mod tests {
                 microphone_startup_benchmark: crate::commands::microphone_startup_benchmark::MicrophoneStartupBenchmarkState::default(),
                 #[cfg(feature = "internal-benchmark")]
                 corpus: crate::commands::corpus::CorpusRecorderState::default(),
-                knowledge: crate::knowledge_store::KnowledgeStore::default(),
                 meeting_store: crate::meeting_store::MeetingStore::default(),
                 meetings: crate::meeting_capture::MeetingCoordinator::default(),
                 meeting_suggestions: crate::meeting_suggestions::MeetingSuggestions::default(),
                 delivery_recovery: crate::delivery_recovery::DeliveryRecoveryState::default(),
-                correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),
 
@@ -7340,12 +7196,10 @@ pub(crate) mod tests {
             microphone_startup_benchmark: Default::default(),
             #[cfg(feature = "internal-benchmark")]
             corpus: Default::default(),
-            knowledge: Default::default(),
             meeting_store: Default::default(),
             meetings: Default::default(),
             meeting_suggestions: Default::default(),
             delivery_recovery: Default::default(),
-            correct_and_teach: Default::default(),
             capture_health: Default::default(),
             performance: Default::default(),
 
@@ -7398,12 +7252,10 @@ pub(crate) mod tests {
                 microphone_startup_benchmark: crate::commands::microphone_startup_benchmark::MicrophoneStartupBenchmarkState::default(),
                 #[cfg(feature = "internal-benchmark")]
                 corpus: crate::commands::corpus::CorpusRecorderState::default(),
-                knowledge: crate::knowledge_store::KnowledgeStore::default(),
                 meeting_store: crate::meeting_store::MeetingStore::default(),
                 meetings: crate::meeting_capture::MeetingCoordinator::default(),
                 meeting_suggestions: crate::meeting_suggestions::MeetingSuggestions::default(),
                 delivery_recovery: crate::delivery_recovery::DeliveryRecoveryState::default(),
-                correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: performance.clone(),
 
@@ -7525,12 +7377,10 @@ pub(crate) mod tests {
                 microphone_startup_benchmark: crate::commands::microphone_startup_benchmark::MicrophoneStartupBenchmarkState::default(),
                 #[cfg(feature = "internal-benchmark")]
                 corpus: crate::commands::corpus::CorpusRecorderState::default(),
-                knowledge: crate::knowledge_store::KnowledgeStore::default(),
                 meeting_store: crate::meeting_store::MeetingStore::default(),
                 meetings: crate::meeting_capture::MeetingCoordinator::default(),
                 meeting_suggestions: crate::meeting_suggestions::MeetingSuggestions::default(),
                 delivery_recovery: crate::delivery_recovery::DeliveryRecoveryState::default(),
-                correct_and_teach: crate::correct_and_teach::CorrectAndTeachState::default(),
                 capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
                 performance: crate::performance_metrics::PerformanceMetrics::default(),
 
@@ -7665,17 +7515,12 @@ pub(crate) mod tests {
                 "enabled": true,
                 "scope": { "kind": "global" }
             }],
-            "voiceCommands": [{
-                "phrase": "confidential phrase",
-                "replacement": "confidential replacement"
-            }],
             "outputDir": "/Users/private/CustomerFiles"
         });
 
         let metadata = ConfigurationLogMetadata::from_options(&options);
-        assert_eq!(metadata.option_count, 5);
+        assert_eq!(metadata.option_count, 4);
         assert_eq!(metadata.app_profile_count, 1);
-        assert_eq!(metadata.voice_command_count, 1);
         assert!(metadata.custom_vocabulary_present);
         assert_eq!(metadata.vocabulary_entry_count, 1);
         assert!(metadata.output_directory_present);
@@ -7688,8 +7533,6 @@ pub(crate) mod tests {
             "private-id",
             "PrivateCanonical",
             "private spoken alias",
-            "confidential phrase",
-            "confidential replacement",
             "/Users/private/CustomerFiles",
         ] {
             assert!(
@@ -7700,7 +7543,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn rejected_command_alias_conflict_leaves_prior_backend_state_unchanged() {
+    fn rejected_built_in_phrase_alias_leaves_prior_backend_state_unchanged() {
         let mut dictation = crate::state::DictationState {
             custom_vocabulary: "Tauri".to_string(),
             vocabulary_entries: vec![crate::state::VocabularyEntry {
@@ -7710,33 +7553,27 @@ pub(crate) mod tests {
                 enabled: true,
                 scope: crate::state::VocabularyScope::Global,
             }],
-            voice_command_pairs: vec![crate::state::VoiceCommand {
-                phrase: "ship it".to_string(),
-                replacement: "deploy".to_string(),
-            }],
             ..Default::default()
         };
         let before = dictation.clone();
         let options = serde_json::json!({
-            "voiceCommands": [{ "phrase": "Tori", "replacement": "override" }],
-            "vocabularyEntries": dictation.vocabulary_entries.clone(),
+            "vocabularyEntries": [{
+                "id": "line",
+                "written": "LineBreak",
+                "aliases": ["new line"],
+                "enabled": true,
+                "scope": { "kind": "global" }
+            }],
         });
 
-        let result = stage_vocabulary_configuration(&options, &dictation, &[])
+        let result = stage_vocabulary_configuration(&options, &dictation)
             .map(|staged| staged.commit(&mut dictation));
 
-        assert!(result.unwrap_err().contains("Voice Command"));
+        assert!(result
+            .unwrap_err()
+            .contains("built-in spoken formatting phrase"));
         assert_eq!(dictation.custom_vocabulary, before.custom_vocabulary);
         assert_eq!(dictation.vocabulary_entries, before.vocabulary_entries);
-        assert_eq!(dictation.voice_command_pairs.len(), 1);
-        assert_eq!(
-            dictation.voice_command_pairs[0].phrase,
-            before.voice_command_pairs[0].phrase
-        );
-        assert_eq!(
-            dictation.voice_command_pairs[0].replacement,
-            before.voice_command_pairs[0].replacement
-        );
     }
 
     #[test]
@@ -8243,10 +8080,8 @@ pub(crate) mod tests {
             dictation.save_transcript = false;
             dictation.auto_paste = false;
         }
-        let knowledge = crate::knowledge_store::KnowledgeStore::default();
         let context = resolve_live_context(
             &app_state,
-            &knowledge,
             &crate::frontmost::FrontmostAppIdentity {
                 bundle_id: Some("com.example.Editor".into()),
                 process_id: Some(42),
@@ -8362,7 +8197,6 @@ pub(crate) mod tests {
             profile("com.brave.Browser", "Media browser"),
             profile("com.example.Editor", "Intended editor"),
         ];
-        let knowledge = crate::knowledge_store::KnowledgeStore::default();
 
         let smart = crate::smart_destination::Snapshot::Target {
             token: 17,
@@ -8390,7 +8224,7 @@ pub(crate) mod tests {
         );
         let destination = select_recording_destination(&media_target, smart.clone());
         assert!(destination.target == editor_target);
-        let context = resolve_recording_context(&app_state, &knowledge, destination);
+        let context = resolve_recording_context(&app_state, destination);
         assert_eq!(context.app.bundle_id.as_deref(), Some("com.example.Editor"));
         assert_eq!(
             context
@@ -8410,7 +8244,7 @@ pub(crate) mod tests {
             crate::smart_destination::Snapshot::Disabled,
         );
         assert!(disabled.target == media_target);
-        let context = resolve_recording_context(&app_state, &knowledge, disabled);
+        let context = resolve_recording_context(&app_state, disabled);
         assert_eq!(
             context
                 .matched_profile
@@ -8427,9 +8261,6 @@ pub(crate) mod tests {
 
     #[test]
     fn live_context_scopes_prompt_and_matcher_to_the_apps_explicit_profile() {
-        use crate::knowledge_store::{
-            KnowledgeEntry, KnowledgePayload, KnowledgeProvenance, KnowledgeScope,
-        };
         use crate::state::{AppProfile, VocabularyEntry, VocabularyScope, WritingStyle};
         let app_state = AppState::default();
         let editor = "com.example.Editor";
@@ -8469,29 +8300,10 @@ pub(crate) mod tests {
                 },
             }];
         }
-        *app_state.knowledge_replacements.lock_or_recover() = Arc::new(vec![KnowledgeEntry {
-            id: "project-learned".into(),
-            payload: KnowledgePayload::ReplacementRule {
-                source: "learned alias".into(),
-                replacement: "LearnedWord".into(),
-            },
-            enabled: true,
-            scope: KnowledgeScope::Project {
-                bundle_id: editor.into(),
-                root: "/project".into(),
-            },
-            provenance: KnowledgeProvenance::LearnedCorrection,
-            created_at_ms: 0,
-            updated_at_ms: 0,
-            revision: 1,
-            voice_command: None,
-        }]);
         rebuild_correction_matcher(&app_state, &app_state.dictation.lock_or_recover());
-        let knowledge = crate::knowledge_store::KnowledgeStore::default();
         for bundle in [editor, chat] {
             let context = resolve_live_context(
                 &app_state,
-                &knowledge,
                 &crate::frontmost::FrontmostAppIdentity {
                     bundle_id: Some(bundle.into()),
                     process_id: Some(1),
@@ -8513,15 +8325,6 @@ pub(crate) mod tests {
                     "ProjectWord"
                 } else {
                     "project alias"
-                },
-                "{bundle}"
-            );
-            assert_eq!(
-                matcher.apply("learned alias"),
-                if project {
-                    "LearnedWord"
-                } else {
-                    "learned alias"
                 },
                 "{bundle}"
             );
@@ -8772,14 +8575,14 @@ pub(crate) mod tests {
 
     #[test]
     fn transcript_stage_timing_skipped_outcome_reports_not_applicable() {
-        use crate::transcript_transform::{StageOutcome, VOICE_COMMANDS_STAGE};
+        use crate::transcript_transform::{StageOutcome, SPOKEN_STRUCTURE_STAGE};
 
         let timing = transcript_stage_timing(&stage_report(
-            VOICE_COMMANDS_STAGE,
+            SPOKEN_STRUCTURE_STAGE,
             StageOutcome::Skipped,
             999,
         ))
-        .expect("voice commands stage recognized");
+        .expect("spoken structure stage recognized");
         assert_eq!(timing.outcome, StageOutcomeV1::Skipped);
         assert_eq!(
             timing.duration_ms,
@@ -8797,6 +8600,11 @@ pub(crate) mod tests {
             1
         ))
         .is_none());
+        // The retired custom Voice Commands stage is no longer emitted or mapped.
+        assert!(
+            transcript_stage_timing(&stage_report("voice_commands", StageOutcome::Applied, 1))
+                .is_none()
+        );
     }
 
     #[test]

@@ -279,14 +279,6 @@ fn post_decision_outcome(
     }
 }
 
-pub(crate) fn read_clipboard_text() -> Result<String, String> {
-    let mut clipboard =
-        Clipboard::new().map_err(|_| "Clipboard access is unavailable.".to_string())?;
-    clipboard
-        .get_text()
-        .map_err(|_| "Clipboard does not currently contain readable text.".to_string())
-}
-
 /// Write `text` to the clipboard. Factored out of `inject_text` so the
 /// transform apply/undo path (`transform_apply.rs`, issue #312 PR-B2) can
 /// reuse the exact same clipboard-write primitive — both the initial

@@ -385,7 +385,6 @@ struct Term {
 struct ExplicitAlias {
     spoken: Vec<char>,
     written: String,
-    priority: u8,
 }
 
 /// Match one normalized lowercase alias at an original UTF-8 byte boundary.
@@ -424,9 +423,9 @@ pub struct CorrectionMatcher {
     terms: Vec<Term>,
     /// Lowercased written forms, so Tier 2 never "corrects" an already-correct token.
     written_lower: std::collections::HashSet<String>,
-    /// Explicit aliases whose spoken form contains a digit. Correct and Teach
-    /// learns from final text, where spoken numbers are already digits, so
-    /// these are matched again after the spoken-numbers stage.
+    /// Explicit aliases whose spoken form contains a digit. Such an alias is
+    /// naturally written against final text, where spoken numbers are already
+    /// digits, so these are matched again after the spoken-numbers stage.
     numeric_aliases: Vec<ExplicitAlias>,
     /// Single-word user vocabulary spellings, used only as sounds-like
     /// targets by the optional homophone context pass.
@@ -453,19 +452,6 @@ impl CorrectionMatcher {
         fuzzy: bool,
         include_builtins: bool,
     ) -> Self {
-        Self::build_with_learned(terms, pairs, &[], fuzzy, include_builtins)
-    }
-
-    /// Build the same matcher while inserting reviewed learned replacements
-    /// between explicit vocabulary aliases and lower-priority derived/fuzzy
-    /// vocabulary. Explicit aliases retain priority for identical phrases.
-    pub fn build_with_learned(
-        terms: &[String],
-        pairs: &[(String, String)],
-        learned_pairs: &[(String, String)],
-        fuzzy: bool,
-        include_builtins: bool,
-    ) -> Self {
         // spoken(lowercased) -> written for derived/built-in vocabulary.
         let mut map: HashMap<String, String> = HashMap::new();
 
@@ -488,15 +474,12 @@ impl CorrectionMatcher {
         }
         let mut explicit_aliases = pairs
             .iter()
-            .map(|pair| (pair, 2_u8))
-            .chain(learned_pairs.iter().map(|pair| (pair, 1_u8)))
-            .filter_map(|((spoken, written), priority)| {
+            .filter_map(|(spoken, written)| {
                 let spoken = normalize_alias(spoken);
                 let written = written.trim();
                 (!spoken.is_empty() && !written.is_empty()).then(|| ExplicitAlias {
                     spoken: spoken.chars().collect(),
                     written: written.to_string(),
-                    priority,
                 })
             })
             .collect::<Vec<_>>();
@@ -504,28 +487,20 @@ impl CorrectionMatcher {
         // explicit precedence idempotent: a second application cannot feed a
         // canonical such as "standard error" into the lower-priority builtin
         // that would otherwise rewrite it to "stderr".
-        explicit_aliases.extend(
-            pairs
-                .iter()
-                .map(|pair| (pair, 2_u8))
-                .chain(learned_pairs.iter().map(|pair| (pair, 1_u8)))
-                .filter_map(|((_, written), priority)| {
-                    let spoken = normalize_alias(written);
-                    let written = written.trim();
-                    (!spoken.is_empty() && !written.is_empty()).then(|| ExplicitAlias {
-                        spoken: spoken.chars().collect(),
-                        written: written.to_string(),
-                        priority,
-                    })
-                }),
-        );
+        explicit_aliases.extend(pairs.iter().filter_map(|(_, written)| {
+            let spoken = normalize_alias(written);
+            let written = written.trim();
+            (!spoken.is_empty() && !written.is_empty()).then(|| ExplicitAlias {
+                spoken: spoken.chars().collect(),
+                written: written.to_string(),
+            })
+        }));
         explicit_aliases.sort_by(|left, right| {
             right
                 .spoken
                 .len()
                 .cmp(&left.spoken.len())
                 .then_with(|| left.spoken.cmp(&right.spoken))
-                .then_with(|| right.priority.cmp(&left.priority))
                 .then_with(|| left.written.cmp(&right.written))
         });
         explicit_aliases.dedup_by(|left, right| left.spoken == right.spoken);
@@ -628,7 +603,7 @@ impl CorrectionMatcher {
     }
 
     /// [`apply_in`](Self::apply_in), also returning the output byte ranges
-    /// written by explicit aliases and learned rules (canonical forms
+    /// written by explicit aliases (canonical forms
     /// included). Later stages treat those spans as literal.
     pub(crate) fn apply_traced(
         &self,
@@ -660,7 +635,7 @@ impl CorrectionMatcher {
     }
 
     /// Re-apply explicit aliases whose spoken form contains a digit after the
-    /// spoken-numbers stage, so a rule learned from final text such as
+    /// spoken-numbers stage, so an alias written against final text such as
     /// `GPT 5` matches `GPT five`. A match must overlap a span that stage just
     /// `rendered` and must not touch a `literal` span an earlier tier wrote;
     /// text Smart Correction already saw is never matched twice.
@@ -948,56 +923,6 @@ pub(crate) fn normalize_alias(value: &str) -> String {
         .to_lowercase()
 }
 
-/// Apply one reviewed learned replacement with the same case-insensitive,
-/// Unicode-aware whole-term contract used by the immutable correction matcher.
-/// The count is returned for Correct and Teach review; no matcher state is
-/// mutated and no content leaves the caller.
-pub(crate) fn preview_exact_replacement(
-    text: &str,
-    source: &str,
-    replacement: &str,
-) -> (String, u32) {
-    let spoken = normalize_alias(source).chars().collect::<Vec<_>>();
-    if spoken.is_empty() {
-        return (text.to_string(), 0);
-    }
-
-    let mut output = String::with_capacity(text.len());
-    let mut copy_start = 0usize;
-    let mut scan = 0usize;
-    let mut count = 0u32;
-    while scan < text.len() {
-        let before_ok = text[..scan]
-            .chars()
-            .next_back()
-            .is_none_or(|character| !character.is_alphanumeric());
-        let matched_end = before_ok
-            .then(|| explicit_alias_match_end(text, scan, &spoken))
-            .flatten()
-            .filter(|end| {
-                text[*end..]
-                    .chars()
-                    .next()
-                    .is_none_or(|character| !character.is_alphanumeric())
-            });
-        if let Some(end) = matched_end {
-            output.push_str(&text[copy_start..scan]);
-            output.push_str(replacement);
-            count = count.saturating_add(1);
-            scan = end;
-            copy_start = end;
-        } else {
-            scan += text[scan..]
-                .chars()
-                .next()
-                .expect("scan always points at a character boundary")
-                .len_utf8();
-        }
-    }
-    output.push_str(&text[copy_start..]);
-    (output, count)
-}
-
 /// Split a written identifier into its likely spoken form: lowercase words joined
 /// by spaces. Handles camelCase, PascalCase, snake_case, kebab-case, and
 /// letter↔digit boundaries. `useEffect` → "use effect", `rePivot` → "re pivot",
@@ -1169,23 +1094,6 @@ mod tests {
         let terms: Vec<String> = terms.iter().map(|s| s.to_string()).collect();
         // include_builtins = true so the abbrev tests (stderr/stdin) exercise them.
         CorrectionMatcher::build(&terms, &[], true, true)
-    }
-
-    #[test]
-    fn reviewed_replacement_preview_uses_production_boundaries() {
-        let (preview, count) =
-            preview_exact_replacement("Neo, NEO and neolithic José", "neo", "Nijo");
-        assert_eq!(preview, "Nijo, Nijo and neolithic José");
-        assert_eq!(count, 2);
-
-        let (preview, count) =
-            preview_exact_replacement("use   recording state", "use recording state", "hook");
-        assert_eq!(preview, "use   recording state");
-        assert_eq!(count, 0);
-
-        let (preview, count) = preview_exact_replacement("JOSÉ josé", "José", "George");
-        assert_eq!(preview, "George George");
-        assert_eq!(count, 2);
     }
 
     // ---- derive_spoken_form ----
@@ -1611,12 +1519,12 @@ mod tests {
 
     #[test]
     fn numeric_aliases_match_only_freshly_rendered_digits() {
-        let learned = vec![
+        let pairs = vec![
             ("GPT 5".to_string(), "GPT-5".to_string()),
             ("20 pages".to_string(), "twenty pages".to_string()),
             ("Tori".to_string(), "Tauri".to_string()),
         ];
-        let m = CorrectionMatcher::build_with_learned(&[], &[], &learned, false, false);
+        let m = CorrectionMatcher::build(&[], &pairs, false, false);
         let text = "GPT 5 wrote 20 pages for Tori";
         let gpt = 4..5;
         let pages = 12..14;
@@ -1636,7 +1544,7 @@ mod tests {
             m.apply_numeric_aliases(text, &[gpt, pages], std::slice::from_ref(&(0..3))),
             "GPT 5 wrote twenty pages for Tori"
         );
-        let plain = CorrectionMatcher::build_with_learned(&[], &[], &learned[2..], false, false);
+        let plain = CorrectionMatcher::build(&[], &pairs[2..], false, false);
         assert_eq!(
             plain.apply_numeric_aliases("GPT 5", std::slice::from_ref(&(4..5)), &[]),
             "GPT 5"

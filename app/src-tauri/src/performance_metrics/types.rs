@@ -216,6 +216,8 @@ pub enum PerformanceStageV1 {
     InferenceDecode,
     TranscriptTransform,
     Cleanup,
+    // retired; kept for stored rows. Custom Voice Commands no longer run, so
+    // nothing emits this stage, but older runs still decode with it.
     VoiceCommands,
     SmartCorrection,
     HomophoneContext,

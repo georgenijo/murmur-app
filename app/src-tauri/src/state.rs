@@ -153,16 +153,6 @@ pub(crate) fn app_profiles_enable_code_vocabulary(
     ide_context_enabled || writing_style == Some(WritingStyle::CodeTechnical)
 }
 
-/// A user-defined voice command: when `phrase` is spoken (matched
-/// case-insensitively on word boundaries), it is replaced by `replacement`.
-/// Applied after the built-in command set, so users can extend — not override —
-/// the defaults.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct VoiceCommand {
-    pub phrase: String,
-    pub replacement: String,
-}
-
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum VocabularyScope {
@@ -217,10 +207,9 @@ pub struct DictationState {
     pub output_dir: String,
     /// Per-app profiles resolved once from the frontmost app at recording start.
     pub app_profiles: Vec<AppProfile>,
+    /// Built-in spoken formatting commands ("new line", "period", "scratch
+    /// that"). Shown in Settings as "Spoken formatting".
     pub voice_commands_enabled: bool,
-    /// User-defined voice commands applied after the built-in set.
-    #[serde(default)]
-    pub voice_command_pairs: Vec<VoiceCommand>,
     /// Rule-based transcript cleanup (filler removal, spacing/capitalization)
     /// applied before injection. Off by default.
     pub cleanup_enabled: bool,
@@ -287,7 +276,6 @@ impl Default for DictationState {
             output_dir: String::new(),
             app_profiles: Vec::new(),
             voice_commands_enabled: false,
-            voice_command_pairs: Vec::new(),
             cleanup_enabled: false,
             cleanup_remove_filler: true,
             cleanup_capitalize: true,
@@ -418,10 +406,6 @@ pub struct AppState {
     /// Aho-Corasick automaton isn't serializable.
     pub correction_matcher:
         Mutex<Option<std::sync::Arc<crate::vocabulary_alias::CorrectionMatcherSet>>>,
-    /// Enabled replacement rules from the local knowledge repository, ordered
-    /// by its deterministic precedence. Refreshed only after repository writes;
-    /// recording snapshots never query SQLite in the transform hot path.
-    pub knowledge_replacements: Mutex<Arc<Vec<crate::knowledge_store::KnowledgeEntry>>>,
     /// Short-lived local project indexes for explicitly opted-in app profiles.
     /// Contents (symbols and root-relative filenames) are never serialized.
     pub ide_context: Mutex<crate::ide_context::IdeContextStore>,
@@ -542,7 +526,6 @@ impl Default for AppState {
             file_transcribing: AtomicBool::new(false),
             microphone_preview: crate::microphone_preview::MicrophonePreviewState::default(),
             correction_matcher: Mutex::new(None),
-            knowledge_replacements: Mutex::new(Arc::new(Vec::new())),
             ide_context: Mutex::new(crate::ide_context::IdeContextStore::default()),
         }
     }
@@ -621,7 +604,6 @@ mod tests {
             correction_matcher: None,
             ide_context_index: None,
             vocabulary_version: 0,
-            voice_commands: None,
         }))
     }
 

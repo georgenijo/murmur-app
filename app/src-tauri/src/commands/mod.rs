@@ -1,13 +1,11 @@
 pub mod benchmark;
 #[cfg(feature = "internal-benchmark")]
 pub mod corpus;
-pub mod correct_and_teach;
 pub mod dictation_diagnostics;
 pub mod dictation_preview;
 pub mod export;
 pub mod integrations;
 pub mod keyboard;
-pub mod knowledge;
 pub mod logging;
 pub mod meeting;
 pub mod meeting_calendar;

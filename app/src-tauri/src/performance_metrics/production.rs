@@ -621,7 +621,6 @@ fn context_key(context: &DictationContextSnapshot) -> Option<String> {
         .as_ref()
         .is_some_and(|prompt| !prompt.is_empty())
         || context.vocabulary.source != VocabularySource::None
-        || !t.voice_commands.is_empty()
         || t.correction_matcher
             .as_ref()
             .is_some_and(|matcher| !matcher.has_only_contextual_rules())
@@ -661,7 +660,9 @@ fn context_key(context: &DictationContextSnapshot) -> Option<String> {
         context.delivery.mirror_to_notchpill,
         context.enabled_command_groups.built_in_voice_commands,
         context.writing_style,
-        context.enabled_command_groups.custom_voice_commands,
+        // Custom Voice Commands were retired. The slot stays in the key, fixed
+        // at its old "none configured" value, so stored keys still compare.
+        false,
         context.context_capture.local_project_index
     );
     Some(format!("{:x}", Sha256::digest(safe.as_bytes())))
@@ -724,7 +725,6 @@ mod tests {
             correction_matcher: None,
             ide_context_index: None,
             vocabulary_version: 1,
-            voice_commands: Some(Vec::new()),
         })
     }
     fn plan() -> AudioStartupDiagnostic {

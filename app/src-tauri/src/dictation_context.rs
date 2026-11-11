@@ -9,7 +9,6 @@ use crate::cli_command::CliFormattingMode;
 use crate::correction::CorrectionMatcher;
 use crate::ide_context::IdeContextIndex;
 use crate::state::{AppProfile, DictationState, WritingStyle};
-use crate::voice_commands::ResolvedVoiceCommand;
 use std::sync::Arc;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -54,7 +53,6 @@ pub struct VocabularyIdentity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnabledCommandGroups {
     pub built_in_voice_commands: bool,
-    pub custom_voice_commands: bool,
 }
 
 /// Permissions to read user context as an input to dictation.
@@ -86,7 +84,6 @@ pub struct TransformationSettings {
     pub cleanup_enabled: bool,
     pub cleanup_remove_filler: bool,
     pub cleanup_capitalize: bool,
-    pub voice_commands: Vec<ResolvedVoiceCommand>,
     pub correction_enabled: bool,
     pub homophone_context_enabled: bool,
     pub correction_matcher: Option<Arc<CorrectionMatcher>>,
@@ -119,10 +116,6 @@ pub struct DictationContextSnapshot {
     pub(crate) homophone_engine: Option<Arc<dyn crate::homophone_context::HomophoneEngine>>,
     pub app: ActiveAppIdentity,
     pub matched_profile: Option<MatchedAppProfile>,
-    /// A project is teachable only when the explicitly opted-in matching
-    /// profile identifies exactly one root. Multiple configured roots are not
-    /// treated as an invented active-project signal.
-    pub teaching_project_root: Option<String>,
     pub transcription: TranscriptionSettings,
     pub transformations: TransformationSettings,
     pub delivery: DeliverySettings,
@@ -139,9 +132,6 @@ pub struct ResolverInputs<'a> {
     pub correction_matcher: Option<Arc<CorrectionMatcher>>,
     pub ide_context_index: Option<Arc<IdeContextIndex>>,
     pub vocabulary_version: u64,
-    /// Repository-backed commands already filtered for the active app. `None`
-    /// preserves legacy in-memory pairs when the local store is unavailable.
-    pub voice_commands: Option<Vec<ResolvedVoiceCommand>>,
 }
 
 /// Resolve global defaults -> matching app profiles.
@@ -215,10 +205,6 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         writing_style: profile.writing_style,
         ide_context_enabled: profile.ide_context_enabled,
     });
-    let teaching_project_root = explicit_profile
-        .filter(|profile| ide_context_enabled && profile.ide_project_roots.len() == 1)
-        .and_then(|profile| profile.ide_project_roots.first())
-        .cloned();
     let custom_vocab = crate::vocabulary_alias::has_applicable_entries(
         &global.vocabulary_entries,
         inputs.bundle_id,
@@ -237,26 +223,6 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
     let voice_commands = style
         .voice_commands_enabled
         .unwrap_or(global.voice_commands_enabled);
-    let resolved_voice_commands = inputs.voice_commands.unwrap_or_else(|| {
-        global
-            .voice_command_pairs
-            .iter()
-            .enumerate()
-            .map(|(index, command)| ResolvedVoiceCommand {
-                id: format!("legacy-runtime-{index:08}"),
-                phrase: command.phrase.clone(),
-                command_type: crate::knowledge_store::VoiceCommandKind::TextReplacement,
-                content: command.replacement.clone(),
-                allow_clipboard_read: false,
-                app_scoped: false,
-            })
-            .collect::<Vec<_>>()
-    });
-    let clipboard_read_allowed = voice_commands
-        && resolved_voice_commands
-            .iter()
-            .any(|command| command.allow_clipboard_read);
-    let custom_voice_commands = voice_commands && !resolved_voice_commands.is_empty();
     let spoken_structure_policy = crate::spoken_structure::SpokenStructurePolicy::resolve(
         voice_commands,
         smart_formatting_enabled,
@@ -271,7 +237,6 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             smart_destination: crate::smart_destination::Snapshot::Disabled,
         },
         matched_profile,
-        teaching_project_root,
         transcription: TranscriptionSettings {
             model_name: global.model_name.clone(),
             language: global.language.clone(),
@@ -287,7 +252,6 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             cleanup_capitalize: style
                 .cleanup_capitalize
                 .unwrap_or(global.cleanup_capitalize),
-            voice_commands: resolved_voice_commands,
             correction_enabled: style
                 .correction_enabled
                 .unwrap_or(global.correction_enabled),
@@ -325,12 +289,10 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         },
         enabled_command_groups: EnabledCommandGroups {
             built_in_voice_commands: voice_commands,
-            custom_voice_commands,
         },
-        // Clipboard input is granted only when an applicable command explicitly
-        // opts in; selected/screen text remain denied. Project indexing is separate.
+        // Selected text, screen text, and clipboard reads stay denied. Project
+        // indexing is a separate, explicit opt-in.
         context_capture: ContextCapturePermissions {
-            clipboard: clipboard_read_allowed,
             local_project_index: ide_context_enabled,
             ..ContextCapturePermissions::default()
         },
@@ -456,7 +418,6 @@ mod tests {
                 cleanup_enabled: snapshot.transformations.cleanup_enabled,
                 cleanup_remove_filler: snapshot.transformations.cleanup_remove_filler,
                 cleanup_capitalize: snapshot.transformations.cleanup_capitalize,
-                voice_commands_enabled: snapshot.enabled_command_groups.built_in_voice_commands,
                 smart_correction_enabled: snapshot.transformations.correction_enabled,
                 homophone_context_enabled: snapshot.transformations.homophone_context_enabled,
                 smart_formatting_enabled: snapshot.transformations.smart_formatting_enabled,
@@ -502,7 +463,6 @@ mod tests {
             correction_matcher: None,
             ide_context_index: None,
             vocabulary_version: 7,
-            voice_commands: None,
         })
     }
 
@@ -785,10 +745,6 @@ mod tests {
             crate::spoken_structure::SpokenStructurePolicy::Basic
         );
         assert!(opted_in.context_capture.local_project_index);
-        assert_eq!(
-            opted_in.teaching_project_root.as_deref(),
-            Some("/explicit/project")
-        );
         assert!(!opted_in.context_capture.surrounding_screen_text);
         assert!(!opted_in.context_capture.selected_text);
         assert!(!opted_in.context_capture.clipboard);
@@ -808,12 +764,6 @@ mod tests {
             ide_named_but_unconfigured.context_capture,
             ContextCapturePermissions::default()
         );
-
-        global.app_profiles[0]
-            .ide_project_roots
-            .push("/another/project".to_string());
-        let ambiguous = resolve_test(&global, Some("com.example.Editor"));
-        assert!(ambiguous.teaching_project_root.is_none());
     }
 
     #[test]

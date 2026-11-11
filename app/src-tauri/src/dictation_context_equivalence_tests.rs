@@ -81,7 +81,6 @@ fn resolve_probe(state: &DictationState, bundle_id: &str) -> Value {
         correction_matcher: None,
         ide_context_index: None,
         vocabulary_version: 1,
-        voice_commands: None,
     }))
 }
 

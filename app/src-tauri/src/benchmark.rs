@@ -915,7 +915,6 @@ fn default_delivery_context() -> TranscriptContext {
         correction_matcher: None,
         ide_context_index: None,
         vocabulary_version: 0,
-        voice_commands: None,
     });
     TranscriptContext {
         session_id: 0,
@@ -926,7 +925,6 @@ fn default_delivery_context() -> TranscriptContext {
             cleanup_enabled: snapshot.transformations.cleanup_enabled,
             cleanup_remove_filler: snapshot.transformations.cleanup_remove_filler,
             cleanup_capitalize: snapshot.transformations.cleanup_capitalize,
-            voice_commands_enabled: snapshot.enabled_command_groups.built_in_voice_commands,
             smart_correction_enabled: snapshot.transformations.correction_enabled,
             homophone_context_enabled: snapshot.transformations.homophone_context_enabled,
             smart_formatting_enabled: snapshot.transformations.smart_formatting_enabled,
@@ -2174,7 +2172,6 @@ mod tests {
         assert!(!stages.cleanup_enabled);
         assert!(stages.cleanup_remove_filler);
         assert!(stages.cleanup_capitalize);
-        assert!(!stages.voice_commands_enabled);
         assert!(stages.smart_correction_enabled);
         assert!(!stages.smart_formatting_enabled);
         assert!(stages.spoken_numbers_enabled);
