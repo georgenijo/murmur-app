@@ -100,7 +100,7 @@ for (const appearance of ['light', 'dark']) {
     expect(await page.locator('.settings-unavailable').evaluate(el => getComputedStyle(el).backgroundColor)).toMatch(/\/ 0\.2\)/);
     await css(page.locator('.settings-unavailable-notice'), { 'font-size': '12px' });
     await css(page.locator('.settings-unavailable-notice svg'), { width: '14px', height: '14px' });
-    await css(page.locator('.settings-segmented'), { height: '34px', 'border-radius': '999px' });
+    await css(page.locator('.settings-segmented'), { height: '32px', 'border-radius': '999px' });
     await expect(page.locator('.settings-segmented-btn[data-selected]')).not.toHaveCSS('box-shadow', 'none');
     const measured = await page.locator('main').evaluate(root => {
       const selectors = ['.settings-section', '.settings-page-head', '.settings-section-title', '.settings-card', '.settings-setting-row', '.settings-row-layout', '.settings-row-title', '.settings-row-description', '.settings-row-controls', '.settings-reset-slot', '.ui-switch', '.ui-switch-thumb', '.ui-select-trigger', '.ui-form-input', '.ui-form-button', '.settings-unavailable-notice', '.settings-segmented'];

@@ -30,7 +30,7 @@ describe('ModesManager', () => {
     expect(previewModeText('um first new line second', mode)).toBe('first \n second');
   });
 
-  it('marks the selected Mode row for keyboard and visual state styling', async () => {
+  it('shows one selected-mode indicator and hides built-in status labels', async () => {
     await act(async () => root.render(
       <ModesManager modes={[mode]} profiles={[]} siteLookupEnabled={false} siteRules={[]} onChange={vi.fn()} />,
     ));
@@ -38,9 +38,17 @@ describe('ModesManager', () => {
     expect(rows.length).toBeGreaterThan(1);
     expect(rows[0].getAttribute('aria-pressed')).toBe('true');
     expect(rows[0].className).toContain('settings-mode-row');
+    expect(rows[0].textContent).toContain('Selected');
+    expect(rows[0].querySelector('svg')).not.toBeNull();
+    expect(rows[0].textContent).not.toContain('Built-in');
     await act(async () => rows[1].click());
     expect(rows[0].getAttribute('aria-pressed')).toBe('false');
     expect(rows[1].getAttribute('aria-pressed')).toBe('true');
+    expect(rows[0].textContent).not.toContain('Selected');
+    expect(rows[1].textContent).toContain('Selected');
+    expect(rows[1].textContent).not.toContain('Built-in');
+    const customRow = rows.find((row) => row.textContent?.includes('Focus'))!;
+    expect(customRow.textContent).toContain('Enabled');
   });
 
   it('creates, tests, edits, and removes exact browser host rules behind global opt-in', async () => {
@@ -152,7 +160,7 @@ describe('ModesManager', () => {
     const onChange = vi.fn();
     const rule = { id: 'github', browserBundleId: 'com.apple.Safari', host: 'github.com', modeId: 'mode.focus', enabled: true };
     await act(async () => root.render(<ModesManager modes={[mode]} profiles={[{ ...profile, modeId: 'mode.focus' }]} siteLookupEnabled={false} siteRules={[rule]} onChange={onChange} initialSelectedId="mode.focus" />));
-    expect([...container.querySelectorAll('h2.settings-section-title')].map((heading) => heading.textContent))
+    expect([...container.querySelectorAll('h2.settings-group-heading')].map((heading) => heading.textContent))
       .toEqual(['Library', 'Selected mode', 'Where it applies', 'Before / after test']);
     expect(container.querySelectorAll('.settings-card.settings-rows')).toHaveLength(4);
     for (const label of ['Mode name', 'Writing style', 'Mode model', 'Mode language', 'Vocabulary policy', 'Use browser site mode rules']) {

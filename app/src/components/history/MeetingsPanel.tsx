@@ -183,8 +183,8 @@ export function MeetingsPanel({ meetings, playbackBusy }: MeetingsPanelProps) {
           {!denied && meetings.status.elapsedMs > 0 && <span className="meetings-elapsed">{formatMeetingTimestamp(meetings.status.elapsedMs)}</span>}
         </div>
         {!denied && <div ref={sourcesRef} className="meetings-statusbar-detail" title={CHANNEL_EXPLAINER}>
-          <span className="meetings-source" data-channel="me" data-active={meetings.status.microphoneActive}><span aria-hidden="true" className="meetings-source-dot" />Microphone (Me)</span>
-          <span className="meetings-source" data-channel="them" data-active={meetings.status.systemAudioActive}><span aria-hidden="true" className="meetings-source-dot" />System audio (Them)</span>
+          <span className="meetings-source" data-channel="me" data-active={meetings.status.microphoneActive}><span aria-hidden="true" className="meetings-source-dot" />Microphone</span>
+          <span className="meetings-source" data-channel="them" data-active={meetings.status.systemAudioActive}><span aria-hidden="true" className="meetings-source-dot" />System audio</span>
           <span className="ui-visually-hidden">{CHANNEL_EXPLAINER}</span>
           {showPermissionHint && <span className="meetings-permission-hint">
             <span><span aria-hidden="true" className="meetings-source-dot" />Mac audio access not checked</span>

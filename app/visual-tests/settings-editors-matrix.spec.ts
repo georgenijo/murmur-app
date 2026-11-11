@@ -78,7 +78,7 @@ for (const { appearance, width, height, label } of surfaceCases()) {
       await expect(input).toBeFocused();
       await input.fill('DELETE');
       await page.keyboard.press('Shift+Tab');
-      await expect(dialog.getByRole('button', { name: 'Delete everything…', exact: true })).toBeFocused();
+      await expect(dialog.getByRole('button', { name: 'Delete everything', exact: true })).toBeFocused();
       await page.keyboard.press('Tab');
       await expect(input).toBeFocused();
       await page.keyboard.press('Escape');

@@ -64,8 +64,8 @@ describe('onboarding model state with native IPC boundaries', () => {
     await click('Get started');
     await click('Continue');
     await click('Continue');
-    await click('Skip meetings for now');
-    await click('Skip Calendar for now');
+    await click('Skip for now');
+    await click('Skip for now');
   };
   const done = async () => {
     await click('Continue'); // model -> hotkey

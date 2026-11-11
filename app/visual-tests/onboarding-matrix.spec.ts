@@ -36,10 +36,7 @@ for (const { appearance, width, height, label } of surfaceCases()) {
           await expect(scope.locator('button[data-default-button]')).toHaveCount(isNavigation ? 1 : 0);
           if (isNavigation) await expect(primary).toHaveAttribute('data-default-button');
           else await expect(primary).not.toHaveAttribute('data-default-button');
-          const inlineAllow = page.locator('.onboarding-permission-allow');
-          const unavailable = index === 3 && ['restricted', 'unsupported'].includes(permission);
-          await expect(inlineAllow).toHaveCount(permission === 'granted' || unavailable ? 0 : 1);
-          if (permission !== 'granted' && !unavailable) await expect(inlineAllow).toHaveAttribute('aria-label', `Allow ${title.replace(' access', '').toLowerCase()} access`);
+          await expect(page.locator('.onboarding-permission-allow')).toHaveCount(0);
 
           // Wait for Welcome's padding to yield to the pinned-footer layout,
           // then sample the frame and portal footer in one layout pass.

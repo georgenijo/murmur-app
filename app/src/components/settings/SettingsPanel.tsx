@@ -175,16 +175,13 @@ function VadSensitivitySlider({
   useEffect(() => setDraft(value), [value]);
   const commit = (next: number) => { if (next !== value) onCommit(next); };
   return (
-    <div className="settings-field">
-      <div className="flex items-center justify-between">
-        <label htmlFor={id} className="text-xs text-on-surface-variant">Sensitivity</label>
-        <span className="text-xs font-medium text-on-surface">{draft === 0 ? 'Off' : `${draft}%`}</span>
-      </div>
+    <>
+      <label htmlFor={id} className="sr-only">Sensitivity</label>
       <input
         type="range"
-        min={0}
-        max={100}
-        step={5}
+        min="0"
+        max="100"
+        step="5"
         id={id}
         value={draft}
         aria-valuetext={draft === 0 ? 'Off' : `${draft} percent`}
@@ -198,8 +195,7 @@ function VadSensitivitySlider({
         onBlur={(event) => commit(Number(event.currentTarget.value))}
         className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
       />
-      <p className="text-xs text-on-surface-variant">Higher keeps more audio. Off is fastest.</p>
-    </div>
+    </>
   );
 }
 
@@ -899,7 +895,7 @@ export const SettingsPanel = memo(function SettingsPanel({
       ?? SETTINGS_TOOLS.find((tool) => tool.id === page)?.label
       ?? page;
   };
-  const pageTitle = searchQuery ? 'Search' : ({ customize: 'Customize Murmur', 'ai-transcription': 'Speech-to-text',
+  const pageTitle = searchQuery ? 'Search' : ({ customize: 'Customize', 'ai-transcription': 'Speech-to-text',
       shortcuts: 'Keyboard shortcuts' } as Record<string, string>)[activeCat]
       ?? searchPageLabel(activeCat);
   return (
@@ -1033,7 +1029,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               onClick={returnToCustomization}
               className="settings-back-btn mb-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
-              <span aria-hidden="true">‹</span> Back to Customize
+              <span aria-hidden="true">‹</span> Customize
             </Button>
           )}
           {activeCat === 'shortcuts' && (
@@ -1101,6 +1097,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             <SettingsRow
               title={<>Voice detection</>}
               targetId="voice-detection"
+              description={previewVadSensitivity === 0 ? 'Off · Responds fastest' : `${previewVadSensitivity}% sensitivity · Higher keeps more audio`}
               disabled={isRecording}
               onReset={settings.vadSensitivity !== DEFAULT_SETTINGS.vadSensitivity ? () => onUpdateSettings({ vadSensitivity: DEFAULT_SETTINGS.vadSensitivity }) : undefined}
               control={<VadSensitivitySlider
@@ -1199,31 +1196,37 @@ export const SettingsPanel = memo(function SettingsPanel({
                 onChange={() => onUpdateSettings({ soundCuesEnabled: !settings.soundCuesEnabled })}
               />
               <SettingsBranch open={settings.soundCuesEnabled}>
-                <label data-setting-target="sound-volume" className="block text-[length:var(--ui-font-caption)] font-medium text-on-surface-variant">
-                  Volume · {settings.soundCueVolume}%
-                  <input
-                    className="mt-2 block w-full accent-primary"
+                <SettingsRow
+                  targetId="sound-volume"
+                  title="Volume"
+                  description={`${settings.soundCueVolume}%`}
+                  control={<input
+                    className="w-full accent-primary"
                     type="range"
                     min="0"
                     max="100"
                     step="5"
                     value={settings.soundCueVolume}
+                    aria-label="Sound cue volume"
                     onChange={(event) => onUpdateSettings({ soundCueVolume: Number(event.target.value) })}
-                  />
-                </label>
-                <div className="flex flex-wrap gap-2" aria-label="Preview sound cues">
-                  {(['start', 'stop', 'success', 'failure'] as const).map((cue: SoundCue) => (
-                    <Button
-                      key={cue}
-                      type="button"
-                      onClick={() => playSoundCue(cue, settings.soundCueVolume)}
-                      size="sm"
-                      className="capitalize"
-                    >
-                      {cue}
-                    </Button>
-                  ))}
-                </div>
+                  />}
+                />
+                <SettingsRow title="Preview" description="Play each local cue">
+                  <div className="mt-2 flex flex-wrap gap-2" aria-label="Preview sound cues">
+                    {(['start', 'stop', 'success', 'failure'] as const).map((cue: SoundCue) => (
+                      <Button
+                        key={cue}
+                        type="button"
+                        onClick={() => playSoundCue(cue, settings.soundCueVolume)}
+                        size="sm"
+                        aria-label={`Preview ${cue} sound`}
+                        className="capitalize"
+                      >
+                        {cue}
+                      </Button>
+                    ))}
+                  </div>
+                </SettingsRow>
                 <SettingToggle
                   targetId="meeting-cues" title="Meeting cues"
                   description="Also play cues during meeting capture"
@@ -1243,19 +1246,20 @@ export const SettingsPanel = memo(function SettingsPanel({
             </div>
           </SettingsSection>
 
-          <SettingsSection hideHeading pageId="ai" activePage={activeCat} title="AI & models">
-            <button
-              type="button"
-              onClick={() => openPage('ai-transcription')}
-              className="flex w-full items-center gap-4 px-1 py-1 text-left hover:text-primary"
-            >
-              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-surface-container-high text-primary"><SettingsNavIcon icon="recording" /></span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-semibold text-on-surface">Speech-to-text</span>
-                <span className="mt-0.5 block truncate text-xs text-on-surface-variant">{selectedRuntime?.label ?? AVAILABLE_MODEL_OPTIONS.find((option) => option.value === settings.model)?.label ?? settings.model} · {selectedRuntime?.installState ?? 'Local model'}</span>
-              </span>
-              <span className="text-xs font-semibold text-on-surface-variant">Configure <span aria-hidden="true">›</span></span>
-            </button>
+          <SettingsSection hideHeading card={false} pageId="ai" activePage={activeCat} title="AI & models">
+            <SettingsGroup>
+              <button
+                type="button"
+                onClick={() => openPage('ai-transcription')}
+                className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              >
+                <span className="settings-title-description">
+                  <span className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">Speech-to-text</span>
+                  <span className="mt-0.5 block text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">{selectedRuntime?.label ?? AVAILABLE_MODEL_OPTIONS.find((option) => option.value === settings.model)?.label ?? settings.model} · {selectedRuntime?.installState ?? 'Local model'}</span>
+                </span>
+                <span aria-hidden="true" className="text-on-surface-variant">›</span>
+              </button>
+            </SettingsGroup>
 
           </SettingsSection>
 
@@ -1401,7 +1405,7 @@ export const SettingsPanel = memo(function SettingsPanel({
 {pasteLastShortcutError && <p role="alert" className="text-[length:var(--ui-font-caption)] text-error">{pasteLastShortcutError}</p>}
 {accessibilityGranted === false && settings.pasteLastShortcut !== null && (
                 <div className="flex items-center gap-2 text-[length:var(--ui-font-caption)] text-primary">
-                  <span>Accessibility permission is required for the global Paste Last shortcut.</span>
+                  <span>Accessibility permission is required for the global Paste Last shortcut</span>
                   <Button type="button" variant="ghost" size="xs" onClick={requestAccessibility}>Grant</Button>
                 </div>
               )}</SettingsRow>
@@ -1469,10 +1473,10 @@ export const SettingsPanel = memo(function SettingsPanel({
               <SettingsBranch open={settings.meetingSuggestionsEnabled} className="settings-branch-stack">
                 <SettingsDisclosure title="Calendar details" layout="stack" targetId="meeting-calendar" open={calendarDetailsOpen} onOpenChange={setCalendarDetailsOpen}>
                   <p className="text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
-                    Supports Zoom, Teams, Slack, Webex, FaceTime, and browsers. Murmur never reads URLs or window titles.
+                    Supports Zoom, Teams, Slack, Webex, FaceTime, and browsers without reading URLs or window titles
                   </p>
                   <p className="text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
-                    Nothing records until you accept a meeting suggestion.
+                    Record only after you accept a meeting suggestion
                   </p>
                   <button
                     type="button"
@@ -1633,7 +1637,6 @@ export const SettingsPanel = memo(function SettingsPanel({
                 if (activeCat === 'customize') setCustomizationDetail('commands');
               }}
               restoreFocus={() => editorOpenerRef.current?.isConnected ? editorOpenerRef.current : contentRef.current?.querySelector<HTMLElement>('[data-setting-target="vocabulary"], [data-setting-target="aliases"], [data-setting-target="knowledge"], [data-setting-target="commands"], [data-setting-target="app-overrides"] button, [aria-label="Modes"] [aria-pressed="true"], .settings-back-btn') ?? searchRef.current}
-              backLabel={activeCat === 'customize' ? 'Back to Customize' : undefined}
             />
       )}
     </div>

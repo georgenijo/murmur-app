@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Remove obsolete Settings status banners, unify Customize and AI navigation rows, use parent-labelled back controls with closeable editor sheets, keep Recording's live-level track visible and space it below microphone help, flatten Diagnostics controls, simplify Performance Lab comparison controls, give onboarding permissions one action and one skip label, standardize meeting naming controls, simplify the Notetaker status strip, and shorten Settings copy.
+
 ## [0.63.3] - 2026-11-11
 
 ### Fixed

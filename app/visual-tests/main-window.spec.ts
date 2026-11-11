@@ -376,7 +376,8 @@ test('customization hub stays legible and restores focus at native and narrow wi
   const fixture = page.locator('[data-visual-ready="true"]');
   const customizationList = page.getByRole('list', { name: 'Customization destinations' });
   const voiceCommands = customizationList.getByRole('button').filter({ hasText: 'Voice commands' });
-  await expect(page.getByRole('heading', { name: 'Customize Murmur' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Customize' })).toBeVisible();
+  await expect(customizationList.getByRole('listitem')).toHaveCount(4);
   await expect(customizationList.getByRole('button')).toHaveCount(4);
   expect(await customizationList.evaluate(element => element.tagName)).toBe('UL');
   for (const label of ['Text & vocabulary', 'Voice commands', 'App overrides', 'Modes']) {
@@ -387,11 +388,11 @@ test('customization hub stays legible and restores focus at native and narrow wi
 
   await voiceCommands.click();
   await expect(page.getByRole('heading', { name: 'Voice commands', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Back to Customize' }).click();
+  await page.getByRole('button', { name: 'Close editor' }).click();
   await expect(voiceCommands).toBeFocused();
 
   await page.setViewportSize({ width: 720, height: 560 });
-  await expect(page.getByRole('heading', { name: 'Customize Murmur', level: 1 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Customize', level: 1 })).toBeVisible();
   await expect(fixture).toHaveScreenshot('light-settings-customization-hub-narrow.png');
 });
 
@@ -608,12 +609,12 @@ test('settings rows keep the shared spacing contract and aligned controls', asyn
 test('browser-site Mode rules disclose their exact privacy boundary at normal and narrow widths', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings-site-modes&appearance=light');
   await page.getByRole('button', { name: 'Modes', exact: true }).click();
-  await page.getByRole('button', { name: /Technical Built-in/ }).click();
+  await page.getByRole('button', { name: /^Technical/ }).click();
 
   const fixture = page.locator('[data-visual-ready="true"]');
   const browserSites = page.getByText('Browser sites', { exact: true });
   await expect(page.getByRole('switch', { name: 'Use browser site mode rules' })).toBeChecked();
-  await expect(page.getByText(/never reads page text or history/)).toBeVisible();
+  await expect(page.getByText(/page text and history stay unread/)).toBeVisible();
   await expect(page.getByRole('textbox', { name: 'Host for github.com' })).toHaveValue('github.com');
   await browserSites.scrollIntoViewIfNeeded();
   await page.mouse.move(0, 0);

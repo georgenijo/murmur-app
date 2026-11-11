@@ -76,9 +76,9 @@ for (const appearance of ['light', 'dark'] as const) {
       await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=knowledge&appearance=${appearance}`);
       const enabledQuiet = page.getByRole('button', { name: 'Enable all shown', exact: true });
       await sharedHoverFill(enabledQuiet);
-      const back = page.locator('.settings-back-btn').first();
-      await expect(back).toBeVisible();
-      await sharedHoverFill(back);
+      const close = page.getByRole('button', { name: 'Close editor', exact: true });
+      await expect(close).toBeVisible();
+      await sharedHoverFill(close);
     });
   });
 }

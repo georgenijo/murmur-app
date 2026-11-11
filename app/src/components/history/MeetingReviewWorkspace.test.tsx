@@ -163,6 +163,7 @@ describe('MeetingReviewWorkspace', () => {
 
   it('hides the with-audio export when audio was not retained', async () => {
     await act(async () => root.render(<MeetingReviewWorkspace meetings={controller()} segments={segments} captureBusy={false} onNotice={() => {}} />));
+    expect(container.textContent).toContain('Audio was not retained. Turn on Keep meeting audio in Meetings to retain future sessions.');
     await openExport();
     expect(document.querySelector('[role="menu"]')?.textContent).not.toContain('Export with audio…');
   });
@@ -224,7 +225,7 @@ describe('MeetingReviewWorkspace', () => {
     await act(async () => root.render(<MeetingReviewWorkspace meetings={controller()} segments={segments} captureBusy={false} onNotice={() => {}} />));
 
     expect(container.querySelector('[aria-label="Meeting audio playback"]')).toBeNull();
-    expect(container.textContent).toContain('Audio was not retained for this meeting');
+    expect(container.textContent).toContain('Audio was not retained. Turn on Keep meeting audio in Meetings to retain future sessions.');
     expect(container.querySelector('[aria-label^="Play segment at"]')).toBeNull();
   });
 

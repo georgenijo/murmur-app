@@ -49,29 +49,25 @@ function formatUpdated(timestamp: number) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp);
 }
 
-function StatusBanner({ availability, message, recoveryAtMs, onRetry }: {
+function StatusBanner({ availability, message, onRetry }: {
   availability: 'ready' | 'recovered' | 'reinitialized' | 'unavailable';
   message: string | null;
-  recoveryAtMs: number | null;
   onRetry: () => void;
 }) {
-  if (availability === 'ready') return (
-    <div className="flex items-center gap-2 rounded-lg border border-success/60 bg-success/10 px-3 py-2 text-xs text-success" role="status">
-      <span className="h-2 w-2 rounded-full bg-success" /> Local store ready
-    </div>
-  );
   if (availability === 'unavailable') return (
     <div className="flex items-center justify-between gap-3 rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error" role="alert">
       <span>{message ?? 'The local knowledge store is unavailable.'}</span>
       <Button type="button" variant="ghost" size="xs" onClick={onRetry} className="shrink-0">Retry</Button>
     </div>
   );
-  return (
-    <div className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface" role="status">
-      <strong>{availability === 'recovered' ? 'Recovered from a local backup.' : 'Started with a new local store.'}</strong>{' '}
-      {message}{recoveryAtMs ? ` (${formatUpdated(recoveryAtMs)})` : ''}
+  if (availability === 'recovered' || availability === 'reinitialized') return (
+    <div className="rounded-lg border border-outline-variant/50 bg-surface-container-low px-3 py-2 text-[length:var(--ui-font-caption)] text-on-surface-variant" role="status">
+      {message ?? (availability === 'recovered'
+        ? 'Murmur restored personal knowledge from a local backup.'
+        : 'Murmur created an empty local knowledge store after recovering from database damage.')}
     </div>
   );
+  return null;
 }
 
 export function KnowledgeManager({ active, profiles }: Props) {
@@ -213,7 +209,6 @@ export function KnowledgeManager({ active, profiles }: Props) {
       <StatusBanner
         availability={knowledge.status.availability}
         message={knowledge.status.message}
-        recoveryAtMs={knowledge.status.recoveryAtMs}
         onRetry={() => void retry()}
       />
 
@@ -236,7 +231,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
           <Button type="button" size="sm" onClick={() => void chooseImport()} disabled={unavailable || bulkBusy}>Import…</Button>
           <Button type="button" size="sm" onClick={() => setDeleteAllOpen(true)} disabled={unavailable || bulkBusy || knowledge.status.recordCount === 0} data-tone="danger">Delete all…</Button>
           </ActionsOverflow>
-          <span className="ml-auto self-center text-xs text-on-surface-variant">{knowledge.status.recordCount} stored locally · schema v{knowledge.status.schemaVersion}</span>
+          <span className="ml-auto self-center text-xs text-on-surface-variant">{knowledge.status.recordCount} stored locally</span>
         </div>
       </div>
 
@@ -339,7 +334,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
         </label>
       </ConfirmDialog>}
 
-      {deleteAllOpen && <ConfirmDialog restoreFocus={restoreConfirmFocus} title="Delete all personal knowledge?" confirmLabel="Delete everything…" dangerous disabled={deletePhrase !== 'DELETE'} onCancel={() => { setDeleteAllOpen(false); setDeletePhrase(''); }} onConfirm={() => void run(() => deleteAllKnowledge(knowledge.status.storeRevision), 'All personal knowledge deleted.').then(() => { setDeleteAllOpen(false); setDeletePhrase(''); }).catch(() => {})}>
+      {deleteAllOpen && <ConfirmDialog restoreFocus={restoreConfirmFocus} title="Delete all personal knowledge?" confirmLabel="Delete everything" dangerous disabled={deletePhrase !== 'DELETE'} onCancel={() => { setDeleteAllOpen(false); setDeletePhrase(''); }} onConfirm={() => void run(() => deleteAllKnowledge(knowledge.status.storeRevision), 'All personal knowledge deleted.').then(() => { setDeleteAllOpen(false); setDeletePhrase(''); }).catch(() => {})}>
         <p>This permanently deletes all knowledge plus local recovery backups. Export first if you may need it later.</p>
         <label className="mt-3 block text-xs font-medium text-on-surface">Type DELETE to confirm
           <input aria-label="Type DELETE to confirm" value={deletePhrase} onChange={(event) => setDeletePhrase(event.target.value)} className="mt-1 w-full rounded-(--ui-radius-control) border border-error bg-(--ui-tint-raised) px-3 py-2 font-mono text-sm text-on-surface outline-none focus:border-error focus:ring-2 focus:ring-error" />
