@@ -3,7 +3,7 @@ import { useSettingsAdvanced } from '../../lib/hooks/useSettingsAdvanced';
 import { ADVANCED_TARGETS, visibleSettingsTarget } from './settingsDisclosureRouting';
 import { SettingsDisclosureContext } from './SettingsLayout';
 import { SettingsRow } from './SettingsRow';
-import { Button } from '../ui/FormControls';
+import { Button, Input } from '../ui/FormControls';
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { defaultButtonKeyDown } from '../../lib/defaultButton';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useId } from 'react';
@@ -449,6 +449,7 @@ export const SettingsPanel = memo(function SettingsPanel({
   const [appliedRequestToken, setAppliedRequestToken] = useState(pageRequest?.token);
   const [diagnosticsWindowError, setDiagnosticsWindowError] = useState<string | null>(null);
   const [calendarSettingsError, setCalendarSettingsError] = useState<string | null>(null);
+  const [calendarDetailsOpen, setCalendarDetailsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [editorTab, setEditorTab] = useState<SettingsEditorTab | null>(pageRequest?.editorTab ?? null);
   const revealedTargetRef = useRef<SettingTargetRequest | null>(null);
@@ -1428,86 +1429,76 @@ export const SettingsPanel = memo(function SettingsPanel({
             </div>
           </SettingsSection>
 
-          <SettingsSection hideHeading pageId="meetings" activePage={activeCat} title="Meetings">
-            <SettingsCallout title="Stored separately from dictation">
-              Meetings never appear in dictation history.
-            </SettingsCallout>
-            <div className="settings-stack">
+          <SettingsSection hideHeading card={false} pageId="meetings" activePage={activeCat} title="Meetings">
+            <div className="settings-groups">
+              <SettingsGroup title="Meeting capture">
               <SettingToggle
                 targetId="meeting-suggestions"
                 title="Suggest Notetaker for Calendar meetings"
-                description="Reads your Calendar to offer notes when a meeting starts. Nothing records until you accept."
+                description="Use your Calendar to offer a prompt for supported calls"
                 checked={settings.meetingSuggestionsEnabled} defaultChecked={DEFAULT_SETTINGS.meetingSuggestionsEnabled}
                 onChange={() => onUpdateSettings({ meetingSuggestionsEnabled: !settings.meetingSuggestionsEnabled })}
               />
-              <SettingsBranch open={settings.meetingSuggestionsEnabled}>
-              <div data-setting-target="meeting-calendar"><p className="text-xs leading-relaxed text-on-surface-variant">
-                Works with Zoom, Teams, Slack, Webex, FaceTime, and browsers. Murmur never reads URLs or window titles.
-              </p>
-              <button
-                type="button"
-                className="w-fit text-xs font-medium text-on-surface-variant underline hover:text-primary"
-                onClick={() => {
-                  setCalendarSettingsError(null);
-                  void openCalendarPreferences().catch(() => {
-                    setCalendarSettingsError('Calendar settings could not be opened. Open Privacy & Security → Calendars in System Settings.');
-                  });
-                }}
-              >
-                Open Calendar settings…
-              </button>
-              </div>
+              <SettingsBranch open={settings.meetingSuggestionsEnabled} className="settings-branch-stack">
+                <SettingsDisclosure title="Calendar details" layout="stack" targetId="meeting-calendar" open={calendarDetailsOpen} onOpenChange={setCalendarDetailsOpen}>
+                  <p className="text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
+                    Supports Zoom, Teams, Slack, Webex, FaceTime, and browsers. Murmur never reads URLs or window titles.
+                  </p>
+                  <button
+                    type="button"
+                    className="settings-quiet-btn"
+                    onClick={() => {
+                      setCalendarSettingsError(null);
+                      void openCalendarPreferences().catch(() => {
+                        setCalendarSettingsError('Calendar settings could not be opened. Open Privacy & Security → Calendars in System Settings.');
+                      });
+                    }}
+                  >
+                    Open Calendar settings…
+                  </button>
+                </SettingsDisclosure>
               </SettingsBranch>
               {calendarSettingsError && (
-                <p role="alert" className="text-xs text-error">{calendarSettingsError}</p>
+                <p role="alert" className="text-[length:var(--ui-font-caption)] text-error">{calendarSettingsError}</p>
               )}
-            </div>
-            <SettingToggle
-              targetId="meeting-audio"
-              title="Keep meeting audio"
-              description="Keep recordings after transcription"
-              checked={settings.meetingRetainAudio} defaultChecked={DEFAULT_SETTINGS.meetingRetainAudio}
-              onChange={() => onUpdateSettings({ meetingRetainAudio: !settings.meetingRetainAudio })}
-            />
-            <MeetingDiarizationSettings
-              enabled={settings.meetingDiarization}
-              onEnabledChange={(meetingDiarization) => onUpdateSettings({ meetingDiarization })}
-            />
-            <SettingsDisclosure title="Advanced" layout="rows">
-            <SettingToggle
-              targetId="meeting-echo-cancellation"
-              title="Reduce speaker echo"
-              description="Remove speaker audio from your mic. Experimental."
-              checked={settings.meetingEchoCancellationEnabled} defaultChecked={DEFAULT_SETTINGS.meetingEchoCancellationEnabled}
-              onChange={() => onUpdateSettings({ meetingEchoCancellationEnabled: !settings.meetingEchoCancellationEnabled })}
-            />
-            <div data-setting-target="meeting-retention" className="grid gap-4 rounded-lg transition-shadow sm:grid-cols-2 [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <label className="text-sm font-medium text-on-surface">
-                Keep transcripts by age
-                <select
-                  value={settings.meetingRetentionDays}
-                  onChange={(event) => onUpdateSettings({ meetingRetentionDays: Number(event.target.value) })}
-                  className="mt-2 h-9 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-2 text-sm text-on-surface"
-                >
-                  <option value={0}>No age limit</option>
-                  <option value={30}>30 days</option>
-                  <option value={90}>90 days</option>
-                  <option value={365}>1 year</option>
-                </select>
-              </label>
-              <label className="text-sm font-medium text-on-surface">
-                Session limit
-                <input
-                  type="number"
-                  min={1}
-                  max={10000}
-                  value={settings.meetingMaxSessions}
-                  onChange={(event) => onUpdateSettings({ meetingMaxSessions: Math.max(1, Math.min(10000, Number(event.target.value) || 1)) })}
-                  className="mt-2 h-9 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-2 text-sm text-on-surface"
+              <SettingToggle
+                targetId="meeting-audio"
+                title="Keep meeting audio"
+                description=""
+                checked={settings.meetingRetainAudio} defaultChecked={DEFAULT_SETTINGS.meetingRetainAudio}
+                onChange={() => onUpdateSettings({ meetingRetainAudio: !settings.meetingRetainAudio })}
+              />
+              <SettingsDisclosure title="Advanced" description="Echo and retention" layout="rows">
+                <SettingToggle
+                  targetId="meeting-echo-cancellation"
+                  title="Reduce speaker echo"
+                  description="Experimental"
+                  checked={settings.meetingEchoCancellationEnabled} defaultChecked={DEFAULT_SETTINGS.meetingEchoCancellationEnabled}
+                  onChange={() => onUpdateSettings({ meetingEchoCancellationEnabled: !settings.meetingEchoCancellationEnabled })}
                 />
-              </label>
+                <SettingsRow
+                  targetId="meeting-retention"
+                  title="Keep transcripts by age"
+                  control={<Select aria-label="Keep transcripts by age" value={String(settings.meetingRetentionDays)} onChange={(value) => onUpdateSettings({ meetingRetentionDays: Number(value) })} items={[
+                    { value: '0', label: 'No age limit' },
+                    { value: '30', label: '30 days' },
+                    { value: '90', label: '90 days' },
+                    { value: '365', label: '1 year' },
+                  ]} />}
+                />
+                <SettingsRow
+                  title="Session limit"
+                  control={<Input aria-label="Session limit" type="number" min={1} max={10000} value={settings.meetingMaxSessions} onChange={(event) => onUpdateSettings({ meetingMaxSessions: Math.max(1, Math.min(10000, Number(event.target.value) || 1)) })} />}
+                />
+              </SettingsDisclosure>
+              </SettingsGroup>
+              <SettingsGroup title="Speaker labels">
+                <MeetingDiarizationSettings
+                  enabled={settings.meetingDiarization}
+                  onEnabledChange={(meetingDiarization) => onUpdateSettings({ meetingDiarization })}
+                />
+              </SettingsGroup>
             </div>
-            </SettingsDisclosure>
           </SettingsSection>
 
           <SettingsSection hideHeading card={false} pageId="performance" activePage={activeCat} title="Performance Lab">

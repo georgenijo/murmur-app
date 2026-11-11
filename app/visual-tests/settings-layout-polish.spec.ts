@@ -102,23 +102,45 @@ for (const appearance of ['dark', 'light'] as const) {
 
   test(`${appearance} remote speaker details fold with Label remote speakers`, async ({ page }) => {
     await open(page, appearance, 'settings', 'Meetings');
-    await page.locator('.settings-advanced-toggle').first().click();
-    const speakers = page.locator('[data-setting-target="meeting-speakers"]');
+    const speakers = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Speaker labels', exact: true }) });
     const toggle = speakers.getByRole('switch', { name: 'Label remote speakers' });
-    const branch = speakers.locator('.settings-dependent-branch');
+    const branch = speakers.locator('.settings-dependent-branch').first();
     const model = speakers.getByText('Remote speaker model', { exact: true });
     await expect(toggle).toHaveAttribute('aria-checked', 'false');
     await expect(branch).toHaveAttribute('inert', '');
     await expect(model).toBeHidden();
-    await expect(speakers.getByText(/Labels stay on this Mac/)).toBeHidden();
+    await expect(speakers.getByText(/temporarily saves system audio/)).toHaveCount(0);
     await toggle.click();
     await expect(branch).not.toHaveAttribute('inert', '');
     await expect(model).toBeVisible();
-    await expect(speakers.getByText(/Labels stay on this Mac/)).toBeVisible();
+    await expect(speakers.getByText(/temporarily saves system audio/)).toHaveCount(0);
+    await speakers.getByRole('button', { name: 'How speaker labeling works' }).click();
+    await expect(speakers.getByText(/temporarily saves system audio/)).toBeVisible();
     await expect(speakers.getByRole('button', { name: /Download model|Remove model/ })).toBeVisible();
     await toggle.click();
     await expect(model).toBeHidden();
     await expect(branch).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  test(`${appearance} Meetings stays compact at 840 by 620`, async ({ page }) => {
+    await page.setViewportSize({ width: 840, height: 620 });
+    await open(page, appearance, 'settings', 'Meetings');
+    const suggestions = page.locator('[data-setting-target="meeting-suggestions"]');
+    const audio = page.locator('[data-setting-target="meeting-audio"]');
+    const speakers = page.locator('[data-setting-target="meeting-speakers"]');
+    const description = suggestions.locator('.settings-row-description');
+    await expect(description).toHaveCount(1);
+    expect((await box(description)).height).toBeLessThanOrEqual(18);
+    await expect(audio.locator('.settings-row-description')).toHaveCount(0);
+    await expect(speakers.locator('.settings-row-description')).toHaveCount(0);
+    for (const row of [suggestions, audio, speakers]) {
+      const rowBox = await box(row);
+      const switchBox = await box(row.getByRole('switch'));
+      expect(switchBox.right).toBeLessThanOrEqual(rowBox.right);
+      expect(switchBox.y).toBeGreaterThanOrEqual(rowBox.y);
+      expect(switchBox.bottom).toBeLessThanOrEqual(rowBox.bottom);
+    }
+    await expect(page).toHaveScreenshot(`meetings-compact-840-${appearance}.png`);
   });
 
   test(`${appearance} model card folds away while Smart Auto-Stop is off`, async ({ page }) => {

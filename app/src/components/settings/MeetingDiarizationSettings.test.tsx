@@ -48,7 +48,7 @@ describe('MeetingDiarizationSettings', () => {
     container.remove();
   });
 
-  it('keeps the opt-in explicit and discloses temporary audio and fallback behavior', async () => {
+  it('keeps the opt-in explicit and makes the required privacy disclosure reachable', async () => {
     meetingMocks.getStatus.mockResolvedValue({ supported: true, installed: false, installing: false, bytes: 21_599_417 });
     const onEnabledChange = vi.fn();
     await act(async () => root.render(
@@ -57,14 +57,19 @@ describe('MeetingDiarizationSettings', () => {
 
     const toggle = container.querySelector('[role="switch"][aria-label="Label remote speakers"]') as HTMLButtonElement;
     expect(toggle.getAttribute('aria-checked')).toBe('false');
-    expect(container.textContent).toContain('saves up to two hours of system audio');
-    expect(container.textContent).toContain('speaker labeling is skipped while capture and transcription continue');
-    expect(container.textContent).toContain('Uncertain passages remain Them');
-    expect(container.textContent).toContain('does not create voice profiles across meetings');
+    expect(container.textContent).not.toContain('Stored separately from dictation');
+    expect(container.textContent).not.toContain('temporarily saves system audio');
     expect(container.querySelector('a[href*="FluidInference/speaker-diarization-coreml"]')).toBeTruthy();
     expect(container.querySelector('a[href="https://creativecommons.org/licenses/by/4.0/"]')).toBeTruthy();
     await act(async () => toggle.click());
     expect(onEnabledChange).toHaveBeenCalledWith(true);
+    await act(async () => root.render(<MeetingDiarizationSettings enabled onEnabledChange={onEnabledChange} />));
+    const disclosure = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'How speaker labeling works')!;
+    await act(async () => disclosure.click());
+    expect(container.textContent).toContain('temporarily saves system audio for labeling, up to two hours, then deletes it');
+    expect(container.textContent).toContain('capture and transcription continue');
+    expect(container.textContent).toContain('Uncertain passages stay Them');
+    expect(container.textContent).toContain('No cross-meeting voice profiles');
   });
 
   it('folds the model, disclosure and status errors with its parent', async () => {
@@ -78,7 +83,7 @@ describe('MeetingDiarizationSettings', () => {
     expect(branch.getAttribute('aria-hidden')).toBe('true');
     expect(branch.hasAttribute('inert')).toBe(true);
     expect(branch.textContent).toContain('Remote speaker model');
-    expect(branch.textContent).toContain('Labels stay on this Mac');
+    expect(branch.textContent).toContain('How speaker labeling works');
     expect(branch.querySelector('[role="alert"]')?.textContent).toContain('Model status unavailable');
     await render(true);
     expect(branch.getAttribute('aria-hidden')).toBe('false');
@@ -135,12 +140,12 @@ describe('MeetingDiarizationSettings', () => {
     await act(async () => finishDownload?.());
 
     expect(meetingMocks.download).toHaveBeenCalledOnce();
-    expect(container.textContent).toContain('Installed locally');
+    expect(container.textContent).toContain('Local · 20.6 MB');
     const remove = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Remove model…') as HTMLButtonElement;
     await act(async () => remove.click());
     expect(meetingMocks.remove).not.toHaveBeenCalled();
     await act(async () => remove.click());
     expect(meetingMocks.remove).toHaveBeenCalledOnce();
-    expect(container.textContent).toContain('Optional download');
+    expect(container.textContent).toContain('Optional · 20.6 MB');
   });
 });
