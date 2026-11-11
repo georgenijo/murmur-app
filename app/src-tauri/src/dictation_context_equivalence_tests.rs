@@ -12,7 +12,7 @@
 use crate::commands::recording::{sanitize_app_profiles, sanitize_modes};
 use crate::dictation_context::{resolve, DictationContextSnapshot, ResolverInputs};
 use crate::state::DictationState;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::path::PathBuf;
 
 fn fixture_path(name: &str) -> PathBuf {
@@ -186,4 +186,55 @@ fn legacy_resolver_matches_committed_before_outputs() {
             }
         }
     }
+}
+
+/// The resolver over migrated settings (no Modes) against the committed
+/// pre-removal outputs, restricted to the fields each probe says have a home.
+#[test]
+fn migrated_settings_reproduce_before_outputs_for_fields_with_a_home() {
+    let matrix = read_fixture("legacy-matrix.json");
+    let before = read_fixture("before-resolver.json");
+    let migrated = read_fixture("migrated-matrix.json");
+    let after = resolve_all(&matrix, |case| {
+        let id = case["id"].as_str().unwrap();
+        let settings = migrated["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate["id"] == id)
+            .unwrap_or_else(|| panic!("no migrated settings for {id}"));
+        let settings = &settings["settings"];
+        let mut state = global_state(settings);
+        state.app_profiles =
+            sanitize_app_profiles(settings["appProfiles"].as_array().expect("appProfiles"));
+        state
+    });
+
+    let mut compared = 0;
+    for case in matrix["cases"].as_array().unwrap() {
+        let case_id = case["id"].as_str().unwrap();
+        for probe in case["probes"].as_array().unwrap() {
+            let probe_id = string(probe, "id");
+            let label = format!("{case_id}/{probe_id}");
+            let want = probe_output(&before, case_id, probe_id);
+            let got = probe_output(&after, case_id, probe_id);
+            let fields = probe["compare"].as_array().expect("compare");
+            let mut want_fields = Map::new();
+            let mut got_fields = Map::new();
+            for field in fields {
+                let field = field.as_str().unwrap();
+                want_fields.insert(field.to_string(), want[field].clone());
+                got_fields.insert(field.to_string(), got[field].clone());
+                compared += 1;
+            }
+            assert_eq!(got_fields, want_fields, "{label}: migrated != before");
+            if let Some(expected) = probe.get("afterExpected") {
+                assert_partial(got, expected, &format!("{label} after"));
+            }
+            if let Some(expected) = probe.get("expectIdeContext") {
+                assert_eq!(&got["ideContextEnabled"], expected, "{label} ide context");
+            }
+        }
+    }
+    assert!(compared > 300, "matrix compared only {compared} fields");
 }
