@@ -130,6 +130,24 @@ fn check_preauthorized(
     }
 }
 
+/// Setup brackets at which native code first touches the input device: AUHAL
+/// binding it, CPAL opening its stream, and either backend starting IO. A
+/// `StartPreauthorized` grant is re-checked on entering each one, in addition
+/// to the check immediately before setup begins. Earlier brackets (device
+/// resolution, output-unit creation and initialization) never open input and
+/// cannot present a TCC prompt.
+fn setup_touches_input(observation: &MicrophoneSetupObservation) -> bool {
+    matches!(
+        observation,
+        MicrophoneSetupObservation::Step(
+            CaptureSetupStep::SetCurrentDevice
+                | CaptureSetupStep::StreamBuild
+                | CaptureSetupStep::StreamStart,
+            SetupTransition::Entered,
+        )
+    )
+}
+
 fn check_capture_authorization(
     automatic_deadline: Option<u64>,
     preauthorized: bool,
@@ -2522,6 +2540,33 @@ mod tests {
     }
 
     #[test]
+    fn preauthorized_grant_is_rechecked_only_where_setup_touches_input() {
+        use CaptureSetupStep::*;
+        let entered = |step| MicrophoneSetupObservation::Step(step, SetupTransition::Entered);
+        let completed = |step| MicrophoneSetupObservation::Step(step, SetupTransition::Completed);
+        for step in [SetCurrentDevice, StreamBuild, StreamStart] {
+            assert!(setup_touches_input(&entered(step)), "{step:?}");
+            assert!(!setup_touches_input(&completed(step)), "{step:?}");
+        }
+        // Natively these ~5 ms TCC queries ran before every bracket and added
+        // ~100 ms to key-down capture startup.
+        for step in [
+            DeviceResolution,
+            AudioUnitCreation,
+            AudioUnitNew,
+            AudioUnitInit,
+            EnableInputIo,
+            DisableOutputIo,
+            FormatConfiguration,
+            CallbackInstallation,
+            DefaultConfig,
+            AwaitingFirstCallback,
+        ] {
+            assert!(!setup_touches_input(&entered(step)), "{step:?}");
+        }
+    }
+
+    #[test]
     fn preauthorized_start_refuses_a_grant_lost_after_the_host_checked() {
         use super::*;
         // Granted when the command arrived, then TCC reset to notDetermined
@@ -3631,7 +3676,12 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
             let failed = Arc::new(AtomicBool::new(false));
             let started = {
                 let mut emit_setup = |observation: MicrophoneSetupObservation| {
-                    check_capture_authorization(automatic_deadline, preauthorized)?;
+                    check_automatic_probe(automatic_deadline)?;
+                    // A TCC status query costs ~5 ms; run it only where native
+                    // setup touches the input, not before every bracket.
+                    if setup_touches_input(&observation) {
+                        check_preauthorized(preauthorized, microphone_authorization_granted)?;
+                    }
                     let message = match observation {
                         MicrophoneSetupObservation::Step(step, transition) => {
                             ProductionHelperMessage::SetupStep {

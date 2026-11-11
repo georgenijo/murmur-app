@@ -3739,6 +3739,114 @@ mod release_tail_tests;
 mod tests {
     use super::*;
 
+    /// A stand-in helper process: replies with `reply` on stdout and records
+    /// every byte the host writes to it, so a test can prove what was sent.
+    fn scripted_helper(
+        reply: &[u8],
+    ) -> (
+        std::process::Child,
+        std::process::ChildStdin,
+        std::process::ChildStdout,
+        PathBuf,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let reply_path = dir.path().join("reply.bin");
+        let received = dir.path().join("received.bin");
+        std::fs::write(&reply_path, reply).unwrap();
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "cat \"$0\"; exec cat > \"$1\""])
+            .arg(&reply_path)
+            .arg(&received)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = child.stdin.take().unwrap();
+        let output = child.stdout.take().unwrap();
+        (child, input, output, received, dir)
+    }
+
+    fn hello_ack(capture_id: u64, nonce: SessionNonce, version: u16) -> Vec<u8> {
+        let mut frame = Vec::new();
+        write_production_control(
+            &mut frame,
+            capture_id,
+            nonce,
+            &ProductionHelperMessage::HelloAck,
+        )
+        .unwrap();
+        frame[4..6].copy_from_slice(&version.to_le_bytes());
+        frame
+    }
+
+    /// The native failure behind "key-down capture never opened": a helper
+    /// built before `StartPreauthorized`. With protocol v11 such a helper's
+    /// v10 reply fails the handshake, and the host sends nothing after Hello,
+    /// so no start of any kind (and no capture) can follow.
+    #[test]
+    fn a_pre_v11_helper_is_rejected_at_the_handshake_before_any_start() {
+        let (capture_id, nonce) = (77, [7_u8; 16]);
+        for (version, accepted) in [
+            (10_u16, false),
+            (9, false),
+            (
+                murmur_capture_helper_protocol::PRODUCTION_PROTOCOL_VERSION,
+                true,
+            ),
+        ] {
+            let (mut child, mut input, output, received, _dir) =
+                scripted_helper(&hello_ack(capture_id, nonce, version));
+            let result = hello(&mut input, output, capture_id, nonce);
+            assert_eq!(result.is_ok(), accepted, "helper v{version}");
+            if !accepted {
+                assert_eq!(
+                    result.err(),
+                    Some(AudioFailure::new(
+                        AudioFailureKind::ProtocolError,
+                        AudioInitPhase::StreamBuild
+                    )),
+                    "helper v{version}"
+                );
+            }
+            drop(input);
+            child.wait().unwrap();
+            let sent = std::fs::read(&received).unwrap();
+            let mut reader = sent.as_slice();
+            let first =
+                read_production_frame::<ProductionHostMessage>(&mut reader, capture_id, nonce)
+                    .unwrap();
+            assert!(
+                matches!(
+                    first,
+                    ProductionFrame::Control(ProductionHostMessage::Hello)
+                ),
+                "helper v{version}: {first:?}"
+            );
+            assert!(
+                reader.is_empty(),
+                "helper v{version}: host sent more than Hello"
+            );
+        }
+    }
+
+    /// The stale binary seen natively could not decode the v11 host's frames
+    /// and exited. EOF during the handshake is the same typed failure.
+    #[test]
+    fn a_helper_that_exits_during_the_handshake_is_a_protocol_error() {
+        let (mut child, mut input, output, _received, _dir) = scripted_helper(&[]);
+        let result = hello(&mut input, output, 78, [8_u8; 16]);
+        assert_eq!(
+            result.err(),
+            Some(AudioFailure::new(
+                AudioFailureKind::ProtocolError,
+                AudioInitPhase::StreamBuild
+            ))
+        );
+        drop(input);
+        child.wait().unwrap();
+    }
+
     #[test]
     fn inventory_is_never_published_without_confirmed_helper_exit() {
         let inventory = EnumeratedAudioInputInventory {

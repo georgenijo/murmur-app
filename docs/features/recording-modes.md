@@ -23,8 +23,11 @@ would use, which the frontend mirrors through `set_fn_capture_input`. It is
 admitted only when microphone permission is already granted and nothing else
 owns the microphone. It never prompts. The grant is checked at keyboard
 admission, at attempt start, after the helper handshake, and finally by the
-capture helper itself immediately before it creates the native capture
-(`StartPreauthorized`). A grant lost at any of those points refuses the
+capture helper itself (`StartPreauthorized`): immediately before native setup
+begins, and again on entering each step that touches the input (binding the
+device, opening the stream, starting IO). Earlier setup steps never open
+input, and each TCC query costs about 5 ms, so they are not re-checked. A
+grant lost at any of those points refuses the
 capture. It shows no UI and publishes no levels.
 
 - **Confirmed** (`hold-down-start` or `double-tap-toggle`): the listener binds
@@ -84,14 +87,15 @@ the trigger-key picker in Settings and onboarding shows a hint to set it to
 "Do Nothing".
 
 **Globe companion event.** When macOS performs the Globe action it also posts
-an ordinary key-down/key-up pair for the Globe key (keycode 179). rdev reports
-it as `Key::Unknown`, and it arrives within a few milliseconds of the Fn
-release. With Fn as the trigger, the listener drops an unmapped key press that
-arrives within 100 ms of an Fn edge, and that key's release, before any
-detector sees them. Without this, every Fn double-tap is cancelled as a chord.
-Each dropped event logs `keyboard.globe_companion_ignored` with
-`companion=globe` or `unmapped`. Mapped keys are never dropped, and an
-unmapped key later than the window is still a chord.
+an ordinary key-down/key-up pair for the Globe key (keycode 179), confirmed
+natively. rdev reports it as `Key::Unknown(179)`, and it arrives within a few
+milliseconds of the Fn release. With Fn as the trigger, the listener drops a
+179 press that arrives within 100 ms of an Fn edge, and the one release that
+balances it, before any detector sees them. Without this, every Fn double-tap
+is cancelled as a chord. Each dropped event logs
+`keyboard.globe_companion_ignored` with `companion=globe`. Other `Unknown`
+codes are real keys (keypad digits, ISO Section, JIS Yen) and still cancel an
+Fn gesture, as does a 179 press outside the window.
 
 **Fn held with other shortcuts.** Murmur cannot consume or alter keys, so it
 cannot block a system shortcut. Pressing a non-modifier key during a promoted

@@ -530,18 +530,22 @@ impl PressedFunctionKeys {
 const GLOBE_COMPANION_WINDOW: Duration = Duration::from_millis(100);
 
 /// Apple's Globe key keycode, posted as an ordinary key-down/key-up pair when
-/// macOS performs the "Press 🌐 key to" action.
+/// macOS performs the "Press 🌐 key to" action. Confirmed natively: every
+/// companion George's Mac posted after an Fn edge carried this code.
 const GLOBE_KEYCODE: u32 = 179;
 
 /// macOS follows an Fn/Globe flags edge with an ordinary key event for the
-/// system Globe action. rdev reports it as `Key::Unknown`, which the detectors
-/// would otherwise treat as a second key and cancel every Fn double-tap. Only
-/// filters while Fn is the dictation key; the companion's release is filtered
-/// whenever it arrives so a stray key-up never reaches the detectors.
+/// system Globe action. rdev reports it as `Key::Unknown(179)`, which the
+/// detectors would otherwise treat as a second key and cancel every Fn
+/// double-tap. Only that exact code is a companion: other `Key::Unknown`
+/// codes are real keys (keypad digits, ISO Section, JIS Yen) and must still
+/// cancel an Fn gesture. A companion press is filtered only within the window
+/// after an Fn edge while Fn is the dictation key, and only the release that
+/// balances a filtered press is filtered.
 #[derive(Debug, Default)]
 struct GlobeCompanion {
     last_fn_edge: Option<Instant>,
-    companion_down: Option<u32>,
+    companion_down: bool,
 }
 
 impl GlobeCompanion {
@@ -562,28 +566,21 @@ impl GlobeCompanion {
                 self.last_fn_edge = Some(now);
                 None
             }
-            EventType::KeyPress(Key::Unknown(code))
-                if self.last_fn_edge.is_some_and(|edge| {
-                    now.saturating_duration_since(edge) <= GLOBE_COMPANION_WINDOW
-                }) =>
+            EventType::KeyPress(Key::Unknown(GLOBE_KEYCODE))
+                if !self.companion_down
+                    && self.last_fn_edge.is_some_and(|edge| {
+                        now.saturating_duration_since(edge) <= GLOBE_COMPANION_WINDOW
+                    }) =>
             {
-                self.companion_down = Some(code);
-                Some(globe_companion_label(code))
+                self.companion_down = true;
+                Some("globe")
             }
-            EventType::KeyRelease(Key::Unknown(code)) if self.companion_down == Some(code) => {
-                self.companion_down = None;
-                Some(globe_companion_label(code))
+            EventType::KeyRelease(Key::Unknown(GLOBE_KEYCODE)) if self.companion_down => {
+                self.companion_down = false;
+                Some("globe")
             }
             _ => None,
         }
-    }
-}
-
-fn globe_companion_label(code: u32) -> &'static str {
-    if code == GLOBE_KEYCODE {
-        "globe"
-    } else {
-        "unmapped"
     }
 }
 
@@ -2417,6 +2414,7 @@ mod tests {
         let t0 = Instant::now();
         let press = EventType::KeyPress(Key::Unknown(GLOBE_KEYCODE));
         let release = EventType::KeyRelease(Key::Unknown(GLOBE_KEYCODE));
+        let fn_target = Some(Key::Function);
 
         // Another dictation key never filters, even right after an Fn edge.
         let mut filter = GlobeCompanion::default();
@@ -2428,9 +2426,8 @@ mod tests {
         assert_eq!(filter.filter(&press, Some(Key::ShiftLeft), t0), None);
 
         // Fn target: a companion within the window is filtered, and so is its
-        // release even when that arrives after the window.
+        // balancing release even when that arrives after the window.
         let mut filter = GlobeCompanion::default();
-        let fn_target = Some(Key::Function);
         assert_eq!(
             filter.filter(&EventType::KeyRelease(Key::Function), fn_target, t0),
             None
@@ -2439,33 +2436,72 @@ mod tests {
             filter.filter(&press, fn_target, t0 + Duration::from_millis(30)),
             Some("globe")
         );
+        // A second companion press before the release is not balanced; it
+        // reaches the detectors rather than overwriting the open pair.
+        assert_eq!(
+            filter.filter(&press, fn_target, t0 + Duration::from_millis(31)),
+            None
+        );
         assert_eq!(
             filter.filter(&release, fn_target, t0 + Duration::from_millis(400)),
             Some("globe")
         );
-        // A second release with no matching press passes through.
+        // A release with no filtered press passes through.
         assert_eq!(filter.filter(&release, fn_target, t0), None);
 
-        // Other unmapped codes are labelled without their identity.
-        assert_eq!(
-            filter.filter(&EventType::KeyPress(Key::Function), fn_target, t0),
-            None
-        );
-        assert_eq!(
-            filter.filter(&EventType::KeyPress(Key::Unknown(200)), fn_target, t0),
-            Some("unmapped")
-        );
-
-        // Outside the window an unmapped key is a real key.
+        // Outside the window the Globe code is a real key.
         let mut filter = GlobeCompanion::default();
         filter.filter(&EventType::KeyRelease(Key::Function), fn_target, t0);
         let late = t0 + GLOBE_COMPANION_WINDOW + Duration::from_millis(1);
         assert_eq!(filter.filter(&press, fn_target, late), None);
-        // Mapped keys are never companions.
-        assert_eq!(
-            filter.filter(&EventType::KeyPress(Key::KeyE), fn_target, t0),
-            None
-        );
+        assert_eq!(filter.filter(&release, fn_target, late), None);
+    }
+
+    /// rdev's pinned macOS mapping reports these physical keys as `Unknown`:
+    /// keypad 1 (83), ISO Section (10), and JIS Yen (93). Only the confirmed
+    /// Globe code is a companion; every other unknown key stays a chord.
+    #[test]
+    fn real_unmapped_keys_inside_the_window_are_never_companions() {
+        let t0 = Instant::now();
+        let fn_target = Some(Key::Function);
+        for code in [83, 10, 93] {
+            let mut filter = GlobeCompanion::default();
+            filter.filter(&EventType::KeyPress(Key::Function), fn_target, t0);
+            let at = t0 + Duration::from_millis(5);
+            assert_eq!(
+                filter.filter(&EventType::KeyPress(Key::Unknown(code)), fn_target, at),
+                None,
+                "{code}"
+            );
+            assert_eq!(
+                filter.filter(&EventType::KeyRelease(Key::Unknown(code)), fn_target, at),
+                None,
+                "{code}"
+            );
+            // Its release never closes a real companion pair either.
+            filter.filter(&EventType::KeyRelease(Key::Function), fn_target, at);
+            assert_eq!(
+                filter.filter(
+                    &EventType::KeyPress(Key::Unknown(GLOBE_KEYCODE)),
+                    fn_target,
+                    at
+                ),
+                Some("globe")
+            );
+            assert_eq!(
+                filter.filter(&EventType::KeyRelease(Key::Unknown(code)), fn_target, at),
+                None,
+                "{code}"
+            );
+            assert_eq!(
+                filter.filter(
+                    &EventType::KeyRelease(Key::Unknown(GLOBE_KEYCODE)),
+                    fn_target,
+                    at
+                ),
+                Some("globe")
+            );
+        }
     }
 
     fn make_detector(key: Key) -> DoubleTapDetector {

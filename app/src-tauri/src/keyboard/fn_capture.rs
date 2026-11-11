@@ -694,6 +694,49 @@ mod tests {
         }
     }
 
+    /// Review finding: real keys rdev reports as `Key::Unknown` (keypad 1,
+    /// ISO Section, JIS Yen) inside the companion window are chords. They
+    /// must discard an Fn hold and must not complete a double-tap.
+    #[test]
+    fn real_unmapped_keys_inside_the_window_still_cancel_fn_gestures() {
+        for code in [83, 10, 93] {
+            let key = EventType::KeyPress(Key::Unknown(code));
+            let key_up = EventType::KeyRelease(Key::Unknown(code));
+            // Fn held, keypad key tapped within 100 ms, Fn still held.
+            for mode in [DetectorMode::HoldDown, DetectorMode::Both] {
+                let mut sim = Sim::new(mode, Key::Function);
+                assert_eq!(sim.press(), vec![Action::Open(1)], "{mode:?} {code}");
+                assert_eq!(
+                    sim.event_with(key, false),
+                    vec![Action::Discard(1, DiscardReason::NotConfirmed)],
+                    "{mode:?} {code}"
+                );
+                sim.event_with(key_up, false);
+                assert!(
+                    !sim.promote()
+                        .iter()
+                        .any(|a| matches!(a, Action::Bind { .. })),
+                    "{mode:?} {code}: the chord must not promote into dictation"
+                );
+            }
+            // Fn → keypad key → Fn must not confirm a double-tap.
+            for mode in [DetectorMode::DoubleTap, DetectorMode::Both] {
+                let mut sim = Sim::new(mode, Key::Function);
+                sim.press();
+                sim.release();
+                sim.event_with(key, false);
+                sim.event_with(key_up, false);
+                sim.press();
+                sim.release();
+                assert!(
+                    !sim.actions.iter().any(|a| matches!(a, Action::Bind { .. })),
+                    "{mode:?} {code}: {:?}",
+                    sim.actions
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_real_key_after_fn_still_cancels() {
         for mode in [DetectorMode::DoubleTap, DetectorMode::Both] {

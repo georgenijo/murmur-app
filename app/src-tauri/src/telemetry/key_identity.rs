@@ -230,7 +230,7 @@ fn is_safe_keyboard_string(key: &str, value: &str) -> bool {
             matches!(value, "none" | "other") || crate::keyboard::is_dictation_key_id(value)
         }
         "modifier_edge" => matches!(value, "press" | "release" | "not_modifier"),
-        "companion" => matches!(value, "globe" | "unmapped"),
+        "companion" => value == "globe",
         "caller_file" => {
             value.ends_with(".rs")
                 && value

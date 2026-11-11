@@ -481,3 +481,44 @@ fn a_failed_key_down_open_leaves_no_owner_dictation_or_busy_microphone() {
         shutdown(&supervisor);
     }
 }
+
+/// Review finding: the command-level race check. A key-down capture admitted
+/// after the preview command's first retire must be superseded by the check
+/// the command runs under its transition lock, not reported as busy. Drives
+/// the command's own decision function against a live supervisor.
+#[test]
+fn preview_command_supersedes_a_key_down_capture_admitted_after_its_first_retire() {
+    let t = key_down(None, None);
+    // The command's first retire found nothing; then an Fn press won the lock.
+    retire(&t.supervisor);
+    assert!(open(&t.supervisor, 61, None));
+    wait_flowing(&t.supervisor, 61);
+    let blocker = crate::commands::microphone_preview::preview_audio_blocker(
+        || holds_only_unconfirmed_key_down(&t.supervisor.public),
+        || retire(&t.supervisor),
+        || t.supervisor.public.is_active(),
+    );
+    assert_eq!(blocker, None, "the mic test must not report the key-down capture as busy");
+    assert_eq!(t.supervisor.public.phase(), PublicPhase::Idle);
+    assert!(t.buffers.lock().unwrap()[0].lock().unwrap().is_empty());
+    assert!(dictation_events(&t.sink).is_empty());
+    shutdown(&t.supervisor);
+}
+
+#[test]
+fn preview_command_still_reports_a_dictation_owned_microphone_busy() {
+    let t = key_down(None, None);
+    assert!(open(&t.supervisor, 62, None));
+    wait_flowing(&t.supervisor, 62);
+    let owner = AudioOwner::Dictation(63);
+    assert_eq!(confirmed_start(&t.supervisor, owner, Some(62), None).recv().unwrap(), Ok(()));
+    let blocker = crate::commands::microphone_preview::preview_audio_blocker(
+        || holds_only_unconfirmed_key_down(&t.supervisor.public),
+        || retire(&t.supervisor),
+        || t.supervisor.public.is_active(),
+    );
+    assert_eq!(blocker, Some(crate::commands::microphone_preview::PREVIEW_AUDIO_BUSY));
+    assert!(t.supervisor.public.is_recording_for(owner), "a dictation is never superseded");
+    assert_eq!(stop_samples(&t.supervisor, owner), vec![KEY_DOWN_PCM; 160]);
+    shutdown(&t.supervisor);
+}
