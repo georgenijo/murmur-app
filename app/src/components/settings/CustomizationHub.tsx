@@ -1,4 +1,5 @@
 import { useLayoutEffect, useRef } from 'react';
+import { SettingsChevron } from './SettingsChevron';
 import { SettingsGroup } from './SettingsLayout';
 
 export type CustomizationDestination = 'text' | 'commands' | 'styles' | 'modes';
@@ -63,7 +64,7 @@ export function CustomizationHub({ focusDestination, onOpen }: CustomizationHubP
                     {destination.description}
                   </span>
                 </span>
-                <span aria-hidden="true" className="text-on-surface-variant">›</span>
+                <SettingsChevron direction="right" />
               </button>
             </li>
           ))}

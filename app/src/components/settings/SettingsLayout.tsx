@@ -1,7 +1,7 @@
-import { ChevronDown } from 'lucide-react';
 import { createContext, useContext, useId, useRef, type ReactNode } from 'react';
 import { useSettingsAdvanced } from '../../lib/hooks/useSettingsAdvanced';
 import { SettingsCard } from './SettingsRow';
+import { SettingsChevron } from './SettingsChevron';
 import { SettingsBranch } from './SettingsBranch';
 
 export const SettingsDisclosureContext = createContext<{ open: boolean; setOpen: (open: boolean) => void } | null>(null);
@@ -69,7 +69,7 @@ export function SettingsDisclosure({ title, description, layout, targetId, child
         <span className="settings-advanced-copy"><span>{title}</span>
           {description && <span className="settings-advanced-description">{description}</span>}
         </span>
-        <ChevronDown aria-hidden="true" className="settings-advanced-chevron" />
+        <SettingsChevron direction="down" className="settings-advanced-chevron" />
       </button>
       <SettingsBranch id={contentId} open={open} unmountOnClose restoreFocus={() => buttonRef.current}
         className={layout === 'rows' ? 'settings-advanced-rows' : 'settings-advanced-stack settings-branch-stack'}>

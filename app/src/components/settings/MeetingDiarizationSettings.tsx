@@ -135,8 +135,7 @@ export function MeetingDiarizationSettings({
           onCheckedChange={() => onEnabledChange(!enabled)}
         />} />
 
-      <SettingsBranch open={enabled} className="settings-branch-stack">
-      <div className="settings-rows">
+      <SettingsBranch open={enabled}>
       <SettingsDisclosure title="How speaker labeling works" layout="stack" open={howItWorksOpen} onOpenChange={setHowItWorksOpen}>
         <p className="text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
           Labels stay on this Mac and apply only within this meeting. Murmur temporarily saves system audio for labeling, up to two hours, then deletes it; Keep meeting audio is separate. Over two hours, labeling is skipped while capture and transcription continue. Uncertain passages stay Them. No cross-meeting voice profiles.
@@ -163,7 +162,6 @@ export function MeetingDiarizationSettings({
         </div>
       )}
       {error && <p role="alert" className="text-[length:var(--ui-font-caption)] text-error">{error}</p>}
-      </div>
       </SettingsBranch>
     </>
   );
