@@ -875,7 +875,12 @@ start acceptance, first retained nonempty PCM, and native capture readiness.
 Double-tap timing also records first release → toggle emission (including the
 second tap's hold). Both-mode hold arming is included in press-to-accepted time.
 These measurements add visibility. Microphone startup still begins only after
-recording is accepted. A first clean tap in Double Tap or Both mode may silently
+recording is accepted, except for the Fn / Globe trigger, which opens a
+speculative capture at key-down. A confirmed start adopts that capture, and an
+unconfirmed press discards it (see
+[Recording modes](recording-modes.md#fn-and-globe-key-down-capture)).
+An adopted capture logs `audio.capture_ready` with `warm=true` and
+`speculative=true`. A first clean tap in Double Tap or Both mode may silently
 spawn, signature-verify, and handshake an idle capture helper, but only when
 microphone permission is already granted. It creates no AudioUnit, opens no
 device, and captures no audio. The confirmed start for the same gesture adopts

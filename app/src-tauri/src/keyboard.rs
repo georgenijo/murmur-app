@@ -819,6 +819,9 @@ fn current_gesture() -> Option<Candidate> {
 }
 fn emit_hold_start(handle: &tauri::AppHandle, candidate: Option<Candidate>) {
     let token = candidate.map(|c| crate::audio_lifecycle::gesture::emit(c, true));
+    if let Some(candidate) = candidate {
+        fn_capture::confirm(candidate.token);
+    }
     let _ = handle.emit(
         "hold-down-start",
         serde_json::json!({ "gestureToken": token }),
@@ -835,6 +838,9 @@ fn emit_dictation_toggle(handle: &tauri::AppHandle) {
             d.fired_candidate.take()
         });
     let token = candidate.map(|c| crate::audio_lifecycle::gesture::emit(c, false));
+    if let Some(candidate) = candidate {
+        fn_capture::confirm(candidate.token);
+    }
     let _ = handle.emit(
         "double-tap-toggle",
         serde_json::json!({ "gestureToken": token }),
@@ -951,6 +957,9 @@ fn schedule_second_tap_expiry(
             );
         }
         let elapsed_ms = expired.map(|(elapsed, _)| elapsed);
+        if expired.is_some() {
+            fn_capture::settle(mode);
+        }
 
         if let Some(elapsed_ms) =
             elapsed_ms.filter(|_| listener_context_matches(mode, listener_generation))
@@ -1004,8 +1013,8 @@ fn now_unix_ms() -> u64 {
 /// `hotkey_to_rdev_key` below accepts either set with no id-ownership check
 /// of its own.
 pub const DICTATION_KEY_IDS: &[&str] = &[
-    "shift_l", "alt_l", "ctrl_r", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10",
-    "f11", "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20",
+    "shift_l", "alt_l", "ctrl_r", "fn", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9",
+    "f10", "f11", "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20",
 ];
 
 /// Whether `hotkey` is one of the ids reserved for the dictation listener
@@ -1020,6 +1029,8 @@ pub fn is_dictation_key_id(hotkey: &str) -> bool {
 /// The dictation and Paste Last listeners share this mapping.
 fn hotkey_to_rdev_key(hotkey: &str) -> Option<Key> {
     match hotkey {
+        // Fn/Globe arrives as a flags-changed event for the hardware Fn key.
+        "fn" => Some(Key::Function),
         "shift_l" => Some(Key::ShiftLeft),
         "alt_l" => Some(Key::Alt),
         "ctrl_r" => Some(Key::ControlRight),
@@ -1376,7 +1387,9 @@ fn log_hotkey_arming_cancelled(mode: DetectorMode, reason: &'static str, held_ms
 
 // -- Both-mode arbitration state --
 
+mod fn_capture;
 mod hold_promotion;
+pub(crate) use fn_capture::{set_capture_input as set_fn_capture_input, CaptureInput};
 use hold_promotion::HoldPromotion;
 
 static HOLD_PROMOTION: HoldPromotion = HoldPromotion::new();
@@ -1500,6 +1513,7 @@ pub fn set_processing(processing: bool) {
     if !was_processing && processing {
         crate::audio_lifecycle::gesture::clear_pending();
         invalidate_preparation(crate::audio::prepare::InvalidateReason::Processing);
+        fn_capture::abandon(crate::audio_lifecycle::speculative::DiscardReason::Processing);
         // Entering processing: invalidate any pending hold-promotion timer
         // so it can't fire hold-down-start during active processing.
         HOLD_PROMOTION.invalidate();
@@ -1546,6 +1560,7 @@ pub fn set_app_disabled(disabled: bool) {
     let was_disabled = APP_DISABLED.swap(disabled, Ordering::SeqCst);
     if disabled {
         invalidate_preparation(crate::audio::prepare::InvalidateReason::Disabled);
+        fn_capture::abandon(crate::audio_lifecycle::speculative::DiscardReason::Disabled);
     }
     if !was_disabled && disabled {
         // Transitioning false → true: clean up any partial detector state
@@ -1769,6 +1784,7 @@ pub fn start_listener(app_handle: tauri::AppHandle, hotkey: &str, mode: &str) {
     }
 
     LISTENER_ACTIVE.store(true, Ordering::SeqCst);
+    fn_capture::listener_changed(target, true);
     LAST_RDEV_CALLBACK_AT_MS.store(now_unix_ms(), Ordering::SeqCst);
     LAST_TAP_SILENCE_WARNING_AT_MS.store(0, Ordering::SeqCst);
 
@@ -1863,6 +1879,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                     // Invalidate pending hold-promotion timers
                     HOLD_PROMOTION.invalidate();
                     invalidate_preparation(crate::audio::prepare::InvalidateReason::Escape);
+                    fn_capture::abandon(crate::audio_lifecycle::speculative::DiscardReason::Escape);
 
                     tracing::info!(
                         target: "keyboard",
@@ -1880,6 +1897,11 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                 if !LISTENER_ACTIVE.load(Ordering::SeqCst) {
                     return;
                 }
+
+                // Fn/Globe only: snapshot the detectors so a press that begins
+                // a fresh gesture can open the microphone at key-down.
+                let fn_trigger = fn_capture::trigger_active();
+                let fn_gesture_was_idle = fn_trigger && fn_capture::gesture_idle_before(mode);
 
                 match mode {
                     DetectorMode::DoubleTap => {
@@ -2117,6 +2139,17 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                         }
                     }
                 }
+                if fn_trigger {
+                    fn_capture::after_event(
+                        &handle,
+                        mode,
+                        listener_generation,
+                        dictation_target_key(),
+                        &event.event_type,
+                        shortcut_modifiers.any(),
+                        fn_gesture_was_idle,
+                    );
+                }
             };
 
             if let Err(e) = listen(callback) {
@@ -2203,6 +2236,7 @@ pub fn stop_listener() {
     LISTENER_ACTIVE.store(false, Ordering::SeqCst);
     LISTENER_GENERATION.fetch_add(1, Ordering::SeqCst);
     invalidate_preparation(crate::audio::prepare::InvalidateReason::ListenerChanged);
+    fn_capture::listener_changed(None, false);
 
     // Reset both detectors and Both-mode state
     {
@@ -2230,6 +2264,7 @@ pub fn set_target_key(hotkey: &str) -> bool {
     invalidate_preparation(crate::audio::prepare::InvalidateReason::ListenerChanged);
     HOLD_PROMOTION.invalidate();
     let target = hotkey_to_rdev_key(hotkey);
+    fn_capture::listener_changed(target, LISTENER_ACTIVE.load(Ordering::SeqCst));
     let mode = {
         let m = ACTIVE_MODE.lock().unwrap_or_else(|p| p.into_inner());
         *m
@@ -2869,13 +2904,14 @@ mod tests {
         assert_eq!(
             DICTATION_KEY_IDS,
             [
-                "shift_l", "alt_l", "ctrl_r", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9",
-                "f10", "f11", "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20",
+                "shift_l", "alt_l", "ctrl_r", "fn", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8",
+                "f9", "f10", "f11", "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f19", "f20",
             ]
         );
         assert_eq!(hotkey_to_rdev_key("shift_l"), Some(Key::ShiftLeft));
         assert_eq!(hotkey_to_rdev_key("alt_l"), Some(Key::Alt));
         assert_eq!(hotkey_to_rdev_key("ctrl_r"), Some(Key::ControlRight));
+        assert_eq!(hotkey_to_rdev_key("fn"), Some(Key::Function));
         let function_keys = [
             Key::F1,
             Key::F2,

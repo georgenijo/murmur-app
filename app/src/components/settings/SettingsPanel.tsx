@@ -24,6 +24,7 @@ import {
   PASTE_LAST_SHORTCUT_OPTIONS,
   RECORDING_MODE_OPTIONS,
   isFunctionDictationKey,
+  GLOBE_DICTATION_KEY,
   pasteLastShortcutConflict,
   pasteLastShortcutLabel,
   type PasteLastShortcut,
@@ -1130,6 +1131,11 @@ export const SettingsPanel = memo(function SettingsPanel({
                 items={DICTATION_KEY_OPTIONS}
                 aria-label="Dictation trigger key"
               />}><p className="text-xs text-on-surface-variant">{keyHelp}</p>
+{settings.doubleTapKey === GLOBE_DICTATION_KEY && (
+                <p className="settings-row-description" data-testid="globe-key-hint">
+                  The mic opens while Fn is held so the first word isn't lost; audio from presses that don't start a dictation is discarded. If Fn also opens the emoji picker or switches input source, set System Settings › Keyboard › “Press 🌐 key to” to “Do Nothing”.
+                </p>
+              )}
 {isFunctionDictationKey(settings.doubleTapKey) && (
                 <p className="text-xs text-on-surface-variant">
                   May need Fn on Apple keyboards. The key keeps its normal action.

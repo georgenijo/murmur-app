@@ -1413,7 +1413,9 @@ pub(crate) fn drain_stopping_recording(
         *received += samples.len() as u64;
         accept(samples);
     });
-    if owner.dictation_id().is_some() && outcome.fully_drained(*received) {
+    // An adopted key-down worker keeps its speculative identity; its drained
+    // stop seals the dictation that owns it now.
+    if owner.is_dictation_capture() && outcome.fully_drained(*received) {
         let _ = events.send(AudioWorkerEvent::RecordingSealed { owner });
     }
     outcome

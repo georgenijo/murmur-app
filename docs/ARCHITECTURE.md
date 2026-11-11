@@ -222,11 +222,11 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 172 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 173 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
-| `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, generation-gated publication, and strict worker ownership through exit |
+| `audio_lifecycle.rs` | App-lifetime single-owner supervisor; async start, generation cancellation, deadlines, generation-gated publication, and strict worker ownership through exit. Also owns the Fn / Globe speculative capture phase (`AudioOwner::Speculative`): adopted by the matching confirmed start, or discarded through confirmed teardown with a 1.5 s backstop (`audio_speculative.rs`) |
 | `audio_decode.rs` | Decoding imported audio files for `transcribe_file` |
 | `audio_graph_snapshot.rs` | Deadline-bounded Core Audio HAL snapshots for armed capture-hang reports, plus content-free graph counts and Murmur audio-owner state |
 | `capture_helper_probe.rs` | Probe-only capture-helper handshake, callback-health observation, cancel, and confirmed termination evidence |
@@ -264,7 +264,7 @@ stay local and never reach logs or telemetry. See
 | `hang_diagnostics.rs` | Server-armed, consent-bound capture-hang bundle collection with bounded native probes and upload |
 | `ide_context.rs` | Memory-only bounded IDE symbol / root-relative file index |
 | `injector.rs` | Clipboard write, CGEvent paste (osascript fallback), focused-field AX role checks |
-| `keyboard.rs` | Dictation and Paste Last detectors on one shared rdev thread |
+| `keyboard.rs` | Dictation and Paste Last detectors on one shared rdev thread; `keyboard/fn_capture.rs` opens, binds, or discards Fn / Globe key-down capture from detector state |
 | `knowledge_store/` | SQLite personal knowledge store: migrations, repository, backup/recovery |
 | `meeting_capture.rs` | Meeting supervisor: worker protocol, per-channel resample/VAD chunking, durable spool publication, serialized inference, teardown |
 | `meeting_store/` | SQLite meeting sessions/segments/FTS: migrations, backup/recovery, search, retention, audio ownership |
@@ -491,7 +491,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-172 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+173 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 

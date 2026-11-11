@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { cancelRecording, startRecording, stopRecording, type DictationStopTrigger } from '../dictation';
+import { cancelRecording, startRecording, stopRecording, syncFnCaptureInput, type DictationStopTrigger } from '../dictation';
 import type { SmartAutoMicrophoneRequest } from '../settings';
 import { isDictationStatus } from '../types';
 import type { DictationStatus } from '../types';
@@ -73,6 +73,13 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
   useEffect(() => { statusRef.current = status; }, [status]);
   useEffect(() => { microphoneRef.current = microphone; }, [microphone]);
   useEffect(() => { smartAutoRef.current = smartAuto; }, [smartAuto]);
+  // Smart Auto requests are rebuilt every render; sync only real changes.
+  const fnCaptureInputKey = JSON.stringify([microphone ?? null, smartAuto ?? null]);
+  useEffect(() => {
+    syncFnCaptureInput(microphoneRef.current, smartAutoRef.current).catch((err) => {
+      flog.error('recording', 'Fn capture input sync failed', { error: String(err) });
+    });
+  }, [fnCaptureInputKey]);
   const isStartingRef = useRef(false);
   const startOperationRef = useRef<Promise<void> | null>(null);
   const isStoppingRef = useRef(false);

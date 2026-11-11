@@ -192,6 +192,9 @@ fn is_safe_keyboard_string(key: &str, value: &str) -> bool {
                 | "processing_skipped"
                 | "other_key"
                 | "released"
+                | "input_unconfigured"
+                | "not_admitted"
+                | "smart_auto_unavailable"
         ),
         "detector" => matches!(value, "double_tap" | "hold_down"),
         "mode" => matches!(
@@ -489,6 +492,25 @@ mod tests {
                 "{events:?}"
             );
             assert!(events[6].contains(r#""phase":"End""#), "{events:?}");
+        }
+    }
+
+    #[test]
+    fn fn_capture_skip_keeps_its_content_free_schema() {
+        for reason in [
+            "input_unconfigured",
+            "not_admitted",
+            "smart_auto_unavailable",
+        ] {
+            let mut data = serde_json::json!({
+                "event_code": "keyboard.fn_capture_skipped",
+                "capture_id": 3,
+                "reason": reason,
+            });
+            let expected = data.clone();
+            data["device_id"] = serde_json::json!("PRIVATE_DEVICE");
+            assert!(sanitize_fields("keyboard", data.as_object_mut().unwrap()));
+            assert_eq!(data, expected);
         }
     }
 
