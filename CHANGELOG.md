@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.63.2] - 2026-11-11
+
 ### Fixed
 
 - Soften auxiliary dialog outlines and actions, prevent meeting-speaker truncation, theme the notch meeting prompt, and hide the collapsed-sidebar privacy dot.
