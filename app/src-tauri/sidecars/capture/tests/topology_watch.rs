@@ -26,7 +26,7 @@ fn passive_topology_watch_stops_cancels_and_reaps_on_stdin_eof() {
     ] {
         let mut helper = OwnedHelper(
             Command::new(env!("CARGO_BIN_EXE_murmur-capture-helper"))
-                .args(["--production-v10", "73", "01010101010101010101010101010101"])
+                .args(["--production-v11", "73", "01010101010101010101010101010101"])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())

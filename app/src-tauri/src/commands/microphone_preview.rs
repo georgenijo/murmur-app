@@ -107,6 +107,25 @@ pub async fn verify_microphone_preview_signal(
     Ok(preview.finish_signal_verification(preview_id))
 }
 
+pub(crate) const PREVIEW_AUDIO_BUSY: &str =
+    "The microphone is still in use or recovering. Wait for Murmur to become ready.";
+
+/// The microphone-owner check for a preview start, run under the recording
+/// transition. An Fn key-down capture admitted after the command's first
+/// retire is unconfirmed: it is no dictation, so the preview supersedes it
+/// (its own teardown discards its audio) instead of reporting the microphone
+/// busy. Any other owner still blocks the preview.
+pub(crate) fn preview_audio_blocker(
+    unconfirmed_key_down: impl Fn() -> bool,
+    retire_key_down: impl FnOnce(),
+    audio_active: impl Fn() -> bool,
+) -> Option<&'static str> {
+    if unconfirmed_key_down() {
+        retire_key_down();
+    }
+    audio_active().then_some(PREVIEW_AUDIO_BUSY)
+}
+
 #[tauri::command]
 pub async fn start_microphone_preview(
     window: tauri::WebviewWindow,
@@ -150,11 +169,12 @@ pub async fn start_microphone_preview(
         if state.app_state.microphone_preview.is_active() {
             return Err("A microphone test is already active".to_string());
         }
-        if audio_lifecycle::is_audio_active() {
-            return Err(
-                "The microphone is still in use or recovering. Wait for Murmur to become ready."
-                    .to_string(),
-            );
+        if let Some(busy) = preview_audio_blocker(
+            audio_lifecycle::is_unconfirmed_key_down_capture,
+            audio_lifecycle::retire_standby,
+            audio_lifecycle::is_audio_active,
+        ) {
+            return Err(busy.to_string());
         }
     }
     let device_id = match smart_auto.as_ref() {

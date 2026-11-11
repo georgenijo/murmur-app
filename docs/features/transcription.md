@@ -196,7 +196,7 @@ waits for worker exit and thread join before claiming ownership. Unconfirmed
 teardown retains the owner and blocks another microphone open.
 
 Host and signed worker require microphone permission already granted. A probe
-never enters the interactive TCC prompt path. Protocol v10 carries an absolute,
+never enters the interactive TCC prompt path. Protocol v11 carries an absolute,
 sleep-inclusive deadline stamped when the permit is created. A worker watchdog
 exits at that deadline even if native setup or stop is blocked. Revocation uses
 the existing bounded cancellation path; it does not promise instantaneous
@@ -875,7 +875,12 @@ start acceptance, first retained nonempty PCM, and native capture readiness.
 Double-tap timing also records first release → toggle emission (including the
 second tap's hold). Both-mode hold arming is included in press-to-accepted time.
 These measurements add visibility. Microphone startup still begins only after
-recording is accepted. A first clean tap in Double Tap or Both mode may silently
+recording is accepted, except for the Fn / Globe trigger, which opens a
+speculative capture at key-down. A confirmed start adopts that capture, and an
+unconfirmed press discards it (see
+[Recording modes](recording-modes.md#fn-and-globe-key-down-capture)).
+An adopted capture logs `audio.capture_ready` with `warm=true` and
+`speculative=true`. A first clean tap in Double Tap or Both mode may silently
 spawn, signature-verify, and handshake an idle capture helper, but only when
 microphone permission is already granted. It creates no AudioUnit, opens no
 device, and captures no audio. The confirmed start for the same gesture adopts

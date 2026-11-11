@@ -1,5 +1,7 @@
 #[path = "audio_gesture.rs"]
 pub(crate) mod gesture;
+#[path = "audio_speculative.rs"]
+pub(crate) mod speculative;
 use crate::audio::{
     self, AudioCommand, AudioFailure, AudioFailureKind, AudioInitPhase, AudioWorkerEvent,
     AudioWorkerEventSender, AudioWorkerSpec,
@@ -24,6 +26,10 @@ pub(crate) enum AudioOwner {
     Dictation(u64),
     Preview(u64),
     MicrophoneBenchmark(u64),
+    /// Fn/Globe key-down capture awaiting gesture confirmation. It has no UI,
+    /// publishes no levels, and is adopted by its confirmed dictation start or
+    /// discarded with its samples (see `speculative`).
+    Speculative(u64),
     #[cfg(feature = "internal-benchmark")]
     Corpus(u64),
 }
@@ -31,7 +37,10 @@ pub(crate) enum AudioOwner {
 impl AudioOwner {
     pub(crate) fn telemetry_id(self) -> u64 {
         match self {
-            Self::Dictation(id) | Self::Preview(id) | Self::MicrophoneBenchmark(id) => id,
+            Self::Dictation(id)
+            | Self::Preview(id)
+            | Self::MicrophoneBenchmark(id)
+            | Self::Speculative(id) => id,
             #[cfg(feature = "internal-benchmark")]
             Self::Corpus(id) => id,
         }
@@ -42,9 +51,16 @@ impl AudioOwner {
             Self::Dictation(_) => "dictation",
             Self::Preview(_) => "preview",
             Self::MicrophoneBenchmark(_) => "microphone_benchmark",
+            Self::Speculative(_) => "speculative",
             #[cfg(feature = "internal-benchmark")]
             Self::Corpus(_) => "corpus",
         }
+    }
+
+    /// A capture whose worker behaves as dictation capture: a speculative
+    /// worker keeps its identity after its dictation adopts it.
+    pub(crate) fn is_dictation_capture(self) -> bool {
+        matches!(self, Self::Dictation(_) | Self::Speculative(_))
     }
 
     /// Preview capture proves device readiness and drives a level meter, but
@@ -58,6 +74,12 @@ impl AudioOwner {
             Self::Preview(id) => Some(id),
             _ => None,
         }
+    }
+
+    /// Fn key-down capture before its gesture is confirmed. Its worker keeps
+    /// this identity even after a confirmed start adopts it.
+    pub(crate) fn is_speculative(self) -> bool {
+        matches!(self, Self::Speculative(_))
     }
 
     pub(crate) fn dictation_id(self) -> Option<u64> {
@@ -197,6 +219,8 @@ enum AttemptPhase {
     Recovering,
     Stopping,
     Standby,
+    /// Fn key-down capture that no dictation owns yet.
+    Speculative,
 }
 
 #[repr(u8)]
@@ -208,6 +232,7 @@ enum PublicPhase {
     Recovering = 3,
     Stopping = 4,
     Standby = 5,
+    Speculative = 6,
 }
 
 impl PublicPhase {
@@ -219,6 +244,7 @@ impl PublicPhase {
             Self::Recovering => "recovering",
             Self::Stopping => "stopping",
             Self::Standby => "standby",
+            Self::Speculative => "speculative",
         }
     }
 }
@@ -230,6 +256,8 @@ struct PublicState {
     phase: AtomicU8,
     still_connecting: std::sync::atomic::AtomicBool,
     owner: Mutex<Option<AudioOwner>>,
+    /// Speculative capture id whose worker already retains PCM (0 = none).
+    flowing_speculative: AtomicU64,
 }
 
 impl Default for PublicState {
@@ -239,6 +267,7 @@ impl Default for PublicState {
             phase: AtomicU8::new(PublicPhase::Idle as u8),
             still_connecting: std::sync::atomic::AtomicBool::new(false),
             owner: Mutex::new(None),
+            flowing_speculative: AtomicU64::new(0),
         }
     }
 }
@@ -260,6 +289,7 @@ impl PublicState {
             value if value == PublicPhase::Recovering as u8 => PublicPhase::Recovering,
             value if value == PublicPhase::Stopping as u8 => PublicPhase::Stopping,
             value if value == PublicPhase::Standby as u8 => PublicPhase::Standby,
+            value if value == PublicPhase::Speculative as u8 => PublicPhase::Speculative,
             _ => PublicPhase::Recovering,
         }
     }
@@ -401,6 +431,9 @@ impl LifecycleSink for ProductionLifecycleSink {
                     event,
                 );
             }
+            // Unconfirmed key-down audio has no observer. Its adopting
+            // dictation receives lifecycle events under its own owner.
+            AudioOwner::Speculative(_) => {}
             #[cfg(feature = "internal-benchmark")]
             AudioOwner::Corpus(capture_id) => {
                 crate::commands::corpus::handle_audio_lifecycle(
@@ -448,6 +481,11 @@ enum SupervisorMessage {
     },
     ConfigureStandby(StandbyPolicy),
     RetireStandby(Sender<()>),
+    SpeculativeStart(SpeculativeStartRequest),
+    DiscardSpeculative {
+        id: u64,
+        reason: speculative::DiscardReason,
+    },
     InputTopologyChanged,
     Worker(AudioWorkerEvent),
     #[cfg(test)]
@@ -457,6 +495,22 @@ enum SupervisorMessage {
     },
     #[cfg(test)]
     Shutdown(Sender<()>),
+}
+
+struct SpeculativeStartRequest {
+    id: u64,
+    /// When Fn went down, as stamped by the keyboard callback. The backstop
+    /// runs from here, not from supervisor acceptance.
+    pressed_at: Instant,
+    device_id: Option<String>,
+    app_handle: Option<tauri::AppHandle>,
+    response: Sender<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SpeculativeAttempt {
+    id: u64,
+    deadline: Instant,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -472,6 +526,9 @@ struct Attempt {
     retire_responses: Vec<Sender<()>>,
     standby_policy: StandbyPolicy,
     standby_deadline: Option<Instant>,
+    /// Present from Fn key-down until adoption; kept through discard so a
+    /// start arriving during teardown queues behind the exact worker's exit.
+    speculative: Option<SpeculativeAttempt>,
     tail_deadline: Option<Instant>,
     // Logical recording generation whose own stop issued the worker Stop.
     // Standby retirement/recovery Stops never acquire this binding.
@@ -617,6 +674,7 @@ fn run_supervisor(
                     current.probe_permit.is_some()
                         || current.tail_deadline.is_some()
                         || current.phase == AttemptPhase::Standby
+                        || current.phase == AttemptPhase::Speculative
                 }) {
                     handle_deadlines_at(
                         &mut attempt,
@@ -720,8 +778,19 @@ fn run_supervisor(
                     }
                     SupervisorMessage::RetireStandby(response) => {
                         if let Some(current) = attempt.as_mut().filter(|a| {
-                            a.phase == AttemptPhase::Standby || a.standby_deadline.is_some()
+                            a.phase == AttemptPhase::Standby
+                                || a.standby_deadline.is_some()
+                                || a.speculative.is_some()
                         }) {
+                            if let Some(speculative) = current.speculative {
+                                if current.phase == AttemptPhase::Speculative {
+                                    log_speculative_discard(
+                                        current,
+                                        speculative.id,
+                                        speculative::DiscardReason::Superseded,
+                                    );
+                                }
+                            }
                             current.retire_responses.push(response);
                             begin_recovery(
                                 &mut attempt,
@@ -732,6 +801,102 @@ fn run_supervisor(
                             );
                         } else {
                             let _ = response.send(());
+                        }
+                        continue;
+                    }
+                    SupervisorMessage::SpeculativeStart(request) => {
+                        let expired = Instant::now()
+                            >= request.pressed_at + speculative::SPECULATIVE_CAPTURE_TTL;
+                        if expired {
+                            tracing::info!(target: "audio",
+                                event_code = "audio.speculative_capture_refused",
+                                capture_id = request.id,
+                                reason = "expired",
+                                "key-down capture refused; its backstop elapsed before admission"
+                            );
+                            let _ = request.response.send(false);
+                        } else if attempt.is_none()
+                            && pending_start.is_none()
+                            && !crate::keyboard::is_app_disabled()
+                        {
+                            start_speculative(
+                                request,
+                                &mut attempt,
+                                &worker_event_sender,
+                                factory.as_ref(),
+                                sink.as_ref(),
+                                &public,
+                            );
+                        } else {
+                            tracing::info!(target: "audio",
+                                event_code = "audio.speculative_capture_refused",
+                                capture_id = request.id,
+                                reason = "microphone_busy",
+                                busy_owner = attempt
+                                    .as_ref()
+                                    .map(|a| a.owner.kind())
+                                    .or(pending_start.as_ref().map(|_| "pending_start"))
+                                    .unwrap_or("app_disabled"),
+                                "key-down capture refused; the confirmed start takes the ordinary path"
+                            );
+                            let _ = request.response.send(false);
+                        }
+                        continue;
+                    }
+                    SupervisorMessage::DiscardSpeculative { id, reason } => {
+                        if let Some(current) = attempt.as_ref().filter(|a| {
+                            a.phase == AttemptPhase::Speculative
+                                && a.speculative.is_some_and(|s| s.id == id)
+                        }) {
+                            log_speculative_discard(current, id, reason);
+                            begin_recovery(
+                                &mut attempt,
+                                AudioCancelReason::User,
+                                sink.as_ref(),
+                                &public,
+                                None,
+                            );
+                        }
+                        continue;
+                    }
+                    SupervisorMessage::Start(request)
+                        if pending_start.is_none()
+                            && attempt.as_ref().is_some_and(|a| a.speculative.is_some()) =>
+                    {
+                        let current = attempt.as_ref().unwrap();
+                        let speculative = current.speculative.unwrap();
+                        let adoptable = current.phase == AttemptPhase::Speculative
+                            && request.owner.dictation_id().is_some()
+                            && request.gesture.speculative_capture == Some(speculative.id)
+                            && current.device_id == request.device_id
+                            && Instant::now() < speculative.deadline
+                            && current.input_topology_generation
+                                == INPUT_TOPOLOGY_GENERATION.load(Ordering::Acquire);
+                        if adoptable {
+                            adopt_speculative(
+                                attempt.as_mut().unwrap(),
+                                request,
+                                sink.as_ref(),
+                                &public,
+                            );
+                        } else {
+                            if current.phase == AttemptPhase::Speculative {
+                                log_speculative_discard(
+                                    current,
+                                    speculative.id,
+                                    speculative::DiscardReason::Superseded,
+                                );
+                            }
+                            begin_recovery(
+                                &mut attempt,
+                                AudioCancelReason::User,
+                                sink.as_ref(),
+                                &public,
+                                None,
+                            );
+                            // Runs cold only after the discarded worker's
+                            // confirmed exit.
+                            pending_start = Some(request);
                         }
                         continue;
                     }
@@ -876,6 +1041,7 @@ fn deadline_wait(attempt: Option<&Attempt>, config: SupervisorConfig) -> Duratio
     let now = Instant::now();
     let deadline = match attempt.phase {
         AttemptPhase::Standby => attempt.standby_deadline.unwrap_or(now),
+        AttemptPhase::Speculative => attempt.speculative.map_or(now, |s| s.deadline),
         AttemptPhase::Stopping if attempt.tail_deadline.is_some() => {
             attempt.tail_deadline.unwrap_or(now)
         }
@@ -969,7 +1135,7 @@ fn handle_message(
                     current.stop_response = Some(response);
                     public.set_phase(PublicPhase::Stopping);
                 }
-                AttemptPhase::Standby => {
+                AttemptPhase::Standby | AttemptPhase::Speculative => {
                     let _ = response.send(Ok(Vec::new()));
                 }
                 AttemptPhase::Starting => unreachable!("starting was handled above"),
@@ -994,12 +1160,17 @@ fn handle_message(
                 owner_matches
                     && matches!(
                         current.phase,
-                        AttemptPhase::Starting | AttemptPhase::Recording | AttemptPhase::Standby
+                        AttemptPhase::Starting
+                            | AttemptPhase::Recording
+                            | AttemptPhase::Standby
+                            | AttemptPhase::Speculative
                     )
                     && (!starting_only
                         || matches!(
                             current.phase,
-                            AttemptPhase::Starting | AttemptPhase::Standby
+                            AttemptPhase::Starting
+                                | AttemptPhase::Standby
+                                | AttemptPhase::Speculative
                         ))
             } else {
                 false
@@ -1035,6 +1206,8 @@ fn handle_message(
         }
         SupervisorMessage::ConfigureStandby(_)
         | SupervisorMessage::RetireStandby(_)
+        | SupervisorMessage::SpeculativeStart(_)
+        | SupervisorMessage::DiscardSpeculative { .. }
         | SupervisorMessage::InputTopologyChanged => {
             unreachable!()
         }
@@ -1081,7 +1254,7 @@ fn handle_start(
     }
     if let Some(current) = attempt.as_ref() {
         let error = match current.phase {
-            AttemptPhase::Starting => AudioStartError::AlreadyStarting,
+            AttemptPhase::Starting | AttemptPhase::Speculative => AudioStartError::AlreadyStarting,
             AttemptPhase::Recording | AttemptPhase::Standby => AudioStartError::AlreadyRecording,
             AttemptPhase::Recovering | AttemptPhase::Stopping => AudioStartError::AudioRecovering,
         };
@@ -1163,6 +1336,7 @@ fn handle_start(
         retire_responses: Vec::new(),
         standby_policy: StandbyPolicy::default(),
         standby_deadline: None,
+        speculative: None,
         tail_deadline: None,
         recording_stop_owner: None,
         probe_deadline: request
@@ -1264,6 +1438,174 @@ fn publish_gesture_ready(current: &Attempt, sink: &dyn LifecycleSink, ready: Ins
     }
 }
 
+fn log_speculative_discard(current: &Attempt, id: u64, reason: speculative::DiscardReason) {
+    tracing::info!(target: "audio",
+        event_code = "audio.speculative_capture_discarded",
+        capture_id = id,
+        reason = reason.as_str(),
+        flowing = current.ready_at.is_some(),
+        open_ms = current.accepted_at.elapsed().as_millis() as u64,
+        "unconfirmed key-down capture discarded; samples cleared before teardown"
+    );
+}
+
+/// A key-down capture the worker could not open or keep. The typed kind and
+/// phase are content-free and say why; they never carry native error text.
+fn log_speculative_failure(current: &Attempt, id: u64, kind: &'static str, phase: &'static str) {
+    tracing::info!(target: "audio",
+        event_code = "audio.speculative_capture_discarded",
+        capture_id = id,
+        reason = speculative::DiscardReason::CaptureFailed.as_str(),
+        failure_kind = kind,
+        failure_phase = phase,
+        flowing = current.ready_at.is_some(),
+        open_ms = current.accepted_at.elapsed().as_millis() as u64,
+        "key-down capture failed; samples cleared and the confirmed press takes the ordinary path"
+    );
+}
+
+/// Open the Fn key-down capture through the ordinary capture start, then mark
+/// it speculative before any worker event can be processed.
+fn start_speculative(
+    request: SpeculativeStartRequest,
+    attempt: &mut Option<Attempt>,
+    worker_event_sender: &AudioWorkerEventSender,
+    factory: &dyn WorkerFactory,
+    sink: &dyn LifecycleSink,
+    public: &PublicState,
+) {
+    let (response, accepted) = mpsc::channel();
+    let owner = AudioOwner::Speculative(request.id);
+    let deadline = request.pressed_at + speculative::SPECULATIVE_CAPTURE_TTL;
+    handle_start(
+        StartRequest {
+            gesture: gesture::StartGesture::default(),
+            caller_alive: Arc::new(AtomicBool::new(true)),
+            owner,
+            app_handle: request.app_handle,
+            device_id: request.device_id,
+            origin: "speculative".to_string(),
+            wait_until_ready: false,
+            response,
+            probe_permit: None,
+        },
+        attempt,
+        worker_event_sender,
+        factory,
+        sink,
+        public,
+    );
+    let started = matches!(accepted.try_recv(), Ok(Ok(())));
+    if let Some(current) = attempt.as_mut().filter(|a| started && a.owner == owner) {
+        current.phase = AttemptPhase::Speculative;
+        current.speculative = Some(SpeculativeAttempt {
+            id: request.id,
+            deadline,
+        });
+        public.set_phase(PublicPhase::Speculative);
+    }
+    let _ = request.response.send(started);
+}
+
+/// The confirmed dictation start for the same Fn gesture takes over the
+/// key-down worker. Retained PCM from key-down becomes the recording's start.
+fn adopt_speculative(
+    current: &mut Attempt,
+    request: StartRequest,
+    sink: &dyn LifecycleSink,
+    public: &PublicState,
+) {
+    let speculative = current
+        .speculative
+        .take()
+        .expect("only speculative attempts are adopted");
+    let flowing = current.ready_at.is_some();
+    public
+        .flowing_speculative
+        .compare_exchange(speculative.id, 0, Ordering::SeqCst, Ordering::SeqCst)
+        .ok();
+    public.clear_owner(current.owner);
+    let open_ms = current.accepted_at.elapsed().as_millis() as u64;
+    current.owner = request.owner;
+    current.recording_stop_owner = None;
+    current.app_handle = request.app_handle;
+    current.origin = request.origin;
+    current.accepted_at = Instant::now();
+    current.gesture = request.gesture.timing;
+    public.set_owner(current.owner);
+    sink.notify(
+        current.app_handle.as_ref(),
+        current.owner,
+        AudioLifecycleEvent::StartupDiagnostic(audio::AudioStartupDiagnostic::GestureAccepted {
+            gesture_expected: request.gesture.expected,
+            double_tap_expected: request.gesture.expected && current.origin == "toggle",
+            press_to_accepted_ms: current.gesture.map(|g| {
+                gesture::millis(g.accepted.saturating_duration_since(g.candidate.pressed))
+            }),
+            double_tap_gap_ms: current.gesture.and_then(|g| g.gap_ms),
+        }),
+    );
+    tracing::info!(target: "audio",
+        event_code = "audio.speculative_capture_adopted",
+        capture_id = speculative.id,
+        recording_id = current.owner.telemetry_id(),
+        flowing,
+        open_ms,
+        "confirmed dictation adopted its key-down capture"
+    );
+    if let Some(recording_id) = current.owner.dictation_id() {
+        tracing::info!(
+            target: "audio",
+            event_code = "audio.capture_started",
+            recording_id,
+            owner = current.owner.telemetry_id(),
+            owner_kind = current.owner.kind(),
+            origin = current.origin.as_str(),
+            speculative = true,
+            "audio initialization accepted"
+        );
+    }
+    if flowing {
+        current.ready_at = Some(Instant::now());
+        current.phase = AttemptPhase::Recording;
+        current.active.store(true, Ordering::SeqCst);
+        // Stop-press stamps read the adopted buffer through this cursor, as
+        // they do after cold readiness and standby resume.
+        *public
+            .diagnostic_cursor
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some((
+            current.owner,
+            Arc::clone(&current.shared),
+            current.sample_rate,
+        ));
+        public.set_phase(PublicPhase::Recording);
+        publish_gesture_ready(current, sink, Instant::now());
+        sink.notify(
+            current.app_handle.as_ref(),
+            current.owner,
+            AudioLifecycleEvent::Accepted,
+        );
+        sink.notify(
+            current.app_handle.as_ref(),
+            current.owner,
+            AudioLifecycleEvent::Ready,
+        );
+        tracing::info!(target: "audio", event_code = "audio.capture_ready", recording_id = current.owner.telemetry_id(), warm = true, speculative = true, startup_ms = current.accepted_at.elapsed().as_millis() as u64, "key-down PCM available at confirmed start");
+    } else {
+        // The key-down worker is still opening the device: continue as an
+        // ordinary start, with readiness published on its first buffer.
+        current.phase = AttemptPhase::Starting;
+        public.set_phase(PublicPhase::Starting);
+        sink.notify(
+            current.app_handle.as_ref(),
+            current.owner,
+            AudioLifecycleEvent::Accepted,
+        );
+    }
+    let _ = request.response.send(Ok(()));
+}
+
 fn handle_worker_event(
     event: AudioWorkerEvent,
     attempt: &mut Option<Attempt>,
@@ -1315,6 +1657,19 @@ fn handle_worker_event(
     let owner = current.owner;
     match event {
         AudioWorkerEvent::PermissionPromptPending { .. } => {
+            if current.phase == AttemptPhase::Speculative {
+                // Key-down capture never waits on or presents a TCC prompt.
+                if let Some(speculative) = current.speculative {
+                    log_speculative_failure(
+                        current,
+                        speculative.id,
+                        "permission_prompt_required",
+                        AudioInitPhase::StreamBuild.as_str(),
+                    );
+                }
+                begin_recovery(attempt, AudioCancelReason::User, sink, public, None);
+                return;
+            }
             if current.probe_permit.is_some() {
                 begin_recovery(
                     attempt,
@@ -1449,6 +1804,31 @@ fn handle_worker_event(
             sent_at,
             ..
         } => match current.phase {
+            AttemptPhase::Speculative => {
+                if current
+                    .shared
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .is_empty()
+                {
+                    return;
+                }
+                // Retain PCM for adoption but stay invisible: `active` remains
+                // false, so the worker publishes no level meter.
+                current.sample_rate = sample_rate;
+                current.ready_at = Some(Instant::now());
+                if let Some(speculative) = current.speculative {
+                    public
+                        .flowing_speculative
+                        .store(speculative.id, Ordering::SeqCst);
+                    tracing::info!(target: "audio",
+                        event_code = "audio.speculative_capture_flowing",
+                        capture_id = speculative.id,
+                        startup_ms = current.accepted_at.elapsed().as_millis() as u64,
+                        "key-down capture retaining PCM before confirmation"
+                    );
+                }
+            }
             AttemptPhase::Starting => {
                 if current.owner.retains_samples()
                     && current
@@ -1538,6 +1918,18 @@ fn handle_worker_event(
             }
         },
         AudioWorkerEvent::InitFailed { failure, .. } => {
+            if let Some(speculative) = current
+                .speculative
+                .filter(|_| current.phase == AttemptPhase::Speculative)
+            {
+                // A refused grant or failed open; the worker exits on its own.
+                log_speculative_failure(
+                    current,
+                    speculative.id,
+                    failure.kind.as_str(),
+                    failure.phase.as_str(),
+                );
+            }
             sink.invalidate_input_health(current.device_id.as_deref());
             current.failure = Some(failure.clone());
             if let Some(response) = current.start_response.take() {
@@ -1547,9 +1939,24 @@ fn handle_worker_event(
         AudioWorkerEvent::RuntimeFailed { failure, .. } => {
             if matches!(
                 current.phase,
-                AttemptPhase::Starting | AttemptPhase::Recording | AttemptPhase::Standby
+                AttemptPhase::Starting
+                    | AttemptPhase::Recording
+                    | AttemptPhase::Standby
+                    | AttemptPhase::Speculative
             ) {
                 if current.phase == AttemptPhase::Standby {
+                    begin_recovery(attempt, AudioCancelReason::User, sink, public, None);
+                    return;
+                }
+                if current.phase == AttemptPhase::Speculative {
+                    if let Some(speculative) = current.speculative {
+                        log_speculative_failure(
+                            current,
+                            speculative.id,
+                            failure.kind.as_str(),
+                            failure.phase.as_str(),
+                        );
+                    }
                     begin_recovery(attempt, AudioCancelReason::User, sink, public, None);
                     return;
                 }
@@ -1561,7 +1968,7 @@ fn handle_worker_event(
                     AudioOwner::Preview(_) | AudioOwner::MicrophoneBenchmark(_) => Some(failure),
                     #[cfg(feature = "internal-benchmark")]
                     AudioOwner::Corpus(_) => Some(failure),
-                    AudioOwner::Dictation(_) => None,
+                    AudioOwner::Dictation(_) | AudioOwner::Speculative(_) => None,
                 };
                 begin_recovery(
                     attempt,
@@ -1634,8 +2041,23 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
         finished.owner,
         AudioOwner::Preview(_) | AudioOwner::MicrophoneBenchmark(_)
     );
+    if let Some(speculative) = finished.speculative {
+        public
+            .flowing_speculative
+            .compare_exchange(speculative.id, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .ok();
+        tracing::info!(target: "audio",
+            event_code = "audio.speculative_capture_closed",
+            capture_id = speculative.id,
+            open_ms = finished.accepted_at.elapsed().as_millis() as u64,
+            teardown_ms = finished
+                .stopping_started_at
+                .map(|started| started.elapsed().as_millis() as u64),
+            "unconfirmed key-down capture worker exited and joined"
+        );
+    }
     match finished.phase {
-        AttemptPhase::Standby => {}
+        AttemptPhase::Standby | AttemptPhase::Speculative => {}
         AttemptPhase::Stopping => {
             let response_delivered = if finished.sealed_delivery {
                 true
@@ -1724,7 +2146,10 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
                         AudioLifecycleEvent::Idle,
                     );
                 }
-            } else if !idle_after_clear && finished.standby_deadline.is_none() {
+            } else if !idle_after_clear
+                && finished.standby_deadline.is_none()
+                && finished.speculative.is_none()
+            {
                 sink.notify(
                     finished.app_handle.as_ref(),
                     finished.owner,
@@ -1863,13 +2288,23 @@ fn begin_recovery(
     ) {
         return;
     }
-    let was_standby = current.phase == AttemptPhase::Standby;
+    // Standby pre-roll and unconfirmed key-down audio belong to no recording:
+    // drop them before teardown and never surface a recovery to the UI.
+    // Revocation and the clear share the buffer lock, so no live or drained
+    // helper PCM can land after this point, even if exit is never confirmed.
+    let was_standby = current.phase == AttemptPhase::Standby || current.speculative.is_some();
     if was_standby {
         current
             .shared
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .clear();
+            .revoke_retention();
+    }
+    if let Some(speculative) = current.speculative {
+        public
+            .flowing_speculative
+            .compare_exchange(speculative.id, 0, Ordering::SeqCst, Ordering::SeqCst)
+            .ok();
     }
     current.active.store(false, Ordering::SeqCst);
     if let Some(permit) = &current.probe_permit {
@@ -1978,6 +2413,29 @@ fn handle_deadlines_at(
         // A probe lease also ends after successful signal verification. Its
         // cleanup must not advance the failure epoch of the result being saved.
         begin_recovery(attempt, AudioCancelReason::User, sink, public, None);
+        return;
+    }
+    if current.phase == AttemptPhase::Speculative {
+        let topology_changed =
+            current.input_topology_generation != INPUT_TOPOLOGY_GENERATION.load(Ordering::Acquire);
+        let expired = current.speculative.is_none_or(|s| now >= s.deadline);
+        let disabled = crate::keyboard::is_app_disabled();
+        if expired || topology_changed || disabled {
+            if let Some(speculative) = current.speculative {
+                log_speculative_discard(
+                    current,
+                    speculative.id,
+                    if topology_changed {
+                        speculative::DiscardReason::TopologyChanged
+                    } else if disabled {
+                        speculative::DiscardReason::Disabled
+                    } else {
+                        speculative::DiscardReason::Expired
+                    },
+                );
+            }
+            begin_recovery(attempt, AudioCancelReason::User, sink, public, None);
+        }
         return;
     }
     if current.phase == AttemptPhase::Standby
@@ -2306,8 +2764,11 @@ pub(crate) fn stop_dictation_recording(
 /// Read only the retained sample count at a native stop-key press. Never queue,
 /// copy PCM, or wait for capture. Contention means unavailable, not zero.
 pub(crate) fn dictation_sample_cursor(recording_id: u64) -> Option<usize> {
+    sample_cursor_in(&supervisor().public, recording_id)
+}
+
+fn sample_cursor_in(public: &PublicState, recording_id: u64) -> Option<usize> {
     use crate::MutexExt;
-    let public = &supervisor().public;
     if public.phase() != PublicPhase::Recording {
         return None;
     }
@@ -2502,8 +2963,77 @@ pub(crate) fn retire_standby() {
     let _ = rx.recv_timeout(SUPERVISOR_RESPONSE_TIMEOUT);
 }
 
+/// Ask the supervisor to open the Fn key-down capture. Returns the receiver for
+/// its admission, so callers can sequence the request under their own lock and
+/// wait outside it. `false` means the microphone was busy; nothing was opened.
+pub(crate) fn request_speculative_capture(
+    id: u64,
+    pressed_at: Instant,
+    device_id: Option<String>,
+    app_handle: Option<tauri::AppHandle>,
+) -> Receiver<bool> {
+    let (response, admitted) = mpsc::channel();
+    let request = SpeculativeStartRequest {
+        id,
+        pressed_at,
+        device_id,
+        app_handle,
+        response,
+    };
+    if let Err(mpsc::SendError(SupervisorMessage::SpeculativeStart(request))) = supervisor()
+        .sender
+        .send(SupervisorMessage::SpeculativeStart(request))
+    {
+        let _ = request.response.send(false);
+    }
+    admitted
+}
+
+pub(crate) fn await_speculative_admission(admitted: Receiver<bool>) -> bool {
+    admitted
+        .recv_timeout(SUPERVISOR_RESPONSE_TIMEOUT)
+        .unwrap_or(false)
+}
+
+/// Discard an unconfirmed key-down capture: its samples are cleared and the
+/// exact worker is stopped and joined. A no-op once a start adopted it.
+pub(crate) fn discard_speculative_capture(id: u64, reason: speculative::DiscardReason) {
+    if let Some(supervisor) = SUPERVISOR.get() {
+        let _ = supervisor
+            .sender
+            .send(SupervisorMessage::DiscardSpeculative { id, reason });
+    }
+}
+
+pub(crate) fn speculative_capture_is_flowing(id: u64) -> bool {
+    id != 0
+        && SUPERVISOR
+            .get()
+            .is_some_and(|s| s.public.flowing_speculative.load(Ordering::SeqCst) == id)
+}
+
 pub(crate) fn is_audio_active() -> bool {
     supervisor().public.is_active()
+}
+
+/// The microphone is held only by an unconfirmed Fn key-down capture (open or
+/// still tearing down). It belongs to no dictation, so an explicit capture such
+/// as the Settings microphone test may supersede it.
+pub(crate) fn is_unconfirmed_key_down_capture() -> bool {
+    SUPERVISOR
+        .get()
+        .is_some_and(|supervisor| holds_only_unconfirmed_key_down(&supervisor.public))
+}
+
+fn holds_only_unconfirmed_key_down(public: &PublicState) -> bool {
+    public.is_active()
+        && matches!(
+            *public
+                .owner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            Some(AudioOwner::Speculative(_))
+        )
 }
 
 /// A new logical dictation generation must not supersede cleanup guidance
@@ -4193,6 +4723,10 @@ mod tests {
 
     mod stop_diagnostics_tests {
         include!("capture_stop_diagnostics_tests.rs");
+    }
+
+    mod capture_speculative_tests {
+        include!("capture_speculative_tests.rs");
     }
 
     #[test]

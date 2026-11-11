@@ -231,6 +231,8 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "keyboard.listener_failed" => Some("keyboard.listener_failed"),
         "keyboard.escape_cancel" => Some("keyboard.escape_cancel"),
         "keyboard.hotkey_arming_cancelled" => Some("keyboard.hotkey_arming_cancelled"),
+        "keyboard.fn_capture_skipped" => Some("keyboard.fn_capture_skipped"),
+        "keyboard.globe_companion_ignored" => Some("keyboard.globe_companion_ignored"),
         "audio.capture_backend_timeout" => Some("audio.capture_backend_timeout"),
         "audio.system_audio_graph_observed" => Some("audio.system_audio_graph_observed"),
         "audio.device_reresolution_started" => Some("audio.device_reresolution_started"),
@@ -242,6 +244,11 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "audio.recording_context_ready" => Some("audio.recording_context_ready"),
         "audio.standby_policy_applied" => Some("audio.standby_policy_applied"),
         "audio.standby_entered" => Some("audio.standby_entered"),
+        "audio.speculative_capture_refused" => Some("audio.speculative_capture_refused"),
+        "audio.speculative_capture_flowing" => Some("audio.speculative_capture_flowing"),
+        "audio.speculative_capture_adopted" => Some("audio.speculative_capture_adopted"),
+        "audio.speculative_capture_discarded" => Some("audio.speculative_capture_discarded"),
+        "audio.speculative_capture_closed" => Some("audio.speculative_capture_closed"),
         "audio.capture_failed" => Some("audio.capture_failed"),
         "audio.lifecycle_failed" => Some("audio.lifecycle_failed"),
         "audio.permission_prompt_changed" => Some("audio.permission_prompt_changed"),
@@ -3490,6 +3497,26 @@ mod tests {
         assert!(!encoded.contains("SENTINEL"));
         assert!(!encoded.contains("/Users/private"));
         assert_eq!(data.as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn speculative_capture_codes_survive_release_summaries() {
+        for code in [
+            "audio.speculative_capture_refused",
+            "audio.speculative_capture_flowing",
+            "audio.speculative_capture_adopted",
+            "audio.speculative_capture_discarded",
+            "audio.speculative_capture_closed",
+            "keyboard.fn_capture_skipped",
+            "keyboard.globe_companion_ignored",
+        ] {
+            assert_eq!(canonical_event_code(code), Some(code));
+            let data = serde_json::json!({"event_code": code, "capture_id": 4});
+            assert_eq!(
+                sanitized_summary("audio", Some("PRIVATE_SENTINEL".into()), &data, false),
+                code
+            );
+        }
     }
 
     #[test]

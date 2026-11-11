@@ -264,6 +264,10 @@ pub(crate) struct EnumeratedAudioInputInventory {
 pub(crate) struct CaptureSamples {
     samples: Vec<f32>,
     standby_ms: Option<u32>,
+    /// Set once audio that belongs to no recording (unconfirmed key-down or
+    /// standby pre-roll) is discarded. Every later append, including PCM the
+    /// helper flushes while draining a Stop, is dropped under this lock.
+    retention_revoked: bool,
 }
 
 impl std::ops::Deref for CaptureSamples {
@@ -279,6 +283,9 @@ impl std::ops::DerefMut for CaptureSamples {
 }
 impl CaptureSamples {
     pub(crate) fn append_pcm(&mut self, pcm: &[f32], rate: u32) {
+        if self.retention_revoked {
+            return;
+        }
         self.samples.extend_from_slice(pcm);
         if let Some(ms) = self.standby_ms {
             let limit = rate as usize * ms as usize / 1000;
@@ -296,6 +303,33 @@ impl CaptureSamples {
     }
     pub(crate) fn take(&mut self) -> Vec<f32> {
         std::mem::take(&mut self.samples)
+    }
+    /// Atomically clear retained samples and refuse all future appends. Used
+    /// before teardown of a capture whose audio belongs to no recording; never
+    /// reversed for the same buffer.
+    pub(crate) fn revoke_retention(&mut self) {
+        self.retention_revoked = true;
+        self.samples = Vec::new();
+    }
+    #[cfg(test)]
+    pub(crate) fn retention_revoked(&self) -> bool {
+        self.retention_revoked
+    }
+}
+
+/// The only production path from helper PCM into a capture buffer, shared by
+/// live reads and the post-Stop drain so both honor retention revocation.
+pub(crate) fn retain_pcm(
+    shared: &Mutex<CaptureSamples>,
+    owner: crate::audio_lifecycle::AudioOwner,
+    pcm: &[f32],
+    rate: u32,
+) {
+    if owner.retains_samples() {
+        shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .append_pcm(pcm, rate);
     }
 }
 
@@ -638,7 +672,7 @@ fn spawn_helper_checked(
     }
     let signature_ms = signature_started.elapsed().as_millis() as u64;
     let capture_id_text = capture_id.to_string();
-    let mut arguments = vec!["--production-v10", capture_id_text.as_str(), nonce_hex];
+    let mut arguments = vec!["--production-v11", capture_id_text.as_str(), nonce_hex];
     if let Some(fault) = fault {
         arguments.extend(["--fault", fault]);
     }
@@ -1413,7 +1447,9 @@ pub(crate) fn drain_stopping_recording(
         *received += samples.len() as u64;
         accept(samples);
     });
-    if owner.dictation_id().is_some() && outcome.fully_drained(*received) {
+    // An adopted key-down worker keeps its speculative identity; its drained
+    // stop seals the dictation that owns it now.
+    if owner.is_dictation_capture() && outcome.fully_drained(*received) {
         let _ = events.send(AudioWorkerEvent::RecordingSealed { owner });
     }
     outcome
@@ -2175,6 +2211,64 @@ fn stop_requested_between_attempts(command_receiver: &Receiver<AudioCommand>) ->
     )
 }
 
+/// How an attempt may proceed under the current microphone authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartPermission {
+    Proceed,
+    /// Ordinary interactive capture waits on the system prompt.
+    AwaitPrompt,
+    Refuse,
+}
+
+/// Automatic probes and Fn key-down capture run only under a grant that
+/// already exists; they refuse instead of presenting or waiting on a prompt.
+fn requires_existing_grant(
+    owner: crate::audio_lifecycle::AudioOwner,
+    automatic_probe: bool,
+) -> bool {
+    automatic_probe || owner.is_speculative()
+}
+
+fn start_permission(requires_existing_grant: bool, status: &str) -> StartPermission {
+    match status {
+        "granted" => StartPermission::Proceed,
+        "denied" => StartPermission::Refuse,
+        _ if requires_existing_grant => StartPermission::Refuse,
+        "notDetermined" => StartPermission::AwaitPrompt,
+        // "unknown" is a transient probe failure, not a decision.
+        _ => StartPermission::Proceed,
+    }
+}
+
+/// Whether a running attempt must end because the grant is no longer in
+/// force. Key-down capture treats a TCC reset as lost at once instead of
+/// waiting on a prompt; a transient "unknown" never ends an adopted dictation.
+fn runtime_permission_lost(
+    automatic_probe: bool,
+    existing_grant_only: bool,
+    retained_audio: bool,
+    status: &str,
+) -> bool {
+    (automatic_probe && status != "granted")
+        || status == "denied"
+        || (status == "notDetermined" && (retained_audio || existing_grant_only))
+}
+
+/// The helper Start command for a non-probe attempt. Key-down capture uses
+/// the variant the helper itself refuses without an existing grant.
+fn interactive_start_message(
+    owner: crate::audio_lifecycle::AudioOwner,
+    device_id: Option<&str>,
+    backend: CaptureBackend,
+) -> ProductionHostMessage {
+    let device_id = device_id.map(str::to_string);
+    if owner.is_speculative() {
+        ProductionHostMessage::StartPreauthorized { device_id, backend }
+    } else {
+        ProductionHostMessage::Start { device_id, backend }
+    }
+}
+
 // Keep the attempt's ownership, cancellation, buffer, application, and event
 // channels explicit; bundling them would obscure the capture lifecycle.
 #[allow(clippy::too_many_arguments)]
@@ -2221,8 +2315,10 @@ fn run_backend(
         });
     }
     let mut permission_prompt_started = None;
+    let existing_grant_only = requires_existing_grant(owner, probe_permit.is_some());
     let permission_status = crate::commands::permissions::check_microphone_permission_status();
-    if permission_status == "denied" || (probe_permit.is_some() && permission_status != "granted") {
+    let permission = start_permission(existing_grant_only, &permission_status);
+    if permission == StartPermission::Refuse {
         return AttemptResult::Failed {
             failure: AudioFailure::new(
                 AudioFailureKind::PermissionDenied,
@@ -2232,7 +2328,7 @@ fn run_backend(
             active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
         };
     }
-    if permission_status == "notDetermined" {
+    if permission == StartPermission::AwaitPrompt {
         begin_permission_prompt_pause(
             &mut permission_prompt_started,
             &mut clock,
@@ -2365,10 +2461,39 @@ fn run_backend(
                 deadline_ns: deadline.expect("automatic probe requires a monotonic deadline"),
             }
         }
-        None => ProductionHostMessage::Start {
-            device_id: device_id.map(str::to_string),
-            backend,
-        },
+        None => {
+            // Re-check after the helper handshake: the grant seen at keyboard
+            // admission and attempt start may have been reset since. The
+            // helper repeats this check before creating native capture.
+            if existing_grant_only
+                && start_permission(
+                    true,
+                    &crate::commands::permissions::check_microphone_permission_status(),
+                ) != StartPermission::Proceed
+            {
+                if !terminate_or_quarantine(
+                    child,
+                    Some(input),
+                    capture_id,
+                    nonce,
+                    Some(ProductionHostMessage::Cancel),
+                    owner,
+                    event_sender,
+                    AudioInitPhase::StreamBuild,
+                ) {
+                    return AttemptResult::TerminalHandled;
+                }
+                return AttemptResult::Failed {
+                    failure: AudioFailure::new(
+                        AudioFailureKind::PermissionDenied,
+                        AudioInitPhase::StreamBuild,
+                    ),
+                    retained_audio: false,
+                    active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
+                };
+            }
+            interactive_start_message(owner, device_id, backend)
+        }
     };
     let start_sent_at = Instant::now();
     if write_production_control(&mut input, capture_id, nonce, &start_message).is_err() {
@@ -2479,14 +2604,8 @@ fn run_backend(
                     event_sender,
                     stop_started,
                 );
-                let retains_samples = owner.retains_samples();
                 let mut accept = |samples: &[f32]| {
-                    if retains_samples {
-                        shared
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .append_pcm(samples, sample_rate.unwrap_or(16_000));
-                    }
+                    retain_pcm(shared, owner, samples, sample_rate.unwrap_or(16_000));
                 };
                 // Keep reading after Stop: the helper flushes its ring as PCM
                 // before Stopped, and frames already in the pipe are the last
@@ -2574,10 +2693,13 @@ fn run_backend(
             // destroy retained audio by itself.
             let permission_status =
                 crate::commands::permissions::check_microphone_permission_status();
-            let permission_lost = (probe_permit.is_some() && permission_status != "granted")
-                || permission_status == "denied"
-                || (retained_audio && permission_status == "notDetermined");
-            if probe_permit.is_none() && !retained_audio && permission_status == "notDetermined" {
+            let permission_lost = runtime_permission_lost(
+                probe_permit.is_some(),
+                existing_grant_only,
+                retained_audio,
+                &permission_status,
+            );
+            if !existing_grant_only && !retained_audio && permission_status == "notDetermined" {
                 begin_permission_prompt_pause(
                     &mut permission_prompt_started,
                     &mut clock,
@@ -2800,12 +2922,7 @@ fn run_backend(
                 expected_sequence += 1;
                 received_samples += pcm.samples.len() as u64;
                 sample_rate = Some(pcm.sample_rate);
-                if owner.retains_samples() {
-                    shared
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .append_pcm(&pcm.samples, pcm.sample_rate);
-                }
+                retain_pcm(shared, owner, &pcm.samples, pcm.sample_rate);
                 if !retained_audio {
                     retained_audio = true;
                     current_phase = AudioInitPhase::Runtime;
@@ -3622,6 +3739,114 @@ mod release_tail_tests;
 mod tests {
     use super::*;
 
+    /// A stand-in helper process: replies with `reply` on stdout and records
+    /// every byte the host writes to it, so a test can prove what was sent.
+    fn scripted_helper(
+        reply: &[u8],
+    ) -> (
+        std::process::Child,
+        std::process::ChildStdin,
+        std::process::ChildStdout,
+        PathBuf,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let reply_path = dir.path().join("reply.bin");
+        let received = dir.path().join("received.bin");
+        std::fs::write(&reply_path, reply).unwrap();
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "cat \"$0\"; exec cat > \"$1\""])
+            .arg(&reply_path)
+            .arg(&received)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let input = child.stdin.take().unwrap();
+        let output = child.stdout.take().unwrap();
+        (child, input, output, received, dir)
+    }
+
+    fn hello_ack(capture_id: u64, nonce: SessionNonce, version: u16) -> Vec<u8> {
+        let mut frame = Vec::new();
+        write_production_control(
+            &mut frame,
+            capture_id,
+            nonce,
+            &ProductionHelperMessage::HelloAck,
+        )
+        .unwrap();
+        frame[4..6].copy_from_slice(&version.to_le_bytes());
+        frame
+    }
+
+    /// The native failure behind "key-down capture never opened": a helper
+    /// built before `StartPreauthorized`. With protocol v11 such a helper's
+    /// v10 reply fails the handshake, and the host sends nothing after Hello,
+    /// so no start of any kind (and no capture) can follow.
+    #[test]
+    fn a_pre_v11_helper_is_rejected_at_the_handshake_before_any_start() {
+        let (capture_id, nonce) = (77, [7_u8; 16]);
+        for (version, accepted) in [
+            (10_u16, false),
+            (9, false),
+            (
+                murmur_capture_helper_protocol::PRODUCTION_PROTOCOL_VERSION,
+                true,
+            ),
+        ] {
+            let (mut child, mut input, output, received, _dir) =
+                scripted_helper(&hello_ack(capture_id, nonce, version));
+            let result = hello(&mut input, output, capture_id, nonce);
+            assert_eq!(result.is_ok(), accepted, "helper v{version}");
+            if !accepted {
+                assert_eq!(
+                    result.err(),
+                    Some(AudioFailure::new(
+                        AudioFailureKind::ProtocolError,
+                        AudioInitPhase::StreamBuild
+                    )),
+                    "helper v{version}"
+                );
+            }
+            drop(input);
+            child.wait().unwrap();
+            let sent = std::fs::read(&received).unwrap();
+            let mut reader = sent.as_slice();
+            let first =
+                read_production_frame::<ProductionHostMessage>(&mut reader, capture_id, nonce)
+                    .unwrap();
+            assert!(
+                matches!(
+                    first,
+                    ProductionFrame::Control(ProductionHostMessage::Hello)
+                ),
+                "helper v{version}: {first:?}"
+            );
+            assert!(
+                reader.is_empty(),
+                "helper v{version}: host sent more than Hello"
+            );
+        }
+    }
+
+    /// The stale binary seen natively could not decode the v11 host's frames
+    /// and exited. EOF during the handshake is the same typed failure.
+    #[test]
+    fn a_helper_that_exits_during_the_handshake_is_a_protocol_error() {
+        let (mut child, mut input, output, _received, _dir) = scripted_helper(&[]);
+        let result = hello(&mut input, output, 78, [8_u8; 16]);
+        assert_eq!(
+            result.err(),
+            Some(AudioFailure::new(
+                AudioFailureKind::ProtocolError,
+                AudioInitPhase::StreamBuild
+            ))
+        );
+        drop(input);
+        child.wait().unwrap();
+    }
+
     #[test]
     fn inventory_is_never_published_without_confirmed_helper_exit() {
         let inventory = EnumeratedAudioInputInventory {
@@ -4258,6 +4483,106 @@ mod tests {
                 + CAPTURE_PROTOCOL_RESERVE,
             CAPTURE_ACTIVE_BUDGET
         );
+    }
+
+    #[test]
+    fn key_down_capture_refuses_instead_of_prompting_when_the_grant_is_gone() {
+        use crate::audio_lifecycle::AudioOwner;
+        // Granted at keyboard admission, then TCC reset before the attempt
+        // starts: the worker refuses before any helper or prompt.
+        for status in ["notDetermined", "unknown", "denied"] {
+            crate::commands::permissions::override_microphone_permission_status_for_test(Some(
+                status,
+            ));
+            let (_commands, receiver) = mpsc::channel();
+            let events = AudioWorkerEventSender::new(|event| {
+                panic!("key-down capture must not report or wait on a prompt: {event:?}")
+            });
+            let shared = Arc::new(Mutex::new(CaptureSamples::default()));
+            let result = run_backend(
+                AudioOwner::Speculative(41),
+                CaptureBackend::Auhal,
+                None,
+                AttemptContext {
+                    is_primary: true,
+                    memo_promoted: false,
+                    resolution_pass: 1,
+                    backend_attempt: 1,
+                },
+                &receiver,
+                &shared,
+                &Arc::new(AtomicBool::new(false)),
+                &None,
+                &events,
+                None,
+                None,
+            );
+            crate::commands::permissions::override_microphone_permission_status_for_test(None);
+            assert!(
+                matches!(
+                    result,
+                    AttemptResult::Failed { ref failure, retained_audio: false, .. }
+                        if failure.kind == AudioFailureKind::PermissionDenied
+                ),
+                "{status}"
+            );
+            assert!(shared.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn key_down_capture_permission_policy_is_existing_grant_only_at_every_boundary() {
+        use crate::audio_lifecycle::AudioOwner;
+        let speculative = AudioOwner::Speculative(1);
+        let dictation = AudioOwner::Dictation(1);
+        assert!(requires_existing_grant(speculative, false));
+        assert!(!requires_existing_grant(dictation, false));
+        assert!(requires_existing_grant(dictation, true));
+        // Attempt start and the post-handshake re-check.
+        for (status, existing, ordinary) in [
+            (
+                "granted",
+                StartPermission::Proceed,
+                StartPermission::Proceed,
+            ),
+            (
+                "notDetermined",
+                StartPermission::Refuse,
+                StartPermission::AwaitPrompt,
+            ),
+            ("unknown", StartPermission::Refuse, StartPermission::Proceed),
+            ("denied", StartPermission::Refuse, StartPermission::Refuse),
+        ] {
+            assert_eq!(start_permission(true, status), existing, "{status}");
+            assert_eq!(start_permission(false, status), ordinary, "{status}");
+        }
+        // Start: the helper enforces the grant itself for key-down capture.
+        assert_eq!(
+            interactive_start_message(speculative, Some("mic"), CaptureBackend::Auhal),
+            ProductionHostMessage::StartPreauthorized {
+                device_id: Some("mic".into()),
+                backend: CaptureBackend::Auhal
+            }
+        );
+        assert_eq!(
+            interactive_start_message(dictation, None, CaptureBackend::Cpal),
+            ProductionHostMessage::Start {
+                device_id: None,
+                backend: CaptureBackend::Cpal
+            }
+        );
+        // Running: a TCC reset ends key-down capture rather than pausing for
+        // a prompt; a transient unknown never ends an adopted dictation.
+        assert!(runtime_permission_lost(false, true, false, "notDetermined"));
+        assert!(!runtime_permission_lost(
+            false,
+            false,
+            false,
+            "notDetermined"
+        ));
+        assert!(!runtime_permission_lost(false, true, true, "unknown"));
+        assert!(runtime_permission_lost(false, true, true, "denied"));
+        assert!(runtime_permission_lost(true, true, false, "unknown"));
     }
 
     #[test]

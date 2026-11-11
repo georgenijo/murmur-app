@@ -130,6 +130,17 @@ vocabularies while dropping arbitrary string values. See
 [Transcription Pipeline](../features/transcription.md#per-recording-lifecycle-telemetry)
 for stage denominators and terminal semantics.
 
+Fn / Globe key-down capture uses its own content-free codes on the `audio`
+stream: `audio.speculative_capture_refused`, `audio.speculative_capture_flowing`,
+`audio.speculative_capture_adopted`, `audio.speculative_capture_discarded`, and
+`audio.speculative_capture_closed`. The keyboard stream adds
+`keyboard.fn_capture_skipped`. They carry only a numeric `capture_id`, a bounded
+`reason` label, `flowing`, and millisecond timings such as `open_ms` and
+`teardown_ms`; adoption also carries the `recording_id`. A speculative capture
+logs `owner_kind: "speculative"` until adoption, so dictation denominators
+count only confirmed recordings. See
+[Recording modes](../features/recording-modes.md#fn-and-globe-key-down-capture).
+
 `pipeline.dictation_preview_presentation` records the native live-preview
 window lifecycle. It carries a positive `recording_id` and an `outcome` of
 `shown`, `show_failed`, `hidden`, or `hide_failed`. The related

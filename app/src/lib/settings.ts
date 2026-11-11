@@ -7,12 +7,17 @@ const FUNCTION_DICTATION_KEY_IDS = [
   'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10',
   'f11', 'f12', 'f13', 'f14', 'f15', 'f16', 'f17', 'f18', 'f19', 'f20',
 ] as const;
+/** Fn/Globe: the only trigger whose press opens the microphone before the
+ * gesture is confirmed (unconfirmed audio is discarded natively). */
+export const GLOBE_DICTATION_KEY = 'fn';
 const DICTATION_KEY_IDS = [
   ...MODIFIER_DICTATION_KEY_IDS,
+  GLOBE_DICTATION_KEY,
   ...FUNCTION_DICTATION_KEY_IDS,
 ] as const;
 
 export type DictationKey = (typeof DICTATION_KEY_IDS)[number];
+const FUNCTION_DICTATION_KEY_SET: ReadonlySet<string> = new Set(FUNCTION_DICTATION_KEY_IDS);
 export type FunctionDictationKey = (typeof FUNCTION_DICTATION_KEY_IDS)[number];
 
 export type PasteLastShortcut =
@@ -446,6 +451,7 @@ export function isDictationKey(value: unknown): value is DictationKey {
 export function dictationKeyLabel(key: DictationKey): string {
   if (isFunctionDictationKey(key)) return key.toUpperCase();
   switch (key) {
+    case 'fn': return '🌐 Fn / Globe';
     case 'shift_l': return '⇧ Left Shift';
     case 'alt_l': return '⌥ Left Option';
     case 'ctrl_r': return '⌃ Right Control';
@@ -457,7 +463,7 @@ export function dictationKeyLabel(key: DictationKey): string {
 }
 
 export function isFunctionDictationKey(key: DictationKey): key is FunctionDictationKey {
-  return key.startsWith('f');
+  return FUNCTION_DICTATION_KEY_SET.has(key);
 }
 
 export function recordingShortcutHint(mode: RecordingMode, key: DictationKey): string {

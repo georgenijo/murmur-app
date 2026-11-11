@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => {
     startRecording: vi.fn(),
     stopRecording: vi.fn(),
     cancelRecording: vi.fn(),
+    syncFnCaptureInput: vi.fn(async () => undefined),
     listeners,
     listen: vi.fn(async (event: string, handler: (event: { payload: unknown }) => void) => {
       listeners.set(event, handler);
@@ -22,6 +23,7 @@ vi.mock('../dictation', () => ({
   startRecording: mocks.startRecording,
   stopRecording: mocks.stopRecording,
   cancelRecording: mocks.cancelRecording,
+  syncFnCaptureInput: mocks.syncFnCaptureInput,
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
@@ -75,6 +77,24 @@ describe('useRecordingState transition ordering', () => {
     await act(async () => root.unmount());
     vi.useRealTimers();
     container.remove();
+  });
+
+  it('mirrors the start request microphone for Fn key-down capture once per change', async () => {
+    expect(mocks.syncFnCaptureInput).toHaveBeenCalledWith('system_default', null);
+    mocks.syncFnCaptureInput.mockClear();
+    const probeContainer = document.createElement('div');
+    const probeRoot = createRoot(probeContainer);
+    function Probe({ microphone }: { microphone: string }) {
+      useRecordingState({ addEntry: mocks.addEntry, microphone });
+      return null;
+    }
+    await act(async () => probeRoot.render(<Probe microphone="system_default" />));
+    await act(async () => probeRoot.render(<Probe microphone="system_default" />));
+    expect(mocks.syncFnCaptureInput).toHaveBeenCalledOnce();
+    await act(async () => probeRoot.render(<Probe microphone="usb-mic" />));
+    expect(mocks.syncFnCaptureInput).toHaveBeenCalledTimes(2);
+    expect(mocks.syncFnCaptureInput).toHaveBeenLastCalledWith('usb-mic', null);
+    await act(async () => probeRoot.unmount());
   });
 
   it('cancels promptly while microphone initialization is still starting', async () => {

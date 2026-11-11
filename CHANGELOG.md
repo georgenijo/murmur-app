@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.64.0] - 2026-11-11
+
+<!-- Release notes generated using configuration in .github/release.yml at f35db07201e9b8e1b652a00e2f25ed058f9e3ab8 -->
+
+## What's Changed
+### Other Changes
+* feat: Fn/Globe dictation trigger with key-down capture by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1102
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.63.4...v0.64.0
+
 ## [0.63.4] - 2026-11-11
 
 ### Fixed

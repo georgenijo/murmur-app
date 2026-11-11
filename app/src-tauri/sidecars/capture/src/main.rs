@@ -409,7 +409,7 @@ fn main() {
             }
             _ => {}
         }
-        if arguments.first().map(String::as_str) == Some("--production-v10") {
+        if arguments.first().map(String::as_str) == Some("--production-v11") {
             if production::run(&arguments[1..]).is_ok() {
                 return;
             }
