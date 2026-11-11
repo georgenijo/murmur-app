@@ -50,6 +50,7 @@ import './styles.css';
 
 const query = new URLSearchParams(window.location.search);
 const requestedState = query.get('state') ?? 'idle';
+const longSpeakerLabels = query.get('speaker-labels') === 'long';
 const homeFixture = query.get('proposal') ?? requestedState;
 const copyFixture = requestedState === 'settings-copy';
 const copyKnowledge = query.get('knowledge') === 'empty' ? [] : [
@@ -158,15 +159,19 @@ const meetingFixture = {
     attendees: [],
     id: 'meeting-fixture', startedAtMs: Date.UTC(2026, 7, 31, 14, 30), endedAtMs: Date.UTC(2026, 7, 31, 14, 48),
     status: 'complete', modelName: 'base.en', language: 'en', smartPunctuation: true,
-    retainAudio: requestedState === 'meetings-review-audio', durationMs: 1_080_000, segmentCount: 2,
+    retainAudio: requestedState === 'meetings-review-audio', durationMs: 1_080_000, segmentCount: longSpeakerLabels ? 3 : 2,
     preview: 'We agreed to ship the local review workspace.', errorCode: null,
   },
-  segments: [
+  segments: longSpeakerLabels ? [
+    { id: 101, sessionId: 'meeting-fixture', speaker: 'me', remoteSpeakerId: null, sequence: 0, startMs: 12_000, endMs: 18_000, status: 'final', text: 'The compact speaker column stays aligned across the transcript.', audioAvailable: false, errorCode: null },
+    { id: 102, sessionId: 'meeting-fixture', speaker: 'them', remoteSpeakerId: 1, sequence: 0, startMs: 27_000, endMs: 35_000, status: 'final', text: 'A medium speaker label shares that same text start.', audioAvailable: false, errorCode: null },
+    { id: 103, sessionId: 'meeting-fixture', speaker: 'them', remoteSpeakerId: null, sequence: 1, startMs: 42_000, endMs: 51_000, status: 'final', text: 'A deliberately long label wraps without clipping or moving this text column.', audioAvailable: false, errorCode: null },
+  ] : [
     { id: 101, sessionId: 'meeting-fixture', speaker: 'me', remoteSpeakerId: null, sequence: 0, startMs: 12_000, endMs: 18_000, status: 'final', text: 'We agreed to ship the local review workspace.', audioAvailable: requestedState === 'meetings-review-audio', errorCode: null },
     { id: 102, sessionId: 'meeting-fixture', speaker: 'them', remoteSpeakerId: null, sequence: 0, startMs: 27_000, endMs: 35_000, status: 'final', text: 'I will verify the export formats and source links.', audioAvailable: requestedState === 'meetings-review-audio', errorCode: null },
   ],
-  labels: { me: 'George', them: 'Alex' },
-  remoteSpeakers: [],
+  labels: longSpeakerLabels ? { me: 'Me', them: 'Alexandria Perseverance the Second' } : { me: 'George', them: 'Alex' },
+  remoteSpeakers: longSpeakerLabels ? [{ speakerId: 1, label: 'Alexandria' }] : [],
   generated: requestedState === 'meetings-review-audio' ? null : { revision: 2, document: { schema: 'murmur.meeting-review.v1', summary: { key: 'summary', text: 'The team agreed to ship and verify the local review workspace.', sourceSegmentIds: [101, 102] }, decisions: [{ key: 'decision:0', text: 'Ship the review workspace locally.', sourceSegmentIds: [101] }], actionItems: [{ key: 'action:0', text: 'Verify export formats and source links.', owner: 'Alex', dueDate: null, sourceSegmentIds: [102] }], openQuestions: [] } },
   review: requestedState === 'meetings-review-audio' ? null : { revision: 1, basedOnGeneratedRevision: 1, document: { schema: 'murmur.meeting-review.v1', summary: { key: 'summary', text: 'The meeting review is ready for final verification.', sourceSegmentIds: [101, 102] }, decisions: [{ key: 'decision:0', text: 'Keep all review data local.', sourceSegmentIds: [101] }], actionItems: [{ key: 'action:0', text: 'Verify every export format.', owner: 'Alex', dueDate: null, sourceSegmentIds: [102] }], openQuestions: [] } },
   activeDocument: requestedState === 'meetings-review-audio' ? null : { schema: 'murmur.meeting-review.v1', summary: { key: 'summary', text: 'The meeting review is ready for final verification.', sourceSegmentIds: [101, 102] }, decisions: [{ key: 'decision:0', text: 'Keep all review data local.', sourceSegmentIds: [101] }], actionItems: [{ key: 'action:0', text: 'Verify every export format.', owner: 'Alex', dueDate: null, sourceSegmentIds: [102] }], openQuestions: [] },

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import type { useMeetings } from '../../lib/hooks/useMeetings';
 import { ChevronDown } from 'lucide-react';
 import { MeetingHeaderActions } from './MeetingHeaderActions';
@@ -194,6 +194,11 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
   };
 
   const speakerSummary = [labels.me, labels.them, ...remoteSpeakers.map((speaker) => speaker.label)].filter(Boolean).join(', ');
+  const speakerColumnWidth = Math.min(120, Math.max(48, ...segments.map((segment) => {
+    const canonical = segment.speaker === 'me' ? 'Me' : 'Them';
+    const display = meetingSegmentDisplayLabel(segment, labels, remoteSpeakers);
+    return (display === canonical ? display : `${display} (${canonical})`).length * 7;
+  })));
 
   return (
     <div className="meeting-workspace">
@@ -257,13 +262,17 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
         ? capture?.phase === 'recording' ? 'Stop this meeting before exporting captions.' : capture?.footer ?? 'Captions will be available when this meeting finishes.'
         : 'One caption per recorded speech segment, with saved speaker names. Untranscribed sections are marked. Review notes are not included.'}</p>}
 
-      <section className="meeting-transcript" aria-labelledby="meeting-transcript-title">
+      <section
+        className="meeting-transcript"
+        aria-labelledby="meeting-transcript-title"
+        style={{ '--meeting-speaker-column': `${speakerColumnWidth}px` } as CSSProperties}
+      >
         <div className="meeting-transcript-header">
           <h3 id="meeting-transcript-title">Transcript</h3>
           <span className="meeting-transcript-count">{segments.length} {segments.length === 1 ? 'segment' : 'segments'}</span>
           <span className="flex-1" />
           <details ref={speakersRef} className="meeting-speakers">
-            <summary className="ui-form-button meeting-header-action">Speakers: {speakerSummary}<ChevronDown aria-hidden="true" className="h-3.5 w-3.5" /></summary>
+            <summary className="ui-form-button meeting-header-action"><span className="meeting-speakers-summary-text">Speakers: {speakerSummary}</span><ChevronDown aria-hidden="true" className="h-3.5 w-3.5 shrink-0" /></summary>
             <div className="meeting-speakers-panel">
               <div className="flex flex-wrap items-end gap-2">
                 <label className="min-w-32 flex-1 text-(length:--ui-font-caption) font-semibold text-on-surface">Me channel
