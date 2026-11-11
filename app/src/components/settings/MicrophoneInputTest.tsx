@@ -35,6 +35,7 @@ import { Select } from '../ui/Select';
 import { useSettingsSurfaceActive } from './SettingsSurfaceContext';
 import { SettingsBranch } from './SettingsBranch';
 import AnimatedSwitch from '../ui/animated-switch/animated-switch';
+import { Button } from '../ui/FormControls';
 
 // The start command currently returns this plain string for dictation contention.
 const DICTATION_BUSY_ERROR = 'Finish the current dictation before testing the microphone';
@@ -741,7 +742,7 @@ export function MicrophoneInputTest({
     : undefined;
 
   return (
-    <div>
+    <div className="settings-microphone-input">
       <SettingsRow title="Microphone" align="start" control={<div className="settings-picker">{smartAuto && onSmartAutoChange ? (
         <MicrophonePicker
           microphone={microphone}
@@ -775,12 +776,12 @@ export function MicrophoneInputTest({
       {selectorHelperText && missingDevice && inventoryAvailable ? (
         <p
           id={selectorHelperId}
-          className="mt-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface"
+          className="mt-0.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-[length:var(--ui-font-caption)] text-on-surface"
         >
           {selectorHelperText}
         </p>
       ) : smartAutoActive && showSmartAutoFeedback ? (
-        <div id={selectorHelperId} className="mt-2 rounded-lg border border-outline-variant/25 bg-surface-container-low px-3 py-2 text-xs text-on-surface-variant" aria-live="polite">
+        <div id={selectorHelperId} className="mt-0.5 rounded-lg border border-outline-variant/25 bg-surface-container-low px-3 py-2 text-[length:var(--ui-font-caption)] text-on-surface-variant" aria-live="polite">
           {smartAutoStatus.kind === 'loading' ? (
             <p>Checking which included microphone is ready…</p>
           ) : probingStatus ? (
@@ -822,7 +823,7 @@ export function MicrophoneInputTest({
           ) : null}
         </div>
       ) : selectorHelperText || automaticHelperText ? (
-        <p id={selectorHelperId} className="mt-2 text-xs text-on-surface-variant">
+        <p id={selectorHelperId} className="mt-0.5 text-[length:var(--ui-font-caption)] text-on-surface-variant">
           {selectorHelperText ?? automaticHelperText}
         </p>
       ) : (
@@ -877,18 +878,19 @@ export function MicrophoneInputTest({
             <div ref={peakRef} className="absolute inset-y-0 left-0 w-0.5 bg-on-surface" aria-hidden="true" />
           </div>
         </div>
-        <p className={`mt-2 text-xs ${actionError || vadError || status.message ? 'text-error' : 'text-on-surface-variant'}`} role={actionError || vadError || status.message ? 'alert' : undefined}>
+        <p className={`mt-2 text-[length:var(--ui-font-caption)] ${actionError || vadError || status.message ? 'text-error' : 'text-on-surface-variant'}`} role={actionError || vadError || status.message ? 'alert' : undefined}>
           {helperText}
         </p>
         {suspensionReason !== null && status.previewId === null && monitoringActive && (
-          <button
+          <Button
             type="button"
-            className="mt-2 rounded-lg border border-outline-variant px-2 py-1 text-xs text-on-surface disabled:opacity-50"
+            size="sm"
+            className="mt-2"
             disabled={busy || dictationBusy || !ready || !inventoryAvailable}
             onClick={retryPreview}
           >
             Retry microphone preview
-          </button>
+          </Button>
         )}
       </div>
     </div>

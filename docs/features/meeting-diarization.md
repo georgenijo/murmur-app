@@ -5,6 +5,16 @@ Remote speaker labels are an optional post-meeting refinement. Install the
 meeting. Microphone text keeps its existing Me channel. The model processes
 only system playback, entirely on this Mac.
 
+## Settings disclosure
+
+Meetings settings keeps speaker-labeling details behind **How speaker labeling
+works**, after the opt-in toggle. The disclosure states that labels stay local
+and apply only within the meeting; system audio is held temporarily for at most
+two hours and then deleted; Keep meeting audio is separate; over-limit meetings
+continue capture and transcription without labeling; uncertain passages stay
+Them; and Murmur creates no cross-meeting voice profiles. The adjacent model
+row retains the FluidInference and CC BY 4.0 attribution links.
+
 Murmur temporarily saves the remote audio while the meeting runs and speaker
 labels finish. This temporary file is separate from Keep meeting audio. It is
 private to your user, capped at two hours, and deleted after success, failure,

@@ -69,6 +69,13 @@ function setValue(element: HTMLInputElement | HTMLSelectElement, value: string) 
   element.dispatchEvent(new Event(element instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }));
 }
 
+async function choose(container: HTMLElement, label: string, value: string) {
+  const trigger = container.querySelector<HTMLButtonElement>(`[role="combobox"][aria-label="${label}"]`)!;
+  await act(async () => trigger.click());
+  await act(async () => (Array.from(document.querySelectorAll<HTMLElement>('[role="option"]'))
+    .find((option) => option.dataset.index !== undefined && option.textContent?.trim().startsWith(value))!).click());
+}
+
 describe('KnowledgeManager', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -117,13 +124,16 @@ describe('KnowledgeManager', () => {
 
   it('creates each type and exposes explicit visibility controls', async () => {
     await act(async () => button(container, 'Create knowledge…').click());
-    const type = container.querySelector('[role="dialog"] select') as HTMLSelectElement;
     expect(container.querySelector('[aria-label="Heard phrase"]')).not.toBeNull();
-    await act(async () => setValue(type, 'vocabulary_term'));
+    expect(container.querySelector('[aria-label="Heard phrase"]')?.className).toContain('w-full');
+    await choose(container, 'Knowledge type', 'Vocabulary term');
     expect(container.querySelector('[aria-label="Written form"]')).not.toBeNull();
-    await act(async () => setValue(type, 'snippet'));
+    await choose(container, 'Knowledge type', 'Snippet');
     expect(container.querySelector('[aria-label="Snippet body"]')).not.toBeNull();
-    expect(container.textContent).toContain('One project in one app');
+    expect(container.querySelector('[aria-label="Snippet body"]')?.className).toContain('w-full');
+    await act(async () => (container.querySelector<HTMLButtonElement>('[aria-label="Knowledge visibility"]')!).click());
+    expect(document.body.textContent).toContain('One project in one app');
+    await act(async () => (container.querySelector<HTMLButtonElement>('[aria-label="Knowledge visibility"]')!).click());
     expect(container.textContent).toContain('Make this entry available to features that use it');
     expect(container.textContent).not.toContain('future repository lookups');
     const help = container.querySelector('details')!;
@@ -131,6 +141,19 @@ describe('KnowledgeManager', () => {
     expect(help.textContent).toContain('manually created entries take priority over imports');
     expect(help.textContent).toContain('saving an entry does not automatically change every dictation');
     expect(help.open).toBe(false);
+  });
+
+  it('Escape closes an open dropdown before it closes the editor', async () => {
+    await act(async () => button(container, 'Create knowledge…').click());
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="Knowledge visibility"]')!;
+    const escape = () => trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await act(async () => trigger.click());
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    await act(async () => { escape(); });
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[aria-label="Heard phrase"]')).not.toBeNull();
+    await act(async () => { escape(); });
+    expect(container.querySelector('[aria-label="Heard phrase"]')).toBeNull();
   });
 
   it('previews import, exports, and requires typed DELETE before delete-all', async () => {
@@ -163,10 +186,11 @@ describe('KnowledgeManager', () => {
     mocks.list.mockResolvedValueOnce({ entries: matches.slice(50), total: 55, nextOffset: null, storeRevision: 9 });
     await act(async () => {
       setValue(container.querySelector<HTMLInputElement>('[aria-label="Search personal knowledge"]')!, '  match  ');
-      setValue(container.querySelector<HTMLSelectElement>('[aria-label="Filter knowledge type"]')!, 'replacement_rule');
-      setValue(container.querySelector<HTMLSelectElement>('[aria-label="Filter enabled state"]')!, 'enabled');
-      setValue(container.querySelector<HTMLSelectElement>('[aria-label="Filter visibility"]')!, 'app');
+      // Inputs retain ordinary DOM change handling; shared selects are exercised below.
     });
+    await choose(container, 'Filter knowledge type', 'Replacements');
+    await choose(container, 'Filter enabled state', 'Enabled');
+    await choose(container, 'Filter visibility', 'App');
     await act(async () => button(container, 'Disable all shown').click());
     expect(mocks.list.mock.calls).toEqual([
       [{ query: 'match', kind: 'replacement_rule', enabled: true, scopeKind: 'app', limit: 50, offset: 0 }],
@@ -205,7 +229,7 @@ describe('KnowledgeManager', () => {
     await act(async () => setValue(container.querySelector<HTMLInputElement>('[aria-label="Type DELETE to confirm matching records"]')!, 'DELETE'));
     await act(async () => button(container, 'Cancel').click());
     expect(mocks.remove).not.toHaveBeenCalled();
-    await act(async () => setValue(container.querySelector<HTMLSelectElement>('[aria-label="Filter visibility"]')!, 'global'));
+    await choose(container, 'Filter visibility', 'Global');
     await act(async () => button(container, 'Delete all shown…').click());
     expect(button(container, 'Delete 1 matching records…').disabled).toBe(true);
     expect(mocks.list).toHaveBeenLastCalledWith(expect.objectContaining({ scopeKind: 'global' }));
@@ -219,7 +243,7 @@ describe('KnowledgeManager', () => {
     await act(async () => { enable.click(); enable.click(); });
     expect(mocks.list).toHaveBeenCalledTimes(1);
     expect(button(container, 'Disable all shown').disabled).toBe(true);
-    expect(container.querySelector<HTMLButtonElement>('[role="switch"]')?.disabled).toBe(true);
+    expect(container.querySelector<HTMLButtonElement>('[role="switch"]')?.getAttribute('data-disabled')).not.toBeNull();
     await act(async () => resolvePage?.({ entries: [ENTRY], total: 2, nextOffset: 1, storeRevision: 9 }));
     expect(mocks.toggle).not.toHaveBeenCalled();
     expect(container.textContent).toContain('Refresh and try again. No records were changed.');

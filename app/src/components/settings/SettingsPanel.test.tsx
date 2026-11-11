@@ -738,6 +738,26 @@ describe('SettingsPanel information architecture', () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
   });
 
+  it('groups Recording and Delivery settings while keeping the app overrides target', async () => {
+    const nav = Array.from(container.querySelectorAll<HTMLButtonElement>('nav button'));
+    const recording = nav.find((button) => button.textContent === 'Recording')!;
+    await act(async () => recording.click());
+    expect(Array.from(container.querySelectorAll('h2')).map((heading) => heading.textContent)).toEqual([
+      'Input', 'Controls',
+    ]);
+
+    const delivery = nav.find((button) => button.textContent === 'Delivery')!;
+    await act(async () => delivery.click());
+    expect(Array.from(container.querySelectorAll('h2')).map((heading) => heading.textContent)).toEqual([
+      'Pasting', 'Files', 'History',
+    ]);
+    await act(async () => (container.querySelector('.settings-advanced-toggle') as HTMLButtonElement).click());
+    const overrides = container.querySelector<HTMLButtonElement>('[data-setting-target="app-overrides"]:not(.settings-advanced)')!;
+    expect(overrides.textContent).toContain('Manage app overrides');
+    await act(async () => overrides.click());
+    expect(container.textContent).toContain('App overrides editor');
+  });
+
   it('keeps the scroll position when Delivery Advanced opens and closes', async () => {
     const delivery = Array.from(container.querySelectorAll<HTMLButtonElement>('nav button'))
       .find(button => button.textContent === 'Delivery')!;
@@ -765,7 +785,7 @@ describe('SettingsPanel information architecture', () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
   });
 
-  it('discloses Calendar reads and browser limits before enabling meeting suggestions', async () => {
+  it('keeps Meetings copy compact and reveals Calendar details only when requested', async () => {
     const meetings = Array.from(container.querySelectorAll('nav button')).find(
       (button) => button.textContent === 'Meetings',
     ) as HTMLButtonElement;
@@ -775,12 +795,19 @@ describe('SettingsPanel information architecture', () => {
       '[role="switch"][aria-label="Suggest Notetaker for Calendar meetings"]',
     );
     expect(toggle?.getAttribute('aria-checked')).toBe('false');
-    expect(container.textContent).toContain('Reads your Calendar');
-    expect(container.textContent).toContain('Zoom, Teams, Slack, Webex, FaceTime');
-    expect(container.textContent).toContain('never reads URLs or window titles');
+    expect(container.textContent).not.toContain('Stored separately from dictation');
+    expect(container.textContent).not.toContain('Keep recordings after transcription');
+    expect(container.textContent).not.toContain('Label other speakers after a meeting');
+    expect(container.textContent).toContain('Use your Calendar to offer a prompt for supported calls');
 
     await act(async () => toggle?.click());
     expect(onUpdateSettings).toHaveBeenCalledWith({ meetingSuggestionsEnabled: true });
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, meetingSuggestionsEnabled: true }));
+    const details = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Calendar details')!;
+    await act(async () => details.click());
+    expect(container.textContent).toContain('Zoom, Teams, Slack, Webex, FaceTime');
+    expect(container.textContent).toContain('never reads URLs or window titles');
+    expect(container.textContent).toContain('Nothing records until you accept a meeting suggestion.');
   });
 
   it('accepts a direct Keyboard Shortcuts page request for command-palette navigation', async () => {
@@ -1016,6 +1043,8 @@ describe('SettingsPanel information architecture', () => {
     ['overlay position', 'Calibrate overlay position', 'overlay-calibration', 'General'],
     ['paste delay', 'Paste delay', 'paste-delay', 'Delivery'],
     ['sound cues', 'Sound cues', 'sound-cues', 'Recording'],
+    ['history days', 'Meeting retention', 'meeting-retention', 'Meetings'],
+    ['speaker names', 'Remote speaker labels', 'meeting-speakers', 'Meetings'],
     ['vocabulary', 'Vocabulary', 'vocabulary', 'Text & vocabulary'],
     ['aliases', 'Aliases', 'aliases', 'Text & vocabulary'],
     ['knowledge', 'Knowledge', 'knowledge', 'Text & vocabulary'],
@@ -1061,6 +1090,30 @@ describe('SettingsPanel information architecture', () => {
       expect(scrollTo).not.toHaveBeenCalled();
       expect(container.querySelector('h1')?.textContent).toBe('Delivery');
     } finally { vi.useRealTimers(); }
+  });
+
+  it('opens Calendar details when search lands on Calendar suggestion access', async () => {
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, meetingSuggestionsEnabled: true }));
+    const input = container.querySelector('input[type="search"]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, 'calendar suggestion access');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const result = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.includes('Calendar suggestion access'),
+    ) as HTMLButtonElement;
+    await act(async () => result.click());
+    expect(container.querySelector('h1')?.textContent).toBe('Meetings');
+    const action = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.includes('Open Calendar settings'),
+    );
+    expect(action).toBeDefined();
+    expect(action!.closest('[inert], [aria-hidden="true"]')).toBeNull();
+    // Opening the disclosure must not end the reveal: the row still scrolls into view and pulses.
+    const target = container.querySelector<HTMLElement>('[data-setting-target="meeting-calendar"]')!;
+    expect(scrollIntoView.mock.instances).toContain(target);
+    expect(target.classList.contains('settings-target-flash')).toBe(true);
   });
 
   it('preserves the parent scroll while entering a sheet and restores its page on close', async () => {

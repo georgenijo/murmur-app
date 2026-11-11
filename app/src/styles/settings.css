@@ -6,7 +6,6 @@
   --ui-leading-settings-title: 24px;
   --ui-font-settings-group: 11px;
   --settings-row-height: 52px;
-  --settings-theme-width: 280px;
   --settings-nav-group-pad: 8px;
   --settings-nav-group-gap: 16px;
   --settings-nav-item-gap: 4px;
@@ -121,11 +120,26 @@
 }
 
 .settings-eyebrow {
-  font-size: 10px;
-  font-weight: var(--ui-weight-title, 600);
+  font-size: var(--ui-font-micro);
+  font-weight: var(--ui-weight-label, 500);
   letter-spacing: 0;
-  text-transform: uppercase;
   color: var(--murmur-on-surface-variant);
+}
+
+.settings-scanned-vocabulary-grid {
+  grid-template-columns: 48px minmax(0, 1fr) 90px 180px;
+}
+
+.settings-scanned-vocabulary-row {
+  font-size: var(--ui-font-label);
+}
+
+.settings-scanned-vocabulary-feed {
+  font-size: var(--ui-font-caption);
+}
+
+.settings-vocabulary-alias-grid {
+  grid-template-columns: minmax(0, 1fr) 20px minmax(0, 1fr) 120px;
 }
 
 .settings-back-btn:hover {
@@ -432,12 +446,16 @@
 /* The named custom button is the sole clear action in WKWebView and Chromium. */
 .settings-search input::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
 .settings-rail-search { display: none; }
-.settings-content-container { margin-inline: auto; width: 100%; max-width: var(--settings-content-max); padding: var(--settings-content-top) var(--settings-content-x) var(--settings-content-bottom); }
-.settings-workspace main { container-type: inline-size; }
+/* Anchor the Settings shell to the window rather than the scrollport. WKWebView
+ * removes its 6px scrollbar track from a scrollport only once it overflows, so
+ * centering against that port makes cards jump sideways during a fold. */
+.settings-content-container { margin-inline: 0; margin-left: max(0px, calc((var(--settings-content-available) - var(--settings-content-max)) / 2)); width: min(var(--settings-content-max), var(--settings-content-available)); max-width: none; padding: var(--settings-content-top) var(--settings-content-x) var(--settings-content-bottom); }
+.settings-workspace main { --settings-content-available: calc(100vw - var(--settings-nav-width)); container-type: inline-size; }
 .settings-content-topbar { flex: none; min-height: 44px; display: flex; align-items: center; padding: 8px max(var(--settings-content-x), calc((100cqw - 680px) / 2)); }
-/* WebKit needs scroll to reserve the gutter; expanding a fold must not change
- * the content width. The idle scrollbar track is transparent. */
-.settings-workspace main > .settings-content-topbar + .overflow-y-auto { overflow-y: auto; scrollbar-gutter: auto; }
+/* WKWebView does not reserve `scrollbar-gutter`, but it does retain the app's
+ * transparent 6px track for `scroll`. Keeping that lane present makes the
+ * centered content width independent of an Advanced fold's overflow state. */
+.settings-workspace main > .settings-content-topbar + .overflow-y-auto { overflow-x: hidden; overflow-y: scroll; }
 .settings-content-topbar h1 { font-size: var(--ui-font-settings-title); line-height: var(--ui-leading-settings-title); font-weight: 600; letter-spacing: var(--ui-track-title); }
 .settings-section { margin: 0 0 var(--settings-section-gap); }
 .settings-section:last-child { margin-bottom: 0; }
@@ -451,6 +469,9 @@
 .settings-rows > * { padding: var(--settings-row-pad) var(--settings-row-x); border-radius: 0; }
 .settings-rows > * + * { border-top: 1px solid var(--settings-divider); }
 .settings-setting-row { container: settings-row / inline-size; min-width: 0; min-height: var(--settings-row-height); }
+/* Rows keep one shared height; a row shorter than that (a switch with no description) is centred in it instead of leaving a band underneath. */
+.settings-setting-row:has(> .settings-row-layout) { display: grid; grid-template-columns: minmax(0, 1fr); align-content: center; }
+.settings-setting-row[data-compact] { min-height: var(--ui-control-standard); }
 .settings-setting-row:hover { background: transparent; }
 .settings-row-layout[data-align='start'] { align-items: start; }
 .settings-row-layout[data-align='start'] > .settings-title-description > .settings-row-title { min-height: var(--ui-control-standard, 32px); }
@@ -489,7 +510,7 @@
 /* Keep row width and toggle spacing constant throughout entry and exit; moving
    the insets on click rewraps controls before the fold can animate. */
 .settings-advanced:has(> .settings-advanced-rows) { padding-bottom: 0; }
-.settings-advanced:has(> .settings-advanced-rows) > .settings-advanced-toggle { margin-bottom: var(--settings-row-pad); }
+.settings-advanced:has(> .settings-advanced-rows[data-expanded='true']) > .settings-advanced-toggle { margin-bottom: var(--settings-row-pad); }
 .settings-advanced > .settings-advanced-rows { margin-inline: calc(-1 * var(--settings-row-x)); }
 .settings-branch-stack > .settings-dependent-branch-clip > .settings-dependent-branch-content.settings-stack { padding-top: var(--settings-stack-gap); }
 .settings-branch-stack > .settings-dependent-branch-clip > .settings-dependent-branch-content.settings-stack > * + * { margin-top: var(--settings-stack-gap); }
@@ -522,6 +543,7 @@
 .settings-search-match { background: var(--settings-search-match-bg); color: var(--settings-search-match-fg); }
 @media (max-width: 767px) {
   .settings-window-header { --ui-sidebar-width: var(--settings-nav-rail); }
+  .settings-workspace main { --settings-content-available: calc(100vw - var(--settings-nav-rail)); }
   .settings-sidebar { width: var(--settings-nav-rail); }
   .settings-sidebar .settings-nav-item { justify-content: center; padding-inline: 0; }
   .settings-sidebar .settings-nav-item span, .settings-tools-eyebrow { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -658,7 +680,8 @@
 .settings-rows > .settings-groups, .settings-rows > [data-setting-target='shortcuts'] { padding: 0; }
 .settings-groups { display: flex; flex-direction: column; gap: 16px; }
 .settings-group-heading { margin: 0 16px 6px; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-settings-group); line-height: var(--ui-leading-micro); font-weight: 500; }
-.settings-groups .settings-advanced { padding-block: 0; border-top: 0; box-shadow: inset 0 1px 0 var(--settings-divider); }
+.settings-groups .settings-advanced { padding-block: 0; border-top: 0; }
+.settings-groups .settings-advanced:not(:first-child) { box-shadow: inset 0 1px 0 var(--settings-divider); }
 .settings-advanced-toggle { justify-content: space-between; min-height: var(--settings-row-height); font-size: var(--ui-font-label); line-height: var(--ui-leading-label); }
 .settings-advanced-copy { display: flex; flex-direction: column; gap: var(--settings-copy-gap); }
 .settings-advanced-description { color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); font-weight: 400; }
@@ -689,17 +712,17 @@
 .settings-theme-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; min-height: 28px; }
 .settings-theme-header > h2 { margin-bottom: 0; }
 .settings-appearance-themes { padding: 16px; }
-.settings-theme-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, var(--settings-theme-width))); align-items: stretch; gap: 16px; }
-.settings-theme-collection { min-width: 0; padding: 12px; cursor: pointer; border-radius: var(--ui-radius-card); border: 1px solid var(--settings-card-border); background: var(--murmur-surface-container-lowest); }
+.settings-theme-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-flow: row dense; align-items: start; gap: 16px; }
+.settings-theme-collection { grid-column: span 2; min-width: 0; padding: 12px; cursor: pointer; border-radius: var(--ui-radius-card); border: 1px solid var(--settings-card-border); background: var(--murmur-surface-container-lowest); }
+.settings-theme-collection[data-theme-variants='1'] { grid-column: span 1; }
 .settings-theme-collection:hover { background: var(--murmur-surface-container-low); }
 .settings-theme-collection.settings-theme-active { border-color: var(--murmur-primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 35%, transparent); }
 .settings-theme-previews { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.settings-theme-collection[data-theme-variants='1'] .settings-theme-previews { grid-template-columns: minmax(0, 1fr); }
 .settings-theme-mode { position: relative; min-width: 0; }
 .settings-theme-variant { position: relative; display: flex; flex-direction: column; align-items: stretch; width: 100%; border: 0; padding: 0; background: transparent; border-radius: 6px; }
-.settings-theme-variant[data-assigned] .settings-theme-preview { border-color: color-mix(in srgb, var(--murmur-outline-variant) 65%, var(--murmur-on-surface-variant)); }
+.settings-theme-variant[data-assigned] .settings-theme-preview { border-color: var(--murmur-success); box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-success) 70%, transparent); }
 .settings-theme-variant[data-showing-now] .settings-theme-preview { border-color: var(--murmur-primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 35%, transparent); }
-.settings-theme-variant-check { position: absolute; top: 4px; right: 4px; display: grid; width: 16px; height: 16px; place-items: center; border-radius: 50%; background: var(--murmur-primary); color: var(--murmur-on-primary); font-size: var(--ui-font-micro); line-height: var(--ui-leading-micro); font-weight: 600; }
-.settings-theme-variant-assigned { position: absolute; top: 4px; right: 4px; display: grid; width: 14px; height: 14px; place-items: center; border: 1px solid var(--murmur-outline-variant); border-radius: 50%; background: var(--murmur-surface-container-lowest); color: var(--murmur-on-surface-variant); font-size: var(--ui-font-micro); line-height: var(--ui-leading-micro); font-weight: 600; }
 .settings-theme-preview { display: flex; width: 100%; height: 68px; overflow: hidden; border: 1px solid var(--preview-outline-variant); border-radius: 6px; background: var(--preview-surface); }
 .settings-theme-preview-sidebar { width: 25px; flex: none; height: 100%; background: var(--preview-surface-container-low); border-right: 1px solid var(--preview-outline-variant); }
 .settings-theme-preview-copy { display: flex; flex: 1; flex-direction: column; align-items: flex-start; gap: 5px; padding: 12px 8px; }
@@ -712,11 +735,16 @@
 .settings-theme-footer > div { margin-left: auto; }
 .settings-theme-name { flex: 1 1 0; }
 .settings-theme-name-label { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-theme-collection[data-theme-variants='1'] .settings-theme-footer { align-items: flex-start; }
+.settings-theme-collection[data-theme-variants='1'] .settings-theme-name { overflow: visible; white-space: normal; text-overflow: clip; }
+.settings-theme-collection[data-theme-variants='1'] .settings-theme-name-label { overflow: visible; white-space: normal; text-overflow: clip; overflow-wrap: anywhere; }
 .settings-theme-action { width: 28px; height: 28px; }
+.settings-theme-action-menu { position: relative; display: flex; margin-left: auto; flex: none; }
 .settings-theme-options { position: absolute; top: 100%; left: 0; z-index: 30; display: flex; flex-direction: column; min-width: 144px; padding: 4px; border-radius: var(--ui-radius-control); border: 1px solid var(--ui-hairline); background: var(--murmur-surface-container-lowest); box-shadow: var(--ui-shadow-1); }
 .settings-theme-options button { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; padding: 4px 8px; text-align: left; font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
 .settings-theme-options button:hover, .settings-theme-options button[aria-pressed='true'] { background: var(--ui-tint-sunken); }
-.settings-theme-variant:focus-visible, .settings-theme-options button:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 2px; }
+.settings-theme-actions { top: auto; right: 0; bottom: 100%; left: auto; }
+.settings-theme-variant:focus-visible, .settings-theme-options button:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 3px; }
 @media (max-height: 660px) { .settings-workspace:has(.settings-shortcut-row) .settings-content-container { padding-bottom: 24px; } }
 @container settings-fields (width < 512px) { .settings-shortcut-row { grid-template-columns: minmax(0, 1fr) auto; } .settings-workspace .settings-shortcut-row > button { grid-column: 2; grid-row: 2; } }
 
@@ -726,3 +754,14 @@
 .settings-groups .settings-rows > button.settings-setting-row:last-child { border-bottom-left-radius: var(--ui-radius-card); border-bottom-right-radius: var(--ui-radius-card); }
 
 .settings-microphone-disclosure { min-height: 28px; }
+.settings-microphone-input .settings-title-description { display: contents; }
+.settings-microphone-input .settings-row-layout { row-gap: var(--settings-copy-gap); }
+.settings-microphone-input .settings-row-title { grid-column: 1; grid-row: 1; }
+.settings-microphone-input .settings-row-controls { grid-column: 2; grid-row: 1; }
+.settings-microphone-input .settings-row-title ~ p { grid-column: 1 / -1; grid-row: 2; }
+.settings-microphone-input .settings-row-title ~ p:not(:first-child) { margin-top: var(--settings-copy-gap); }
+@container settings-row (width < 512px) {
+  .settings-microphone-input .settings-row-title,
+  .settings-microphone-input .settings-row-controls,
+  .settings-microphone-input .settings-row-title ~ p { grid-column: 1; grid-row: auto; }
+}

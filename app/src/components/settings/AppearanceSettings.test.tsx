@@ -468,6 +468,35 @@ describe("AppearanceSettings", () => {
     expect(mocks.controller!.commitImport).toHaveBeenCalledWith(preview);
   });
 
+  it("returns focus to the actions trigger when Escape dismisses a single-variant card's menu", async () => {
+    const darkOnly: ThemeLibraryEntryV1 = {
+      version: 1,
+      id: "midnight-dark",
+      label: "Midnight Dark",
+      modes: ["dark"],
+      theme: {
+        version: 1,
+        presetId: "custom",
+        dark: { background: "#11151a", "on-surface": "#f2f5f7" },
+      },
+      source: { kind: "local" },
+    };
+    mocks.controller!.library.document = { version: 1, revision: 1, themes: [darkOnly] };
+    await act(async () => root.render(<AppearanceSettings />));
+
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="Theme actions for Midnight Dark"]')!;
+    await act(async () => trigger.click());
+    const menu = container.querySelector('[aria-label="Midnight Dark theme actions"]')!;
+    const action = menu.querySelector<HTMLButtonElement>("button")!;
+    action.focus();
+    expect(document.activeElement).toBe(action);
+    await act(async () => {
+      action.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+    expect(container.querySelector('[aria-label="Midnight Dark theme actions"]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it("activates single-mode cards and swatches without replacing the opposite theme", async () => {
     const darkOnly: ThemeLibraryEntryV1 = {
       version: 1,
@@ -622,14 +651,12 @@ describe("AppearanceSettings", () => {
     expect(darkVariant.getAttribute('aria-pressed')).toBe('true');
     expect(lightVariant.getAttribute('title')).toContain('used in light mode');
     expect(darkVariant.getAttribute('title')).toContain('showing now');
-    expect(claudeCard.querySelectorAll('.settings-theme-variant-check')).toHaveLength(1);
-    expect(claudeCard.querySelectorAll('.settings-theme-variant-assigned')).toHaveLength(1);
+    expect(claudeCard.querySelectorAll('.settings-theme-variant-check, .settings-theme-variant-assigned')).toHaveLength(0);
     mocks.controller!.resolvedAppearance = 'light';
     await act(async () => root.render(<AppearanceSettings />));
     expect(lightVariant.getAttribute('title')).toContain('showing now');
     expect(darkVariant.getAttribute('title')).toContain('used in dark mode');
-    expect(claudeCard.querySelectorAll('.settings-theme-variant-check')).toHaveLength(1);
-    expect(claudeCard.querySelectorAll('.settings-theme-variant-assigned')).toHaveLength(1);
+    expect(claudeCard.querySelectorAll('.settings-theme-variant-check, .settings-theme-variant-assigned')).toHaveLength(0);
     expect(claudeCard.querySelector('button[aria-label^="Use Dusk Light for light mode"]')).not.toBeNull();
     expect(claudeCard.querySelector('button[aria-label="Use Claude Theme theme"]')?.getAttribute("aria-pressed")).toBe("true");
     expect(container.textContent).not.toContain("Active theme");

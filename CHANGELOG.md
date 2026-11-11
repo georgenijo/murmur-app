@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Consolidate Settings cards and Advanced disclosures, compact Meetings and single-variant theme cards, and standardize editor controls, labels, and actions.
 - Soften auxiliary dialog outlines and actions, prevent meeting-speaker truncation, and hide the collapsed-sidebar privacy dot.
 
 ## [0.63.2] - 2026-11-11
