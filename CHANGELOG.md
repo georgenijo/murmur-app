@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.63.2] - 2026-11-11
+
 ### Fixed
 
 - Standardize Settings editor sheets on shared selects, inputs, switches, and button treatments; also soften small Settings labels and keep prose placeholders intact.
