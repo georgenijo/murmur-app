@@ -378,7 +378,7 @@ test('customization hub stays legible and restores focus at native and narrow wi
   const voiceCommands = customizationList.getByRole('button').filter({ hasText: 'Voice commands' });
   await expect(page.getByRole('heading', { name: 'Customize' })).toBeVisible();
   await expect(customizationList.getByRole('button')).toHaveCount(4);
-  expect(await customizationList.evaluate(element => element.tagName)).toBe('DIV');
+  expect(await customizationList.evaluate(element => element.tagName)).toBe('UL');
   for (const label of ['Text & vocabulary', 'Voice commands', 'App overrides', 'Modes']) {
     await expect(customizationList.getByRole('button', { name: new RegExp(`^${label}`) })).toHaveCount(1);
   }
@@ -387,7 +387,7 @@ test('customization hub stays legible and restores focus at native and narrow wi
 
   await voiceCommands.click();
   await expect(page.getByRole('heading', { name: 'Voice commands', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Customize' }).click();
+  await page.getByRole('button', { name: 'Close editor' }).click();
   await expect(voiceCommands).toBeFocused();
 
   await page.setViewportSize({ width: 720, height: 560 });
