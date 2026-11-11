@@ -67,12 +67,13 @@ export function SmartAutoStopSettings({
   };
 
   const ready = status?.state === 'ready';
-  const parentDisabled = isRecording || (!enabled && !silenceAutoStopOn);
+  const needsStopOnSilence = !enabled && !silenceAutoStopOn;
+  const parentDisabled = isRecording || needsStopOnSilence;
   const busy = operation !== 'idle' || status?.state === 'downloading';
 
   return (
     <div data-setting-target="smart-auto-stop" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-      <SettingsRow title="Smart Auto-Stop (experimental)" description="Stop sooner when you sound finished. Needs Stop on silence." onReset={enabled !== DEFAULT_SETTINGS.smartAutoStopEnabled ? () => onEnabledChange(DEFAULT_SETTINGS.smartAutoStopEnabled) : undefined} disabled={parentDisabled} control={<AnimatedSwitch
+      <SettingsRow title="Smart Auto-Stop (experimental)" description={needsStopOnSilence ? 'Needs Stop on silence to stop sooner after you finish speaking' : 'Stop sooner after you finish speaking'} onReset={enabled !== DEFAULT_SETTINGS.smartAutoStopEnabled ? () => onEnabledChange(DEFAULT_SETTINGS.smartAutoStopEnabled) : undefined} disabled={parentDisabled} control={<AnimatedSwitch
           size="md"
           checked={enabled}
           disabled={parentDisabled}

@@ -12,6 +12,8 @@ import { KnowledgeManager } from './KnowledgeManager';
 import { VocabScanStrip } from './VocabScanStrip';
 import { VocabularyAliasesEditor } from './VocabularyAliasesEditor';
 import { VoiceCommandsManager } from './VoiceCommandsManager';
+import { Button, Input } from '../ui/FormControls';
+import { Select } from '../ui/Select';
 
 export type SettingsEditorTab =
   | 'app-overrides'
@@ -43,7 +45,6 @@ interface SettingsEditorsWindowProps {
   onCancelScan: () => void;
   onBack: () => void;
   onOpenVoiceCommandSettings?: () => void;
-  backLabel?: string;
   restoreFocus?: () => HTMLElement | null;
   target?: { id: string } | null;
 }
@@ -72,12 +73,9 @@ function ScannedVocabulary({ settings }: { settings: Settings }) {
         <label className="relative min-w-[260px] flex-1">
           <span className="sr-only">Filter terms</span>
           <span aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant">⌕</span>
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter terms…" className="h-10 w-full rounded-xl border border-outline-variant bg-surface-container-lowest pl-9 pr-3 text-sm outline-none focus:border-primary" />
+          <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Filter terms…" aria-label="Filter terms" className="pl-9" />
         </label>
-        <select value={sort} onChange={(event) => setSort(event.target.value as 'frequency' | 'alpha')} className="h-10 rounded-xl border border-outline-variant bg-surface-container-high px-3 text-xs text-on-surface">
-          <option value="frequency">Sort: frequency</option>
-          <option value="alpha">Sort: A–Z</option>
-        </select>
+        <Select aria-label="Sort scanned vocabulary" value={sort} onChange={(value) => setSort(value as 'frequency' | 'alpha')} items={[{ value: 'frequency', label: 'Sort: frequency' }, { value: 'alpha', label: 'Sort: A–Z' }]} />
         <span className="text-xs text-on-surface-variant">
           {summary ? `${summary.whisperCount} feed the model · ${summary.terms} total` : 'No project scan yet'}
         </span>
@@ -89,18 +87,18 @@ function ScannedVocabulary({ settings }: { settings: Settings }) {
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-[48px_minmax(0,1fr)_90px_180px] gap-3 border-b border-outline-variant/20 bg-surface-container-low px-4 py-2.5 text-[10px] font-semibold uppercase tracking-normal text-on-surface-variant">
+            <div className="settings-scanned-vocabulary-grid grid gap-3 border-b border-outline-variant/20 bg-surface-container-low px-4 py-2.5 text-[length:var(--ui-font-micro)] font-medium text-on-surface-variant">
               <span>#</span><span>Term</span><span className="text-right">Freq</span><span>Feeds</span>
             </div>
             <div className="h-full max-h-[460px] overflow-y-auto">
               {terms.map((term) => {
                 const rank = summary.rankedTerms.findIndex((candidate) => candidate.term === term.term) + 1;
                 return (
-                  <div key={term.term} className="grid grid-cols-[48px_minmax(0,1fr)_90px_180px] items-center gap-3 border-b border-outline-variant/15 px-4 py-3 text-sm last:border-b-0">
+                  <div key={term.term} className="settings-scanned-vocabulary-grid settings-scanned-vocabulary-row grid items-center gap-3 border-b border-outline-variant/15 px-4 py-3 last:border-b-0">
                     <span className="text-on-surface-variant">{rank}</span>
                     <code className="truncate font-mono text-on-surface">{term.term}</code>
                     <span className="text-right tabular-nums text-on-surface-variant">{term.freq}×</span>
-                    <span className="rounded-lg bg-surface-container-high px-3 py-1.5 text-xs text-on-surface">
+                    <span className="settings-scanned-vocabulary-feed rounded-lg bg-surface-container-high px-3 py-1.5 text-on-surface">
                       {rank <= summary.whisperCount ? 'Model prompt' : 'Correction only'}
                     </span>
                   </div>
@@ -127,7 +125,6 @@ export function SettingsEditorsWindow({
   onCancelScan,
   onBack,
   onOpenVoiceCommandSettings,
-  backLabel = 'Close editor',
   restoreFocus,
   target,
 }: SettingsEditorsWindowProps) {
@@ -156,15 +153,16 @@ export function SettingsEditorsWindow({
     <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}
       onKeyDown={defaultButtonKeyDown} className="settings-editor-sheet">
       <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
-        <button
+        <h2 id={titleId} className="text-base font-semibold text-on-surface">{SETTINGS_EDITOR_LABELS[initialTab]}</h2>
+        <Button
           type="button"
           onClick={onBack}
-          className="settings-back-btn focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          size="sm"
+          aria-label="Close editor"
+          className="ml-auto"
         >
-          <span aria-hidden="true">‹</span>
-          {backLabel}
-        </button>
-        <h2 id={titleId} className="text-base font-semibold text-on-surface">{SETTINGS_EDITOR_LABELS[initialTab]}</h2>
+          Close
+        </Button>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col">
@@ -197,11 +195,11 @@ export function SettingsEditorsWindow({
             <p className="text-[length:var(--ui-font-caption)] text-on-surface-variant">Scan one local source folder for identifiers. Dependency and build directories remain excluded.</p>
             <div className="settings-card mt-4 p-4">
               <p className="flex min-w-0 rounded-lg bg-surface-container-low px-3 py-2 text-xs text-on-surface">
-                <MiddleTruncate value={settings.codeVocabFolder || 'No project folder selected'} />
+                {settings.codeVocabFolder ? <MiddleTruncate value={settings.codeVocabFolder} /> : 'No project folder selected'}
               </p>
               <div className="mt-3 flex gap-2">
-                <button type="button" onClick={onChooseCodeFolder} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary">Choose folder…</button>
-                {settings.codeVocabFolder && <button type="button" onClick={onClearCodeFolder} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface-variant">Clear</button>}
+                <Button type="button" variant="primary" size="sm" onClick={onChooseCodeFolder}>Choose folder…</Button>
+                {settings.codeVocabFolder && <Button type="button" size="sm" onClick={onClearCodeFolder}>Clear</Button>}
               </div>
               <VocabScanStrip
                 status={scanStatus}

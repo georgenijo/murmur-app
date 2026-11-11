@@ -59,6 +59,21 @@ describe('VocabTermsModal accessibility', () => {
     vi.useRealTimers();
   });
 
+  it('Escape closes an open sort dropdown before it closes the sheet', async () => {
+    const opener = container.querySelector('button') as HTMLButtonElement;
+    await act(async () => opener.click());
+    await act(async () => vi.advanceTimersByTime(60));
+    const sort = container.querySelector<HTMLButtonElement>('[aria-label="Sort scanned terms"]')!;
+    const escape = () => sort.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await act(async () => sort.click());
+    expect(sort.getAttribute('aria-expanded')).toBe('true');
+    await act(async () => { escape(); });
+    expect(sort.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    await act(async () => { escape(); });
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+  });
+
   it('labels the dialog, traps Tab at both edges, and restores opener focus', async () => {
     const opener = container.querySelector('button') as HTMLButtonElement;
     await act(async () => opener.click());

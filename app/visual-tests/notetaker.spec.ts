@@ -7,7 +7,7 @@ for (const appearance of ['light', 'dark']) {
       for (const state of ['meetings-many', 'meetings-empty', 'meetings-recording', 'meetings-stopping', 'meetings-finishing', 'meetings-permission-denied']) {
         await page.goto(`/visual-fixtures.html?state=${state}&appearance=${appearance}`);
         await expect(page.getByRole('heading', { name: 'Notetaker', exact: true })).toBeVisible();
-        await expect(page.locator('.meetings-statusbar')).toHaveCSS('height', width === 840 ? '75px' : '57px');
+        await expect(page.locator('.meetings-statusbar')).toHaveCSS('height', width === 840 ? '56px' : '40px');
         const overflow = await page.locator('.meetings-panel').evaluate((panel) => [...panel.querySelectorAll('.meetings-list,.meeting-workspace'), panel].some((element) => element.scrollWidth > element.clientWidth + 1));
         expect(overflow).toBe(false);
         const status = await page.locator('.meetings-statusbar').boundingBox();

@@ -107,6 +107,11 @@ describe('MeetingsPanel retained audio deletion', () => {
     await act(async () => starts[0].click());
     expect(meetings.start).toHaveBeenCalledOnce();
     expect(container.querySelector('.meetings-phase-dot')?.getAttribute('data-phase')).toBe('idle');
+    expect(container.querySelector('.meetings-phase p')?.textContent).toBe('Meeting capture is idle');
+    expect(container.querySelector('.meetings-statusbar')?.textContent).toContain('Microphone');
+    expect(container.querySelector('.meetings-statusbar')?.textContent).toContain('System audio');
+    expect(container.querySelector('.meetings-statusbar')?.textContent).not.toContain('(Me)');
+    expect(container.querySelector('.meetings-statusbar')?.textContent).not.toContain('(Them)');
   });
 
   it('offers System Settings and an enabled retry when Mac audio access is denied', async () => {

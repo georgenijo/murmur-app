@@ -1335,7 +1335,7 @@ textarea {
 .personalization-privacy { margin-top: var(--ui-space-5); color: var(--murmur-on-surface-variant); font-size: 0.6875rem; line-height: var(--ui-leading-micro); }
 
 /* Notetaker: compact status bar, day-grouped list, single-column detail. */
-.meetings-statusbar { display: flex; flex-shrink: 0; align-items: center; flex-wrap: wrap; align-content: center; gap: 12px; height: 57px; min-height: 57px; box-sizing: border-box; border-bottom: 1px solid var(--ui-hairline); padding: 0 0 16px; }
+.meetings-statusbar { display: flex; flex-shrink: 0; align-items: center; flex-wrap: wrap; align-content: center; gap: 8px; height: 40px; min-height: 40px; box-sizing: border-box; padding: 0; }
 .meetings-statusbar-detail { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-label); }
 .meetings-permission-hint { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .meetings-alerts { display: flex; flex-shrink: 0; flex-direction: column; gap: var(--ui-space-3); padding-top: var(--ui-space-4); }
@@ -1379,6 +1379,10 @@ textarea {
 .meeting-header-action[data-tone="accent"] { color: var(--murmur-primary); }
 .meeting-header-action[data-tone="danger"] { color: var(--murmur-on-surface-variant); }
 .meeting-header-action[data-confirming="true"] { color: var(--murmur-error); }
+.meeting-field-label { display: block; color: var(--murmur-on-surface); font-size: var(--ui-font-caption); font-weight: 500; }
+.meeting-calendar-events { max-height: 16rem; overflow-y: auto; border-block: 1px solid var(--ui-hairline); }
+.meeting-calendar-event { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; }
+.meeting-calendar-event + .meeting-calendar-event { border-top: 1px solid var(--ui-hairline); }
 .meeting-field { width: 100%; border: 1px solid var(--ui-hairline); border-radius: var(--ui-radius-control); background: var(--murmur-surface-container-lowest); padding: var(--ui-space-3) var(--ui-space-4); color: var(--murmur-on-surface); font-size: var(--ui-font-caption); font-weight: 400; }
 .meeting-field:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 0; }
 .meeting-quiet-note { border: 1px solid transparent; border-radius: var(--ui-radius-control); background: var(--ui-tint-sunken); padding: var(--ui-space-4) var(--ui-space-5); color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }

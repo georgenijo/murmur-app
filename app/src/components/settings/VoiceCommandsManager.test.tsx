@@ -63,6 +63,17 @@ function setValue(element: HTMLInputElement | HTMLSelectElement | HTMLTextAreaEl
   element.dispatchEvent(new Event(element instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }));
 }
 
+async function choose(container: HTMLElement, label: string, optionText: string) {
+  const trigger = container.querySelector<HTMLButtonElement>(`[role="combobox"][aria-label="${label}"]`)!;
+  await act(async () => trigger.click());
+  await act(async () => (Array.from(document.querySelectorAll<HTMLElement>('[role="option"]'))
+    .find((option) => option.textContent?.trim().startsWith(optionText))!).click());
+}
+
+function selectValue(container: HTMLElement, label: string) {
+  return container.querySelector<HTMLButtonElement>(`[role="combobox"][aria-label="${label}"]`)?.textContent?.trim();
+}
+
 describe('VoiceCommandsManager', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -122,11 +133,11 @@ describe('VoiceCommandsManager', () => {
 
   it('creates an app-scoped multiline snippet with explicit clipboard permission and preview', async () => {
     await act(async () => button(container, 'New command…').click());
-    await act(async () => setValue(container.querySelector('[aria-label="Voice command type"]') as HTMLSelectElement, 'snippet'));
-    await act(async () => setValue(container.querySelector('[aria-label="Voice command scope"]') as HTMLSelectElement, 'app'));
+    await choose(container, 'Voice command type', 'Multiline snippet');
+    await choose(container, 'Voice command scope', 'One configured app');
     await act(async () => setValue(container.querySelector('[aria-label="Voice command phrase"]') as HTMLInputElement, 'mail signature'));
     await act(async () => setValue(container.querySelector('[aria-label="Voice command content"]') as HTMLTextAreaElement, 'Regards,\nGeorge\n{{clipboard}}'));
-    const permission = container.querySelector('[aria-label="Allow clipboard reading"]') as HTMLInputElement;
+    const permission = container.querySelector('[aria-label="Allow clipboard reading"]') as HTMLButtonElement;
     await act(async () => permission.click());
     await act(async () => setValue(container.querySelector('[aria-label="Voice command test phrase"]') as HTMLTextAreaElement, 'mail signature'));
     await act(async () => button(container, 'Test').click());
@@ -149,14 +160,14 @@ describe('VoiceCommandsManager', () => {
     await act(async () => button(sourceRow, 'Duplicate').click());
 
     expect(container.querySelector('[role="dialog"]')?.textContent).toContain('Duplicate voice command');
-    expect((container.querySelector('[aria-label="Voice command type"]') as HTMLSelectElement).value).toBe('snippet');
-    expect((container.querySelector('[aria-label="Voice command scope"]') as HTMLSelectElement).value).toBe('app');
-    expect((container.querySelector('[aria-label="Voice command application"]') as HTMLSelectElement).value).toBe('com.apple.mail');
+    expect(selectValue(container, 'Voice command type')).toContain('Multiline snippet');
+    expect(selectValue(container, 'Voice command scope')).toContain('One configured app');
+    expect(selectValue(container, 'Voice command application')).toContain('Mail');
     expect((container.querySelector('[aria-label="Voice command phrase"]') as HTMLInputElement).value).toBe('');
     expect((container.querySelector('[aria-label="Voice command test phrase"]') as HTMLTextAreaElement).value).toBe('');
     expect((container.querySelector('[aria-label="Voice command content"]') as HTMLTextAreaElement).value).toBe('Regards,\nGeorge\n{{clipboard}}');
-    expect((container.querySelector('[aria-label="Allow clipboard reading"]') as HTMLInputElement).checked).toBe(true);
-    expect((container.querySelector('input[type="checkbox"]:not([aria-label])') as HTMLInputElement).checked).toBe(false);
+    expect(container.querySelector('[aria-label="Allow clipboard reading"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelector('input[type="checkbox"]:not([aria-hidden])')).toBeNull();
     expect(mocks.preview).not.toHaveBeenCalled();
     expect(mocks.upsert).not.toHaveBeenCalled();
 

@@ -125,6 +125,7 @@ describe('appearance runtime hooks', () => {
     }, ['light']);
     await act(async () => { await controller!.library.install([source]); });
     const before = localStorage.getItem(APPEARANCE_STORAGE_KEY);
+    await act(async () => themeButton('Theme actions for Ocean').click());
     await act(async () => themeButton('Duplicate Ocean').click());
     expect(localStorage.getItem(APPEARANCE_STORAGE_KEY)).toBe(before);
     expect(controller!.library.document.themes).toHaveLength(2);
@@ -138,6 +139,7 @@ describe('appearance runtime hooks', () => {
     expect(controller!.document.theme.accent).toBe('#cc3366');
     expect(controller!.library.document.themes[0]).toEqual(source);
     expect(controller!.library.document.themes[1]).toEqual(copy);
+    await act(async () => themeButton('Theme actions for Ocean').click());
     await act(async () => themeButton('Duplicate Ocean').click());
     expect(controller!.library.document.themes.map((entry) => entry.id)).toEqual(['ocean', 'copy-of-ocean', 'copy-of-ocean-2']);
   });

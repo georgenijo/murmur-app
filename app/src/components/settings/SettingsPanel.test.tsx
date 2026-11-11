@@ -225,12 +225,16 @@ describe('SettingsPanel information architecture', () => {
       const row = hubButton(label);
       await act(async () => row.click());
       expect((container.querySelector('[role="dialog"] h2') ?? container.querySelector('h1'))?.textContent).toBe(heading);
-      const back = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
-        (button) => button.textContent?.includes('Back to Customize'),
-      ) as HTMLButtonElement;
-      expect(back).toBeDefined();
-      await act(async () => back.click());
-      expect(container.querySelector('h1')?.textContent).toBe('Customize Murmur');
+      const returnControl = container.querySelector<HTMLButtonElement>('[role="dialog"] [aria-label="Close editor"]')
+        ?? Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+          (button) => button.classList.contains('settings-back-btn') && button.textContent?.includes('Customize'),
+        );
+      expect(returnControl).toBeDefined();
+      expect(returnControl?.getAttribute('aria-label') ?? returnControl?.textContent).toContain(
+        container.querySelector('[role="dialog"]') ? 'Close editor' : 'Customize',
+      );
+      await act(async () => returnControl!.click());
+      expect(container.querySelector('h1')?.textContent).toBe('Customize');
       expect(document.activeElement).toBe(hubButton(label));
     }
   });
@@ -241,7 +245,18 @@ describe('SettingsPanel information architecture', () => {
     expect(list.tagName).toBe('UL');
     expect(list.children).toHaveLength(4);
     expect(Array.from(list.children).every(element => element.tagName === 'LI')).toBe(true);
+    expect(Array.from(list.children).every(element => element.firstElementChild?.tagName === 'BUTTON')).toBe(true);
     expect(list.textContent).not.toMatch(/0[1-5]/);
+  });
+
+  it('labels back buttons with their parent page names', async () => {
+    const shortcuts = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('Keyboard shortcuts'))!;
+    await act(async () => shortcuts.click());
+    expect(container.querySelector<HTMLButtonElement>('.settings-back-btn')?.textContent).toContain('General');
+
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'ai-transcription', token: 2 }));
+    expect(container.querySelector<HTMLButtonElement>('.settings-back-btn')?.textContent).toContain('AI & models');
   });
 
   it('uses full-width rows with individual text-editor search targets and keeps clipboard delivery copy with Auto-paste', async () => {
@@ -257,6 +272,36 @@ describe('SettingsPanel information architecture', () => {
     expect(container.querySelector('.settings-callout')).toBeNull();
     expect(container.querySelector('[data-setting-target="auto-paste"]')?.textContent)
       .toContain('Always copied to clipboard. Also paste into active app.');
+  });
+
+  it('uses one card for the AI & models destination', async () => {
+    const aiModels = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'AI & models',
+    ) as HTMLButtonElement;
+    await act(async () => aiModels.click());
+    expect(container.textContent).toContain('Speech-to-text');
+    expect(Array.from(container.querySelectorAll('section')).map((section) => section.getAttribute('aria-label'))).toContain('AI & models');
+    const aiPage = Array.from(container.querySelectorAll('section')).find(
+      (section) => section.getAttribute('aria-label') === 'AI & models',
+    )!;
+    expect(aiPage.querySelectorAll('.settings-card')).toHaveLength(1);
+  });
+
+  it('keeps standby, retention, and unavailable-feature consequences in their setting copy', async () => {
+    const navButton = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('nav button'))
+      .find((button) => button.textContent === label)!;
+
+    await act(async () => navButton('Recording').click());
+    await act(async () => (container.querySelector('.settings-advanced-toggle') as HTMLButtonElement).click());
+    expect(container.textContent).toContain('its indicator stays on. Only pre-roll joins the next recording.');
+
+    await act(async () => navButton('Delivery').click());
+    expect(container.textContent).toContain('Turning off keeps existing history.');
+
+    await act(async () => navButton('Text & vocabulary').click());
+    await act(async () => (container.querySelector('.settings-advanced-toggle') as HTMLButtonElement).click());
+    await act(async () => (container.querySelector('[data-setting-target="smart-correction"] [role="switch"]') as HTMLButtonElement).click());
+    expect(container.textContent).toContain('Your preference is saved; deterministic spelling is used.');
   });
 
   it('closes the commands sheet and focuses the actual disabled switch without enabling it', async () => {
@@ -281,7 +326,7 @@ describe('SettingsPanel information architecture', () => {
     expect(onUpdateSettings).not.toHaveBeenCalled();
     const back = container.querySelector<HTMLButtonElement>('.settings-back-btn')!;
     await act(async () => back.click());
-    expect(container.querySelector('h1')?.textContent).toBe('Customize Murmur');
+    expect(container.querySelector('h1')?.textContent).toBe('Customize');
     expect(document.activeElement).toBe(commandsRow());
   });
 
@@ -636,17 +681,17 @@ describe('SettingsPanel information architecture', () => {
     const soundSwitch = container.querySelector('[role="switch"][aria-label="Sound cues"]') as HTMLElement;
     await act(async () => soundSwitch.click());
     expect(onUpdateSettings).toHaveBeenCalledWith({ soundCuesEnabled: false });
-    const volumeLabel = Array.from(container.querySelectorAll('label')).find(
-      (label) => label.textContent?.includes('Volume'),
-    ) as HTMLLabelElement;
-    const slider = volumeLabel.querySelector('input[type="range"]') as HTMLInputElement;
+    const slider = container.querySelector<HTMLInputElement>('[aria-label="Sound cue volume"]')!;
     const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => {
       valueSetter.call(slider, '70');
       slider.dispatchEvent(new Event('input', { bubbles: true }));
     });
     expect(onUpdateSettings).toHaveBeenCalledWith({ soundCueVolume: 70 });
-    const success = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'success') as HTMLButtonElement;
+    for (const cue of ['start', 'stop', 'success', 'failure']) {
+      expect(container.querySelector(`[aria-label="Preview ${cue} sound"]`)).not.toBeNull();
+    }
+    const success = container.querySelector<HTMLButtonElement>('[aria-label="Preview success sound"]')!;
     await act(async () => success.click());
     expect(soundCueMock).toHaveBeenCalledWith('success', 45);
     const meetingSwitch = container.querySelector('[role="switch"][aria-label="Meeting cues"]') as HTMLElement;
@@ -753,6 +798,26 @@ describe('SettingsPanel information architecture', () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
   });
 
+  it('groups Recording and Delivery settings while keeping the app overrides target', async () => {
+    const nav = Array.from(container.querySelectorAll<HTMLButtonElement>('nav button'));
+    const recording = nav.find((button) => button.textContent === 'Recording')!;
+    await act(async () => recording.click());
+    expect(Array.from(container.querySelectorAll('h2')).map((heading) => heading.textContent)).toEqual([
+      'Input', 'Controls',
+    ]);
+
+    const delivery = nav.find((button) => button.textContent === 'Delivery')!;
+    await act(async () => delivery.click());
+    expect(Array.from(container.querySelectorAll('h2')).map((heading) => heading.textContent)).toEqual([
+      'Pasting', 'Files', 'History',
+    ]);
+    await act(async () => (container.querySelector('.settings-advanced-toggle') as HTMLButtonElement).click());
+    const overrides = container.querySelector<HTMLButtonElement>('[data-setting-target="app-overrides"]:not(.settings-advanced)')!;
+    expect(overrides.textContent).toContain('Manage app overrides');
+    await act(async () => overrides.click());
+    expect(container.textContent).toContain('App overrides editor');
+  });
+
   it('keeps the scroll position when Delivery Advanced opens and closes', async () => {
     const delivery = Array.from(container.querySelectorAll<HTMLButtonElement>('nav button'))
       .find(button => button.textContent === 'Delivery')!;
@@ -780,7 +845,7 @@ describe('SettingsPanel information architecture', () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
   });
 
-  it('discloses Calendar reads and browser limits before enabling meeting suggestions', async () => {
+  it('keeps Meetings copy compact and reveals Calendar details only when requested', async () => {
     const meetings = Array.from(container.querySelectorAll('nav button')).find(
       (button) => button.textContent === 'Meetings',
     ) as HTMLButtonElement;
@@ -790,12 +855,19 @@ describe('SettingsPanel information architecture', () => {
       '[role="switch"][aria-label="Suggest Notetaker for Calendar meetings"]',
     );
     expect(toggle?.getAttribute('aria-checked')).toBe('false');
-    expect(container.textContent).toContain('Reads your Calendar');
-    expect(container.textContent).toContain('Zoom, Teams, Slack, Webex, FaceTime');
-    expect(container.textContent).toContain('never reads URLs or window titles');
+    expect(container.textContent).not.toContain('Stored separately from dictation');
+    expect(container.textContent).not.toContain('Keep recordings after transcription');
+    expect(container.textContent).not.toContain('Label other speakers after a meeting');
+    expect(container.textContent).toContain('Use your Calendar to offer a prompt for supported calls');
 
     await act(async () => toggle?.click());
     expect(onUpdateSettings).toHaveBeenCalledWith({ meetingSuggestionsEnabled: true });
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, meetingSuggestionsEnabled: true }));
+    const details = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Calendar details')!;
+    await act(async () => details.click());
+    expect(container.textContent).toContain('Zoom, Teams, Slack, Webex, FaceTime');
+    expect(container.textContent).toContain('without reading URLs or window titles');
+    expect(container.textContent).toContain('Record only after you accept a meeting suggestion');
   });
 
   it('accepts a direct Keyboard Shortcuts page request for command-palette navigation', async () => {
@@ -882,7 +954,7 @@ describe('SettingsPanel information architecture', () => {
     ) as HTMLButtonElement;
     await act(async () => aiModels.click());
     const speechModel = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Speech-to-text') && button.textContent?.includes('Configure'),
+      (button) => button.textContent?.includes('Speech-to-text') && button.classList.contains('settings-setting-row'),
     ) as HTMLButtonElement;
     await act(async () => speechModel.click());
 
@@ -915,11 +987,9 @@ describe('SettingsPanel information architecture', () => {
     expect(container.querySelector('nav[aria-label="Settings editors"]')).toBeNull();
     expect(container.querySelector('[role="dialog"] h2')?.textContent).toBe('Aliases');
 
-    const back = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Close editor'),
-    ) as HTMLButtonElement;
-    expect(back).toBeDefined();
-    await act(async () => back.click());
+    const close = container.querySelector<HTMLButtonElement>('[aria-label="Close editor"]');
+    expect(close).toBeDefined();
+    await act(async () => close!.click());
 
     expect(container.textContent).toContain('Text & vocabulary');
     expect(container.querySelector('[role="dialog"]')).toBeNull();
@@ -1031,6 +1101,8 @@ describe('SettingsPanel information architecture', () => {
     ['overlay position', 'Calibrate overlay position', 'overlay-calibration', 'General'],
     ['paste delay', 'Paste delay', 'paste-delay', 'Delivery'],
     ['sound cues', 'Sound cues', 'sound-cues', 'Recording'],
+    ['history days', 'Meeting retention', 'meeting-retention', 'Meetings'],
+    ['speaker names', 'Remote speaker labels', 'meeting-speakers', 'Meetings'],
     ['vocabulary', 'Vocabulary', 'vocabulary', 'Text & vocabulary'],
     ['aliases', 'Aliases', 'aliases', 'Text & vocabulary'],
     ['knowledge', 'Knowledge', 'knowledge', 'Text & vocabulary'],
@@ -1078,6 +1150,30 @@ describe('SettingsPanel information architecture', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it('opens Calendar details when search lands on Calendar suggestion access', async () => {
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, meetingSuggestionsEnabled: true }));
+    const input = container.querySelector('input[type="search"]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, 'calendar suggestion access');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const result = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.includes('Calendar suggestion access'),
+    ) as HTMLButtonElement;
+    await act(async () => result.click());
+    expect(container.querySelector('h1')?.textContent).toBe('Meetings');
+    const action = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.includes('Open Calendar settings'),
+    );
+    expect(action).toBeDefined();
+    expect(action!.closest('[inert], [aria-hidden="true"]')).toBeNull();
+    // Opening the disclosure must not end the reveal: the row still scrolls into view and pulses.
+    const target = container.querySelector<HTMLElement>('[data-setting-target="meeting-calendar"]')!;
+    expect(scrollIntoView.mock.instances).toContain(target);
+    expect(target.classList.contains('settings-target-flash')).toBe(true);
+  });
+
   it('preserves the parent scroll while entering a sheet and restores its page on close', async () => {
     const input = container.querySelector('input[type="search"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
@@ -1100,10 +1196,8 @@ describe('SettingsPanel information architecture', () => {
     expect(scrollTo).not.toHaveBeenCalled();
 
     scrollTo.mockClear();
-    const back = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
-      (button) => button.textContent?.includes('Close editor'),
-    ) as HTMLButtonElement;
-    await act(async () => back.click());
+    const close = container.querySelector<HTMLButtonElement>('[aria-label="Close editor"]');
+    await act(async () => close!.click());
     expect(container.querySelector('h1')?.textContent).toBe('Text & vocabulary');
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
   });

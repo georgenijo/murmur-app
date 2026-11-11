@@ -19,14 +19,26 @@ for (const appearance of ['light', 'dark']) {
       expect(triples).not.toContain('Text & Vocabulary');
       expect(triples).not.toContain('AI & Models');
       const advanced = content.locator('.settings-advanced-toggle[aria-expanded=false]');
-      const advancedCount = await advanced.count();
-      for (const button of await advanced.all()) await button.click();
+      // Collapsed nested controls remain mounted but hidden until their parent
+      // is revealed; expand only controls a user can actually reach.
+      let advancedCount = 0;
+      for (const button of await advanced.all()) {
+        if (await button.isVisible()) {
+          await button.click();
+          advancedCount++;
+        }
+      }
       const summaries = content.locator('summary');
       for (const summary of await summaries.all()) {
         if (await summary.isVisible() && !(await summary.locator('..').getAttribute('open') !== null)) await summary.click();
       }
       if (advancedCount || await summaries.count()) {
-        await content.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+        await content.evaluate(async (element) => {
+          // Let an Advanced branch mount and apply its revealed-row inset before
+          // pinning the audit at the bottom of the scrollport.
+          await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+          element.scrollTop = element.scrollHeight;
+        });
         await expect(content).toHaveScreenshot(`${appearance}-copy-${pane}-expanded.png`);
       }
     });
@@ -52,7 +64,7 @@ for (const appearance of ['light', 'dark']) {
     await expect(page.getByRole('menu')).toHaveScreenshot(`${appearance}-copy-knowledge-overflow.png`);
     await page.getByRole('menuitem', { name: 'Delete all…', exact: true }).click();
     await page.getByLabel('Type DELETE to confirm', { exact: true }).fill('DELETE');
-    const remove = page.getByRole('button', { name: 'Delete everything…', exact: true });
+    const remove = page.getByRole('button', { name: 'Delete everything', exact: true });
     await expect(remove).toBeEnabled();
     await remove.focus();
     await page.keyboard.press('Enter');

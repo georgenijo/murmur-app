@@ -222,10 +222,6 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
 
       {detail.session.retainAudio && meetingAudio ? (
         <MeetingAudioPlayer audio={meetingAudio} captureBusy={captureBusy} />
-      ) : !detail.session.retainAudio ? (
-        <p className="meeting-quiet-note">
-          Audio was not retained for this meeting. Enable Keep Meeting Audio in Meetings settings to play future sessions.
-        </p>
       ) : null}
 
       {bundlePlan && bundlePlan.sessionId === detail.session.id && (
@@ -258,10 +254,6 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
         </section>
       )}
 
-      {captions && <p className="meeting-quiet-note" role="status">{detail.session.status === 'active'
-        ? capture?.phase === 'recording' ? 'Stop this meeting before exporting captions.' : capture?.footer ?? 'Captions will be available when this meeting finishes.'
-        : 'One caption per recorded speech segment, with saved speaker names. Untranscribed sections are marked. Review notes are not included.'}</p>}
-
       <section
         className="meeting-transcript"
         aria-labelledby="meeting-transcript-title"
@@ -270,6 +262,10 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
         <div className="meeting-transcript-header">
           <h3 id="meeting-transcript-title">Transcript</h3>
           <span className="meeting-transcript-count">{segments.length} {segments.length === 1 ? 'segment' : 'segments'}</span>
+          {!detail.session.retainAudio && <span className="meeting-transcript-count">Audio was not retained. Turn on Keep meeting audio in Meetings to retain future sessions.</span>}
+          {captions && <span className="meeting-transcript-count">{detail.session.status === 'active'
+            ? capture?.phase === 'recording' ? 'Stop this meeting before exporting captions.' : capture?.footer ?? 'Captions will be available when this meeting finishes.'
+            : 'One caption per recorded speech segment, with saved speaker names. Untranscribed sections are marked. Review notes are not included.'}</span>}
           <span className="flex-1" />
           <details ref={speakersRef} className="meeting-speakers">
             <summary className="ui-form-button meeting-header-action"><span className="meeting-speakers-summary-text">Speakers: {speakerSummary}</span><ChevronDown aria-hidden="true" className="h-3.5 w-3.5 shrink-0" /></summary>

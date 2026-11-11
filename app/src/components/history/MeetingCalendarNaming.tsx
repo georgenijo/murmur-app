@@ -25,6 +25,15 @@ interface MeetingCalendarNamingProps {
   renderTrigger?: (lookup: () => void, disabled: boolean) => ReactNode;
 }
 
+const calendarEventDateTime = new Intl.DateTimeFormat(undefined, {
+  dateStyle: 'medium',
+  timeStyle: 'short',
+});
+
+function formatEventTimeRange(event: CalendarEventCandidate): string {
+  return `${calendarEventDateTime.format(event.startMs)} – ${calendarEventDateTime.format(event.endMs)}`;
+}
+
 export function MeetingCalendarNaming({ sessionId, disabled, onApply, onManualNaming, onNotice, renderTrigger }: MeetingCalendarNamingProps) {
   const [state, setState] = useState<PickerState>({ kind: 'closed' });
   const generation = useRef(0);
@@ -112,25 +121,25 @@ export function MeetingCalendarNaming({ sessionId, disabled, onApply, onManualNa
         <div role="status" className="meeting-detail-header-panel space-y-2 text-xs text-on-surface-variant">
           <p>{state.message}</p>
           <div className="flex flex-wrap gap-2">
-            <button type="button" onClick={onManualNaming} className="dialog-pill-btn px-3 py-1.5 text-primary">Name manually</button>
-            {state.permission !== 'unsupported' && <button type="button" onClick={() => void openSettings()} className="dialog-pill-btn px-3 py-1.5">Open Calendar settings…</button>}
-            {state.permission === 'denied' && <button type="button" onClick={() => void reset()} className="dialog-pill-btn px-3 py-1.5">Reset Calendar access…</button>}
+            <button type="button" onClick={onManualNaming} className="ui-form-button meeting-header-action" data-tone="accent">Name manually</button>
+            {state.permission !== 'unsupported' && <button type="button" onClick={() => void openSettings()} className="ui-form-button meeting-header-action">Open Calendar settings…</button>}
+            {state.permission === 'denied' && <button type="button" onClick={() => void reset()} className="ui-form-button meeting-header-action">Reset Calendar access…</button>}
           </div>
         </div>
       )}
       {picking && (
         <fieldset ref={pickerRef} disabled={disabled || state.kind === 'applying'} aria-busy={state.kind === 'applying'} className="meeting-detail-header-panel space-y-2 text-xs">
-          <legend className="font-semibold text-on-surface">Choose an overlapping event</legend>
+          <legend className="font-medium text-on-surface">Choose an overlapping event</legend>
           {state.events.length === 0 ? <p className="text-on-surface-variant">No calendar events overlap this meeting. You can still name it manually.</p> : (
             <>
               <p className="text-on-surface-variant">Only the title and attendee names of the event you apply will be saved.</p>
-              <div className="max-h-64 space-y-2 overflow-y-auto">
+              <div className="meeting-calendar-events">
                 {state.events.map((event) => (
-                  <label key={event.selectionToken} className="flex items-start gap-2 rounded-[var(--ui-radius-control)] border border-[var(--ui-hairline)] p-2">
+                  <label key={event.selectionToken} className="meeting-calendar-event">
                     <input type="radio" name={`calendar-event-${sessionId}`} checked={state.selectedToken === event.selectionToken} onChange={() => setState({ kind: 'choosing', events: state.events, selectedToken: event.selectionToken })} />
                     <span className="min-w-0 break-words">
-                      <span className="block font-semibold text-on-surface">{event.title}</span>
-                      <span className="block text-on-surface-variant">{new Date(event.startMs).toLocaleString()} – {new Date(event.endMs).toLocaleTimeString()}</span>
+                      <span className="block font-medium text-on-surface">{event.title}</span>
+                      <span className="block text-on-surface-variant">{formatEventTimeRange(event)}</span>
                       {event.attendees.length > 0 && <span className="block text-on-surface-variant">Attendees: {event.attendees.join(', ')}</span>}
                     </span>
                   </label>
@@ -139,8 +148,8 @@ export function MeetingCalendarNaming({ sessionId, disabled, onApply, onManualNa
             </>
           )}
           <div className="flex gap-2">
-            <button type="button" disabled={!state.selectedToken} onClick={() => void apply()} className="dialog-pill-btn px-3 py-1.5 text-primary disabled:opacity-40">{state.kind === 'applying' ? 'Applying…' : 'Apply event'}</button>
-            <button type="button" onClick={close} className="dialog-pill-btn px-3 py-1.5">Cancel calendar lookup</button>
+            <button type="button" disabled={!state.selectedToken} onClick={() => void apply()} className="ui-form-button meeting-header-action" data-tone="accent">{state.kind === 'applying' ? 'Applying…' : 'Apply event'}</button>
+            <button type="button" onClick={close} className="ui-form-button meeting-header-action">Cancel calendar lookup</button>
           </div>
         </fieldset>
       )}

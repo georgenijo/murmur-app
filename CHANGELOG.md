@@ -6,8 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.63.4] - 2026-11-11
+
 ### Fixed
 
+- Remove obsolete Settings status banners, unify Customize and AI navigation rows, use parent-labelled back controls with closeable editor sheets, keep Recording's live-level track visible and space it below microphone help, flatten Diagnostics controls, simplify Performance Lab comparison controls, give onboarding permissions one action and one skip label, standardize meeting naming controls, simplify the Notetaker status strip, and shorten Settings copy.
+
+## [0.63.3] - 2026-11-11
+
+### Fixed
+
+- Consolidate Settings cards and Advanced disclosures, compact Meetings and single-variant theme cards, and standardize editor controls, labels, and actions.
 - Soften auxiliary dialog outlines and actions, prevent meeting-speaker truncation, and hide the collapsed-sidebar privacy dot.
 
 ## [0.63.2] - 2026-11-11

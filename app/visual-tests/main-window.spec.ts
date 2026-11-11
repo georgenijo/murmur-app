@@ -376,7 +376,8 @@ test('customization hub stays legible and restores focus at native and narrow wi
   const fixture = page.locator('[data-visual-ready="true"]');
   const customizationList = page.getByRole('list', { name: 'Customization destinations' });
   const voiceCommands = customizationList.getByRole('button').filter({ hasText: 'Voice commands' });
-  await expect(page.getByRole('heading', { name: 'Customize Murmur' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Customize' })).toBeVisible();
+  await expect(customizationList.getByRole('listitem')).toHaveCount(4);
   await expect(customizationList.getByRole('button')).toHaveCount(4);
   expect(await customizationList.evaluate(element => element.tagName)).toBe('UL');
   for (const label of ['Text & vocabulary', 'Voice commands', 'App overrides', 'Modes']) {
@@ -387,11 +388,11 @@ test('customization hub stays legible and restores focus at native and narrow wi
 
   await voiceCommands.click();
   await expect(page.getByRole('heading', { name: 'Voice commands', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Back to Customize' }).click();
+  await page.getByRole('button', { name: 'Close editor' }).click();
   await expect(voiceCommands).toBeFocused();
 
   await page.setViewportSize({ width: 720, height: 560 });
-  await expect(page.getByRole('heading', { name: 'Customize Murmur', level: 1 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Customize', level: 1 })).toBeVisible();
   await expect(fixture).toHaveScreenshot('light-settings-customization-hub-narrow.png');
 });
 
@@ -567,7 +568,7 @@ test('settings rows keep the shared spacing contract and aligned controls', asyn
   const rowGeometry = (target: string) => page.locator(`[data-setting-target="${target}"]`).evaluate((row) => {
     const style = getComputedStyle(row);
     const box = row.getBoundingClientRect();
-    const title = row.querySelector('p')!.getBoundingClientRect();
+    const title = row.querySelector('.settings-row-title')!.getBoundingClientRect();
     const toggle = row.querySelector('[role="switch"]')!.getBoundingClientRect();
     return {
       left: box.left,
@@ -608,12 +609,12 @@ test('settings rows keep the shared spacing contract and aligned controls', asyn
 test('browser-site Mode rules disclose their exact privacy boundary at normal and narrow widths', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=settings-site-modes&appearance=light');
   await page.getByRole('button', { name: 'Modes', exact: true }).click();
-  await page.getByRole('button', { name: /Technical Built-in/ }).click();
+  await page.getByRole('button', { name: /^Technical/ }).click();
 
   const fixture = page.locator('[data-visual-ready="true"]');
   const browserSites = page.getByText('Browser sites', { exact: true });
   await expect(page.getByRole('switch', { name: 'Use browser site mode rules' })).toBeChecked();
-  await expect(page.getByText(/never reads page text or history/)).toBeVisible();
+  await expect(page.getByText(/page text and history stay unread/)).toBeVisible();
   await expect(page.getByRole('textbox', { name: 'Host for github.com' })).toHaveValue('github.com');
   await browserSites.scrollIntoViewIfNeeded();
   await page.mouse.move(0, 0);
@@ -636,6 +637,7 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   } as const;
   const collection = { id: 'open-vsx:h1dr0n.claude-theme', label: 'Catppuccin for VSCode' };
   const longerCollection = { id: 'open-vsx:long-name', label: 'Catppuccin for VSCode — Extended Edition' };
+  const singleCollection = { id: 'open-vsx:single-dark', label: 'Midnight Dark' };
   const entry = (
     id: string,
     label: string,
@@ -672,6 +674,9 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
         light: { background: '#eff1f5', foreground: '#4c4f69', accent: '#8839ef' },
         dark: { background: '#1e1e2e', foreground: '#cdd6f4', accent: '#cba6f7' },
       }, longerCollection),
+      entry('midnight-dark', 'Midnight Dark', ['dark'], {
+        dark: { background: '#111111', foreground: '#eeeeee', accent: '#4aa56c' },
+      }, singleCollection),
     ],
   };
   await page.addInitScript((value) => {
@@ -685,23 +690,23 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   const sonicCard = page.locator('[data-theme-collection="Sonic"]');
   const catppuccinCard = page.locator('[data-theme-collection="Catppuccin for VSCode"]');
   const longerCard = page.locator('[data-theme-collection="Catppuccin for VSCode — Extended Edition"]');
+  const singleCard = page.locator('[data-theme-collection="Midnight Dark"]');
   await expect(catppuccinCard).toHaveCount(1);
   await expect(longerCard).toHaveCount(1);
-  await expect(sonicCard).toHaveCSS('width', '280px');
   await expect(sonicCard).toHaveCSS('height', '130px');
-  await expect(catppuccinCard).toHaveCSS('width', '280px');
   await expect(catppuccinCard).toHaveCSS('height', '130px');
   await expect(catppuccinCard.locator('button[aria-label*="light variant"][aria-pressed="true"]')).toBeVisible();
   await expect(catppuccinCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
-  await expect(catppuccinCard.locator('.settings-theme-variant-check')).toHaveCount(1);
-  await expect(catppuccinCard.locator('.settings-theme-variant-assigned')).toHaveCount(1);
+  await expect(catppuccinCard.locator('.settings-theme-variant-check, .settings-theme-variant-assigned')).toHaveCount(0);
   await expect(catppuccinCard.locator('.settings-theme-caption, .settings-theme-mode-status')).toHaveCount(0);
   const previewGeometry = await catppuccinCard.evaluate((card) => {
+    const cardBox = card.getBoundingClientRect();
     const previews = card.querySelector('.settings-theme-previews')!.getBoundingClientRect();
     const footer = card.querySelector('.settings-theme-footer')!.getBoundingClientRect();
     const variants = Array.from(card.querySelectorAll('.settings-theme-preview'))
       .map((preview) => preview.getBoundingClientRect());
     return {
+      cardBox,
       previewsLeft: previews.left,
       previewsRight: previews.right,
       footerLeft: footer.left,
@@ -714,6 +719,58 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   expect(Math.abs(previewGeometry.previewsRight - previewGeometry.footerRight)).toBeLessThanOrEqual(1);
   expect(Math.abs(previewGeometry.firstPreviewLeft - previewGeometry.footerLeft)).toBeLessThanOrEqual(1);
   expect(Math.abs(previewGeometry.lastPreviewRight - previewGeometry.footerRight)).toBeLessThanOrEqual(1);
+  const singleGeometry = await singleCard.evaluate((card) => {
+    const cardBox = card.getBoundingClientRect();
+    const previewBox = card.querySelector('.settings-theme-preview')!.getBoundingClientRect();
+    const nameBox = card.querySelector('.settings-theme-name')!.getBoundingClientRect();
+    const actionsBox = card.querySelector('.settings-theme-action')!.getBoundingClientRect();
+    return { cardBox, previewBox, nameBox, actionsBox };
+  });
+  expect(singleGeometry.cardBox.width).toBeLessThan(previewGeometry.footerRight - previewGeometry.footerLeft);
+  expect(Math.abs(singleGeometry.cardBox.right - singleGeometry.previewBox.right)).toBeCloseTo(
+    Math.abs(previewGeometry.cardBox.right - previewGeometry.previewsRight),
+    1,
+  );
+  expect(singleGeometry.actionsBox.left).toBeGreaterThanOrEqual(singleGeometry.cardBox.left);
+  expect(singleGeometry.actionsBox.right).toBeLessThanOrEqual(singleGeometry.cardBox.right);
+  expect(singleGeometry.nameBox.right).toBeLessThanOrEqual(singleGeometry.actionsBox.left);
+  const moreActions = singleCard.getByRole('button', { name: 'Theme actions for Midnight Dark' });
+  await moreActions.focus();
+  await expect(moreActions).toBeFocused();
+  await moreActions.press('Space');
+  await expect(singleCard.getByRole('button', { name: 'Export Midnight Dark' })).toBeVisible();
+  await expect(singleCard.getByRole('button', { name: 'Duplicate Midnight Dark' })).toBeVisible();
+  await expect(singleCard.getByRole('button', { name: 'Remove Midnight Dark' })).toBeVisible();
+  await moreActions.press('Escape');
+  await expect(singleCard.getByRole('group', { name: 'Midnight Dark theme actions' })).toHaveCount(0);
+  const ringColors = await catppuccinCard.evaluate((card) => {
+    const colorFor = (name: string) => {
+      const probe = document.createElement('span');
+      probe.style.color = `var(${name})`;
+      document.body.append(probe);
+      const color = getComputedStyle(probe).color;
+      probe.remove();
+      return color;
+    };
+    const variants = Array.from(card.querySelectorAll<HTMLButtonElement>('.settings-theme-variant'));
+    const showing = variants.find((variant) => variant.dataset.showingNow);
+    const assigned = variants.find((variant) => variant.dataset.assigned && !variant.dataset.showingNow);
+    return {
+      showingBorder: getComputedStyle(showing!.querySelector('.settings-theme-preview')!).borderColor,
+      assignedBorder: getComputedStyle(assigned!.querySelector('.settings-theme-preview')!).borderColor,
+      primary: colorFor('--murmur-primary'),
+      success: colorFor('--murmur-success'),
+      showingShadow: getComputedStyle(showing!.querySelector('.settings-theme-preview')!).boxShadow,
+      assignedShadow: getComputedStyle(assigned!.querySelector('.settings-theme-preview')!).boxShadow,
+    };
+  });
+  expect(ringColors.showingBorder).toBe(ringColors.primary);
+  expect(ringColors.assignedBorder).toBe(ringColors.success);
+  expect(ringColors.showingShadow).not.toBe(ringColors.assignedShadow);
+  const nonSelectedPreview = page.locator('[data-theme-collection="OpenCode"] button[aria-label*="light mode"]');
+  await nonSelectedPreview.focus();
+  await expect(nonSelectedPreview).toHaveCSS('outline-offset', '3px');
+  await expect(nonSelectedPreview).toHaveCSS('outline-color', ringColors.primary);
   const themeName = catppuccinCard.getByRole('button', { name: 'Use Catppuccin for VSCode theme' });
   await expect(themeName).toHaveAttribute('title', 'Catppuccin for VSCode');
   const themeNameLabel = themeName.locator('.settings-theme-name-label');
@@ -734,6 +791,9 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   await page.getByRole('radio', { name: /dark/i }).click();
   await expect(catppuccinCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
   await expect(fixture).toHaveScreenshot('dark-settings-appearance.png');
+
+  await page.setViewportSize({ width: 840, height: 620 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(840);
 
   const cardHeight = await catppuccinCard.evaluate((element) => element.getBoundingClientRect().height);
   const chooser = catppuccinCard.locator('button[aria-label^="Choose dark variant"]');
@@ -761,6 +821,97 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   await expect(chooser).toBeFocused();
   await expect(chooser).toHaveAttribute('aria-expanded', 'false');
   await expect.poll(() => catppuccinCard.evaluate((element) => element.getBoundingClientRect().height)).toBe(cardHeight);
+});
+
+test('single-variant cards pack at half width without clipping actions at the Settings minimum', async ({ page }) => {
+  await page.setViewportSize({ width: 840, height: 620 });
+  const darkOnly = (id: string, label: string) => ({
+    version: 1,
+    id,
+    label,
+    modes: ['dark'],
+    theme: { version: 1, presetId: 'custom', dark: { background: '#151923', foreground: '#e5e7eb', accent: '#4aa56c' } },
+    source: { kind: 'local' as const },
+  });
+  await page.addInitScript((library) => {
+    localStorage.setItem('murmur-theme-library', JSON.stringify(library));
+  }, {
+    version: 1,
+    revision: 1,
+    themes: [
+      darkOnly('single-one', 'Single One'),
+      darkOnly('single-two', 'Single Two'),
+      darkOnly('single-three', 'Single Three'),
+      darkOnly('single-four', 'Single Four'),
+      darkOnly('midnight-fixture', 'Midnight Fixture'),
+    ],
+  });
+  await page.goto('/visual-fixtures.html?state=settings-appearance&appearance=dark');
+  await page.getByRole('button', { name: 'Appearance', exact: true }).click();
+
+  const singleCards = page.locator('[data-theme-variants="1"]');
+  const doubleCard = page.locator('[data-theme-collection="Sonic"]');
+  await expect(singleCards).toHaveCount(5);
+  const geometry = await page.evaluate(() => {
+    const cards = Array.from(document.querySelectorAll<HTMLElement>('[data-theme-variants="1"]'));
+    const double = document.querySelector<HTMLElement>('[data-theme-collection="Sonic"]')!;
+    const grid = document.querySelector<HTMLElement>('.settings-theme-grid')!;
+    return {
+      viewportWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+      doubleWidth: double.getBoundingClientRect().width,
+      doublePreviewRightInset: (() => {
+        const cardBox = double.getBoundingClientRect();
+        const previewBox = double.querySelector('.settings-theme-previews')!.getBoundingClientRect();
+        return cardBox.right - previewBox.right;
+      })(),
+      grid: grid.getBoundingClientRect(),
+      allCards: Array.from(grid.querySelectorAll<HTMLElement>('.settings-theme-collection')).map((card) => card.getBoundingClientRect()),
+      cards: cards.map((card) => {
+        const cardBox = card.getBoundingClientRect();
+        const previewBox = card.querySelector('.settings-theme-preview')!.getBoundingClientRect();
+        const nameBox = card.querySelector('.settings-theme-name')!.getBoundingClientRect();
+        const actionBox = card.querySelector('.settings-theme-action')!.getBoundingClientRect();
+        return { cardBox, previewBox, nameBox, actionBox };
+      }),
+    };
+  });
+  expect(geometry.scrollWidth).toBe(geometry.viewportWidth);
+  expect(geometry.doubleWidth).toBeCloseTo(geometry.grid.width / 2 - 8, 1);
+  for (const card of geometry.allCards) {
+    expect(card.right).toBeLessThanOrEqual(geometry.grid.right + 1);
+  }
+  for (const card of geometry.cards) {
+    expect(card.cardBox.width).toBeLessThan(geometry.doubleWidth);
+    expect(Math.abs(card.cardBox.right - card.previewBox.right)).toBeCloseTo(geometry.doublePreviewRightInset, 1);
+    expect(card.actionBox.left).toBeGreaterThanOrEqual(card.cardBox.left);
+    expect(card.actionBox.right).toBeLessThanOrEqual(card.cardBox.right);
+    expect(card.nameBox.right).toBeLessThanOrEqual(card.actionBox.left);
+  }
+  const lastCard = page.locator('[data-theme-collection="Midnight Fixture"]');
+  const nameLabel = lastCard.locator('.settings-theme-name-label');
+  await expect(nameLabel).toHaveText('Midnight Fixture');
+  expect(await nameLabel.evaluate((element) => element.scrollHeight <= element.clientHeight && element.scrollWidth <= element.clientWidth)).toBe(true);
+  await lastCard.getByRole('button', { name: 'Theme actions for Midnight Fixture' }).click();
+  const menu = lastCard.getByRole('group', { name: 'Midnight Fixture theme actions' });
+  await expect(menu.getByRole('button', { name: 'Export Midnight Fixture' })).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Duplicate Midnight Fixture' })).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Remove Midnight Fixture' })).toBeVisible();
+  const menuBox = await menu.boundingBox();
+  expect(menuBox!.y).toBeGreaterThanOrEqual(0);
+  expect(menuBox!.y + menuBox!.height).toBeLessThanOrEqual(620);
+
+  await page.setViewportSize({ width: 1100, height: 780 });
+  const defaultGeometry = await page.locator('.settings-theme-grid').evaluate((grid) => {
+    const gridBox = grid.getBoundingClientRect();
+    return {
+      gridBox,
+      cards: Array.from(grid.querySelectorAll<HTMLElement>('.settings-theme-collection')).map((card) => card.getBoundingClientRect()),
+    };
+  });
+  for (const card of defaultGeometry.cards) {
+    expect(card.right).toBeLessThanOrEqual(defaultGeometry.gridBox.right + 1);
+  }
 });
 
 test('the main recording waveform reacts to audio without pulse animation', async ({ page }) => {

@@ -3,7 +3,7 @@ import { useSettingsAdvanced } from '../../lib/hooks/useSettingsAdvanced';
 import { ADVANCED_TARGETS, visibleSettingsTarget } from './settingsDisclosureRouting';
 import { SettingsDisclosureContext } from './SettingsLayout';
 import { SettingsRow } from './SettingsRow';
-import { Button } from '../ui/FormControls';
+import { Button, Input } from '../ui/FormControls';
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { defaultButtonKeyDown } from '../../lib/defaultButton';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useId } from 'react';
@@ -176,16 +176,13 @@ function VadSensitivitySlider({
   useEffect(() => setDraft(value), [value]);
   const commit = (next: number) => { if (next !== value) onCommit(next); };
   return (
-    <div className="settings-field">
-      <div className="flex items-center justify-between">
-        <label htmlFor={id} className="text-xs text-on-surface-variant">Sensitivity</label>
-        <span className="text-xs font-medium text-on-surface">{draft === 0 ? 'Off' : `${draft}%`}</span>
-      </div>
+    <>
+      <label htmlFor={id} className="sr-only">Sensitivity</label>
       <input
         type="range"
-        min={0}
-        max={100}
-        step={5}
+        min="0"
+        max="100"
+        step="5"
         id={id}
         value={draft}
         aria-valuetext={draft === 0 ? 'Off' : `${draft} percent`}
@@ -199,8 +196,7 @@ function VadSensitivitySlider({
         onBlur={(event) => commit(Number(event.currentTarget.value))}
         className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-surface-container-highest accent-primary"
       />
-      <p className="text-xs text-on-surface-variant">Higher keeps more audio. Off is fastest.</p>
-    </div>
+    </>
   );
 }
 
@@ -450,6 +446,7 @@ export const SettingsPanel = memo(function SettingsPanel({
   const [appliedRequestToken, setAppliedRequestToken] = useState(pageRequest?.token);
   const [diagnosticsWindowError, setDiagnosticsWindowError] = useState<string | null>(null);
   const [calendarSettingsError, setCalendarSettingsError] = useState<string | null>(null);
+  const [calendarDetailsOpen, setCalendarDetailsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [editorTab, setEditorTab] = useState<SettingsEditorTab | null>(pageRequest?.editorTab ?? null);
   const revealedTargetRef = useRef<SettingTargetRequest | null>(null);
@@ -523,6 +520,10 @@ export const SettingsPanel = memo(function SettingsPanel({
     if (!targetRequest) return;
     if (revealedTargetRef.current === targetRequest) return;
     const id = visibleTargetId!;
+    if (id === 'meeting-calendar' && settings.meetingSuggestionsEnabled && !calendarDetailsOpen) {
+      setCalendarDetailsOpen(true);
+      return;
+    }
     if (ADVANCED_TARGETS[activeCat]?.includes(id) && !advancedOpen) {
       setAdvancedOpen(true);
       return;
@@ -582,7 +583,7 @@ export const SettingsPanel = memo(function SettingsPanel({
       window.clearTimeout(timeout);
       flashed?.classList.remove('settings-target-flash');
     };
-  }, [activeCat, editorTab, targetRequest, visibleTargetId, advancedOpen, setAdvancedOpen]);
+  }, [activeCat, editorTab, targetRequest, visibleTargetId, advancedOpen, setAdvancedOpen, calendarDetailsOpen, settings.meetingSuggestionsEnabled]);
   useLayoutEffect(() => {
     if (activeCat !== 'shortcuts' || shortcutReturnFocus === null) return;
     contentRef.current
@@ -895,7 +896,7 @@ export const SettingsPanel = memo(function SettingsPanel({
       ?? SETTINGS_TOOLS.find((tool) => tool.id === page)?.label
       ?? page;
   };
-  const pageTitle = searchQuery ? 'Search' : ({ customize: 'Customize Murmur', 'ai-transcription': 'Speech-to-text',
+  const pageTitle = searchQuery ? 'Search' : ({ customize: 'Customize', 'ai-transcription': 'Speech-to-text',
       shortcuts: 'Keyboard shortcuts' } as Record<string, string>)[activeCat]
       ?? searchPageLabel(activeCat);
   return (
@@ -981,7 +982,7 @@ export const SettingsPanel = memo(function SettingsPanel({
           {searchQuery ? (
             <section aria-label="Settings search results">
               <h2 className="settings-section-title">Search</h2>
-              <p className="mb-3 text-[11px] font-semibold uppercase tracking-normal text-on-surface-variant">
+              <p className="mb-3 text-[length:var(--ui-font-micro)] font-medium text-on-surface-variant">
                 {searchResults.length} {searchResults.length === 1 ? 'result' : 'results'}
               </p>
               {searchResults.length === 0 ? (
@@ -1012,7 +1013,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                         <span className="block text-sm font-semibold text-on-surface">{highlightSettingsMatch(result.title, searchQuery)}</span>
                         <span className="mt-0.5 block text-xs text-on-surface-variant">{highlightSettingsMatch(result.detail, searchQuery)}</span>
                       </span>
-                      <span className="rounded-full bg-surface-container-high px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">
+                      <span className="rounded-full bg-surface-container-high px-2.5 py-1 text-[length:var(--ui-font-micro)] font-medium text-on-surface-variant">
                         {searchPageLabel(result.page)}
                       </span>
                       <span aria-hidden="true" className="text-on-surface-variant">›</span>
@@ -1029,7 +1030,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               onClick={returnToCustomization}
               className="settings-back-btn mb-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
-              <span aria-hidden="true">‹</span> Back to Customize
+              <span aria-hidden="true">‹</span> Customize
             </Button>
           )}
           {activeCat === 'shortcuts' && (
@@ -1070,7 +1071,9 @@ export const SettingsPanel = memo(function SettingsPanel({
             activePage={activeCat}
             onOpenOwner={openShortcutOwner}
           />
-          <SettingsSection hideHeading pageId="recording" activePage={activeCat} title="Recording">
+          <SettingsSection hideHeading card={false} pageId="recording" activePage={activeCat} title="Recording">
+            <div className="settings-groups">
+            <SettingsGroup title="Input">
             <div data-setting-target="microphone" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <MicrophoneInputTest
                 microphone={settings.microphone}
@@ -1089,12 +1092,13 @@ export const SettingsPanel = memo(function SettingsPanel({
                 onSmartAutoChange={onUpdateSettings}
               />
               {audioInventoryState.error && (
-                <p role="alert" className="text-xs text-primary">{audioInventoryState.error} Close and reopen Settings if it does not refresh.</p>
+                <p role="alert" className="text-[length:var(--ui-font-caption)] text-primary">{audioInventoryState.error} Close and reopen Settings if it does not refresh.</p>
               )}
             </div>
             <SettingsRow
               title={<>Voice detection</>}
               targetId="voice-detection"
+              description={previewVadSensitivity === 0 ? 'Off · Responds fastest' : `${previewVadSensitivity}% sensitivity · Higher keeps more audio`}
               disabled={isRecording}
               onReset={settings.vadSensitivity !== DEFAULT_SETTINGS.vadSensitivity ? () => onUpdateSettings({ vadSensitivity: DEFAULT_SETTINGS.vadSensitivity }) : undefined}
               control={<VadSensitivitySlider
@@ -1103,6 +1107,8 @@ export const SettingsPanel = memo(function SettingsPanel({
                 onCommit={(vadSensitivity) => onUpdateSettings({ vadSensitivity })}
               />}
             />
+            </SettingsGroup>
+            <SettingsGroup title="Controls">
             <SettingsRow
               title={<>Recording trigger</>}
               targetId="recording-trigger"
@@ -1114,13 +1120,13 @@ export const SettingsPanel = memo(function SettingsPanel({
                 ))}
               </div>}
             >
-              {isRecording && <p className="text-xs text-primary">Stop recording before changing mode.</p>}
+              {isRecording && <p className="text-[length:var(--ui-font-caption)] text-primary">Stop recording before changing mode.</p>}
             </SettingsRow>
             {accessibilityGranted === false && (
               <div>
-                <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
+                <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-[length:var(--ui-font-caption)] text-on-surface">
                   <span>Accessibility permission is required for keyboard detection.</span>
-                  <button type="button" onClick={requestAccessibility} className="ml-auto underline">Grant</button>
+                  <Button type="button" variant="ghost" size="xs" onClick={requestAccessibility} className="ml-auto">Grant</Button>
                 </div>
               </div>
             )}
@@ -1130,20 +1136,20 @@ export const SettingsPanel = memo(function SettingsPanel({
                 disabled={isRecording}
                 items={DICTATION_KEY_OPTIONS}
                 aria-label="Dictation trigger key"
-              />}><p className="text-xs text-on-surface-variant">{keyHelp}</p>
+              />}><p className="text-[length:var(--ui-font-caption)] text-on-surface-variant">{keyHelp}</p>
 {settings.doubleTapKey === GLOBE_DICTATION_KEY && (
                 <p className="settings-row-description" data-testid="globe-key-hint">
                   The mic opens while Fn is held so the first word isn't lost; audio from presses that don't start a dictation is discarded. If Fn also opens the emoji picker or switches input source, set System Settings › Keyboard › “Press 🌐 key to” to “Do Nothing”.
                 </p>
               )}
 {isFunctionDictationKey(settings.doubleTapKey) && (
-                <p className="text-xs text-on-surface-variant">
+                <p className="text-[length:var(--ui-font-caption)] text-on-surface-variant">
                   May need Fn on Apple keyboards. The key keeps its normal action.
                 </p>
               )}</SettingsRow>
             <SettingsBranch open={isDoubleTap || isBoth}><SettingToggle targetId="hotkey-feedback" title="Hotkey timing feedback" description="Flash the overlay when a tap misses the double-tap window" checked={settings.hotkeyMissFeedback} defaultChecked={DEFAULT_SETTINGS.hotkeyMissFeedback} onChange={() => onUpdateSettings({ hotkeyMissFeedback: !settings.hotkeyMissFeedback })} /></SettingsBranch>
             <SettingsRow
-              title={<label className="block text-sm font-medium text-on-surface">Stop on silence</label>}
+              title={<label className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">Stop on silence</label>}
               targetId="stop-on-silence"
               disabled={isRecording}
               onReset={settings.autoStopSilenceMs !== DEFAULT_SETTINGS.autoStopSilenceMs ? () => onUpdateSettings({ autoStopSilenceMs: DEFAULT_SETTINGS.autoStopSilenceMs }) : undefined}
@@ -1166,10 +1172,12 @@ export const SettingsPanel = memo(function SettingsPanel({
                 ))}
               </div>}
             >
-              <p className="text-xs text-on-surface-variant">
+              <p className="text-[length:var(--ui-font-caption)] text-on-surface-variant">
                 End hands-free recordings after a pause
               </p>
             </SettingsRow>
+            </SettingsGroup>
+            <SettingsGroup>
             <SettingsDisclosure title="Advanced" layout="rows">
             <SettingToggle
               targetId="standby" title="Warm microphone standby"
@@ -1194,30 +1202,37 @@ export const SettingsPanel = memo(function SettingsPanel({
                 onChange={() => onUpdateSettings({ soundCuesEnabled: !settings.soundCuesEnabled })}
               />
               <SettingsBranch open={settings.soundCuesEnabled}>
-                <label data-setting-target="sound-volume" className="block text-xs font-medium text-on-surface-variant">
-                  Volume · {settings.soundCueVolume}%
-                  <input
-                    className="mt-2 block w-full accent-primary"
+                <SettingsRow
+                  targetId="sound-volume"
+                  title="Volume"
+                  description={`${settings.soundCueVolume}%`}
+                  control={<input
+                    className="w-full accent-primary"
                     type="range"
                     min="0"
                     max="100"
                     step="5"
                     value={settings.soundCueVolume}
+                    aria-label="Sound cue volume"
                     onChange={(event) => onUpdateSettings({ soundCueVolume: Number(event.target.value) })}
-                  />
-                </label>
-                <div className="flex flex-wrap gap-2" aria-label="Preview sound cues">
-                  {(['start', 'stop', 'success', 'failure'] as const).map((cue: SoundCue) => (
-                    <Button
-                      key={cue}
-                      type="button"
-                      onClick={() => playSoundCue(cue, settings.soundCueVolume)}
-                      className="h-8 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 text-xs font-medium capitalize text-on-surface hover:bg-surface-container"
-                    >
-                      {cue}
-                    </Button>
-                  ))}
-                </div>
+                  />}
+                />
+                <SettingsRow title="Preview" description="Play each local cue">
+                  <div className="mt-2 flex flex-wrap gap-2" aria-label="Preview sound cues">
+                    {(['start', 'stop', 'success', 'failure'] as const).map((cue: SoundCue) => (
+                      <Button
+                        key={cue}
+                        type="button"
+                        onClick={() => playSoundCue(cue, settings.soundCueVolume)}
+                        size="sm"
+                        aria-label={`Preview ${cue} sound`}
+                        className="capitalize"
+                      >
+                        {cue}
+                      </Button>
+                    ))}
+                  </div>
+                </SettingsRow>
                 <SettingToggle
                   targetId="meeting-cues" title="Meeting cues"
                   description="Also play cues during meeting capture"
@@ -1233,21 +1248,24 @@ export const SettingsPanel = memo(function SettingsPanel({
               onEnabledChange={(smartAutoStopEnabled) => onUpdateSettings({ smartAutoStopEnabled })}
             />
             </SettingsDisclosure>
+            </SettingsGroup>
+            </div>
           </SettingsSection>
 
-          <SettingsSection hideHeading pageId="ai" activePage={activeCat} title="AI & models">
-            <button
-              type="button"
-              onClick={() => openPage('ai-transcription')}
-              className="flex w-full items-center gap-4 px-1 py-1 text-left hover:text-primary"
-            >
-              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-surface-container-high text-primary"><SettingsNavIcon icon="recording" /></span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-sm font-semibold text-on-surface">Speech-to-text</span>
-                <span className="mt-0.5 block truncate text-xs text-on-surface-variant">{selectedRuntime?.label ?? AVAILABLE_MODEL_OPTIONS.find((option) => option.value === settings.model)?.label ?? settings.model} · {selectedRuntime?.installState ?? 'Local model'}</span>
-              </span>
-              <span className="text-xs font-semibold text-on-surface-variant">Configure <span aria-hidden="true">›</span></span>
-            </button>
+          <SettingsSection hideHeading card={false} pageId="ai" activePage={activeCat} title="AI & models">
+            <SettingsGroup>
+              <button
+                type="button"
+                onClick={() => openPage('ai-transcription')}
+                className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              >
+                <span className="settings-title-description">
+                  <span className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">Speech-to-text</span>
+                  <span className="mt-0.5 block text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">{selectedRuntime?.label ?? AVAILABLE_MODEL_OPTIONS.find((option) => option.value === settings.model)?.label ?? settings.model} · {selectedRuntime?.installState ?? 'Local model'}</span>
+                </span>
+                <span aria-hidden="true" className="text-on-surface-variant">›</span>
+              </button>
+            </SettingsGroup>
 
           </SettingsSection>
 
@@ -1282,7 +1300,7 @@ export const SettingsPanel = memo(function SettingsPanel({
 {isRecording && <p className="text-xs text-primary">Stop recording before changing model.</p>}
 {modelAvailable === false && modelDownload.phase === 'idle' && (
                 <div className="flex items-center rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
-                  <span>Model not downloaded</span><button type="button" onClick={() => void downloadModel()} className="ml-auto underline">Download</button>
+                  <span>Model not downloaded</span><Button type="button" variant="ghost" size="xs" onClick={() => void downloadModel()} className="ml-auto">Download</Button>
                 </div>
               )}
 {modelDownload.phase === 'downloading' && (
@@ -1291,7 +1309,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                   <div className="h-1.5 overflow-hidden rounded-full bg-surface-container-highest"><div role="progressbar" aria-valuenow={downloadProgress ?? undefined} aria-valuemin={0} aria-valuemax={100} aria-valuetext={downloadProgress === null ? 'Model installation in progress' : `Download progress: ${downloadProgress} percent`} className={`h-full rounded-full bg-primary ${downloadProgress === null ? 'model-download-indeterminate' : 'transition-all duration-200'}`} style={downloadProgress === null ? undefined : { width: `${downloadProgress}%` }} /></div>
                 </div>
               )}
-{modelDownload.phase === 'error' && <div className="flex items-center rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"><span>{modelDownload.message}</span><button type="button" onClick={() => void downloadModel()} className="ml-auto underline">Retry</button></div>}</SettingsRow>
+{modelDownload.phase === 'error' && <div className="flex items-center rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"><span>{modelDownload.message}</span><Button type="button" variant="ghost" size="xs" onClick={() => void downloadModel()} className="ml-auto">Retry</Button></div>}</SettingsRow>
             <TranscriptionModelStorage models={runtimeModels} selectedModel={settings.model} busy={isRecording} />
             <SettingsRow title={<>Language</>} targetId="language" disabled={isRecording || englishOnly} onReset={settings.language !== DEFAULT_SETTINGS.language ? () => onUpdateSettings({ language: DEFAULT_SETTINGS.language }) : undefined} control={<Select value={settings.language} onChange={(language) => onUpdateSettings({ language })} disabled={isRecording || englishOnly} items={LANGUAGE_OPTIONS} />}><p className="text-xs text-on-surface-variant">{englishOnly ? 'English only — use Whisper Large Turbo for others' : 'Auto-detect picks the language each time'}</p></SettingsRow>
             <SettingsDisclosure title="Advanced" layout="rows">
@@ -1330,8 +1348,8 @@ export const SettingsPanel = memo(function SettingsPanel({
               <SettingToggle targetId="developer-terms" title="Developer terms" description="Use developer vocabulary in technical modes and IDE contexts" checked={settings.codeVocabEnabled} defaultChecked={DEFAULT_SETTINGS.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
               <SettingsBranch open={settings.codeVocabEnabled}>
                 <div data-setting-target="project-scan" className="settings-field">
-                  <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface"><MiddleTruncate value={settings.codeVocabFolder || 'No folder — built-in developer terms only'} /></p>
-                  <button type="button" onClick={(event) => openEditor('scan', event.currentTarget)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage project scan</button>
+                  <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.codeVocabFolder ? <MiddleTruncate value={settings.codeVocabFolder} /> : 'No folder — built-in developer terms only'}</p>
+                  <Button type="button" size="sm" onClick={(event) => openEditor('scan', event.currentTarget)}>Manage project scan</Button>
                   <p className="text-xs text-on-surface-variant">Scanned locally. Build and dependency folders are skipped.</p>
                 </div>
               </SettingsBranch>
@@ -1345,14 +1363,16 @@ export const SettingsPanel = memo(function SettingsPanel({
             </SettingsDisclosure>
           </SettingsSection>
 
-          <SettingsSection hideHeading pageId="delivery" activePage={activeCat} title="Delivery">
+          <SettingsSection hideHeading card={false} pageId="delivery" activePage={activeCat} title="Delivery">
+            <div className="settings-groups">
+            <SettingsGroup title="Pasting">
             <SettingToggle targetId="auto-paste" title="Auto-paste" label="Auto paste" description={autoPasteDeliveryDescription(settings)} checked={autoPasteOn} defaultChecked={DEFAULT_SETTINGS.autoPaste} disabled={saveToFile} onChange={() => onUpdateSettings({ autoPaste: !settings.autoPaste })} />
             <SettingsBranch open={settings.autoPaste}>
-              {saveToFile && <p role="status" data-tone="accent" className="settings-callout text-xs text-on-surface">Auto-paste is paused; the stored preference remains on.</p>}
+              {saveToFile && <p role="status" data-tone="accent" className="settings-callout text-[length:var(--ui-font-caption)] text-on-surface">Auto-paste is paused; the stored preference remains on.</p>}
               {!saveToFile && accessibilityGranted === false && (
-                <div className="flex items-center gap-2 text-xs text-primary">
+                <div className="flex items-center gap-2 text-[length:var(--ui-font-caption)] text-primary">
                   <span>Accessibility permission is required to paste into the active app.</span>
-                  <button type="button" onClick={requestAccessibility} className="ml-auto underline">Grant</button>
+                  <Button type="button" variant="ghost" size="xs" onClick={requestAccessibility} className="ml-auto">Grant</Button>
                 </div>
               )}
               <div
@@ -1383,30 +1403,32 @@ export const SettingsPanel = memo(function SettingsPanel({
                   );
                 }}
                 items={PASTE_LAST_SHORTCUT_OPTIONS}
-              />}><p className="text-xs leading-relaxed text-on-surface-variant">
+              />}><p className="text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
                 {settings.pasteLastShortcut === null
                   ? 'Paste your latest dictation again from anywhere'
                   : `Press ${pasteLastShortcutLabel(settings.pasteLastShortcut)} to paste your latest dictation again`}
               </p>
-{pasteLastShortcutError && <p role="alert" className="text-xs text-error">{pasteLastShortcutError}</p>}
+{pasteLastShortcutError && <p role="alert" className="text-[length:var(--ui-font-caption)] text-error">{pasteLastShortcutError}</p>}
 {accessibilityGranted === false && settings.pasteLastShortcut !== null && (
-                <div className="flex items-center gap-2 text-xs text-primary">
-                  <span>Accessibility permission is required for the global Paste Last shortcut.</span>
-                  <button type="button" onClick={requestAccessibility} className="underline">Grant</button>
+                <div className="flex items-center gap-2 text-[length:var(--ui-font-caption)] text-primary">
+                  <span>Accessibility permission is required for the global Paste Last shortcut</span>
+                  <Button type="button" variant="ghost" size="xs" onClick={requestAccessibility}>Grant</Button>
                 </div>
               )}</SettingsRow>
-            <>
+            </SettingsGroup>
+            <SettingsGroup title="Files">
               <SettingToggle targetId="file-output" title="Save transcript to file" description="Write each completed transcription to a .txt file" checked={settings.saveTranscript} defaultChecked={DEFAULT_SETTINGS.saveTranscript} onChange={() => onUpdateSettings({ saveTranscript: !settings.saveTranscript })} />
               <SettingToggle title="Save audio to file" description="Write each recording to a .wav file" checked={settings.saveAudio} defaultChecked={DEFAULT_SETTINGS.saveAudio} onChange={() => onUpdateSettings({ saveAudio: !settings.saveAudio })} />
               <SettingsBranch open={saveToFile}>
                 <div className="settings-field">
-                  <p className="text-xs text-on-surface-variant">Shared output folder</p>
-                  <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface"><MiddleTruncate value={settings.outputDir || 'Documents/Murmur (default)'} /></p>
-                  <div className="flex gap-3"><button type="button" onClick={() => void chooseOutputFolder()} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Choose folder…</button>{settings.outputDir && <button type="button" onClick={() => onUpdateSettings({ outputDir: '' })} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}</div>
-                  <p className="text-xs text-on-surface-variant">{fileOutputDeliveryDescription(settings)}</p>
+                  <p className="text-[length:var(--ui-font-caption)] text-on-surface-variant">Shared output folder</p>
+                  <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-[length:var(--ui-font-caption)] text-on-surface">{settings.outputDir ? <MiddleTruncate value={settings.outputDir} /> : 'Documents/Murmur (default)'}</p>
+                  <div className="flex gap-2"><Button type="button" size="sm" onClick={() => void chooseOutputFolder()}>Choose folder…</Button>{settings.outputDir && <Button type="button" size="sm" onClick={() => onUpdateSettings({ outputDir: '' })}>Reset to default</Button>}</div>
+                  <p className="text-[length:var(--ui-font-caption)] text-on-surface-variant">{fileOutputDeliveryDescription(settings)}</p>
                 </div>
               </SettingsBranch>
-            </>
+            </SettingsGroup>
+            <SettingsGroup title="History">
             <SettingToggle
               targetId="history"
               title="Save transcription history"
@@ -1415,9 +1437,19 @@ export const SettingsPanel = memo(function SettingsPanel({
               onChange={() => onUpdateSettings({ retainHistory: !settings.retainHistory })}
             />
             {notchPillInstalled && <SettingToggle title="Mirror captions to NotchPill" description="Show your latest dictation in NotchPill" checked={settings.mirrorToNotchPill} defaultChecked={DEFAULT_SETTINGS.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />}
-            <SettingsDisclosure title="Advanced" description="Per-app delivery and writing" layout="stack" targetId="app-overrides">
-              <button type="button" onClick={(event) => openEditor('app-overrides', event.currentTarget)} className="settings-quiet-btn flex w-full items-center justify-between text-left">Manage app overrides <span aria-hidden="true">›</span></button>
+            </SettingsGroup>
+            <SettingsGroup>
+            <SettingsDisclosure title="Advanced" description="Per-app delivery and writing" layout="rows" targetId="app-overrides">
+              <button type="button" aria-label="Manage app overrides" data-setting-target="app-overrides" onClick={(event) => openEditor('app-overrides', event.currentTarget)} className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+                <span className="settings-title-description">
+                  <span className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">Manage app overrides</span>
+                  <span className="mt-0.5 block text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">Set delivery and writing preferences for specific apps</span>
+                </span>
+                <span aria-hidden="true" className="text-on-surface-variant">›</span>
+              </button>
             </SettingsDisclosure>
+            </SettingsGroup>
+            </div>
           </SettingsSection>
 
           <SettingsSection hideHeading plain pageId="modes" activePage={activeCat} title="Modes">
@@ -1434,86 +1466,78 @@ export const SettingsPanel = memo(function SettingsPanel({
             </div>
           </SettingsSection>
 
-          <SettingsSection hideHeading pageId="meetings" activePage={activeCat} title="Meetings">
-            <SettingsCallout title="Stored separately from dictation">
-              Meetings never appear in dictation history.
-            </SettingsCallout>
-            <div className="settings-stack">
+          <SettingsSection hideHeading card={false} pageId="meetings" activePage={activeCat} title="Meetings">
+            <div className="settings-groups">
+              <SettingsGroup title="Meeting capture">
               <SettingToggle
                 targetId="meeting-suggestions"
                 title="Suggest Notetaker for Calendar meetings"
-                description="Reads your Calendar to offer notes when a meeting starts. Nothing records until you accept."
+                description="Use your Calendar to offer a prompt for supported calls"
                 checked={settings.meetingSuggestionsEnabled} defaultChecked={DEFAULT_SETTINGS.meetingSuggestionsEnabled}
                 onChange={() => onUpdateSettings({ meetingSuggestionsEnabled: !settings.meetingSuggestionsEnabled })}
               />
-              <SettingsBranch open={settings.meetingSuggestionsEnabled}>
-              <div data-setting-target="meeting-calendar"><p className="text-xs leading-relaxed text-on-surface-variant">
-                Works with Zoom, Teams, Slack, Webex, FaceTime, and browsers. Murmur never reads URLs or window titles.
-              </p>
-              <button
-                type="button"
-                className="w-fit text-xs font-medium text-on-surface-variant underline hover:text-primary"
-                onClick={() => {
-                  setCalendarSettingsError(null);
-                  void openCalendarPreferences().catch(() => {
-                    setCalendarSettingsError('Calendar settings could not be opened. Open Privacy & Security → Calendars in System Settings.');
-                  });
-                }}
-              >
-                Open Calendar settings…
-              </button>
-              </div>
+              <SettingsBranch open={settings.meetingSuggestionsEnabled} className="settings-branch-stack">
+                <SettingsDisclosure title="Calendar details" layout="stack" targetId="meeting-calendar" open={calendarDetailsOpen} onOpenChange={setCalendarDetailsOpen}>
+                  <p className="text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
+                    Supports Zoom, Teams, Slack, Webex, FaceTime, and browsers without reading URLs or window titles
+                  </p>
+                  <p className="text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
+                    Record only after you accept a meeting suggestion
+                  </p>
+                  <button
+                    type="button"
+                    className="settings-quiet-btn"
+                    onClick={() => {
+                      setCalendarSettingsError(null);
+                      void openCalendarPreferences().catch(() => {
+                        setCalendarSettingsError('Calendar settings could not be opened. Open Privacy & Security → Calendars in System Settings.');
+                      });
+                    }}
+                  >
+                    Open Calendar settings…
+                  </button>
+                </SettingsDisclosure>
               </SettingsBranch>
               {calendarSettingsError && (
-                <p role="alert" className="text-xs text-error">{calendarSettingsError}</p>
+                <p role="alert" className="text-[length:var(--ui-font-caption)] text-error">{calendarSettingsError}</p>
               )}
-            </div>
-            <SettingToggle
-              targetId="meeting-audio"
-              title="Keep meeting audio"
-              description="Keep recordings after transcription"
-              checked={settings.meetingRetainAudio} defaultChecked={DEFAULT_SETTINGS.meetingRetainAudio}
-              onChange={() => onUpdateSettings({ meetingRetainAudio: !settings.meetingRetainAudio })}
-            />
-            <MeetingDiarizationSettings
-              enabled={settings.meetingDiarization}
-              onEnabledChange={(meetingDiarization) => onUpdateSettings({ meetingDiarization })}
-            />
-            <SettingsDisclosure title="Advanced" layout="rows">
-            <SettingToggle
-              targetId="meeting-echo-cancellation"
-              title="Reduce speaker echo"
-              description="Remove speaker audio from your mic. Experimental."
-              checked={settings.meetingEchoCancellationEnabled} defaultChecked={DEFAULT_SETTINGS.meetingEchoCancellationEnabled}
-              onChange={() => onUpdateSettings({ meetingEchoCancellationEnabled: !settings.meetingEchoCancellationEnabled })}
-            />
-            <div data-setting-target="meeting-retention" className="grid gap-4 rounded-lg transition-shadow sm:grid-cols-2 [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              <label className="text-sm font-medium text-on-surface">
-                Keep transcripts by age
-                <select
-                  value={settings.meetingRetentionDays}
-                  onChange={(event) => onUpdateSettings({ meetingRetentionDays: Number(event.target.value) })}
-                  className="mt-2 h-9 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-2 text-sm text-on-surface"
-                >
-                  <option value={0}>No age limit</option>
-                  <option value={30}>30 days</option>
-                  <option value={90}>90 days</option>
-                  <option value={365}>1 year</option>
-                </select>
-              </label>
-              <label className="text-sm font-medium text-on-surface">
-                Session limit
-                <input
-                  type="number"
-                  min={1}
-                  max={10000}
-                  value={settings.meetingMaxSessions}
-                  onChange={(event) => onUpdateSettings({ meetingMaxSessions: Math.max(1, Math.min(10000, Number(event.target.value) || 1)) })}
-                  className="mt-2 h-9 w-full rounded-lg border border-outline-variant bg-surface-container-lowest px-2 text-sm text-on-surface"
+              <SettingToggle
+                targetId="meeting-audio"
+                title="Keep meeting audio"
+                checked={settings.meetingRetainAudio} defaultChecked={DEFAULT_SETTINGS.meetingRetainAudio}
+                onChange={() => onUpdateSettings({ meetingRetainAudio: !settings.meetingRetainAudio })}
+              />
+              <SettingsDisclosure title="Advanced" description="Echo and retention" layout="rows">
+                <SettingToggle
+                  targetId="meeting-echo-cancellation"
+                  title="Reduce speaker echo"
+                  description="Experimental"
+                  checked={settings.meetingEchoCancellationEnabled} defaultChecked={DEFAULT_SETTINGS.meetingEchoCancellationEnabled}
+                  onChange={() => onUpdateSettings({ meetingEchoCancellationEnabled: !settings.meetingEchoCancellationEnabled })}
                 />
-              </label>
+                <SettingsRow
+                  targetId="meeting-retention"
+                  title="Keep transcripts by age"
+                  control={<Select aria-label="Keep transcripts by age" value={String(settings.meetingRetentionDays)} onChange={(value) => onUpdateSettings({ meetingRetentionDays: Number(value) })} items={[
+                    { value: '0', label: 'No age limit' },
+                    { value: '30', label: '30 days' },
+                    { value: '90', label: '90 days' },
+                    { value: '365', label: '1 year' },
+                  ]} />}
+                />
+                <SettingsRow
+                  title="Session limit"
+                  control={<Input aria-label="Session limit" type="number" min={1} max={10000} value={settings.meetingMaxSessions} onChange={(event) => onUpdateSettings({ meetingMaxSessions: Math.max(1, Math.min(10000, Number(event.target.value) || 1)) })} />}
+                />
+              </SettingsDisclosure>
+              </SettingsGroup>
+              <SettingsGroup title="Speaker labels">
+                <MeetingDiarizationSettings
+                  enabled={settings.meetingDiarization}
+                  onEnabledChange={(meetingDiarization) => onUpdateSettings({ meetingDiarization })}
+                />
+              </SettingsGroup>
             </div>
-            </SettingsDisclosure>
           </SettingsSection>
 
           <SettingsSection hideHeading card={false} pageId="performance" activePage={activeCat} title="Performance Lab">
@@ -1619,7 +1643,6 @@ export const SettingsPanel = memo(function SettingsPanel({
                 if (activeCat === 'customize') setCustomizationDetail('commands');
               }}
               restoreFocus={() => editorOpenerRef.current?.isConnected ? editorOpenerRef.current : contentRef.current?.querySelector<HTMLElement>('[data-setting-target="vocabulary"], [data-setting-target="aliases"], [data-setting-target="knowledge"], [data-setting-target="commands"], [data-setting-target="app-overrides"] button, [aria-label="Modes"] [aria-pressed="true"], .settings-back-btn') ?? searchRef.current}
-              backLabel={activeCat === 'customize' ? 'Back to Customize' : undefined}
             />
       )}
     </div>

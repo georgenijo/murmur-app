@@ -39,7 +39,10 @@ for (const { appearance, width, height, label } of surfaceCases()) {
       await expect(create).toBeFocused();
       await create.click();
       await expect(first).toBeFocused();
-      await dialog.getByLabel('Voice command type', { exact: true }).selectOption('snippet');
+      const commandType = dialog.getByRole('combobox', { name: 'Voice command type', exact: true });
+      await commandType.click();
+      await dialog.getByRole('option', { name: 'Multiline snippet', exact: true }).click();
+      await expect(commandType).toHaveText('Multiline snippet');
       await dialog.getByLabel('Voice command content', { exact: true }).fill('line one');
       await page.keyboard.press('Shift+Enter');
       const content = dialog.getByLabel('Voice command content', { exact: true });
@@ -75,7 +78,7 @@ for (const { appearance, width, height, label } of surfaceCases()) {
       await expect(input).toBeFocused();
       await input.fill('DELETE');
       await page.keyboard.press('Shift+Tab');
-      await expect(dialog.getByRole('button', { name: 'Delete everything…', exact: true })).toBeFocused();
+      await expect(dialog.getByRole('button', { name: 'Delete everything', exact: true })).toBeFocused();
       await page.keyboard.press('Tab');
       await expect(input).toBeFocused();
       await page.keyboard.press('Escape');

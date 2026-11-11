@@ -70,6 +70,7 @@ for (const appearance of ['light', 'dark']) {
     await expect(page.getByRole('button', { name: 'Fixture menu' })).toHaveCSS('box-shadow', /0px 0px 0px 2px/);
     await page.keyboard.press('Enter');
     const menu = page.getByRole('menu');
+    await expect(menu).not.toHaveAttribute('data-starting-style');
     await expect(menu).toHaveCSS('scale', 'none');
     await expect(menu).toHaveCSS('padding', '4px');
     await expect(menu).toHaveCSS('border-radius', '8px');

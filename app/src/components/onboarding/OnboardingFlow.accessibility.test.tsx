@@ -50,7 +50,7 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     if (step === 'accessibility') return;
     await click(axGranted ? 'Continue' : 'Skip for now');
     if (step === 'systemAudio') return;
-    await click('Skip meetings for now');
+    await click('Skip for now');
   };
 
   beforeEach(() => {
@@ -116,8 +116,8 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
       ['Get started', 'Microphone access'],
       ['Continue', 'Accessibility access'],
       ['Continue', 'System audio access'],
-      ['Skip meetings for now', 'Calendar access'],
-      ['Skip Calendar for now', 'Speech model'],
+      ['Skip for now', 'Calendar access'],
+      ['Skip for now', 'Speech model'],
       ['Continue', 'Recording shortcut'],
       ['Continue', "You're all set"],
     ];
@@ -348,7 +348,7 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     vi.useFakeTimers();
     await toStep(step);
     expect(native.invoke).not.toHaveBeenCalledWith(step === 'systemAudio' ? 'request_system_audio_permission' : 'request_calendar_permission');
-    expect(container.textContent).toContain('Continue shows the macOS permission prompt.');
+    expect(container.textContent).not.toContain('Continue shows the macOS permission prompt.');
     await click('Continue');
     expect(container.querySelector('[data-fresh="true"]')?.textContent).toBe('Allowed');
     await advance(900);
@@ -462,7 +462,7 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     await click('Open System Settings…');
     expectDevRecovery();
     await click('Skip for now');
-    await click('Skip meetings for now');
+    await click('Skip for now');
     expectDevRecovery();
     expect(native.invoke.mock.calls.some(([command]) => /^reset_.*_permission$/.test(command))).toBe(false);
   });
@@ -481,7 +481,7 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     await click('Murmur is listed but still not detected? Reset permission…');
     expect(native.invoke).toHaveBeenCalledWith('reset_accessibility_permission');
     await click('Skip for now');
-    await click('Skip meetings for now');
+    await click('Skip for now');
     await click('Reset Calendar permission…');
     expect(native.invoke).toHaveBeenCalledWith('reset_calendar_permission');
   });

@@ -62,10 +62,10 @@ export function MeetingMetadataEditor({ session, disabled, onSave, onApplyCalend
       {draft ? (
         <form className="meeting-detail-header-form" aria-label="Name meeting" aria-busy={saving} onSubmit={(event) => { event.preventDefault(); void save(); }}>
           <fieldset disabled={disabled || saving || applyingCalendar} className="space-y-2">
-            <label className="block text-xs font-semibold text-on-surface">Meeting title
+            <label className="meeting-field-label">Meeting title
               <input autoFocus value={title} maxLength={200} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="Untitled meeting" className="meeting-field mt-1" />
             </label>
-            <label className="block text-xs font-semibold text-on-surface">Attendees, one per line
+            <label className="meeting-field-label">Attendees, one per line
               <textarea value={attendees} maxLength={20100} rows={2} onChange={(event) => setDraft({ ...draft, attendees: event.target.value })} className="meeting-field mt-1 resize-y" />
             </label>
             <div className="flex gap-2">

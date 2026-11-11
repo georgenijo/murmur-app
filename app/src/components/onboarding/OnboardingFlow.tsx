@@ -529,7 +529,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             </>}
             {step === 'microphone' && <>
               <StepHeading icon={Mic} title="Microphone access" subtitle="Murmur records your speech for local transcription. Audio is discarded after transcription." />
-              <PermissionCard icon={Mic} label="Microphone" state={micGranted ? 'granted' : micDenied ? 'denied' : 'notSet'} waiting={micBusy || micWaiting} fresh={freshGrant === step} onAllow={micDenied ? handleOpenMicSettings : handleAllowMic} />
+              <PermissionCard icon={Mic} label="Microphone" state={micGranted ? 'granted' : micDenied ? 'denied' : 'notSet'} waiting={micBusy || micWaiting} fresh={freshGrant === step} />
               {micWaiting && <p className="onboarding-copy">Waiting for your answer in the macOS dialog…</p>}
               {micDenied && <><p className="onboarding-copy">Enable {permissionOwner} under Privacy &amp; Security → Microphone, then come back. This screen updates automatically.</p>{isDev ? <DevPermissionHelp /> : <button className="onboarding-link" onClick={handleResetMic}>Reset permission…</button>}</>}
               {micError && <ErrorMessage message={micError} />}
@@ -537,28 +537,26 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             </>}
             {step === 'accessibility' && <>
               <StepHeading icon={Accessibility} title="Accessibility access" subtitle="Use the global recording key and auto-paste while Murmur is in the background." />
-              <PermissionCard icon={Accessibility} label="Accessibility" state={axGranted ? 'granted' : 'notSet'} waiting={axBusy || axGranted === null} fresh={freshGrant === step} onAllow={handleGrantAx} />
+              <PermissionCard icon={Accessibility} label="Accessibility" state={axGranted ? 'granted' : 'notSet'} waiting={axBusy || axGranted === null} fresh={freshGrant === step} />
               {!axGranted && <><p className="onboarding-copy">Turn on {permissionOwner} in System Settings, then come back. This screen updates automatically.</p>{axRequested && (isDev ? <DevPermissionHelp /> : <button className="onboarding-link" onClick={handleResetAx}>Murmur is listed but still not detected? Reset permission…</button>)}</>}
               {axError && <ErrorMessage message={axError} />}
               <WizardNavigationRow onBack={goBack} onNext={axGranted ? goNext : handleGrantAx} onSkip={goNext} nextEnabled={!axBusy} defaultAction={axGranted === true} nextLabel={axGranted ? 'Continue' : 'Open System Settings…'} skippable={!axGranted} skipLabel="Skip for now" />
             </>}
             {step === 'systemAudio' && <>
               <StepHeading icon={AudioLines} title="System audio access" subtitle="Optional for meetings. Capture audio from your Mac alongside your microphone." />
-              <PermissionCard icon={AudioLines} label="System audio" state={systemAudioStatus} waiting={systemAudioBusy} fresh={freshGrant === step} onAllow={systemAudioStatus === 'denied' ? () => void openSystemAudioPreferences().catch(() => setSystemAudioError('Could not open System Audio settings.')) : handleRequestSystemAudio} />
-              {systemAudioStatus === 'unknown' && <p className="onboarding-copy">Continue shows the macOS permission prompt.</p>}
+              <PermissionCard icon={AudioLines} label="System audio" state={systemAudioStatus} waiting={systemAudioBusy} fresh={freshGrant === step} />
               <p className="onboarding-copy">{systemAudioStatus === 'unsupported' ? 'Meeting capture requires macOS 14.2 or newer. Dictation is still available.' : 'macOS may list Murmur under Privacy & Security → Screen & System Audio Recording.'}</p>
               {(systemAudioStatus === 'denied' || systemAudioStatus === 'granted') && <button className="onboarding-link" disabled={systemAudioBusy} onClick={() => void handleRequestSystemAudio()}>{systemAudioStatus === 'denied' ? 'Check again' : 'Re-check system audio access'}</button>}
               {systemAudioError && <ErrorMessage message={systemAudioError} />}
-              <WizardNavigationRow onBack={goBack} onNext={systemAudioStatus === 'denied' ? () => void openSystemAudioPreferences() : systemAudioStatus === 'unknown' ? handleRequestSystemAudio : goNext} onSkip={goNext} nextEnabled={!systemAudioBusy} defaultAction={systemAudioStatus !== 'denied' && systemAudioStatus !== 'unknown'} nextLabel={systemAudioStatus === 'denied' ? 'Open System Settings…' : 'Continue'} skippable={systemAudioStatus !== 'granted'} skipLabel="Skip meetings for now" />
+              <WizardNavigationRow onBack={goBack} onNext={systemAudioStatus === 'denied' ? () => void openSystemAudioPreferences() : systemAudioStatus === 'unknown' ? handleRequestSystemAudio : goNext} onSkip={goNext} nextEnabled={!systemAudioBusy} defaultAction={systemAudioStatus !== 'denied' && systemAudioStatus !== 'unknown'} nextLabel={systemAudioStatus === 'denied' ? 'Open System Settings…' : 'Continue'} skippable={systemAudioStatus !== 'granted'} skipLabel="Skip for now" />
             </>}
             {step === 'calendar' && <>
               <StepHeading icon={CalendarDays} title="Calendar access" subtitle="Optional for meetings. Offer event names and attendees for you to confirm, without changing your calendar." />
-              <PermissionCard icon={CalendarDays} label="Calendar" state={calendarStatus} waiting={calendarBusy} fresh={freshGrant === step} onAllow={calendarStatus === 'denied' ? handleOpenCalendarSettings : handleRequestCalendar} />
-              {calendarStatus === 'notDetermined' && <p className="onboarding-copy">Continue shows the macOS permission prompt.</p>}
+              <PermissionCard icon={CalendarDays} label="Calendar" state={calendarStatus} waiting={calendarBusy} fresh={freshGrant === step} />
               <p className="onboarding-copy">{calendarStatus === 'denied' ? `Enable ${permissionOwner} under Privacy & Security → Calendars, or name meetings manually.` : calendarStatus === 'restricted' || calendarStatus === 'unsupported' ? 'You can still name meetings manually.' : 'Calendar details stay on this Mac.'}</p>
               {calendarStatus === 'denied' && (isDev ? <DevPermissionHelp /> : <button className="onboarding-link" disabled={calendarBusy} onClick={handleResetCalendar}>Reset Calendar permission…</button>)}
               {calendarError && <ErrorMessage message={calendarError} />}
-              <WizardNavigationRow onBack={goBack} onNext={calendarStatus === 'denied' ? handleOpenCalendarSettings : calendarStatus === 'notDetermined' ? handleRequestCalendar : goNext} onSkip={goNext} nextEnabled={!calendarBusy} defaultAction={calendarStatus !== 'denied' && calendarStatus !== 'notDetermined'} nextLabel={calendarStatus === 'denied' ? 'Open System Settings…' : 'Continue'} skippable={calendarStatus !== 'granted'} skipLabel="Skip Calendar for now" />
+              <WizardNavigationRow onBack={goBack} onNext={calendarStatus === 'denied' ? handleOpenCalendarSettings : calendarStatus === 'notDetermined' ? handleRequestCalendar : goNext} onSkip={goNext} nextEnabled={!calendarBusy} defaultAction={calendarStatus !== 'denied' && calendarStatus !== 'notDetermined'} nextLabel={calendarStatus === 'denied' ? 'Open System Settings…' : 'Continue'} skippable={calendarStatus !== 'granted'} skipLabel="Skip for now" />
             </>}
             {step === 'model' && <>
               <StepHeading icon={Cpu} title="Speech model" subtitle="Download a local model once, then transcribe offline." />
@@ -613,7 +611,7 @@ function DevPermissionHelp() {
   return <p className="onboarding-copy">In this development session, grant access to the terminal app that launched Murmur, then restart the dev server. If access stays stale, turn that terminal's permission off and on in System Settings.</p>;
 }
 
-function PermissionCard({ icon: Icon, label, state, waiting = false, fresh = false, onAllow }: { icon: typeof Mic; label: string; state: string; waiting?: boolean; fresh?: boolean; onAllow: () => void }) {
+function PermissionCard({ icon: Icon, label, state, waiting = false, fresh = false }: { icon: typeof Mic; label: string; state: string; waiting?: boolean; fresh?: boolean }) {
   const granted = state === 'granted';
   const denied = state === 'denied';
   const StatusIcon = granted ? Check : waiting ? LoaderCircle : denied || state === 'restricted' ? CircleAlert : Minus;
@@ -624,7 +622,6 @@ function PermissionCard({ icon: Icon, label, state, waiting = false, fresh = fal
     <span className="onboarding-permission-state" data-tone={granted ? 'success' : denied ? 'error' : 'neutral'} data-fresh={granted && fresh}>
       <StatusIcon aria-hidden="true" size={16} className={waiting && !granted ? 'onboarding-spinner' : undefined} />{text}
     </span>
-    {!granted && state !== 'unsupported' && state !== 'restricted' && <button type="button" className="dialog-pill-btn onboarding-permission-allow" aria-label={`Allow ${label.toLowerCase()} access`} disabled={waiting} onClick={onAllow}>Allow…</button>}
   </div>;
 }
 

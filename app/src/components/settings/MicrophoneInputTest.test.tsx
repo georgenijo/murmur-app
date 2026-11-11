@@ -198,6 +198,15 @@ describe('MicrophoneInputTest', () => {
     expect(mocks.invoke).not.toHaveBeenCalledWith('verify_microphone_preview_signal', expect.anything());
   });
 
+  it('keeps an empty live level track in the control column', async () => {
+    await render();
+
+    const meter = container.querySelector('[role="meter"]') as HTMLElement;
+    expect(meter).toBeTruthy();
+    expect(meter.closest('.settings-live-input-level-control')).toBeTruthy();
+    expect(meter.closest('.settings-live-input-level-row')?.className).toContain('settings-live-input-level-row');
+  });
+
   it('starts an exact preview automatically and paints level events through animation frames', async () => {
     await render();
     expect(mocks.invoke).toHaveBeenCalledWith('start_microphone_preview', {

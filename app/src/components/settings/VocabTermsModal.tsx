@@ -1,6 +1,8 @@
 import { defaultButtonKeyDown } from '../../lib/defaultButton';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { RankedTerm, VocabScanSummary } from '../../lib/settings';
+import { Button, Input } from '../ui/FormControls';
+import { Select } from '../ui/Select';
 
 interface VocabTermsModalProps {
   /** The completed scan whose ranked terms are shown. */
@@ -52,6 +54,8 @@ export function VocabTermsModal({
     const previouslyFocused =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const onKey = (e: KeyboardEvent) => {
+      // An open dropdown inside the sheet consumes Escape to close itself.
+      if (e.defaultPrevented) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         onCloseRef.current();
@@ -200,7 +204,7 @@ export function VocabTermsModal({
               <circle cx="11" cy="11" r="7" />
               <path d="m21 21-4.3-4.3" />
             </svg>
-            <input
+            <Input
               ref={searchRef}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -208,17 +212,10 @@ export function VocabTermsModal({
               aria-label="Filter scanned terms"
               autoComplete="off"
               spellCheck={false}
-              className="min-w-0 flex-1 border-none bg-transparent text-xs text-on-surface outline-none placeholder:text-on-surface-variant"
+              className="min-w-0 flex-1 border-none bg-transparent"
             />
           </div>
-          <select
-            value={sortMode}
-            onChange={(e) => setSortMode(e.target.value as SortMode)}
-            className="cursor-pointer rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2.5 py-[7px] text-[11px] text-on-surface-variant"
-          >
-            <option value="freq">Sort: frequency</option>
-            <option value="alpha">Sort: A–Z</option>
-          </select>
+          <Select aria-label="Sort scanned terms" value={sortMode} onChange={(value) => setSortMode(value as SortMode)} items={[{ value: 'freq', label: 'Sort: frequency' }, { value: 'alpha', label: 'Sort: A–Z' }]} />
         </div>
 
         {/* list */}
@@ -235,13 +232,13 @@ export function VocabTermsModal({
         {/* footer */}
         <div className="flex items-center justify-between border-t border-outline-variant/40 px-[18px] py-2.5 text-[11px] text-on-surface-variant">
           <span>{countLabel}</span>
-          <button
+          <Button
             type="button"
             onClick={handleCopyAll}
-            className="rounded-md border border-outline-variant/40 bg-surface-container-lowest px-3 py-1.5 text-[11px] font-semibold text-on-surface-variant transition-colors hover:border-outline-variant/40"
+            size="sm"
           >
             {copied ? 'Copied ✓' : 'Copy all'}
-          </button>
+          </Button>
         </div>
       </div>
     </div>

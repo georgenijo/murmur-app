@@ -12,6 +12,8 @@ import {
   WRITING_STYLE_OPTIONS,
 } from '../../lib/settings';
 import { Select } from '../ui/Select';
+import { Button, Input } from '../ui/FormControls';
+import AnimatedSwitch from '../ui/animated-switch/animated-switch';
 
 export interface RunningApplication {
   bundleId: string;
@@ -104,16 +106,12 @@ function OverrideSelect({
   return (
     <label className="block text-xs font-medium text-on-surface">
       {label}
-      <select
+      <Select
         aria-label={`${label} for ${appLabel}`}
         value={overrideChoice(value)}
-        onChange={(event) => onChange(overrideValue(event.target.value as OverrideChoice))}
-        className="mt-1 w-full rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2.5 py-2 text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-      >
-        {OVERRIDE_OPTIONS.map((option) => (
-          <option key={option.value} value={option.value}>{option.label}</option>
-        ))}
-      </select>
+        onChange={(choice) => onChange(overrideValue(choice as OverrideChoice))}
+        items={OVERRIDE_OPTIONS}
+      />
     </label>
   );
 }
@@ -229,28 +227,23 @@ export function AppOverridesEditor({ profiles, onChange }: {
         </p>
         {availableApps.length > 0 ? (
           <div className="mt-3 flex gap-2">
-            <select
+            <Select
               aria-label="Running app"
               value={selectedApp}
-              onChange={(event) => setSelectedApp(event.target.value)}
-              className="min-w-0 flex-1 rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-            >
-              <option value="">Choose a running app…</option>
-              {availableApps.map((app) => (
-                <option key={app.bundleId} value={app.bundleId}>{app.name} — {app.bundleId}</option>
-              ))}
-            </select>
-            <button
+              onChange={setSelectedApp}
+              items={[{ value: '', label: 'Choose a running app…' }, ...availableApps.map((app) => ({ value: app.bundleId, label: `${app.name} — ${app.bundleId}` }))]}
+            />
+            <Button
               type="button"
               disabled={!selectedApp}
               onClick={() => {
                 const app = availableApps.find((candidate) => candidate.bundleId === selectedApp);
                 if (app) addProfile(app.bundleId, app.name);
               }}
-              className="shrink-0 rounded-(--ui-radius-pill) border border-outline-variant/40 bg-surface-container-high px-3 py-2 text-xs font-medium text-on-surface disabled:cursor-not-allowed disabled:opacity-50"
+              size="sm"
             >
               Add app
-            </button>
+            </Button>
           </div>
         ) : (
           <p className="mt-3 text-xs text-on-surface-variant">No unconfigured running apps are available. Use the advanced entry below.</p>
@@ -258,17 +251,16 @@ export function AppOverridesEditor({ profiles, onChange }: {
 
         <SettingsDisclosure pane="app-overrides" title="Advanced" description="Enter a bundle ID" layout="stack" targetId="app-overrides-manual">
           <div className="mt-2 space-y-2">
-            <input
+            <Input
               type="text"
               value={label}
               onChange={(event) => setLabel(event.target.value)}
               placeholder="App name (optional)"
               autoComplete="off"
               spellCheck={false}
-              className="w-full rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
             />
             <div className="flex gap-2">
-              <input
+              <Input
                 type="text"
                 value={bundleId}
                 onChange={(event) => setBundleId(event.target.value)}
@@ -277,16 +269,16 @@ export function AppOverridesEditor({ profiles, onChange }: {
                 autoCorrect="off"
                 autoCapitalize="off"
                 spellCheck={false}
-                className="min-w-0 flex-1 rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 font-mono text-xs text-on-surface placeholder:text-on-surface-variant focus:outline-none focus:ring-2 focus:ring-primary"
+                className="min-w-0 flex-1"
               />
-              <button
+              <Button
                 type="button"
                 onClick={() => addProfile(bundleId, label)}
                 disabled={!bundleId.trim()}
-                className="shrink-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs font-medium text-on-surface-variant hover:bg-surface-container hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                size="sm"
               >
                 Add
-              </button>
+              </Button>
             </div>
           </div>
         </SettingsDisclosure>
@@ -339,16 +331,11 @@ export function AppOverridesEditor({ profiles, onChange }: {
                       <h4 className="text-xs font-medium text-on-surface">Local IDE project context</h4>
                       <p className="mt-1 text-xs text-on-surface-variant">Index only selected roots in memory for symbols and <span className="font-mono">@file</span> mentions. Murmur never reads editor text, selections, or the clipboard.</p>
                     </div>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={profile.ideContextEnabled}
+                    <AnimatedSwitch
                       aria-label={`Local IDE project context for ${appLabel}`}
-                      onClick={() => updateProfile(profile.bundleId, { ideContextEnabled: !profile.ideContextEnabled })}
-                      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${profile.ideContextEnabled ? 'bg-primary' : 'bg-surface-container-highest'}`}
-                    >
-                      <span className={`inline-block h-4 w-4 rounded-full shadow transition-transform ${profile.ideContextEnabled ? 'translate-x-6 bg-on-primary' : 'translate-x-1 bg-on-surface-variant'}`} />
-                    </button>
+                      checked={profile.ideContextEnabled}
+                      onCheckedChange={(ideContextEnabled) => updateProfile(profile.bundleId, { ideContextEnabled })}
+                    />
                   </div>
                   <SettingsBranch open={profile.ideContextEnabled}>
                     <div className="space-y-2">
@@ -357,15 +344,15 @@ export function AppOverridesEditor({ profiles, onChange }: {
                           {profile.ideProjectRoots.map((root) => (
                             <li key={root} className="flex items-center gap-2 rounded-md bg-surface-container-lowest px-2 py-1.5">
                               <MiddleTruncate className="flex-1 font-mono text-xs text-on-surface" value={root} />
-                              <ConfirmActionButton label="Remove root" confirmLabel="Confirm remove" onConfirm={() => updateProfile(profile.bundleId, { ideProjectRoots: profile.ideProjectRoots.filter((candidate) => candidate !== root) })} className="shrink-0 text-xs text-on-surface-variant underline hover:text-error" />
+                              <ConfirmActionButton label="Remove root" confirmLabel="Confirm remove" onConfirm={() => updateProfile(profile.bundleId, { ideProjectRoots: profile.ideProjectRoots.filter((candidate) => candidate !== root) })} className="ui-secondary-button shrink-0" data-tone="danger" />
                             </li>
                           ))}
                         </ul>
                       ) : <p className="text-xs text-on-surface-variant">No project roots configured.</p>}
-                      <div className="flex flex-wrap gap-3">
-                        <button type="button" onClick={() => void addIdeRoot(profile.bundleId)} disabled={profile.ideProjectRoots.length >= 4} className="text-xs font-medium text-on-surface-variant underline hover:text-primary disabled:opacity-50">Add project root…</button>
-                        <button type="button" onClick={() => void refreshIdeIndex(profile.bundleId)} disabled={profile.ideProjectRoots.length === 0 || ideStatuses[profile.bundleId]?.state === 'scanning'} className="text-xs font-medium text-on-surface-variant underline hover:text-primary disabled:opacity-50">Refresh index</button>
-                        <button type="button" onClick={() => void clearIdeIndex(profile.bundleId)} disabled={profile.ideProjectRoots.length === 0} className="text-xs font-medium text-on-surface-variant underline hover:text-error disabled:opacity-50">Clear index</button>
+                      <div className="flex flex-wrap gap-2">
+                        <Button type="button" size="sm" onClick={() => void addIdeRoot(profile.bundleId)} disabled={profile.ideProjectRoots.length >= 4}>Add project root…</Button>
+                        <Button type="button" size="sm" onClick={() => void refreshIdeIndex(profile.bundleId)} disabled={profile.ideProjectRoots.length === 0 || ideStatuses[profile.bundleId]?.state === 'scanning'}>Refresh index</Button>
+                        <Button type="button" size="sm" onClick={() => void clearIdeIndex(profile.bundleId)} disabled={profile.ideProjectRoots.length === 0} data-tone="danger">Clear index</Button>
                       </div>
                       <p role="status" className="text-xs text-on-surface-variant">{ideStatusText(ideStatuses[profile.bundleId], profile.ideProjectRoots.length)}</p>
                       <p className="text-xs text-on-surface-variant">Clear index removes only memory contents; Remove root changes the persisted override. Paths are never written to logs.</p>

@@ -58,9 +58,9 @@ for (const appearance of ['light', 'dark']) {
       // Wait for the reduced-motion fold to finish mounting before aligning
       // the screenshot. Scrolling a still-clipped branch can capture a different
       // viewport even after toHaveScreenshot waits for stable pixels.
+      // Advanced can contain direct rows as well as a nested animated branch;
+      // its accessible expanded state is the stable contract in either layout.
       await expect(advanced(page)).toHaveAttribute('aria-expanded', 'true');
-      await expect(page.locator('.settings-advanced .settings-dependent-branch-clip').first())
-        .toHaveClass(/settings-dependent-branch-settled/);
       await advanced(page).evaluate(el => el.scrollIntoView({ block: 'start' }));
       await expect(page).toHaveScreenshot(`${appearance}-${pane}-unfolded.png`);
     });

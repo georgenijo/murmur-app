@@ -35,7 +35,7 @@ for (const appearance of appearances) {
       const customize = navigation.getByRole('button', { name: 'Customize', exact: true });
       await customize.click();
       await expect(customize).toHaveAttribute('aria-current', 'page');
-      await expect(page.getByRole('heading', { name: 'Customize Murmur', exact: true, level: 1 })).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'Customize', exact: true, level: 1 })).toBeVisible();
 
       const customizeIcon = customize.locator('svg').evaluate((svg) => svg.innerHTML);
       const modesIcon = navigation.getByRole('button', { name: 'Modes', exact: true }).locator('svg').evaluate((svg) => svg.innerHTML);
@@ -46,7 +46,7 @@ for (const appearance of appearances) {
 
       await navigation.getByRole('button', { name: 'Modes', exact: true }).click();
       const modeList = page.getByRole('list', { name: 'Modes' });
-      const modeRow = modeList.getByRole('button', { name: /Technical Built-in/ }).first();
+      const modeRow = modeList.getByRole('button', { name: /^Technical/ }).first();
       await expect(modeRow).toBeVisible();
       await modeRow.click();
       await expect(modeRow).toHaveAttribute('aria-pressed', 'true');
@@ -59,9 +59,8 @@ for (const appearance of appearances) {
           boxShadow: style.boxShadow,
         };
       });
-      expect(selectedModeStyle.borderTopWidth).toBe('1px');
-      expect(selectedModeStyle.borderTopColor).not.toBe('rgba(0, 0, 0, 0)');
-      expect(selectedModeStyle.boxShadow).toContain('inset');
+      expect(selectedModeStyle.boxShadow).toBe('none');
+      await expect(modeRow.locator('svg')).toHaveCount(1);
     });
   }
 }

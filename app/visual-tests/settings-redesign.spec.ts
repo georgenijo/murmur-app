@@ -32,7 +32,7 @@ for (const appearance of ['light', 'dark'] as const) {
       await page.emulateMedia({ colorScheme: appearance, reducedMotion: 'reduce' });
       await page.goto(`/visual-fixtures.html?state=settings-appearance&appearance=${appearance}`);
       await expect(page.locator('.settings-appearance-mode')).toHaveCSS('border-radius', '12px');
-      await expect(page.locator('.settings-segmented')).toHaveCSS('height', '34px');
+      await expect(page.locator('.settings-segmented')).toHaveCSS('height', '32px');
       await expect(page.locator('.settings-segmented-btn').first()).toHaveCSS('border-radius', '8px');
       const initialShowing = page.locator('.settings-theme-variant[data-showing-now]');
       await expect(initialShowing).toHaveCount(1);
@@ -49,15 +49,15 @@ for (const appearance of ['light', 'dark'] as const) {
       await expect(opencodeOther).toHaveAttribute('data-showing-now', 'true');
       await expect(opencodeOther).toHaveAttribute('data-assigned', 'true');
       await expect(sonicCurrent).toHaveAttribute('data-assigned', 'true');
-      await expect(sonic.locator('.settings-theme-variant-assigned')).toHaveCount(1);
+      await expect(sonic.locator('.settings-theme-variant-check, .settings-theme-variant-assigned')).toHaveCount(0);
       await page.getByRole('radio', { name: `Use ${currentMode} mode`, exact: true }).click();
       await expect(sonicCurrent).toHaveAttribute('data-showing-now', 'true');
-      await expect(opencode.locator('.settings-theme-variant-assigned')).toHaveCount(1);
+      await expect(opencode.locator('.settings-theme-variant-check, .settings-theme-variant-assigned')).toHaveCount(0);
       await page.getByRole('radio', { name: 'Follow the system appearance', exact: true }).click();
       await expect(sonicCurrent).toHaveAttribute('data-showing-now', 'true');
       await page.getByRole('button', { name: `Use OpenCode for ${currentMode} mode`, exact: false }).click();
       await expect(opencodeCurrent).toHaveAttribute('data-showing-now', 'true');
-      await expect(page.locator('.settings-theme-variant-check')).toHaveCount(1);
+      await expect(page.locator('.settings-theme-variant-check, .settings-theme-variant-assigned')).toHaveCount(0);
       await expect(page.locator('.settings-theme-caption, .settings-theme-mode-status')).toHaveCount(0);
       expect(await sonic.evaluate((card) => card.getBoundingClientRect().height))
         .toBe(await opencode.evaluate((card) => card.getBoundingClientRect().height));

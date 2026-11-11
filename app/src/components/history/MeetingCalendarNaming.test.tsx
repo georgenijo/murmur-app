@@ -56,6 +56,11 @@ describe('MeetingCalendarNaming', () => {
     expect(calendar.requestCalendarPermission).not.toHaveBeenCalled();
     expect(container.querySelectorAll('input[type="radio"]')).toHaveLength(count);
     expect(container.querySelector('input:checked')).toBeNull();
+    const eventOption = container.querySelector('.meeting-calendar-event') as HTMLLabelElement;
+    expect(eventOption).toBeTruthy();
+    expect(eventOption.querySelector('input[type="radio"]')?.getAttribute('name')).toBe('calendar-event-meeting-one');
+    expect(eventOption.textContent).not.toMatch(/\d{1,2}:\d{2}:\d{2}/);
+    expect(button('Apply event').className).toContain('meeting-header-action');
     expect(button('Apply event').disabled).toBe(true);
     expect(onApply).not.toHaveBeenCalled();
     const radio = container.querySelector<HTMLInputElement>('input[type="radio"]');

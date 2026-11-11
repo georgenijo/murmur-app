@@ -8,7 +8,7 @@ interface StreamChipsProps {
 
 export function StreamChips({ active, onToggle }: StreamChipsProps) {
   return (
-    <div className="flex flex-wrap gap-1.5">
+    <div className="flex flex-wrap gap-1">
       {STREAMS.map((stream) => {
         const colors = STREAM_COLORS[stream];
         const isActive = active.has(stream);
@@ -18,10 +18,10 @@ export function StreamChips({ active, onToggle }: StreamChipsProps) {
             key={stream}
             onClick={() => onToggle(stream)}
             aria-pressed={isActive}
-            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-all ${
+            className={`inline-flex h-7 items-center gap-1.5 rounded-(--ui-radius-control) px-2 text-[length:var(--ui-font-caption)] font-medium transition-colors ${
               isActive
-                ? `${colors.bg} ${colors.text} ring-1 ring-current/20`
-                : 'bg-surface-container text-on-surface-variant'
+                ? `${colors.bg} ${colors.text}`
+                : 'bg-transparent text-on-surface-variant hover:bg-surface-container'
             }`}
           >
             <span

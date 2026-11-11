@@ -15,10 +15,10 @@ export const SettingsDisclosureContext = createContext<{ open: boolean; setOpen:
 const FLASH_RING = 'rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40';
 
 /** A named group with the same heading and card treatment on every page. */
-export function SettingsGroup({ title, children }: { title: string; children: ReactNode }) {
+export function SettingsGroup({ title, children }: { title?: string; children: ReactNode }) {
   const id = useId();
-  return <section aria-labelledby={id}>
-    <h2 id={id} className="settings-group-heading">{title}</h2>
+  return <section aria-labelledby={title ? id : undefined}>
+    {title && <h2 id={id} className="settings-group-heading">{title}</h2>}
     <SettingsCard>{children}</SettingsCard>
   </section>;
 }
@@ -43,17 +43,22 @@ export function SettingsCallout({ title, children, tone = 'neutral', targetId }:
 
 /** A collapsed "Advanced" group. `rows` lays its children out like card rows
  *  (divider between each); `stack` spaces them without dividers. */
-export function SettingsDisclosure({ title, description, layout, targetId, children, pane }: {
+export function SettingsDisclosure({ title, description, layout, targetId, children, pane, open: controlledOpen, onOpenChange }: {
   title: string;
   description?: string;
   layout: 'rows' | 'stack';
   pane?: string;
   targetId?: string;
   children: ReactNode;
+  /** Use local UI state for compact disclosures that do not belong to a pane's Advanced state. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const context = useContext(SettingsDisclosureContext);
   const [ownOpen, setOwnOpen] = useSettingsAdvanced(pane ?? '');
-  const state = context ?? { open: ownOpen, setOpen: setOwnOpen };
+  const state = controlledOpen !== undefined && onOpenChange
+    ? { open: controlledOpen, setOpen: onOpenChange }
+    : context ?? { open: ownOpen, setOpen: setOwnOpen };
   const buttonRef = useRef<HTMLButtonElement>(null);
   const contentId = useId();
   const open = state?.open ?? false;
