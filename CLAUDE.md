@@ -30,12 +30,27 @@ python3 scripts/build_capture_helpers.py
 On Apple Silicon macOS, build the bundled helpers before the first Rust check
 or Tauri build. Helper binaries are gitignored. See Development for packaging.
 
-## Reproduce visible bugs first
+## Reproduce behaviour bugs first, not screenshots
 
-For a bug in something the user sees, reproduce it in the running native app
-before changing code, and record what you saw. A report such as "status is not
-working" can be a layout, data, or timing problem; looking at the affected screen
-decides which. If you cannot reproduce it, say so before proposing a fix.
+A screenshot that shows the problem is the reproduction. When a report is about
+how something looks (layout, spacing, wording, colour, a control's style, too
+much on a page) and the screenshot shows it, go straight to the change. Do not
+build and launch the app to look at the same screen again. The native check
+comes once, after the change, under the next section.
+
+Reproduce in the running native app before changing code when the report is
+about what the app does: something fails, works only sometimes, jumps or
+flickers, loses or corrupts data, or depends on timing, state, permissions,
+audio, or another app. A screenshot does not replace this, because a still image
+cannot show a timing or state problem. Do the same for an appearance report that
+has no screenshot or whose screenshot does not show the problem.
+
+For those bugs, write down the exact steps, what you expected, what happened,
+and the revision you saw it on. Find the cause before changing code; a report
+such as "status is not working" can be a layout, data, or timing problem, and
+watching it happen decides which. After the fix, repeat the same steps on the
+fixed build and record the result. If you cannot reproduce it, say so before
+proposing a fix, and do not ship a guess as a fix.
 
 ## Verify the actual change
 

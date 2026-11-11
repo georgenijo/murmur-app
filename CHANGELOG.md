@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.63.2] - 2026-11-11
+
 ### Fixed
 
 - Simplify Meetings settings into compact grouped rows, remove its noninteractive storage banner and repeated toggle copy, and move the remote-speaker privacy details into a reachable disclosure while retaining model attribution.
