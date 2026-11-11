@@ -49,9 +49,11 @@ active, until its exact native download owner confirms cancellation or completio
    model list scrolls inside the wizard's fixed-height frame. The right action
    becomes Cancel during an active download, with Back disabled until it settles.
 7. **Hotkey** — chooses Hold / Double-tap / Both and a trigger key. The grouped
-   picker contains Left Shift, Left Option, Right Control, and F1 through F20.
-   Selecting a function key explains the macOS Fn and standard-function-key
-   setting and notes that Murmur does not suppress the key's normal action.
+   picker contains Left Shift, Left Option, Right Control, Fn / Globe, and F1
+   through F20. Selecting a function key explains the macOS Fn and
+   standard-function-key setting and notes that Murmur does not suppress the
+   key's normal action. Selecting Fn / Globe explains key-down capture and the
+   "Press 🌐 key to" → "Do Nothing" system setting.
 8. **Done** — live summary of the checks plus a quick-start card derived from
    the selected recording mode and trigger key.
 
@@ -118,8 +120,7 @@ below the scrolling model cards. Forward
 and Back entry transitions fade and slide 12 px in opposite directions over 220 ms;
 progress dots transition over 200 ms, fresh checks over 160 ms. All colors use
 semantic appearance tokens, and new recurring geometry uses `--ui-*` tokens.
-Playwright screenshot assertions disable animations; the onboarding matrix also
-uses reduced motion for deterministic geometry checks.
+The onboarding matrix uses reduced motion for deterministic geometry checks.
 
 In `tauri:dev`, permission guidance names the launching terminal. Microphone,
 Accessibility, and Calendar Reset actions are hidden because their native

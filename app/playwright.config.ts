@@ -10,14 +10,8 @@ export default defineConfig({
     baseURL: `http://127.0.0.1:${port}`,
     viewport: { width: 880, height: 720 },
     deviceScaleFactor: 1,
-    // Screenshots that show a time must not depend on the machine's time zone.
+    // Keep time-based fixture text independent of the machine's time zone.
     timezoneId: 'UTC',
-  },
-  expect: {
-    toHaveScreenshot: {
-      animations: 'disabled',
-      maxDiffPixelRatio: 0.001,
-    },
   },
   webServer: {
     command: `npm run dev -- --host 127.0.0.1 --port ${port}`,

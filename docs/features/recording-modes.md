@@ -5,6 +5,105 @@ The app supports Hold-Down, Double-Tap, and a combined Both mode, selectable in 
 ## Transform hold key (issue #312)
 
 
+## Fn and Globe key-down capture
+
+Fn / Globe (`fn`) works as a dictation trigger in Hold, Double-Tap, and Both
+modes. rdev reports it as `Key::Function`: a `FlagsChanged` event for keycode 63,
+which is a press or release of the secondary-Fn flag. Like Shift, Option, and
+Control, it is a modifier-only trigger. It gets the same 150 ms hold arming
+window in Hold mode and the 200 ms deferred promotion in Both mode.
+
+**Key-down capture (Fn only).** Fn is the one trigger that opens the microphone
+before the gesture is confirmed. When an Fn press begins a fresh gesture, the
+listener asks the audio supervisor for a speculative capture. A fresh gesture
+means the detectors were idle, no Command/Shift/Option/Control is held, the
+press is not the single tap that stops a toggle recording, and Murmur is neither
+processing nor disabled. The capture opens the same input the next dictation
+would use, which the frontend mirrors through `set_fn_capture_input`. It is
+admitted only when microphone permission is already granted and nothing else
+owns the microphone. It never prompts. The grant is checked at keyboard
+admission, at attempt start, after the helper handshake, and finally by the
+capture helper itself (`StartPreauthorized`): immediately before native setup
+begins, and again on entering each step that touches the input (binding the
+device, opening the stream, starting IO). Earlier setup steps never open
+input, and each TCC query costs about 5 ms, so they are not re-checked. A
+grant lost at any of those points refuses the
+capture. It shows no UI and publishes no levels.
+
+- **Confirmed** (`hold-down-start` or `double-tap-toggle`): the listener binds
+  the capture to that gesture token before emitting the event. If
+  `start_native_recording` for the same token, input, and topology arrives
+  within the backstop, it adopts the running worker. Audio retained since
+  key-down becomes the start of the recording. If PCM is already flowing, the
+  start skips the visible "starting"/Connecting phase.
+- **Not confirmed**: a stray tap, Fn plus another key, holding too long for a
+  tap, a second tap that never comes, Escape, a trigger-key or listener change,
+  processing, disable, or a refused start. The capture is discarded as soon as
+  the gesture is known to have ended. Under the buffer lock, its retained
+  samples are cleared and retention is revoked, so PCM still in flight or
+  flushed by the helper while it drains Stop is dropped too. The exact worker
+  is then stopped through the supervisor's confirmed teardown:
+  cooperative stop within 250 ms, then a process-group kill within the 2 s
+  termination budget. Ownership is kept until exit is confirmed. Discarded
+  audio is never transcribed, written to disk, or logged.
+- **Backstop**: the supervisor discards any capture that no start adopted
+  within 1.5 s of key-down (`SPECULATIVE_CAPTURE_TTL`). It is measured from the
+  keyboard listener's key-down stamp, not from supervisor acceptance, and a
+  request that arrives after it has elapsed is never opened.
+
+- **Settings microphone test**: while the test owns the microphone, an Fn press
+  opens no key-down capture (`preview_active`); a confirmed dictation stops the
+  test as before and takes the ordinary start path. If the test starts while
+  an unconfirmed key-down capture is open, it supersedes that capture. A
+  dictation that wins the race pauses the test quietly ("Level monitoring
+  pauses…") rather than showing an error, and the test resumes when the
+  dictation ends.
+- **Diagnostics**: `keyboard.fn_capture_skipped` carries the first blocking
+  fact as `reason` (`listener_changed`, `processing_skipped`, `disabled`,
+  `gesture_ended`, `permission_not_granted`, `dictation_busy`,
+  `preview_active`, `microphone_busy`, `cleanup_pending`,
+  `input_unconfigured`, or `smart_auto_unavailable`). A capture the helper
+  could not open or keep logs `audio.speculative_capture_discarded` with
+  `reason=capture_failed` and the typed `failure_kind` and `failure_phase`. A
+  supervisor refusal names the busy owner kind. None of these carry device
+  names, error text, or audio.
+
+The key-down start uses production helper protocol v11, which adds
+`StartPreauthorized`. A helper built before that change fails the handshake
+instead of exiting on the unknown message, so rebuild the helpers
+(`python3 scripts/build_capture_helpers.py`) after pulling this change.
+
+In Hold mode, the microphone is on only while Fn is held, and after that only
+if the hold became a dictation. In Double-Tap mode, the capture stays open
+through the gap between taps, so the microphone indicator can stay on for up
+to about 400 ms after the first release, plus teardown. Other trigger keys
+never open the microphone before a confirmed start.
+
+**Globe key action.** macOS may also act on Fn / Globe (emoji picker, input
+source switching, dictation, or nothing), depending on System Settings ›
+Keyboard › "Press 🌐 key to". Murmur's listener is listen-only and does not
+suppress it. Murmur does not change that setting for you. When Fn is selected,
+the trigger-key picker in Settings and onboarding shows a hint to set it to
+"Do Nothing".
+
+**Globe companion event.** When macOS performs the Globe action it also posts
+an ordinary key-down/key-up pair for the Globe key (keycode 179), confirmed
+natively. rdev reports it as `Key::Unknown(179)`, and it arrives within a few
+milliseconds of the Fn release. With Fn as the trigger, the listener drops a
+179 press that arrives within 100 ms of an Fn edge, and the one release that
+balances it, before any detector sees them. Without this, every Fn double-tap
+is cancelled as a chord. Each dropped event logs
+`keyboard.globe_companion_ignored` with `companion=globe`. Other `Unknown`
+codes are real keys (keypad digits, ISO Section, JIS Yen) and still cancel an
+Fn gesture, as does a 179 press outside the window.
+
+**Fn held with other shortcuts.** Murmur cannot consume or alter keys, so it
+cannot block a system shortcut. Pressing a non-modifier key during a promoted
+Fn hold ends that hold, as it does for every hold trigger. macOS does not
+treat ⇧⌘4 with Fn/Globe held as the plain ⇧⌘4 screenshot shortcut, so the
+screenshot does not fire. Release Fn before using such a shortcut, or choose a
+different trigger key.
+
 ## Hold-Down Mode (default)
 
 Hold the configured trigger key to record, then release it to stop and transcribe.
@@ -18,6 +117,7 @@ Hold the configured trigger key to record, then release it to stop and transcrib
 | `shift_l` | Left Shift |
 | `alt_l` | Left Option |
 | `ctrl_r` | Right Control |
+| `fn` | 🌐 Fn / Globe |
 | `f1` through `f20` | F1 through F20 |
 
 On Apple keyboards, F1 through F12 can control brightness, audio, and other
@@ -135,7 +235,7 @@ Uses `rdev` for low-level keyboard event listening. Detects quick double-taps on
 
 **Behavior:** Double-tap the trigger key to start recording, then tap it once to stop.
 
-**Available keys:** Same as Hold-Down mode (Left Shift, Left Option, Right Control, and F1 through F20).
+**Available keys:** Same as Hold-Down mode (Left Shift, Left Option, Right Control, Fn / Globe, and F1 through F20).
 
 **Requires Accessibility permission** (rdev needs it for global keyboard events).
 

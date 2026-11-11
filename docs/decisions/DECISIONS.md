@@ -1,5 +1,21 @@
 # Decisions Log
 
+## 2026-11-11: Remove screenshot baselines
+
+**Decision:** Remove pixel screenshot comparisons and their platform-specific
+baseline images. Keep Playwright DOM, interaction, and geometry assertions;
+verify native UI changes as described in `CLAUDE.md`, and add geometry or DOM
+coverage for layout fixes.
+
+**Why:** Two platform image sets required nondeterministic regeneration, and
+8 of 11 CI runs on PR #1103 failed on screenshot noise for a macOS-only product.
+Functional assertions and proportionate native inspection provide useful checks
+without the recurring pixel comparison churn.
+
+**References:** `.github/workflows/ci.yml`, `app/visual-tests/`
+
+---
+
 ## 2026-11-09: Archive and discontinue the GPUI rewrite
 
 **Decision:** Close the rewrite PRs and tracking issues without merging their
@@ -80,14 +96,14 @@ out the words; that costs one IPC round trip per resize. Details:
 
 **Decision:** `changes` only filters paths; workflow validation runs in a
 separate `policy` job that every run requires. Vitest, the Linux and macOS
-Playwright goldens, and Rust lint vs. Rust tests run as parallel shards or jobs,
+Playwright tests, and Rust lint vs. Rust tests run as parallel shards or jobs,
 and `ci-pass` requires all of them. Rust unit tests run under `cargo nextest`
 instead of `cargo test -- --test-threads=1`. Docs, scripts, and Python tests no
 longer start the frontend or Rust builds, and CI no longer runs a separate
 `cargo check` before clippy.
 
 **Why:** PR CI took 7–10 minutes, mostly in serial work: validation blocked
-every job, Linux goldens ran after vitest, and a single Rust job ran check,
+every job, Linux screenshot tests ran after vitest, and a single Rust job ran check,
 clippy, the test build, and serial tests back to back. nextest runs every test
 in its own process, so the shared process state that forced one thread stays
 isolated. Locally the suite went from 29 s to 9 s, and it passed repeated runs

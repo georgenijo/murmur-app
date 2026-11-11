@@ -45,7 +45,6 @@ for (const appearance of ['light', 'dark']) {
         }
       }
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(state === 'narrow' ? 720 : 1100);
-      await expect(page.locator('[data-visual-ready]')).toHaveScreenshot(`home-sidebar-${appearance}-${state}.png`);
     });
   }
 }

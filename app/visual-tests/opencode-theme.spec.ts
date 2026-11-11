@@ -89,7 +89,6 @@ for (const appearance of ['light', 'dark'] as const) {
     expect(stored.cache[appearance]).toEqual(resolved[appearance]);
 
     await page.mouse.move(0, 0);
-    await expect(page.locator('[data-visual-ready=true]')).toHaveScreenshot(`opencode-${appearance}-appearance.png`);
   });
 
   for (const state of ['idle', 'settings'] as const) {
@@ -100,7 +99,6 @@ for (const appearance of ['light', 'dark'] as const) {
       const fixture = page.locator('[data-visual-ready="true"]');
       await expect(fixture).toHaveAttribute('data-theme-fixture', 'opencode');
       expect(await murmurTokens(page)).toEqual(resolved[appearance]);
-      await expect(fixture).toHaveScreenshot(`opencode-${appearance}-${destination}.png`);
     });
   }
 }

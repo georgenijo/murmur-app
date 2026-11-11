@@ -23,6 +23,7 @@ import {
   DEFAULT_SETTINGS,
   DICTATION_KEY_OPTIONS,
   dictationKeyLabel,
+  isFunctionDictationKey,
   IDLE_TIMEOUT_NEVER_ON_POWER_ADAPTER,
   IDLE_TIMEOUT_OPTIONS,
   LEGACY_OVERLAY_OFFSET_KEY,
@@ -67,13 +68,21 @@ describe('WRITING_STYLE_VALUES', () => {
 describe('dictation keys', () => {
   it('keeps the three existing modifiers and F1 through F20 in one catalog', () => {
     expect(DICTATION_KEY_OPTIONS.map((option) => option.value)).toEqual([
-      'shift_l', 'alt_l', 'ctrl_r',
+      'shift_l', 'alt_l', 'ctrl_r', 'fn',
       ...Array.from({ length: 20 }, (_, index) => `f${index + 1}`),
     ]);
     expect(DICTATION_KEY_OPTIONS.map((option) => option.label)).toEqual([
-      '⇧ Left Shift', '⌥ Left Option', '⌃ Right Control',
+      '⇧ Left Shift', '⌥ Left Option', '⌃ Right Control', '🌐 Fn / Globe',
       ...Array.from({ length: 20 }, (_, index) => `F${index + 1}`),
     ]);
+  });
+
+  it('treats Fn / Globe as a modifier-style trigger, not an F-key', () => {
+    expect(isFunctionDictationKey('fn')).toBe(false);
+    expect(isFunctionDictationKey('f1')).toBe(true);
+    saveSettings({ ...DEFAULT_SETTINGS, doubleTapKey: 'fn' });
+    expect(loadSettings().doubleTapKey).toBe('fn');
+    expect(dictationKeyLabel('fn')).toBe('🌐 Fn / Globe');
   });
 
   it('reloads function keys with the same labels and recording hints', () => {

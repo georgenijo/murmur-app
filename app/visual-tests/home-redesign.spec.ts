@@ -29,7 +29,6 @@ for (const appearance of ['light', 'dark'] as const) {
         await expect(page.getByRole('searchbox', { name: 'Search transcripts' })).toBeDisabled();
         await expect(page.getByRole('button', { name: 'Filter transcripts' })).toBeDisabled();
         await expect(page.getByRole('button', { name: 'More history actions' })).toBeDisabled();
-        await expect(page).toHaveScreenshot(`home-empty-${appearance}-${size.width}x${size.height}.png`);
       });
       test('confirmed microphone denial has a single recovery action', async ({ page }) => {
         await page.goto(`/visual-fixtures.html?state=home-mic-denied&appearance=${appearance}`);
@@ -37,7 +36,6 @@ for (const appearance of ['light', 'dark'] as const) {
         await expect(page.getByRole('button', { name: 'Open System Settings…', exact: true })).toBeEnabled();
         await expect(page.locator('.home-talk [role="status"]')).toBeVisible();
         expect(await page.locator('.home-dashboard').evaluate(n => n.scrollWidth <= n.clientWidth)).toBe(true);
-        await expect(page).toHaveScreenshot(`home-mic-denied-${appearance}-${size.width}x${size.height}.png`);
       });
     });
   }

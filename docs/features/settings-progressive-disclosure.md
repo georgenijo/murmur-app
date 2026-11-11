@@ -135,17 +135,8 @@ and Dark, all seven existing editor sheets and their caller focus, nested IDE
 rows, both motion preferences, computed timing/row measurements, search pulse,
 manual-entry search, persistence/reload, and enabled navigation. The original
 22-pane fixtures, full visual suite, #850 keyboard/dialog tests, measurement
-and imported-theme contrast matrices remain required. Darwin and Linux PNGs
-have distinct platform suffixes; Linux runs in
-`mcr.microsoft.com/playwright:v1.62.1-noble` on the Mac mini. The temporary
-`playwright.849.config.ts` uses only port 14849 with server reuse disabled.
-It is an evidence runner, not a replacement for the standard CI config.
-
-Native verification is deliberately reserved for the lead's isolated Mac mini
-build. See the implementation evidence directory for exact recording steps,
-command logs, golden manifest and revision receipt. No GUI app, OS display or
-permission setting, updater/OTA/canary, recognition benchmark, production data,
-MacBook, remote push, PR or review was operated by this implementation worker.
+and imported-theme contrast matrices remain required. The Playwright suite runs
+in the CI Linux container; native verification follows `CLAUDE.md`.
 
 Murmur Bench: N/A — this changes Settings presentation, disclosure UI state,
 search routing and editor focus only; backend settings, capture, recognition,

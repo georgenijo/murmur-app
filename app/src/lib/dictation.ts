@@ -48,6 +48,21 @@ export async function startRecording(
   }
 }
 
+/**
+ * Mirror the dictation microphone selection natively for Fn/Globe key-down
+ * capture, using the exact arguments `startRecording` sends, so the audio
+ * opened at key-down can be adopted by the confirmed start.
+ */
+export async function syncFnCaptureInput(
+  deviceName?: string,
+  smartAuto?: SmartAutoMicrophoneRequest | null,
+): Promise<void> {
+  await invoke('set_fn_capture_input', {
+    deviceName: smartAuto ? null : microphoneDeviceNameArg(deviceName),
+    smartAuto: smartAuto ?? null,
+  });
+}
+
 export type DictationStopTrigger = 'hold_release' | 'toggle' | 'overlay' | 'auto_stop' | 'other';
 
 export async function stopRecording(stopTrigger: DictationStopTrigger = 'other'): Promise<DictationResponse> {

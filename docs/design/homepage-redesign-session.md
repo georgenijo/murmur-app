@@ -17,7 +17,7 @@ existing components, not promoting any variant file.
 - `app/src/visual-fixtures.tsx` — `?state=redesign-a|redesign-b|redesign-c`
   routing, and `appearance=dark` now applies the real Sonic dark palette
   (previously every "dark" fixture rendered light).
-- `app/redesign-shot.mjs` and `app/redesign-interact.mjs` — Playwright capture
+- `app/redesign-interact.mjs` — Playwright capture
   scripts. Run from `app/` with the Vite dev server up on
   `http://127.0.0.1:1420`. Output goes to `/tmp/murmur-redesign/`.
 

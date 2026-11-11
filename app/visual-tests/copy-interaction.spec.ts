@@ -2,6 +2,14 @@ import { expect, test } from '@playwright/test';
 
 const panes = ['general', 'recording', 'delivery', 'meetings', 'text', 'ai', 'ai-transcription', 'modes', 'appearance', 'performance', 'diagnostics', 'shortcuts'];
 const editors = ['aliases', 'knowledge', 'commands', 'scan', 'vocabulary'];
+const paneTitles: Record<string, string> = {
+  general: 'General', recording: 'Recording', delivery: 'Delivery', meetings: 'Meetings',
+  text: 'Text & vocabulary', ai: 'AI & models', 'ai-transcription': 'Speech-to-text',
+  modes: 'Modes', appearance: 'Appearance', performance: 'Performance Lab',
+  diagnostics: 'Diagnostics', shortcuts: 'Keyboard shortcuts',
+  'editor-aliases': 'Aliases', 'editor-knowledge': 'Knowledge',
+  'editor-commands': 'Voice commands', 'editor-scan': 'Project scan', 'editor-vocabulary': 'Vocabulary',
+};
 for (const appearance of ['light', 'dark']) {
   for (const pane of [...panes, ...editors.map((editor) => `editor-${editor}`)]) {
     test(`${appearance} copy audit ${pane}`, async ({ page }) => {
@@ -10,27 +18,32 @@ for (const appearance of ['light', 'dark']) {
       const editor = pane.startsWith('editor-') ? pane.slice(7) : null;
       await page.goto(`/visual-fixtures.html?state=settings-copy&appearance=${appearance}&page=${editor ? 'text' : pane}${editor ? `&editor=${editor}` : ''}`);
       await expect(page.locator('[data-visual-ready=true]')).toBeVisible();
-      await expect(page.locator(editor ? '.settings-editor-sheet > div:first-child h2' : '.settings-workspace .settings-page-title')).toBeVisible();
+      const heading = page.locator(editor ? '.settings-editor-sheet > div:first-child h2' : '.settings-workspace .settings-page-title');
+      await expect(heading).toBeVisible();
+      await expect(heading).toHaveText(paneTitles[pane]);
       // Real panes may retain several viewport lengths of advanced controls.
       const content = page.locator(editor ? '.settings-editor-sheet' : '[data-testid=settings-content]');
-      await expect(content).toHaveScreenshot(`${appearance}-copy-${pane}.png`);
       const triples = await content.innerText();
       expect(triples).not.toContain('...');
       expect(triples).not.toContain('Text & Vocabulary');
       expect(triples).not.toContain('AI & Models');
-      const advanced = content.locator('.settings-advanced-toggle[aria-expanded=false]');
+      const advanced = content.locator('.settings-advanced-toggle');
       // Collapsed nested controls remain mounted but hidden until their parent
       // is revealed; expand only controls a user can actually reach.
       let advancedCount = 0;
       for (const button of await advanced.all()) {
-        if (await button.isVisible()) {
+        if (await button.isVisible() && await button.getAttribute('aria-expanded') === 'false') {
           await button.click();
+          await expect(button).toHaveAttribute('aria-expanded', 'true');
           advancedCount++;
         }
       }
       const summaries = content.locator('summary');
       for (const summary of await summaries.all()) {
-        if (await summary.isVisible() && !(await summary.locator('..').getAttribute('open') !== null)) await summary.click();
+        if (await summary.isVisible() && !(await summary.locator('..').getAttribute('open') !== null)) {
+          await summary.click();
+          await expect(summary.locator('..')).toHaveAttribute('open', '');
+        }
       }
       if (advancedCount || await summaries.count()) {
         await content.evaluate(async (element) => {
@@ -39,7 +52,6 @@ for (const appearance of ['light', 'dark']) {
           await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
           element.scrollTop = element.scrollHeight;
         });
-        await expect(content).toHaveScreenshot(`${appearance}-copy-${pane}-expanded.png`);
       }
     });
   }
@@ -55,13 +67,11 @@ for (const appearance of ['light', 'dark']) {
     await dialog.getByLabel('Voice command phrase', { exact: true }).fill('insert farewell');
     await dialog.getByLabel('Voice command content', { exact: true }).fill('See you soon');
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).focus();
-    await expect(dialog).toHaveScreenshot(`${appearance}-copy-command-default.png`);
     await page.keyboard.press('Enter');
     await expect(dialog).toHaveCount(0);
 
     await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=knowledge&appearance=${appearance}`);
     await page.getByRole('button', { name: 'More knowledge actions' }).click();
-    await expect(page.getByRole('menu')).toHaveScreenshot(`${appearance}-copy-knowledge-overflow.png`);
     await page.getByRole('menuitem', { name: 'Delete all…', exact: true }).click();
     await page.getByLabel('Type DELETE to confirm', { exact: true }).fill('DELETE');
     const remove = page.getByRole('button', { name: 'Delete everything', exact: true });
@@ -69,7 +79,6 @@ for (const appearance of ['light', 'dark']) {
     await remove.focus();
     await page.keyboard.press('Enter');
     await expect(dialog).toBeVisible();
-    await expect(dialog).toHaveScreenshot(`${appearance}-copy-knowledge-delete.png`);
     await page.keyboard.press('Space');
     await expect(dialog).toHaveCount(0);
   });
@@ -86,7 +95,6 @@ for (const appearance of ['light', 'dark']) {
     const deleteBounds = await confirm.boundingBox();
     expect(toggleBounds!.x + toggleBounds!.width).toBeLessThanOrEqual(deleteBounds!.x);
     await page.keyboard.press('Enter'); await expect(confirm).toBeVisible();
-    await expect(page.locator('.settings-editor-sheet')).toHaveScreenshot(`${appearance}-copy-alias-armed.png`);
     await page.keyboard.press('Space');
     await expect(page.getByRole('button', { name: 'Delete Murmur…', exact: true })).toHaveCount(0);
   });

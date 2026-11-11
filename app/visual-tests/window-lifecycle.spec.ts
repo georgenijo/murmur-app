@@ -36,7 +36,6 @@ for (const appearance of ['light', 'dark']) {
     expect(measurement.appearance).toEqual({ background: measurement.background, headerHeight: measurement.headerHeight, zoom: 1 });
     expect(measurement.headerHeight).toBeGreaterThan(0);
     expect(measurement.background).toMatch(/^#[a-f0-9]{6}$/i);
-    await expect(page).toHaveScreenshot(`window-minimum-${appearance}.png`);
   });
 
   test(`all settings pages fit the 840×620 native minimum (${appearance})`, async ({ page }) => {

@@ -9,7 +9,7 @@ Dictation and meeting transcription run locally.
 - [Architecture](docs/ARCHITECTURE.md): module ownership, data flow, and native boundaries.
 - [Features](docs/FEATURES.md): feature index and links to detailed behavior.
 - [Development](docs/DEVELOPMENT.md): setup, permissions, builds, and troubleshooting.
-- [API reference](docs/reference/commands.md): 172 registered commands.
+- [API reference](docs/reference/commands.md): 173 registered commands.
 
 Read the documentation relevant to the task. Search the source for individual
 files and symbols instead of maintaining another file inventory here.
@@ -55,15 +55,20 @@ proposing a fix, and do not ship a guess as a fix.
 ## Verify the actual change
 
 Run required CI checks and the narrowest relevant local checks. Frontend changes
-need both TypeScript checks and Vitest. Documentation and script changes use
+run `npx tsc --noEmit`, `npm test`, and `npm run test:visual` from `app/`.
+No screenshot baselines. Do not add `toHaveScreenshot` or commit baseline images.
+When fixing a layout bug, add a geometry or DOM assertion that would catch it.
+Documentation and script changes use
 file or CLI checks; they do not require launching the app.
 
-For all manual app verification, use Computer Use or another allowed native UI
-control tool against the running native macOS app, including settings and other
-frontend work. Build the changed revision and confirm that the running app
-contains it. Click through the affected flow, enter input, exercise shortcuts
-where relevant, and inspect the result. Screenshots support that interaction; a
-browser preview does not establish native app behavior.
+For manual app verification, use Computer Use or another allowed native UI
+control tool against the running native macOS app. Build the changed revision
+and confirm that the running app contains it. For behaviour, native chrome,
+window, or overlay changes, click through the affected flow, enter input,
+exercise shortcuts where relevant, and inspect the result. For appearance-only
+changes such as CSS, copy, or spacing, inspect the changed screen in light and
+dark in the built native app and attach a screenshot to the PR; click-through
+is not required. A browser preview does not establish native app behavior.
 
 Native UI work runs on a Mac. On a host that cannot build or run the app, use
 Fleet to locate a Mac and do the reproduction and verification there. Respect

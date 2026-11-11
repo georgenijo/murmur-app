@@ -582,8 +582,16 @@ export function MicrophoneInputTest({
           lateRetryPendingRef.current = true;
           setSuspensionReason(null);
           setActionError(null);
+        } else if (isDictationError) {
+          // A dictation took the microphone first (for example a Fn/Globe
+          // press while this page is open). That is an expected pause, not a
+          // failure: no alert, and the preview resumes when dictation ends.
+          if (suspensionReasonRef.current !== 'other') {
+            setSuspensionReason('dictation');
+            setActionError(null);
+          }
         } else if (suspensionReasonRef.current !== 'other') {
-          setSuspensionReason(isDictationError ? 'dictation' : 'other');
+          setSuspensionReason('other');
           setActionError(String(error));
         }
       }
@@ -697,7 +705,7 @@ export function MicrophoneInputTest({
     setSuspensionReason(null);
   };
   const helperText = actionError ?? vadError ?? status.message ?? (
-    dictationBusy
+    dictationBusy || suspensionReason === 'dictation'
       ? 'Level monitoring pauses while Murmur records and resumes automatically.'
       : !ready
         ? 'Preparing microphone monitoring…'
