@@ -287,6 +287,23 @@ describe('SettingsPanel information architecture', () => {
     expect(aiPage.querySelectorAll('.settings-card')).toHaveLength(1);
   });
 
+  it('keeps standby, retention, and unavailable-feature consequences in their setting copy', async () => {
+    const navButton = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('nav button'))
+      .find((button) => button.textContent === label)!;
+
+    await act(async () => navButton('Recording').click());
+    await act(async () => (container.querySelector('.settings-advanced-toggle') as HTMLButtonElement).click());
+    expect(container.textContent).toContain('its indicator stays on. Only pre-roll joins the next recording.');
+
+    await act(async () => navButton('Delivery').click());
+    expect(container.textContent).toContain('Turning off keeps existing history.');
+
+    await act(async () => navButton('Text & vocabulary').click());
+    await act(async () => (container.querySelector('.settings-advanced-toggle') as HTMLButtonElement).click());
+    await act(async () => (container.querySelector('[data-setting-target="smart-correction"] [role="switch"]') as HTMLButtonElement).click());
+    expect(container.textContent).toContain('Your preference is saved; deterministic spelling is used.');
+  });
+
   it('closes the commands sheet and focuses the actual disabled switch without enabling it', async () => {
     await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, voiceCommandsEnabled: false }, { page: 'customize', token: 1 }));
     const commandsRow = () => Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Customization destinations"] button'))
