@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Remove obsolete Settings status banners, unify Customize and AI navigation rows, and use parent-labelled back controls with closeable editor sheets.
 - Consolidate Settings cards and Advanced disclosures, compact Meetings and single-variant theme cards, and standardize editor controls, labels, and actions.
 - Soften auxiliary dialog outlines and actions, prevent meeting-speaker truncation, and hide the collapsed-sidebar privacy dot.
 

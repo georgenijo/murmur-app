@@ -225,11 +225,15 @@ describe('SettingsPanel information architecture', () => {
       const row = hubButton(label);
       await act(async () => row.click());
       expect((container.querySelector('[role="dialog"] h2') ?? container.querySelector('h1'))?.textContent).toBe(heading);
-      const back = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
-        (button) => button.textContent?.includes('Back to Customize'),
-      ) as HTMLButtonElement;
-      expect(back).toBeDefined();
-      await act(async () => back.click());
+      const returnControl = container.querySelector<HTMLButtonElement>('[role="dialog"] [aria-label="Close editor"]')
+        ?? Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+          (button) => button.classList.contains('settings-back-btn') && button.textContent?.includes('Customize'),
+        );
+      expect(returnControl).toBeDefined();
+      expect(returnControl?.getAttribute('aria-label') ?? returnControl?.textContent).toContain(
+        container.querySelector('[role="dialog"]') ? 'Close editor' : 'Customize',
+      );
+      await act(async () => returnControl!.click());
       expect(container.querySelector('h1')?.textContent).toBe('Customize');
       expect(document.activeElement).toBe(hubButton(label));
     }
@@ -242,6 +246,16 @@ describe('SettingsPanel information architecture', () => {
     expect(list.children).toHaveLength(4);
     expect(Array.from(list.children).every(element => element.tagName === 'BUTTON')).toBe(true);
     expect(list.textContent).not.toMatch(/0[1-5]/);
+  });
+
+  it('labels back buttons with their parent page names', async () => {
+    const shortcuts = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('Keyboard shortcuts'))!;
+    await act(async () => shortcuts.click());
+    expect(container.querySelector<HTMLButtonElement>('.settings-back-btn')?.textContent).toContain('General');
+
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'ai-transcription', token: 2 }));
+    expect(container.querySelector<HTMLButtonElement>('.settings-back-btn')?.textContent).toContain('AI & models');
   });
 
   it('uses full-width rows with individual text-editor search targets and keeps clipboard delivery copy with Auto-paste', async () => {
@@ -927,11 +941,9 @@ describe('SettingsPanel information architecture', () => {
     expect(container.querySelector('nav[aria-label="Settings editors"]')).toBeNull();
     expect(container.querySelector('[role="dialog"] h2')?.textContent).toBe('Aliases');
 
-    const back = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent?.includes('Close editor'),
-    ) as HTMLButtonElement;
-    expect(back).toBeDefined();
-    await act(async () => back.click());
+    const close = container.querySelector<HTMLButtonElement>('[aria-label="Close editor"]');
+    expect(close).toBeDefined();
+    await act(async () => close!.click());
 
     expect(container.textContent).toContain('Text & vocabulary');
     expect(container.querySelector('[role="dialog"]')).toBeNull();
@@ -1138,10 +1150,8 @@ describe('SettingsPanel information architecture', () => {
     expect(scrollTo).not.toHaveBeenCalled();
 
     scrollTo.mockClear();
-    const back = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
-      (button) => button.textContent?.includes('Close editor'),
-    ) as HTMLButtonElement;
-    await act(async () => back.click());
+    const close = container.querySelector<HTMLButtonElement>('[aria-label="Close editor"]');
+    await act(async () => close!.click());
     expect(container.querySelector('h1')?.textContent).toBe('Text & vocabulary');
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
   });

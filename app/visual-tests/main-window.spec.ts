@@ -387,7 +387,7 @@ test('customization hub stays legible and restores focus at native and narrow wi
 
   await voiceCommands.click();
   await expect(page.getByRole('heading', { name: 'Voice commands', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Back to Customize' }).click();
+  await page.getByRole('button', { name: 'Customize' }).click();
   await expect(voiceCommands).toBeFocused();
 
   await page.setViewportSize({ width: 720, height: 560 });

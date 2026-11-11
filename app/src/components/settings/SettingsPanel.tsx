@@ -1033,7 +1033,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               onClick={returnToCustomization}
               className="settings-back-btn mb-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
-              <span aria-hidden="true">‹</span> Back to Customize
+              <span aria-hidden="true">‹</span> Customize
             </Button>
           )}
           {activeCat === 'shortcuts' && (
@@ -1634,7 +1634,6 @@ export const SettingsPanel = memo(function SettingsPanel({
                 if (activeCat === 'customize') setCustomizationDetail('commands');
               }}
               restoreFocus={() => editorOpenerRef.current?.isConnected ? editorOpenerRef.current : contentRef.current?.querySelector<HTMLElement>('[data-setting-target="vocabulary"], [data-setting-target="aliases"], [data-setting-target="knowledge"], [data-setting-target="commands"], [data-setting-target="app-overrides"] button, [aria-label="Modes"] [aria-pressed="true"], .settings-back-btn') ?? searchRef.current}
-              backLabel={activeCat === 'customize' ? 'Back to Customize' : undefined}
             />
       )}
     </div>

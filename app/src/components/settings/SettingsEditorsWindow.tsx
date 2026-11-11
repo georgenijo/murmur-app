@@ -45,7 +45,6 @@ interface SettingsEditorsWindowProps {
   onCancelScan: () => void;
   onBack: () => void;
   onOpenVoiceCommandSettings?: () => void;
-  backLabel?: string;
   restoreFocus?: () => HTMLElement | null;
   target?: { id: string } | null;
 }
@@ -126,7 +125,6 @@ export function SettingsEditorsWindow({
   onCancelScan,
   onBack,
   onOpenVoiceCommandSettings,
-  backLabel = 'Close editor',
   restoreFocus,
   target,
 }: SettingsEditorsWindowProps) {
@@ -155,15 +153,16 @@ export function SettingsEditorsWindow({
     <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1}
       onKeyDown={defaultButtonKeyDown} className="settings-editor-sheet">
       <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
-        <button
+        <h2 id={titleId} className="text-base font-semibold text-on-surface">{SETTINGS_EDITOR_LABELS[initialTab]}</h2>
+        <Button
           type="button"
           onClick={onBack}
-          className="settings-back-btn focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          size="sm"
+          aria-label="Close editor"
+          className="ml-auto"
         >
-          <span aria-hidden="true">‹</span>
-          {backLabel}
-        </button>
-        <h2 id={titleId} className="text-base font-semibold text-on-surface">{SETTINGS_EDITOR_LABELS[initialTab]}</h2>
+          Close
+        </Button>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col">
