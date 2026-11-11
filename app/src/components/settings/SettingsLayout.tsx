@@ -15,10 +15,10 @@ export const SettingsDisclosureContext = createContext<{ open: boolean; setOpen:
 const FLASH_RING = 'rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40';
 
 /** A named group with the same heading and card treatment on every page. */
-export function SettingsGroup({ title, children }: { title: string; children: ReactNode }) {
+export function SettingsGroup({ title, children }: { title?: string; children: ReactNode }) {
   const id = useId();
-  return <section aria-labelledby={id}>
-    <h2 id={id} className="settings-group-heading">{title}</h2>
+  return <section aria-labelledby={title ? id : undefined}>
+    {title && <h2 id={id} className="settings-group-heading">{title}</h2>}
     <SettingsCard>{children}</SettingsCard>
   </section>;
 }

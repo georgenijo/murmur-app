@@ -738,6 +738,26 @@ describe('SettingsPanel information architecture', () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
   });
 
+  it('groups Recording and Delivery settings while keeping the app overrides target', async () => {
+    const nav = Array.from(container.querySelectorAll<HTMLButtonElement>('nav button'));
+    const recording = nav.find((button) => button.textContent === 'Recording')!;
+    await act(async () => recording.click());
+    expect(Array.from(container.querySelectorAll('h2')).map((heading) => heading.textContent)).toEqual([
+      'Input', 'Controls',
+    ]);
+
+    const delivery = nav.find((button) => button.textContent === 'Delivery')!;
+    await act(async () => delivery.click());
+    expect(Array.from(container.querySelectorAll('h2')).map((heading) => heading.textContent)).toEqual([
+      'Pasting', 'Files', 'History',
+    ]);
+    await act(async () => (container.querySelector('.settings-advanced-toggle') as HTMLButtonElement).click());
+    const overrides = container.querySelector<HTMLButtonElement>('[data-setting-target="app-overrides"]:not(.settings-advanced)')!;
+    expect(overrides.textContent).toContain('Manage app overrides');
+    await act(async () => overrides.click());
+    expect(container.textContent).toContain('App overrides editor');
+  });
+
   it('keeps the scroll position when Delivery Advanced opens and closes', async () => {
     const delivery = Array.from(container.querySelectorAll<HTMLButtonElement>('nav button'))
       .find(button => button.textContent === 'Delivery')!;
