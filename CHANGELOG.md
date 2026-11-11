@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.63.2] - 2026-11-11
+
 ### Fixed
 
 - Soften shared secondary-control borders, replace nested Text & vocabulary tiles with standard navigation rows, clarify clipboard-first Auto-paste behavior, and remove the redundant Settings title divider.
