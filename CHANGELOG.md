@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.65.0] - 2026-11-11
+
 ### Removed
 
 - **Modes are retired.** The Settings → Modes page, custom Modes and their
