@@ -43,17 +43,22 @@ export function SettingsCallout({ title, children, tone = 'neutral', targetId }:
 
 /** A collapsed "Advanced" group. `rows` lays its children out like card rows
  *  (divider between each); `stack` spaces them without dividers. */
-export function SettingsDisclosure({ title, description, layout, targetId, children, pane }: {
+export function SettingsDisclosure({ title, description, layout, targetId, children, pane, open: controlledOpen, onOpenChange }: {
   title: string;
   description?: string;
   layout: 'rows' | 'stack';
   pane?: string;
   targetId?: string;
   children: ReactNode;
+  /** Use local UI state for compact disclosures that do not belong to a pane's Advanced state. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const context = useContext(SettingsDisclosureContext);
   const [ownOpen, setOwnOpen] = useSettingsAdvanced(pane ?? '');
-  const state = context ?? { open: ownOpen, setOpen: setOwnOpen };
+  const state = controlledOpen !== undefined && onOpenChange
+    ? { open: controlledOpen, setOpen: onOpenChange }
+    : context ?? { open: ownOpen, setOpen: setOwnOpen };
   const buttonRef = useRef<HTMLButtonElement>(null);
   const contentId = useId();
   const open = state?.open ?? false;

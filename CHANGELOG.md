@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
-- Standardize Settings editor sheets on shared selects, inputs, switches, and button treatments; also soften small Settings labels and keep prose placeholders intact.
+- Consolidate Settings cards and Advanced disclosures, compact Meetings and single-variant theme cards, and standardize editor controls, labels, and actions.
 - Soften shared secondary-control borders, replace nested Text & vocabulary tiles with standard navigation rows, clarify clipboard-first Auto-paste behavior, and remove the redundant Settings title divider.
 - Make Settings callouts visibly distinct across built-in themes.
 - Make active theme variants unmistakable in Appearance, and compact theme cards by removing redundant preview captions and status rows.

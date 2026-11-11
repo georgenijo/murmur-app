@@ -104,23 +104,59 @@ for (const appearance of ['dark', 'light'] as const) {
 
   test(`${appearance} remote speaker details fold with Label remote speakers`, async ({ page }) => {
     await open(page, appearance, 'settings', 'Meetings');
-    await page.locator('.settings-advanced-toggle').first().click();
-    const speakers = page.locator('[data-setting-target="meeting-speakers"]');
-    const toggle = speakers.getByRole('switch', { name: 'Label remote speakers' });
-    const branch = speakers.locator('.settings-dependent-branch');
-    const model = speakers.getByText('Remote speaker model', { exact: true });
+    const speakerGroup = page.getByRole('heading', { name: 'Speaker labels', exact: true }).locator('..');
+    const toggle = speakerGroup.getByRole('switch', { name: 'Label remote speakers' });
+    const branch = speakerGroup.locator('.settings-card > .settings-dependent-branch');
+    const model = speakerGroup.getByText('Remote speaker model', { exact: true });
     await expect(toggle).toHaveAttribute('aria-checked', 'false');
     await expect(branch).toHaveAttribute('inert', '');
     await expect(model).toBeHidden();
-    await expect(speakers.getByText(/Labels stay on this Mac/)).toBeHidden();
+    await expect(speakerGroup.getByText(/temporarily saves system audio/)).toHaveCount(0);
     await toggle.click();
     await expect(branch).not.toHaveAttribute('inert', '');
     await expect(model).toBeVisible();
-    await expect(speakers.getByText(/Labels stay on this Mac/)).toBeVisible();
-    await expect(speakers.getByRole('button', { name: /Download model|Remove model/ })).toBeVisible();
+    await expect(speakerGroup.getByText(/temporarily saves system audio/)).toHaveCount(0);
+    await speakerGroup.getByRole('button', { name: 'How speaker labeling works' }).click();
+    await expect(speakerGroup.getByText(/temporarily saves system audio/)).toBeVisible();
+    await expect(speakerGroup.getByRole('button', { name: /Download model|Remove model/ })).toBeVisible();
     await toggle.click();
     await expect(model).toBeHidden();
     await expect(branch).toHaveAttribute('aria-hidden', 'true');
+  });
+
+  test(`${appearance} Meetings stays compact at 840 by 620`, async ({ page }) => {
+    await page.setViewportSize({ width: 840, height: 620 });
+    await open(page, appearance, 'settings', 'Meetings');
+    const suggestions = page.locator('[data-setting-target="meeting-suggestions"]');
+    const audio = page.locator('[data-setting-target="meeting-audio"]');
+    const speakers = page.locator('[data-setting-target="meeting-speakers"]');
+    const speakerGroup = page.getByRole('heading', { name: 'Speaker labels', exact: true }).locator('..');
+    const description = suggestions.locator('.settings-row-description');
+    const age = page.locator('[data-setting-target="meeting-retention"]');
+    await page.getByRole('button', { name: 'Advanced Echo and retention' }).click();
+    await expect(description).toHaveCount(1);
+    expect((await box(description)).height).toBeLessThanOrEqual(18);
+    await expect(audio.locator('.settings-row-description')).toHaveCount(0);
+    await expect(speakers.locator('.settings-row-description')).toHaveCount(0);
+    for (const row of [suggestions, audio, speakers]) {
+      const rowBox = await box(row);
+      const switchBox = await box(row.getByRole('switch'));
+      expect(switchBox.right).toBeLessThanOrEqual(rowBox.right);
+      expect(switchBox.y).toBeGreaterThanOrEqual(rowBox.y);
+      expect(switchBox.bottom).toBeLessThanOrEqual(rowBox.bottom);
+    }
+    const singleLineRows = await Promise.all([audio, speakers].map(box));
+    for (const row of singleLineRows) expect(row.height).toBeLessThanOrEqual(44);
+    expect(Math.abs(singleLineRows[0].height - singleLineRows[1].height)).toBeLessThanOrEqual(2);
+    expect((await box(age)).height).toBeGreaterThanOrEqual(singleLineRows[0].height);
+
+    await speakers.getByRole('switch', { name: 'Label remote speakers' }).click();
+    const disclosure = speakerGroup.getByRole('button', { name: 'How speaker labeling works' });
+    const [disclosureBox, labelBox] = await Promise.all([
+      box(disclosure),
+      box(speakers.locator('.settings-row-title')),
+    ]);
+    expect(Math.abs(disclosureBox.x - labelBox.x)).toBeLessThanOrEqual(1);
   });
 
   test(`${appearance} model card folds away while Smart Auto-Stop is off`, async ({ page }) => {

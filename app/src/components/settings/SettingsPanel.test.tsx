@@ -785,7 +785,7 @@ describe('SettingsPanel information architecture', () => {
     expect(scrollTo).toHaveBeenCalledWith({ top: 0 });
   });
 
-  it('discloses Calendar reads and browser limits before enabling meeting suggestions', async () => {
+  it('keeps Meetings copy compact and reveals Calendar details only when requested', async () => {
     const meetings = Array.from(container.querySelectorAll('nav button')).find(
       (button) => button.textContent === 'Meetings',
     ) as HTMLButtonElement;
@@ -795,12 +795,18 @@ describe('SettingsPanel information architecture', () => {
       '[role="switch"][aria-label="Suggest Notetaker for Calendar meetings"]',
     );
     expect(toggle?.getAttribute('aria-checked')).toBe('false');
-    expect(container.textContent).toContain('Reads your Calendar');
-    expect(container.textContent).toContain('Zoom, Teams, Slack, Webex, FaceTime');
-    expect(container.textContent).toContain('never reads URLs or window titles');
+    expect(container.textContent).not.toContain('Stored separately from dictation');
+    expect(container.textContent).not.toContain('Keep recordings after transcription');
+    expect(container.textContent).not.toContain('Label other speakers after a meeting');
+    expect(container.textContent).toContain('Use your Calendar to offer a prompt for supported calls');
 
     await act(async () => toggle?.click());
     expect(onUpdateSettings).toHaveBeenCalledWith({ meetingSuggestionsEnabled: true });
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, meetingSuggestionsEnabled: true }));
+    const details = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Calendar details')!;
+    await act(async () => details.click());
+    expect(container.textContent).toContain('Zoom, Teams, Slack, Webex, FaceTime');
+    expect(container.textContent).toContain('never reads URLs or window titles');
   });
 
   it('accepts a direct Keyboard Shortcuts page request for command-palette navigation', async () => {
@@ -1036,6 +1042,8 @@ describe('SettingsPanel information architecture', () => {
     ['overlay position', 'Calibrate overlay position', 'overlay-calibration', 'General'],
     ['paste delay', 'Paste delay', 'paste-delay', 'Delivery'],
     ['sound cues', 'Sound cues', 'sound-cues', 'Recording'],
+    ['history days', 'Meeting retention', 'meeting-retention', 'Meetings'],
+    ['speaker names', 'Remote speaker labels', 'meeting-speakers', 'Meetings'],
     ['vocabulary', 'Vocabulary', 'vocabulary', 'Text & vocabulary'],
     ['aliases', 'Aliases', 'aliases', 'Text & vocabulary'],
     ['knowledge', 'Knowledge', 'knowledge', 'Text & vocabulary'],

@@ -470,6 +470,7 @@
 .settings-rows > * { padding: var(--settings-row-pad) var(--settings-row-x); border-radius: 0; }
 .settings-rows > * + * { border-top: 1px solid var(--settings-divider); }
 .settings-setting-row { container: settings-row / inline-size; min-width: 0; min-height: var(--settings-row-height); }
+.settings-setting-row[data-compact] { min-height: var(--ui-control-standard); }
 .settings-setting-row:hover { background: transparent; }
 .settings-row-layout[data-align='start'] { align-items: start; }
 .settings-row-layout[data-align='start'] > .settings-title-description > .settings-row-title { min-height: var(--ui-control-standard, 32px); }
