@@ -242,9 +242,10 @@ describe('SettingsPanel information architecture', () => {
   it('presents Customize as independent named destinations rather than numbered steps', async () => {
     await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'customize', token: 1 }));
     const list = container.querySelector('[aria-label="Customization destinations"]')!;
-    expect(list.tagName).toBe('DIV');
+    expect(list.tagName).toBe('UL');
     expect(list.children).toHaveLength(4);
-    expect(Array.from(list.children).every(element => element.tagName === 'BUTTON')).toBe(true);
+    expect(Array.from(list.children).every(element => element.tagName === 'LI')).toBe(true);
+    expect(Array.from(list.children).every(element => element.firstElementChild?.tagName === 'BUTTON')).toBe(true);
     expect(list.textContent).not.toMatch(/0[1-5]/);
   });
 

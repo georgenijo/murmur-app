@@ -45,28 +45,29 @@ export function CustomizationHub({ focusDestination, onOpen }: CustomizationHubP
   return (
     <section aria-label="Customize Murmur">
       <SettingsGroup>
-        <div aria-label="Customization destinations">
-        {DESTINATIONS.map((destination) => (
-            <button
-              key={destination.id}
-              ref={(node) => {
-                if (node) rowRefs.current[destination.id] = node;
-                else delete rowRefs.current[destination.id];
-              }}
-              type="button"
-              onClick={(event) => onOpen(destination.id, event.currentTarget)}
-              className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            >
-              <span className="settings-title-description">
-                <span className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">{destination.title}</span>
-                <span className="mt-0.5 block text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
-                  {destination.description}
+        <ul aria-label="Customization destinations" className="m-0 list-none p-0">
+          {DESTINATIONS.map((destination) => (
+            <li key={destination.id}>
+              <button
+                ref={(node) => {
+                  if (node) rowRefs.current[destination.id] = node;
+                  else delete rowRefs.current[destination.id];
+                }}
+                type="button"
+                onClick={(event) => onOpen(destination.id, event.currentTarget)}
+                className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              >
+                <span className="settings-title-description">
+                  <span className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">{destination.title}</span>
+                  <span className="mt-0.5 block text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
+                    {destination.description}
+                  </span>
                 </span>
-              </span>
-              <span aria-hidden="true" className="text-on-surface-variant">›</span>
-            </button>
-        ))}
-        </div>
+                <span aria-hidden="true" className="text-on-surface-variant">›</span>
+              </button>
+            </li>
+          ))}
+        </ul>
       </SettingsGroup>
     </section>
   );
