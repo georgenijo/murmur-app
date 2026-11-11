@@ -24,6 +24,7 @@ import {
   DICTATION_KEY_OPTIONS,
   dictationKeyLabel,
   isFunctionDictationKey,
+  GLOBE_DICTATION_KEY,
   type DictationKey,
   type ModelOption,
   type RecordingMode,
@@ -570,6 +571,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                 </div>
                 <p id="onboarding-trigger-key-label" className="onboarding-label">Trigger key</p>
                 <Select aria-labelledby="onboarding-trigger-key-label" value={selectedTriggerKey} onChange={setSelectedTriggerKey} items={DICTATION_KEY_OPTIONS} />
+                {selectedTriggerKey === GLOBE_DICTATION_KEY && <p className="onboarding-copy" data-testid="globe-key-hint">The mic opens while Fn is held so the first word isn't lost; audio from presses that don't start a dictation is discarded. If Fn also opens the emoji picker or switches input source, set System Settings › Keyboard › “Press 🌐 key to” to “Do Nothing”.</p>}
                 {isFunctionDictationKey(selectedTriggerKey) && <p className="onboarding-copy">On Apple keyboards, F1–F12 may require Fn or the macOS setting that uses function keys as standard keys. Murmur does not suppress the key's normal system or app action.</p>}
               </div>
               <WizardNavigationRow onBack={goBack} onNext={goNext} nextEnabled defaultAction nextLabel="Continue" />

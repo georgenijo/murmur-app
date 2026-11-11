@@ -44,6 +44,8 @@ pub(crate) struct AcceptedGesture {
 pub(crate) struct StartGesture {
     pub expected: bool,
     pub timing: Option<AcceptedGesture>,
+    /// Fn key-down capture bound to this gesture, adopted only by its start.
+    pub speculative_capture: Option<u64>,
 }
 /// Claim at command entry, before any await, validation, or busy return. A
 /// rejected request drops its owned stamp; it cannot be reused by a later call.
@@ -56,6 +58,7 @@ impl GestureClaim {
         let now = Instant::now();
         StartGesture {
             expected: self.expected,
+            speculative_capture: None,
             timing: self
                 .stamp
                 .filter(|p| p.hold == hold && now.saturating_duration_since(p.emitted) <= MAX_AGE)

@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 172 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 173 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -163,9 +163,10 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `start_keyboard_listener` | `hotkey: String`, `mode: String` | `Result<(), String>` | Synchronizes Rust-owned listener registration in `hold_down`, `double_tap`, or `both`; identical registration preserves detector state and reuses a thread prepared by native setup. Validates mode and the modifier/F1–F20 key allowlist; requires Accessibility. |
+| `start_keyboard_listener` | `hotkey: String`, `mode: String` | `Result<(), String>` | Synchronizes Rust-owned listener registration in `hold_down`, `double_tap`, or `both`; identical registration preserves detector state and reuses a thread prepared by native setup. Validates mode and the modifier/Fn/F1–F20 key allowlist; requires Accessibility. |
 | `stop_keyboard_listener` | — | `()` | Stops processing key events; the thread stays alive. |
 | `update_keyboard_key` | `hotkey: String` | `Result<(), String>` | Validates and changes the trigger key at runtime. Emits `hold-down-stop` if the old key was held, so no recording is stranded. |
+| `set_fn_capture_input` | `deviceName: Option<String>`, `smartAuto: Option<SmartAutoRequest>` | `Result<(), String>` | Mirrors the microphone the next dictation will request, so Fn / Globe key-down capture opens the same input. At most one argument may be set; an empty, oversized (>4096 bytes), or NUL-containing device id is rejected. Never logged. |
 | `set_keyboard_recording` | `recording: bool` | `()` | Syncs recording state into the double-tap detector. |
 | `set_app_disabled` | `disabled: bool` | `Result<(), String>` | Global disable/enable. Mirrors state to the tray check item and emits `app-disabled-changed`. |
 | `get_app_disabled` | — | `bool` | Current global-disable state. |

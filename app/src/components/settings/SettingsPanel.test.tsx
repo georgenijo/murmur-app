@@ -644,7 +644,7 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => picker?.click());
     const listbox = container.querySelector('[role="listbox"]')!;
     expect(listbox.querySelector('[role="group"]')).toBeNull();
-    expect(listbox.querySelectorAll('[role="option"]')).toHaveLength(23);
+    expect(listbox.querySelectorAll('[role="option"]')).toHaveLength(24);
 
     await act(async () => {
       picker?.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
@@ -655,6 +655,21 @@ describe('SettingsPanel information architecture', () => {
     expect(onUpdateSettings).toHaveBeenCalledWith({ doubleTapKey: 'f20' });
     expect(container.textContent).toContain('May need Fn on Apple keyboards');
     expect(container.textContent).toContain('keeps its normal action');
+  });
+
+  it('explains Fn / Globe key-down capture and the system Globe action', async () => {
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, doubleTapKey: 'fn' }));
+    const recording = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'Recording',
+    ) as HTMLButtonElement;
+    await act(async () => recording.click());
+
+    const picker = container.querySelector<HTMLButtonElement>('[aria-label="Dictation trigger key"]');
+    expect(picker?.textContent).toContain('Fn / Globe');
+    const hint = container.querySelector('[data-testid="globe-key-hint"]');
+    expect(hint?.textContent).toContain('discarded');
+    expect(hint?.textContent).toContain('Do Nothing');
+    expect(container.textContent).not.toContain('May need Fn on Apple keyboards');
   });
 
   it('updates and previews recording sound cues', async () => {

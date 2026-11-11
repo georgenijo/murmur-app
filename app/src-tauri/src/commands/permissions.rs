@@ -294,6 +294,18 @@ fn mic_status_to_banner_state(status: isize) -> &'static str {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static MICROPHONE_STATUS_OVERRIDE: std::cell::Cell<Option<&'static str>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Test-only: report `status` from this thread instead of reading TCC.
+#[cfg(test)]
+pub(crate) fn override_microphone_permission_status_for_test(status: Option<&'static str>) {
+    MICROPHONE_STATUS_OVERRIDE.with(|cell| cell.set(status));
+}
+
 /// Read the *current* microphone authorization status as a banner-state string.
 ///
 /// Queries `AVCaptureDevice.authorizationStatus(for: .audio)` live at call-time
@@ -307,6 +319,10 @@ fn mic_status_to_banner_state(status: isize) -> &'static str {
 /// so it cannot duck other apps' audio (issue #177).
 #[tauri::command]
 pub fn check_microphone_permission_status() -> String {
+    #[cfg(test)]
+    if let Some(status) = MICROPHONE_STATUS_OVERRIDE.with(std::cell::Cell::get) {
+        return status.to_string();
+    }
     #[cfg(target_os = "macos")]
     {
         use objc2::msg_send;

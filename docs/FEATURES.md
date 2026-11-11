@@ -43,7 +43,8 @@ feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 | Double-Tap | Two taps (each <200ms, gap <400ms) start; single tap stops |
 | Both | Both at once, via 200ms deferred hold promotion |
 
-- Trigger keys: Left Shift, Left Option, Right Control, or F1–F20.
+- Trigger keys: Left Shift, Left Option, Right Control, Fn / Globe, or F1–F20.
+- Fn / Globe opens the microphone at key-down so the first word is kept. Presses that never become a confirmed dictation are discarded, with no transcription, file, or log content, within a 1.5 s backstop. Other keys never capture before a confirmed start. Murmur does not suppress the system Globe action ([details](features/recording-modes.md#fn-and-globe-key-down-capture)).
 - Modifier+letter combos are rejected so normal typing never triggers recording.
 - Optional amber overlay flash when a double-tap's second-tap window expires (`hotkeyMissFeedback`, off by default).
 - Global disable from the tray ("Disable Murmur") or the overlay's power button.
@@ -308,7 +309,7 @@ headless runner, and regression gate are excluded from normal distribution.
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 172 registered commands |
+| Rust backend | `app/src-tauri/src/` — 173 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |
 | Diagnostics MCP tool | `tools/murmur-diag/` |
