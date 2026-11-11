@@ -114,7 +114,7 @@ test('a dark-only theme applies from Light and keeps Appearance and Customize le
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-appearance', 'dark');
   await page.getByRole('button', { name: 'Appearance', exact: true }).click();
-  await page.getByRole('button', { name: 'Use Sonic for light mode', exact: true }).click();
+  await page.getByRole('button', { name: /^Use Sonic for light mode/ }).click();
   await expect(page.locator('html')).toHaveAttribute('data-appearance', 'light');
   await page.getByRole('group', { name: 'Flat Dark light and dark styles' })
     .getByRole('button', { name: /for dark mode/ }).click();

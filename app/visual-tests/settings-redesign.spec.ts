@@ -34,11 +34,33 @@ for (const appearance of ['light', 'dark'] as const) {
       await expect(page.locator('.settings-appearance-mode')).toHaveCSS('border-radius', '12px');
       await expect(page.locator('.settings-segmented')).toHaveCSS('height', '34px');
       await expect(page.locator('.settings-segmented-btn').first()).toHaveCSS('border-radius', '8px');
-      await page.getByRole('button', { name: 'Use OpenCode for dark mode', exact: true }).click();
-      await expect(page.locator('[data-theme-collection="Sonic"] .settings-theme-mode-status')).toHaveText('Used for light');
-      await expect(page.locator('[data-theme-collection="OpenCode"] .settings-theme-mode-status')).toHaveText('Used for dark');
-      await page.getByRole('button', { name: 'Use Sonic theme', exact: true }).click();
-      await expect(page.locator('[data-theme-collection="Sonic"] .settings-theme-mode-status')).toHaveText('Used for light and dark');
+      const initialShowing = page.locator('.settings-theme-variant[data-showing-now]');
+      await expect(initialShowing).toHaveCount(1);
+      const currentMode = /for (light|dark) mode/.exec(await initialShowing.getAttribute('aria-label') ?? '')?.[1] as 'light' | 'dark';
+      const otherMode = currentMode === 'light' ? 'dark' : 'light';
+      const sonic = page.locator('[data-theme-collection="Sonic"]');
+      const opencode = page.locator('[data-theme-collection="OpenCode"]');
+      const sonicCurrent = sonic.getByRole('button', { name: new RegExp(`Use Sonic for ${currentMode} mode`) });
+      const opencodeCurrent = opencode.getByRole('button', { name: new RegExp(`Use OpenCode for ${currentMode} mode`) });
+      const opencodeOther = opencode.getByRole('button', { name: new RegExp(`Use OpenCode for ${otherMode} mode`) });
+      await sonicCurrent.click();
+      await expect(sonicCurrent).toHaveAttribute('data-showing-now', 'true');
+      await opencodeOther.click();
+      await expect(opencodeOther).toHaveAttribute('data-showing-now', 'true');
+      await expect(opencodeOther).toHaveAttribute('data-assigned', 'true');
+      await expect(sonicCurrent).toHaveAttribute('data-assigned', 'true');
+      await expect(sonic.locator('.settings-theme-variant-assigned')).toHaveCount(1);
+      await page.getByRole('radio', { name: `Use ${currentMode} mode`, exact: true }).click();
+      await expect(sonicCurrent).toHaveAttribute('data-showing-now', 'true');
+      await expect(opencode.locator('.settings-theme-variant-assigned')).toHaveCount(1);
+      await page.getByRole('radio', { name: 'Follow the system appearance', exact: true }).click();
+      await expect(sonicCurrent).toHaveAttribute('data-showing-now', 'true');
+      await page.getByRole('button', { name: `Use OpenCode for ${currentMode} mode`, exact: false }).click();
+      await expect(opencodeCurrent).toHaveAttribute('data-showing-now', 'true');
+      await expect(page.locator('.settings-theme-variant-check')).toHaveCount(1);
+      await expect(page.locator('.settings-theme-caption, .settings-theme-mode-status')).toHaveCount(0);
+      expect(await sonic.evaluate((card) => card.getBoundingClientRect().height))
+        .toBe(await opencode.evaluate((card) => card.getBoundingClientRect().height));
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
     });
   }

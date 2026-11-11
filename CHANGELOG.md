@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - Soften shared secondary-control borders, replace nested Text & vocabulary tiles with standard navigation rows, clarify clipboard-first Auto-paste behavior, and remove the redundant Settings title divider.
 - Make Settings callouts visibly distinct across built-in themes.
+- Make active theme variants unmistakable in Appearance, and compact theme cards by removing redundant preview captions and status rows.
 
 ## [0.63.1] - 2026-11-10
 
