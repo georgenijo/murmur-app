@@ -15,6 +15,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   commands (`get_mode_runtime_status`, `set_next_recording_mode`, `cycle_mode`,
   `clear_temporary_mode_override`, `probe_browser_site`, `read_modes_file`).
   Recording modes (Hold Down, Double-Tap) and Writing Styles are unchanged.
+- **Personal Knowledge, custom Voice Commands and Correct and Teach are
+  retired.** The Settings → Knowledge and Voice commands pages, the Teach action
+  on the newest History entry, and the first-use "teach a correction" hint are
+  gone, along with seventeen native commands (thirteen Knowledge commands,
+  including `preview_voice_command`, and four Correct and Teach commands). The
+  built-in spoken commands (`period`, `comma`, `question mark`, `open paren`,
+  `close paren`, `new line`, `new paragraph`, `scratch that`) and their on/off
+  switch stay; the switch is now labelled **Spoken formatting**. Vocabulary and
+  aliases are unchanged, and aliases still cannot reuse a built-in spoken
+  phrase.
 
 ### Migration
 
@@ -49,6 +59,17 @@ What no longer applies:
 - The Technical vocabulary policy has no replacement. A Code / technical
   writing style or project context still enables developer vocabulary.
 - Old Mode data in history and statistics is ignored, never shown or exported.
+
+### Your knowledge folder
+
+Murmur no longer opens, reads, migrates, or deletes your old knowledge data. It
+stays on disk in `<appdata>/knowledge/` (`knowledge.sqlite3`, with its
+`backups/` and `quarantine/` folders). If you used Voice Commands or Correct and
+Teach, export from Settings → Knowledge before updating; afterwards you can
+delete this folder.
+
+Old statistics, history entries and discovery hints that mention these features
+are ignored, never shown or exported.
 
 ## [0.64.3] - 2026-11-11
 

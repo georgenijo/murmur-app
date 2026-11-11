@@ -99,15 +99,15 @@ Scales must be ordered from larger to smaller. A malformed sequence is converted
 The live order is:
 
 ```text
-cleanup → voice commands → Smart Correction → Smart Formatting
+cleanup → Smart Correction → Smart Formatting
 → Spoken Structure → spoken numbers → IDE context → CLI formatting → final text
 ```
 
 Running after Spoken Structure allows numeric separators to disambiguate fractions (`one slash two` → `1/2`). Running before IDE and CLI formatting gives those authoritative stages numeric tokens when a code or command utterance includes a spoken number.
 
-Text written by an explicit vocabulary alias or learned rule in Smart Correction, including a heard canonical form, is literal to this stage. An alias written as `twenty pages` stays `twenty pages`.
+Text written by an explicit vocabulary alias in Smart Correction, including a heard canonical form, is literal to this stage. An alias written as `twenty pages` stays `twenty pages`.
 
-Correct and Teach learns from final history text, where numbers are already digits. When Smart Correction is on, explicit aliases and learned rules whose spoken form contains a digit (for example `GPT 5` → `GPT-5`) are therefore matched again at the end of this stage. A re-match must overlap digits this stage just rendered and must not touch text an explicit alias or learned rule wrote, so no correction applies twice and explicit-alias precedence holds. Those spans are known only while the text is exactly what Smart Correction produced. If Smart Formatting or Spoken Structure rewrote it, the re-match is skipped and numbers render normally. See [Correct and Teach](correct-and-teach.md#scope-and-precedence).
+When Smart Correction is on, explicit aliases whose spoken form contains a digit (for example `GPT 5` → `GPT-5`) are matched again at the end of this stage, because the recognizer may have said `GPT five`. A re-match must overlap digits this stage just rendered and must not touch text an explicit alias wrote, so no correction applies twice and explicit-alias precedence holds. Those spans are known only while the text is exactly what Smart Correction produced. If Smart Formatting or Spoken Structure rewrote it, the re-match is skipped and numbers render normally.
 
 The pass is English-only. It runs for normal live dictation, including default and code-oriented profiles. The explicit Verbatim profile disables it. Imported-file transcription also leaves number words unchanged.
 

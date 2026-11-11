@@ -34,7 +34,7 @@ The explicit `command` cue is required so ordinary uses such as “a slash separ
 CLI canonicalization is the final deterministic transformation:
 
 ```text
-raw transcript → cleanup → voice commands → Smart Correction → Smart Formatting → Spoken Structure → spoken numbers → CLI formatting → final text
+raw transcript → cleanup → Smart Correction → Smart Formatting → Spoken Structure → spoken numbers → CLI formatting → final text
 ```
 
 Running after Smart Correction lets vocabulary resolve technical names first. Smart Formatting and Spoken Structure bypass utterances activated by the CLI grammar, including already-canonical commands, and the final CLI stage then owns separators, flags, paths, versions, and command-family casing. The pipeline keeps the original and final text together only in memory for reporting and tests; neither value is added to structured logs by this stage.
@@ -52,7 +52,7 @@ The generic spoken-symbol grammar is separate from alias data. It recognizes bou
 
 The local lexicon layers:
 
-1. User-approved atom mappings from existing custom voice commands
+1. Caller-approved atom mappings (live dictation supplies none; the evaluation harness passes fixture aliases)
 2. Small built-in tool/package/script aliases
 3. Terms captured by the immutable code-vocabulary snapshot
 

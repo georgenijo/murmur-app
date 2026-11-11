@@ -13,8 +13,8 @@ and upgrades migrate an existing cache to disk once when no durable file
 exists. History keeps its rolling 200-entry cap (`trimHistory` drops the oldest
 beyond it, by index so same-millisecond ids cannot confuse it), and the only
 thing that leaves the app is an export the user explicitly asks for. An entry
-worth keeping past the cap belongs in an export or the knowledge store, not in
-a special history state.
+worth keeping past the cap belongs in an export, not in a special history
+state.
 
 Stored transcript entries use schema version 2. New live-dictation entries keep
 the exact raw backend recognition separately from the delivered text, together
@@ -75,7 +75,7 @@ a star on pinned entries, without per-entry word counts, durations, or repeated
 mode controls. Clicking any non-interactive part of a row copies the entry's
 full stored text, including text hidden behind **Show more**. A focused row does
 the same with Enter or Space and briefly announces **Copied**. Nested actions
-such as **Show more**, **Copy as Markdown**, and **Correct & Teach** retain their
+such as **Show more** and **Copy as Markdown** retain their
 own behavior and do not trigger a plain-text copy.
 
 The newest 30 matching transcript rows are mounted initially. **Show older**
@@ -112,7 +112,7 @@ The **Export** menu acts on **exactly what is currently shown** — filters and 
 
 Each format can go to the clipboard or to a file. The two menu groups repeat the same format names, so each is a labelled `role="group"` and every item carries the verb in its accessible name ("Copy 5 shown as Markdown", "Save 5 shown as Markdown"). Entries are ordered exactly as displayed (newest first), and timestamps are rendered as local `YYYY-MM-DD HH:MM:SS` so an export reads the same on every machine.
 
-**`teachingContext` is never exported.** The bundle id and project root captured at recording start are local scope metadata for Correct-and-Teach, not part of a transcript the user is sharing. All three formats are asserted against this in tests.
+**Retired scope metadata is never exported.** Older entries carried a `teachingContext` (a bundle id and project root) for the retired Correct and Teach feature. It is dropped when history loads and is not part of a transcript the user is sharing. All three formats are asserted against this in tests.
 
 Markdown and plain-text exports remain delivered-text views. Raw recognition,
 model/profile correlation, and stage outcomes leave history only through the
@@ -134,17 +134,13 @@ That command is deliberately narrow — it is a document sink, not a general fil
 
 Cancelling the dialog is a no-op — no command call, no message.
 
-## Correct and Teach
-
-Correct-and-Teach still targets **the newest entry in the whole history**, not the first row on screen. Sorting and filtering reorder the list, so the button is anchored to `entries[entries.length - 1]` and travels with that entry wherever it is displayed.
-
 ## Files
 
 | File | Role |
 |------|------|
 | `app/src/lib/history.ts` | Entry shape, trim/filter/sort, match segmentation, export rendering |
 | `app/src/lib/historyExport.ts` | Clipboard and save-dialog wrappers around the pure renderer |
-| `app/src/lib/hooks/useHistoryManagement.ts` | State + retention boundary: add, update, clear |
+| `app/src/lib/hooks/useHistoryManagement.ts` | State + retention boundary: add, pin, delete, clear |
 | `app/src/lib/durableUserData.ts` | Boot hydration, localStorage migration, write-through and clear bridge |
 | `app/src-tauri/src/commands/settings_store.rs` | Bounded atomic durable blobs and corruption quarantine |
 | `app/src/components/history/HistoryPanel.tsx` | Search, cards, export menu, clear actions |
@@ -153,7 +149,7 @@ Correct-and-Teach still targets **the newest entry in the whole history**, not t
 
 ## Tests
 
-- `app/src/lib/history.test.ts` — the 200-entry trim, duplicate ids, filters, sorting, match segmentation (including regex metacharacters and reassembly), all three export formats, and the teaching-context exclusion.
+- `app/src/lib/history.test.ts` — the 200-entry trim, duplicate ids, filters, sorting, match segmentation (including regex metacharacters and reassembly), all three export formats, and the retired teaching-context exclusion.
 - `app/src/components/history/HistoryPanel.test.tsx` — search/filter interaction, bounded render batches, export scope, dialog cancellation, and the two-step clear.
 - `app/src/lib/hooks/useFileTranscription.test.tsx` — newly enqueued files publish synchronously and enter the sequential drain exactly once.
 - `app/src-tauri/src/commands/export.rs` — the full validation matrix plus atomic overwrite and temp-file placement.

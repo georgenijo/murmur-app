@@ -147,8 +147,8 @@ re-grant instead of spelunking through System Settings.
 ## Contextual hints after setup
 
 The wizard remains eight steps. Home goes directly to dictation and history.
-Three once-only hints respond to an expired double-tap window, a new history
-entry, and an existing teaching context identifying an allow-listed browser.
+One once-only hint responds to an expired double-tap window. Earlier hints that
+referred to retired features are ignored when old records are read.
 The local record stores fixed hint IDs, without transcript, selection, site,
 window-title or meeting content. Dismissed hints stay dismissed after relaunch.
 Both setup-assistant entry points reset hint state.

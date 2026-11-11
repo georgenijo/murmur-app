@@ -40,7 +40,7 @@ Each fixture declares:
 - local provenance, deletion guidance, and `containsRealUserData: false`;
 - fixture-provided raw ASR for deterministic runs, or a workspace-relative WAV plus exact installed model/backend for hardware runs;
 - a recognition reference transcript and one or more bounded acceptable raw-ASR outputs (the first bounded output is the reference when `referenceTranscript` is omitted);
-- fixture-only stage switches, explicit Off/Basic/Extended/Union Spoken Structure policy, profile metadata, vocabulary, voice commands, CLI prompt, and IDE symbols/files;
+- fixture-only stage switches, explicit Off/Basic/Extended/Union Spoken Structure policy, profile metadata, vocabulary, CLI prompt, and IDE symbols/files;
 - expected final and delivered text plus selected stage outcomes;
 - fixed deterministic timing values.
 

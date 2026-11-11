@@ -135,9 +135,9 @@ diagnostics.
 
 Local run history and CPU/memory samples live in `diagnostics/performance.sqlite3` under the Tauri app-data directory (`~/Library/Application Support/com.localdictation/`, or `com.localdictation.dev` in dev builds). They are content-free and bounded (200 runs, 600 samples), and are cleared from Settings → Performance.
 
-## Personal knowledge data
+## Retired personal knowledge data
 
-Settings → Knowledge stores replacement rules, vocabulary terms, and snippets only on this Mac under the app data directory in `knowledge/knowledge.sqlite3`. Use the Knowledge page to inspect, edit, disable, export, import, or permanently delete this data. Knowledge content and selected file paths are excluded from logs. See [`features/personal-knowledge-store.md`](features/personal-knowledge-store.md) for migration, backup, and recovery behavior.
+Earlier versions stored replacement rules, vocabulary terms, and snippets in `knowledge/knowledge.sqlite3` under the app data directory. Personal Knowledge, custom Voice Commands, and Correct and Teach have been retired, and Murmur no longer opens that folder. It stays on disk untouched (with its `backups/` and `quarantine/` subfolders), and you can delete it once you no longer need it.
 
 ## Meeting data
 

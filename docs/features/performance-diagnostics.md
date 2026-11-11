@@ -13,8 +13,8 @@ The Rust-owned SQLite database lives at:
 ~/Library/Application Support/com.localdictation/diagnostics/performance.sqlite3
 ```
 
-It is separate from logs, transcription history, settings, personal knowledge,
-and Performance Lab/evaluation reports. The store keeps:
+It is separate from logs, transcription history, settings, and Performance
+Lab/evaluation reports. The store keeps:
 
 - the newest 200 completed runs;
 - active content-free lifecycle rows so early exits and restart interruption can
@@ -101,7 +101,7 @@ The contract never uses numeric zero as a missing-data sentinel.
   unrecorded measurement rather than displaying a measured zero;
 - inference/decode;
 - aggregate deterministic transcript transformation and the existing
-  content-free cleanup, Voice Commands, Smart Correction, homophone context,
+  content-free cleanup, Smart Correction, homophone context,
   Smart Formatting, IDE context, and CLI stage outcomes;
 - `homophoneContext` measures the optional tier's complete wall time, with
   `completed` or `fallback` outcomes (including timeout, unavailable model,
@@ -402,7 +402,7 @@ records with that external label are also excluded.
 
 The configuration fingerprint contains only supported content-free settings
 and capture backend order. It never hashes transcript, prompt, vocabulary,
-learned correction, project, or profile text. Runs with custom context/rules,
+project, or profile text. Runs with custom context/rules,
 IDE context, or external file-output configuration that cannot be compared on
 that basis have an unavailable configuration identity. The UI states that these
 runs cannot establish a compatible latency cohort. Missing/unknown warm state

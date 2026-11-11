@@ -34,7 +34,7 @@ While focus is inside a text field, **only the Command form is accepted**: macOS
 
 Rows whose meaning depends on state are labelled with the state, not the toggle: while recording, the row reads *Stop recording*; while Murmur is disabled, *Enable Murmur*.
 
-Opening a settings page uses a `{ page, token }` request rather than a bare page id. The token makes a repeat request for the page you are already on still register, and an unrecognised page id resolves back to General instead of rendering an empty pane. Contextual Text & vocabulary, Voice commands, and App overrides requests retain a route back to the Customize hub. The Keyboard Shortcuts command opens the read-only General detail page directly.
+Opening a settings page uses a `{ page, token }` request rather than a bare page id. The token makes a repeat request for the page you are already on still register, and an unrecognised page id resolves back to General instead of rendering an empty pane. Contextual Text & vocabulary and App overrides requests retain a route back to the Customize hub. The Keyboard Shortcuts command opens the read-only General detail page directly.
 
 ## Matching and ranking
 

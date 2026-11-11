@@ -120,7 +120,7 @@ feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## 4. Text intelligence
 
-All stages are deterministic and local. They run in one ordered pipeline: **cleanup → voice commands → smart correction → smart formatting → spoken structure → spoken numbers → IDE context → CLI formatting**.
+All stages are deterministic and local. They run in one ordered pipeline: **cleanup → smart correction → smart formatting → spoken structure → spoken numbers → IDE context → CLI formatting**.
 
 ### Cleanup
 Filler removal ("um", "uh") and sentence capitalization, each independently toggleable.
@@ -129,7 +129,7 @@ Filler removal ("um", "uh") and sentence capitalization, each independently togg
 Turns clear spoken enumerations into lists; applies explicitly cued email/URL grammar; handles bounded same-utterance restatements ("no wait, make that…"). Bypassed in CLI/code/verbatim contexts and for imported files.
 
 ### Spoken structure — [features/spoken-structure.md](features/spoken-structure.md)
-Single owner for spoken punctuation, lines, paragraphs, quotes, parentheses, slashes, symbols, ASR-punctuation arbitration, and sentence-boundary-aware `scratch that`. Basic/Extended/Union policy preserves existing Voice Commands and Smart Formatting enablement without double-processing.
+Single owner for spoken punctuation, lines, paragraphs, quotes, parentheses, slashes, symbols, ASR-punctuation arbitration, and sentence-boundary-aware `scratch that`. Basic/Extended/Union policy preserves the Spoken formatting and Smart Formatting switches without double-processing.
 
 ### Spoken numbers — [features/spoken-number-formatting.md](features/spoken-number-formatting.md)
 Renders English cardinals as digits under a register-aware policy. Prose registers keep small counts such as "two of them" as words. Technical and Terminal convert eagerly and join digit runs (`8080`) and dotted versions. Every policy renders times (`4:30 PM`), dates and years (`September 17, 2026`), labels (`step 3`), and versions (`2.17.2`), and leaves hyphenated compounds (`two-factor`) alone. Invalid scale order fails closed at the last unambiguous group. Verbatim and imported audio remain literal.
@@ -140,17 +140,8 @@ Deterministic formatting for spoken npm/npx, Git, Cargo, Docker, kubectl and sim
 ### Vocabulary and correction
 - **Code-vocabulary scan** — breadth-first walk of a chosen project folder (caps: 1000 files / 32 MB / 512 KB per file), extracting identifiers with live progress, a searchable view-all pop-out, and a cap warning. Top 96 terms feed Whisper's token-bound prompt; top 500 feed Smart Correction.
 - **Smart Correction** — post-model correction applied to *every* backend's output. Tier 1 exact map, Tier 2 phonetic "sounds-like" restricted to structured identifiers (camelCase / snake_case / digit) so ordinary English isn't rewritten.
-- **Explicit spoken aliases** — [features/vocabulary-aliases.md](features/vocabulary-aliases.md). Map exact recognized variants ("Tori", "Tory") to a canonical written term ("Tauri"). Ambiguity, cycles, and command conflicts are rejected atomically.
+- **Explicit spoken aliases** — [features/vocabulary-aliases.md](features/vocabulary-aliases.md). Map exact recognized variants ("Tori", "Tory") to a canonical written term ("Tauri"). Ambiguity, cycles, and conflicts with built-in spoken phrases are rejected atomically.
 - **Context-cued variants** — built-in fixes such as `Tori` → `Tauri`, `Postgres SQL` → `PostgreSQL`, and `Maine` → `main` apply only in a Technical/Terminal register, with project context, or near a cue word. Counter-cues fail closed, so a person named Tori is untouched.
-
-### Voice Commands 2.0 — [features/voice-commands.md](features/voice-commands.md)
-Typed, persistent local commands: text replacements and multiline snippets, deterministic `{{date}}` / `{{time}}` variables, explicitly permitted `{{clipboard}}` insertion, global and per-app scopes, conflict validation, and a no-paste preview/test UI.
-
-### Correct and Teach — [features/correct-and-teach.md](features/correct-and-teach.md)
-Edit the newest history entry and Murmur proposes **one bounded replacement** to learn, scoped global / app / project. Uses uniquely provable case-insensitive context alignment, so casing differences can't widen a one-word fix into a sentence rule; ambiguous alignments fail closed. **Teach specific term** lets you select one exact heard term inside a longer sentence when automatic extraction is too broad. Nothing persists without explicit confirmation.
-
-### Personal knowledge store — [features/personal-knowledge-store.md](features/personal-knowledge-store.md)
-Versioned local SQLite store for replacement rules, vocabulary terms, snippets. Bounded search, scoped inspection, create/edit/enable/disable/delete, atomic export/import, visible recovery state, confirmed delete-all, deterministic migration with backup recovery and quarantine.
 
 ### Per-app dictation context — [features/per-app-profiles.md](features/per-app-profiles.md)
 Per-bundle-ID profiles override auto-paste, cleanup, smart formatting, and CLI formatting, and select an explicit **Writing Style** (Inherit / Conversational / Polished prose / Code-technical / Verbatim / Notes). Resolved once into an immutable recording-start snapshot; app type is never inferred and app content is never captured. A bounded memory-only running-app picker with manual bundle-ID fallback fills the profile list.
@@ -213,8 +204,7 @@ Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mi
 
 ### Settings — [reference/settings.md](reference/settings.md)
 Settings opens on **General**. The **Customize** page is a compact hub of
-independent destinations: **Text & vocabulary**, **Voice commands**, **App
-overrides**. Every hub destination has
+independent destinations: **Text & vocabulary** and **App overrides**. Every hub destination has
 a visible route back. Returning restores keyboard focus to the destination that
 opened it. The persistent Settings navigation also exposes
 General, Recording, Delivery, Meetings, Text & Vocabulary, AI & Models,
@@ -246,8 +236,8 @@ redesigned surfaces visually consistent as features evolve.
 
 ### Onboarding — [features/onboarding-flow.md](features/onboarding-flow.md)
 
-The eight-step first-launch assistant leads directly to Home. Three content-free,
-once-only hints react to hotkey, history and browser teaching-context events.
+The eight-step first-launch assistant leads directly to Home. One content-free,
+once-only hint reacts to an expired double-tap window.
 Either setup-assistant entry point resets hint state; upgrades preserve hint
 dismissals while removing retired local progress data.
 First-launch wizard: Welcome → Microphone → Accessibility → optional System
@@ -298,7 +288,7 @@ headless runner, and regression gate are excluded from normal distribution.
 - Developer ID signed and notarized; hardened runtime; capture helpers ship with dedicated entitlements; release finalization fails closed on any unexpected bundle executable.
 - Release builds use `opt-level = "s"`, LTO off, 16 parallel codegen units, and panic abort; stripping remains disabled so Tauri can patch the updater bundle-type marker.
 - **Auto-updater** — [features/auto-updater.md](features/auto-updater.md). Due-gated checks on launch, every six hours, foreground activation, and macOS wake against `latest-v2.json`; passive homepage/menu-bar availability indicators; ed25519 signatures; required-version enforcement; progress and auto-relaunch.
-- **Privacy boundaries**: release `pipeline` events drop all strings; `transform` and `meeting` events are restricted to explicit stable vocabularies in *all* builds; the remote log shipper excludes the entire meeting stream; knowledge content and selected paths are excluded from logs; instructions never enter history or stats. Meeting transcripts always persist locally in SQLite; meeting audio persists only when explicitly retained, apart from disclosed bounded temporary system audio for opted-in speaker refinement.
+- **Privacy boundaries**: release `pipeline` events drop all strings; `transform` and `meeting` events are restricted to explicit stable vocabularies in *all* builds; the remote log shipper excludes the entire meeting stream; selected paths are excluded from logs; instructions never enter history or stats. Meeting transcripts always persist locally in SQLite; meeting audio persists only when explicitly retained, apart from disclosed bounded temporary system audio for opted-in speaker refinement.
 - All local data is inspectable and deletable from within the app.
 
 ---
@@ -307,7 +297,7 @@ headless runner, and regression gate are excluded from normal distribution.
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 167 registered commands |
+| Rust backend | `app/src-tauri/src/` — 150 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |
 | Diagnostics MCP tool | `tools/murmur-diag/` |
