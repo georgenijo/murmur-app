@@ -6,8 +6,6 @@
   --ui-leading-settings-title: 24px;
   --ui-font-settings-group: 11px;
   --settings-row-height: 52px;
-  --settings-theme-width: 280px;
-  --settings-theme-unit: 132px;
   --settings-nav-group-pad: 8px;
   --settings-nav-group-gap: 16px;
   --settings-nav-item-gap: 4px;
@@ -690,7 +688,7 @@
 .settings-theme-header { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; min-height: 28px; }
 .settings-theme-header > h2 { margin-bottom: 0; }
 .settings-appearance-themes { padding: 16px; }
-.settings-theme-grid { display: grid; grid-template-columns: repeat(4, var(--settings-theme-unit)); grid-auto-flow: row dense; align-items: start; gap: 16px; }
+.settings-theme-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-flow: row dense; align-items: start; gap: 16px; }
 .settings-theme-collection { grid-column: span 2; min-width: 0; padding: 12px; cursor: pointer; border-radius: var(--ui-radius-card); border: 1px solid var(--settings-card-border); background: var(--murmur-surface-container-lowest); }
 .settings-theme-collection[data-theme-variants='1'] { grid-column: span 1; padding-inline: 4px; }
 .settings-theme-collection:hover { background: var(--murmur-surface-container-low); }
@@ -713,6 +711,9 @@
 .settings-theme-footer > div { margin-left: auto; }
 .settings-theme-name { flex: 1 1 0; }
 .settings-theme-name-label { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-theme-collection[data-theme-variants='1'] .settings-theme-footer { align-items: flex-start; }
+.settings-theme-collection[data-theme-variants='1'] .settings-theme-name { overflow: visible; white-space: normal; text-overflow: clip; }
+.settings-theme-collection[data-theme-variants='1'] .settings-theme-name-label { overflow: visible; white-space: normal; text-overflow: clip; overflow-wrap: anywhere; }
 .settings-theme-action { width: 28px; height: 28px; }
 .settings-theme-action-menu { position: relative; display: flex; margin-left: auto; flex: none; }
 .settings-theme-options { position: absolute; top: 100%; left: 0; z-index: 30; display: flex; flex-direction: column; min-width: 144px; padding: 4px; border-radius: var(--ui-radius-control); border: 1px solid var(--ui-hairline); background: var(--murmur-surface-container-lowest); box-shadow: var(--ui-shadow-1); }

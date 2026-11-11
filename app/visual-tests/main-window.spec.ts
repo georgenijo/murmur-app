@@ -692,9 +692,7 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   const singleCard = page.locator('[data-theme-collection="Midnight Dark"]');
   await expect(catppuccinCard).toHaveCount(1);
   await expect(longerCard).toHaveCount(1);
-  await expect(sonicCard).toHaveCSS('width', '280px');
   await expect(sonicCard).toHaveCSS('height', '130px');
-  await expect(catppuccinCard).toHaveCSS('width', '280px');
   await expect(catppuccinCard).toHaveCSS('height', '130px');
   await expect(catppuccinCard.locator('button[aria-label*="light variant"][aria-pressed="true"]')).toBeVisible();
   await expect(catppuccinCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
@@ -839,7 +837,7 @@ test('single-variant cards pack at half width without clipping actions at the Se
       darkOnly('single-two', 'Single Two'),
       darkOnly('single-three', 'Single Three'),
       darkOnly('single-four', 'Single Four'),
-      darkOnly('single-five', 'Single Five'),
+      darkOnly('midnight-fixture', 'Midnight Fixture'),
     ],
   });
   await page.goto('/visual-fixtures.html?state=settings-appearance&appearance=dark');
@@ -851,10 +849,13 @@ test('single-variant cards pack at half width without clipping actions at the Se
   const geometry = await page.evaluate(() => {
     const cards = Array.from(document.querySelectorAll<HTMLElement>('[data-theme-variants="1"]'));
     const double = document.querySelector<HTMLElement>('[data-theme-collection="Sonic"]')!;
+    const grid = document.querySelector<HTMLElement>('.settings-theme-grid')!;
     return {
       viewportWidth: document.documentElement.clientWidth,
       scrollWidth: document.documentElement.scrollWidth,
       doubleWidth: double.getBoundingClientRect().width,
+      grid: grid.getBoundingClientRect(),
+      allCards: Array.from(grid.querySelectorAll<HTMLElement>('.settings-theme-collection')).map((card) => card.getBoundingClientRect()),
       cards: cards.map((card) => {
         const cardBox = card.getBoundingClientRect();
         const previewBox = card.querySelector('.settings-theme-preview')!.getBoundingClientRect();
@@ -865,6 +866,10 @@ test('single-variant cards pack at half width without clipping actions at the Se
     };
   });
   expect(geometry.scrollWidth).toBe(geometry.viewportWidth);
+  expect(geometry.doubleWidth).toBeCloseTo(geometry.grid.width / 2 - 8, 1);
+  for (const card of geometry.allCards) {
+    expect(card.right).toBeLessThanOrEqual(geometry.grid.right + 1);
+  }
   for (const card of geometry.cards) {
     expect(card.cardBox.width).toBeLessThan(geometry.doubleWidth);
     expect(Math.abs(card.cardBox.right - card.previewBox.right)).toBeLessThanOrEqual(6);
@@ -872,15 +877,30 @@ test('single-variant cards pack at half width without clipping actions at the Se
     expect(card.actionBox.right).toBeLessThanOrEqual(card.cardBox.right);
     expect(card.nameBox.right).toBeLessThanOrEqual(card.actionBox.left);
   }
-  const lastCard = page.locator('[data-theme-collection="Single Five"]');
-  await lastCard.getByRole('button', { name: 'Theme actions for Single Five' }).click();
-  const menu = lastCard.getByRole('group', { name: 'Single Five theme actions' });
-  await expect(menu.getByRole('button', { name: 'Export Single Five' })).toBeVisible();
-  await expect(menu.getByRole('button', { name: 'Duplicate Single Five' })).toBeVisible();
-  await expect(menu.getByRole('button', { name: 'Remove Single Five' })).toBeVisible();
+  const lastCard = page.locator('[data-theme-collection="Midnight Fixture"]');
+  const nameLabel = lastCard.locator('.settings-theme-name-label');
+  await expect(nameLabel).toHaveText('Midnight Fixture');
+  expect(await nameLabel.evaluate((element) => element.scrollHeight <= element.clientHeight && element.scrollWidth <= element.clientWidth)).toBe(true);
+  await lastCard.getByRole('button', { name: 'Theme actions for Midnight Fixture' }).click();
+  const menu = lastCard.getByRole('group', { name: 'Midnight Fixture theme actions' });
+  await expect(menu.getByRole('button', { name: 'Export Midnight Fixture' })).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Duplicate Midnight Fixture' })).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Remove Midnight Fixture' })).toBeVisible();
   const menuBox = await menu.boundingBox();
   expect(menuBox!.y).toBeGreaterThanOrEqual(0);
   expect(menuBox!.y + menuBox!.height).toBeLessThanOrEqual(620);
+
+  await page.setViewportSize({ width: 1100, height: 780 });
+  const defaultGeometry = await page.locator('.settings-theme-grid').evaluate((grid) => {
+    const gridBox = grid.getBoundingClientRect();
+    return {
+      gridBox,
+      cards: Array.from(grid.querySelectorAll<HTMLElement>('.settings-theme-collection')).map((card) => card.getBoundingClientRect()),
+    };
+  });
+  for (const card of defaultGeometry.cards) {
+    expect(card.right).toBeLessThanOrEqual(defaultGeometry.gridBox.right + 1);
+  }
 });
 
 test('the main recording waveform reacts to audio without pulse animation', async ({ page }) => {
