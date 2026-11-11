@@ -2978,24 +2978,30 @@ async fn run_transcription_pipeline(
                 r.prepare_work_us = unavailable;
             });
             app_handle
-                .run_on_main_thread(move || {
-                    let _timing_scope = prepare_timing.bind();
-                    drop(prepare_queue);
-                    if sender.is_closed() || !worker_authority.is_current() {
-                        return;
-                    }
-                    let state = prepare_app.state::<State>();
-                    let outcome = with_current_delivery_owner_timed(
-                        &state.app_state,
-                        recording_id,
-                        true,
-                        || {
-                            let _work = dt::Timer::new(|r| &mut r.prepare_work_us);
-                            crate::smart_destination::prepare(&preparing, Some(&worker_authority))
-                        },
-                    );
-                    let _ = sender.send(outcome);
-                })
+                .run_on_main_thread(crate::main_thread_watch::job(
+                    "smart_destination.prepare",
+                    move || {
+                        let _timing_scope = prepare_timing.bind();
+                        drop(prepare_queue);
+                        if sender.is_closed() || !worker_authority.is_current() {
+                            return;
+                        }
+                        let state = prepare_app.state::<State>();
+                        let outcome = with_current_delivery_owner_timed(
+                            &state.app_state,
+                            recording_id,
+                            true,
+                            || {
+                                let _work = dt::Timer::new(|r| &mut r.prepare_work_us);
+                                crate::smart_destination::prepare(
+                                    &preparing,
+                                    Some(&worker_authority),
+                                )
+                            },
+                        );
+                        let _ = sender.send(outcome);
+                    },
+                ))
                 .map_err(|error| {
                     delivery_timing.update(|r| dt::set_outcome(r, dt::Outcome::DispatchFailed));
                     error.to_string()
@@ -3032,11 +3038,14 @@ async fn run_transcription_pipeline(
                     );
                     let abandoned = smart_destination.clone();
                     let abort_timing = delivery_timing.clone();
-                    let _ = app_handle.run_on_main_thread(move || {
-                        let _scope = abort_timing.bind();
-                        let _cleanup = dt::Timer::new(|r| &mut r.cleanup_us);
-                        crate::smart_destination::abort(&abandoned, None);
-                    });
+                    let _ = app_handle.run_on_main_thread(crate::main_thread_watch::job(
+                        "smart_destination.abort_after_prepare",
+                        move || {
+                            let _scope = abort_timing.bind();
+                            let _cleanup = dt::Timer::new(|r| &mut r.cleanup_us);
+                            crate::smart_destination::abort(&abandoned, None);
+                        },
+                    ));
                     (smart_destination, delivery_target) = smart_prepare_fallback(
                         &smart_destination,
                         refused_without_activation,
@@ -3069,8 +3078,13 @@ async fn run_transcription_pipeline(
         let worker_authority = injection_authority.clone();
         let inject_timing = delivery_timing.clone();
         let inject_queue = delivery_timing.timer(|r| &mut r.inject_queue_us);
+        // Joins this paste's main-thread wait to what occupied the thread;
+        // submitted when this scope ends, after the reply or timeout.
+        let paste_probe = crate::main_thread_watch::PasteProbe::new(recording_id);
+        let worker_probe = paste_probe.worker();
         app_handle
-            .run_on_main_thread(move || {
+            .run_on_main_thread(crate::main_thread_watch::job("injector.paste", move || {
+                worker_probe.started();
                 let _timing_scope = inject_timing.bind();
                 drop(inject_queue);
                 let state = injection_app_handle.state::<State>();
@@ -3113,8 +3127,9 @@ async fn run_transcription_pipeline(
                     ),
                     Some(Err(_)) => {}
                 }
+                worker_probe.finished();
                 let _ = tx.send((attempt, std::time::Instant::now()));
-            })
+            }))
             .map_err(|e| {
                 delivery_timing.update(|r| dt::set_outcome(r, dt::Outcome::DispatchFailed));
                 format!("Failed to dispatch to main thread: {}", e)

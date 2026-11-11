@@ -47,6 +47,7 @@ pub mod launch;
 mod legacy_query_cleanup;
 mod legacy_transform_cleanup;
 mod log_shipper;
+mod main_thread_watch;
 pub mod managed_child;
 mod meeting_artifact;
 mod meeting_audio;
@@ -248,7 +249,7 @@ pub fn run() {
             overlay_frame: Mutex::new(None),
             overlay_layout: Mutex::new(commands::overlay::OverlayLayout::default()),
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(main_thread_watch::instrument_invoke_handler(tauri::generate_handler![
             commands::recording::init_dictation,
             delivery_recovery::retry_last_delivery,
             commands::recording::process_audio,
@@ -422,30 +423,35 @@ pub fn run() {
             telemetry::clear_event_history,
             resource_monitor::get_resource_usage,
             window_state::sync_window_chrome
-        ])
+        ]))
         .on_window_event(|window, event| {
-            window_state::on_event(window, event);
-            #[cfg(target_os = "macos")]
-            if let tauri::WindowEvent::Destroyed = event {
-                commands::overlay_material::window_destroyed(window.app_handle(), window.label());
-            }
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Hide instead of destroy for persistent windows
-                if window.label() == "main" || window.label() == "diagnostics" {
-                    api.prevent_close();
-                    if window.label() == "main" {
-                        commands::microphone_preview::cancel_for_window_close(
-                            window.app_handle().clone(),
-                        );
-                    }
-                    let _ = window.hide();
-                    tracing::info!(target: "system", "{} window hidden on close request", window.label());
+            main_thread_watch::callback(main_thread_watch::window_event_label(event), || {
+                window_state::on_event(window, event);
+                #[cfg(target_os = "macos")]
+                if let tauri::WindowEvent::Destroyed = event {
+                    commands::overlay_material::window_destroyed(window.app_handle(), window.label());
                 }
-            }
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    // Hide instead of destroy for persistent windows
+                    if window.label() == "main" || window.label() == "diagnostics" {
+                        api.prevent_close();
+                        if window.label() == "main" {
+                            commands::microphone_preview::cancel_for_window_close(
+                                window.app_handle().clone(),
+                            );
+                        }
+                        let _ = window.hide();
+                        tracing::info!(target: "system", "{} window hidden on close request", window.label());
+                    }
+                }
+            })
         })
         .setup(|app| {
             window_state::initialize(app.handle())?;
             telemetry::init(app.handle().clone());
+            // After telemetry and Tauri's event loop: observes every main-thread
+            // busy span and labels the app's own main-thread work.
+            main_thread_watch::install();
             launch::milestone("system.launch_process_start");
             launch::prepare(app.handle());
             audio_inventory::initialize(app.handle().clone());
@@ -651,7 +657,7 @@ pub fn run() {
                 .menu(&tray_menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app_handle, event| {
-                    match event.id().as_ref() {
+                    main_thread_watch::callback("tray.menu_event", || match event.id().as_ref() {
                         "show" => {
                             if let Some(win) = app_handle.get_webview_window("main") {
                                 let _ = win.show();
@@ -687,10 +693,10 @@ pub fn run() {
                             let _ = commands::mode_runtime::select_next_recording_mode(app_handle, &state, mode_id);
                         }
                         _ => {}
-                    }
+                    });
                 })
                 .on_tray_icon_event(move |_tray, event| {
-                    if matches!(event, TrayIconEvent::Click {
+                    main_thread_watch::callback("tray.icon_event", || if matches!(event, TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
                         ..
@@ -699,7 +705,7 @@ pub fn run() {
                             let _ = win.show();
                             let _ = win.set_focus();
                         }
-                    }
+                    });
                 })
                 .build(app)?;
 
@@ -712,38 +718,40 @@ pub fn run() {
         .expect("error while building tauri application");
 
     app.run(|_app_handle, _event| {
-        // Suppress Tauri's default RunEvent::Reopen behaviour which shows
-        // the main window whenever the macOS app is activated — including
-        // when the overlay is clicked.  We only re-show the main window
-        // when there are truly no visible windows (e.g. dock-icon click
-        // after the user closed everything).
-        #[cfg(target_os = "macos")]
-        if let RunEvent::Reopen {
-            has_visible_windows,
-            ..
-        } = &_event
-        {
-            if !has_visible_windows {
-                if let Some(win) = _app_handle.get_webview_window("main") {
-                    let _ = win.show();
-                    let _ = win.set_focus();
+        main_thread_watch::callback(main_thread_watch::run_event_label(&_event), || {
+            // Suppress Tauri's default RunEvent::Reopen behaviour which shows
+            // the main window whenever the macOS app is activated — including
+            // when the overlay is clicked.  We only re-show the main window
+            // when there are truly no visible windows (e.g. dock-icon click
+            // after the user closed everything).
+            #[cfg(target_os = "macos")]
+            if let RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } = &_event
+            {
+                if !has_visible_windows {
+                    if let Some(win) = _app_handle.get_webview_window("main") {
+                        let _ = win.show();
+                        let _ = win.set_focus();
+                    }
                 }
             }
-        }
 
-        if let RunEvent::Exit = &_event {
-            audio_lifecycle::retire_standby();
-            window_state::flush(_app_handle);
-            smart_destination::set_enabled(false);
-            audio_inventory::shutdown();
-            // App-exit teardown: stop resident native helpers so none outlive
-            // the app (all no-op when no child is running).
-            #[cfg(target_os = "macos")]
-            if let Some(state) = _app_handle.try_state::<State>() {
-                let _ = meeting_diarization::cancel_all();
-                state.meetings.shutdown(_app_handle);
-                state.meeting_suggestions.shutdown();
+            if let RunEvent::Exit = &_event {
+                audio_lifecycle::retire_standby();
+                window_state::flush(_app_handle);
+                smart_destination::set_enabled(false);
+                audio_inventory::shutdown();
+                // App-exit teardown: stop resident native helpers so none outlive
+                // the app (all no-op when no child is running).
+                #[cfg(target_os = "macos")]
+                if let Some(state) = _app_handle.try_state::<State>() {
+                    let _ = meeting_diarization::cancel_all();
+                    state.meetings.shutdown(_app_handle);
+                    state.meeting_suggestions.shutdown();
+                }
             }
-        }
+        })
     });
 }

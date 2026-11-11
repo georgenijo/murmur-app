@@ -181,10 +181,13 @@ pub(crate) fn start(app: tauri::AppHandle) {
                 continue;
             }
 
-            let dispatched = app.run_on_main_thread(move || {
-                native::sample(generation);
-                SAMPLE_PENDING.store(false, Ordering::Release);
-            });
+            let dispatched = app.run_on_main_thread(crate::main_thread_watch::job(
+                "smart_destination.sample",
+                move || {
+                    native::sample(generation);
+                    SAMPLE_PENDING.store(false, Ordering::Release);
+                },
+            ));
             if dispatched.is_err() {
                 SAMPLE_PENDING.store(false, Ordering::Release);
             } else {
@@ -219,10 +222,13 @@ pub async fn capture(
     let native_veto = fallback_vetoed.clone();
     let (sender, receiver) = tokio::sync::oneshot::channel();
     if app
-        .run_on_main_thread(move || {
-            let snapshot = native::capture(&expected, generation, &native_veto);
-            let _ = sender.send(snapshot);
-        })
+        .run_on_main_thread(crate::main_thread_watch::job(
+            "smart_destination.capture",
+            move || {
+                let snapshot = native::capture(&expected, generation, &native_veto);
+                let _ = sender.send(snapshot);
+            },
+        ))
         .is_err()
     {
         return unproven_capture(generation, &fallback_vetoed);
@@ -377,7 +383,10 @@ impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         if matches!(self.snapshot, Snapshot::Target { .. }) {
             let snapshot = self.snapshot.clone();
-            let _ = self.app.run_on_main_thread(move || abort(&snapshot, None));
+            let _ = self.app.run_on_main_thread(crate::main_thread_watch::job(
+                "smart_destination.abort_on_drop",
+                move || abort(&snapshot, None),
+            ));
         }
     }
 }

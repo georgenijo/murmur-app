@@ -279,6 +279,9 @@ rows, auto-scroll that disengages on manual scroll, copy-all and clear.
 ### Performance diagnostics — [features/performance-diagnostics.md](features/performance-diagnostics.md)
 Bounded local run history (200 runs, 600 resource samples) in SQLite: per-stage timings, CPU/memory timelines, transform-stage correlation, warm-vs-cold state, and RSS deltas. Incomplete runs claiming success are rejected. No dictated text is ever recorded.
 
+### Main-thread diagnostics — [features/main-thread-diagnostics.md](features/main-thread-diagnostics.md)
+Content-free spans for every queued main-thread job, main-thread command, and run-loop busy span, joined to each paste's main-thread wait by recording id.
+
 ### Report comparison — [features/diagnostic-report-comparison.md](features/diagnostic-report-comparison.md)
 Portable reports import into a session-only Reports workspace for schema-validated side-by-side comparison. Imported data is never silently adopted into local run history; invalid or oversized reports fail closed.
 

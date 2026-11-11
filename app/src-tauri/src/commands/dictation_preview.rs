@@ -68,7 +68,7 @@ fn notch_height(app: &tauri::AppHandle) -> Option<f64> {
 /// already visible is how a display change is absorbed.
 pub(crate) fn show_internal(app: &tauri::AppHandle) -> Result<(), String> {
     POPOVER.show(app, frame(app, notch_height(app)))?;
-    refit_material(app);
+    crate::main_thread_watch::section("preview.refit_material", || refit_material(app));
     Ok(())
 }
 
@@ -150,7 +150,7 @@ pub async fn show_dictation_preview(
     let app = window.app_handle().clone();
     let dispatch_app = app.clone();
     let (tx, rx) = tokio::sync::oneshot::channel();
-    app.run_on_main_thread(move || {
+    app.run_on_main_thread(crate::main_thread_watch::job("preview.show", move || {
         // Validate at presentation time, not before a queued native mutation.
         let state = dispatch_app.state::<State>();
         let result = if can_show(&state.app_state, recording_id) {
@@ -167,7 +167,7 @@ pub async fn show_dictation_preview(
             },
         );
         let _ = tx.send(result);
-    })
+    }))
     .map_err(|_| "dictation preview presentation could not be scheduled".to_string())?;
     rx.await
         .map_err(|_| "dictation preview presentation was cancelled".to_string())?
@@ -175,7 +175,7 @@ pub async fn show_dictation_preview(
 
 pub(crate) fn hide_for_recording(app: &tauri::AppHandle, recording_id: u64) {
     let dispatch_app = app.clone();
-    let _ = app.run_on_main_thread(move || {
+    let _ = app.run_on_main_thread(crate::main_thread_watch::job("preview.hide", move || {
         // A late ticker must not hide its successor, including after this
         // operation spent time queued on the native main thread.
         if !can_hide(&dispatch_app.state::<State>().app_state, recording_id) {
@@ -190,7 +190,7 @@ pub(crate) fn hide_for_recording(app: &tauri::AppHandle, recording_id: u64) {
                 PresentationOutcome::HideFailed
             },
         );
-    });
+    }));
 }
 
 pub(crate) fn apply_initial_size(app: &tauri::AppHandle) {

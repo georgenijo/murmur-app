@@ -23,25 +23,28 @@ pub(crate) async fn set_suggestion_observation(
     enabled: bool,
 ) -> Result<(), String> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    app.run_on_main_thread(move || {
-        let result = catch(AssertUnwindSafe(|| {
-            SUGGESTION_OBSERVER_STORE.with(|slot| {
-                let mut slot = slot.borrow_mut();
-                if enabled {
-                    permission_status().require_read_access()?;
-                    if slot.is_none() {
-                        *slot = Some(unsafe { EKEventStore::new() });
+    app.run_on_main_thread(crate::main_thread_watch::job(
+        "calendar.set_suggestion_observation",
+        move || {
+            let result = catch(AssertUnwindSafe(|| {
+                SUGGESTION_OBSERVER_STORE.with(|slot| {
+                    let mut slot = slot.borrow_mut();
+                    if enabled {
+                        permission_status().require_read_access()?;
+                        if slot.is_none() {
+                            *slot = Some(unsafe { EKEventStore::new() });
+                        }
+                    } else {
+                        *slot = None;
                     }
-                } else {
-                    *slot = None;
-                }
-                Ok(())
-            })
-        }))
-        .map_err(|_| UNAVAILABLE.to_string())
-        .and_then(|result| result);
-        let _ = sender.send(result);
-    })
+                    Ok(())
+                })
+            }))
+            .map_err(|_| UNAVAILABLE.to_string())
+            .and_then(|result| result);
+            let _ = sender.send(result);
+        },
+    ))
     .map_err(|_| UNAVAILABLE.to_string())?;
     receiver.await.map_err(|_| UNAVAILABLE.to_string())?
 }
@@ -64,25 +67,28 @@ pub(crate) async fn request_permission(
     }
     let operation = CalendarOperation::acquire()?;
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    app.run_on_main_thread(move || {
-        let _ = catch(AssertUnwindSafe(|| unsafe {
-            let store = EKEventStore::new();
-            // EventKit may complete on any queue. The completion owns the store
-            // and admission guard until it has delivered its single result.
-            let pending = Mutex::new(Some((store.clone(), operation, sender)));
-            let completion = RcBlock::new(move |_granted: Bool, error: *mut NSError| {
-                if let Some((_store, _operation, sender)) = pending.lock_or_recover().take() {
-                    let result = if error.is_null() {
-                        Ok(permission_status())
-                    } else {
-                        Err(UNAVAILABLE.to_string())
-                    };
-                    let _ = sender.send(result);
-                }
-            });
-            store.requestFullAccessToEventsWithCompletion(RcBlock::as_ptr(&completion));
-        }));
-    })
+    app.run_on_main_thread(crate::main_thread_watch::job(
+        "calendar.request_access",
+        move || {
+            let _ = catch(AssertUnwindSafe(|| unsafe {
+                let store = EKEventStore::new();
+                // EventKit may complete on any queue. The completion owns the store
+                // and admission guard until it has delivered its single result.
+                let pending = Mutex::new(Some((store.clone(), operation, sender)));
+                let completion = RcBlock::new(move |_granted: Bool, error: *mut NSError| {
+                    if let Some((_store, _operation, sender)) = pending.lock_or_recover().take() {
+                        let result = if error.is_null() {
+                            Ok(permission_status())
+                        } else {
+                            Err(UNAVAILABLE.to_string())
+                        };
+                        let _ = sender.send(result);
+                    }
+                });
+                store.requestFullAccessToEventsWithCompletion(RcBlock::as_ptr(&completion));
+            }));
+        },
+    ))
     .map_err(|_| UNAVAILABLE.to_string())?;
     receiver.await.map_err(|_| UNAVAILABLE.to_string())?
 }
