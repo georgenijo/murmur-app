@@ -188,8 +188,5 @@ error; it never changes dictation state.
 
 ## Settings surfaces
 
-### `useKnowledge`
-Bounded, paged access to the personal knowledge store (`list_knowledge`) with search/filter, driven by a request object and an `active` gate so closed panels don't query.
-
 ### `useVocabScan`
 Live code-vocabulary scan: starts `scan_code_vocab`, streams `vocab-scan-progress` correlated by `scanId`, and reports non-adoption when a newer scan or a settings change supersedes the walk.

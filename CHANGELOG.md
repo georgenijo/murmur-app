@@ -69,7 +69,9 @@ Teach, export from Settings → Knowledge before updating; afterwards you can
 delete this folder.
 
 Old statistics, history entries and discovery hints that mention these features
-are ignored, never shown or exported.
+are ignored, never shown or exported. Any leftover legacy `voiceCommands` list in
+your settings file is dropped on the next save; earlier releases had already
+moved those entries into the knowledge store.
 
 ## [0.64.3] - 2026-11-11
 
