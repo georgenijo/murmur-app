@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+- Make active theme variants unmistakable in Appearance, and compact theme cards by removing redundant preview captions and status rows.
+
 ## [0.63.1] - 2026-11-10
 
 ### Fixed

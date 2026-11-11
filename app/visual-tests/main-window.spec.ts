@@ -634,7 +634,7 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
     version: '1.0.0',
     license: 'MIT',
   } as const;
-  const collection = { id: 'open-vsx:h1dr0n.claude-theme', label: 'Claude Theme' };
+  const collection = { id: 'open-vsx:h1dr0n.claude-theme', label: 'Catppuccin for VSCode' };
   const entry = (
     id: string,
     label: string,
@@ -673,20 +673,25 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   }, library);
   await page.goto('/visual-fixtures.html?state=settings-appearance&appearance=light');
   await page.getByRole('button', { name: 'Appearance', exact: true }).click();
-  await page.getByRole('button', { name: 'Use Claude Theme theme' }).click();
+  await page.getByRole('button', { name: 'Use Catppuccin for VSCode theme' }).click();
 
   const fixture = page.locator('[data-visual-ready="true"]');
   const sonicCard = page.locator('[data-theme-collection="Sonic"]');
-  const claudeCard = page.locator('[data-theme-collection="Claude Theme"]');
-  await expect(claudeCard).toHaveCount(1);
+  const catppuccinCard = page.locator('[data-theme-collection="Catppuccin for VSCode"]');
+  await expect(catppuccinCard).toHaveCount(1);
   await expect(sonicCard).toHaveCSS('width', '242px');
-  await expect(sonicCard).toHaveCSS('height', '146px');
-  await expect(claudeCard).toHaveCSS('width', '242px');
-  await expect(claudeCard).toHaveCSS('height', '166px');
-  await expect(claudeCard.locator('button[aria-label*="light variant"][aria-pressed="true"]')).toBeVisible();
-  await expect(claudeCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
+  await expect(sonicCard).toHaveCSS('height', '130px');
+  await expect(catppuccinCard).toHaveCSS('width', '242px');
+  await expect(catppuccinCard).toHaveCSS('height', '130px');
+  await expect(catppuccinCard.locator('button[aria-label*="light variant"][aria-pressed="true"]')).toBeVisible();
+  await expect(catppuccinCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
+  await expect(catppuccinCard.locator('.settings-theme-variant-check')).toHaveCount(2);
+  await expect(catppuccinCard.locator('.settings-theme-caption, .settings-theme-mode-status')).toHaveCount(0);
+  const themeName = catppuccinCard.getByRole('button', { name: 'Use Catppuccin for VSCode theme' });
+  await expect(themeName).toHaveAttribute('title', 'Catppuccin for VSCode');
+  expect(await themeName.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
   await expect(page.locator('section[aria-labelledby="active-theme-heading"]')).toHaveCount(0);
-  await expect(claudeCard.getByText('Active', { exact: true })).toHaveCount(0);
+  await expect(catppuccinCard.getByText('Active', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('radio', { name: /system/i })).not.toContainText('Active');
   await expect(page.getByText('Partly active')).toHaveCount(0);
   await expect(page.getByText('Choose dark style')).toHaveCount(0);
@@ -694,25 +699,25 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   await expect(fixture).toHaveScreenshot('light-settings-appearance.png');
 
   await page.getByRole('radio', { name: /dark/i }).click();
-  await expect(claudeCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
+  await expect(catppuccinCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
   await expect(fixture).toHaveScreenshot('dark-settings-appearance.png');
 
-  const cardHeight = await claudeCard.evaluate((element) => element.getBoundingClientRect().height);
-  const chooser = claudeCard.locator('button[aria-label^="Choose dark variant"]');
+  const cardHeight = await catppuccinCard.evaluate((element) => element.getBoundingClientRect().height);
+  const chooser = catppuccinCard.locator('button[aria-label^="Choose dark variant"]');
   // Settings reserves Return for default actions; Space activates the focused button.
   await chooser.focus();
   await page.keyboard.press('Space');
   const midnight = page.getByRole('button', { name: /Use .*Midnight.* for dark mode/ });
   await expect(midnight).toBeVisible();
-  await expect.poll(() => claudeCard.evaluate((element) => element.getBoundingClientRect().height)).toBe(cardHeight);
-  const choices = claudeCard.getByRole('group', { name: 'Dark variants', exact: true });
+  await expect.poll(() => catppuccinCard.evaluate((element) => element.getBoundingClientRect().height)).toBe(cardHeight);
+  const choices = catppuccinCard.getByRole('group', { name: 'Dark variants', exact: true });
   await expect(choices.locator('button[aria-pressed="true"] .settings-theme-option-check')).toHaveText('✓');
   await expect(midnight.locator('.settings-theme-option-check')).toHaveCount(0);
   await midnight.focus();
   await page.keyboard.press('Space');
   await expect(chooser).toBeFocused();
   await expect(chooser).toHaveAttribute('aria-expanded', 'false');
-  await expect(claudeCard.locator('button[aria-label*="dark variant"][aria-label*="Midnight"]')).toBeVisible();
+  await expect(catppuccinCard.locator('button[aria-label*="dark variant"][aria-label*="Midnight"]')).toBeVisible();
   await page.keyboard.press('Space');
   const selected = choices.locator('button[aria-pressed="true"]');
   await expect(selected).toContainText('Midnight');
@@ -722,7 +727,7 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   await expect(choices).toHaveCount(0);
   await expect(chooser).toBeFocused();
   await expect(chooser).toHaveAttribute('aria-expanded', 'false');
-  await expect.poll(() => claudeCard.evaluate((element) => element.getBoundingClientRect().height)).toBe(cardHeight);
+  await expect.poll(() => catppuccinCard.evaluate((element) => element.getBoundingClientRect().height)).toBe(cardHeight);
 });
 
 test('the main recording waveform reacts to audio without pulse animation', async ({ page }) => {

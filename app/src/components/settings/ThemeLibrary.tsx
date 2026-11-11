@@ -117,7 +117,7 @@ function ModePreview({ mode, options, selected, active, labels, open, onOpen, on
         else onChoose(selected.entry);
       }}>
       <ThemePreview tokens={selected.tokens} />
-      <span className="settings-theme-caption">{modeLabel}</span>
+      {active && <span aria-hidden="true" className="settings-theme-variant-check">✓</span>}
     </button>
     {options.length > 1 && open && <div className="settings-theme-options" role="group" aria-label={`${modeLabel} variants`}
       onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onOpen(); openerRef.current?.focus(); } }}>
@@ -197,7 +197,6 @@ function CollectionCard({
   const dark = groups.find((group) => group.mode === 'dark')?.selected.entry ?? null;
   const ids = new Set(entries.map((entry) => entry.id));
   const activeNow = ids.has(selection[resolvedAppearance]);
-  const selectedModes = groups.filter(group => selection[group.mode] === group.selected.entry.id).map(group => group.mode);
   const exportEntry = groups.find((group) => group.mode === 'dark')?.selected.entry
     ?? groups[0]?.selected.entry;
   const applyPair = () => onApplyPair(light, dark);
@@ -253,7 +252,7 @@ function CollectionCard({
             event.stopPropagation();
             applyPair();
           }}
-          className="block min-w-0 flex-1 truncate rounded-sm text-left text-[length:var(--ui-font-label)] font-medium text-on-surface outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="settings-theme-name block min-w-0 flex-1 truncate rounded-sm text-left text-[length:var(--ui-font-label)] font-medium text-on-surface outline-none focus-visible:ring-2 focus-visible:ring-primary"
           title={label}
         >
           {activeNow && <span aria-hidden="true" className="settings-theme-check">✓</span>}{label}
@@ -270,9 +269,6 @@ function CollectionCard({
             {onRemove && <ActionButton label={`Remove ${label}`} onClick={onRemove} danger><TrashIcon /></ActionButton>}
           </div>
         )}
-        {selectedModes.length > 0 && <p className="settings-theme-mode-status">
-          {selectedModes.length === 2 ? 'Used for light and dark' : `Used for ${selectedModes[0]}`}
-        </p>}
       </div>
     </article>
   );

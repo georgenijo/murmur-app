@@ -35,10 +35,17 @@ for (const appearance of ['light', 'dark'] as const) {
       await expect(page.locator('.settings-segmented')).toHaveCSS('height', '34px');
       await expect(page.locator('.settings-segmented-btn').first()).toHaveCSS('border-radius', '8px');
       await page.getByRole('button', { name: 'Use OpenCode for dark mode', exact: true }).click();
-      await expect(page.locator('[data-theme-collection="Sonic"] .settings-theme-mode-status')).toHaveText('Used for light');
-      await expect(page.locator('[data-theme-collection="OpenCode"] .settings-theme-mode-status')).toHaveText('Used for dark');
+      const sonic = page.locator('[data-theme-collection="Sonic"]');
+      const opencode = page.locator('[data-theme-collection="OpenCode"]');
+      await expect(sonic.getByRole('button', { name: 'Use Sonic for light mode' })).toHaveAttribute('aria-pressed', 'true');
+      await expect(sonic.getByRole('button', { name: 'Use Sonic for dark mode' })).toHaveAttribute('aria-pressed', 'false');
+      await expect(opencode.getByRole('button', { name: 'Use OpenCode for dark mode' })).toHaveAttribute('aria-pressed', 'true');
+      await expect(opencode.locator('.settings-theme-variant-check')).toHaveCount(1);
       await page.getByRole('button', { name: 'Use Sonic theme', exact: true }).click();
-      await expect(page.locator('[data-theme-collection="Sonic"] .settings-theme-mode-status')).toHaveText('Used for light and dark');
+      await expect(sonic.locator('.settings-theme-variant-check')).toHaveCount(2);
+      await expect(page.locator('.settings-theme-caption, .settings-theme-mode-status')).toHaveCount(0);
+      expect(await sonic.evaluate((card) => card.getBoundingClientRect().height))
+        .toBe(await opencode.evaluate((card) => card.getBoundingClientRect().height));
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
     });
   }
