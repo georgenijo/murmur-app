@@ -1379,6 +1379,10 @@ textarea {
 .meeting-header-action[data-tone="accent"] { color: var(--murmur-primary); }
 .meeting-header-action[data-tone="danger"] { color: var(--murmur-on-surface-variant); }
 .meeting-header-action[data-confirming="true"] { color: var(--murmur-error); }
+.meeting-field-label { display: block; color: var(--murmur-on-surface); font-size: var(--ui-font-caption); font-weight: 500; }
+.meeting-calendar-events { max-height: 16rem; overflow-y: auto; border-block: 1px solid var(--ui-hairline); }
+.meeting-calendar-event { display: flex; align-items: flex-start; gap: 8px; padding: 8px 0; }
+.meeting-calendar-event + .meeting-calendar-event { border-top: 1px solid var(--ui-hairline); }
 .meeting-field { width: 100%; border: 1px solid var(--ui-hairline); border-radius: var(--ui-radius-control); background: var(--murmur-surface-container-lowest); padding: var(--ui-space-3) var(--ui-space-4); color: var(--murmur-on-surface); font-size: var(--ui-font-caption); font-weight: 400; }
 .meeting-field:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 0; }
 .meeting-quiet-note { border: 1px solid transparent; border-radius: var(--ui-radius-control); background: var(--ui-tint-sunken); padding: var(--ui-space-4) var(--ui-space-5); color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
