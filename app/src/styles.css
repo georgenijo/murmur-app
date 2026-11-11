@@ -1335,7 +1335,7 @@ textarea {
 .personalization-privacy { margin-top: var(--ui-space-5); color: var(--murmur-on-surface-variant); font-size: 0.6875rem; line-height: var(--ui-leading-micro); }
 
 /* Notetaker: compact status bar, day-grouped list, single-column detail. */
-.meetings-statusbar { display: flex; flex-shrink: 0; align-items: center; flex-wrap: wrap; align-content: center; gap: 12px; height: 57px; min-height: 57px; box-sizing: border-box; border-bottom: 1px solid var(--ui-hairline); padding: 0 0 16px; }
+.meetings-statusbar { display: flex; flex-shrink: 0; align-items: center; flex-wrap: wrap; align-content: center; gap: 8px; height: 40px; min-height: 40px; box-sizing: border-box; padding: 0; }
 .meetings-statusbar-detail { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-label); }
 .meetings-permission-hint { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .meetings-alerts { display: flex; flex-shrink: 0; flex-direction: column; gap: var(--ui-space-3); padding-top: var(--ui-space-4); }
