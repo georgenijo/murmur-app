@@ -1541,7 +1541,7 @@ export const SettingsPanel = memo(function SettingsPanel({
           </SettingsSection>
 
           <SettingsSection hideHeading card={false} pageId="diagnostics" activePage={activeCat} title="Diagnostics">
-            <div data-setting-target="diagnostics" className="settings-card h-[520px] min-h-0 overflow-hidden">
+            <div data-setting-target="diagnostics" className="h-[520px] min-h-0 overflow-hidden">
               <DiagnosticsWorkspace
                 active={activeCat === 'diagnostics'}
                 storeHealthEnabled

@@ -223,6 +223,35 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
     expect(container.textContent).toContain('Diagnostics storage');
   });
 
+  it('uses shared compact controls while keeping correlation filters named', async () => {
+    const popOut = container.querySelector(
+      'button[aria-label="Open Diagnostics in a separate window"]',
+    ) as HTMLButtonElement;
+    const copy = Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent === 'Copy filtered events') as HTMLButtonElement;
+    const clear = Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent === 'Clear events…') as HTMLButtonElement;
+    const correlation = container.querySelector(
+      'button[role="combobox"][aria-label="Correlation field"]',
+    ) as HTMLButtonElement;
+    const filter = container.querySelector(
+      'input[aria-label="Filter by Recording ID"]',
+    ) as HTMLInputElement;
+
+    for (const control of [popOut, copy, clear]) {
+      expect(control.classList).toContain('ui-form-button');
+      expect(control.dataset.size).toBe('sm');
+    }
+    expect(correlation.classList).toContain('ui-select-trigger');
+    expect(filter.classList).toContain('ui-form-input');
+
+    await act(async () => correlation.click());
+    const runId = Array.from(container.querySelectorAll('[role="option"]'))
+      .find(option => option.textContent === 'Run ID') as HTMLElement;
+    await act(async () => runId.click());
+    expect(filter.getAttribute('aria-label')).toBe('Filter by Run ID');
+  });
+
   it('renders only the newest 100 rows while retaining the full filtered count', async () => {
     hookMocks.events = Array.from({ length: 150 }, (_, index) => ({
       timestamp: `2026-08-07T12:00:${String(index).padStart(3, '0')}Z`,

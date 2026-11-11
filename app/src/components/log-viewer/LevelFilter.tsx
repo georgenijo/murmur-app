@@ -9,7 +9,7 @@ interface LevelFilterProps {
 
 export function LevelFilter({ active, onToggle }: LevelFilterProps) {
   return (
-    <div className="flex gap-1">
+    <div className="settings-segmented h-7" role="group" aria-label="Event levels">
       {FILTER_LEVELS.map((level) => {
         const isActive = active.has(level);
         return (
@@ -18,11 +18,8 @@ export function LevelFilter({ active, onToggle }: LevelFilterProps) {
             key={level}
             onClick={() => onToggle(level)}
             aria-pressed={isActive}
-            className={`px-2 py-0.5 rounded text-xs font-medium transition-colors ${
-              isActive
-                ? 'bg-primary text-on-primary'
-                : 'bg-surface-container text-on-surface-variant hover:bg-surface-container-high'
-            }`}
+            data-selected={isActive}
+            className="settings-segmented-btn !min-w-0 !px-2"
           >
             {level}
           </button>

@@ -1,4 +1,6 @@
 import { ConfirmActionButton } from '../ui/ConfirmActionButton';
+import { Button, Input } from '../ui/FormControls';
+import { Select } from '../ui/Select';
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useEventStore } from '../../lib/hooks/useEventStore';
 import { usePerformanceDiagnostics } from '../../lib/hooks/usePerformanceDiagnostics';
@@ -141,7 +143,7 @@ export function DiagnosticsWorkspace({
   return (
     <div className="flex h-full min-h-0 flex-col bg-background text-on-surface">
       {/* Header */}
-      <div className="shrink-0 bg-surface-container-low px-4 py-3">
+      <div className="shrink-0 border-b border-outline-variant/15 px-4 py-3">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           {/* Tabs */}
           <div role="tablist" aria-label="Diagnostics views" className="flex max-w-full gap-1 overflow-x-auto rounded-xl bg-surface-container p-1">
@@ -177,28 +179,27 @@ export function DiagnosticsWorkspace({
           {(onPopOut || tab === 'events') && (
             <div className="flex flex-wrap gap-2">
               {onPopOut && (
-                <button
-                  type="button"
+                <Button
+                  size="sm"
                   onClick={() => onPopOut(tab)}
                   aria-label="Open Diagnostics in a separate window"
-                  className="rounded-lg border border-outline-variant/10 bg-surface-container-lowest px-3 py-1.5 text-xs font-medium text-on-surface-variant shadow-sm transition-colors hover:bg-surface-container hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                 >
                   <span aria-hidden="true">↗</span> Pop out
-                </button>
+                </Button>
               )}
               {tab === 'events' && (
                 <>
-              <button
-                type="button"
+              <Button
+                size="sm"
                 onClick={handleCopyAll}
-                className="rounded-lg border border-outline-variant/10 bg-surface-container-lowest px-3 py-1.5 text-xs font-medium text-on-surface-variant shadow-sm transition-colors hover:bg-surface-container hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
               >
                 Copy filtered events
-              </button>
+              </Button>
               <ConfirmActionButton label="Clear events" confirmLabel="Confirm clear"
                 type="button"
                 onConfirm={clear}
-                className="rounded-lg border border-outline-variant/10 bg-surface-container-lowest px-3 py-1.5 text-xs font-medium text-on-surface-variant shadow-sm transition-colors hover:bg-surface-container hover:text-error focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                data-size="sm"
+                className="ui-form-button"
                />
                 </>
               )}
@@ -210,22 +211,24 @@ export function DiagnosticsWorkspace({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <StreamChips active={activeStreams} onToggle={toggleStream} />
             <div className="flex flex-wrap items-center gap-2">
-              <label className="flex items-center gap-1.5 text-xs text-on-surface-variant">
-                Correlation
-                <select
+              <label className="flex items-center gap-1.5 text-[length:var(--ui-font-caption)] text-on-surface-variant">
+                <span>Correlation</span>
+                <div className="w-36">
+                  <Select
                   value={correlation.field}
-                  onChange={event => setCorrelation(current => ({
-                    field: event.target.value as CorrelationField,
+                  onChange={field => setCorrelation(current => ({
+                    field: field as CorrelationField,
                     value: current.value,
                   }))}
                   aria-label="Correlation field"
-                  className="rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2 py-1 text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
-                >
-                  {(Object.keys(CORRELATION_FIELD_LABELS) as CorrelationField[]).map(field => (
-                    <option key={field} value={field}>{CORRELATION_FIELD_LABELS[field]}</option>
-                  ))}
-                </select>
-                <input
+                  size="sm"
+                  items={(Object.keys(CORRELATION_FIELD_LABELS) as CorrelationField[]).map(field => ({
+                    value: field,
+                    label: CORRELATION_FIELD_LABELS[field],
+                  }))}
+                />
+                </div>
+                <Input
                   type="text"
                   inputMode={correlation.field === 'run_id' ? 'text' : 'numeric'}
                   pattern={correlation.field === 'run_id' ? undefined : '[0-9]*'}
@@ -236,7 +239,7 @@ export function DiagnosticsWorkspace({
                   }))}
                   placeholder="All"
                   aria-label={`Filter by ${CORRELATION_FIELD_LABELS[correlation.field]}`}
-                  className="w-28 rounded-lg border border-on-surface-variant bg-surface-container-lowest px-2 py-1 font-mono text-xs text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+                  className="w-28 font-[family-name:var(--ui-font-mono)] text-[length:var(--ui-font-caption)]"
                 />
               </label>
               <LevelFilter active={activeLevels} onToggle={toggleLevel} />
@@ -256,7 +259,7 @@ export function DiagnosticsWorkspace({
           className="flex-1 overflow-y-auto font-mono text-xs"
         >
           {filteredEvents.length === 0 ? (
-            <div className="flex items-center justify-center h-32 text-on-surface-variant text-sm">
+            <div className="flex h-32 items-center justify-center font-sans text-sm text-on-surface-variant">
               No events to display
             </div>
           ) : (
