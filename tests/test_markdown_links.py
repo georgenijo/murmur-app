@@ -239,17 +239,17 @@ class MaintainedDocsTests(unittest.TestCase):
             root = Path(directory)
             (root / "AGENTS.md").write_text("# Agents\n")
             docs = root / "docs"
-            (docs / "archive").mkdir(parents=True)
-            (docs / "archive" / "old.md").write_text("[broken](nope.md)\n")
-            (docs / "research-structured-events.md").write_text("[broken](nope.md)\n")
+            (docs / "research").mkdir(parents=True)
+            (docs / "research" / "old.md").write_text("[broken](nope.md)\n")
+            (docs / "PAPERCLIP_FAMILY_HOST_PROOF.md").write_text("[broken](nope.md)\n")
             (docs / "kept.md").write_text("# Kept\n")
 
             paths = maintained_docs(root)
             names = {path.relative_to(root) for path in paths}
             self.assertIn(Path("AGENTS.md"), names)
             self.assertIn(Path("docs/kept.md"), names)
-            self.assertNotIn(Path("docs/archive/old.md"), names)
-            self.assertNotIn(Path("docs/research-structured-events.md"), names)
+            self.assertNotIn(Path("docs/research/old.md"), names)
+            self.assertNotIn(Path("docs/PAPERCLIP_FAMILY_HOST_PROOF.md"), names)
 
     def test_validate_markdown_links_reports_broken_link_with_file_and_target(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -32,20 +32,13 @@ ROOT_DOCS = (
 # rather than maintained documentation: broken links inside them are not
 # actionable the way a stale doc-tree link is, so they are ignored here.
 ARCHIVE_DIRS = {
-    "archive",
     "draft",
-    "evidence",
-    "investigations",
-    "qa",
-    "reports",
     "research",
-    "sessions",
 }
 
 # Individual docs/ files that are point-in-time research/execution artifacts
 # rather than maintained documentation.
 ARCHIVE_FILES = {
-    "research-structured-events.md",
     "PAPERCLIP_FAMILY_HOST_PROOF.md",
 }
 

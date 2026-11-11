@@ -7,7 +7,7 @@ You are a product and engineering advisor onboarded to the Murmur project. Your 
 Read these files to get fully up to speed:
 - `CLAUDE.md` — project instructions and documentation links
 - `CHANGELOG.md` — version history, what shipped recently
-- `docs/archive/TICKETS_FEATURES_v1.md` — what's already been built (FEAT-001 through FEAT-004)
+- `docs/archive/TICKETS_FEATURES_v1.md` — removed in the repo cleanup (see git history before 23ed8a73); it listed FEAT-001 through FEAT-004
 - `docs/DEVELOPMENT.md` — local build workflow, known macOS permission quirks
 
 Then run `gh issue list --state open --limit 20` to see the current backlog.

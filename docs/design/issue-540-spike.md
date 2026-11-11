@@ -22,7 +22,7 @@ Conclusion: FluidAudio's pinned offline diarizer is usable and fast enough on th
 | No persisted embeddings | The Rust bridge returns no embeddings. It returns only speaker ID, times, and quality. | Feasible, must remain enforced |
 | Concurrent dictation unaffected | The offline FFI call has no cancellation or yield API. No concurrent ASR measurement has run yet. | Scheduling contract required |
 
-The approximate DER is a smoke metric from `spikes/issue-540/evaluate.py`, not an upstream-equivalent DER implementation. It should not become a release threshold without comparison against FluidAudio's scorer.
+The approximate DER is a smoke metric from `spikes/issue-540/evaluate.py` (removed in the repo cleanup; see git history before 23ed8a73), not an upstream-equivalent DER implementation. It should not become a release threshold without comparison against FluidAudio's scorer.
 
 ## Exact dependency and API
 
@@ -117,6 +117,7 @@ Reuse the existing ownership code instead of creating a second process system. `
 Build the isolated spike with the same pin and linker settings as Murmur:
 
 ```bash
+# spikes/issue-540 was removed in the repo cleanup; see git history before 23ed8a73
 cd /Users/george-mac-mini/Documents/code/murmur-app-issue-540/spikes/issue-540
 cargo build -j 2 --release
 ```

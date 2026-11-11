@@ -130,7 +130,7 @@ now uploads:
 Interactive TCC results must be collected from that downloaded, quarantined,
 notarized bundle. CI cannot grant/deny dialogs or prove System Settings
 responsible-process attribution. The matrix in
-[`docs/evidence/407-capture-helper-phase-0.json`](../evidence/407-capture-helper-phase-0.json)
+`docs/evidence/407-capture-helper-phase-0.json` (removed in the repo cleanup; see git history before 23ed8a73)
 records expected and actual states without audio, transcripts, device names, or
 paths.
 
