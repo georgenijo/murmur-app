@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.64.2] - 2026-11-11
+
+<!-- Release notes generated using configuration in .github/release.yml at 136506797035b5852aa8a089301d250c3097c589 -->
+
+## What's Changed
+### Other Changes
+* docs: rewrite the README with a simpler layout and new graphics by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1108
+* fix(settings): smooth Advanced collapse, tighten speaker labels, match chevrons by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1110
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.64.1...v0.64.2
+
 ## [0.64.1] - 2026-11-11
 
 <!-- Release notes generated using configuration in .github/release.yml at d4130dfe28fb499a11a137b09eb51445892c0e23 -->
