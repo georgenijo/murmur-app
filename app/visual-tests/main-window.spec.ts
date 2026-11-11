@@ -374,9 +374,10 @@ test('customization hub stays legible and restores focus at native and narrow wi
   await page.getByRole('navigation', { name: 'Settings pages' }).getByRole('button', { name: 'Customize', exact: true }).click();
 
   const fixture = page.locator('[data-visual-ready="true"]');
-  const customizationList = page.locator('[aria-label="Customization destinations"]');
+  const customizationList = page.getByRole('list', { name: 'Customization destinations' });
   const voiceCommands = customizationList.getByRole('button').filter({ hasText: 'Voice commands' });
   await expect(page.getByRole('heading', { name: 'Customize' })).toBeVisible();
+  await expect(customizationList.getByRole('listitem')).toHaveCount(4);
   await expect(customizationList.getByRole('button')).toHaveCount(4);
   expect(await customizationList.evaluate(element => element.tagName)).toBe('UL');
   for (const label of ['Text & vocabulary', 'Voice commands', 'App overrides', 'Modes']) {

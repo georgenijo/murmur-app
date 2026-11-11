@@ -45,9 +45,9 @@ export function CustomizationHub({ focusDestination, onOpen }: CustomizationHubP
   return (
     <section aria-label="Customize Murmur">
       <SettingsGroup>
-        <ul aria-label="Customization destinations" className="settings-destination-list m-0 list-none p-0">
+        <ul aria-label="Customization destinations" role="list" className="settings-destination-list m-0 list-none p-0">
           {DESTINATIONS.map((destination) => (
-            <li key={destination.id}>
+            <li key={destination.id} role="listitem">
               <button
                 ref={(node) => {
                   if (node) rowRefs.current[destination.id] = node;
