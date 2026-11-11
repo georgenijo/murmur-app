@@ -586,7 +586,7 @@ export const SettingsPanel = memo(function SettingsPanel({
       window.clearTimeout(timeout);
       flashed?.classList.remove('settings-target-flash');
     };
-  }, [activeCat, editorTab, targetRequest, visibleTargetId, advancedOpen, setAdvancedOpen]);
+  }, [activeCat, editorTab, targetRequest, visibleTargetId, advancedOpen, setAdvancedOpen, calendarDetailsOpen, settings.meetingSuggestionsEnabled]);
   useLayoutEffect(() => {
     if (activeCat !== 'shortcuts' || shortcutReturnFocus === null) return;
     contentRef.current

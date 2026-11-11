@@ -1110,6 +1110,10 @@ describe('SettingsPanel information architecture', () => {
     );
     expect(action).toBeDefined();
     expect(action!.closest('[inert], [aria-hidden="true"]')).toBeNull();
+    // Opening the disclosure must not end the reveal: the row still scrolls into view and pulses.
+    const target = container.querySelector<HTMLElement>('[data-setting-target="meeting-calendar"]')!;
+    expect(scrollIntoView.mock.instances).toContain(target);
+    expect(target.classList.contains('settings-target-flash')).toBe(true);
   });
 
   it('preserves the parent scroll while entering a sheet and restores its page on close', async () => {
