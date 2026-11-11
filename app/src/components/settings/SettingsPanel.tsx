@@ -1069,7 +1069,9 @@ export const SettingsPanel = memo(function SettingsPanel({
             activePage={activeCat}
             onOpenOwner={openShortcutOwner}
           />
-          <SettingsSection hideHeading pageId="recording" activePage={activeCat} title="Recording">
+          <SettingsSection hideHeading card={false} pageId="recording" activePage={activeCat} title="Recording">
+            <div className="settings-groups">
+            <SettingsGroup title="Input">
             <div data-setting-target="microphone" className="settings-stack rounded-lg transition-shadow [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
               <MicrophoneInputTest
                 microphone={settings.microphone}
@@ -1088,7 +1090,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 onSmartAutoChange={onUpdateSettings}
               />
               {audioInventoryState.error && (
-                <p role="alert" className="text-xs text-primary">{audioInventoryState.error} Close and reopen Settings if it does not refresh.</p>
+                <p role="alert" className="text-[length:var(--ui-font-caption)] text-primary">{audioInventoryState.error} Close and reopen Settings if it does not refresh.</p>
               )}
             </div>
             <SettingsRow
@@ -1102,6 +1104,8 @@ export const SettingsPanel = memo(function SettingsPanel({
                 onCommit={(vadSensitivity) => onUpdateSettings({ vadSensitivity })}
               />}
             />
+            </SettingsGroup>
+            <SettingsGroup title="Controls">
             <SettingsRow
               title={<>Recording trigger</>}
               targetId="recording-trigger"
@@ -1113,11 +1117,11 @@ export const SettingsPanel = memo(function SettingsPanel({
                 ))}
               </div>}
             >
-              {isRecording && <p className="text-xs text-primary">Stop recording before changing mode.</p>}
+              {isRecording && <p className="text-[length:var(--ui-font-caption)] text-primary">Stop recording before changing mode.</p>}
             </SettingsRow>
             {accessibilityGranted === false && (
               <div>
-                <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
+                <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-[length:var(--ui-font-caption)] text-on-surface">
                   <span>Accessibility permission is required for keyboard detection.</span>
                   <button type="button" onClick={requestAccessibility} className="ml-auto underline">Grant</button>
                 </div>
@@ -1129,15 +1133,15 @@ export const SettingsPanel = memo(function SettingsPanel({
                 disabled={isRecording}
                 items={DICTATION_KEY_OPTIONS}
                 aria-label="Dictation trigger key"
-              />}><p className="text-xs text-on-surface-variant">{keyHelp}</p>
+              />}><p className="text-[length:var(--ui-font-caption)] text-on-surface-variant">{keyHelp}</p>
 {isFunctionDictationKey(settings.doubleTapKey) && (
-                <p className="text-xs text-on-surface-variant">
+                <p className="text-[length:var(--ui-font-caption)] text-on-surface-variant">
                   May need Fn on Apple keyboards. The key keeps its normal action.
                 </p>
               )}</SettingsRow>
             <SettingsBranch open={isDoubleTap || isBoth}><SettingToggle targetId="hotkey-feedback" title="Hotkey timing feedback" description="Flash the overlay when a tap misses the double-tap window" checked={settings.hotkeyMissFeedback} defaultChecked={DEFAULT_SETTINGS.hotkeyMissFeedback} onChange={() => onUpdateSettings({ hotkeyMissFeedback: !settings.hotkeyMissFeedback })} /></SettingsBranch>
             <SettingsRow
-              title={<label className="block text-sm font-medium text-on-surface">Stop on silence</label>}
+              title={<label className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">Stop on silence</label>}
               targetId="stop-on-silence"
               disabled={isRecording}
               onReset={settings.autoStopSilenceMs !== DEFAULT_SETTINGS.autoStopSilenceMs ? () => onUpdateSettings({ autoStopSilenceMs: DEFAULT_SETTINGS.autoStopSilenceMs }) : undefined}
@@ -1160,10 +1164,12 @@ export const SettingsPanel = memo(function SettingsPanel({
                 ))}
               </div>}
             >
-              <p className="text-xs text-on-surface-variant">
+              <p className="text-[length:var(--ui-font-caption)] text-on-surface-variant">
                 End hands-free recordings after a pause
               </p>
             </SettingsRow>
+            </SettingsGroup>
+            <SettingsGroup title="Advanced">
             <SettingsDisclosure title="Advanced" layout="rows">
             <SettingToggle
               targetId="standby" title="Warm microphone standby"
@@ -1188,7 +1194,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 onChange={() => onUpdateSettings({ soundCuesEnabled: !settings.soundCuesEnabled })}
               />
               <SettingsBranch open={settings.soundCuesEnabled}>
-                <label data-setting-target="sound-volume" className="block text-xs font-medium text-on-surface-variant">
+                <label data-setting-target="sound-volume" className="block text-[length:var(--ui-font-caption)] font-medium text-on-surface-variant">
                   Volume · {settings.soundCueVolume}%
                   <input
                     className="mt-2 block w-full accent-primary"
@@ -1206,7 +1212,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                       key={cue}
                       type="button"
                       onClick={() => playSoundCue(cue, settings.soundCueVolume)}
-                      className="h-8 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 text-xs font-medium capitalize text-on-surface hover:bg-surface-container"
+                      className="h-8 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 text-[length:var(--ui-font-caption)] font-medium capitalize text-on-surface hover:bg-surface-container"
                     >
                       {cue}
                     </Button>
@@ -1227,6 +1233,8 @@ export const SettingsPanel = memo(function SettingsPanel({
               onEnabledChange={(smartAutoStopEnabled) => onUpdateSettings({ smartAutoStopEnabled })}
             />
             </SettingsDisclosure>
+            </SettingsGroup>
+            </div>
           </SettingsSection>
 
           <SettingsSection hideHeading pageId="ai" activePage={activeCat} title="AI & models">
@@ -1339,12 +1347,14 @@ export const SettingsPanel = memo(function SettingsPanel({
             </SettingsDisclosure>
           </SettingsSection>
 
-          <SettingsSection hideHeading pageId="delivery" activePage={activeCat} title="Delivery">
+          <SettingsSection hideHeading card={false} pageId="delivery" activePage={activeCat} title="Delivery">
+            <div className="settings-groups">
+            <SettingsGroup title="Pasting">
             <SettingToggle targetId="auto-paste" title="Auto-paste" label="Auto paste" description={autoPasteDeliveryDescription(settings)} checked={autoPasteOn} defaultChecked={DEFAULT_SETTINGS.autoPaste} disabled={saveToFile} onChange={() => onUpdateSettings({ autoPaste: !settings.autoPaste })} />
             <SettingsBranch open={settings.autoPaste}>
-              {saveToFile && <p role="status" data-tone="accent" className="settings-callout text-xs text-on-surface">Auto-paste is paused; the stored preference remains on.</p>}
+              {saveToFile && <p role="status" data-tone="accent" className="settings-callout text-[length:var(--ui-font-caption)] text-on-surface">Auto-paste is paused; the stored preference remains on.</p>}
               {!saveToFile && accessibilityGranted === false && (
-                <div className="flex items-center gap-2 text-xs text-primary">
+                <div className="flex items-center gap-2 text-[length:var(--ui-font-caption)] text-primary">
                   <span>Accessibility permission is required to paste into the active app.</span>
                   <button type="button" onClick={requestAccessibility} className="ml-auto underline">Grant</button>
                 </div>
@@ -1377,30 +1387,32 @@ export const SettingsPanel = memo(function SettingsPanel({
                   );
                 }}
                 items={PASTE_LAST_SHORTCUT_OPTIONS}
-              />}><p className="text-xs leading-relaxed text-on-surface-variant">
+              />}><p className="text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
                 {settings.pasteLastShortcut === null
                   ? 'Paste your latest dictation again from anywhere'
                   : `Press ${pasteLastShortcutLabel(settings.pasteLastShortcut)} to paste your latest dictation again`}
               </p>
-{pasteLastShortcutError && <p role="alert" className="text-xs text-error">{pasteLastShortcutError}</p>}
+{pasteLastShortcutError && <p role="alert" className="text-[length:var(--ui-font-caption)] text-error">{pasteLastShortcutError}</p>}
 {accessibilityGranted === false && settings.pasteLastShortcut !== null && (
-                <div className="flex items-center gap-2 text-xs text-primary">
+                <div className="flex items-center gap-2 text-[length:var(--ui-font-caption)] text-primary">
                   <span>Accessibility permission is required for the global Paste Last shortcut.</span>
                   <button type="button" onClick={requestAccessibility} className="underline">Grant</button>
                 </div>
               )}</SettingsRow>
-            <>
+            </SettingsGroup>
+            <SettingsGroup title="Files">
               <SettingToggle targetId="file-output" title="Save transcript to file" description="Write each completed transcription to a .txt file" checked={settings.saveTranscript} defaultChecked={DEFAULT_SETTINGS.saveTranscript} onChange={() => onUpdateSettings({ saveTranscript: !settings.saveTranscript })} />
               <SettingToggle title="Save audio to file" description="Write each recording to a .wav file" checked={settings.saveAudio} defaultChecked={DEFAULT_SETTINGS.saveAudio} onChange={() => onUpdateSettings({ saveAudio: !settings.saveAudio })} />
               <SettingsBranch open={saveToFile}>
                 <div className="settings-field">
-                  <p className="text-xs text-on-surface-variant">Shared output folder</p>
-                  <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface"><MiddleTruncate value={settings.outputDir || 'Documents/Murmur (default)'} /></p>
-                  <div className="flex gap-3"><button type="button" onClick={() => void chooseOutputFolder()} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Choose folder…</button>{settings.outputDir && <button type="button" onClick={() => onUpdateSettings({ outputDir: '' })} className="text-xs font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}</div>
-                  <p className="text-xs text-on-surface-variant">{fileOutputDeliveryDescription(settings)}</p>
+                  <p className="text-[length:var(--ui-font-caption)] text-on-surface-variant">Shared output folder</p>
+                  <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-[length:var(--ui-font-caption)] text-on-surface"><MiddleTruncate value={settings.outputDir || 'Documents/Murmur (default)'} /></p>
+                  <div className="flex gap-3"><button type="button" onClick={() => void chooseOutputFolder()} className="text-[length:var(--ui-font-caption)] font-medium text-on-surface-variant underline hover:text-primary">Choose folder…</button>{settings.outputDir && <button type="button" onClick={() => onUpdateSettings({ outputDir: '' })} className="text-[length:var(--ui-font-caption)] font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}</div>
+                  <p className="text-[length:var(--ui-font-caption)] text-on-surface-variant">{fileOutputDeliveryDescription(settings)}</p>
                 </div>
               </SettingsBranch>
-            </>
+            </SettingsGroup>
+            <SettingsGroup title="History">
             <SettingToggle
               targetId="history"
               title="Save transcription history"
@@ -1409,9 +1421,19 @@ export const SettingsPanel = memo(function SettingsPanel({
               onChange={() => onUpdateSettings({ retainHistory: !settings.retainHistory })}
             />
             {notchPillInstalled && <SettingToggle title="Mirror captions to NotchPill" description="Show your latest dictation in NotchPill" checked={settings.mirrorToNotchPill} defaultChecked={DEFAULT_SETTINGS.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />}
-            <SettingsDisclosure title="Advanced" description="Per-app delivery and writing" layout="stack" targetId="app-overrides">
-              <button type="button" onClick={(event) => openEditor('app-overrides', event.currentTarget)} className="settings-quiet-btn flex w-full items-center justify-between text-left">Manage app overrides <span aria-hidden="true">›</span></button>
+            </SettingsGroup>
+            <SettingsGroup title="Advanced">
+            <SettingsDisclosure title="Advanced" description="Per-app delivery and writing" layout="rows" targetId="app-overrides">
+              <button type="button" data-setting-target="app-overrides" onClick={(event) => openEditor('app-overrides', event.currentTarget)} className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+                <span className="settings-title-description">
+                  <span className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">Manage app overrides</span>
+                  <span className="mt-0.5 block text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">Set delivery and writing preferences for specific apps</span>
+                </span>
+                <span aria-hidden="true" className="text-on-surface-variant">›</span>
+              </button>
             </SettingsDisclosure>
+            </SettingsGroup>
+            </div>
           </SettingsSection>
 
           <SettingsSection hideHeading plain pageId="modes" activePage={activeCat} title="Modes">

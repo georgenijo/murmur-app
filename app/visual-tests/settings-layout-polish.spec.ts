@@ -46,7 +46,7 @@ for (const appearance of ['dark', 'light'] as const) {
     expect(calibrate.bottom).toBeLessThanOrEqual(cal.bottom - 4);
   });
 
-  test(`${appearance} Delivery Advanced keeps the app-overrides button styling`, async ({ page }) => {
+  test(`${appearance} Delivery Advanced uses a standard app-overrides navigation row`, async ({ page }) => {
     await open(page, appearance, 'settings', 'Delivery');
     await page.locator('.settings-advanced-toggle').first().click();
     const button = page.getByRole('button', { name: /Manage app overrides/ });
@@ -57,7 +57,9 @@ for (const appearance of ['dark', 'light'] as const) {
     });
     expect(parseFloat(style.left)).toBeGreaterThan(0);
     expect(parseFloat(style.right)).toBeGreaterThan(0);
-    expect(style.top).toBe(style.bottom);
+    // The row has only the card's interior divider, unlike the former outlined button.
+    expect(style.top).toBe('1px');
+    expect(style.bottom).toBe('0px');
   });
 
   test(`${appearance} Smart Auto microphone list stays inside the Recording card`, async ({ page }) => {
