@@ -3121,11 +3121,16 @@ pub(crate) fn register_sleep_wake_observer() {
     ) {
         let block =
             block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
-                crate::audio_inventory::invalidate_signal_evidence(None);
-                if reason == AudioCancelReason::SystemSleep {
-                    cancel_preview_for_environment_change(reason);
-                }
-                cancel_starting_for_environment_change(reason);
+                crate::main_thread_watch::callback(
+                    "audio_lifecycle.environment_notification",
+                    || {
+                        crate::audio_inventory::invalidate_signal_evidence(None);
+                        if reason == AudioCancelReason::SystemSleep {
+                            cancel_preview_for_environment_change(reason);
+                        }
+                        cancel_starting_for_environment_change(reason);
+                    },
+                );
             });
         unsafe {
             let observer = center.addObserverForName_object_queue_usingBlock(

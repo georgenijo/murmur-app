@@ -15,55 +15,58 @@ pub(crate) fn position_traffic_lights(window: &tauri::WebviewWindow, top: f64) {
     use tauri::Manager;
     let window = window.clone();
     let handle = window.app_handle().clone();
-    let _ = handle.run_on_main_thread(move || {
-        use objc2_app_kit::{NSWindow, NSWindowButton, NSWindowStyleMask};
-        use objc2_foundation::NSPoint;
-        debug_assert!(objc2_foundation::MainThreadMarker::new().is_some());
-        let Ok(ptr) = window.ns_window() else {
-            return;
-        };
-        let native: &NSWindow = unsafe { &*ptr.cast() };
-        if native.styleMask().contains(NSWindowStyleMask::FullScreen) {
-            return;
-        }
-        let Some(close) = native.standardWindowButton(NSWindowButton::CloseButton) else {
-            return;
-        };
-        // SAFETY: AppKit view hierarchy access stays on the main thread.
-        let Some(parent) = (unsafe { close.superview() }) else {
-            return;
-        };
-        // Enlarge the titlebar's hit area as well as moving its buttons. A
-        // position below AppKit's default 28pt titlebar must remain clickable.
-        if let Some(container) = unsafe { parent.superview() } {
-            let mut frame = container.frame();
-            frame.size.height = (top + 7.0) * 2.0;
-            frame.origin.y = native.frame().size.height - frame.size.height;
-            container.setFrame(frame);
-        }
-        let close_x = close.frame().origin.x;
-        let buttons = [
-            NSWindowButton::CloseButton,
-            NSWindowButton::MiniaturizeButton,
-            NSWindowButton::ZoomButton,
-        ];
-        let positions: Vec<_> = buttons
-            .into_iter()
-            .filter_map(|kind| {
-                native.standardWindowButton(kind).map(|button| {
-                    let offset = button.frame().origin.x - close_x;
-                    (button, offset)
+    let _ = handle.run_on_main_thread(crate::main_thread_watch::job(
+        "native_window.position_traffic_lights",
+        move || {
+            use objc2_app_kit::{NSWindow, NSWindowButton, NSWindowStyleMask};
+            use objc2_foundation::NSPoint;
+            debug_assert!(objc2_foundation::MainThreadMarker::new().is_some());
+            let Ok(ptr) = window.ns_window() else {
+                return;
+            };
+            let native: &NSWindow = unsafe { &*ptr.cast() };
+            if native.styleMask().contains(NSWindowStyleMask::FullScreen) {
+                return;
+            }
+            let Some(close) = native.standardWindowButton(NSWindowButton::CloseButton) else {
+                return;
+            };
+            // SAFETY: AppKit view hierarchy access stays on the main thread.
+            let Some(parent) = (unsafe { close.superview() }) else {
+                return;
+            };
+            // Enlarge the titlebar's hit area as well as moving its buttons. A
+            // position below AppKit's default 28pt titlebar must remain clickable.
+            if let Some(container) = unsafe { parent.superview() } {
+                let mut frame = container.frame();
+                frame.size.height = (top + 7.0) * 2.0;
+                frame.origin.y = native.frame().size.height - frame.size.height;
+                container.setFrame(frame);
+            }
+            let close_x = close.frame().origin.x;
+            let buttons = [
+                NSWindowButton::CloseButton,
+                NSWindowButton::MiniaturizeButton,
+                NSWindowButton::ZoomButton,
+            ];
+            let positions: Vec<_> = buttons
+                .into_iter()
+                .filter_map(|kind| {
+                    native.standardWindowButton(kind).map(|button| {
+                        let offset = button.frame().origin.x - close_x;
+                        (button, offset)
+                    })
                 })
-            })
-            .collect();
-        for (button, offset) in positions {
-            let target = NSPoint::new(
-                crate::window_state::TRAFFIC_LIGHT_X + offset,
-                native.frame().size.height - top - button.frame().size.height,
-            );
-            button.setFrameOrigin(parent.convertPoint_fromView(target, None));
-        }
-    });
+                .collect();
+            for (button, offset) in positions {
+                let target = NSPoint::new(
+                    crate::window_state::TRAFFIC_LIGHT_X + offset,
+                    native.frame().size.height - top - button.frame().size.height,
+                );
+                button.setFrameOrigin(parent.convertPoint_fromView(target, None));
+            }
+        },
+    ));
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -77,9 +80,12 @@ pub(crate) fn hide_titlebar_separator(window: &tauri::WebviewWindow) {
     use tauri::Manager;
     let window = window.clone();
     let handle = window.app_handle().clone();
-    if let Err(error) = handle.run_on_main_thread(move || {
-        apply_hidden_titlebar_separator_on_main(&window);
-    }) {
+    if let Err(error) = handle.run_on_main_thread(crate::main_thread_watch::job(
+        "native_window.hide_titlebar_separator",
+        move || {
+            apply_hidden_titlebar_separator_on_main(&window);
+        },
+    )) {
         tracing::warn!(
             target: "system",
             "hide_titlebar_separator: run_on_main_thread failed: {}",
@@ -129,9 +135,12 @@ pub(crate) fn set_window_level_and_activation(
     use tauri::Manager;
     let window = window.clone();
     let handle = window.app_handle().clone();
-    if let Err(e) = handle.run_on_main_thread(move || {
-        apply_window_level_and_activation_on_main(&window, level, prevents_activation);
-    }) {
+    if let Err(e) = handle.run_on_main_thread(crate::main_thread_watch::job(
+        "native_window.set_level_and_activation",
+        move || {
+            apply_window_level_and_activation_on_main(&window, level, prevents_activation);
+        },
+    )) {
         tracing::warn!(target: "system", "set_window_level_and_activation: run_on_main_thread failed: {}", e);
     }
 }
@@ -207,12 +216,14 @@ impl PopoverSpec {
         frame: (f64, f64, f64, f64),
     ) -> Result<(), String> {
         let (x, y, width, height) = frame;
-        window
-            .set_size(tauri::LogicalSize::new(width, height))
-            .map_err(|_| format!("{} window could not be sized", self.label))?;
-        window
-            .set_position(tauri::LogicalPosition::new(x, y))
-            .map_err(|_| format!("{} window could not be positioned", self.label))
+        crate::main_thread_watch::section("window.set_size", || {
+            window.set_size(tauri::LogicalSize::new(width, height))
+        })
+        .map_err(|_| format!("{} window could not be sized", self.label))?;
+        crate::main_thread_watch::section("window.set_position", || {
+            window.set_position(tauri::LogicalPosition::new(x, y))
+        })
+        .map_err(|_| format!("{} window could not be positioned", self.label))
     }
 
     /// Resize and reposition to `frame` without touching level, activation,
@@ -237,15 +248,16 @@ impl PopoverSpec {
     ) -> Result<(), String> {
         let window = self.window(app)?;
         self.resize_and_position(&window, frame)?;
-        set_window_level_and_activation(&window, ABOVE_MENU_BAR_LEVEL, true);
-        window
-            .set_focusable(false)
+        crate::main_thread_watch::section("window.set_level_and_activation", || {
+            set_window_level_and_activation(&window, ABOVE_MENU_BAR_LEVEL, true)
+        });
+        crate::main_thread_watch::section("window.set_focusable", || window.set_focusable(false))
             .map_err(|_| format!("{} focus mode could not be set", self.label))?;
-        window
-            .set_ignore_cursor_events(self.ignore_cursor_events)
-            .map_err(|_| format!("{} pointer events could not be set", self.label))?;
-        window
-            .show()
+        crate::main_thread_watch::section("window.set_ignore_cursor_events", || {
+            window.set_ignore_cursor_events(self.ignore_cursor_events)
+        })
+        .map_err(|_| format!("{} pointer events could not be set", self.label))?;
+        crate::main_thread_watch::section("window.show", || window.show())
             .map_err(|_| format!("{} window could not be shown", self.label))
     }
 
@@ -254,8 +266,7 @@ impl PopoverSpec {
     pub(crate) fn hide(&self, app: &tauri::AppHandle) -> Result<(), String> {
         use tauri::Manager;
         match app.get_webview_window(self.label) {
-            Some(window) => window
-                .hide()
+            Some(window) => crate::main_thread_watch::section("window.hide", || window.hide())
                 .map_err(|_| format!("{} window could not be hidden", self.label)),
             None => Ok(()),
         }

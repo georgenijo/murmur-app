@@ -405,6 +405,16 @@ generation, setting-off and rejected native presentation clear the content.
 No preview copy/paste/log/persist/export path exists. The native show gate
 revalidates the exact generation on the main thread immediately before display.
 
+An accepted stop hands the native hide to delivery. Delivery queues it on the
+main thread directly behind the paste job, so the hide never delays the paste.
+A stop that ends without a paste hides at once. This covers no speech, empty
+text, cancel while processing, and errors. Cancels and interruptions during
+recording are still hidden by the partial ticker. Every hide rechecks the exact
+generation on the main thread, so a late hide never hides a successor's card.
+Each hide logs a `trigger` on `pipeline.dictation_preview_presentation`, and
+`pipeline.main_thread_paste_wait` reports `preview_hide`. See
+[Main-thread diagnostics](main-thread-diagnostics.md).
+
 ## Click Interactions
 
 `useRecordingControls` disambiguates single-click and double-click with a 250ms debounce timer.

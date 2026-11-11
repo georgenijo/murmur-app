@@ -144,6 +144,13 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer 
         event: &tracing::Event<'_>,
         _ctx: tracing_subscriber::layer::Context<'_, S>,
     ) {
+        // A log write and window emit on the main thread is main-thread work.
+        crate::main_thread_watch::section("telemetry.event", || self.record_event(event));
+    }
+}
+
+impl TauriEmitterLayer {
+    fn record_event(&self, event: &tracing::Event<'_>) {
         let meta = event.metadata();
 
         // Stream = target (e.g. "pipeline", "audio", "system")
@@ -268,6 +275,10 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "pipeline.delivery_target_verified" => Some("pipeline.delivery_target_verified"),
         "pipeline.smart_destination_delivery" => Some("pipeline.smart_destination_delivery"),
         "pipeline.paste_safety" => Some("pipeline.paste_safety"),
+        "pipeline.main_thread_paste_wait" => Some("pipeline.main_thread_paste_wait"),
+        "system.main_thread_watch_started" => Some("system.main_thread_watch_started"),
+        "system.main_thread_span" => Some("system.main_thread_span"),
+        "system.main_thread_paste_span" => Some("system.main_thread_paste_span"),
         "homophone_context.backoff_entered" => Some("homophone_context.backoff_entered"),
         "homophone_context.backoff_exited" => Some("homophone_context.backoff_exited"),
         "homophone_context.prewarm_requested" => Some("homophone_context.prewarm_requested"),
@@ -485,6 +496,101 @@ fn sanitize_dictation_partial_tick_event(data: &mut serde_json::Map<String, serd
     });
 }
 
+fn is_main_thread_watch_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    matches!(
+        data.get("event_code").and_then(serde_json::Value::as_str),
+        Some(
+            "pipeline.main_thread_paste_wait"
+                | "system.main_thread_watch_started"
+                | "system.main_thread_span"
+                | "system.main_thread_paste_span"
+        )
+    )
+}
+
+/// Main-thread diagnostics carry only static labels, ids, monotonic
+/// timestamps, and durations. Keep that exact schema in every build.
+fn sanitize_main_thread_watch_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    let code = data
+        .get("event_code")
+        .and_then(serde_json::Value::as_str)
+        .and_then(canonical_event_code)
+        .unwrap_or("");
+    data.retain(|key, value| {
+        let number = value.as_u64().is_some();
+        let boolean = value.is_boolean();
+        let label = value
+            .as_str()
+            .is_some_and(crate::main_thread_watch::is_safe_label);
+        match (code, key.as_str()) {
+            (_, "event_code") => true,
+            ("system.main_thread_watch_started", key) => match key {
+                "epoch_unix_ms" | "log_span_min_us" | "slow_paste_us" => number,
+                "observers_installed" | "reporter_started" => boolean,
+                _ => false,
+            },
+            ("system.main_thread_span" | "system.main_thread_paste_span", key) => match key {
+                "recording_id" => {
+                    code == "system.main_thread_paste_span"
+                        && value.as_u64().is_some_and(|id| id > 0)
+                }
+                "kind" => value.as_str().is_some_and(|kind| {
+                    matches!(
+                        kind,
+                        "job"
+                            | "command"
+                            | "callback"
+                            | "section"
+                            | "runloop_busy"
+                            | "runloop_segment"
+                    )
+                }),
+                "label" => label,
+                // Empty for spans that are not run-loop busy spans.
+                "longest_phase" => label || value.as_str() == Some(""),
+                "start_us" | "start_unix_ms" | "duration_us" | "queue_us" | "longest_phase_us"
+                | "segments" => number,
+                "overlap_us" => code == "system.main_thread_paste_span" && number,
+                "suppressed" | "dropped" => code == "system.main_thread_span" && number,
+                "on_main" => boolean,
+                _ => false,
+            },
+            ("pipeline.main_thread_paste_wait", key) => match key {
+                "recording_id" => value.as_u64().is_some_and(|id| id > 0),
+                "outcome" => matches!(value.as_str(), Some("started" | "not_started")),
+                "longest_label" => label,
+                "longest_kind" => value.as_str().is_some_and(|kind| {
+                    matches!(kind, "none" | "job" | "command" | "callback" | "section")
+                }),
+                "inject_queue_us"
+                | "inject_job_us"
+                | "queued_us"
+                | "started_us"
+                | "queued_unix_ms"
+                | "runloop_busy_us"
+                | "runloop_idle_us"
+                | "labelled_us"
+                | "unlabelled_busy_us"
+                | "job_us"
+                | "command_us"
+                | "callback_us"
+                | "section_us"
+                | "event_loop_drain_us"
+                | "longest_us"
+                | "span_count"
+                | "spans_logged" => number,
+                "slow" | "spans_truncated" => boolean,
+                "preview_hide" => matches!(
+                    value.as_str(),
+                    Some("none" | "before_paste" | "during_wait" | "after_paste")
+                ),
+                _ => false,
+            },
+            _ => false,
+        }
+    });
+}
+
 fn is_dictation_preview_presentation_event(
     data: &serde_json::Map<String, serde_json::Value>,
 ) -> bool {
@@ -501,6 +607,9 @@ fn sanitize_dictation_preview_presentation_event(
         "outcome" => value.as_str().is_some_and(|value| {
             matches!(value, "shown" | "show_failed" | "hidden" | "hide_failed")
         }),
+        "trigger" => value
+            .as_str()
+            .is_some_and(|value| matches!(value, "after_paste" | "no_paste" | "recording_ended")),
         _ => false,
     });
 }
@@ -1510,6 +1619,13 @@ fn sanitized_summary(
         == Some("pipeline.delivery_target_verified")
     {
         "Dictation delivery target verification".to_string()
+    } else if data.as_object().is_some_and(is_main_thread_watch_event) {
+        // Constant in every build; the useful facts are the typed fields.
+        data["event_code"]
+            .as_str()
+            .and_then(canonical_event_code)
+            .unwrap_or("Structured event")
+            .to_string()
     } else if data.get("event_code").and_then(serde_json::Value::as_str)
         == Some("pipeline.paste_safety")
     {
@@ -1840,6 +1956,10 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     }
     if is_dictation_preview_presentation_event(obj) {
         sanitize_dictation_preview_presentation_event(obj);
+        return;
+    }
+    if is_main_thread_watch_event(obj) {
+        sanitize_main_thread_watch_event(obj);
         return;
     }
     if is_dictation_terminal_event(obj) {
@@ -3715,9 +3835,89 @@ mod tests {
                 assert_eq!(data["recording_id"], 9);
                 assert_eq!(data["outcome"], outcome);
                 assert_eq!(data.as_object().unwrap().len(), 3);
+                let mut hide = serde_json::json!({
+                    "event_code": "pipeline.dictation_preview_presentation",
+                    "recording_id": 9,
+                    "outcome": outcome,
+                    "trigger": "after_paste",
+                });
+                sanitize_event_data("pipeline", &mut hide, debug_build);
+                assert_eq!(hide["trigger"], "after_paste");
+                let mut free_trigger = serde_json::json!({
+                    "event_code": "pipeline.dictation_preview_presentation",
+                    "recording_id": 9,
+                    "trigger": "SENTINEL",
+                });
+                sanitize_event_data("pipeline", &mut free_trigger, debug_build);
+                assert!(free_trigger.get("trigger").is_none());
                 assert!(!serde_json::to_string(&data).unwrap().contains("SENTINEL"));
                 assert!(!serde_json::to_string(&data).unwrap().contains("private"));
             }
+        }
+    }
+
+    #[test]
+    fn main_thread_watch_schema_is_exact_and_content_free_in_every_build() {
+        for debug_build in [true, false] {
+            let mut span = serde_json::json!({
+                "event_code": "system.main_thread_paste_span",
+                "recording_id": 4,
+                "kind": "command",
+                "label": "show_dictation_preview",
+                "start_us": 10,
+                "start_unix_ms": 20,
+                "duration_us": 30,
+                "overlap_us": 25,
+                "queue_us": 0,
+                "on_main": true,
+                "longest_phase": "",
+                "longest_phase_us": 0,
+                "segments": 0,
+                "title": "SENTINEL_WINDOW",
+                "suppressed": 3
+            });
+            sanitize_event_data("system", &mut span, debug_build);
+            assert_eq!(span["label"], "show_dictation_preview");
+            assert_eq!(span["overlap_us"], 25);
+            assert_eq!(span["longest_phase"], "");
+            assert!(span.get("title").is_none());
+            assert!(span.get("suppressed").is_none());
+            assert_eq!(span.as_object().unwrap().len(), 13);
+
+            let mut unsafe_label = serde_json::json!({
+                "event_code": "system.main_thread_span",
+                "kind": "clipboard",
+                "label": "Copied secret text",
+                "duration_us": 12_000
+            });
+            sanitize_event_data("system", &mut unsafe_label, debug_build);
+            assert!(unsafe_label.get("label").is_none());
+            assert!(unsafe_label.get("kind").is_none());
+            assert_eq!(unsafe_label["duration_us"], 12_000);
+
+            let mut wait = serde_json::json!({
+                "event_code": "pipeline.main_thread_paste_wait",
+                "recording_id": 4,
+                "outcome": "started",
+                "inject_queue_us": 80_000,
+                "slow": true,
+                "longest_label": "preview.hide",
+                "longest_kind": "job",
+                "event_loop_drain_us": 70_000,
+                "preview_hide": "after_paste",
+                "text": "SENTINEL_TRANSCRIPT"
+            });
+            sanitize_event_data("pipeline", &mut wait, debug_build);
+            assert_eq!(wait["inject_queue_us"], 80_000);
+            assert_eq!(wait["longest_label"], "preview.hide");
+            assert_eq!(wait["event_loop_drain_us"], 70_000);
+            assert!(!serde_json::to_string(&wait).unwrap().contains("SENTINEL"));
+            assert_eq!(wait["preview_hide"], "after_paste");
+            assert_eq!(wait.as_object().unwrap().len(), 9);
+            assert_eq!(
+                sanitized_summary("pipeline", Some("free text".into()), &wait, debug_build),
+                "pipeline.main_thread_paste_wait"
+            );
         }
     }
 

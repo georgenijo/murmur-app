@@ -492,9 +492,12 @@ fn register_native_observers(app: &tauri::AppHandle, coordinator: &MeetingSugges
 
 pub(crate) async fn frontmost_bundle_id(app: &tauri::AppHandle) -> Option<String> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    app.run_on_main_thread(move || {
-        let _ = sender.send(crate::frontmost::query_frontmost_app_identity().bundle_id);
-    })
+    app.run_on_main_thread(crate::main_thread_watch::job(
+        "meeting_suggestions.frontmost_bundle_id",
+        move || {
+            let _ = sender.send(crate::frontmost::query_frontmost_app_identity().bundle_id);
+        },
+    ))
     .ok()?;
     tokio::time::timeout(Duration::from_secs(2), receiver)
         .await

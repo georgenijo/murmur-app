@@ -632,7 +632,10 @@ mod native {
             pin_system_appearance(&app, label);
         }
         let block = block2::RcBlock::new(|_notification: std::ptr::NonNull<NSNotification>| {
-            restyle_all();
+            crate::main_thread_watch::callback(
+                "overlay_material.accessibility_notification",
+                restyle_all,
+            );
         });
         let center = NSWorkspace::sharedWorkspace().notificationCenter();
         let observer = unsafe {
@@ -647,9 +650,11 @@ mod native {
         std::mem::forget(observer);
         let block =
             block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
-                for label in [OVERLAY_LABEL, LIVE_WORDS_LABEL] {
-                    pin_system_appearance(&app, label);
-                }
+                crate::main_thread_watch::callback("overlay_material.theme_notification", || {
+                    for label in [OVERLAY_LABEL, LIVE_WORDS_LABEL] {
+                        pin_system_appearance(&app, label);
+                    }
+                });
             });
         let observer = unsafe {
             NSDistributedNotificationCenter::defaultCenter()
@@ -694,7 +699,10 @@ fn on_main(app: &tauri::AppHandle, f: impl FnOnce(&tauri::AppHandle) + Send + 's
         return;
     }
     let handle = app.clone();
-    if let Err(error) = app.run_on_main_thread(move || f(&handle)) {
+    if let Err(error) = app.run_on_main_thread(crate::main_thread_watch::job(
+        "overlay_material.on_main",
+        move || f(&handle),
+    )) {
         tracing::warn!(target: "system", "overlay material: main-thread dispatch failed: {}", error);
     }
 }
@@ -723,9 +731,12 @@ async fn on_main_acked(
 ) -> Result<bool, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let handle = app.clone();
-    app.run_on_main_thread(move || {
-        let _ = tx.send(f(&handle));
-    })
+    app.run_on_main_thread(crate::main_thread_watch::job(
+        "overlay_material.on_main_acked",
+        move || {
+            let _ = tx.send(f(&handle));
+        },
+    ))
     .map_err(|error| error.to_string())?;
     rx.await
         .map_err(|_| "overlay material update was dropped".to_string())

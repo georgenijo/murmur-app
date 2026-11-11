@@ -211,7 +211,30 @@ fn emit_dictation_partial_tick(recording_id: u64, outcome: &'static str, sample_
     );
 }
 
-fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
+/// Register `recording_id`'s partial ticker as the preview hide's ticker side.
+/// The caller holds the dictation lock: the stop transition claims the hide
+/// under the same lock, so registration either precedes that claim or sees
+/// the recording already stopped and refuses. Older generations never
+/// replace a newer registration.
+fn register_partial_ticker_locked(
+    app_state: &AppState,
+    dictation: &crate::state::DictationState,
+    recording_id: u64,
+) -> bool {
+    recording_id > 0
+        && app_state.recording_id.load(Ordering::SeqCst) == recording_id
+        && dictation.status == DictationStatus::Recording
+        && !app_state.is_cancelled(recording_id)
+        && crate::commands::dictation_preview::note_ticker_started(recording_id)
+}
+
+/// Spawn the live-preview ticker. `register` runs under the dictation lock
+/// (see [`register_partial_ticker_locked`]); no ticker runs if it refuses.
+fn spawn_dictation_partial_ticker(
+    app: tauri::AppHandle,
+    recording_id: u64,
+    register: impl FnOnce() -> bool,
+) {
     let Some(context) = app.state::<State>().app_state.active_context(recording_id) else {
         return;
     };
@@ -219,6 +242,9 @@ fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
     let whisper = transcriber::whisper::supports_live_preview(model);
     if !whisper && !transcriber::is_coreml_model(model) {
         emit_dictation_partial_tick(recording_id, "unsupported_model", 0);
+        return;
+    }
+    if !register() {
         return;
     }
     #[cfg(feature = "preview-decode-reuse")]
@@ -249,7 +275,9 @@ fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
                 decode_one_dictation_partial(&tick_app, recording_id, tick_preview).await;
             }));
         }
-        crate::commands::dictation_preview::hide_for_recording(&app, recording_id);
+        // An accepted stop hands this hide to delivery, which queues it
+        // behind the paste; only cancels and interruptions hide here.
+        crate::commands::dictation_preview::hide_on_ticker_exit(&app, recording_id);
     }));
 }
 
@@ -1641,6 +1669,38 @@ mod clipboard_delivery_tests {
     }
 
     #[test]
+    fn a_partial_ticker_registers_only_while_its_recording_is_live() {
+        // Ids above any other test's, since the ticker registration only grows.
+        let app_state = AppState::default();
+        app_state.recording_id.store(9_000_001, Ordering::SeqCst);
+        let mut dictation = app_state.dictation.lock_or_recover();
+        dictation.status = DictationStatus::Recording;
+        // A stale generation is refused even while the lock shows Recording.
+        assert!(!register_partial_ticker_locked(
+            &app_state, &dictation, 9_000_000
+        ));
+        assert!(register_partial_ticker_locked(
+            &app_state, &dictation, 9_000_001
+        ));
+        // A ready callback that resumes after the stop transition is refused:
+        // the stop already claimed (or declined) the hide under this lock.
+        app_state.recording_id.store(9_000_002, Ordering::SeqCst);
+        dictation.status = DictationStatus::Processing;
+        assert!(!register_partial_ticker_locked(
+            &app_state, &dictation, 9_000_002
+        ));
+        dictation.status = DictationStatus::Recording;
+        assert!(register_partial_ticker_locked(
+            &app_state, &dictation, 9_000_002
+        ));
+        // The predecessor resuming now cannot overwrite its successor.
+        app_state.recording_id.store(9_000_001, Ordering::SeqCst);
+        assert!(!register_partial_ticker_locked(
+            &app_state, &dictation, 9_000_001
+        ));
+    }
+
+    #[test]
     fn queued_delivery_rechecks_ownership_before_running_its_side_effect() {
         let app_state = AppState::default();
         app_state.recording_id.store(12, Ordering::SeqCst);
@@ -2596,6 +2656,8 @@ fn register_shadow_measurement(
 #[derive(Default)]
 struct PipelineStopContext {
     delivery_target: Option<crate::frontmost::DeliveryTargetSnapshot>,
+    /// The live preview's hide, owned by delivery from the accepted stop.
+    preview_hide: Option<crate::commands::dictation_preview::PreviewHideOwner>,
 }
 
 /// Shared transcription pipeline: model init -> transcribe -> inject text -> set idle.
@@ -2612,7 +2674,10 @@ async fn run_transcription_pipeline(
 ) -> Result<PipelineResult, String> {
     let PipelineStopContext {
         delivery_target: stop_delivery_target,
+        preview_hide,
     } = stop;
+    // Dropped on every return without a delivery job, which hides at once.
+    let mut preview_hide = preview_hide;
     // Guard resets status to Idle on any return path (error or success),
     // but only if this recording is still the active one
     let mut _guard = IdleGuard::new(app_state, recording_id);
@@ -2978,24 +3043,30 @@ async fn run_transcription_pipeline(
                 r.prepare_work_us = unavailable;
             });
             app_handle
-                .run_on_main_thread(move || {
-                    let _timing_scope = prepare_timing.bind();
-                    drop(prepare_queue);
-                    if sender.is_closed() || !worker_authority.is_current() {
-                        return;
-                    }
-                    let state = prepare_app.state::<State>();
-                    let outcome = with_current_delivery_owner_timed(
-                        &state.app_state,
-                        recording_id,
-                        true,
-                        || {
-                            let _work = dt::Timer::new(|r| &mut r.prepare_work_us);
-                            crate::smart_destination::prepare(&preparing, Some(&worker_authority))
-                        },
-                    );
-                    let _ = sender.send(outcome);
-                })
+                .run_on_main_thread(crate::main_thread_watch::job(
+                    "smart_destination.prepare",
+                    move || {
+                        let _timing_scope = prepare_timing.bind();
+                        drop(prepare_queue);
+                        if sender.is_closed() || !worker_authority.is_current() {
+                            return;
+                        }
+                        let state = prepare_app.state::<State>();
+                        let outcome = with_current_delivery_owner_timed(
+                            &state.app_state,
+                            recording_id,
+                            true,
+                            || {
+                                let _work = dt::Timer::new(|r| &mut r.prepare_work_us);
+                                crate::smart_destination::prepare(
+                                    &preparing,
+                                    Some(&worker_authority),
+                                )
+                            },
+                        );
+                        let _ = sender.send(outcome);
+                    },
+                ))
                 .map_err(|error| {
                     delivery_timing.update(|r| dt::set_outcome(r, dt::Outcome::DispatchFailed));
                     error.to_string()
@@ -3032,11 +3103,14 @@ async fn run_transcription_pipeline(
                     );
                     let abandoned = smart_destination.clone();
                     let abort_timing = delivery_timing.clone();
-                    let _ = app_handle.run_on_main_thread(move || {
-                        let _scope = abort_timing.bind();
-                        let _cleanup = dt::Timer::new(|r| &mut r.cleanup_us);
-                        crate::smart_destination::abort(&abandoned, None);
-                    });
+                    let _ = app_handle.run_on_main_thread(crate::main_thread_watch::job(
+                        "smart_destination.abort_after_prepare",
+                        move || {
+                            let _scope = abort_timing.bind();
+                            let _cleanup = dt::Timer::new(|r| &mut r.cleanup_us);
+                            crate::smart_destination::abort(&abandoned, None);
+                        },
+                    ));
                     (smart_destination, delivery_target) = smart_prepare_fallback(
                         &smart_destination,
                         refused_without_activation,
@@ -3069,56 +3143,75 @@ async fn run_transcription_pipeline(
         let worker_authority = injection_authority.clone();
         let inject_timing = delivery_timing.clone();
         let inject_queue = delivery_timing.timer(|r| &mut r.inject_queue_us);
-        app_handle
-            .run_on_main_thread(move || {
-                let _timing_scope = inject_timing.bind();
-                drop(inject_queue);
-                let state = injection_app_handle.state::<State>();
-                let attempt = with_current_delivery_owner_timed(
-                    &state.app_state,
-                    recording_id,
-                    false,
-                    || {
-                        let _work = dt::Timer::new(|r| &mut r.inject_work_us);
-                        injector::inject_with_destination_authorized(
-                            &text_to_inject,
-                            effective_auto_paste,
-                            paste_delay_ms,
-                            &delivery_target,
-                            &smart_destination,
-                            Some(&worker_authority),
-                        )
-                    },
-                );
-                {
-                    let _cleanup = dt::Timer::new(|r| &mut r.cleanup_us);
-                    crate::smart_destination::abort(&smart_destination, None);
-                }
-                match &attempt {
-                    Some(Ok(result)) => {
-                        if let Some(evidence) = result.verification {
-                            emit_delivery_target_verification(
+        // Joins this paste's main-thread wait to what occupied the thread;
+        // submitted when this scope ends, after the reply or timeout.
+        let paste_probe = crate::main_thread_watch::PasteProbe::new(recording_id);
+        let worker_probe = paste_probe.worker();
+        // The preview hide is queued only after the paste job, so it can never
+        // sit ahead of the paste on the main thread.
+        crate::commands::dictation_preview::dispatch_then_hide(
+            || {
+                app_handle
+                    .run_on_main_thread(crate::main_thread_watch::job(
+                        "injector.paste",
+                        move || {
+                            worker_probe.started();
+                            let _timing_scope = inject_timing.bind();
+                            drop(inject_queue);
+                            let state = injection_app_handle.state::<State>();
+                            let attempt = with_current_delivery_owner_timed(
+                                &state.app_state,
                                 recording_id,
-                                delivery_anchor,
-                                stop_sample,
-                                evidence,
+                                false,
+                                || {
+                                    let _work = dt::Timer::new(|r| &mut r.inject_work_us);
+                                    injector::inject_with_destination_authorized(
+                                        &text_to_inject,
+                                        effective_auto_paste,
+                                        paste_delay_ms,
+                                        &delivery_target,
+                                        &smart_destination,
+                                        Some(&worker_authority),
+                                    )
+                                },
                             );
-                        }
-                    }
-                    None => emit_delivery_target_verification(
-                        recording_id,
-                        delivery_anchor,
-                        stop_sample,
-                        crate::frontmost::verify_delivery_target(&delivery_target, false),
-                    ),
-                    Some(Err(_)) => {}
-                }
-                let _ = tx.send((attempt, std::time::Instant::now()));
-            })
-            .map_err(|e| {
-                delivery_timing.update(|r| dt::set_outcome(r, dt::Outcome::DispatchFailed));
-                format!("Failed to dispatch to main thread: {}", e)
-            })?;
+                            {
+                                let _cleanup = dt::Timer::new(|r| &mut r.cleanup_us);
+                                crate::smart_destination::abort(&smart_destination, None);
+                            }
+                            match &attempt {
+                                Some(Ok(result)) => {
+                                    if let Some(evidence) = result.verification {
+                                        emit_delivery_target_verification(
+                                            recording_id,
+                                            delivery_anchor,
+                                            stop_sample,
+                                            evidence,
+                                        );
+                                    }
+                                }
+                                None => emit_delivery_target_verification(
+                                    recording_id,
+                                    delivery_anchor,
+                                    stop_sample,
+                                    crate::frontmost::verify_delivery_target(
+                                        &delivery_target,
+                                        false,
+                                    ),
+                                ),
+                                Some(Err(_)) => {}
+                            }
+                            worker_probe.finished();
+                            let _ = tx.send((attempt, std::time::Instant::now()));
+                        },
+                    ))
+                    .map_err(|e| {
+                        delivery_timing.update(|r| dt::set_outcome(r, dt::Outcome::DispatchFailed));
+                        format!("Failed to dispatch to main thread: {}", e)
+                    })
+            },
+            preview_hide.take(),
+        )?;
         let paste_hint = if cfg!(target_os = "macos") {
             "Text is in your clipboard -- press Cmd+V to paste manually."
         } else {
@@ -4845,10 +4938,13 @@ pub(crate) fn handle_audio_lifecycle(
             });
         },
     );
-    if became_ready
-        && dictation_partial_is_current(&partial_app.state::<State>().app_state, recording_id)
-    {
-        spawn_dictation_partial_ticker(partial_app, recording_id);
+    if became_ready {
+        let register_app = partial_app.clone();
+        spawn_dictation_partial_ticker(partial_app, recording_id, move || {
+            let state = register_app.state::<State>();
+            let dictation = state.app_state.dictation.lock_or_recover();
+            register_partial_ticker_locked(&state.app_state, &dictation, recording_id)
+        });
     }
 }
 
@@ -5296,7 +5392,9 @@ fn publish_recording_ready_if_audio_ready(
         context_to_status_emit_ms = context_ready_at.elapsed().as_millis() as u64,
         "recording status emitted after context ready"
     );
-    spawn_dictation_partial_ticker(app_handle.clone(), recording_id);
+    spawn_dictation_partial_ticker(app_handle.clone(), recording_id, || {
+        register_partial_ticker_locked(&state.app_state, &dictation, recording_id)
+    });
     true
 }
 
@@ -5817,6 +5915,10 @@ async fn stop_native_recording_for(
             "state": "idle"
         }));
     }
+    // Owns the live preview's hide from the accepted stop: queued behind the
+    // paste by delivery, or hidden at once when this function or the pipeline
+    // returns without one.
+    let mut preview_hide = None;
     // Atomic check-and-set + generation capture in a single lock.
     let (status, rid, interrupted_capture, stop_delivery_target) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
@@ -5839,6 +5941,10 @@ async fn stop_native_recording_for(
             DictationStatus::Starting => (DictationStatus::Starting, rid, None, None),
             DictationStatus::Recovering => {
                 if let Some(capture) = audio_lifecycle::take_interrupted_dictation(rid) {
+                    preview_hide = crate::commands::dictation_preview::PreviewHideOwner::claim(
+                        &app_handle,
+                        rid,
+                    );
                     transition_dictation_status(rid, &mut dictation, DictationStatus::Processing);
                     // Freeze the native delivery target at the accepted stop
                     // transition, under the same ownership lock that commits
@@ -5857,6 +5963,10 @@ async fn stop_native_recording_for(
                 }
             }
             DictationStatus::Recording => {
+                // Before status leaves Recording: the ticker then sees this
+                // claim whenever it sees the stop, and leaves the hide to it.
+                preview_hide =
+                    crate::commands::dictation_preview::PreviewHideOwner::claim(&app_handle, rid);
                 transition_dictation_status(rid, &mut dictation, DictationStatus::Processing);
                 // Freeze the native delivery target at the accepted stop
                 // transition, under the same ownership lock that commits
@@ -6086,6 +6196,7 @@ async fn stop_native_recording_for(
         Arc::clone(&context),
         PipelineStopContext {
             delivery_target: stop_delivery_target,
+            preview_hide: preview_hide.take(),
         },
     )
     .await;

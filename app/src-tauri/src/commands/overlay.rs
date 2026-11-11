@@ -590,54 +590,59 @@ pub(crate) fn dock_watch_context(
 #[cfg(target_os = "macos")]
 pub(crate) fn follow_dock(app: &tauri::AppHandle) {
     let handle = app.clone();
-    let dispatched = app.run_on_main_thread(move || {
-        let state = handle.state::<State>();
-        let layout = *state.overlay_layout.lock_or_recover();
-        if layout.placement != OverlayPlacement::FloatingPill {
-            return;
-        }
-        let Some(frame) = *state.overlay_frame.lock_or_recover() else {
-            return;
-        };
-        let (Some(overlay), Ok(Some(monitor))) = (
-            handle.get_webview_window("overlay"),
-            handle.primary_monitor(),
-        ) else {
-            return;
-        };
-        let sf = monitor.scale_factor();
-        let area = monitor.work_area();
-        let notch = *state.notch_info.lock_or_recover();
-        let left = area.position.x as f64 / sf;
-        let top = usable_top(
-            monitor.position().y as f64 / sf,
-            area.position.y as f64 / sf,
-            notch,
-        );
-        let (_, y) = pill_logical_position(
-            (
-                left,
-                top,
-                left + area.size.width as f64 / sf,
-                pill_bottom_for(&handle, &monitor),
-            ),
-            (frame.width, frame.height),
-        );
-        let target = OverlayFrame { y, ..frame };
-        if frame_unchanged(Some(frame), target) {
-            return;
-        }
-        *state.overlay_frame.lock_or_recover() = None;
-        if let Err(error) = overlay.set_position(tauri::LogicalPosition::new(frame.x, y)) {
-            // The window did not move: keep its frame so the next Dock change
-            // can still follow.
-            remember_overlay_frame(&handle, frame);
-            tracing::warn!(target: "system", "follow_dock: set_position failed: {}", error);
-            return;
-        }
-        remember_overlay_frame(&handle, target);
-        follow_dictation_preview(&handle);
-    });
+    let dispatched = app.run_on_main_thread(crate::main_thread_watch::job(
+        "overlay.follow_dock",
+        move || {
+            let state = handle.state::<State>();
+            let layout = *state.overlay_layout.lock_or_recover();
+            if layout.placement != OverlayPlacement::FloatingPill {
+                return;
+            }
+            let Some(frame) = *state.overlay_frame.lock_or_recover() else {
+                return;
+            };
+            let (Some(overlay), Ok(Some(monitor))) = (
+                handle.get_webview_window("overlay"),
+                handle.primary_monitor(),
+            ) else {
+                return;
+            };
+            let sf = monitor.scale_factor();
+            let area = monitor.work_area();
+            let notch = *state.notch_info.lock_or_recover();
+            let left = area.position.x as f64 / sf;
+            let top = usable_top(
+                monitor.position().y as f64 / sf,
+                area.position.y as f64 / sf,
+                notch,
+            );
+            let (_, y) = pill_logical_position(
+                (
+                    left,
+                    top,
+                    left + area.size.width as f64 / sf,
+                    pill_bottom_for(&handle, &monitor),
+                ),
+                (frame.width, frame.height),
+            );
+            let target = OverlayFrame { y, ..frame };
+            if frame_unchanged(Some(frame), target) {
+                return;
+            }
+            *state.overlay_frame.lock_or_recover() = None;
+            if let Err(error) = crate::main_thread_watch::section("overlay.set_position", || {
+                overlay.set_position(tauri::LogicalPosition::new(frame.x, y))
+            }) {
+                // The window did not move: keep its frame so the next Dock change
+                // can still follow.
+                remember_overlay_frame(&handle, frame);
+                tracing::warn!(target: "system", "follow_dock: set_position failed: {}", error);
+                return;
+            }
+            remember_overlay_frame(&handle, target);
+            follow_dictation_preview(&handle);
+        },
+    ));
     if let Err(error) = dispatched {
         tracing::warn!(target: "system", "follow_dock: main-thread dispatch failed: {}", error);
     }
@@ -829,13 +834,16 @@ async fn settled_outer_position(
         tokio::time::sleep(std::time::Duration::from_millis(POSITION_SETTLE_PROBE_MS)).await;
         let (tx, rx) = tokio::sync::oneshot::channel();
         let window = overlay.clone();
-        app.run_on_main_thread(move || {
-            let result = window
-                .outer_position()
-                .map(|position| (position.x, position.y))
-                .map_err(|error| error.to_string());
-            let _ = tx.send(result);
-        })
+        app.run_on_main_thread(crate::main_thread_watch::job(
+            "overlay.settled_outer_position",
+            move || {
+                let result = window
+                    .outer_position()
+                    .map(|position| (position.x, position.y))
+                    .map_err(|error| error.to_string());
+                let _ = tx.send(result);
+            },
+        ))
         .map_err(|error| error.to_string())?;
         let observed = tokio::time::timeout(std::time::Duration::from_secs(1), rx)
             .await
@@ -1003,9 +1011,12 @@ pub(crate) fn request_placement_refresh(trigger: PlacementTrigger) {
 #[cfg(target_os = "macos")]
 fn refresh_placement(app_handle: &tauri::AppHandle, trigger: PlacementTrigger) {
     let handle = app_handle.clone();
-    if let Err(error) = app_handle.run_on_main_thread(move || {
-        apply_placement(&handle, trigger);
-    }) {
+    if let Err(error) = app_handle.run_on_main_thread(crate::main_thread_watch::job(
+        "overlay.refresh_placement",
+        move || {
+            apply_placement(&handle, trigger);
+        },
+    )) {
         tracing::warn!(target: "system", "overlay placement main-thread dispatch failed: {}", error);
     }
 }
@@ -1144,7 +1155,9 @@ pub(crate) fn register_screen_change_observer(app_handle: tauri::AppHandle) {
     );
 
     let block = block2::RcBlock::new(move |_notification: std::ptr::NonNull<NSNotification>| {
-        request_placement_refresh(PlacementTrigger::DisplayChange);
+        crate::main_thread_watch::callback("overlay.display_change_notification", || {
+            request_placement_refresh(PlacementTrigger::DisplayChange)
+        });
     });
 
     unsafe {
@@ -1178,26 +1191,29 @@ fn raise_window_above_menubar(overlay: &tauri::WebviewWindow) {
     // off-main), same as `set_window_level_and_activation` (issue #325).
     let overlay = overlay.clone();
     let handle = overlay.app_handle().clone();
-    if let Err(e) = handle.run_on_main_thread(move || {
-        if let Ok(ptr) = overlay.ns_window() {
-            let ns_window: &objc2_app_kit::NSWindow = unsafe { &*(ptr.cast()) };
-            ns_window.setHasShadow(false);
+    if let Err(e) = handle.run_on_main_thread(crate::main_thread_watch::job(
+        "overlay.raise_above_menubar",
+        move || {
+            if let Ok(ptr) = overlay.ns_window() {
+                let ns_window: &objc2_app_kit::NSWindow = unsafe { &*(ptr.cast()) };
+                ns_window.setHasShadow(false);
 
-            // Tauri's `visibleOnAllWorkspaces` only adds CanJoinAllSpaces.
-            // Keep this status surface stationary across Mission Control,
-            // allow it into full-screen spaces, and let it join every Stage
-            // Manager application set. Without CanJoinAllApplications on
-            // macOS 26, WindowServer can leave the overlay attached to
-            // Murmur's previous set even though the window still exists.
-            let mut behavior = ns_window.collectionBehavior();
-            behavior |= objc2_app_kit::NSWindowCollectionBehavior::CanJoinAllSpaces;
-            behavior |= objc2_app_kit::NSWindowCollectionBehavior::CanJoinAllApplications;
-            behavior |= objc2_app_kit::NSWindowCollectionBehavior::Stationary;
-            behavior |= objc2_app_kit::NSWindowCollectionBehavior::IgnoresCycle;
-            behavior |= objc2_app_kit::NSWindowCollectionBehavior::FullScreenAuxiliary;
-            ns_window.setCollectionBehavior(behavior);
-        }
-    }) {
+                // Tauri's `visibleOnAllWorkspaces` only adds CanJoinAllSpaces.
+                // Keep this status surface stationary across Mission Control,
+                // allow it into full-screen spaces, and let it join every Stage
+                // Manager application set. Without CanJoinAllApplications on
+                // macOS 26, WindowServer can leave the overlay attached to
+                // Murmur's previous set even though the window still exists.
+                let mut behavior = ns_window.collectionBehavior();
+                behavior |= objc2_app_kit::NSWindowCollectionBehavior::CanJoinAllSpaces;
+                behavior |= objc2_app_kit::NSWindowCollectionBehavior::CanJoinAllApplications;
+                behavior |= objc2_app_kit::NSWindowCollectionBehavior::Stationary;
+                behavior |= objc2_app_kit::NSWindowCollectionBehavior::IgnoresCycle;
+                behavior |= objc2_app_kit::NSWindowCollectionBehavior::FullScreenAuxiliary;
+                ns_window.setCollectionBehavior(behavior);
+            }
+        },
+    )) {
         tracing::warn!(target: "system", "raise_window_above_menubar: run_on_main_thread failed: {}", e);
     }
 }
@@ -1288,15 +1304,18 @@ pub(crate) fn position_overlay_default(
             .state::<State>()
             .overlay_frame
             .lock_or_recover() = None;
-        let sized = if let Err(e) = overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h))
-        {
+        let sized = if let Err(e) = crate::main_thread_watch::section("overlay.set_size", || {
+            overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h))
+        }) {
             tracing::warn!(target: "system", "position_overlay_default: set_size({}, {}) failed: {}", overlay_w, overlay_h, e);
             false
         } else {
             true
         };
         tracing::info!(target: "system", "position_overlay_default: x={}, y={}, sf={}", x, y, sf);
-        if let Err(e) = overlay.set_position(tauri::LogicalPosition::new(x, y)) {
+        if let Err(e) = crate::main_thread_watch::section("overlay.set_position", || {
+            overlay.set_position(tauri::LogicalPosition::new(x, y))
+        }) {
             tracing::warn!(target: "system", "position_overlay_default: set_position({}, {}) failed: {}", x, y, e);
         } else {
             if sized {
@@ -1355,7 +1374,9 @@ pub(crate) fn position_overlay_default(
             .state::<State>()
             .overlay_frame
             .lock_or_recover() = None;
-        if let Err(e) = overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h)) {
+        if let Err(e) = crate::main_thread_watch::section("overlay.set_size", || {
+            overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h))
+        }) {
             tracing::warn!(target: "system", "position_overlay_default: fallback set_size({}, {}) failed: {}", overlay_w, overlay_h, e);
         }
     }
@@ -1387,7 +1408,8 @@ pub fn show_overlay(app: tauri::AppHandle) -> Result<(), String> {
     {
         match app.get_webview_window("overlay") {
             Some(overlay) => {
-                overlay.show().map_err(|e| e.to_string())?;
+                crate::main_thread_watch::section("overlay.show", || overlay.show())
+                    .map_err(|e| e.to_string())?;
                 let layout = *app.state::<State>().overlay_layout.lock_or_recover();
                 let _ = overlay.set_ignore_cursor_events(overlay_click_through(layout));
                 // Tell the overlay it is visible so it can gate cursor polling.
@@ -1445,135 +1467,146 @@ pub async fn set_overlay_expanded(
         refresh_cached_dock_tile(&app);
         let (tx, rx) = tokio::sync::oneshot::channel();
         let dispatch_app = app.clone();
-        app.run_on_main_thread(move || {
-            let result = (|| {
-                // Resolve geometry only once this mutation reaches the native
-                // main thread. A queued display refresh may have replaced the
-                // notch/scale contract since the command was invoked.
-                let state = dispatch_app.state::<State>();
-                let notch = *state.notch_info.lock_or_recover();
-                let mut layout = *state.overlay_layout.lock_or_recover();
-                layout.expanded = expanded;
-                if let Some(activity) = activity {
-                    layout.activity = activity;
-                }
-                if let Some(placement) = placement {
-                    layout.placement = placement;
-                }
-                let geometry = geometry_for_layout(notch, content, layout);
-                if tx.is_closed() {
-                    return Err("overlay resize expired before native dispatch".to_string());
-                }
-                let applied = animation_surface(
-                    applied_surface_for(&geometry, expanded),
-                    *state.overlay_frame.lock_or_recover(),
-                    defer_shrink.unwrap_or(false),
-                );
-                // Accepted native setters update `overlay_frame` synchronously
-                // on this same main-thread queue. Prefer that authoritative
-                // target over an immediate WindowServer read, which can still
-                // report the frame preceding a queued placement/calibration.
-                let saved_frame = *state.overlay_frame.lock_or_recover();
-                let (logical_position, current_width) = match saved_frame {
-                    Some(frame) => ((frame.x, frame.y), frame.width),
-                    None => {
-                        let position = overlay
-                            .outer_position()
-                            .map_err(|error| error.to_string())?;
-                        let size = overlay.outer_size().map_err(|error| error.to_string())?;
-                        let scale = overlay.scale_factor().map_err(|error| error.to_string())?;
-                        (
-                            (position.x as f64 / scale, position.y as f64 / scale),
-                            size.width as f64 / scale,
-                        )
+        app.run_on_main_thread(crate::main_thread_watch::job(
+            "overlay.apply_geometry",
+            move || {
+                let result = (|| {
+                    // Resolve geometry only once this mutation reaches the native
+                    // main thread. A queued display refresh may have replaced the
+                    // notch/scale contract since the command was invoked.
+                    let state = dispatch_app.state::<State>();
+                    let notch = *state.notch_info.lock_or_recover();
+                    let mut layout = *state.overlay_layout.lock_or_recover();
+                    layout.expanded = expanded;
+                    if let Some(activity) = activity {
+                        layout.activity = activity;
                     }
-                };
-                let (mut x, mut y) =
-                    resized_logical_position(logical_position, current_width, applied.window_w);
-                // Placement and size are one main-thread transaction. Re-clamp
-                // on every state/hover change, including a short work area.
-                let mut calibration = None;
-                if let Some(monitor) = dispatch_app.primary_monitor().map_err(|e| e.to_string())? {
-                    let sf = monitor.scale_factor();
-                    let area = monitor.work_area();
-                    let left = area.position.x as f64 / sf;
-                    let right = left + area.size.width as f64 / sf;
-                    let frame_top = monitor.position().y as f64 / sf;
-                    let work_top = usable_top(frame_top, area.position.y as f64 / sf, notch);
-                    let bottom = (area.position.y as f64 + area.size.height as f64) / sf;
-                    let offset = state.overlay_calibration.lock_or_recover().requested_offset;
-                    let position = applied_overlay_position(offset, geometry.floating);
-                    if geometry.floating {
-                        // Bottom-anchored: width changes keep the centre, height
-                        // changes grow the hover card upward from the pill.
-                        (x, y) = pill_logical_position(
+                    if let Some(placement) = placement {
+                        layout.placement = placement;
+                    }
+                    let geometry = geometry_for_layout(notch, content, layout);
+                    if tx.is_closed() {
+                        return Err("overlay resize expired before native dispatch".to_string());
+                    }
+                    let applied = animation_surface(
+                        applied_surface_for(&geometry, expanded),
+                        *state.overlay_frame.lock_or_recover(),
+                        defer_shrink.unwrap_or(false),
+                    );
+                    // Accepted native setters update `overlay_frame` synchronously
+                    // on this same main-thread queue. Prefer that authoritative
+                    // target over an immediate WindowServer read, which can still
+                    // report the frame preceding a queued placement/calibration.
+                    let saved_frame = *state.overlay_frame.lock_or_recover();
+                    let (logical_position, current_width) = match saved_frame {
+                        Some(frame) => ((frame.x, frame.y), frame.width),
+                        None => {
+                            let position = overlay
+                                .outer_position()
+                                .map_err(|error| error.to_string())?;
+                            let size = overlay.outer_size().map_err(|error| error.to_string())?;
+                            let scale =
+                                overlay.scale_factor().map_err(|error| error.to_string())?;
                             (
-                                left,
-                                work_top,
-                                right,
-                                pill_bottom_for(&dispatch_app, &monitor),
-                            ),
-                            (applied.window_w, applied.window_h),
-                        );
-                    } else {
-                        // The notch is centred on the display frame, never the
-                        // work area. Re-derive x so a side Dock left behind by
-                        // the bottom pill cannot shift the island off the notch.
-                        (x, _) = centered_logical_position(
-                            (monitor.position().x, monitor.position().y),
-                            (monitor.size().width, monitor.size().height),
-                            sf,
-                            applied.window_w,
-                        );
-                        y = frame_top + position.applied_offset;
-                        y = y.min((bottom - applied.window_h).max(frame_top));
+                                (position.x as f64 / scale, position.y as f64 / scale),
+                                size.width as f64 / scale,
+                            )
+                        }
+                    };
+                    let (mut x, mut y) =
+                        resized_logical_position(logical_position, current_width, applied.window_w);
+                    // Placement and size are one main-thread transaction. Re-clamp
+                    // on every state/hover change, including a short work area.
+                    let mut calibration = None;
+                    if let Some(monitor) =
+                        dispatch_app.primary_monitor().map_err(|e| e.to_string())?
+                    {
+                        let sf = monitor.scale_factor();
+                        let area = monitor.work_area();
+                        let left = area.position.x as f64 / sf;
+                        let right = left + area.size.width as f64 / sf;
+                        let frame_top = monitor.position().y as f64 / sf;
+                        let work_top = usable_top(frame_top, area.position.y as f64 / sf, notch);
+                        let bottom = (area.position.y as f64 + area.size.height as f64) / sf;
+                        let offset = state.overlay_calibration.lock_or_recover().requested_offset;
+                        let position = applied_overlay_position(offset, geometry.floating);
+                        if geometry.floating {
+                            // Bottom-anchored: width changes keep the centre, height
+                            // changes grow the hover card upward from the pill.
+                            (x, y) = pill_logical_position(
+                                (
+                                    left,
+                                    work_top,
+                                    right,
+                                    pill_bottom_for(&dispatch_app, &monitor),
+                                ),
+                                (applied.window_w, applied.window_h),
+                            );
+                        } else {
+                            // The notch is centred on the display frame, never the
+                            // work area. Re-derive x so a side Dock left behind by
+                            // the bottom pill cannot shift the island off the notch.
+                            (x, _) = centered_logical_position(
+                                (monitor.position().x, monitor.position().y),
+                                (monitor.size().width, monitor.size().height),
+                                sf,
+                                applied.window_w,
+                            );
+                            y = frame_top + position.applied_offset;
+                            y = y.min((bottom - applied.window_h).max(frame_top));
+                        }
+                        calibration = Some(position);
                     }
-                    calibration = Some(position);
-                }
-                let frame = OverlayFrame {
-                    x,
-                    y,
-                    width: applied.window_w,
-                    height: applied.window_h,
-                };
-                // Most activity changes keep the same bounds (the pill never
-                // resizes). Skipping the setters avoids a WindowServer
-                // transaction, and its dropped frames, for a no-op.
-                if !frame_unchanged(saved_frame, frame) {
-                    // Never retain an authoritative old frame after a partially
-                    // successful size/position pair.
-                    *state.overlay_frame.lock_or_recover() = None;
-                    overlay
-                        .set_size(tauri::LogicalSize::new(applied.window_w, applied.window_h))
+                    let frame = OverlayFrame {
+                        x,
+                        y,
+                        width: applied.window_w,
+                        height: applied.window_h,
+                    };
+                    // Most activity changes keep the same bounds (the pill never
+                    // resizes). Skipping the setters avoids a WindowServer
+                    // transaction, and its dropped frames, for a no-op.
+                    if !frame_unchanged(saved_frame, frame) {
+                        // Never retain an authoritative old frame after a partially
+                        // successful size/position pair.
+                        *state.overlay_frame.lock_or_recover() = None;
+                        crate::main_thread_watch::section("overlay.set_size", || {
+                            overlay.set_size(tauri::LogicalSize::new(
+                                applied.window_w,
+                                applied.window_h,
+                            ))
+                        })
                         .map_err(|error| error.to_string())?;
-                    overlay
-                        .set_position(tauri::LogicalPosition::new(x, y))
+                        crate::main_thread_watch::section("overlay.set_position", || {
+                            overlay.set_position(tauri::LogicalPosition::new(x, y))
+                        })
                         .map_err(|error| error.to_string())?;
-                }
-                if let Some(position) = calibration {
-                    // Publish effective bounds only after both setters succeed,
-                    // so an open calibration sheet follows placement changes.
-                    remember_overlay_position(&dispatch_app, frame, position);
-                } else {
-                    remember_overlay_frame(&dispatch_app, frame);
-                }
-                *state.overlay_layout.lock_or_recover() = layout;
-                let _ = overlay.set_ignore_cursor_events(overlay_click_through(layout));
-                // The material re-fits in this same main-thread turn, so the
-                // grown or shrunk window never shows it off-centre for a frame.
-                if layout.placement == OverlayPlacement::FloatingPill {
-                    crate::commands::overlay_material::refit(&dispatch_app, OVERLAY_MATERIAL);
-                } else {
-                    crate::commands::overlay_material::remove_all();
-                }
-                follow_dictation_preview(&dispatch_app);
-                // Emitted only after native setters succeed; the webview can
-                // never reveal a larger surface before its native grow ack.
-                let _ = dispatch_app.emit("overlay-surface-changed", geometry);
-                Ok(applied)
-            })();
-            let _ = tx.send(result);
-        })
+                    }
+                    if let Some(position) = calibration {
+                        // Publish effective bounds only after both setters succeed,
+                        // so an open calibration sheet follows placement changes.
+                        remember_overlay_position(&dispatch_app, frame, position);
+                    } else {
+                        remember_overlay_frame(&dispatch_app, frame);
+                    }
+                    *state.overlay_layout.lock_or_recover() = layout;
+                    let _ = overlay.set_ignore_cursor_events(overlay_click_through(layout));
+                    // The material re-fits in this same main-thread turn, so the
+                    // grown or shrunk window never shows it off-centre for a frame.
+                    if layout.placement == OverlayPlacement::FloatingPill {
+                        crate::commands::overlay_material::refit(&dispatch_app, OVERLAY_MATERIAL);
+                    } else {
+                        crate::commands::overlay_material::remove_all();
+                    }
+                    follow_dictation_preview(&dispatch_app);
+                    // Emitted only after native setters succeed; the webview can
+                    // never reveal a larger surface before its native grow ack.
+                    let _ = dispatch_app.emit("overlay-surface-changed", geometry);
+                    Ok(applied)
+                })();
+                let _ = tx.send(result);
+            },
+        ))
         .map_err(|error| error.to_string())?;
         tokio::time::timeout(std::time::Duration::from_secs(2), rx)
             .await
@@ -1614,80 +1647,88 @@ pub async fn set_overlay_vertical_offset(
         let overlay_to_move = overlay.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let dispatch_app = app.clone();
-        app.run_on_main_thread(move || {
-            let result = (|| {
-                let monitor = dispatch_app
-                    .primary_monitor()
-                    .map_err(|error| error.to_string())?
-                    .or_else(|| overlay_to_move.current_monitor().ok().flatten())
-                    .ok_or_else(|| "no monitor available".to_string())?;
-                let position = monitor.position();
-                let size = monitor.size();
-                let scale_factor = monitor.scale_factor();
-                let monitor_position = (position.x, position.y);
-                let monitor_size = (size.width, size.height);
-                let area = monitor.work_area();
-                let notch = *dispatch_app.state::<State>().notch_info.lock_or_recover();
-                let floating = dispatch_app
-                    .state::<State>()
-                    .overlay_layout
-                    .lock_or_recover()
-                    .placement
-                    == OverlayPlacement::FloatingPill;
-                let current_scale = overlay_to_move
-                    .scale_factor()
-                    .map_err(|error| error.to_string())?;
-                let current_size = overlay_to_move
-                    .outer_size()
-                    .map_err(|error| error.to_string())?;
-                let width = current_size.width as f64 / current_scale;
-                let height = current_size.height as f64 / current_scale;
-                let (centered_x, top_y) =
-                    centered_logical_position(monitor_position, monitor_size, scale_factor, width);
-                let work_left = area.position.x as f64 / scale_factor;
-                let work_top = usable_top(top_y, area.position.y as f64 / scale_factor, notch);
-                let work_right = work_left + area.size.width as f64 / scale_factor;
-                let applied = applied_overlay_position(offset, floating);
-                let (x, y) = if floating {
-                    pill_logical_position(
-                        (
-                            work_left,
-                            work_top,
-                            work_right,
-                            pill_bottom_for(&dispatch_app, &monitor),
-                        ),
-                        (width, height),
-                    )
-                } else {
-                    (centered_x, top_y + applied.applied_offset)
-                };
-                overlay_to_move
-                    .set_position(tauri::LogicalPosition::new(x, y))
-                    .map_err(|error| error.to_string())?;
-                remember_overlay_position(
-                    &dispatch_app,
-                    OverlayFrame {
-                        x,
-                        y,
+        app.run_on_main_thread(crate::main_thread_watch::job(
+            "overlay.set_vertical_offset",
+            move || {
+                let result = (|| {
+                    let monitor = dispatch_app
+                        .primary_monitor()
+                        .map_err(|error| error.to_string())?
+                        .or_else(|| overlay_to_move.current_monitor().ok().flatten())
+                        .ok_or_else(|| "no monitor available".to_string())?;
+                    let position = monitor.position();
+                    let size = monitor.size();
+                    let scale_factor = monitor.scale_factor();
+                    let monitor_position = (position.x, position.y);
+                    let monitor_size = (size.width, size.height);
+                    let area = monitor.work_area();
+                    let notch = *dispatch_app.state::<State>().notch_info.lock_or_recover();
+                    let floating = dispatch_app
+                        .state::<State>()
+                        .overlay_layout
+                        .lock_or_recover()
+                        .placement
+                        == OverlayPlacement::FloatingPill;
+                    let current_scale = overlay_to_move
+                        .scale_factor()
+                        .map_err(|error| error.to_string())?;
+                    let current_size = overlay_to_move
+                        .outer_size()
+                        .map_err(|error| error.to_string())?;
+                    let width = current_size.width as f64 / current_scale;
+                    let height = current_size.height as f64 / current_scale;
+                    let (centered_x, top_y) = centered_logical_position(
+                        monitor_position,
+                        monitor_size,
+                        scale_factor,
                         width,
-                        height,
-                    },
-                    applied,
-                );
-                follow_dictation_preview(&dispatch_app);
-                Ok::<_, String>((
-                    (
-                        (x * scale_factor).round() as i32,
-                        (y * scale_factor).round() as i32,
-                    ),
-                    applied,
-                    position.x,
-                    position.y,
-                    scale_factor,
-                ))
-            })();
-            let _ = tx.send(result);
-        })
+                    );
+                    let work_left = area.position.x as f64 / scale_factor;
+                    let work_top = usable_top(top_y, area.position.y as f64 / scale_factor, notch);
+                    let work_right = work_left + area.size.width as f64 / scale_factor;
+                    let applied = applied_overlay_position(offset, floating);
+                    let (x, y) = if floating {
+                        pill_logical_position(
+                            (
+                                work_left,
+                                work_top,
+                                work_right,
+                                pill_bottom_for(&dispatch_app, &monitor),
+                            ),
+                            (width, height),
+                        )
+                    } else {
+                        (centered_x, top_y + applied.applied_offset)
+                    };
+                    crate::main_thread_watch::section("overlay.set_position", || {
+                        overlay_to_move.set_position(tauri::LogicalPosition::new(x, y))
+                    })
+                    .map_err(|error| error.to_string())?;
+                    remember_overlay_position(
+                        &dispatch_app,
+                        OverlayFrame {
+                            x,
+                            y,
+                            width,
+                            height,
+                        },
+                        applied,
+                    );
+                    follow_dictation_preview(&dispatch_app);
+                    Ok::<_, String>((
+                        (
+                            (x * scale_factor).round() as i32,
+                            (y * scale_factor).round() as i32,
+                        ),
+                        applied,
+                        position.x,
+                        position.y,
+                        scale_factor,
+                    ))
+                })();
+                let _ = tx.send(result);
+            },
+        ))
         .map_err(|error| error.to_string())?;
         let ((x, y), applied, monitor_x, monitor_y, scale_factor) =
             tokio::time::timeout(std::time::Duration::from_secs(2), rx)
@@ -1737,7 +1778,8 @@ pub async fn set_overlay_vertical_offset(
 pub fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
     match app.get_webview_window("main") {
         Some(window) => {
-            window.show().map_err(|e| e.to_string())?;
+            crate::main_thread_watch::section("main_window.show", || window.show())
+                .map_err(|e| e.to_string())?;
             window.set_focus().map_err(|e| e.to_string())
         }
         None => {
@@ -1752,7 +1794,8 @@ pub fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
 pub fn hide_overlay(app: tauri::AppHandle) -> Result<(), String> {
     match app.get_webview_window("overlay") {
         Some(overlay) => {
-            overlay.hide().map_err(|e| e.to_string())?;
+            crate::main_thread_watch::section("overlay.hide", || overlay.hide())
+                .map_err(|e| e.to_string())?;
             // Tell the overlay it is hidden so it can stop cursor polling.
             let _ = app.emit("overlay-visible-changed", false);
             Ok(())

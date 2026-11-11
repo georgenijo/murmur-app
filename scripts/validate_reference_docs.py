@@ -19,8 +19,12 @@ COUNT_DOCS = (
 
 
 def registered_commands(lib_rs: str) -> list[str]:
+    # The handler may be wrapped by the main-thread diagnostics instrument,
+    # which times each command without changing the registered set.
     handler = re.search(
-        r"\.invoke_handler\(tauri::generate_handler!\[(?P<body>.*?)\]\)",
+        r"\.invoke_handler\("
+        r"(?:main_thread_watch::instrument_invoke_handler\()?"
+        r"tauri::generate_handler!\[(?P<body>.*?)\]\)",
         lib_rs,
         re.S,
     )

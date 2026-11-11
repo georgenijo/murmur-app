@@ -186,9 +186,12 @@ pub(crate) async fn retry_last_delivery(
         // destination app and prove its currently editable field afresh.
         let (sender, receiver) = tokio::sync::oneshot::channel();
         app_handle
-            .run_on_main_thread(move || {
-                let _ = sender.send(crate::frontmost::capture_delivery_target_snapshot());
-            })
+            .run_on_main_thread(crate::main_thread_watch::job(
+                "delivery_recovery.capture_target",
+                move || {
+                    let _ = sender.send(crate::frontmost::capture_delivery_target_snapshot());
+                },
+            ))
             .map_err(|error| error.to_string())?;
         let current =
             match tokio::time::timeout(std::time::Duration::from_millis(250), receiver).await {
@@ -230,22 +233,28 @@ pub(crate) async fn retry_last_delivery(
         let _cancel_preparation = CancelOnDrop(&preparation_authority);
         let preparation_worker = preparation_authority.clone();
         app_handle
-            .run_on_main_thread(move || {
-                let _worker = worker;
-                if sender.is_closed() || !preparation_worker.is_current() {
-                    return;
-                }
-                let state = prepare_app.state::<State>();
-                let dictation = state.app_state.dictation.lock_or_recover();
-                let outcome = if dictation.status == crate::state::DictationStatus::Idle
-                    && state.app_state.recording_id.load(Ordering::SeqCst) == retry_generation
-                {
-                    crate::smart_destination::prepare_focused(&preparing, Some(&preparation_worker))
-                } else {
-                    crate::smart_destination::PrepareOutcome::Refused
-                };
-                let _ = sender.send(outcome);
-            })
+            .run_on_main_thread(crate::main_thread_watch::job(
+                "delivery_recovery.prepare",
+                move || {
+                    let _worker = worker;
+                    if sender.is_closed() || !preparation_worker.is_current() {
+                        return;
+                    }
+                    let state = prepare_app.state::<State>();
+                    let dictation = state.app_state.dictation.lock_or_recover();
+                    let outcome = if dictation.status == crate::state::DictationStatus::Idle
+                        && state.app_state.recording_id.load(Ordering::SeqCst) == retry_generation
+                    {
+                        crate::smart_destination::prepare_focused(
+                            &preparing,
+                            Some(&preparation_worker),
+                        )
+                    } else {
+                        crate::smart_destination::PrepareOutcome::Refused
+                    };
+                    let _ = sender.send(outcome);
+                },
+            ))
             .map_err(|error| error.to_string())?;
         let reply = match tokio::time::timeout(std::time::Duration::from_secs(1), receiver).await {
             Ok(Ok(reply)) => Some(reply),
@@ -268,10 +277,13 @@ pub(crate) async fn retry_last_delivery(
         if reply != Some(crate::smart_destination::PrepareOutcome::Ready) {
             let abandoned = latest.smart_destination.clone();
             let worker = work.clone();
-            let _ = app_handle.run_on_main_thread(move || {
-                let _worker = worker;
-                crate::smart_destination::abort(&abandoned, None);
-            });
+            let _ = app_handle.run_on_main_thread(crate::main_thread_watch::job(
+                "delivery_recovery.abort",
+                move || {
+                    let _worker = worker;
+                    crate::smart_destination::abort(&abandoned, None);
+                },
+            ));
             latest.smart_destination = preparation_fallback(&latest.smart_destination, reply);
         }
     }
@@ -279,30 +291,33 @@ pub(crate) async fn retry_last_delivery(
     let retry_app = app_handle.clone();
     let worker = work.clone();
     app_handle
-        .run_on_main_thread(move || {
-            let state = retry_app.state::<State>();
-            let dictation = state.app_state.dictation.lock_or_recover();
-            if dictation.status != crate::state::DictationStatus::Idle
-                || state.app_state.recording_id.load(Ordering::SeqCst) != retry_generation
-            {
+        .run_on_main_thread(crate::main_thread_watch::job(
+            "delivery_recovery.retry_inject",
+            move || {
+                let state = retry_app.state::<State>();
+                let dictation = state.app_state.dictation.lock_or_recover();
+                if dictation.status != crate::state::DictationStatus::Idle
+                    || state.app_state.recording_id.load(Ordering::SeqCst) != retry_generation
+                {
+                    crate::smart_destination::abort(&latest.smart_destination, None);
+                    let _ = tx.send(None);
+                    return;
+                }
+                // Routes on the snapshot itself: Disabled uses legacy normal paste,
+                // Unverified uses normal paste with the secure-field veto, and a
+                // fresh smart Target uses its one-shot capability.
+                let attempt = injector::inject_with_destination_authorized(
+                    &latest.text,
+                    true,
+                    latest.delay_ms,
+                    &latest.target,
+                    &latest.smart_destination,
+                    Some(worker.attempt()),
+                );
                 crate::smart_destination::abort(&latest.smart_destination, None);
-                let _ = tx.send(None);
-                return;
-            }
-            // Routes on the snapshot itself: Disabled uses legacy normal paste,
-            // Unverified uses normal paste with the secure-field veto, and a
-            // fresh smart Target uses its one-shot capability.
-            let attempt = injector::inject_with_destination_authorized(
-                &latest.text,
-                true,
-                latest.delay_ms,
-                &latest.target,
-                &latest.smart_destination,
-                Some(worker.attempt()),
-            );
-            crate::smart_destination::abort(&latest.smart_destination, None);
-            let _ = tx.send(Some(attempt));
-        })
+                let _ = tx.send(Some(attempt));
+            },
+        ))
         .map_err(|error| error.to_string())?;
 
     let received = tokio::time::timeout(std::time::Duration::from_secs(2), rx).await;
