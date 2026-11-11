@@ -32,7 +32,7 @@ for (const appearance of ['light', 'dark'] as const) {
       await page.emulateMedia({ colorScheme: appearance, reducedMotion: 'reduce' });
       await page.goto(`/visual-fixtures.html?state=settings-appearance&appearance=${appearance}`);
       await expect(page.locator('.settings-appearance-mode')).toHaveCSS('border-radius', '12px');
-      await expect(page.locator('.settings-segmented')).toHaveCSS('height', '34px');
+      await expect(page.locator('.settings-segmented')).toHaveCSS('height', '32px');
       await expect(page.locator('.settings-segmented-btn').first()).toHaveCSS('border-radius', '8px');
       const initialShowing = page.locator('.settings-theme-variant[data-showing-now]');
       await expect(initialShowing).toHaveCount(1);
