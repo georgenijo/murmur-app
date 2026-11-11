@@ -35,6 +35,7 @@ import { Select } from '../ui/Select';
 import { useSettingsSurfaceActive } from './SettingsSurfaceContext';
 import { SettingsBranch } from './SettingsBranch';
 import AnimatedSwitch from '../ui/animated-switch/animated-switch';
+import { Button } from '../ui/FormControls';
 
 // The start command currently returns this plain string for dictation contention.
 const DICTATION_BUSY_ERROR = 'Finish the current dictation before testing the microphone';
@@ -881,14 +882,15 @@ export function MicrophoneInputTest({
           {helperText}
         </p>
         {suspensionReason !== null && status.previewId === null && monitoringActive && (
-          <button
+          <Button
             type="button"
-            className="mt-2 rounded-lg border border-outline-variant px-2 py-1 text-xs text-on-surface disabled:opacity-50"
+            size="sm"
+            className="mt-2"
             disabled={busy || dictationBusy || !ready || !inventoryAvailable}
             onClick={retryPreview}
           >
             Retry microphone preview
-          </button>
+          </Button>
         )}
       </div>
     </div>

@@ -4,6 +4,8 @@ import type { VocabularyEntry, VoiceCommand } from '../../lib/settings';
 import { previewVocabularyAliases } from '../../lib/dictation';
 import { validateVocabularyEntries } from '../../lib/vocabulary';
 import { VocabularyFileActions } from './VocabularyFileActions';
+import { Button, Input } from '../ui/FormControls';
+import AnimatedSwitch from '../ui/animated-switch/animated-switch';
 
 function newEntryId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `vocabulary-${Date.now()}-${Math.random()}`;
@@ -82,13 +84,15 @@ export function VocabularyAliasesEditor({
             For reliable replacement, enter the words Murmur actually hears on the left. Separate variants with commas.
           </p>
         </div>
-        <button
+        <Button
           type="button"
           onClick={addEntry}
-          className="shrink-0 rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-1.5 text-xs font-medium text-on-primary hover:brightness-110"
+          variant="primary"
+          size="sm"
+          className="shrink-0"
         >
           + Add spelling
-        </button>
+        </Button>
       </div>
 
       <VocabularyFileActions
@@ -105,8 +109,8 @@ export function VocabularyAliasesEditor({
         </div>
       ) : (
         <div className="settings-card mt-3 overflow-hidden">
-          <div className="grid grid-cols-[minmax(0,1fr)_20px_minmax(0,1fr)_120px] items-center gap-2 border-b border-outline-variant/30 bg-surface-container-low px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">
-            <span>Murmur hears <span className="font-normal normal-case tracking-normal">(optional)</span></span>
+          <div className="settings-vocabulary-alias-grid grid items-center gap-2 border-b border-outline-variant/30 bg-surface-container-low px-3 py-2 text-[length:var(--ui-font-micro)] font-medium text-on-surface-variant">
+            <span>Murmur hears <span className="font-normal">(optional)</span></span>
             <span aria-hidden="true" />
             <span>Murmur types</span>
             <span className="sr-only">Actions</span>
@@ -119,9 +123,9 @@ export function VocabularyAliasesEditor({
             {draft.map((entry, index) => (
               <div
                 key={entry.id}
-                className={`grid grid-cols-[minmax(0,1fr)_20px_minmax(0,1fr)_120px] items-center gap-2 px-3 py-2 ${entry.enabled ? '' : 'bg-surface-container-low opacity-60'}`}
+                className={`settings-vocabulary-alias-grid grid items-center gap-2 px-3 py-2 ${entry.enabled ? '' : 'bg-surface-container-low opacity-60'}`}
               >
-                <input
+                <Input
                   aria-label={`Spoken aliases for ${entry.written || `term ${index + 1}`}`}
                   value={entry.aliases.join(', ')}
                   onChange={(event) => patchEntry(index, {
@@ -133,7 +137,7 @@ export function VocabularyAliasesEditor({
                   autoComplete="off"
                   autoCorrect="off"
                   spellCheck={false}
-                  className="min-w-0 rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2.5 py-1.5 text-xs text-on-surface placeholder:text-on-surface-variant/70 focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="min-w-0"
                 />
                 <svg
                   aria-hidden="true"
@@ -145,7 +149,7 @@ export function VocabularyAliasesEditor({
                 >
                   <path d="M3 10h13m-4-4 4 4-4 4" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-                <input
+                <Input
                   aria-label={`Written form ${index + 1}`}
                   value={entry.written}
                   onChange={(event) => patchEntry(index, { written: event.target.value })}
@@ -153,20 +157,16 @@ export function VocabularyAliasesEditor({
                   autoComplete="off"
                   autoCorrect="off"
                   spellCheck={false}
-                  className="min-w-0 rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-2.5 py-1.5 text-xs font-medium text-on-surface placeholder:font-normal placeholder:text-on-surface-variant/70 focus:outline-none focus:ring-2 focus:ring-primary"
+                  className="min-w-0 font-medium"
                 />
                 <div className="flex items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    role="switch"
+                  <AnimatedSwitch
                     aria-label={`${entry.enabled ? 'Disable' : 'Enable'} ${entry.written || `term ${index + 1}`}`}
-                    aria-checked={entry.enabled}
                     title={entry.enabled ? 'Turn off' : 'Turn on'}
-                    onClick={() => patchEntry(index, { enabled: !entry.enabled })}
-                    className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full ${entry.enabled ? 'bg-primary' : 'bg-surface-container-highest'}`}
-                  >
-                    <span className={`inline-block h-3.5 w-3.5 rounded-full shadow transition-transform ${entry.enabled ? 'translate-x-4 bg-on-primary' : 'translate-x-1 bg-on-surface-variant'}`} />
-                  </button>
+                    checked={entry.enabled}
+                    onCheckedChange={() => patchEntry(index, { enabled: !entry.enabled })}
+                    size="sm"
+                  />
                   <ConfirmActionButton key={entry.id} label="Delete" confirmLabel="Confirm" aria-label={`Delete ${entry.written || `term ${index + 1}`}`} onConfirm={() => update(draft.filter((_, entryIndex) => entryIndex !== index))} className="rounded p-1 text-xs text-error hover:bg-error/10" />
                 </div>
               </div>
@@ -201,25 +201,25 @@ export function VocabularyAliasesEditor({
             <div className="flex items-center justify-between gap-3">
               <p className="text-[11px] text-on-surface-variant">Runs locally in memory. Nothing is copied or logged.</p>
               <label className="flex shrink-0 items-center gap-2 text-[11px] text-on-surface-variant">
-                <input type="checkbox" checked={includeCli} onChange={(event) => setIncludeCli(event.target.checked)} />
+                <AnimatedSwitch aria-label="Include CLI formatting" checked={includeCli} onCheckedChange={setIncludeCli} size="sm" />
                 Include CLI formatting
               </label>
             </div>
             <div className="mt-2 flex gap-2">
-              <input
+              <Input
                 aria-label="Alias preview input"
                 value={previewInput}
                 onChange={(event) => { setPreviewInput(event.target.value); setPreviewOutput(''); }}
-                className="min-w-0 flex-1 rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-xs text-on-surface focus:outline-none focus:ring-2 focus:ring-primary"
+                className="min-w-0 flex-1"
               />
-              <button
+              <Button
                 type="button"
                 disabled={previewing || !previewInput.trim()}
                 onClick={() => void runPreview()}
-                className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-medium text-on-surface disabled:opacity-50"
+                size="sm"
               >
                 {previewing ? 'Testing…' : 'Test'}
-              </button>
+              </Button>
             </div>
             {previewOutput && (
               <output aria-label="Alias preview output" className="mt-2 block rounded-lg bg-surface-container px-3 py-2 font-mono text-xs text-on-surface">

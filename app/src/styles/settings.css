@@ -121,11 +121,26 @@
 }
 
 .settings-eyebrow {
-  font-size: 10px;
-  font-weight: var(--ui-weight-title, 600);
+  font-size: var(--ui-font-micro);
+  font-weight: var(--ui-weight-label, 500);
   letter-spacing: 0;
-  text-transform: uppercase;
   color: var(--murmur-on-surface-variant);
+}
+
+.settings-scanned-vocabulary-grid {
+  grid-template-columns: 48px minmax(0, 1fr) 90px 180px;
+}
+
+.settings-scanned-vocabulary-row {
+  font-size: var(--ui-font-label);
+}
+
+.settings-scanned-vocabulary-feed {
+  font-size: var(--ui-font-caption);
+}
+
+.settings-vocabulary-alias-grid {
+  grid-template-columns: minmax(0, 1fr) 20px minmax(0, 1fr) 120px;
 }
 
 .settings-back-btn:hover {

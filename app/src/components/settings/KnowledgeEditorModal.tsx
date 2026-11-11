@@ -8,6 +8,9 @@ import type {
   KnowledgePayload,
   KnowledgeScope,
 } from '../../lib/knowledge';
+import { Button, Input } from '../ui/FormControls';
+import { Select } from '../ui/Select';
+import AnimatedSwitch from '../ui/animated-switch/animated-switch';
 
 interface Props {
   entry: KnowledgeEntry | null;
@@ -35,7 +38,6 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const dialogRef = useRef<HTMLDivElement>(null);
-  const firstRef = useRef<HTMLSelectElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   // Save is this dialog's default button; read through a ref so the
@@ -67,7 +69,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
       }
     };
     document.addEventListener('keydown', onKey);
-    const timer = window.setTimeout(() => firstRef.current?.focus(), 40);
+    const timer = window.setTimeout(() => dialogRef.current?.querySelector<HTMLElement>('[role="combobox"]')?.focus(), 40);
     return () => {
       document.removeEventListener('keydown', onKey);
       window.clearTimeout(timer);
@@ -135,7 +137,7 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
     if (!saving) void submit();
   };
 
-  const inputClass = 'w-full rounded-(--ui-radius-control) border-(--ui-hairline) bg-(--ui-tint-raised) px-3 py-2 text-sm text-on-surface outline-none focus:border-primary focus:ring-1 focus:ring-primary';
+  const inputClass = 'mt-1';
 
   return (
     <div
@@ -164,26 +166,22 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
         <div className="space-y-4">
           <label className="block text-xs font-medium text-on-surface">
             Type
-            <select
-              ref={firstRef}
+            <Select
               value={payload.kind}
-              onChange={(event) => changeKind(event.target.value as KnowledgeKind)}
+              onChange={(value) => changeKind(value as KnowledgeKind)}
               disabled={Boolean(entry)}
-              className={`${inputClass} mt-1`}
-            >
-              <option value="replacement_rule">Replacement rule</option>
-              <option value="vocabulary_term">Vocabulary term</option>
-              <option value="snippet">Snippet</option>
-            </select>
+              aria-label="Knowledge type"
+              items={[{ value: 'replacement_rule', label: 'Replacement rule' }, { value: 'vocabulary_term', label: 'Vocabulary term' }, { value: 'snippet', label: 'Snippet' }]}
+            />
           </label>
 
           {payload.kind === 'replacement_rule' && (
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="text-xs font-medium text-on-surface">Heard phrase
-                <input aria-label="Heard phrase" value={payload.source} onChange={(event) => setPayload({ ...payload, source: event.target.value })} className={`${inputClass} mt-1`} maxLength={256} />
+                <Input aria-label="Heard phrase" value={payload.source} onChange={(event) => setPayload({ ...payload, source: event.target.value })} className={inputClass} maxLength={256} />
               </label>
               <label className="text-xs font-medium text-on-surface">Replacement
-                <input aria-label="Replacement" value={payload.replacement} onChange={(event) => setPayload({ ...payload, replacement: event.target.value })} className={`${inputClass} mt-1`} maxLength={4096} />
+                <Input aria-label="Replacement" value={payload.replacement} onChange={(event) => setPayload({ ...payload, replacement: event.target.value })} className={inputClass} maxLength={4096} />
               </label>
             </div>
           )}
@@ -212,27 +210,23 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
 
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="text-xs font-medium text-on-surface">Visibility
-              <select value={scope.kind} onChange={(event) => setScope((current) => ({ ...current, kind: event.target.value as KnowledgeScope['kind'] }))} className={`${inputClass} mt-1`}>
-                <option value="global">All apps</option>
-                <option value="app">One app</option>
-                <option value="project">One project in one app</option>
-              </select>
+              <Select aria-label="Knowledge visibility" value={scope.kind} onChange={(value) => setScope((current) => ({ ...current, kind: value as KnowledgeScope['kind'] }))} items={[{ value: 'global', label: 'All apps' }, { value: 'app', label: 'One app' }, { value: 'project', label: 'One project in one app' }]} />
             </label>
             {scope.kind !== 'global' && (
               <label className="text-xs font-medium text-on-surface">App bundle ID
-                <input list="knowledge-profile-ids" aria-label="App bundle ID" value={scope.bundleId} onChange={(event) => setScope((current) => ({ ...current, bundleId: event.target.value }))} className={`${inputClass} mt-1 font-mono`} placeholder="com.apple.Terminal" />
+                <Input list="knowledge-profile-ids" aria-label="App bundle ID" value={scope.bundleId} onChange={(event) => setScope((current) => ({ ...current, bundleId: event.target.value }))} className={inputClass} placeholder="com.apple.Terminal" />
                 <datalist id="knowledge-profile-ids">{profiles.map((profile) => <option key={profile.bundleId} value={profile.bundleId}>{profile.label}</option>)}</datalist>
               </label>
             )}
           </div>
           {scope.kind === 'project' && (
             <label className="block text-xs font-medium text-on-surface">Project root
-              <input aria-label="Project root" value={scope.root} onChange={(event) => setScope((current) => ({ ...current, root: event.target.value }))} className={`${inputClass} mt-1 font-mono`} placeholder="/Users/me/code/project" />
+              <Input aria-label="Project root" value={scope.root} onChange={(event) => setScope((current) => ({ ...current, root: event.target.value }))} className={inputClass} placeholder="/Users/me/code/project" />
             </label>
           )}
 
           <label className="flex items-center gap-2 text-sm text-on-surface">
-            <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} className="accent-primary" />
+            <AnimatedSwitch aria-label="Make this entry available to features that use it" checked={enabled} onCheckedChange={setEnabled} size="sm" />
             Make this entry available to features that use it
           </label>
 
@@ -245,8 +239,8 @@ export function KnowledgeEditorModal({ entry, profiles, onClose, onSave }: Props
           {error && <p role="alert" className="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">{error}</p>}
 
           <div className="flex justify-end gap-2 border-t border-outline-variant/25 pt-4">
-            <button type="button" onClick={onClose} className="rounded-lg border border-outline-variant/40 px-3 py-2 text-xs font-medium text-on-surface-variant hover:bg-surface-container">Cancel</button>
-            <button type="button" onClick={() => void submit()} data-default-button disabled={saving} className="rounded-(--ui-radius-pill) bg-primary shadow-(--ui-shadow-accent) px-3 py-2 text-xs font-semibold text-on-primary hover:bg-primary-dim disabled:opacity-50">{saving ? 'Saving…' : 'Save knowledge'}</button>
+            <Button type="button" size="sm" onClick={onClose}>Cancel</Button>
+            <Button type="button" variant="primary" size="sm" onClick={() => void submit()} data-default-button disabled={saving}>{saving ? 'Saving…' : 'Save knowledge'}</Button>
           </div>
         </div>
       </div>
