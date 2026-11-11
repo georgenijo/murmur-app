@@ -117,6 +117,45 @@ fn check_automatic_probe(deadline: Option<u64>) -> Result<(), FailureCode> {
     }
 }
 
+/// `StartPreauthorized` capture may only run under a grant that already
+/// exists; it never asks for one.
+fn check_preauthorized(
+    preauthorized: bool,
+    granted: impl FnOnce() -> bool,
+) -> Result<(), FailureCode> {
+    if preauthorized && !granted() {
+        Err(FailureCode::PermissionDenied)
+    } else {
+        Ok(())
+    }
+}
+
+/// Setup brackets at which native code first touches the input device: AUHAL
+/// binding it, CPAL opening its stream, and either backend starting IO. A
+/// `StartPreauthorized` grant is re-checked on entering each one, in addition
+/// to the check immediately before setup begins. Earlier brackets (device
+/// resolution, output-unit creation and initialization) never open input and
+/// cannot present a TCC prompt.
+fn setup_touches_input(observation: &MicrophoneSetupObservation) -> bool {
+    matches!(
+        observation,
+        MicrophoneSetupObservation::Step(
+            CaptureSetupStep::SetCurrentDevice
+                | CaptureSetupStep::StreamBuild
+                | CaptureSetupStep::StreamStart,
+            SetupTransition::Entered,
+        )
+    )
+}
+
+fn check_capture_authorization(
+    automatic_deadline: Option<u64>,
+    preauthorized: bool,
+) -> Result<(), FailureCode> {
+    check_automatic_probe(automatic_deadline)?;
+    check_preauthorized(preauthorized, microphone_authorization_granted)
+}
+
 fn spawn_automatic_probe_watchdog(deadline_ns: u64) -> Result<(), ()> {
     std::thread::Builder::new()
         .name("automatic-probe-deadline".into())
@@ -2501,6 +2540,56 @@ mod tests {
     }
 
     #[test]
+    fn preauthorized_grant_is_rechecked_only_where_setup_touches_input() {
+        use CaptureSetupStep::*;
+        let entered = |step| MicrophoneSetupObservation::Step(step, SetupTransition::Entered);
+        let completed = |step| MicrophoneSetupObservation::Step(step, SetupTransition::Completed);
+        for step in [SetCurrentDevice, StreamBuild, StreamStart] {
+            assert!(setup_touches_input(&entered(step)), "{step:?}");
+            assert!(!setup_touches_input(&completed(step)), "{step:?}");
+        }
+        // Natively these ~5 ms TCC queries ran before every bracket and added
+        // ~100 ms to key-down capture startup.
+        for step in [
+            DeviceResolution,
+            AudioUnitCreation,
+            AudioUnitNew,
+            AudioUnitInit,
+            EnableInputIo,
+            DisableOutputIo,
+            FormatConfiguration,
+            CallbackInstallation,
+            DefaultConfig,
+            AwaitingFirstCallback,
+        ] {
+            assert!(!setup_touches_input(&entered(step)), "{step:?}");
+        }
+    }
+
+    #[test]
+    fn preauthorized_start_refuses_a_grant_lost_after_the_host_checked() {
+        use super::*;
+        // Granted when the command arrived, then TCC reset to notDetermined
+        // before native capture creation: the second check refuses.
+        let checks = std::cell::Cell::new(0);
+        let next = || {
+            checks.set(checks.get() + 1);
+            checks.get() == 1
+        };
+        assert_eq!(check_preauthorized(true, next), Ok(()));
+        assert_eq!(
+            check_preauthorized(true, next),
+            Err(FailureCode::PermissionDenied)
+        );
+        // Ordinary interactive Start never consults the grant here; it keeps
+        // its existing prompt behavior.
+        assert_eq!(
+            check_preauthorized(false, || panic!("interactive start must not be gated")),
+            Ok(())
+        );
+    }
+
+    #[test]
     fn automatic_probe_requires_grant_and_unexpired_bounded_lease() {
         use super::*;
         assert!(automatic_probe_allowed(10, Some(1), true));
@@ -3471,7 +3560,7 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
         nonce,
         PassiveInput::lookup,
     )?;
-    let (command, automatic_deadline) = match command {
+    let (command, automatic_deadline, preauthorized) = match command {
         ProductionHostMessage::StartAutomaticProbe {
             device_id,
             backend,
@@ -3485,9 +3574,15 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                     backend,
                 },
                 Some(deadline_ns),
+                false,
             )
         }
-        command => (command, None),
+        ProductionHostMessage::StartPreauthorized { device_id, backend } => (
+            ProductionHostMessage::Start { device_id, backend },
+            None,
+            true,
+        ),
+        command => (command, None, false),
     };
     match command {
         ProductionHostMessage::Enumerate => {
@@ -3544,7 +3639,24 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                     let _ = control_tx.send(message);
                 }
             });
-            check_automatic_probe(automatic_deadline).map_err(|_| ())?;
+            if let Err(code) = check_capture_authorization(automatic_deadline, preauthorized) {
+                if !preauthorized {
+                    return Err(());
+                }
+                // Typed refusal, so the host never treats it as a prompt.
+                write_production_control(
+                    &mut stdout,
+                    capture_id,
+                    nonce,
+                    &ProductionHelperMessage::Failure {
+                        code,
+                        backend,
+                        retained_samples: 0,
+                    },
+                )
+                .map_err(|_| ())?;
+                return Ok(());
+            }
             write_production_control(
                 &mut stdout,
                 capture_id,
@@ -3565,6 +3677,11 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
             let started = {
                 let mut emit_setup = |observation: MicrophoneSetupObservation| {
                     check_automatic_probe(automatic_deadline)?;
+                    // A TCC status query costs ~5 ms; run it only where native
+                    // setup touches the input, not before every bracket.
+                    if setup_touches_input(&observation) {
+                        check_preauthorized(preauthorized, microphone_authorization_granted)?;
+                    }
                     let message = match observation {
                         MicrophoneSetupObservation::Step(step, transition) => {
                             ProductionHelperMessage::SetupStep {
@@ -3587,20 +3704,25 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                     write_production_control(&mut stdout, capture_id, nonce, &message)
                         .map_err(|_| FailureCode::Internal)
                 };
-                match backend {
-                    CaptureBackend::Cpal => start_cpal(
-                        device_id.as_deref(),
-                        Arc::clone(&ring),
-                        Arc::clone(&failed),
-                        &mut emit_setup,
-                    ),
-                    CaptureBackend::Auhal => start_auhal_resolved(
-                        device_id.as_deref(),
-                        Arc::clone(&ring),
-                        None,
-                        &mut emit_setup,
-                        prepared_input.as_ref(),
-                    ),
+                // Last check immediately before native capture creation: a
+                // grant lost since the host's checks refuses, never prompts.
+                match check_capture_authorization(automatic_deadline, preauthorized) {
+                    Err(code) => Err(code),
+                    Ok(()) => match backend {
+                        CaptureBackend::Cpal => start_cpal(
+                            device_id.as_deref(),
+                            Arc::clone(&ring),
+                            Arc::clone(&failed),
+                            &mut emit_setup,
+                        ),
+                        CaptureBackend::Auhal => start_auhal_resolved(
+                            device_id.as_deref(),
+                            Arc::clone(&ring),
+                            None,
+                            &mut emit_setup,
+                            prepared_input.as_ref(),
+                        ),
+                    },
                 }
             };
             let (mut stream, sample_rate) = match started {
@@ -3661,10 +3783,11 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
             let mut starvation_injected = false;
             let mut last_automatic_permission_check = Instant::now();
             loop {
-                if automatic_deadline.is_some()
+                if (automatic_deadline.is_some() || preauthorized)
                     && last_automatic_permission_check.elapsed() >= Duration::from_millis(250)
                 {
-                    check_automatic_probe(automatic_deadline).map_err(|_| ())?;
+                    check_capture_authorization(automatic_deadline, preauthorized)
+                        .map_err(|_| ())?;
                     last_automatic_permission_check = Instant::now();
                 }
                 if fault == Some("hang-before-first-buffer") && retained == 0 {

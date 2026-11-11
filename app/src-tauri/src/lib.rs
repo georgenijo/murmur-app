@@ -302,6 +302,7 @@ pub fn run() {
             commands::keyboard::start_keyboard_listener,
             commands::keyboard::stop_keyboard_listener,
             commands::keyboard::update_keyboard_key,
+            commands::keyboard::set_fn_capture_input,
             commands::keyboard::set_keyboard_recording,
             commands::keyboard::set_app_disabled,
             commands::keyboard::get_app_disabled,

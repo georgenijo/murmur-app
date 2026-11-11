@@ -13,7 +13,7 @@ pub const SYNTHETIC_FIXTURE_DIGEST: &str =
 // Production capture uses a separate, binary-framed protocol. Probe v1 above
 // remains stable so shipped attribution/recovery evidence stays readable.
 pub const PRODUCTION_PROTOCOL_NAME: &str = "murmur.capture";
-pub const PRODUCTION_PROTOCOL_VERSION: u16 = 10;
+pub const PRODUCTION_PROTOCOL_VERSION: u16 = 11;
 pub const MAX_AUTOMATIC_PROBE_NS: u64 = 8_000_000_000;
 
 /// Cross-process, sleep-inclusive monotonic clock for automatic capture leases.
@@ -189,6 +189,14 @@ pub enum ProductionHostMessage {
     /// isolated worker. Listener callbacks never enumerate or open devices.
     WatchInputTopology,
     Start {
+        device_id: Option<String>,
+        backend: CaptureBackend,
+    },
+    /// Interactive capture that must never request authorization: the helper
+    /// re-checks an existing microphone grant immediately before creating the
+    /// native capture and refuses with `PermissionDenied` otherwise. Used for
+    /// Fn key-down capture, which starts before any confirmed gesture.
+    StartPreauthorized {
         device_id: Option<String>,
         backend: CaptureBackend,
     },
@@ -840,6 +848,23 @@ mod tests {
         );
         assert!(serde_json::from_str::<ProductionHostMessage>(
             r#"{"type":"startAutomaticProbe","deviceId":"test","backend":"cpal"}"#
+        )
+        .is_err());
+        let preauthorized = ProductionHostMessage::StartPreauthorized {
+            device_id: None,
+            backend: CaptureBackend::Auhal,
+        };
+        let encoded = serde_json::to_string(&preauthorized).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"startPreauthorized","deviceId":null,"backend":"auhal"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ProductionHostMessage>(&encoded).unwrap(),
+            preauthorized
+        );
+        assert!(serde_json::from_str::<ProductionHostMessage>(
+            r#"{"type":"startPreauthorized","deviceId":null,"backend":"auhal","prompt":true}"#
         )
         .is_err());
         assert_eq!(

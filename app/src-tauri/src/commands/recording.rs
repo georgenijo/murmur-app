@@ -5345,13 +5345,26 @@ pub(crate) fn dictation_start_blocker(
 /// It shares the confirmed start's admission guards and additionally refuses
 /// while a previous dictation's capture cleanup is still pending.
 pub(crate) fn dictation_prepare_admitted(state: &State) -> bool {
+    dictation_prepare_refusal(state).is_none()
+}
+
+/// The first content-free reason a prepared or key-down capture may not open
+/// now, or `None` when it may.
+pub(crate) fn dictation_prepare_refusal(state: &State) -> Option<&'static str> {
     let dictation = state.app_state.dictation.lock_or_recover();
-    dictation_start_blocker(state, dictation.status).is_none()
-        && !state.app_state.microphone_preview.is_active()
-        && !audio_lifecycle::is_audio_active()
-        && !audio_lifecycle::is_dictation_cleanup_pending(
-            state.app_state.recording_id.load(Ordering::SeqCst),
-        )
+    if dictation_start_blocker(state, dictation.status).is_some() {
+        Some("dictation_busy")
+    } else if state.app_state.microphone_preview.is_active() {
+        Some("preview_active")
+    } else if audio_lifecycle::is_audio_active() {
+        Some("microphone_busy")
+    } else if audio_lifecycle::is_dictation_cleanup_pending(
+        state.app_state.recording_id.load(Ordering::SeqCst),
+    ) {
+        Some("cleanup_pending")
+    } else {
+        None
+    }
 }
 
 #[tauri::command]
@@ -5365,6 +5378,9 @@ pub async fn start_native_recording(
 ) -> Result<serde_json::Value, String> {
     // Consume only this request's stamp before every await or rejected start.
     let gesture_claim = audio_lifecycle::gesture::claim(gesture_token.as_deref());
+    // A Fn/Globe gesture may own a key-down capture. Dropping this claim on any
+    // early return discards that audio immediately.
+    let speculative = audio_lifecycle::speculative::claim(gesture_token.as_deref());
     // This lock covers only the synchronous ownership transition. Core Audio
     // initialization happens on the supervisor and never waits under it.
     let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
@@ -5505,6 +5521,11 @@ pub async fn start_native_recording(
             }
         }
     };
+    // A Fn key-down capture that already retains PCM is adopted with no
+    // connecting phase: Recording follows as soon as the context is installed.
+    let speculative_flowing = speculative.is_flowing();
+    let mut gesture = gesture;
+    gesture.speculative_capture = speculative.consume();
     // Publish Starting before the worker can report Ready. Otherwise a very
     // fast device open could emit Recording first and this command would then
     // overwrite the frontend with a stale Starting event.
@@ -5512,7 +5533,9 @@ pub async fn start_native_recording(
         "dictation-generation-started",
         serde_json::json!({ "recordingId": rid }),
     );
-    let _ = app_handle.emit("recording-status-changed", "starting");
+    if !speculative_flowing {
+        let _ = app_handle.emit("recording-status-changed", "starting");
+    }
     // Reserve the generation before the worker is allowed to emit lifecycle
     // events. Terminal persistence can now wait for the asynchronous begin
     // without holding capture ownership or the recording transition.

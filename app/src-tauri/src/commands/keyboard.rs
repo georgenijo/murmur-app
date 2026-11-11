@@ -88,6 +88,31 @@ pub fn update_keyboard_key(app_handle: tauri::AppHandle, hotkey: String) -> Resu
     Ok(())
 }
 
+/// Mirror the dictation microphone selection for Fn/Globe key-down capture,
+/// which opens before the webview can pass it with the start request. The
+/// confirmed start still sends its own selection; a mismatch discards the
+/// key-down audio and starts cold. Never logged.
+#[tauri::command]
+pub fn set_fn_capture_input(
+    device_name: Option<String>,
+    smart_auto: Option<crate::microphone_auto::SmartAutoRequest>,
+) -> Result<(), String> {
+    let input = match (device_name, smart_auto) {
+        (Some(_), Some(_)) => {
+            return Err("Smart Auto cannot be combined with a fixed microphone.".to_string())
+        }
+        (Some(device), None)
+            if device.is_empty() || device.len() > 4_096 || device.contains('\0') =>
+        {
+            return Err("Invalid microphone identifier.".to_string())
+        }
+        (device, None) => keyboard::CaptureInput::Device(device),
+        (None, Some(request)) => keyboard::CaptureInput::SmartAuto(request),
+    };
+    keyboard::set_fn_capture_input(input);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn set_keyboard_recording(recording: bool) {
     keyboard::set_recording_state(recording);
