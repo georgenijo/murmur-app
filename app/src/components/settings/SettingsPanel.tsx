@@ -1246,7 +1246,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             </div>
           </SettingsSection>
 
-          <SettingsSection hideHeading pageId="ai" activePage={activeCat} title="AI & models">
+          <SettingsSection hideHeading card={false} pageId="ai" activePage={activeCat} title="AI & models">
             <SettingsGroup>
               <button
                 type="button"

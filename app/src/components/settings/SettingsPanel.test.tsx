@@ -274,6 +274,19 @@ describe('SettingsPanel information architecture', () => {
       .toContain('Always copied to clipboard. Also paste into active app.');
   });
 
+  it('uses one card for the AI & models destination', async () => {
+    const aiModels = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'AI & models',
+    ) as HTMLButtonElement;
+    await act(async () => aiModels.click());
+    expect(container.textContent).toContain('Speech-to-text');
+    expect(Array.from(container.querySelectorAll('section')).map((section) => section.getAttribute('aria-label'))).toContain('AI & models');
+    const aiPage = Array.from(container.querySelectorAll('section')).find(
+      (section) => section.getAttribute('aria-label') === 'AI & models',
+    )!;
+    expect(aiPage.querySelectorAll('.settings-card')).toHaveLength(1);
+  });
+
   it('closes the commands sheet and focuses the actual disabled switch without enabling it', async () => {
     await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, voiceCommandsEnabled: false }, { page: 'customize', token: 1 }));
     const commandsRow = () => Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Customization destinations"] button'))
