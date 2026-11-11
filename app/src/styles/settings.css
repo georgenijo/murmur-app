@@ -93,18 +93,6 @@
 
 }
 
-.settings-mode-row {
-  border: 1px solid var(--settings-divider);
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
-}
-
-.settings-mode-row[aria-pressed='true'] {
-  background: color-mix(in srgb, var(--murmur-primary) 13%, var(--settings-tint-raised));
-  border-color: color-mix(in srgb, var(--murmur-primary) 48%, var(--settings-hairline));
-  box-shadow: inset 3px 0 0 var(--murmur-primary);
-  font-weight: var(--ui-weight-label, 500);
-}
-
 .settings-callout {
   border-radius: var(--settings-radius-control);
   padding: 12px 14px;
@@ -605,13 +593,15 @@
 }
 
 /* Modes page (#931): headed cards built from shared rows. */
-.settings-modes-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 168px), 1fr)); gap: 8px; }
-.settings-modes-list > .settings-mode-row { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; padding: 8px 12px; border-radius: var(--ui-radius-control); color: var(--murmur-on-surface-variant); text-align: left; cursor: pointer; }
-.settings-modes-list > .settings-mode-row:not([aria-pressed='true']):hover { background: var(--murmur-surface-container-low); color: var(--murmur-on-surface); }
-.settings-modes-list > .settings-mode-row[aria-pressed='true'] { color: var(--murmur-on-surface); }
-.settings-modes-list > .settings-mode-row:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 1px; }
+.settings-modes { display: flex; flex-direction: column; gap: 16px; }
+.settings-modes-list { display: flex; flex-direction: column; }
+.settings-modes-list > .settings-mode-row { display: flex; align-items: center; min-width: 0; min-height: var(--settings-row-height); padding: var(--settings-row-pad) var(--settings-row-x); color: var(--murmur-on-surface); text-align: left; cursor: pointer; }
+.settings-modes-list > .settings-mode-row + .settings-mode-row { border-top: 1px solid var(--settings-divider); }
+.settings-modes-list > .settings-mode-row:not([aria-pressed='true']):hover { background: var(--murmur-surface-container-low); }
+.settings-modes-list > .settings-mode-row:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: -2px; }
 .settings-mode-row-name { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--ui-font-body); line-height: var(--ui-leading-body); font-weight: 500; }
 .settings-mode-row-status { display: block; font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); color: var(--murmur-on-surface-variant); }
+.settings-mode-row-check { width: 16px; height: 16px; flex: none; color: var(--murmur-primary); stroke-width: 1.75; }
 .settings-modes .settings-row-layout:not(:has(> .settings-row-controls)) { grid-template-columns: minmax(0, 1fr); }
 .settings-modes-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .settings-modes-note { margin-top: 8px; font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); color: var(--murmur-on-surface-variant); }

@@ -1,11 +1,13 @@
 import { ConfirmActionButton } from '../ui/ConfirmActionButton';
-import { useId, useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useState } from 'react';
+import { Check } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { Button, Input } from '../ui/FormControls';
 import { Select } from '../ui/Select';
 import AnimatedSwitch from '../ui/animated-switch/animated-switch';
 import { SettingsBranch } from './SettingsBranch';
-import { SettingsCard, SettingsRow } from './SettingsRow';
+import { SettingsGroup } from './SettingsLayout';
+import { SettingsRow } from './SettingsRow';
 import { ModeFileActions } from './ModeFileActions';
 import {
   AVAILABLE_MODEL_OPTIONS,
@@ -65,17 +67,6 @@ const VOCABULARY_OPTIONS: { value: MurmurMode['vocabularyPolicy']; label: string
   { value: 'technical', label: 'Technical' },
 ];
 const BROWSER_OPTIONS = SITE_MODE_BROWSERS.map((browser) => ({ value: browser.bundleId as string, label: browser.label }));
-
-/** One headed card on the Modes page, using the shared section rhythm. */
-function ModesGroup({ title, children }: { title: string; children: ReactNode }) {
-  const id = useId();
-  return (
-    <section className="settings-section" aria-labelledby={id}>
-      <div className="settings-page-head"><h2 id={id} className="settings-section-title">{title}</h2></div>
-      <SettingsCard>{children}</SettingsCard>
-    </section>
-  );
-}
 
 export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, onChange, onAddAppProfile, initialSelectedId }: {
   modes: MurmurMode[];
@@ -188,19 +179,25 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
   const modeName = (id: string | null) => allModes.find((mode) => mode.id === id)?.name ?? 'an unavailable mode';
   return (
     <div className="settings-modes">
-      <ModesGroup title="Library">
+      <SettingsGroup title="Library">
         <div className="settings-modes-list" role="list" aria-label="Modes">
-          {allModes.map((mode) => <button key={mode.id} type="button" aria-pressed={mode.id === selected.id} onClick={() => setSelectedId(mode.id)} className="settings-mode-row">
-            <span className="settings-mode-row-name">{mode.name || 'Untitled mode'}</span>
-            <span className="settings-mode-row-status">{mode.builtIn ? 'Built-in' : mode.enabled ? 'Enabled' : 'Disabled'}</span>
-          </button>)}
+          {allModes.map((mode) => {
+            const isSelected = mode.id === selected.id;
+            return <button key={mode.id} type="button" aria-pressed={isSelected} onClick={() => setSelectedId(mode.id)} className="settings-mode-row">
+              <span className="min-w-0 flex-1">
+                <span className="settings-mode-row-name">{mode.name || 'Untitled mode'}</span>
+                {!mode.builtIn && <span className="settings-mode-row-status">{mode.enabled ? 'Enabled' : 'Disabled'}</span>}
+              </span>
+              {isSelected && <><Check aria-hidden="true" className="settings-mode-row-check" /><span className="sr-only">Selected</span></>}
+            </button>;
+          })}
         </div>
-        <SettingsRow title="Custom mode" description="Start from your global settings, or duplicate a selected mode"
+        <SettingsRow title="Custom mode" description="Start from global settings or duplicate a selected mode"
           control={<Button variant="primary" onClick={() => create()}>Create mode</Button>} />
         <ModeFileActions settings={{ modes, appProfiles: profiles, browserSiteRules: siteRules, siteModeLookupEnabled: siteLookupEnabled }} onChange={onChange} />
-      </ModesGroup>
+      </SettingsGroup>
 
-      <ModesGroup title="Selected mode">
+      <SettingsGroup title="Selected mode">
         <SettingsRow title={selected.name || 'Untitled mode'} description={custom ? summarizeMode(selected) : `Built-in template · ${summarizeMode(selected)}`}
           control={<>
             <Button size="sm" onClick={() => create(selected)}>Duplicate</Button>
@@ -217,10 +214,10 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
           <SettingsRow title="Language" control={<Select aria-label="Mode language" value={selected.language ?? ''} onChange={(value) => updateMode({ language: value || null })}
             items={[{ value: '', label: 'Use global' }, ...LANGUAGE_OPTIONS]} />} />
           <SettingsRow title="Vocabulary" control={<Select aria-label="Vocabulary policy" value={selected.vocabularyPolicy} onChange={(value) => updateMode({ vocabularyPolicy: value })} items={VOCABULARY_OPTIONS} />} />
-        </> : <SettingsRow title="Customize" description="Built-in modes are read-only. Duplicate one to change its style, model, language, or vocabulary." />}
-      </ModesGroup>
+        </> : <SettingsRow title="Customize" description="Duplicate built-in modes to change style, model, language, or vocabulary" />}
+      </SettingsGroup>
 
-      <ModesGroup title="Where it applies">
+      <SettingsGroup title="Where it applies">
         {profiles.length ? <>
           <SettingsRow title="Bound applications" description={`Dictation in a bound app uses ${selected.name || 'this mode'}`} />
           {profiles.map((profile) => {
@@ -233,7 +230,7 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
           control={onAddAppProfile && <Button onClick={(event) => onAddAppProfile(selected.id, event.currentTarget)}>Add an app</Button>} />}
         <div role="group" aria-label="Browser sites" className="settings-modes-sites">
         <SettingsRow targetId="browser-sites" title="Browser sites"
-          description="Reads only the current URL from an allowed browser, immediately discards everything except its exact host, and never reads page text or history. A host is saved only when you add a rule."
+          description="Uses only the exact host from allowed browsers; page text and history stay unread"
           control={<AnimatedSwitch checked={siteLookupEnabled} aria-label="Use browser site mode rules" onCheckedChange={(checked) => commit({ siteModeLookupEnabled: checked })} />} />
         <SettingsBranch open={siteLookupEnabled}>
           <SettingsRow targetId="browser-site-rules" title="Add a site rule" description={`Use ${selected.name || 'this mode'} on an exact host in one browser`}>
@@ -256,17 +253,17 @@ export function ModesManager({ modes, profiles, siteLookupEnabled, siteRules, on
           </SettingsRow>
         </SettingsBranch>
         </div>
-      </ModesGroup>
+      </SettingsGroup>
 
-      <ModesGroup title="Before / after test">
-        <SettingsRow title="Sample text" description="Preview stays in this window. It never copies, pastes, or injects into another app.">
+      <SettingsGroup title="Before / after test">
+        <SettingsRow title="Sample text" description="Preview stays in this window without copying, pasting, or sending text to another app">
           <textarea aria-label="Mode test input" value={sample} onChange={(event) => setSample(event.target.value)} className="settings-modes-sample" />
         </SettingsRow>
         <div className="settings-modes-preview">
           <div><p className="settings-modes-preview-label">Before</p><p className="settings-modes-preview-text">{sample}</p></div>
           <div><p className="settings-modes-preview-label">After</p><p data-testid="mode-preview" className="settings-modes-preview-text" data-tone="after">{previewModeText(sample, selected)}</p></div>
         </div>
-      </ModesGroup>
+      </SettingsGroup>
     </div>
   );
 }
