@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.64.3] - 2026-11-11
+
+<!-- Release notes generated using configuration in .github/release.yml at 1bd443f63cc2f1dcb963f4556b976e49bf35a524 -->
+
+## What's Changed
+### Other Changes
+* chore: remove dead docs, evidence, spikes, AEC spike tool and unused icons by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1111
+* Paste before the live-preview hide, plus main-thread diagnostics by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1112
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.64.2...v0.64.3
+
 ## [0.64.2] - 2026-11-11
 
 <!-- Release notes generated using configuration in .github/release.yml at 136506797035b5852aa8a089301d250c3097c589 -->

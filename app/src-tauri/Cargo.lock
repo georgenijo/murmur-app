@@ -6180,7 +6180,7 @@ dependencies = [
 
 [[package]]
 name = "ui"
-version = "0.64.2"
+version = "0.64.3"
 dependencies = [
  "aho-corasick",
  "arboard",
