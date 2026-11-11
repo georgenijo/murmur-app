@@ -42,6 +42,23 @@ pub struct FrontmostAppIdentity {
     pub process_id: Option<i32>,
 }
 
+/// Browsers whose web content Murmur treats as a document surface, so delivery
+/// verification requires a retained document ancestor and does not poke the
+/// browser's manual-accessibility switch.
+const KNOWN_BROWSER_BUNDLE_IDS: [&str; 6] = [
+    "com.apple.Safari",
+    "com.google.Chrome",
+    "com.microsoft.edgemac",
+    "com.brave.Browser",
+    "company.thebrowser.Browser",
+    "org.chromium.Chromium",
+];
+
+/// Whether `bundle_id` names one of the supported desktop browsers.
+pub fn is_known_browser(bundle_id: &str) -> bool {
+    KNOWN_BROWSER_BUNDLE_IDS.contains(&bundle_id)
+}
+
 /// Opaque app-launch identity. The value is derived from LaunchServices'
 /// launch date and is never logged or exposed over the Tauri boundary.
 #[derive(Clone, Copy, PartialEq, Eq)]

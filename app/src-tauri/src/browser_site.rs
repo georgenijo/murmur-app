@@ -3,23 +3,10 @@ use crate::state::BrowserSiteRule;
 use crate::MutexExt;
 use serde::Serialize;
 
-pub const ALLOWED_BROWSER_BUNDLE_IDS: [&str; 6] = [
-    "com.apple.Safari",
-    "com.google.Chrome",
-    "com.microsoft.edgemac",
-    "com.brave.Browser",
-    "company.thebrowser.Browser",
-    "org.chromium.Chromium",
-];
-
 #[derive(Clone, PartialEq, Eq)]
 pub struct BrowserSiteIdentity {
     pub browser_bundle_id: String,
     pub host: String,
-}
-
-pub fn allowed_browser(bundle_id: &str) -> bool {
-    ALLOWED_BROWSER_BUNDLE_IDS.contains(&bundle_id)
 }
 
 pub fn normalize_host(value: &str) -> Option<String> {
@@ -152,7 +139,7 @@ pub fn query_for_identity(expected: &FrontmostAppIdentity) -> Option<BrowserSite
     // run-loop pool: drain AppKit's autoreleased objects before returning.
     autoreleasepool(|_| {
         let expected_bundle = expected.bundle_id.as_deref()?;
-        if !allowed_browser(expected_bundle) || expected.process_id.is_none() {
+        if !crate::frontmost::is_known_browser(expected_bundle) || expected.process_id.is_none() {
             return None;
         }
         let application = NSWorkspace::sharedWorkspace().frontmostApplication()?;
@@ -205,7 +192,11 @@ pub async fn probe_browser_site(
     let mut supported_browser = None;
     for _ in 0..50 {
         let expected = crate::frontmost::query_frontmost_app_identity();
-        if expected.bundle_id.as_deref().is_some_and(allowed_browser) {
+        if expected
+            .bundle_id
+            .as_deref()
+            .is_some_and(crate::frontmost::is_known_browser)
+        {
             supported_browser = expected.bundle_id.clone();
             if let Some(identity) = query_for_identity(&expected) {
                 return Ok(BrowserSiteProbe {

@@ -1277,7 +1277,7 @@ fn inspect_current_from_snapshot(
 
     if status != EditableStatus::Editable
         && status != EditableStatus::Secure
-        && !crate::browser_site::allowed_browser(&identity.bundle_id)
+        && !crate::frontmost::is_known_browser(&identity.bundle_id)
         && enable_manual_accessibility_if_needed(state, &snapshot, &app)
     {
         window = copy_element_attribute(app.as_element(), "AXFocusedWindow").ok();
@@ -1292,7 +1292,7 @@ fn inspect_current_from_snapshot(
         EditableStatus::Secure => CurrentObservation::Secure,
         EditableStatus::Editable => {
             let document = field.as_ref().and_then(retained_document_ancestor);
-            let requires_document = crate::browser_site::allowed_browser(&identity.bundle_id)
+            let requires_document = crate::frontmost::is_known_browser(&identity.bundle_id)
                 || manual_accessibility_applies(state, &snapshot, &app);
             let (Some(window), Some(field)) = (window, field) else {
                 return CurrentObservation::EditableUnverified;

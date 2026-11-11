@@ -3846,7 +3846,7 @@ fn sanitize_browser_site_rules(
                 || id.len() > 128
                 || !seen_ids.insert(id.to_string())
                 || !seen_sites.insert((browser_bundle_id.to_string(), host.clone()))
-                || !crate::browser_site::allowed_browser(browser_bundle_id)
+                || !crate::frontmost::is_known_browser(browser_bundle_id)
                 || (crate::dictation_context::builtin_mode(mode_id).is_none()
                     && !modes.iter().any(|mode| mode.id == mode_id))
             {
