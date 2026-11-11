@@ -25,7 +25,9 @@ for (const { path, state } of pages) {
         for (let pass = 0; pass < 3; pass++) {
           const owners = page.locator('.settings-setting-row:has(+ .settings-dependent-branch) [role=switch][aria-checked=false]:not([data-disabled])');
           for (const owner of await owners.all()) if (await owner.isVisible()) await owner.click();
-          for (const button of await page.locator('.settings-advanced-toggle[aria-expanded=false]').all()) await button.click();
+          for (const button of await page.locator('.settings-advanced-toggle[aria-expanded=false]').all()) {
+            if (await button.isVisible()) await button.click();
+          }
         }
       }
       // A toggle can return before React and :has() layout settle on macOS.
@@ -44,9 +46,9 @@ for (const { path, state } of pages) {
             const advancedRows = row.matches('.settings-advanced:has(> .settings-advanced-rows)');
             const label = row.textContent?.trim().slice(0, 40);
             if (style.paddingTop !== (branch || groupedAdvanced ? '0px' : '7px') || style.paddingBottom !== (branch || groupedAdvanced || advancedRows ? '0px' : '7px')) failures.push(`${label}: vertical padding ${style.paddingTop}/${style.paddingBottom}`);
-            // Advanced keeps its trailing 7px on the toggle in both states,
-            // so row width and spacing do not change at animation boundaries.
-            if (advancedRows && getComputedStyle(row.querySelector('.settings-advanced-toggle')!).marginBottom !== '7px') failures.push(`${label}: Advanced toggle spacing`);
+            // A closed Advanced card is only its header row. Its trailing gap
+            // appears with the revealed rows, without moving card edges.
+            if (advancedRows && getComputedStyle(row.querySelector('.settings-advanced-toggle')!).marginBottom !== (row.querySelector('.settings-advanced-rows')?.getAttribute('data-expanded') === 'true' ? '7px' : '0px')) failures.push(`${label}: Advanced toggle spacing`);
             if (style.paddingLeft !== (branch ? '0px' : '16px') || style.paddingRight !== (branch ? '0px' : '16px')) failures.push(`${label}: horizontal padding ${style.paddingLeft}/${style.paddingRight}`);
             if (style.borderRadius !== '0px' && !row.matches('button:last-child')) failures.push(`${label}: rounded row ${style.borderRadius}`);
             if (Math.abs(bounds.width - (card.width - 2)) > .1) failures.push(`${label}: inset divider (${bounds.width}/${card.width})`);

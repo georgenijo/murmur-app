@@ -567,7 +567,7 @@ test('settings rows keep the shared spacing contract and aligned controls', asyn
   const rowGeometry = (target: string) => page.locator(`[data-setting-target="${target}"]`).evaluate((row) => {
     const style = getComputedStyle(row);
     const box = row.getBoundingClientRect();
-    const title = row.querySelector('p')!.getBoundingClientRect();
+    const title = row.querySelector('.settings-row-title')!.getBoundingClientRect();
     const toggle = row.querySelector('[role="switch"]')!.getBoundingClientRect();
     return {
       left: box.left,
@@ -699,11 +699,13 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   await expect(catppuccinCard.locator('.settings-theme-variant-check, .settings-theme-variant-assigned')).toHaveCount(0);
   await expect(catppuccinCard.locator('.settings-theme-caption, .settings-theme-mode-status')).toHaveCount(0);
   const previewGeometry = await catppuccinCard.evaluate((card) => {
+    const cardBox = card.getBoundingClientRect();
     const previews = card.querySelector('.settings-theme-previews')!.getBoundingClientRect();
     const footer = card.querySelector('.settings-theme-footer')!.getBoundingClientRect();
     const variants = Array.from(card.querySelectorAll('.settings-theme-preview'))
       .map((preview) => preview.getBoundingClientRect());
     return {
+      cardBox,
       previewsLeft: previews.left,
       previewsRight: previews.right,
       footerLeft: footer.left,
@@ -724,7 +726,10 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
     return { cardBox, previewBox, nameBox, actionsBox };
   });
   expect(singleGeometry.cardBox.width).toBeLessThan(previewGeometry.footerRight - previewGeometry.footerLeft);
-  expect(Math.abs(singleGeometry.cardBox.right - singleGeometry.previewBox.right)).toBeLessThanOrEqual(6);
+  expect(Math.abs(singleGeometry.cardBox.right - singleGeometry.previewBox.right)).toBeCloseTo(
+    Math.abs(previewGeometry.cardBox.right - previewGeometry.previewsRight),
+    1,
+  );
   expect(singleGeometry.actionsBox.left).toBeGreaterThanOrEqual(singleGeometry.cardBox.left);
   expect(singleGeometry.actionsBox.right).toBeLessThanOrEqual(singleGeometry.cardBox.right);
   expect(singleGeometry.nameBox.right).toBeLessThanOrEqual(singleGeometry.actionsBox.left);
@@ -854,6 +859,11 @@ test('single-variant cards pack at half width without clipping actions at the Se
       viewportWidth: document.documentElement.clientWidth,
       scrollWidth: document.documentElement.scrollWidth,
       doubleWidth: double.getBoundingClientRect().width,
+      doublePreviewRightInset: (() => {
+        const cardBox = double.getBoundingClientRect();
+        const previewBox = double.querySelector('.settings-theme-previews')!.getBoundingClientRect();
+        return cardBox.right - previewBox.right;
+      })(),
       grid: grid.getBoundingClientRect(),
       allCards: Array.from(grid.querySelectorAll<HTMLElement>('.settings-theme-collection')).map((card) => card.getBoundingClientRect()),
       cards: cards.map((card) => {
@@ -872,7 +882,7 @@ test('single-variant cards pack at half width without clipping actions at the Se
   }
   for (const card of geometry.cards) {
     expect(card.cardBox.width).toBeLessThan(geometry.doubleWidth);
-    expect(Math.abs(card.cardBox.right - card.previewBox.right)).toBeLessThanOrEqual(6);
+    expect(Math.abs(card.cardBox.right - card.previewBox.right)).toBeCloseTo(geometry.doublePreviewRightInset, 1);
     expect(card.actionBox.left).toBeGreaterThanOrEqual(card.cardBox.left);
     expect(card.actionBox.right).toBeLessThanOrEqual(card.cardBox.right);
     expect(card.nameBox.right).toBeLessThanOrEqual(card.actionBox.left);

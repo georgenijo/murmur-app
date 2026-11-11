@@ -508,7 +508,7 @@
 /* Keep row width and toggle spacing constant throughout entry and exit; moving
    the insets on click rewraps controls before the fold can animate. */
 .settings-advanced:has(> .settings-advanced-rows) { padding-bottom: 0; }
-.settings-advanced:has(> .settings-advanced-rows) > .settings-advanced-toggle { margin-bottom: var(--settings-row-pad); }
+.settings-advanced:has(> .settings-advanced-rows[data-expanded='true']) > .settings-advanced-toggle { margin-bottom: var(--settings-row-pad); }
 .settings-advanced > .settings-advanced-rows { margin-inline: calc(-1 * var(--settings-row-x)); }
 .settings-branch-stack > .settings-dependent-branch-clip > .settings-dependent-branch-content.settings-stack { padding-top: var(--settings-stack-gap); }
 .settings-branch-stack > .settings-dependent-branch-clip > .settings-dependent-branch-content.settings-stack > * + * { margin-top: var(--settings-stack-gap); }
@@ -712,7 +712,7 @@
 .settings-appearance-themes { padding: 16px; }
 .settings-theme-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); grid-auto-flow: row dense; align-items: start; gap: 16px; }
 .settings-theme-collection { grid-column: span 2; min-width: 0; padding: 12px; cursor: pointer; border-radius: var(--ui-radius-card); border: 1px solid var(--settings-card-border); background: var(--murmur-surface-container-lowest); }
-.settings-theme-collection[data-theme-variants='1'] { grid-column: span 1; padding-inline: 4px; }
+.settings-theme-collection[data-theme-variants='1'] { grid-column: span 1; }
 .settings-theme-collection:hover { background: var(--murmur-surface-container-low); }
 .settings-theme-collection.settings-theme-active { border-color: var(--murmur-primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 35%, transparent); }
 .settings-theme-previews { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
@@ -756,6 +756,7 @@
 .settings-microphone-input .settings-row-title { grid-column: 1; grid-row: 1; }
 .settings-microphone-input .settings-row-controls { grid-column: 2; grid-row: 1; }
 .settings-microphone-input .settings-row-title ~ p { grid-column: 1 / -1; grid-row: 2; }
+.settings-microphone-input .settings-row-title ~ p:not(:first-child) { margin-top: var(--settings-copy-gap); }
 @container settings-row (width < 512px) {
   .settings-microphone-input .settings-row-title,
   .settings-microphone-input .settings-row-controls,

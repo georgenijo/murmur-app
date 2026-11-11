@@ -981,7 +981,7 @@ export const SettingsPanel = memo(function SettingsPanel({
           {searchQuery ? (
             <section aria-label="Settings search results">
               <h2 className="settings-section-title">Search</h2>
-              <p className="mb-3 text-[11px] font-semibold uppercase tracking-normal text-on-surface-variant">
+              <p className="mb-3 text-[length:var(--ui-font-micro)] font-medium text-on-surface-variant">
                 {searchResults.length} {searchResults.length === 1 ? 'result' : 'results'}
               </p>
               {searchResults.length === 0 ? (
@@ -1012,7 +1012,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                         <span className="block text-sm font-semibold text-on-surface">{highlightSettingsMatch(result.title, searchQuery)}</span>
                         <span className="mt-0.5 block text-xs text-on-surface-variant">{highlightSettingsMatch(result.detail, searchQuery)}</span>
                       </span>
-                      <span className="rounded-full bg-surface-container-high px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-on-surface-variant">
+                      <span className="rounded-full bg-surface-container-high px-2.5 py-1 text-[length:var(--ui-font-micro)] font-medium text-on-surface-variant">
                         {searchPageLabel(result.page)}
                       </span>
                       <span aria-hidden="true" className="text-on-surface-variant">›</span>
@@ -1124,7 +1124,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               <div>
                 <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-[length:var(--ui-font-caption)] text-on-surface">
                   <span>Accessibility permission is required for keyboard detection.</span>
-                  <button type="button" onClick={requestAccessibility} className="ml-auto underline">Grant</button>
+                  <Button type="button" variant="ghost" size="xs" onClick={requestAccessibility} className="ml-auto">Grant</Button>
                 </div>
               </div>
             )}
@@ -1213,7 +1213,8 @@ export const SettingsPanel = memo(function SettingsPanel({
                       key={cue}
                       type="button"
                       onClick={() => playSoundCue(cue, settings.soundCueVolume)}
-                      className="h-8 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 text-[length:var(--ui-font-caption)] font-medium capitalize text-on-surface hover:bg-surface-container"
+                      size="sm"
+                      className="capitalize"
                     >
                       {cue}
                     </Button>
@@ -1285,7 +1286,7 @@ export const SettingsPanel = memo(function SettingsPanel({
 {isRecording && <p className="text-xs text-primary">Stop recording before changing model.</p>}
 {modelAvailable === false && modelDownload.phase === 'idle' && (
                 <div className="flex items-center rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface">
-                  <span>Model not downloaded</span><button type="button" onClick={() => void downloadModel()} className="ml-auto underline">Download</button>
+                  <span>Model not downloaded</span><Button type="button" variant="ghost" size="xs" onClick={() => void downloadModel()} className="ml-auto">Download</Button>
                 </div>
               )}
 {modelDownload.phase === 'downloading' && (
@@ -1294,7 +1295,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                   <div className="h-1.5 overflow-hidden rounded-full bg-surface-container-highest"><div role="progressbar" aria-valuenow={downloadProgress ?? undefined} aria-valuemin={0} aria-valuemax={100} aria-valuetext={downloadProgress === null ? 'Model installation in progress' : `Download progress: ${downloadProgress} percent`} className={`h-full rounded-full bg-primary ${downloadProgress === null ? 'model-download-indeterminate' : 'transition-all duration-200'}`} style={downloadProgress === null ? undefined : { width: `${downloadProgress}%` }} /></div>
                 </div>
               )}
-{modelDownload.phase === 'error' && <div className="flex items-center rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"><span>{modelDownload.message}</span><button type="button" onClick={() => void downloadModel()} className="ml-auto underline">Retry</button></div>}</SettingsRow>
+{modelDownload.phase === 'error' && <div className="flex items-center rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"><span>{modelDownload.message}</span><Button type="button" variant="ghost" size="xs" onClick={() => void downloadModel()} className="ml-auto">Retry</Button></div>}</SettingsRow>
             <TranscriptionModelStorage models={runtimeModels} selectedModel={settings.model} busy={isRecording} />
             <SettingsRow title={<>Language</>} targetId="language" disabled={isRecording || englishOnly} onReset={settings.language !== DEFAULT_SETTINGS.language ? () => onUpdateSettings({ language: DEFAULT_SETTINGS.language }) : undefined} control={<Select value={settings.language} onChange={(language) => onUpdateSettings({ language })} disabled={isRecording || englishOnly} items={LANGUAGE_OPTIONS} />}><p className="text-xs text-on-surface-variant">{englishOnly ? 'English only — use Whisper Large Turbo for others' : 'Auto-detect picks the language each time'}</p></SettingsRow>
             <SettingsDisclosure title="Advanced" layout="rows">
@@ -1333,8 +1334,8 @@ export const SettingsPanel = memo(function SettingsPanel({
               <SettingToggle targetId="developer-terms" title="Developer terms" description="Use developer vocabulary in technical modes and IDE contexts" checked={settings.codeVocabEnabled} defaultChecked={DEFAULT_SETTINGS.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
               <SettingsBranch open={settings.codeVocabEnabled}>
                 <div data-setting-target="project-scan" className="settings-field">
-                  <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface"><MiddleTruncate value={settings.codeVocabFolder || 'No folder — built-in developer terms only'} /></p>
-                  <button type="button" onClick={(event) => openEditor('scan', event.currentTarget)} className="rounded-lg bg-surface-container-high px-3 py-2 text-xs font-semibold text-on-surface hover:text-primary">Manage project scan</button>
+                  <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.codeVocabFolder ? <MiddleTruncate value={settings.codeVocabFolder} /> : 'No folder — built-in developer terms only'}</p>
+                  <Button type="button" size="sm" onClick={(event) => openEditor('scan', event.currentTarget)}>Manage project scan</Button>
                   <p className="text-xs text-on-surface-variant">Scanned locally. Build and dependency folders are skipped.</p>
                 </div>
               </SettingsBranch>
@@ -1357,7 +1358,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               {!saveToFile && accessibilityGranted === false && (
                 <div className="flex items-center gap-2 text-[length:var(--ui-font-caption)] text-primary">
                   <span>Accessibility permission is required to paste into the active app.</span>
-                  <button type="button" onClick={requestAccessibility} className="ml-auto underline">Grant</button>
+                  <Button type="button" variant="ghost" size="xs" onClick={requestAccessibility} className="ml-auto">Grant</Button>
                 </div>
               )}
               <div
@@ -1397,7 +1398,7 @@ export const SettingsPanel = memo(function SettingsPanel({
 {accessibilityGranted === false && settings.pasteLastShortcut !== null && (
                 <div className="flex items-center gap-2 text-[length:var(--ui-font-caption)] text-primary">
                   <span>Accessibility permission is required for the global Paste Last shortcut.</span>
-                  <button type="button" onClick={requestAccessibility} className="underline">Grant</button>
+                  <Button type="button" variant="ghost" size="xs" onClick={requestAccessibility}>Grant</Button>
                 </div>
               )}</SettingsRow>
             </SettingsGroup>
@@ -1407,8 +1408,8 @@ export const SettingsPanel = memo(function SettingsPanel({
               <SettingsBranch open={saveToFile}>
                 <div className="settings-field">
                   <p className="text-[length:var(--ui-font-caption)] text-on-surface-variant">Shared output folder</p>
-                  <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-[length:var(--ui-font-caption)] text-on-surface"><MiddleTruncate value={settings.outputDir || 'Documents/Murmur (default)'} /></p>
-                  <div className="flex gap-3"><button type="button" onClick={() => void chooseOutputFolder()} className="text-[length:var(--ui-font-caption)] font-medium text-on-surface-variant underline hover:text-primary">Choose folder…</button>{settings.outputDir && <button type="button" onClick={() => onUpdateSettings({ outputDir: '' })} className="text-[length:var(--ui-font-caption)] font-medium text-on-surface-variant underline hover:text-primary">Reset to default</button>}</div>
+                  <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-[length:var(--ui-font-caption)] text-on-surface">{settings.outputDir ? <MiddleTruncate value={settings.outputDir} /> : 'Documents/Murmur (default)'}</p>
+                  <div className="flex gap-2"><Button type="button" size="sm" onClick={() => void chooseOutputFolder()}>Choose folder…</Button>{settings.outputDir && <Button type="button" size="sm" onClick={() => onUpdateSettings({ outputDir: '' })}>Reset to default</Button>}</div>
                   <p className="text-[length:var(--ui-font-caption)] text-on-surface-variant">{fileOutputDeliveryDescription(settings)}</p>
                 </div>
               </SettingsBranch>
@@ -1425,7 +1426,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             </SettingsGroup>
             <SettingsGroup>
             <SettingsDisclosure title="Advanced" description="Per-app delivery and writing" layout="rows" targetId="app-overrides">
-              <button type="button" data-setting-target="app-overrides" onClick={(event) => openEditor('app-overrides', event.currentTarget)} className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+              <button type="button" aria-label="Manage app overrides" data-setting-target="app-overrides" onClick={(event) => openEditor('app-overrides', event.currentTarget)} className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
                 <span className="settings-title-description">
                   <span className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">Manage app overrides</span>
                   <span className="mt-0.5 block text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">Set delivery and writing preferences for specific apps</span>
@@ -1486,7 +1487,6 @@ export const SettingsPanel = memo(function SettingsPanel({
               <SettingToggle
                 targetId="meeting-audio"
                 title="Keep meeting audio"
-                compact
                 checked={settings.meetingRetainAudio} defaultChecked={DEFAULT_SETTINGS.meetingRetainAudio}
                 onChange={() => onUpdateSettings({ meetingRetainAudio: !settings.meetingRetainAudio })}
               />

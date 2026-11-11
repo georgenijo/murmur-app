@@ -776,12 +776,12 @@ export function MicrophoneInputTest({
       {selectorHelperText && missingDevice && inventoryAvailable ? (
         <p
           id={selectorHelperId}
-          className="mt-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-[length:var(--ui-font-caption)] text-on-surface"
+          className="mt-0.5 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-[length:var(--ui-font-caption)] text-on-surface"
         >
           {selectorHelperText}
         </p>
       ) : smartAutoActive && showSmartAutoFeedback ? (
-        <div id={selectorHelperId} className="mt-2 rounded-lg border border-outline-variant/25 bg-surface-container-low px-3 py-2 text-[length:var(--ui-font-caption)] text-on-surface-variant" aria-live="polite">
+        <div id={selectorHelperId} className="mt-0.5 rounded-lg border border-outline-variant/25 bg-surface-container-low px-3 py-2 text-[length:var(--ui-font-caption)] text-on-surface-variant" aria-live="polite">
           {smartAutoStatus.kind === 'loading' ? (
             <p>Checking which included microphone is ready…</p>
           ) : probingStatus ? (
@@ -823,7 +823,7 @@ export function MicrophoneInputTest({
           ) : null}
         </div>
       ) : selectorHelperText || automaticHelperText ? (
-        <p id={selectorHelperId} className="mt-2 text-[length:var(--ui-font-caption)] text-on-surface-variant">
+        <p id={selectorHelperId} className="mt-0.5 text-[length:var(--ui-font-caption)] text-on-surface-variant">
           {selectorHelperText ?? automaticHelperText}
         </p>
       ) : (

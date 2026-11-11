@@ -146,7 +146,9 @@ for (const appearance of ['dark', 'light'] as const) {
       expect(switchBox.bottom).toBeLessThanOrEqual(rowBox.bottom);
     }
     const singleLineRows = await Promise.all([audio, speakers].map(box));
-    for (const row of singleLineRows) expect(row.height).toBeLessThanOrEqual(44);
+    // Label-only rows use the same standard height as neighboring single-line
+    // picker rows, keeping every control vertically centred in the card.
+    for (const row of singleLineRows) expect(row.height).toBeLessThanOrEqual(56);
     expect(Math.abs(singleLineRows[0].height - singleLineRows[1].height)).toBeLessThanOrEqual(2);
     expect((await box(age)).height).toBeGreaterThanOrEqual(singleLineRows[0].height);
 

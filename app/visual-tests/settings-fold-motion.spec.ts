@@ -11,7 +11,9 @@ for (const fold of ['advanced', 'microphone'] as const) {
       const toggle = page.locator(selector);
       const pane = page.getByTestId('settings-content');
       await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-      await expect(pane).toHaveCSS('overflow-y', 'auto');
+      // Reserve the native scrollbar lane before a fold changes overflow so
+      // the card edges remain stationary in WKWebView.
+      await expect(pane).toHaveCSS('overflow-y', 'scroll');
       // Exercise the WebKit fallback independently of scrollbar-gutter support.
       await pane.evaluate(el => { el.style.scrollbarGutter = 'auto'; });
       const sample = async () => page.evaluate(async selector => {
@@ -56,7 +58,10 @@ for (const fold of ['advanced', 'microphone'] as const) {
           // Scroll tracks the visible fold, rather than holding until children
           // disappear or focus restoration snaps the owner to the viewport.
           const expected = final.scroll + (closing[0].scroll - final.scroll) * frame.height / closing[0].height;
-          expect(Math.abs(frame.scroll - expected)).toBeLessThan(3);
+          // Closing removes the 7px revealed-rows inset with the fold, so its
+          // scroll position may differ by that one spacing unit from a pure
+          // height-proportional interpolation.
+          expect(Math.abs(frame.scroll - expected)).toBeLessThanOrEqual(8);
         }
       }
     });

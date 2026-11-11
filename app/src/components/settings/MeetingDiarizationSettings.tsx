@@ -127,7 +127,7 @@ export function MeetingDiarizationSettings({
 
   return (
     <>
-      <SettingsRow targetId="meeting-speakers" title="Label remote speakers" compact onReset={enabled !== DEFAULT_SETTINGS.meetingDiarization ? () => onEnabledChange(DEFAULT_SETTINGS.meetingDiarization) : undefined} disabled={!supported} control={<AnimatedSwitch
+      <SettingsRow targetId="meeting-speakers" title="Label remote speakers" onReset={enabled !== DEFAULT_SETTINGS.meetingDiarization ? () => onEnabledChange(DEFAULT_SETTINGS.meetingDiarization) : undefined} disabled={!supported} control={<AnimatedSwitch
           size="md"
           checked={enabled}
           disabled={!supported}

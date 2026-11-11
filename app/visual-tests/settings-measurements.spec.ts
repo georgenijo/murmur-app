@@ -125,7 +125,7 @@ for (const appearance of ['light', 'dark']) {
     expect(await sidebar.locator('.settings-tools-eyebrow').evaluate(el => getComputedStyle(el).color)).toMatch(/\/ 0\.8\)/);
     await css(page.getByRole('searchbox'), { height: '32px', 'border-radius': '6px' });
     const content = page.locator('.settings-content-container');
-    await css(content, { 'max-width': '728px', width: '728px', 'padding-top': '24px', 'padding-left': '24px', 'padding-bottom': '48px' });
+    await css(content, { 'max-width': 'none', width: '728px', 'padding-top': '24px', 'padding-left': '24px', 'padding-bottom': '48px' });
     await expect(page.locator('.settings-page-head')).toHaveCount(0);
     await expect(page.locator('.settings-content-topbar h1')).toHaveText('General');
     await css(page.locator('.settings-section'), { 'margin-bottom': '0px' });
