@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.64.1] - 2026-11-11
+
+<!-- Release notes generated using configuration in .github/release.yml at d4130dfe28fb499a11a137b09eb51445892c0e23 -->
+
+## What's Changed
+### Other Changes
+* ci: fix rust-macos sherpa-onnx link failure by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1107
+* test: remove screenshot baselines by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1106
+* fix(ui): compact update notes, tidy Home header, fix Insights hovers by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1105
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.64.0...v0.64.1
+
 ## [0.64.0] - 2026-11-11
 
 <!-- Release notes generated using configuration in .github/release.yml at f35db07201e9b8e1b652a00e2f25ed058f9e3ab8 -->
