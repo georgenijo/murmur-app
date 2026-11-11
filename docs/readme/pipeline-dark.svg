@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 152" width="800" height="152" role="img" aria-labelledby="t d">
+  <title id="t">How a dictation moves through Murmur</title>
+  <desc id="d">Hotkey, then the capture helper, then voice activity detection, then the speech model, then the text pipeline, then the clipboard. Every step runs on your Mac.</desc>
+  <style>
+    :root {
+      --line: #30363d;
+      --box: #161b22;
+      --text: #e6edf3;
+      --muted: #8b949e;
+    }
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; text-anchor: middle; }
+    .name { font-size: 13px; font-weight: 600; fill: var(--text); }
+    .note { font-size: 11px; fill: var(--muted); }
+    .box { fill: var(--box); stroke: var(--line); }
+    .arrow { fill: none; stroke: var(--muted); stroke-width: 1.25; stroke-linecap: round; stroke-linejoin: round; }
+  </style>
+
+  <rect x="0.5" y="12.5" width="799" height="127" rx="12" fill="none" stroke="var(--line)" stroke-dasharray="4 4"/>
+
+  <rect class="box" x="19.5" y="34.5" width="112" height="56" rx="8"/>
+  <text class="name" x="75.5" y="59">Hotkey</text>
+  <text class="note" x="75.5" y="77">hold or double-tap</text>
+
+  <rect class="box" x="149.5" y="34.5" width="112" height="56" rx="8"/>
+  <text class="name" x="205.5" y="59">Capture helper</text>
+  <text class="note" x="205.5" y="77">its own process</text>
+
+  <rect class="box" x="279.5" y="34.5" width="112" height="56" rx="8"/>
+  <text class="name" x="335.5" y="59">Silero VAD</text>
+  <text class="note" x="335.5" y="77">drops the silence</text>
+
+  <rect class="box" x="409.5" y="34.5" width="112" height="56" rx="8"/>
+  <text class="name" x="465.5" y="59">Speech model</text>
+  <text class="note" x="465.5" y="77">Parakeet or Whisper</text>
+
+  <rect class="box" x="539.5" y="34.5" width="112" height="56" rx="8"/>
+  <text class="name" x="595.5" y="59">Text pipeline</text>
+  <text class="note" x="595.5" y="77">fixed rules, in order</text>
+
+  <rect class="box" x="669.5" y="34.5" width="112" height="56" rx="8"/>
+  <text class="name" x="725.5" y="59">Clipboard</text>
+  <text class="note" x="725.5" y="77">then paste, if on</text>
+
+  <g class="arrow">
+    <path d="M135 62.5h11m-3.5-3.5 3.5 3.5-3.5 3.5"/>
+    <path d="M265 62.5h11m-3.5-3.5 3.5 3.5-3.5 3.5"/>
+    <path d="M395 62.5h11m-3.5-3.5 3.5 3.5-3.5 3.5"/>
+    <path d="M525 62.5h11m-3.5-3.5 3.5 3.5-3.5 3.5"/>
+    <path d="M655 62.5h11m-3.5-3.5 3.5 3.5-3.5 3.5"/>
+  </g>
+
+  <text class="note" x="400" y="119">Every step runs on your Mac. Audio and text are never uploaded.</text>
+</svg>
