@@ -73,7 +73,6 @@ for (const theme of ['sonic', 'flat-dark', 'open-vsx-low-contrast', 'open-vsx-hi
     const recording = page.locator('.home-talk');
     await expect(recording).toContainText('Listening');
     expect((await page.getByTestId('home-record-button').boundingBox())!.height).toBeLessThanOrEqual(56);
-    await expect(page.locator('[data-visual-ready=true]')).toHaveScreenshot(`${theme}-recording-cards.png`);
     await page.setViewportSize({ width: 720, height: 560 });
     const box = await recording.boundingBox();
     expect(box).not.toBeNull();
@@ -108,9 +107,7 @@ test('a dark-only theme applies from Light and keeps Appearance and Customize le
   await expect(page.locator('html')).toHaveAttribute('data-appearance', 'dark');
   await expect(page.getByRole('radio', { name: /dark/i })).toBeChecked();
   await page.mouse.move(0, 0);
-  await expect(page.locator('[data-visual-ready=true]')).toHaveScreenshot('flat-dark-appearance.png');
   await page.getByRole('button', { name: 'Customize', exact: true }).click();
-  await expect(page.locator('[data-visual-ready=true]')).toHaveScreenshot('flat-dark-customize.png');
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-appearance', 'dark');
   await page.getByRole('button', { name: 'Appearance', exact: true }).click();

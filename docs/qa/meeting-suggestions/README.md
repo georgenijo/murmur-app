@@ -29,4 +29,4 @@ A real Tauri event-listener test also verifies that accepted transform and
 correction capture paths notify listeners before microphone arm. This closes
 the interval before a slow AX selection returns and publishes review state.
 
-The [overlay snapshot](../../../app/visual-tests/main-window.spec.ts-snapshots/synthetic-meeting-suggestion-overlay-darwin.png) uses explicitly synthetic Calendar data. It proves layout only and does not establish native Calendar permission or capture behavior.
+The [overlay snapshot](../../images/synthetic-meeting-suggestion-overlay-darwin.png) uses explicitly synthetic Calendar data. It proves layout only and does not establish native Calendar permission or capture behavior.

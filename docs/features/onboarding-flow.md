@@ -118,8 +118,7 @@ below the scrolling model cards. Forward
 and Back entry transitions fade and slide 12 px in opposite directions over 220 ms;
 progress dots transition over 200 ms, fresh checks over 160 ms. All colors use
 semantic appearance tokens, and new recurring geometry uses `--ui-*` tokens.
-Playwright screenshot assertions disable animations; the onboarding matrix also
-uses reduced motion for deterministic geometry checks.
+The onboarding matrix uses reduced motion for deterministic geometry checks.
 
 In `tauri:dev`, permission guidance names the launching terminal. Microphone,
 Accessibility, and Calendar Reset actions are hidden because their native

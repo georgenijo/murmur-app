@@ -13,7 +13,6 @@ for (const appearance of ['light', 'dark']) {
       await expect(page.locator(editor ? '.settings-editor-sheet > div:first-child h2' : '.settings-workspace .settings-page-title')).toBeVisible();
       // Real panes may retain several viewport lengths of advanced controls.
       const content = page.locator(editor ? '.settings-editor-sheet' : '[data-testid=settings-content]');
-      await expect(content).toHaveScreenshot(`${appearance}-copy-${pane}.png`);
       const triples = await content.innerText();
       expect(triples).not.toContain('...');
       expect(triples).not.toContain('Text & Vocabulary');
@@ -39,7 +38,6 @@ for (const appearance of ['light', 'dark']) {
           await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
           element.scrollTop = element.scrollHeight;
         });
-        await expect(content).toHaveScreenshot(`${appearance}-copy-${pane}-expanded.png`);
       }
     });
   }
@@ -55,13 +53,11 @@ for (const appearance of ['light', 'dark']) {
     await dialog.getByLabel('Voice command phrase', { exact: true }).fill('insert farewell');
     await dialog.getByLabel('Voice command content', { exact: true }).fill('See you soon');
     await dialog.getByRole('button', { name: 'Cancel', exact: true }).focus();
-    await expect(dialog).toHaveScreenshot(`${appearance}-copy-command-default.png`);
     await page.keyboard.press('Enter');
     await expect(dialog).toHaveCount(0);
 
     await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=knowledge&appearance=${appearance}`);
     await page.getByRole('button', { name: 'More knowledge actions' }).click();
-    await expect(page.getByRole('menu')).toHaveScreenshot(`${appearance}-copy-knowledge-overflow.png`);
     await page.getByRole('menuitem', { name: 'Delete all…', exact: true }).click();
     await page.getByLabel('Type DELETE to confirm', { exact: true }).fill('DELETE');
     const remove = page.getByRole('button', { name: 'Delete everything', exact: true });
@@ -69,7 +65,6 @@ for (const appearance of ['light', 'dark']) {
     await remove.focus();
     await page.keyboard.press('Enter');
     await expect(dialog).toBeVisible();
-    await expect(dialog).toHaveScreenshot(`${appearance}-copy-knowledge-delete.png`);
     await page.keyboard.press('Space');
     await expect(dialog).toHaveCount(0);
   });
@@ -86,7 +81,6 @@ for (const appearance of ['light', 'dark']) {
     const deleteBounds = await confirm.boundingBox();
     expect(toggleBounds!.x + toggleBounds!.width).toBeLessThanOrEqual(deleteBounds!.x);
     await page.keyboard.press('Enter'); await expect(confirm).toBeVisible();
-    await expect(page.locator('.settings-editor-sheet')).toHaveScreenshot(`${appearance}-copy-alias-armed.png`);
     await page.keyboard.press('Space');
     await expect(page.getByRole('button', { name: 'Delete Murmur…', exact: true })).toHaveCount(0);
   });

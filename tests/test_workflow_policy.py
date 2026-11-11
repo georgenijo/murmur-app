@@ -1,4 +1,6 @@
 from pathlib import Path
+import os
+import tempfile
 import unittest
 
 from scripts.validate_workflow_policy import (
@@ -17,6 +19,41 @@ from scripts.validate_workflow_policy import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def screenshot_policy_violations(app: Path) -> list[str]:
+    violations = []
+    for directory, dirs, files in os.walk(app):
+        # Installed and generated dependencies are not repository source.
+        current = Path(directory)
+        visual = app / "visual-tests"
+        if current != visual and visual not in current.parents:
+            dirs[:] = [d for d in dirs if d not in {
+                "node_modules", "target", "dist", "test-results", "playwright-report", ".vite"
+            }]
+        if current == visual or visual in current.parents:
+            violations.extend(str(current / d) for d in dirs if d.endswith("-snapshots"))
+            violations.extend(str(current / f) for f in files if f.lower().endswith(".png"))
+        for filename in files:
+            path = current / filename
+            if b"toHave" + b"Screenshot" in path.read_bytes():
+                violations.append(str(path))
+    return violations
+
+
+class ScreenshotPolicyTests(unittest.TestCase):
+    def test_repository_has_no_pixel_baselines(self):
+        self.assertEqual(screenshot_policy_violations(ROOT / "app"), [])
+
+    def test_guard_detects_assertions_directories_and_images(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app = Path(temp)
+            visual = app / "visual-tests"
+            visual.mkdir()
+            (app / "test.ts").write_text("toHave" + "Screenshot")
+            (visual / "example-snapshots").mkdir()
+            (visual / "example.png").write_bytes(b"png")
+            self.assertEqual(len(screenshot_policy_violations(app)), 3)
 
 
 class WorkflowPolicyMutationTests(unittest.TestCase):
@@ -253,10 +290,10 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
 
-    def test_ci_pass_requires_visual_regression_result(self) -> None:
+    def test_ci_pass_requires_ui_tests_result(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         mutated = workflow.replace(
-            '            "${{ needs.visual-regression.result }}" \\\n',
+            '            "${{ needs.ui-tests.result }}" \\\n',
             "",
             1,
         )
@@ -266,7 +303,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
 
     def test_ci_pass_requires_every_parallel_job(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        for job in ("policy", "visual-linux", "rust-lint"):
+        for job in ("policy", "ui-tests", "rust-lint"):
             with self.subTest(job=job):
                 result = f'            "${{{{ needs.{job}.result }}}}"'
                 start = workflow.index(result)
@@ -274,7 +311,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 mutated = workflow[:start] + workflow[end:]
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
-                needs = "needs: [changes, policy, typecheck, visual-linux, visual-regression, rust-lint, rust-macos]"
+                needs = "needs: [changes, policy, typecheck, ui-tests, rust-lint, rust-macos]"
                 dropped = workflow.replace(needs, needs.replace(f", {job}", ""), 1)
                 self.assertNotEqual(workflow, dropped)
                 with self.assertRaises(AssertionError):
