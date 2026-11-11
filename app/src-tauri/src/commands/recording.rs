@@ -3866,6 +3866,195 @@ fn sanitize_browser_site_rules(
         .collect()
 }
 
+pub(crate) fn sanitize_modes(modes: &[serde_json::Value]) -> Vec<crate::state::MurmurMode> {
+    let mut seen = std::collections::HashSet::new();
+    modes
+        .iter()
+        .take(100)
+        .filter_map(|value| {
+            let id = value.get("id")?.as_str()?.trim();
+            let name = value.get("name")?.as_str()?.trim();
+            if id.is_empty()
+                || name.is_empty()
+                || id.len() > 128
+                || name.len() > 128
+                || id.starts_with("builtin.")
+                || !seen.insert(id.to_string())
+            {
+                return None;
+            }
+            let writing_style = parse_writing_style(value.get("writingStyle"));
+            if value
+                .get("writingStyle")
+                .is_some_and(|field| !field.is_null())
+                && writing_style.is_none()
+            {
+                return None;
+            }
+            for field in [
+                "enabled",
+                "cleanupEnabled",
+                "smartFormattingEnabled",
+                "cliFormattingEnabled",
+                "autoPaste",
+            ] {
+                if value
+                    .get(field)
+                    .is_some_and(|field| !field.is_null() && !field.is_boolean())
+                {
+                    return None;
+                }
+            }
+            if !matches!(
+                value
+                    .get("vocabularyPolicy")
+                    .and_then(|value| value.as_str()),
+                None | Some("inherit" | "general" | "technical")
+            ) || !matches!(
+                value.get("contextPolicy").and_then(|value| value.as_str()),
+                None | Some("none" | "project")
+            ) {
+                return None;
+            }
+            let model_id = match value.get("modelId") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(value) => {
+                    let model = value.as_str()?;
+                    model_runtime::model_definition(model).ok()?;
+                    Some(model.to_string())
+                }
+            };
+            let language = match value.get("language") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(value) => {
+                    let language = value.as_str()?;
+                    if !matches!(
+                        language,
+                        "auto"
+                            | "en"
+                            | "es"
+                            | "fr"
+                            | "de"
+                            | "it"
+                            | "pt"
+                            | "nl"
+                            | "ja"
+                            | "ko"
+                            | "zh"
+                            | "ru"
+                            | "pl"
+                            | "tr"
+                            | "hi"
+                            | "ar"
+                    ) {
+                        return None;
+                    }
+                    Some(language.to_string())
+                }
+            };
+            Some(crate::state::MurmurMode {
+                id: id.to_string(),
+                name: name.to_string(),
+                enabled: value
+                    .get("enabled")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(true),
+                writing_style,
+                cleanup_enabled: value
+                    .get("cleanupEnabled")
+                    .and_then(|value| value.as_bool()),
+                smart_formatting_enabled: value
+                    .get("smartFormattingEnabled")
+                    .and_then(|value| value.as_bool()),
+                cli_formatting_enabled: value
+                    .get("cliFormattingEnabled")
+                    .and_then(|value| value.as_bool()),
+                vocabulary_policy: match value
+                    .get("vocabularyPolicy")
+                    .and_then(|value| value.as_str())
+                {
+                    Some("technical") => crate::state::ModeVocabularyPolicy::Technical,
+                    Some("general") => crate::state::ModeVocabularyPolicy::General,
+                    _ => crate::state::ModeVocabularyPolicy::Inherit,
+                },
+                context_policy: match value.get("contextPolicy").and_then(|value| value.as_str()) {
+                    Some("project") => crate::state::ModeContextPolicy::Project,
+                    _ => crate::state::ModeContextPolicy::None,
+                },
+                model_id,
+                language,
+                auto_paste: value.get("autoPaste").and_then(|value| value.as_bool()),
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn sanitize_app_profiles(
+    profiles: &[serde_json::Value],
+) -> Vec<crate::state::AppProfile> {
+    profiles
+        .iter()
+        .filter_map(|p| {
+            let bundle_id = p
+                .get("bundleId")
+                .and_then(|v| v.as_str())?
+                .trim()
+                .to_string();
+            if bundle_id.is_empty() {
+                return None;
+            }
+            let label = p
+                .get("label")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            // null/absent -> None (use global); otherwise the boolean override.
+            let auto_paste_override = p.get("autoPasteOverride").and_then(|v| v.as_bool());
+            let cleanup_override = p.get("cleanupOverride").and_then(|v| v.as_bool());
+            let cli_formatting_override = p.get("cliFormattingOverride").and_then(|v| v.as_bool());
+            let smart_formatting_override =
+                p.get("smartFormattingOverride").and_then(|v| v.as_bool());
+            let writing_style = parse_writing_style(p.get("writingStyle"));
+            let ide_context_enabled = p
+                .get("ideContextEnabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let ide_project_roots = p
+                .get("ideProjectRoots")
+                .and_then(|value| value.as_array())
+                .map(|roots| {
+                    let roots = roots
+                        .iter()
+                        .filter_map(|root| root.as_str())
+                        .map(str::trim)
+                        .filter(|root| !root.is_empty())
+                        .map(str::to_string)
+                        .collect::<Vec<_>>();
+                    crate::ide_context::normalize_config_roots(&roots)
+                })
+                .unwrap_or_default();
+            let mode_id = p
+                .get("modeId")
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            Some(crate::state::AppProfile {
+                bundle_id,
+                label,
+                auto_paste_override,
+                cleanup_override,
+                cli_formatting_override,
+                smart_formatting_override,
+                writing_style,
+                ide_context_enabled,
+                ide_project_roots,
+                mode_id,
+            })
+        })
+        .collect()
+}
+
 #[tauri::command]
 pub async fn configure_dictation(
     options: serde_json::Value,
@@ -4045,129 +4234,7 @@ pub async fn configure_dictation(
     }
 
     if let Some(modes) = options.get("modes").and_then(|value| value.as_array()) {
-        let mut seen = std::collections::HashSet::new();
-        dictation.modes = modes
-            .iter()
-            .take(100)
-            .filter_map(|value| {
-                let id = value.get("id")?.as_str()?.trim();
-                let name = value.get("name")?.as_str()?.trim();
-                if id.is_empty()
-                    || name.is_empty()
-                    || id.len() > 128
-                    || name.len() > 128
-                    || id.starts_with("builtin.")
-                    || !seen.insert(id.to_string())
-                {
-                    return None;
-                }
-                let writing_style = parse_writing_style(value.get("writingStyle"));
-                if value
-                    .get("writingStyle")
-                    .is_some_and(|field| !field.is_null())
-                    && writing_style.is_none()
-                {
-                    return None;
-                }
-                for field in [
-                    "enabled",
-                    "cleanupEnabled",
-                    "smartFormattingEnabled",
-                    "cliFormattingEnabled",
-                    "autoPaste",
-                ] {
-                    if value
-                        .get(field)
-                        .is_some_and(|field| !field.is_null() && !field.is_boolean())
-                    {
-                        return None;
-                    }
-                }
-                if !matches!(
-                    value
-                        .get("vocabularyPolicy")
-                        .and_then(|value| value.as_str()),
-                    None | Some("inherit" | "general" | "technical")
-                ) || !matches!(
-                    value.get("contextPolicy").and_then(|value| value.as_str()),
-                    None | Some("none" | "project")
-                ) {
-                    return None;
-                }
-                let model_id = match value.get("modelId") {
-                    None | Some(serde_json::Value::Null) => None,
-                    Some(value) => {
-                        let model = value.as_str()?;
-                        model_runtime::model_definition(model).ok()?;
-                        Some(model.to_string())
-                    }
-                };
-                let language = match value.get("language") {
-                    None | Some(serde_json::Value::Null) => None,
-                    Some(value) => {
-                        let language = value.as_str()?;
-                        if !matches!(
-                            language,
-                            "auto"
-                                | "en"
-                                | "es"
-                                | "fr"
-                                | "de"
-                                | "it"
-                                | "pt"
-                                | "nl"
-                                | "ja"
-                                | "ko"
-                                | "zh"
-                                | "ru"
-                                | "pl"
-                                | "tr"
-                                | "hi"
-                                | "ar"
-                        ) {
-                            return None;
-                        }
-                        Some(language.to_string())
-                    }
-                };
-                Some(crate::state::MurmurMode {
-                    id: id.to_string(),
-                    name: name.to_string(),
-                    enabled: value
-                        .get("enabled")
-                        .and_then(|value| value.as_bool())
-                        .unwrap_or(true),
-                    writing_style,
-                    cleanup_enabled: value
-                        .get("cleanupEnabled")
-                        .and_then(|value| value.as_bool()),
-                    smart_formatting_enabled: value
-                        .get("smartFormattingEnabled")
-                        .and_then(|value| value.as_bool()),
-                    cli_formatting_enabled: value
-                        .get("cliFormattingEnabled")
-                        .and_then(|value| value.as_bool()),
-                    vocabulary_policy: match value
-                        .get("vocabularyPolicy")
-                        .and_then(|value| value.as_str())
-                    {
-                        Some("technical") => crate::state::ModeVocabularyPolicy::Technical,
-                        Some("general") => crate::state::ModeVocabularyPolicy::General,
-                        _ => crate::state::ModeVocabularyPolicy::Inherit,
-                    },
-                    context_policy: match value
-                        .get("contextPolicy")
-                        .and_then(|value| value.as_str())
-                    {
-                        Some("project") => crate::state::ModeContextPolicy::Project,
-                        _ => crate::state::ModeContextPolicy::None,
-                    },
-                    model_id,
-                    language,
-                    auto_paste: value.get("autoPaste").and_then(|value| value.as_bool()),
-                })
-            })
-            .collect();
+        dictation.modes = sanitize_modes(modes);
     }
     if let Some(id) = options.get("activeModeId").and_then(|value| value.as_str()) {
         let id = id.trim();
@@ -4210,68 +4277,7 @@ pub async fn configure_dictation(
     // missing/null value means "no override". Entries without a bundleId are
     // skipped. Replaces the whole list when the key is present.
     if let Some(profiles) = options.get("appProfiles").and_then(|v| v.as_array()) {
-        dictation.app_profiles = profiles
-            .iter()
-            .filter_map(|p| {
-                let bundle_id = p
-                    .get("bundleId")
-                    .and_then(|v| v.as_str())?
-                    .trim()
-                    .to_string();
-                if bundle_id.is_empty() {
-                    return None;
-                }
-                let label = p
-                    .get("label")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                // null/absent -> None (use global); otherwise the boolean override.
-                let auto_paste_override = p.get("autoPasteOverride").and_then(|v| v.as_bool());
-                let cleanup_override = p.get("cleanupOverride").and_then(|v| v.as_bool());
-                let cli_formatting_override =
-                    p.get("cliFormattingOverride").and_then(|v| v.as_bool());
-                let smart_formatting_override =
-                    p.get("smartFormattingOverride").and_then(|v| v.as_bool());
-                let writing_style = parse_writing_style(p.get("writingStyle"));
-                let ide_context_enabled = p
-                    .get("ideContextEnabled")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let ide_project_roots = p
-                    .get("ideProjectRoots")
-                    .and_then(|value| value.as_array())
-                    .map(|roots| {
-                        let roots = roots
-                            .iter()
-                            .filter_map(|root| root.as_str())
-                            .map(str::trim)
-                            .filter(|root| !root.is_empty())
-                            .map(str::to_string)
-                            .collect::<Vec<_>>();
-                        crate::ide_context::normalize_config_roots(&roots)
-                    })
-                    .unwrap_or_default();
-                let mode_id = p
-                    .get("modeId")
-                    .and_then(|value| value.as_str())
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string);
-                Some(crate::state::AppProfile {
-                    bundle_id,
-                    label,
-                    auto_paste_override,
-                    cleanup_override,
-                    cli_formatting_override,
-                    smart_formatting_override,
-                    writing_style,
-                    ide_context_enabled,
-                    ide_project_roots,
-                    mode_id,
-                })
-            })
-            .collect();
+        dictation.app_profiles = sanitize_app_profiles(profiles);
         let effective_ide_profiles = dictation
             .app_profiles
             .iter()
