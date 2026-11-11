@@ -645,7 +645,6 @@
 .settings-reset-slot { position: relative; }
 .settings-workspace .settings-reset { position: absolute; left: -4px; top: -4px; }
 .settings-shortcut-row { display: grid; grid-template-columns: minmax(0, 1fr) 170px 96px; align-items: center; gap: 12px; min-height: var(--settings-row-height); padding: 7px 16px; border-bottom: 1px solid var(--settings-divider); }
-.settings-shortcut-row:not(:has(> button)) { grid-template-columns: minmax(0, 1fr) auto; }
 .settings-shortcut-row:last-child { border-bottom: 0; }
 .settings-shortcut-label { min-width: 0; font-size: var(--ui-font-label); line-height: var(--ui-leading-label); font-weight: 500; }
 .settings-shortcut-binding { grid-column: 2; display: flex; align-items: center; justify-self: end; gap: 8px; }
