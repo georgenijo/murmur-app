@@ -66,9 +66,14 @@ it.each([false, true])('resets changed Smart Auto-Stop through its owner and res
   else expect(onEnabledChange).toHaveBeenCalledExactlyOnceWith(false);
 });
 
-it('uses one concise description for Smart Auto-Stop', async () => {
+it('explains the Stop on silence prerequisite only when it disables Smart Auto-Stop', async () => {
   mocks.status.mockResolvedValue({ state: 'notDownloaded', sizeBytes: 8679182 });
+  await act(async () => root.render(<SmartAutoStopSettings enabled={false} silenceAutoStopOn={false} isRecording={false} onEnabledChange={() => {}} />));
+  expect(container.querySelector('.settings-row-description')?.textContent).toBe('Needs Stop on silence to stop sooner after you finish speaking');
+
   await act(async () => root.render(<SmartAutoStopSettings enabled={false} silenceAutoStopOn isRecording={false} onEnabledChange={() => {}} />));
-  expect(container.textContent).toContain('Stop sooner after you finish speaking');
-  expect(container.textContent).not.toContain('Needs Stop on silence');
+  expect(container.querySelector('.settings-row-description')?.textContent).toBe('Stop sooner after you finish speaking');
+
+  await act(async () => root.render(<SmartAutoStopSettings enabled={false} silenceAutoStopOn isRecording onEnabledChange={() => {}} />));
+  expect(container.querySelector('.settings-row-description')?.textContent).toBe('Stop sooner after you finish speaking');
 });
