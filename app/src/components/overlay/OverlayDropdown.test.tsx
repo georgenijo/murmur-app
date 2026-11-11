@@ -5,21 +5,27 @@ import { OverlayDropdown } from './OverlayDropdown';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
 import fixture from './overlay-geometry.fixture.json';
 
-it('shows a pending one-recording Mode and restores the bound Mode after consumption', async () => {
-  const props = {
-    geometry: { dropdownH: 34 } as OverlayGeometry, expanded: true,
-    status: 'idle' as const, stillConnecting: false, showTapMissed: false,
-    disabled: false, autoPaste: true, fileOutputEnabled: false,
-    onToggleDisabled: vi.fn(), onToggleAutoPaste: vi.fn(), onOpenSettings: vi.fn(),
-  };
-  const mode = { id: 'builtin.email', name: 'Email', source: 'app_binding' as const };
+it('offers only the disable, auto-paste, and settings quick controls', async () => {
   const container = document.createElement('div');
   const root = createRoot(container);
-  await act(async () => root.render(<OverlayDropdown {...props} mode={{ ...mode, pending: { id: 'builtin.verbatim', name: 'Verbatim' } }} />));
-  expect(container.querySelector('[aria-label="Next recording: Verbatim. Current Mode: Email"]')?.textContent).toBe('Next: Verbatim');
-  await act(async () => root.render(<OverlayDropdown {...props} mode={{ ...mode, pending: null }} />));
-  expect(container.textContent).not.toContain('Next: Verbatim');
-  expect(container.querySelector('[aria-label="Mode: Email. Click to cycle"]')?.textContent).toBe('Email');
+  await act(async () => root.render(
+    <OverlayDropdown
+      geometry={{ dropdownH: 34 } as OverlayGeometry}
+      expanded
+      status="idle"
+      stillConnecting={false}
+      showTapMissed={false}
+      disabled={false}
+      autoPaste
+      fileOutputEnabled={false}
+      onToggleDisabled={vi.fn()}
+      onToggleAutoPaste={vi.fn()}
+      onOpenSettings={vi.fn()}
+    />,
+  ));
+  const labels = [...container.querySelectorAll('button')].map((button) => button.getAttribute('aria-label'));
+  expect(labels).toHaveLength(3);
+  expect(labels.join(' ')).not.toMatch(/mode/i);
   await act(async () => root.unmount());
 });
 
@@ -42,7 +48,7 @@ it('does not render recording shortcut guidance in the idle quick-controls row',
     />,
   ));
 
-  expect(container.textContent).toBe('Everyday');
+  expect(container.textContent).toBe('');
   await act(async () => root.unmount());
 });
 
@@ -66,7 +72,6 @@ it.each(
         disabled={false}
         autoPaste
         fileOutputEnabled={false}
-        mode={{ id: 'long-mode', name: 'A long Mode name', source: 'manual' }}
         onToggleDisabled={vi.fn()}
         onToggleAutoPaste={vi.fn()}
         onOpenSettings={vi.fn()}
@@ -75,7 +80,7 @@ it.each(
     const controls = container.querySelector('[data-testid="overlay-controls-row"]');
     const message = controls?.nextElementSibling;
     expect(controls).not.toBeNull();
-    expect(controls?.querySelectorAll('button')).toHaveLength(4);
+    expect(controls?.querySelectorAll('button')).toHaveLength(3);
     expect(message?.parentElement).toBe(controls?.parentElement);
     expect(controls?.contains(message ?? null)).toBe(false);
     expect(message?.getAttribute('role')).toBe(status === 'recording' ? null : 'status');
@@ -155,7 +160,7 @@ it('grows the floating pill controls upward as one segmented strip', async () =>
   await act(async () => root.render(<OverlayDropdown {...props} autoPaste />));
   const strip = container.querySelector<HTMLElement>('[role="group"][aria-label="Quick settings"]')!;
   expect(strip.classList.contains('bezel-strip')).toBe(true);
-  expect(strip.querySelectorAll('[data-testid="overlay-controls-row"] .bezel-segment')).toHaveLength(4);
+  expect(strip.querySelectorAll('[data-testid="overlay-controls-row"] .bezel-segment')).toHaveLength(3);
   const paste = container.querySelector<HTMLButtonElement>('[role="switch"]')!;
   expect(paste.getAttribute('aria-checked')).toBe('true');
   expect(paste.textContent).toBe('Paste');

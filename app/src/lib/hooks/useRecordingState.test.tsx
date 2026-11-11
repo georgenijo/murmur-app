@@ -315,7 +315,6 @@ describe('useRecordingState transition ordering', () => {
           recording: {
             recordingId: 7,
             modelId: 'parakeet-v3',
-            modeId: null,
             profileId: 'Editor',
             stages: [],
           },
@@ -347,28 +346,27 @@ describe('useRecordingState transition ordering', () => {
         recording: {
           recordingId: 7,
           modelId: 'parakeet-v3',
-          modeId: null,
           profileId: 'Editor',
           stages: [],
         },
       },
     );
     expect(mocks.updateStats).toHaveBeenCalledTimes(1);
-    expect(mocks.updateStats).toHaveBeenCalledWith('one final transcript', 12, null);
+    expect(mocks.updateStats).toHaveBeenCalledWith('one final transcript', 12);
     expect(current.transcription).toBe('one final transcript');
   });
 
-  it('attributes stats to the recording-start Mode once, even for a repeated completion', async () => {
+  it('counts stats once, even for a repeated completion', async () => {
     const payload = {
-      text: 'words completed in another Mode', duration: 8,
-      recording: { recordingId: 81, modelId: 'parakeet-v3', modeId: 'frozen-mode', profileId: null, stages: [] },
+      text: 'words completed twice', duration: 8,
+      recording: { recordingId: 81, modelId: 'parakeet-v3', profileId: null, stages: [] },
     };
     await act(async () => {
       mocks.listeners.get('transcription-complete')?.({ payload });
       mocks.listeners.get('transcription-complete')?.({ payload });
     });
     expect(mocks.updateStats).toHaveBeenCalledOnce();
-    expect(mocks.updateStats).toHaveBeenCalledWith(payload.text, 8, 'frozen-mode');
+    expect(mocks.updateStats).toHaveBeenCalledWith(payload.text, 8);
     expect(mocks.addEntry).toHaveBeenCalledOnce();
   });
 

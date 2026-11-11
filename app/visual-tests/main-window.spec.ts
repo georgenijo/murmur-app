@@ -372,10 +372,10 @@ test('customization hub stays legible and restores focus at native and narrow wi
   const customizationList = page.getByRole('list', { name: 'Customization destinations' });
   const voiceCommands = customizationList.getByRole('button').filter({ hasText: 'Voice commands' });
   await expect(page.getByRole('heading', { name: 'Customize' })).toBeVisible();
-  await expect(customizationList.getByRole('listitem')).toHaveCount(4);
-  await expect(customizationList.getByRole('button')).toHaveCount(4);
+  await expect(customizationList.getByRole('listitem')).toHaveCount(3);
+  await expect(customizationList.getByRole('button')).toHaveCount(3);
   expect(await customizationList.evaluate(element => element.tagName)).toBe('UL');
-  for (const label of ['Text & vocabulary', 'Voice commands', 'App overrides', 'Modes']) {
+  for (const label of ['Text & vocabulary', 'Voice commands', 'App overrides']) {
     await expect(customizationList.getByRole('button', { name: new RegExp(`^${label}`) })).toHaveCount(1);
   }
   await expect(customizationList).not.toContainText(/\b0[1-5]\b/);
@@ -589,26 +589,6 @@ test('settings rows keep the shared spacing contract and aligned controls', asyn
 
   await page.getByRole('button', { name: 'Delivery', exact: true }).click();
   await expectAligned(['auto-paste', 'file-output']);
-});
-
-test('browser-site Mode rules disclose their exact privacy boundary at normal and narrow widths', async ({ page }) => {
-  await page.goto('/visual-fixtures.html?state=settings-site-modes&appearance=light');
-  await page.getByRole('button', { name: 'Modes', exact: true }).click();
-  await page.getByRole('button', { name: /^Technical/ }).click();
-
-  const fixture = page.locator('[data-visual-ready="true"]');
-  const browserSites = page.getByText('Browser sites', { exact: true });
-  await expect(page.getByRole('switch', { name: 'Use browser site mode rules' })).toBeChecked();
-  await expect(page.getByText(/page text and history stay unread/)).toBeVisible();
-  await expect(page.getByRole('textbox', { name: 'Host for github.com' })).toHaveValue('github.com');
-  await browserSites.scrollIntoViewIfNeeded();
-  await page.mouse.move(0, 0);
-
-  await page.setViewportSize({ width: 720, height: 560 });
-  const testCurrentSite = page.getByRole('button', { name: 'Test current site' });
-  await expect(testCurrentSite).toBeVisible();
-  await testCurrentSite.scrollIntoViewIfNeeded();
-  await page.mouse.move(0, 0);
 });
 
 test('appearance matches the compact collection-card layout', async ({ page }) => {
@@ -1210,7 +1190,7 @@ test('the compact 720x560 home keeps actions and history reachable', async ({ pa
 
 test('contextual hint remains readable on Home', async ({ page }) => {
   await page.goto('/visual-fixtures.html?state=discovery-hint&appearance=light');
-  await expect(page.getByText('Use a mode for this site', { exact: true })).toBeVisible();
+  await expect(page.getByText('A double-tap arrived too slowly', { exact: true })).toBeVisible();
 });
 
 test('the compact 720x560 Insights view stacks analytics without horizontal clipping', async ({ page }) => {

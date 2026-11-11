@@ -16,8 +16,6 @@ import {
 } from './components/settings';
 import { CommandPalette } from './components/CommandPalette';
 import type { PaletteCommand } from './lib/commandPalette';
-import { nextRecordingCommands } from './lib/nextRecordingCommands';
-import { useModeRuntime } from './lib/hooks/useModeRuntime';
 import { isEditableTarget, mainWindowShortcut } from './lib/keyboardShortcuts';
 import { saveHistoryExport } from './lib/historyExport';
 import { useMicrophonePermission } from './lib/hooks/useMicrophonePermission';
@@ -459,13 +457,6 @@ function App() {
 
   // ---- Command palette (⌘K) ----------------------------------------------
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
-  const modeRuntime = useModeRuntime();
-  const setNextRecordingMode = useCallback((modeId: string | null) => {
-    void modeRuntime.setNext(modeId).catch((error: unknown) => presentDeliveryRecoveryNotice({
-      message: String(error),
-      retryable: false,
-    }));
-  }, [modeRuntime.setNext, presentDeliveryRecoveryNotice]);
   const openSettingsTarget = useCallback((target: Omit<SettingsPageRequest, 'token'>) => {
     if (!mainAppReady) return;
     beginCurrentUiTransition(settingsLatencyView(target.page), 'programmatic');
@@ -539,7 +530,6 @@ function App() {
         keywords: ['dictate', 'microphone', 'transcribe'],
         run: () => { void (isRecording ? handleStop() : handleStart()); },
       }] : []),
-      ...nextRecordingCommands(modeRuntime.status, setNextRecordingMode),
       {
         id: 'meeting-toggle',
         title: meetings.status.phase === 'processing' || meetings.status.phase === 'stopping'
@@ -674,7 +664,6 @@ function App() {
     updateSettings, handleStart, handleStop,
     focusHistorySearch, openSettingsPage, closeSettings, checkForUpdate, setShowAbout, pickMediaFiles,
     meetings, presentDeliveryRecoveryNotice, rerunSetup,
-    modeRuntime.status, setNextRecordingMode,
   ]);
 
   const [dismissedExternalErrorKey, setDismissedExternalErrorKey] = useState('');
@@ -850,7 +839,6 @@ function App() {
                 </section>
               ) : (
                 <InsightsView
-                  modes={settings.modes}
                   statsVersion={combinedStatsVersion}
                   onBackToHome={backToHome}
                 />

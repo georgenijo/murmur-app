@@ -10,7 +10,6 @@ import { useOverlayRuntime } from '../lib/hooks/useOverlayRuntime';
 import { useOverlaySettingsMirror } from '../lib/hooks/useOverlaySettingsMirror';
 import { useRecordingControls } from '../lib/hooks/useRecordingControls';
 import { OverlayIsland } from './overlay/OverlayIsland';
-import { useModeRuntime } from '../lib/hooks/useModeRuntime';
 import { useAudioInputInventory } from '../lib/hooks/useAudioInputInventory';
 import { useSmartAutoMicrophoneStatus } from '../lib/hooks/useSmartAutoMicrophoneStatus';
 import { deriveVisual } from './overlay/deriveVisual';
@@ -117,7 +116,6 @@ export function OverlayWidget() {
     floating: settingsMirror.overlayPlacement === 'floating_pill',
     shown: activity !== 'idle', expanded, content: overlayContent,
   });
-  const modeRuntime = useModeRuntime();
 
   const recordingControls = useRecordingControls({
     status, statusRef, disabledRef: runtime.disabledRef, expandedRef,
@@ -268,11 +266,6 @@ export function OverlayWidget() {
             disabled={runtime.disabled}
             autoPaste={settingsMirror.autoPaste}
             fileOutputEnabled={settingsMirror.fileOutputEnabled}
-            mode={modeRuntime.status}
-            onCycleMode={(event) => {
-              event.stopPropagation();
-              void modeRuntime.cycle();
-            }}
             onToggleDisabled={settingsMirror.handleToggleDisabled}
             onToggleAutoPaste={settingsMirror.handleToggleAutoPaste}
             onOpenSettings={settingsMirror.handleOpenSettings}

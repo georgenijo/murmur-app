@@ -17,7 +17,6 @@ for (const [pane, label, sheet] of [
   ['text', 'Manage project scan', 'Project scan'],
   ['delivery', 'Manage app overrides', 'App overrides'],
   ['customize', 'Voice commands', 'Voice commands'],
-  ['modes', 'Add an app', 'App overrides'],
 ] as const) {
   test(`non-focusing ${pane} ${label} activation restores the actual caller`, async ({ page }) => {
     await open(page, pane);
@@ -60,19 +59,6 @@ for (const appearance of ['light', 'dark']) {
       await advanced(page).evaluate(el => el.scrollIntoView({ block: 'start' }));
     });
   }
-  test(`${appearance} browser site rows fold inside their card`, async ({ page }) => {
-    await open(page, 'modes', appearance);
-    const toggle = page.getByRole('switch', { name: 'Use browser site mode rules' });
-    const sites = page.getByRole('group', { name: 'Browser sites', exact: true });
-    // Center the feature rather than clamping to the page bottom, whose
-    // rounded scroll height can move otherwise identical content by one pixel.
-    await sites.evaluate(element => element.scrollIntoView({ block: 'center' }));
-    await expect(toggle).toBeInViewport();
-    await expect(page.getByRole('textbox', { name: 'Site rule host', exact: true })).toHaveCount(0);
-    await toggle.check();
-    await sites.evaluate(element => element.scrollIntoView({ block: 'center' }));
-    await expect(page.getByRole('textbox', { name: 'Site rule host', exact: true })).toBeInViewport();
-  });
   test(`${appearance} appearance editor remains a sheet`, async ({ page }) => {
     await open(page, 'appearance', appearance);
     await page.getByRole('button', { name: 'Create theme', exact: true }).click();
@@ -156,7 +142,6 @@ for (const [query, parent, child] of [
   ['Project scan', 'developer-terms', 'project-scan'],
   ['Remove filler words', 'cleanup', 'cleanup-filler'],
   ['Paste delay', 'auto-paste', 'paste-delay'],
-  ['Browser site rules', 'browser-sites', 'browser-site-rules'],
 ] as const) {
   test(`search for ${query} reveals its off parent without enabling anything`, async ({ page }) => {
     await open(page, 'text', 'light', 'no-preference');

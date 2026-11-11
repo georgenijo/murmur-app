@@ -19,7 +19,6 @@ export interface ActivityStats {
     taught: number;
     byScope: Record<KnowledgeScope['kind'], number>;
   };
-  recordingsByMode: Record<string, number>;
   pasteLastUses: number;
   monthlyBuckets: Record<string, ActivityMonth>;
 }
@@ -55,8 +54,9 @@ export function activityMonth(value?: unknown): ActivityMonth {
   return { ...transformCounts(raw), meetings: count(raw.meetings), meetingMinutes: duration(raw.meetingMinutes) };
 }
 
-// Mode IDs and preset names are the only private labels accepted here. Never
-// pass the stats blob or these keys to diagnostics, logs, or telemetry.
+// Preset names are the only private labels accepted here. Never pass the stats
+// blob or these keys to diagnostics, logs, or telemetry. `recordingsByMode` from
+// older blobs is ignored and dropped on the next save.
 export function sanitizeActivityStats(value: unknown): ActivityStats {
   const raw = record(value);
   const meetings = record(raw.meetings);
@@ -80,9 +80,6 @@ export function sanitizeActivityStats(value: unknown): ActivityStats {
       taught: count(corrections.taught),
       byScope: { global: count(scopes.global), app: count(scopes.app), project: count(scopes.project) },
     },
-    recordingsByMode: Object.fromEntries(Object.entries(record(raw.recordingsByMode))
-      .filter(([id]) => id.length > 0)
-      .map(([id, total]) => [id, count(total)])),
     pasteLastUses: count(raw.pasteLastUses),
     monthlyBuckets: Object.fromEntries(Object.entries(record(raw.monthlyBuckets))
       .filter(([month]) => /^\d{4}-(0[1-9]|1[0-2])$/.test(month))
@@ -148,17 +145,12 @@ export function getActivityInsights(stats: {
   activity: ActivityStats;
 }, now = new Date()) {
   const month = activityMonth(stats.activity.monthlyBuckets[monthKey(now)]);
-  const mostUsedMode = Object.entries(stats.activity.recordingsByMode)
-    .filter(([, count]) => count > 0)
-    .sort(([idA, countA], [idB, countB]) => countB - countA || idA.localeCompare(idB))[0];
   const mostUsedTransform = Object.entries(stats.activity.transforms.byPresetName)
     .filter(([, counts]) => counts.runs > 0)
     .sort(([nameA, countsA], [nameB, countsB]) => countsB.runs - countsA.runs || nameA.localeCompare(nameB))[0];
   return {
     dictationMinutes: stats.totalDurationSeconds / 60,
     typingMinutesSaved: Math.max(0, stats.totalWords / ASSUMED_TYPING_WPM - stats.totalDurationSeconds / 60),
-    mostUsedModeId: mostUsedMode?.[0] ?? null,
-    mostUsedModeRecordings: mostUsedMode?.[1] ?? 0,
     mostUsedTransformName: mostUsedTransform?.[0] ?? null,
     mostUsedTransformRuns: mostUsedTransform?.[1].runs ?? 0,
     month,

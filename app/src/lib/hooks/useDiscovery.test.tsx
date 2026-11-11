@@ -57,23 +57,19 @@ describe('discovery event receipts', () => {
     await act(async () => {
       emit('hotkey-tap-rejected', { reason: 'second_tap_expired', privateText: 'SECRET' });
       emit('hotkey-tap-rejected', { reason: 'second_tap_expired' });
-      emit('transcription-complete', {
-        text: 'SECRET TRANSCRIPT',
-        teachingContext: { appBundleId: 'com.apple.Safari', appLabel: 'SECRET WINDOW' },
-      });
       entries = [{ id: 'SECRET ENTRY', text: 'SECRET HISTORY', timestamp: 1, duration: 1 }];
       root.render(<Harness />);
     });
 
     expect(loadDiscoveryState()?.pendingHints).toEqual([
-      'double_tap_timing', 'browser_modes', 'correct_and_teach',
+      'double_tap_timing', 'correct_and_teach',
     ]);
     expect(localStorage.getItem('murmur_discovery_v2')).not.toContain('SECRET');
 
     await act(async () => root.unmount());
     root = createRoot(container);
     await act(async () => root.render(<Harness />));
-    expect(loadDiscoveryState()?.pendingHints).toHaveLength(3);
+    expect(loadDiscoveryState()?.pendingHints).toHaveLength(2);
   });
 
   it('detects a new entry by identity when retained history stays at its cap', async () => {
@@ -96,31 +92,43 @@ describe('discovery event receipts', () => {
 
   it('visibly dismisses and queues hints while legacy cleanup keeps failing, including after remount', async () => {
     await act(async () => root.unmount());
-    const pending = { version: 2, pendingHints: ['browser_modes'], dismissedHints: [] };
+    const pending = { version: 2, pendingHints: ['double_tap_timing'], dismissedHints: [] };
     localStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify(pending));
     localStorage.setItem('murmur_discovery_v1', JSON.stringify({ ...pending, version: 1 }));
     const cleanup = vi.spyOn(localStorage, 'removeItem').mockImplementation(() => { throw new Error('cleanup unavailable'); });
     try {
       root = createRoot(container);
       await act(async () => root.render(<Harness />));
-      expect(container.querySelector('output')?.textContent).toBe('browser_modes');
+      expect(container.querySelector('output')?.textContent).toBe('double_tap_timing');
       await act(async () => container.querySelector('button')!.click());
       expect(container.querySelector('output')?.textContent).toBe('');
       expect(container.querySelector('button')).toBeNull();
-      expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual({ ...pending, pendingHints: [], dismissedHints: ['browser_modes'] });
+      expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual({ ...pending, pendingHints: [], dismissedHints: ['double_tap_timing'] });
       await act(async () => {
         entries = [{ id: 'new-fixture', text: 'fixture', timestamp: 1, duration: 1 }];
         root.render(<Harness />);
       });
       expect(container.querySelector('output')?.textContent).toBe('correct_and_teach');
-      expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual({ version: 2, pendingHints: ['correct_and_teach'], dismissedHints: ['browser_modes'] });
+      expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual({ version: 2, pendingHints: ['correct_and_teach'], dismissedHints: ['double_tap_timing'] });
       await act(async () => root.unmount());
       root = createRoot(container);
       await act(async () => root.render(<Harness />));
       expect(container.querySelector('output')?.textContent).toBe('correct_and_teach');
-      expect(container.textContent).not.toContain('browser_modes');
+      expect(container.textContent).not.toContain('double_tap_timing');
       expect(localStorage.getItem('murmur_discovery_v1')).not.toBeNull();
     } finally { cleanup.mockRestore(); }
+  });
+
+  it('ignores a retired hint id left in stored discovery state and drops it on the next write', async () => {
+    await act(async () => root.unmount());
+    localStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify({
+      version: 2, pendingHints: ['browser_modes', 'double_tap_timing'], dismissedHints: ['browser_modes'],
+    }));
+    root = createRoot(container);
+    await act(async () => root.render(<Harness />));
+    expect(container.querySelector('output')?.textContent).toBe('double_tap_timing');
+    expect(loadDiscoveryState()).toEqual({ version: 2, pendingHints: ['double_tap_timing'], dismissedHints: [] });
+    expect(localStorage.getItem(DISCOVERY_STORAGE_KEY)).not.toContain('browser_modes');
   });
 
 });
@@ -223,7 +231,7 @@ describe('discovery storage failure matrix', () => {
               const discovery = useDiscovery({ enabled: true, historyEntries: entries });
               return <>
                 <output>{JSON.stringify(discovery.state)}</output>
-                <button onClick={() => discovery.dismissHint('browser_modes')}>Dismiss</button>
+                <button onClick={() => discovery.dismissHint('correct_and_teach')}>Dismiss</button>
               </>;
             }
             const checkpoint = (returned?: State) => {
@@ -240,7 +248,7 @@ describe('discovery storage failure matrix', () => {
                 for (const step of operation.steps) {
                   const state = step === 'load' ? loadDiscoveryState()
                     : step === 'initialize' ? initializeGrandfatheredDiscovery()
-                      : step === 'dismiss' ? dismissDiscoveryHint('browser_modes') : enqueueDiscoveryHint('correct_and_teach');
+                      : step === 'dismiss' ? dismissDiscoveryHint('correct_and_teach') : enqueueDiscoveryHint('correct_and_teach');
                   checkpoint(state);
                 }
               } else {

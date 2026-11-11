@@ -29,9 +29,6 @@ export function useSettings() {
   const [probeConfigureError, setProbeConfigureError] = useState<string | null>(null);
   const settingsRef = useRef(settings);
   const confirmedConfigureSettingsRef = useRef(settings);
-  // Bumped on every native-selected mode so an older full-configure
-  // acknowledgement cannot restore the previous mode in the confirmed snapshot.
-  const nativeModeVersionRef = useRef(0);
   const configureVersionRef = useRef(0);
   const desiredProbePolicyRef = useRef<SmartAutoProbePolicy>(smartAutoProbePolicy(settings));
   const desiredProbePolicyVersionRef = useRef(0);
@@ -231,39 +228,6 @@ export function useSettings() {
     });
   }, [persistSettings]);
 
-  // Native overlay/tray cycling owns the immediate runtime transition. Mirror
-  // manual selections into durable Settings without replaying the command.
-  useEffect(() => {
-    let cancelled = false;
-    let unlisten: (() => void) | null = null;
-    listen<unknown>('mode-manual-changed', ({ payload }) => {
-      const modeId = (payload as { modeId?: unknown } | null)?.modeId;
-      if (typeof modeId !== 'string' || settingsRef.current.activeModeId === modeId) return;
-      const next = { ...settingsRef.current, activeModeId: modeId };
-      settingsRef.current = next;
-      nativeModeVersionRef.current += 1;
-      confirmedConfigureSettingsRef.current = {
-        ...confirmedConfigureSettingsRef.current, activeModeId: modeId,
-      };
-      setSettings(next);
-      persistSettings(next);
-      // A pending full configure may still carry the previous mode. Reapply
-      // only the native-selected mode after that queue drains.
-      void configure({ activeModeId: modeId }, {
-        onSuccess: () => {
-          confirmedConfigureSettingsRef.current = {
-            ...confirmedConfigureSettingsRef.current, activeModeId: modeId,
-          };
-        },
-        onError: () => { console.error('Failed to synchronize the selected mode.'); },
-      }).catch(() => {});
-      void emit('settings-changed');
-    }).then((fn) => {
-      if (cancelled) fn(); else unlisten = fn;
-    });
-    return () => { cancelled = true; unlisten?.(); };
-  }, [persistSettings]);
-
   // Persist backend-driven disabled changes (the tray's "Disable Murmur" item).
   // The equality guard makes this window's own set_app_disabled echo a no-op.
   useEffect(() => {
@@ -283,12 +247,9 @@ export function useSettings() {
     return () => { cancelled = true; unlisten?.(); };
   }, [persistSettings]);
 
-  // Record a full configuration as native-confirmed, keeping any mode that
-  // native code selected after the call was queued.
-  const confirmConfigured = useCallback((configured: Settings, nativeModeVersion: number) => {
-    confirmedConfigureSettingsRef.current = nativeModeVersionRef.current === nativeModeVersion
-      ? configured
-      : { ...configured, activeModeId: confirmedConfigureSettingsRef.current.activeModeId };
+  // Record a full configuration as native-confirmed.
+  const confirmConfigured = useCallback((configured: Settings) => {
+    confirmedConfigureSettingsRef.current = configured;
   }, []);
 
   const updateSettings = useCallback((updates: Partial<Settings>) => {
@@ -352,7 +313,7 @@ export function useSettings() {
       });
     }
 
-    if ('captureStandbyEnabled' in updates || 'captureStandbySeconds' in updates || 'capturePreRollMs' in updates || 'model' in updates || 'autoPaste' in updates || 'disabled' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'recordingMode' in updates || 'doubleTapKey' in updates || 'hotkeyMissFeedback' in updates || 'overlayVerticalOffset' in updates || 'overlayPlacement' in updates || 'overlayLiveWords' in updates || 'activeModeId' in updates || 'modes' in updates || 'appProfiles' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates || probePolicyChanged) {
+    if ('captureStandbyEnabled' in updates || 'captureStandbySeconds' in updates || 'capturePreRollMs' in updates || 'model' in updates || 'autoPaste' in updates || 'disabled' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'recordingMode' in updates || 'doubleTapKey' in updates || 'hotkeyMissFeedback' in updates || 'overlayVerticalOffset' in updates || 'overlayPlacement' in updates || 'overlayLiveWords' in updates || 'appProfiles' in updates || probePolicyChanged) {
       // Notify the overlay window (separate React context) so its quick-settings
       // controls reflect changes made here. The diff-guard in applyExternalSettings
       // prevents this window from re-applying its own change.
@@ -361,11 +322,10 @@ export function useSettings() {
 
     if (probePolicyChanged) scheduleProbePolicyWrite();
 
-    if ('captureStandbyEnabled' in updates || 'captureStandbySeconds' in updates || 'capturePreRollMs' in updates || 'model' in updates || 'language' in updates || 'autoPaste' in updates || 'smartDestinationEnabled' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'vocabularyEntries' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'mirrorToNotchPill' in updates || 'outputDir' in updates || 'appProfiles' in updates || 'modes' in updates || 'activeModeId' in updates || 'siteModeLookupEnabled' in updates || 'browserSiteRules' in updates || 'voiceCommandsEnabled' in updates || 'voiceCommands' in updates || 'cleanupEnabled' in updates || 'smartFormattingEnabled' in updates || 'cleanupRemoveFiller' in updates || 'cleanupCapitalize' in updates || 'codeVocabEnabled' in updates || 'codeVocabFolder' in updates || 'correctionEnabled' in updates || 'correctionFuzzy' in updates || 'homophoneContextEnabled' in updates) {
+    if ('captureStandbyEnabled' in updates || 'captureStandbySeconds' in updates || 'capturePreRollMs' in updates || 'model' in updates || 'language' in updates || 'autoPaste' in updates || 'smartDestinationEnabled' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'vocabularyEntries' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'mirrorToNotchPill' in updates || 'outputDir' in updates || 'appProfiles' in updates || 'voiceCommandsEnabled' in updates || 'voiceCommands' in updates || 'cleanupEnabled' in updates || 'smartFormattingEnabled' in updates || 'cleanupRemoveFiller' in updates || 'cleanupCapitalize' in updates || 'codeVocabEnabled' in updates || 'codeVocabFolder' in updates || 'correctionEnabled' in updates || 'correctionFuzzy' in updates || 'homophoneContextEnabled' in updates) {
       const version = ++configureVersionRef.current;
-      const nativeModeVersion = nativeModeVersionRef.current;
       void configure(buildConfigureOptions(newSettings), {
-        onSuccess: () => { confirmConfigured(newSettings, nativeModeVersion); },
+        onSuccess: () => { confirmConfigured(newSettings); },
         onError: () => {
           console.error('Failed to configure settings; previous values restored.');
           if (configureVersionRef.current === version) {
@@ -390,10 +350,6 @@ export function useSettings() {
               mirrorToNotchPill: confirmed.mirrorToNotchPill,
               outputDir: confirmed.outputDir,
               appProfiles: confirmed.appProfiles,
-              modes: confirmed.modes,
-              activeModeId: confirmed.activeModeId,
-              siteModeLookupEnabled: confirmed.siteModeLookupEnabled,
-              browserSiteRules: confirmed.browserSiteRules,
               voiceCommandsEnabled: confirmed.voiceCommandsEnabled,
               voiceCommands: confirmed.voiceCommands,
               cleanupEnabled: confirmed.cleanupEnabled,

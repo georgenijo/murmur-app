@@ -2,7 +2,6 @@ import { useMemo } from 'react';
 import { ChevronRight } from 'lucide-react';
 import { loadStats } from '../../lib/stats';
 import { ASSUMED_TYPING_WPM, getActivityInsights } from '../../lib/activityStats';
-import type { MurmurMode } from '../../lib/settings';
 import { getUsageOverview } from '../../lib/homeDashboard';
 import { UsageDashboard } from '../UsageDashboard';
 import { DashboardStatGroup, WorkspacePageHeader, type DashboardStatItem } from '../ui/DashboardPrimitives';
@@ -12,7 +11,6 @@ interface InsightsViewProps {
   statsVersion: number;
   initialMetric?: 'words' | 'wpm';
   defaultMoreOpen?: boolean;
-  modes?: readonly MurmurMode[];
   onBackToHome: () => void;
 }
 

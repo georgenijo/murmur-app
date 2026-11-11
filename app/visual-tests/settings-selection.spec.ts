@@ -14,7 +14,6 @@ const navigationLabels = [
   'Meetings',
   'Text & vocabulary',
   'AI & models',
-  'Modes',
   'Appearance',
 ] as const;
 
@@ -38,29 +37,16 @@ for (const appearance of appearances) {
       await expect(page.getByRole('heading', { name: 'Customize', exact: true, level: 1 })).toBeVisible();
 
       const customizeIcon = customize.locator('svg').evaluate((svg) => svg.innerHTML);
-      const modesIcon = navigation.getByRole('button', { name: 'Modes', exact: true }).locator('svg').evaluate((svg) => svg.innerHTML);
-      expect(await customizeIcon).not.toBe(await modesIcon);
+      const appearanceIcon = navigation.getByRole('button', { name: 'Appearance', exact: true }).locator('svg').evaluate((svg) => svg.innerHTML);
+      expect(await customizeIcon).not.toBe(await appearanceIcon);
 
       await expect(customize).toHaveCSS('border-top-width', '0px');
       await expect(customize).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
 
-      await navigation.getByRole('button', { name: 'Modes', exact: true }).click();
-      const modeList = page.getByRole('list', { name: 'Modes' });
-      const modeRow = modeList.getByRole('button', { name: /^Technical/ }).first();
-      await expect(modeRow).toBeVisible();
-      await modeRow.click();
-      await expect(modeRow).toHaveAttribute('aria-pressed', 'true');
-
-      const selectedModeStyle = await modeRow.evaluate((element) => {
-        const style = getComputedStyle(element);
-        return {
-          borderTopWidth: style.borderTopWidth,
-          borderTopColor: style.borderTopColor,
-          boxShadow: style.boxShadow,
-        };
-      });
-      expect(selectedModeStyle.boxShadow).toBe('none');
-      await expect(modeRow.locator('svg')).toHaveCount(1);
+      const delivery = navigation.getByRole('button', { name: 'Delivery', exact: true });
+      await delivery.click();
+      await expect(delivery).toHaveAttribute('aria-current', 'page');
+      await expect(customize).not.toHaveAttribute('aria-current', 'page');
     });
   }
 }

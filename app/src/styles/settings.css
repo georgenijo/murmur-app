@@ -354,7 +354,6 @@
   .settings-back-btn,
   .settings-quiet-btn,
   .settings-segmented-btn,
-  .settings-mode-row,
   .settings-workspace button[role='combobox'],
   .settings-workspace input[type],
   .settings-workspace input:not([type]),
@@ -562,12 +561,12 @@
 .settings-sidebar :is(nav, .settings-nav-tools) > * { margin-block: 0; }
 /* Legacy panes use native action elements. Keep their behavior while giving
    bordered actions the same geometry as the shared Base UI button. */
-.settings-workspace button:is([class*='px-3'][class*='py-'], [class*='px-4'][class*='py-'], [class*='px-2'][class*='py-']):not([role]):not(.settings-nav-item):not(.settings-setting-row):not(.settings-card):not(.settings-mode-row):not(.settings-segmented-btn):not(.settings-search-result):not([aria-expanded]) {
+.settings-workspace button:is([class*='px-3'][class*='py-'], [class*='px-4'][class*='py-'], [class*='px-2'][class*='py-']):not([role]):not(.settings-nav-item):not(.settings-setting-row):not(.settings-card):not(.settings-segmented-btn):not(.settings-search-result):not([aria-expanded]) {
   min-height: var(--ui-control-standard); height: var(--ui-control-standard); padding: 0 calc(12px - 1px); border-width: 1px; border-style: solid; border-radius: var(--ui-radius-control); font-size: var(--ui-font-label); line-height: var(--ui-leading-label); font-weight: 500;
   /* Paint only legacy controls; shared-family and danger colors have their own owner. */
   &:not(:where(.ui-secondary-button, .ui-form-button, .settings-quiet-btn, .settings-back-btn, .text-error, [data-tone="danger"], [data-confirming="true"])) { border-color: var(--ui-control-border); }
 }
-.settings-workspace button:is([class*='px-3'][class*='py-'], [class*='px-4'][class*='py-'], [class*='px-2'][class*='py-']):not([role]):not(.settings-nav-item):not(.settings-setting-row):not(.settings-card):not(.settings-mode-row):not(.settings-segmented-btn):not(.settings-search-result):not([aria-expanded]):active:not(:disabled) { transform: scale(var(--ui-button-press-scale)); }
+.settings-workspace button:is([class*='px-3'][class*='py-'], [class*='px-4'][class*='py-'], [class*='px-2'][class*='py-']):not([role]):not(.settings-nav-item):not(.settings-setting-row):not(.settings-card):not(.settings-segmented-btn):not(.settings-search-result):not([aria-expanded]):active:not(:disabled) { transform: scale(var(--ui-button-press-scale)); }
 
 .settings-title-description > p { font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); text-wrap: pretty; max-width: var(--settings-description-max); margin-top: var(--settings-copy-gap); }
 .ui-switch-thumb { transform: translateX(0); transform-origin: left center; transition: transform var(--ui-switch-knob-duration), scale 100ms; }
@@ -591,41 +590,7 @@
   .settings-dependent-branch { transition: none !important; }
 }
 
-/* Modes page (#931): headed cards built from shared rows. */
-.settings-modes { display: flex; flex-direction: column; gap: 16px; }
-.settings-modes-list { display: flex; flex-direction: column; }
-.settings-modes-list > .settings-mode-row { display: flex; align-items: center; min-width: 0; min-height: var(--settings-row-height); padding: var(--settings-row-pad) var(--settings-row-x); color: var(--murmur-on-surface); text-align: left; cursor: pointer; }
-.settings-modes-list > .settings-mode-row + .settings-mode-row { border-top: 1px solid var(--settings-divider); }
-.settings-modes-list > .settings-mode-row:not([aria-pressed='true']):hover { background: var(--murmur-surface-container-low); }
-.settings-modes-list > .settings-mode-row:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: -2px; }
 .settings-destination-list > li + li { border-top: 1px solid var(--settings-divider); }
-.settings-mode-row-name { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--ui-font-body); line-height: var(--ui-leading-body); font-weight: 500; }
-.settings-mode-row-status { display: block; font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); color: var(--murmur-on-surface-variant); }
-.settings-mode-row-check { width: 16px; height: 16px; flex: none; color: var(--murmur-primary); stroke-width: 1.75; }
-.settings-modes .settings-row-layout:not(:has(> .settings-row-controls)) { grid-template-columns: minmax(0, 1fr); }
-.settings-modes-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.settings-modes-note { margin-top: 8px; font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); color: var(--murmur-on-surface-variant); }
-.settings-modes-error { color: var(--murmur-error); }
-.ui-form-button.settings-modes-danger { color: var(--murmur-error); }
-.settings-modes-import { margin-top: 12px; font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); color: var(--murmur-on-surface); }
-.settings-modes-import > * + * { margin-top: 8px; }
-.settings-modes-import > .settings-modes-actions { justify-content: flex-start; }
-.settings-modes-site-form { display: grid; grid-template-columns: minmax(0, 176px) minmax(0, 1fr) auto; gap: 8px; margin-top: 12px; }
-.settings-modes-site-rule { display: grid; grid-template-columns: auto minmax(0, 176px) minmax(0, 1fr) auto; align-items: center; gap: 8px; }
-.settings-modes-site-rule .ui-form-input { height: var(--ui-control-compact); }
-.settings-modes-sample { display: block; width: 100%; min-height: 72px; margin-top: 12px; padding-block: 8px; resize: vertical; }
-.settings-modes-preview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.settings-modes-preview-label { font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); font-weight: 500; color: var(--murmur-on-surface-variant); }
-.settings-modes-preview-text { margin-top: 4px; min-height: 40px; padding: 8px 12px; border: 1px solid var(--settings-divider); border-radius: var(--ui-radius-control); background: var(--murmur-surface-container-low); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--ui-font-label); line-height: var(--ui-leading-label); color: var(--murmur-on-surface); }
-.settings-modes-preview-text[data-tone='after'] { background: var(--settings-tint-accent-subtle); border-color: color-mix(in srgb, var(--murmur-primary) 30%, var(--settings-divider)); }
-@container settings-fields (width < 512px) {
-  .settings-modes-site-form, .settings-modes-site-rule, .settings-modes-preview { grid-template-columns: minmax(0, 1fr); }
-  .settings-modes-site-rule > [role='switch'] { justify-self: start; }
-}
-/* The Browser sites group keeps its row and folded rules flush with the card. */
-.settings-rows > .settings-modes-sites { padding: 0; }
-.settings-modes-sites > .settings-setting-row { padding: var(--settings-row-pad) var(--settings-row-x); }
-.settings-modes-sites > .settings-dependent-branch { padding: 0; border: 0; }
 
 /* Approved Settings window: one centered column and repeated group geometry. */
 .settings-window-header { position: relative; }

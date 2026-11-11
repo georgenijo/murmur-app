@@ -129,7 +129,7 @@ export function saveStats(stats: DictationStats): void {
   }
 }
 
-export function updateStats(text: string, durationSeconds: number, modeId?: string | null): void {
+export function updateStats(text: string, durationSeconds: number): void {
   try {
     const stats = loadStats();
     const wordCount = text.trim() === '' ? 0 : text.trim().split(/\s+/).length;
@@ -155,14 +155,8 @@ export function updateStats(text: string, durationSeconds: number, modeId?: stri
       },
     };
 
-    const previous = modeId && Object.prototype.hasOwnProperty.call(stats.activity.recordingsByMode, modeId)
-      ? stats.activity.recordingsByMode[modeId] : 0;
-    const recordingsByMode = typeof modeId === 'string' && modeId.length > 0
-      ? { ...stats.activity.recordingsByMode, [modeId]: previous + 1 }
-      : stats.activity.recordingsByMode;
     saveStats({
       ...stats,
-      activity: { ...stats.activity, recordingsByMode },
       totalWords: stats.totalWords + wordCount,
       totalRecordings: stats.totalRecordings + 1,
       totalDurationSeconds: stats.totalDurationSeconds + durationSeconds,

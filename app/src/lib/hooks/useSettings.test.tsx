@@ -206,82 +206,7 @@ describe('useSettings configure rollback privacy', () => {
     expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}').vocabularyEntries).toEqual([]);
   });
 
-  it('preserves a native-selected mode when a later alias edit is rejected', async () => {
-    let onModeChanged: ((event: { payload: { modeId: string } }) => void) | null = null;
-    mocks.listen.mockImplementation(async (event, callback) => {
-      if (event === 'mode-manual-changed') {
-        onModeChanged = callback as (event: { payload: { modeId: string } }) => void;
-      }
-      return () => {};
-    });
-    await mountHarness();
-    await act(async () => {
-      onModeChanged?.({ payload: { modeId: 'builtin.technical' } });
-      await Promise.resolve();
-    });
-    expect(mocks.configure).toHaveBeenCalledWith({ activeModeId: 'builtin.technical' });
-
-    mocks.configure.mockRejectedValueOnce(new Error('invalid alias'));
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-    await act(async () => {
-      current.updateSettings({ vocabularyEntries: [{
-        id: 'term', written: 'Tauri', aliases: ['Tory'], enabled: true,
-        scope: { kind: 'global' },
-      }], customVocabulary: 'Tauri' });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    expect(current.settings.activeModeId).toBe('builtin.technical');
-    expect(current.settings.vocabularyEntries).toEqual([]);
-  });
-
-  it('keeps the native-selected mode after an older full configure completes', async () => {
-    let onModeChanged: ((event: { payload: { modeId: string } }) => void) | null = null;
-    mocks.listen.mockImplementation(async (event, callback) => {
-      if (event === 'mode-manual-changed') {
-        onModeChanged = callback as (event: { payload: { modeId: string } }) => void;
-      }
-      return () => {};
-    });
-    await mountHarness();
-    const oldConfigure = deferred<void>();
-    const modeConfigure = deferred<void>();
-    mocks.configure
-      .mockReturnValueOnce(oldConfigure.promise)
-      .mockReturnValueOnce(modeConfigure.promise)
-      .mockRejectedValueOnce(new Error('invalid alias'));
-    vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    current.updateSettings({ language: 'fr' });
-    await act(async () => onModeChanged?.({ payload: { modeId: 'builtin.technical' } }));
-    await act(async () => {
-      oldConfigure.resolve(undefined);
-      await Promise.resolve();
-      modeConfigure.resolve(undefined);
-      await Promise.resolve();
-    });
-    await act(async () => {
-      current.updateSettings({ vocabularyEntries: [{
-        id: 'term', written: 'Tauri', aliases: ['Tory'], enabled: true,
-        scope: { kind: 'global' },
-      }], customVocabulary: 'Tauri' });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(current.settings.activeModeId).toBe('builtin.technical');
-    expect(current.settings.language).toBe('fr');
-    expect(current.settings.vocabularyEntries).toEqual([]);
-  });
-
-  it('keeps a native-selected mode in UI and storage when an older full configure precedes a rejected edit', async () => {
-    let onModeChanged: ((event: { payload: { modeId: string } }) => void) | null = null;
-    mocks.listen.mockImplementation(async (event, callback) => {
-      if (event === 'mode-manual-changed') {
-        onModeChanged = callback as (event: { payload: { modeId: string } }) => void;
-      }
-      return () => {};
-    });
+  it('keeps an unrelated edit in UI and storage when an older full configure precedes a rejected alias edit', async () => {
     await mountHarness();
     const fullConfigure = deferred<void>();
     const invalidEdit = deferred<void>();
@@ -296,7 +221,6 @@ describe('useSettings configure rollback privacy', () => {
       id: 'term', written: 'Tauri', aliases: ['Tory'], enabled: true,
       scope: { kind: 'global' },
     }], customVocabulary: 'Tauri' });
-    await act(async () => onModeChanged?.({ payload: { modeId: 'builtin.technical' } }));
     await act(async () => {
       fullConfigure.resolve(undefined);
       await Promise.resolve();
@@ -308,8 +232,7 @@ describe('useSettings configure rollback privacy', () => {
 
     expect(current.settings.vocabularyEntries).toEqual([]);
     expect(current.settings.language).toBe('fr');
-    expect(current.settings.activeModeId).toBe('builtin.technical');
-    expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}').activeModeId).toBe('builtin.technical');
+    expect(JSON.parse(localStorage.getItem('dictation-settings') ?? '{}').language).toBe('fr');
   });
 
   it('configures the latest saved alias when startup completes after an edit', async () => {

@@ -60,7 +60,6 @@ import { beginCurrentUiTransition, useUiLatencyDestination } from '../../lib/uiL
 import { Select } from '../ui/Select';
 import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
 import { playSoundCue, type SoundCue } from '../../lib/soundCues';
-import { ModesManager } from './ModesManager';
 import { AppearanceSettings } from './AppearanceSettings';
 import { PerformanceLab } from './PerformanceLab';
 import { MicrophoneInputTest } from './MicrophoneInputTest';
@@ -238,7 +237,6 @@ export const SETTINGS_CATEGORIES = [
   { id: 'meetings', label: 'Meetings', icon: 'meetings' },
   { id: 'text', label: 'Text & vocabulary', icon: 'text' },
   { id: 'ai', label: 'AI & models', icon: 'ai' },
-  { id: 'modes', label: 'Modes', icon: 'modes' },
   { id: 'appearance', label: 'Appearance', icon: 'appearance' },
 ] as const;
 
@@ -269,7 +267,6 @@ function customizationDestinationForRequest(
   if (request.page === 'text' && request.editorTab === 'aliases') return 'text';
   if (request.page === 'text' && !request.editorTab) return 'text';
   if (request.page === 'delivery' && request.target === 'app-overrides') return 'styles';
-  if (request.page === 'modes') return 'modes';
   return null;
 }
 
@@ -282,7 +279,6 @@ function customizationRoute(destination: CustomizationDestination): {
     case 'text': return { page: 'text' };
     case 'commands': return { page: 'text', editorTab: 'commands' };
     case 'styles': return { page: 'delivery', target: 'app-overrides' };
-    case 'modes': return { page: 'modes' };
   }
 }
 
@@ -341,8 +337,6 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'delivery', target: 'history', title: 'Transcription history', detail: 'Keep completed dictations on this Mac', keywords: 'save retain local transcripts' },
   { page: 'delivery', target: 'app-overrides-manual', editorTab: 'app-overrides', title: 'App bundle ID', detail: 'Add an app override by its exact bundle ID', keywords: 'manual advanced profile' },
   { page: 'delivery', target: 'app-overrides', title: 'App overrides', detail: 'Customize delivery for individual apps', keywords: 'profile bundle id per app' },
-  { page: 'modes', target: 'browser-site-rules', title: 'Browser site rules', detail: 'Bind exact browser hosts to Modes', keywords: 'browser sites host mappings' },
-  { page: 'modes', target: 'modes', title: 'Modes', detail: 'Manage reusable behavior for apps and browser sites', keywords: 'style profiles browser host site rules' },
   { page: 'meetings', target: 'meeting-audio', title: 'Meeting audio', detail: 'Choose whether source audio is retained', keywords: 'capture wav keep delete' },
   { page: 'meetings', target: 'meeting-speakers', title: 'Remote speaker labels', detail: 'Install and enable local per-speaker meeting labels', keywords: 'diarization speaker names model local system audio' },
   { page: 'meetings', target: 'meeting-retention', title: 'Meeting retention', detail: 'Set age and session limits', keywords: 'history days sessions sqlite' },
@@ -370,7 +364,6 @@ function SettingsNavIcon({ icon }: { icon: string }) {
     general: <><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" /></>,
     recording: <><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" /></>,
     delivery: <><rect x="5" y="4" width="14" height="16" rx="2" /><path d="m9 12 2 2 4-5" /></>,
-    modes: <><rect x="4" y="5" width="11" height="7" rx="1.5" /><rect x="9" y="12" width="11" height="7" rx="1.5" /><path d="M7 8.5h5M12 15.5h5" /></>,
     meetings: <><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M8 3v4M16 3v4M3 10h18" /></>,
     text: <><path d="M5 5h14M8 5v14M5 19h6M15 10h4M15 14h4" /></>,
     ai: <><circle cx="12" cy="12" r="3" /><path d="M12 2v4M12 18v4M2 12h4M18 12h4M5 5l3 3M16 16l3 3M19 5l-3 3M8 16l-3 3" /></>,
@@ -459,8 +452,6 @@ export const SettingsPanel = memo(function SettingsPanel({
   ));
   const [customizationReturnFocus, setCustomizationReturnFocus] = useState<CustomizationDestination | null>(null);
   const [shortcutReturnFocus, setShortcutReturnFocus] = useState<GlobalShortcutId | null>(null);
-  const [modeSelectionId, setModeSelectionId] = useState<string | null>(null);
-  const [returnToModesPending, setReturnToModesPending] = useState(false);
   const latencyView = editorTab
     ? `settings.${activeCat}.editor.${editorTab}`
     : `settings.${activeCat}`;
@@ -487,10 +478,6 @@ export const SettingsPanel = memo(function SettingsPanel({
     setCustomizationDetail(destination);
     setCustomizationReturnFocus(destination);
     setShortcutReturnFocus(null);
-    if (pageRequest.page !== 'delivery' || pageRequest.target !== 'app-overrides') {
-      setModeSelectionId(null);
-      setReturnToModesPending(false);
-    }
   }, [pageRequest, appliedRequestToken]);
   const [version, setVersion] = useState('');
   const [confirmReset, setConfirmReset] = useState(false);
@@ -836,10 +823,6 @@ export const SettingsPanel = memo(function SettingsPanel({
     setCustomizationDetail(null);
     setCustomizationReturnFocus(null);
     setShortcutReturnFocus(null);
-    if (page !== 'modes') {
-      setModeSelectionId(null);
-      setReturnToModesPending(false);
-    }
   };
 
   const openShortcutOwner = (destination: ShortcutOwnerDestination) => {
@@ -852,23 +835,6 @@ export const SettingsPanel = memo(function SettingsPanel({
     setCustomizationReturnFocus(null);
     setShortcutReturnFocus(destination.shortcutId);
   };
-
-  const openAppProfileForMode = (modeId: string, opener: HTMLElement) => {
-    beginCurrentUiTransition('settings.modes.editor.app-overrides', 'pointer');
-    setModeSelectionId(modeId);
-    setReturnToModesPending(true);
-    editorOpenerRef.current = opener;
-    setEditorTab('app-overrides');
-    setSearchQuery('');
-    setTargetRequest(settingTargetRequest('app-overrides'));
-    setCustomizationDetail(null);
-  };
-
-  useEffect(() => {
-    if (!returnToModesPending || settings.appProfiles.length === 0) return;
-    setReturnToModesPending(false);
-    openPage('modes', 'programmatic');
-  }, [returnToModesPending, settings.appProfiles.length]);
 
   const returnToShortcuts = () => {
     beginCurrentUiTransition('settings.shortcuts', 'programmatic');
@@ -1346,7 +1312,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               </button>
             ))}
             <SettingsDisclosure title="Advanced" layout="rows">
-              <SettingToggle targetId="developer-terms" title="Developer terms" description="Use developer vocabulary in technical modes and IDE contexts" checked={settings.codeVocabEnabled} defaultChecked={DEFAULT_SETTINGS.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
+              <SettingToggle targetId="developer-terms" title="Developer terms" description="Use developer vocabulary in code and technical apps and IDE contexts" checked={settings.codeVocabEnabled} defaultChecked={DEFAULT_SETTINGS.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
               <SettingsBranch open={settings.codeVocabEnabled}>
                 <div data-setting-target="project-scan" className="settings-field">
                   <p className="flex min-w-0 rounded-lg border border-outline-variant/30 bg-surface-container-lowest px-3 py-2 text-xs text-on-surface">{settings.codeVocabFolder ? <MiddleTruncate value={settings.codeVocabFolder} /> : 'No folder — built-in developer terms only'}</p>
@@ -1450,20 +1416,6 @@ export const SettingsPanel = memo(function SettingsPanel({
               </button>
             </SettingsDisclosure>
             </SettingsGroup>
-            </div>
-          </SettingsSection>
-
-          <SettingsSection hideHeading plain pageId="modes" activePage={activeCat} title="Modes">
-            <div data-setting-target="modes">
-              <ModesManager
-                modes={settings.modes}
-                profiles={settings.appProfiles}
-                siteLookupEnabled={settings.siteModeLookupEnabled}
-                siteRules={settings.browserSiteRules}
-                onChange={onUpdateSettings}
-                onAddAppProfile={openAppProfileForMode}
-                initialSelectedId={modeSelectionId}
-              />
             </div>
           </SettingsSection>
 
@@ -1643,7 +1595,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 setTargetRequest(settingTargetRequest('voice-commands', true));
                 if (activeCat === 'customize') setCustomizationDetail('commands');
               }}
-              restoreFocus={() => editorOpenerRef.current?.isConnected ? editorOpenerRef.current : contentRef.current?.querySelector<HTMLElement>('[data-setting-target="vocabulary"], [data-setting-target="aliases"], [data-setting-target="knowledge"], [data-setting-target="commands"], [data-setting-target="app-overrides"] button, [aria-label="Modes"] [aria-pressed="true"], .settings-back-btn') ?? searchRef.current}
+              restoreFocus={() => editorOpenerRef.current?.isConnected ? editorOpenerRef.current : contentRef.current?.querySelector<HTMLElement>('[data-setting-target="vocabulary"], [data-setting-target="aliases"], [data-setting-target="knowledge"], [data-setting-target="commands"], [data-setting-target="app-overrides"] button, .settings-back-btn') ?? searchRef.current}
             />
       )}
     </div>

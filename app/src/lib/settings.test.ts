@@ -19,7 +19,6 @@ import {
   saveSettings,
   AUTO_STOP_SILENCE_OPTIONS,
   AVAILABLE_MODEL_OPTIONS,
-  BUILTIN_MODES,
   DEFAULT_SETTINGS,
   DICTATION_KEY_OPTIONS,
   dictationKeyLabel,
@@ -467,64 +466,14 @@ describe('loadSettings', () => {
     expect(legacy.smartFormattingOverride).toBeNull();
     expect(legacy.cliFormattingOverride).toBeNull();
     expect(legacy.writingStyle).toBeNull();
-    expect(legacy.modeId).toBeUndefined();
+    expect('modeId' in legacy).toBe(false);
   });
 
-  it('exposes the seven immutable built-in Mode identities', () => {
-    expect(BUILTIN_MODES.map((mode) => [mode.id, mode.name])).toEqual([
-      ['builtin.everyday', 'Everyday'], ['builtin.messages', 'Messages'],
-      ['builtin.email', 'Email'], ['builtin.notes', 'Notes'],
-      ['builtin.technical', 'Technical'], ['builtin.terminal', 'Terminal'],
-      ['builtin.verbatim', 'Verbatim'],
-    ]);
-  });
-
-  it('sanitizes custom Modes and preserves unknown bindings for fail-closed resolution', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      modes: [
-        {
-          id: 'mode.focus', name: ' Focus ', builtIn: false, writingStyle: 'notes',
-          cleanupEnabled: true, smartFormattingEnabled: null, cliFormattingEnabled: null,
-          vocabularyPolicy: 'general', contextPolicy: 'project', modelId: 'small.en',
-          language: 'en', autoPaste: false,
-        },
-        { id: 'mode.invalid', name: 'Invalid', builtIn: false, modelId: 'missing-model' },
-        { id: 'builtin.email', name: 'Spoofed', builtIn: false },
-      ],
-      appProfiles: [{ bundleId: 'com.example.App', label: 'App', modeId: 'missing.mode' }],
-    }));
-    const settings = loadSettings();
-    expect(settings.modes).toEqual([expect.objectContaining({
-      id: 'mode.focus', name: 'Focus', builtIn: false, writingStyle: 'notes',
-      cleanupEnabled: true, smartFormattingEnabled: null,
-      vocabularyPolicy: 'general', contextPolicy: 'project', modelId: 'small.en', language: 'en',
-    })]);
-    expect(settings.appProfiles[0].modeId).toBe('missing.mode');
-  });
-
-  it('sanitizes exact browser-host Mode rules and defaults lookup off', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      ...DEFAULT_SETTINGS,
-      siteModeLookupEnabled: true,
-      browserSiteRules: [
-        { id: 'github', browserBundleId: 'com.apple.Safari', host: 'GitHub.com.', modeId: 'builtin.technical', enabled: true },
-        { id: 'duplicate-site', browserBundleId: 'com.apple.Safari', host: 'github.com', modeId: 'builtin.email', enabled: true },
-        { id: 'evil', browserBundleId: 'com.example.Untrusted', host: 'github.com', modeId: 'builtin.email', enabled: true },
-        { id: 'path', browserBundleId: 'com.apple.Safari', host: 'github.com/org', modeId: 'builtin.email', enabled: true },
-      ],
-    }));
-    const settings = loadSettings();
-    expect(settings.siteModeLookupEnabled).toBe(true);
-    expect(settings.browserSiteRules).toEqual([
-      { id: 'github', browserBundleId: 'com.apple.Safari', host: 'github.com', modeId: 'builtin.technical', enabled: true },
-    ]);
-
-    const legacy = { ...DEFAULT_SETTINGS } as Record<string, unknown>;
-    delete legacy.siteModeLookupEnabled;
-    delete legacy.browserSiteRules;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(legacy));
-    expect(loadSettings()).toMatchObject({ siteModeLookupEnabled: false, browserSiteRules: [] });
+  it('does not expose Mode settings on the loaded document', () => {
+    const settings = loadSettings() as unknown as Record<string, unknown>;
+    for (const key of ['modes', 'activeModeId', 'siteModeLookupEnabled', 'browserSiteRules']) {
+      expect(settings).not.toHaveProperty(key);
+    }
   });
 
   it('migrates IDE context as explicit opt-in with bounded persisted roots only', () => {
@@ -1275,5 +1224,188 @@ describe('removed feature upgrade compatibility', () => {
     expect(settings).not.toHaveProperty('queryHotkey');
     expect(settings).not.toHaveProperty('queryArguments');
     expect(settings).not.toHaveProperty('assistantConnection');
+  });
+});
+
+describe('Modes retirement migration', () => {
+  const LEGACY_KEYS = ['modes', 'activeModeId', 'siteModeLookupEnabled', 'browserSiteRules'];
+  const profile = (patch: Record<string, unknown> = {}) => ({
+    bundleId: 'com.apple.mail', label: 'Mail', autoPasteOverride: null, cleanupOverride: null,
+    smartFormattingOverride: null, cliFormattingOverride: null, writingStyle: null,
+    ideContextEnabled: false, ideProjectRoots: [], ...patch,
+  });
+  const focusMode = (patch: Record<string, unknown> = {}) => ({
+    id: 'mode.focus', name: 'Focus', builtIn: false, enabled: true,
+    writingStyle: 'notes', cleanupEnabled: null, smartFormattingEnabled: null,
+    cliFormattingEnabled: null, vocabularyPolicy: 'inherit', contextPolicy: 'none',
+    modelId: null, language: null, autoPaste: null, ...patch,
+  });
+  const legacyDocument = (patch: Record<string, unknown> = {}) => ({
+    ...DEFAULT_SETTINGS, settingsVersion: 7, activeModeId: 'builtin.everyday', modes: [],
+    siteModeLookupEnabled: false, browserSiteRules: [], ...patch,
+  });
+  const stored = () => JSON.parse(localStorage.getItem(STORAGE_KEY)!) as Record<string, unknown>;
+
+  it('folds a bound built-in Mode into the profile and removes every legacy key from storage', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(legacyDocument({
+      appProfiles: [profile({ modeId: 'builtin.email' })],
+    })));
+
+    const settings = loadSettings();
+
+    expect(settings.appProfiles).toEqual([expect.objectContaining({ bundleId: 'com.apple.mail', writingStyle: 'polished' })]);
+    expect('modeId' in settings.appProfiles[0]).toBe(false);
+    const persisted = stored();
+    for (const key of LEGACY_KEYS) expect(persisted).not.toHaveProperty(key);
+    expect(persisted.appProfiles).toEqual([expect.objectContaining({ writingStyle: 'polished' })]);
+    expect('modeId' in (persisted.appProfiles as object[])[0]).toBe(false);
+  });
+
+  it('is idempotent: the migrated document reloads unchanged and writes nothing more', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(legacyDocument({
+      activeModeId: 'mode.focus',
+      modes: [focusMode({ autoPaste: false })],
+      appProfiles: [profile()],
+    })));
+
+    const writes = vi.spyOn(localStorage, 'setItem');
+    let first;
+    let blob;
+    try {
+      first = loadSettings();
+      expect(writes).toHaveBeenCalledTimes(1);
+      blob = localStorage.getItem(STORAGE_KEY);
+      writes.mockClear();
+      expect(loadSettings()).toEqual(first);
+      expect(writes).not.toHaveBeenCalled();
+    } finally { writes.mockRestore(); }
+    expect(localStorage.getItem(STORAGE_KEY)).toBe(blob);
+    expect(first.autoPaste).toBe(false);
+  });
+
+  it('keeps the legacy keys when the migrated save fails and derives the same result next load', () => {
+    const document = legacyDocument({
+      appProfiles: [profile({ modeId: 'builtin.messages' })],
+    });
+    const original = JSON.stringify(document);
+    localStorage.setItem(STORAGE_KEY, original);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failing = vi.spyOn(localStorage, 'setItem').mockImplementation(() => {
+      throw new Error('quota');
+    });
+    let afterFailure;
+    try {
+      afterFailure = loadSettings();
+      expect(afterFailure.appProfiles[0].writingStyle).toBe('conversational');
+    } finally { failing.mockRestore(); errors.mockRestore(); }
+
+    expect(localStorage.getItem(STORAGE_KEY)).toBe(original);
+    expect(loadSettings()).toEqual(afterFailure);
+    for (const key of LEGACY_KEYS) expect(stored()).not.toHaveProperty(key);
+  });
+
+  it('migrates in memory without rewriting storage when the window does not own migrations', () => {
+    ownSettingsMigrations(false);
+    const original = JSON.stringify(legacyDocument({
+      appProfiles: [profile({ modeId: 'builtin.technical' })],
+    }));
+    localStorage.setItem(STORAGE_KEY, original);
+
+    const settings = loadSettings();
+
+    expect(settings.appProfiles[0].writingStyle).toBe('code_technical');
+    expect('modeId' in settings.appProfiles[0]).toBe(false);
+    expect(localStorage.getItem(STORAGE_KEY)).toBe(original);
+  });
+
+  it('does not write when a blob is only parsed', () => {
+    const writes = vi.spyOn(localStorage, 'setItem');
+    try {
+      const parsed = parseSettingsBlob(JSON.stringify(legacyDocument({
+        appProfiles: [profile({ modeId: 'builtin.notes' })],
+      })));
+      expect(parsed.appProfiles[0].writingStyle).toBe('notes');
+      expect(writes).not.toHaveBeenCalled();
+    } finally { writes.mockRestore(); }
+  });
+
+  it('moves a custom global Mode into the global settings and pins the old global onto Everyday-bound profiles', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(legacyDocument({
+      activeModeId: 'mode.focus',
+      language: 'en',
+      autoPaste: true,
+      modes: [focusMode({ autoPaste: false, language: 'fr' })],
+      appProfiles: [profile({ bundleId: 'com.example.Everyday', modeId: 'builtin.everyday' })],
+    })));
+
+    const settings = loadSettings();
+
+    expect(settings.autoPaste).toBe(false);
+    expect(settings.language).toBe('fr');
+    // The profile bound to Everyday kept auto-paste on before; it must keep it on now.
+    expect(settings.appProfiles[0].autoPasteOverride).toBe(true);
+  });
+
+  it('adopts a global Mode model only when the model is installed', async () => {
+    mocks.isTauri.mockReturnValue(true);
+    const blob = JSON.stringify(legacyDocument({
+      activeModeId: 'mode.focus',
+      modes: [focusMode({ modelId: 'small.en' })],
+    }));
+    const hydrate = async (installState: string) => {
+      localStorage.clear();
+      mocks.invoke.mockImplementation(async (command: string) => {
+        if (command === 'load_settings_blob') return blob;
+        if (command === 'get_model_runtime_catalog') return [{ modelName: 'small.en', installState }];
+        return undefined;
+      });
+      await hydrateSettingsFromDisk();
+      return loadSettings();
+    };
+
+    expect((await hydrate('installed')).model).toBe('small.en');
+    expect((await hydrate('not_installed')).model).toBe(DEFAULT_SETTINGS.model);
+  });
+
+  it('leaves the model alone when the installed-model catalog is unavailable', async () => {
+    mocks.isTauri.mockReturnValue(true);
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'load_settings_blob') {
+        return JSON.stringify(legacyDocument({
+          activeModeId: 'mode.focus',
+          modes: [focusMode({ modelId: 'small.en' })],
+        }));
+      }
+      if (command === 'get_model_runtime_catalog') throw new Error('catalog unavailable');
+      return undefined;
+    });
+    try {
+      await hydrateSettingsFromDisk();
+      expect(loadSettings().model).toBe(DEFAULT_SETTINGS.model);
+    } finally { errors.mockRestore(); }
+  });
+
+  it('drops a binding to a missing Mode without falling back to the global Mode', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(legacyDocument({
+      activeModeId: 'mode.focus',
+      modes: [focusMode({ autoPaste: false })],
+      appProfiles: [profile({ modeId: 'missing.mode' })],
+    })));
+
+    const settings = loadSettings();
+
+    expect(settings.appProfiles[0].writingStyle).toBeNull();
+    expect('modeId' in settings.appProfiles[0]).toBe(false);
+  });
+
+  it('does nothing for a document without Mode data', () => {
+    const document = { ...DEFAULT_SETTINGS, settingsVersion: 7 };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(document));
+    const writes = vi.spyOn(localStorage, 'setItem');
+    try {
+      expect(loadSettings().appProfiles).toEqual(DEFAULT_SETTINGS.appProfiles);
+      expect(writes).not.toHaveBeenCalled();
+    } finally { writes.mockRestore(); }
   });
 });

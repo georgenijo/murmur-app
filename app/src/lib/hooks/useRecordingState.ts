@@ -450,7 +450,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
         } else {
           addEntry(text, duration, 'recording', undefined, teachingContext, interrupted);
         }
-        updateStats(text, duration, recording?.modeId);
+        updateStats(text, duration);
         setStatsVersion(v => v + 1);
       }
     }).then((fn) => {

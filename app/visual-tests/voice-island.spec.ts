@@ -94,7 +94,7 @@ for (const { appearance, width, height, label } of surfaceCases()) {
     test.use({ viewport: { width, height }, colorScheme: appearance });
     for (const geometry of ['notched', 'external', 'fallback', 'pill']) {
       for (const state of ['idle', 'starting', 'still-connecting', 'recording', 'recovering']) {
-        test(`Expanded ${geometry} ${state} reserves status separately from Mode and quick actions`, async ({ page }) => {
+        test(`Expanded ${geometry} ${state} reserves status separately from quick actions`, async ({ page }) => {
           await page.emulateMedia({ reducedMotion: 'reduce' });
           const placement = geometry === 'pill' ? 'pill' : 'notch';
           await page.goto(`/visual-fixtures.html?state=voice-island&variant=expanded&placement=${placement}&display=${geometry}&controls-state=${state}&appearance=${appearance}`);
@@ -103,15 +103,12 @@ for (const { appearance, width, height, label } of surfaceCases()) {
           const row = controls.locator('[data-testid="overlay-controls-row"]');
           await page.evaluate(() => document.fonts.ready);
           await expect(row).toHaveCSS('display', 'flex');
-          const mode = row.getByRole('button', { name: /Mode: Everyday/ });
-          const modeSize = await mode.boundingBox();
-          expect(modeSize!.width).toBeGreaterThan(45);
-          await expect(mode).toContainText('Everyday');
+          await expect(row.getByRole('button', { name: /Mode:/ })).toHaveCount(0);
           const positions = await row.locator('button').evaluateAll(elements => elements.map(element => {
             const { x, right, y, bottom } = element.getBoundingClientRect();
             return { x, right, y, bottom };
           }));
-          expect(positions).toHaveLength(4);
+          expect(positions).toHaveLength(3);
           for (let index = 1; index < positions.length; index++) expect(positions[index].x).toBeGreaterThanOrEqual(positions[index - 1].right);
           const frame = await page.locator('[data-native-frame]').boundingBox();
           expect(frame!.width).toBe(241);

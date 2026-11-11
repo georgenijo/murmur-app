@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import {
   DISCOVERY_CHANGED_EVENT,
@@ -8,18 +8,10 @@ import {
   type DiscoveryHintId,
 } from '../discovery';
 import type { HistoryEntry } from '../history';
-import { SITE_MODE_BROWSERS } from '../settings';
 
 interface UseDiscoveryOptions {
   enabled: boolean;
   historyEntries: HistoryEntry[];
-}
-
-function browserBundleId(value: unknown): string | null {
-  if (!value || typeof value !== 'object' || !('teachingContext' in value)) return null;
-  const teachingContext = value.teachingContext;
-  if (!teachingContext || typeof teachingContext !== 'object' || !('appBundleId' in teachingContext)) return null;
-  return typeof teachingContext.appBundleId === 'string' ? teachingContext.appBundleId : null;
 }
 
 function isSecondTapExpired(value: unknown): boolean {
@@ -31,10 +23,6 @@ export function useDiscovery({ enabled, historyEntries }: UseDiscoveryOptions) {
   const [state, setState] = useState(loadDiscoveryState);
   const newestHistoryId = historyEntries[historyEntries.length - 1]?.id ?? null;
   const newestHistoryIdRef = useRef(newestHistoryId);
-  const browserIds = useMemo(
-    () => new Set<string>(SITE_MODE_BROWSERS.map((browser) => browser.bundleId)),
-    [],
-  );
 
   useEffect(() => {
     const refresh = () => setState(loadDiscoveryState());
@@ -60,12 +48,6 @@ export function useDiscovery({ enabled, historyEntries }: UseDiscoveryOptions) {
           setState(enqueueDiscoveryHint('double_tap_timing'));
         }
       }),
-      listen<unknown>('transcription-complete', ({ payload }) => {
-        const bundleId = browserBundleId(payload);
-        if (!disposed && bundleId !== null && browserIds.has(bundleId)) {
-          setState(enqueueDiscoveryHint('browser_modes'));
-        }
-      }),
     ];
     for (const subscription of subscriptions) {
       void subscription.then((unlisten) => {
@@ -77,7 +59,7 @@ export function useDiscovery({ enabled, historyEntries }: UseDiscoveryOptions) {
       disposed = true;
       unlisteners.forEach((unlisten) => unlisten());
     };
-  }, [browserIds, enabled]);
+  }, [enabled]);
 
   const dismissHint = useCallback((id: DiscoveryHintId) => setState(dismissDiscoveryHint(id)), []);
 

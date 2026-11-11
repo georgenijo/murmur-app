@@ -41,7 +41,7 @@ describe('local activity statistics', () => {
       meetings: { count: 0, totalMinutes: 0, summariesGenerated: 0 },
       transforms: { runs: 0, approved: 0, undone: 0, byPresetName: {} },
       corrections: { proposed: 0, taught: 0, byScope: { global: 0, app: 0, project: 0 } },
-      recordingsByMode: {}, pasteLastUses: 0, monthlyBuckets: {},
+      pasteLastUses: 0, monthlyBuckets: {},
     });
   });
 
@@ -52,7 +52,7 @@ describe('local activity statistics', () => {
     updateActivityStats({ kind: 'correction_proposed' });
     updateActivityStats({ kind: 'correction_taught', scope: 'project' });
     updateActivityStats({ kind: 'paste_last' });
-    updateStats('one two three four', 3, 'mode-id');
+    updateStats('one two three four', 3);
     const stats = loadStats();
     saveStats(stats);
     expect(loadStats()).toEqual(stats);
@@ -61,7 +61,7 @@ describe('local activity statistics', () => {
       meetings: { count: 1, totalMinutes: 1.5, summariesGenerated: 0 },
       transforms: { runs: 1, approved: 1, byPresetName: { 'Exact saved name': { runs: 1, approved: 1 } } },
       corrections: { proposed: 1, taught: 1, byScope: { project: 1 } },
-      recordingsByMode: { 'mode-id': 1 }, pasteLastUses: 1,
+      pasteLastUses: 1,
     });
     expect(getActivityInsights(stats, new Date(2026, 7, 1)).month.meetingMinutes).toBe(1.5);
     expect(getActivityInsights(stats, new Date(2026, 8, 1)).month.meetings).toBe(0);
@@ -69,17 +69,14 @@ describe('local activity statistics', () => {
 
   it('accepts prototype-like private labels without inheriting or corrupting counters', () => {
     for (const name of ['__proto__', 'constructor', 'toString']) {
-      updateStats('word', 1, name);
-      updateStats('word', 1, name);
       updateActivityStats({ kind: 'transform', outcome: 'runs', presetName: name });
       updateActivityStats({ kind: 'transform', outcome: 'approved', presetName: name });
     }
     const stats = loadStats();
     for (const name of ['__proto__', 'constructor', 'toString']) {
-      expect(stats.activity.recordingsByMode[name]).toBe(2);
       expect(stats.activity.transforms.byPresetName[name]).toEqual({ runs: 1, approved: 1, undone: 0 });
     }
-    expect(Object.getPrototypeOf(stats.activity.recordingsByMode)).toBe(Object.prototype);
+    expect(Object.getPrototypeOf(stats.activity.transforms.byPresetName)).toBe(Object.prototype);
   });
 
   it('strips private content and invalid counters on both read and write', () => {
@@ -103,6 +100,17 @@ describe('local activity statistics', () => {
     expect(loadStats().activity.pasteLastUses).toBe(0);
   });
 
+  it('ignores and drops the retired per-Mode recording counts from older blobs', () => {
+    const legacy = { ...loadStats(), totalWords: 7, activity: { ...loadStats().activity, recordingsByMode: { 'builtin.technical': 4 } } };
+    localStorage.setItem(STATS_STORE.storageKey, JSON.stringify(legacy));
+    const stats = loadStats();
+    expect(stats.totalWords).toBe(7);
+    expect(stats.activity).not.toHaveProperty('recordingsByMode');
+    expect(getActivityInsights(stats)).not.toHaveProperty('mostUsedModeId');
+    saveStats(stats);
+    expect(localStorage.getItem(STATS_STORE.storageKey)).not.toContain('recordingsByMode');
+  });
+
   it('states a fixed typing-rate assumption and never reports negative time saved', () => {
     const stats = { ...loadStats(), totalWords: 120, totalDurationSeconds: 60 };
     expect(getActivityInsights(stats).dictationMinutes).toBe(1);
@@ -115,12 +123,11 @@ describe('local activity statistics', () => {
     localStorage.setItem(STATS_STORE.storageKey, '{ PRIVATE_LABEL');
     expect(loadStats().activity.transforms.runs).toBe(0);
     expect(JSON.stringify(error.mock.calls)).not.toContain('PRIVATE_LABEL');
-    updateStats('words', 1, 'LocalMode');
+    updateStats('words', 1);
     updateActivityStats({ kind: 'paste_last' });
     resetStats();
     expect(localStorage.getItem(STATS_STORE.storageKey)).toBeNull();
     expect(loadStats().activity.pasteLastUses).toBe(0);
-    expect(loadStats().activity.recordingsByMode).toEqual({});
     error.mockRestore();
   });
 });

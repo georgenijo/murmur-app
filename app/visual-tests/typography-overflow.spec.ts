@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 const destinations = [
   ['General'], ['General', 'Keyboard shortcuts'], ['Recording'], ['Customize'], ['Delivery'], ['Meetings'],
-  ['Text & vocabulary'], ['AI & models'], ['Modes'], ['Appearance'],
+  ['Text & vocabulary'], ['AI & models'], ['Appearance'],
   ['Performance Lab'], ['Diagnostics'],
   ['AI & models', 'Speech-to-text'],
 

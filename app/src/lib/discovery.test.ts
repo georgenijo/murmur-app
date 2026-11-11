@@ -7,13 +7,13 @@ import {
 describe('contextual hint persistence', () => {
   beforeEach(() => localStorage.clear());
 
-  it('migrates only validated hint IDs and removes obsolete local progress', () => {
+  it('migrates only validated hint IDs, drops the retired browser-site hint, and removes obsolete local progress', () => {
     localStorage.setItem('murmur_discovery_v1', JSON.stringify({
       version: 1, completed: ['meeting'], baseline: { meetings: 2 },
       pendingHints: ['browser_modes', 'correct_and_teach'], dismissedHints: ['browser_modes'],
     }));
     expect(initializeGrandfatheredDiscovery()).toEqual({
-      version: 2, pendingHints: ['correct_and_teach'], dismissedHints: ['browser_modes'],
+      version: 2, pendingHints: ['correct_and_teach'], dismissedHints: [],
     });
     expect(localStorage.getItem('murmur_discovery_v1')).toBeNull();
     expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual(loadDiscoveryState());
@@ -23,13 +23,13 @@ describe('contextual hint persistence', () => {
 
   it('queues each hint once and preserves dismissal across initialization', () => {
     initializeDiscoveryAfterSetup();
-    enqueueDiscoveryHint('browser_modes');
-    enqueueDiscoveryHint('browser_modes');
-    expect(loadDiscoveryState()?.pendingHints).toEqual(['browser_modes']);
-    dismissDiscoveryHint('browser_modes');
-    enqueueDiscoveryHint('browser_modes');
+    enqueueDiscoveryHint('double_tap_timing');
+    enqueueDiscoveryHint('double_tap_timing');
+    expect(loadDiscoveryState()?.pendingHints).toEqual(['double_tap_timing']);
+    dismissDiscoveryHint('double_tap_timing');
+    enqueueDiscoveryHint('double_tap_timing');
     expect(initializeGrandfatheredDiscovery()?.pendingHints).toEqual([]);
-    expect(loadDiscoveryState()?.dismissedHints).toEqual(['browser_modes']);
+    expect(loadDiscoveryState()?.dismissedHints).toEqual(['double_tap_timing']);
   });
 
   it('rejects malformed legacy hints without preserving retired data', () => {
@@ -49,13 +49,13 @@ describe('contextual hint persistence', () => {
 
 describe('hint migration recovery', () => {
   const legacyKey = 'murmur_discovery_v1';
-  const stored = (version = 1) => ({ version, pendingHints: ['double_tap_timing'], dismissedHints: ['browser_modes'] });
+  const stored = (version = 1) => ({ version, pendingHints: ['correct_and_teach'], dismissedHints: ['double_tap_timing'] });
   beforeEach(() => localStorage.clear());
 
   it.each([1, 2])('keeps individually valid IDs in v%i arrays with unknown, duplicate and non-string values', (version) => {
     localStorage.setItem(version === 1 ? legacyKey : DISCOVERY_STORAGE_KEY, JSON.stringify({
-      version, pendingHints: ['unknown', 'browser_modes', 'double_tap_timing', null, 'double_tap_timing'],
-      dismissedHints: ['browser_modes', 1, 'future_hint', 'browser_modes'],
+      version, pendingHints: ['unknown', 'browser_modes', 'correct_and_teach', null, 'correct_and_teach'],
+      dismissedHints: ['double_tap_timing', 1, 'future_hint', 'double_tap_timing', 'browser_modes'],
     }));
     expect(loadDiscoveryState()).toEqual(stored(2));
     expect(loadDiscoveryState()).toEqual(stored(2));
@@ -90,8 +90,8 @@ describe('hint migration recovery', () => {
   it('preserves dismissals from both keys and migrates only once', () => {
     localStorage.setItem(legacyKey, JSON.stringify(stored()));
     localStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify({ version: 2,
-      pendingHints: ['browser_modes', 'correct_and_teach'], dismissedHints: ['double_tap_timing'] }));
-    const expected = { version: 2, pendingHints: ['correct_and_teach'], dismissedHints: ['double_tap_timing', 'browser_modes'] };
+      pendingHints: ['double_tap_timing', 'correct_and_teach'], dismissedHints: ['correct_and_teach'] }));
+    const expected = { version: 2, pendingHints: [], dismissedHints: ['correct_and_teach', 'double_tap_timing'] };
     expect(loadDiscoveryState()).toEqual(expected);
     expect(loadDiscoveryState()).toEqual(expected);
     expect(localStorage.getItem(legacyKey)).toBeNull();
@@ -122,19 +122,19 @@ describe('hint storage failure isolation', () => {
 
   it.each([DISCOVERY_STORAGE_KEY, legacyKey])('keeps readable dismissals when pending data is malformed in %s', (key) => {
     localStorage.setItem(key, JSON.stringify({ version: key === legacyKey ? 1 : 2,
-      pendingHints: 'invalid', dismissedHints: ['browser_modes', null, 'unknown'] }));
+      pendingHints: 'invalid', dismissedHints: ['double_tap_timing', null, 'unknown'] }));
     localStorage.setItem(key === legacyKey ? DISCOVERY_STORAGE_KEY : legacyKey, JSON.stringify({
-      version: key === legacyKey ? 2 : 1, pendingHints: ['browser_modes', 'correct_and_teach'], dismissedHints: 'invalid',
+      version: key === legacyKey ? 2 : 1, pendingHints: ['double_tap_timing', 'correct_and_teach'], dismissedHints: 'invalid',
     }));
-    const expected = { version: 2, pendingHints: ['correct_and_teach'], dismissedHints: ['browser_modes'] };
+    const expected = { version: 2, pendingHints: ['correct_and_teach'], dismissedHints: ['double_tap_timing'] };
     expect(initializeGrandfatheredDiscovery()).toEqual(expected);
     expect(loadDiscoveryState()).toEqual(expected);
     expect(localStorage.getItem(legacyKey)).toBeNull();
   });
 
   it.each([DISCOVERY_STORAGE_KEY, legacyKey])('does not overwrite either key when reading %s throws', (failedKey) => {
-    const current = JSON.stringify({ ...empty, dismissedHints: ['browser_modes'] });
-    const legacy = JSON.stringify({ version: 1, pendingHints: ['browser_modes'], dismissedHints: ['correct_and_teach'] });
+    const current = JSON.stringify({ ...empty, dismissedHints: ['double_tap_timing'] });
+    const legacy = JSON.stringify({ version: 1, pendingHints: ['double_tap_timing'], dismissedHints: ['correct_and_teach'] });
     localStorage.setItem(DISCOVERY_STORAGE_KEY, current);
     localStorage.setItem(legacyKey, legacy);
     const originalRead = localStorage.getItem.bind(localStorage);
@@ -145,7 +145,7 @@ describe('hint storage failure isolation', () => {
     const write = vi.spyOn(localStorage, 'setItem');
     const remove = vi.spyOn(localStorage, 'removeItem');
     const recovered = initializeGrandfatheredDiscovery();
-    expect(recovered.dismissedHints).toEqual(failedKey === legacyKey ? ['browser_modes'] : ['correct_and_teach']);
+    expect(recovered.dismissedHints).toEqual(failedKey === legacyKey ? ['double_tap_timing'] : ['correct_and_teach']);
     enqueueDiscoveryHint('double_tap_timing');
     dismissDiscoveryHint('double_tap_timing');
     expect(write).not.toHaveBeenCalled();
@@ -153,8 +153,8 @@ describe('hint storage failure isolation', () => {
     expect(originalRead(DISCOVERY_STORAGE_KEY)).toBe(current);
     expect(originalRead(legacyKey)).toBe(legacy);
     read.mockRestore(); write.mockRestore(); remove.mockRestore();
-    expect(initializeGrandfatheredDiscovery()).toEqual({ ...empty, dismissedHints: ['browser_modes', 'correct_and_teach'] });
-    expect(enqueueDiscoveryHint('browser_modes')?.pendingHints).toEqual([]);
+    expect(initializeGrandfatheredDiscovery()).toEqual({ ...empty, dismissedHints: ['double_tap_timing', 'correct_and_teach'] });
+    expect(enqueueDiscoveryHint('double_tap_timing')?.pendingHints).toEqual([]);
   });
 
   it.each([DISCOVERY_STORAGE_KEY, legacyKey])('uses defaults without writing when %s is unavailable and the other key is absent', (failedKey) => {
@@ -173,16 +173,16 @@ describe('hint storage failure isolation', () => {
 
   it.each(['not JSON', JSON.stringify({ version: 1, pendingHints: [], dismissedHints: ['correct_and_teach'] })])(
     'retains readable state when legacy cleanup throws (%s)', (legacy) => {
-      localStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify({ ...empty, dismissedHints: ['browser_modes'] }));
+      localStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify({ ...empty, dismissedHints: ['double_tap_timing'] }));
       localStorage.setItem(legacyKey, legacy);
       const remove = vi.spyOn(localStorage, 'removeItem').mockImplementation(() => { throw new Error('cleanup unavailable'); });
-      const expected = { ...empty, dismissedHints: legacy === 'not JSON' ? ['browser_modes'] : ['browser_modes', 'correct_and_teach'] };
+      const expected = { ...empty, dismissedHints: legacy === 'not JSON' ? ['double_tap_timing'] : ['double_tap_timing', 'correct_and_teach'] };
       expect(initializeGrandfatheredDiscovery()).toEqual(expected);
       expect(loadDiscoveryState()).toEqual(expected);
       expect(localStorage.getItem(legacyKey)).toBe(legacy);
       remove.mockRestore();
       expect(initializeGrandfatheredDiscovery()).toEqual(expected);
-      expect(enqueueDiscoveryHint('browser_modes')?.pendingHints).toEqual([]);
+      expect(enqueueDiscoveryHint('double_tap_timing')?.pendingHints).toEqual([]);
       expect(localStorage.getItem(legacyKey)).toBeNull();
     },
   );
@@ -201,7 +201,7 @@ describe('hint storage failure isolation', () => {
 
 describe('hint mutations during storage failures', () => {
   const legacyKey = 'murmur_discovery_v1';
-  const pending = { version: 2, pendingHints: ['browser_modes'], dismissedHints: [] };
+  const pending = { version: 2, pendingHints: ['double_tap_timing'], dismissedHints: [] };
   beforeEach(() => localStorage.clear());
 
   it.each(['readable', 'unreadable'])('persists dismissal and queuing while every cleanup throws (%s legacy)', (legacyKind) => {
@@ -210,8 +210,8 @@ describe('hint mutations during storage failures', () => {
     localStorage.setItem(legacyKey, legacy);
     const cleanup = vi.spyOn(localStorage, 'removeItem').mockImplementation(() => { throw new Error('cleanup unavailable'); });
     try {
-      const dismissed = { version: 2, pendingHints: [], dismissedHints: ['browser_modes'] };
-      expect(dismissDiscoveryHint('browser_modes')).toEqual(dismissed);
+      const dismissed = { version: 2, pendingHints: [], dismissedHints: ['double_tap_timing'] };
+      expect(dismissDiscoveryHint('double_tap_timing')).toEqual(dismissed);
       expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual(dismissed);
       // The retained v1 pending ID must not resurrect the dismissed hint on reload.
       expect(loadDiscoveryState()).toEqual(dismissed);
@@ -219,15 +219,15 @@ describe('hint mutations during storage failures', () => {
       expect(enqueueDiscoveryHint('correct_and_teach')).toEqual(queued);
       expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual(queued);
       for (let repeat = 0; repeat < 3; repeat++) {
-        expect(enqueueDiscoveryHint('browser_modes')).toEqual(queued);
+        expect(enqueueDiscoveryHint('double_tap_timing')).toEqual(queued);
         expect(enqueueDiscoveryHint('correct_and_teach')).toEqual(queued);
-        expect(dismissDiscoveryHint('browser_modes')).toEqual(queued);
+        expect(dismissDiscoveryHint('double_tap_timing')).toEqual(queued);
         expect(loadDiscoveryState()).toEqual(queued);
       }
       expect(localStorage.getItem(legacyKey)).toBe(legacy);
       expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual(queued);
     } finally { cleanup.mockRestore(); }
-    expect(loadDiscoveryState()).toEqual({ version: 2, pendingHints: ['correct_and_teach'], dismissedHints: ['browser_modes'] });
+    expect(loadDiscoveryState()).toEqual({ version: 2, pendingHints: ['correct_and_teach'], dismissedHints: ['double_tap_timing'] });
     expect(localStorage.getItem(legacyKey)).toBeNull();
   });
 
@@ -239,7 +239,7 @@ describe('hint mutations during storage failures', () => {
     const write = vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('write unavailable'); });
     const cleanup = vi.spyOn(localStorage, 'removeItem');
     try {
-      expect(dismissDiscoveryHint('browser_modes')).toEqual(pending);
+      expect(dismissDiscoveryHint('double_tap_timing')).toEqual(pending);
       expect(write).toHaveBeenCalledTimes(1);
       expect(cleanup).not.toHaveBeenCalled();
       expect(localStorage.getItem(DISCOVERY_STORAGE_KEY)).toBe(current);
@@ -252,12 +252,12 @@ describe('hint mutations during storage failures', () => {
     localStorage.setItem(legacyKey, JSON.stringify({ ...pending, version: 1 }));
     const originalWrite = localStorage.setItem.bind(localStorage);
     const write = vi.spyOn(localStorage, 'setItem').mockImplementation((key, value) => {
-      if (JSON.parse(value).dismissedHints.includes('browser_modes')) throw new Error('dismissal write unavailable');
+      if (JSON.parse(value).dismissedHints.includes('double_tap_timing')) throw new Error('dismissal write unavailable');
       originalWrite(key, value);
     });
     const cleanup = vi.spyOn(localStorage, 'removeItem').mockImplementation(() => { throw new Error('cleanup unavailable'); });
     try {
-      expect(dismissDiscoveryHint('browser_modes')).toEqual(pending);
+      expect(dismissDiscoveryHint('double_tap_timing')).toEqual(pending);
       expect(write).toHaveBeenCalledTimes(2);
       expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual(pending);
       expect(JSON.parse(localStorage.getItem(legacyKey)!)).toEqual({ ...pending, version: 1 });
@@ -278,12 +278,12 @@ describe('hint mutations during storage failures', () => {
     const write = vi.spyOn(localStorage, 'setItem');
     const cleanup = vi.spyOn(localStorage, 'removeItem');
     try {
-      expect(dismissDiscoveryHint('browser_modes')).toEqual(pending);
+      expect(dismissDiscoveryHint('double_tap_timing')).toEqual(pending);
       expect(write).not.toHaveBeenCalled();
       expect(cleanup).not.toHaveBeenCalled();
       expect(originalRead(DISCOVERY_STORAGE_KEY)).toBe(current);
       expect(originalRead(legacyKey)).toBe(legacy);
     } finally { read.mockRestore(); write.mockRestore(); cleanup.mockRestore(); }
-    expect(dismissDiscoveryHint('browser_modes')).toEqual({ version: 2, pendingHints: [], dismissedHints: ['browser_modes'] });
+    expect(dismissDiscoveryHint('double_tap_timing')).toEqual({ version: 2, pendingHints: [], dismissedHints: ['double_tap_timing'] });
   });
 });

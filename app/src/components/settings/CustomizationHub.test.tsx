@@ -21,5 +21,5 @@ afterEach(async () => {
 it('retains list semantics for unstyled customization destinations', () => {
   const list = container.querySelector('[role="list"][aria-label="Customization destinations"]');
   expect(list).not.toBeNull();
-  expect(list?.querySelectorAll(':scope > [role="listitem"]')).toHaveLength(4);
+  expect(list?.querySelectorAll(':scope > [role="listitem"]')).toHaveLength(3);
 });

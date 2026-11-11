@@ -1,4 +1,10 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
+import {
+  applyLegacyModes,
+  legacyGlobalModelId,
+  readLegacyModeState,
+  stripLegacyModeKeys,
+} from './legacyModes';
 
 export type RecordingMode = 'hold_down' | 'double_tap' | 'both';
 
@@ -66,77 +72,7 @@ export interface AppProfile {
   ideContextEnabled: boolean;
   /** User-selected local roots. Index contents are never persisted. */
   ideProjectRoots: string[];
-  /** Reusable Mode applied before this profile's fine-tuning overrides. */
-  modeId?: string | null;
 }
-
-export type ModeVocabularyPolicy = 'inherit' | 'general' | 'technical';
-export type ModeContextPolicy = 'none' | 'project';
-
-export interface MurmurMode {
-  id: string;
-  name: string;
-  builtIn: boolean;
-  enabled: boolean;
-  writingStyle: WritingStyle | null;
-  cleanupEnabled: boolean | null;
-  smartFormattingEnabled: boolean | null;
-  cliFormattingEnabled: boolean | null;
-  vocabularyPolicy: ModeVocabularyPolicy;
-  contextPolicy: ModeContextPolicy;
-  modelId: ModelOption | null;
-  language: string | null;
-  autoPaste: boolean | null;
-}
-
-export const SITE_MODE_BROWSERS = [
-  { bundleId: 'com.apple.Safari', label: 'Safari' },
-  { bundleId: 'com.google.Chrome', label: 'Google Chrome' },
-  { bundleId: 'com.microsoft.edgemac', label: 'Microsoft Edge' },
-  { bundleId: 'com.brave.Browser', label: 'Brave' },
-  { bundleId: 'company.thebrowser.Browser', label: 'Arc' },
-  { bundleId: 'org.chromium.Chromium', label: 'Chromium' },
-] as const;
-
-export interface BrowserSiteRule {
-  id: string;
-  browserBundleId: string;
-  host: string;
-  modeId: string;
-  enabled: boolean;
-}
-
-export function normalizeSiteHost(value: string): string | null {
-  const host = value.trim().toLowerCase().replace(/\.$/, '');
-  if (!host || host.length > 253 || host.includes(':')) return null;
-  if (host === 'localhost') return host;
-  const labels = host.split('.');
-  if (labels.some((label) => !label || label.length > 63
-    || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label))) return null;
-  return labels.length > 1 ? host : null;
-}
-
-const builtinMode = (
-  id: string,
-  name: string,
-  writingStyle: WritingStyle | null,
-  overrides: Partial<MurmurMode> = {},
-): MurmurMode => ({
-  id, name, builtIn: true, enabled: true, writingStyle,
-  cleanupEnabled: null, smartFormattingEnabled: null, cliFormattingEnabled: null,
-  vocabularyPolicy: 'inherit', contextPolicy: 'none', modelId: null,
-  language: null, autoPaste: null, ...overrides,
-});
-
-export const BUILTIN_MODES: readonly MurmurMode[] = [
-  builtinMode('builtin.everyday', 'Everyday', null),
-  builtinMode('builtin.messages', 'Messages', 'conversational'),
-  builtinMode('builtin.email', 'Email', 'polished'),
-  builtinMode('builtin.notes', 'Notes', 'notes'),
-  builtinMode('builtin.technical', 'Technical', 'code_technical', { vocabularyPolicy: 'technical' }),
-  builtinMode('builtin.terminal', 'Terminal', 'code_technical', { vocabularyPolicy: 'technical', cliFormattingEnabled: true }),
-  builtinMode('builtin.verbatim', 'Verbatim', 'verbatim'),
-] as const;
 
 const MAX_IDE_PROJECT_ROOT_BYTES = 4096;
 
@@ -366,14 +302,6 @@ export interface Settings {
    * completes, so reports survive the 10-slot localStorage cap. */
   benchmarkAutoSave: boolean;
   appProfiles: AppProfile[];
-  /** User-defined reusable Modes. Built-ins are code-owned and not duplicated here. */
-  modes: MurmurMode[];
-  /** Last Mode explicitly selected outside an automatic app binding. */
-  activeModeId: string;
-  /** Explicit opt-in to frontmost-browser exact-host Mode activation. */
-  siteModeLookupEnabled: boolean;
-  /** Exact browser + host rules. URL paths and live site identity are never persisted. */
-  browserSiteRules: BrowserSiteRule[];
   voiceCommandsEnabled: boolean;
   /** User-defined voice commands applied after the built-in set. */
   voiceCommands: VoiceCommand[];
@@ -608,10 +536,6 @@ export const DEFAULT_SETTINGS: Settings = {
   benchmarkOutputDir: '',
   benchmarkAutoSave: false,
   appProfiles: [],
-  modes: [],
-  activeModeId: 'builtin.everyday',
-  siteModeLookupEnabled: false,
-  browserSiteRules: [],
   voiceCommandsEnabled: false,
   voiceCommands: [],
   cleanupEnabled: false,
@@ -754,6 +678,28 @@ export function persistOnboardingComplete(complete: boolean): void {
   } catch { /* An unavailable mirror falls back to frontend-driven startup. */ }
 }
 
+// Installed model ids, fetched once at boot by the main window so the Modes
+// migration can adopt a global mode's model only when it is installed. Unknown
+// (`null`) means the model is not adopted.
+let installedModelIdsForLegacyMigration: ReadonlySet<string> | null = null;
+
+async function prepareLegacyModeMigration(blob: string): Promise<void> {
+  if (!ownsSettingsMigrations) return;
+  installedModelIdsForLegacyMigration = null;
+  try {
+    const document = JSON.parse(blob) as unknown;
+    if (!document || typeof document !== 'object' || Array.isArray(document)) return;
+    const legacy = readLegacyModeState(document as Record<string, unknown>);
+    if (!legacy.present || legacyGlobalModelId(legacy) === null) return;
+    const catalog = await invoke<Array<{ modelName: string; installState: string }>>('get_model_runtime_catalog');
+    installedModelIdsForLegacyMigration = new Set(
+      catalog.filter((model) => model.installState === 'installed').map((model) => model.modelName),
+    );
+  } catch (e) {
+    console.error('Failed to read installed models for the Modes migration:', e);
+  }
+}
+
 // Only the main window rewrites a migrated snapshot or seeds a fresh install.
 // A companion window can hold a stale pre-migration cache, and persisting its
 // migration would overwrite choices the main window has since saved.
@@ -778,6 +724,7 @@ export async function hydrateSettingsFromDisk(): Promise<void> {
       // `loadSettings()` re-runs the full validation gauntlet over whatever is
       // in here, so no schema work belongs on this path.
       localStorage.setItem(STORAGE_KEY, blob);
+      await prepareLegacyModeMigration(blob);
       // The durable gate survives WebKit eviction with the same settings.
       // Legacy snapshots retain the existing local flag and get mirrored by
       // App's onboarding decision; Rust falls back for that first launch.
@@ -792,6 +739,7 @@ export async function hydrateSettingsFromDisk(): Promise<void> {
     // settings only ever lived in localStorage. Repair it once.
     const cached = localStorage.getItem(STORAGE_KEY);
     if (cached !== null) {
+      await prepareLegacyModeMigration(cached);
       await invoke('save_settings_blob', { blob: cached });
     } else if (ownsSettingsMigrations) {
       // A fresh install. Commit the defaults so companions that fail closed
@@ -870,76 +818,6 @@ function sanitizeVocabScan(raw: unknown): VocabScanSummary | null {
     // predate the field and are therefore treated as adopted.
     adopted: typeof r.adopted === 'boolean' ? r.adopted : true,
   };
-}
-
-function sanitizeModes(raw: unknown): MurmurMode[] {
-  if (!Array.isArray(raw)) return [];
-  const models = new Set(AVAILABLE_MODEL_OPTIONS.map((option) => option.value));
-  const languages = new Set(LANGUAGE_OPTIONS.map((option) => option.value));
-  const styles = new Set<WritingStyle>(WRITING_STYLE_VALUES);
-  const seen = new Set(BUILTIN_MODES.map((mode) => mode.id));
-  const modes: MurmurMode[] = [];
-  for (const value of raw.slice(0, 100)) {
-    if (!value || typeof value !== 'object') continue;
-    const mode = value as Partial<MurmurMode>;
-    const id = typeof mode.id === 'string' ? mode.id.trim() : '';
-    const name = typeof mode.name === 'string' ? mode.name.trim() : '';
-    if (!id || !name || id.length > 128 || name.length > 128 || seen.has(id)) continue;
-    if (mode.builtIn === true) continue;
-    if (mode.modelId != null && (typeof mode.modelId !== 'string' || !models.has(mode.modelId))) continue;
-    if (mode.language != null && (typeof mode.language !== 'string' || !languages.has(mode.language))) continue;
-    if (mode.writingStyle != null && !styles.has(mode.writingStyle as WritingStyle)) continue;
-    if ([mode.enabled, mode.cleanupEnabled, mode.smartFormattingEnabled, mode.cliFormattingEnabled, mode.autoPaste]
-      .some((field) => field != null && typeof field !== 'boolean')) continue;
-    if (mode.vocabularyPolicy != null && !['inherit', 'general', 'technical'].includes(mode.vocabularyPolicy)) continue;
-    if (mode.contextPolicy != null && !['none', 'project'].includes(mode.contextPolicy)) continue;
-    const writingStyle = mode.writingStyle === null || styles.has(mode.writingStyle as WritingStyle)
-      ? mode.writingStyle as WritingStyle | null
-      : null;
-    const nullableBoolean = (input: unknown) => typeof input === 'boolean' ? input : null;
-    modes.push({
-      id, name, builtIn: false, enabled: mode.enabled !== false, writingStyle,
-      cleanupEnabled: nullableBoolean(mode.cleanupEnabled),
-      smartFormattingEnabled: nullableBoolean(mode.smartFormattingEnabled),
-      cliFormattingEnabled: nullableBoolean(mode.cliFormattingEnabled),
-      vocabularyPolicy: mode.vocabularyPolicy === 'technical' || mode.vocabularyPolicy === 'general'
-        ? mode.vocabularyPolicy : 'inherit',
-      contextPolicy: mode.contextPolicy === 'project' ? 'project' : 'none',
-      modelId: typeof mode.modelId === 'string' && models.has(mode.modelId) ? mode.modelId as ModelOption : null,
-      language: typeof mode.language === 'string' && languages.has(mode.language) ? mode.language : null,
-      autoPaste: nullableBoolean(mode.autoPaste),
-    });
-    seen.add(id);
-  }
-  return modes;
-}
-
-function sanitizeBrowserSiteRules(raw: unknown, availableModeIds: ReadonlySet<string>): BrowserSiteRule[] {
-  if (!Array.isArray(raw)) return [];
-  const browsers = new Set<string>(SITE_MODE_BROWSERS.map((browser) => browser.bundleId));
-  const seenIds = new Set<string>();
-  const seenSites = new Set<string>();
-  const rules: BrowserSiteRule[] = [];
-  for (const value of raw.slice(0, 128)) {
-    if (!value || typeof value !== 'object') continue;
-    const rule = value as Partial<BrowserSiteRule>;
-    const id = typeof rule.id === 'string' ? rule.id.trim() : '';
-    const host = typeof rule.host === 'string' ? normalizeSiteHost(rule.host) : null;
-    const siteKey = `${rule.browserBundleId}\u0000${host}`;
-    if (!id || id.length > 128 || seenIds.has(id) || seenSites.has(siteKey) || !host
-      || !browsers.has(rule.browserBundleId ?? '')
-      || typeof rule.modeId !== 'string' || !availableModeIds.has(rule.modeId)) continue;
-    rules.push({
-      id,
-      browserBundleId: rule.browserBundleId!,
-      host,
-      modeId: rule.modeId,
-      enabled: rule.enabled !== false,
-    });
-    seenIds.add(id);
-    seenSites.add(siteKey);
-  }
-  return rules;
 }
 
 /** Decode a durable snapshot without rewriting a webview's cache or disk. */
@@ -1120,22 +998,9 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
       // independently editable source after migration.
       parsed.customVocabulary = vocabularyPrompt(parsed.vocabularyEntries);
 
-      parsed.modes = sanitizeModes(parsed.modes);
-      const knownModeIds = new Set([
-        ...BUILTIN_MODES.map((mode) => mode.id),
-        ...parsed.modes.map((mode) => mode.id),
-      ]);
-      const availableModeIds = new Set([
-        ...BUILTIN_MODES.map((mode) => mode.id),
-        ...parsed.modes.filter((mode) => mode.enabled).map((mode) => mode.id),
-      ]);
-      if (typeof parsed.activeModeId !== 'string' || !availableModeIds.has(parsed.activeModeId)) {
-        parsed.activeModeId = DEFAULT_SETTINGS.activeModeId;
-      }
-      parsed.siteModeLookupEnabled = typeof parsed.siteModeLookupEnabled === 'boolean'
-        ? parsed.siteModeLookupEnabled
-        : DEFAULT_SETTINGS.siteModeLookupEnabled;
-      parsed.browserSiteRules = sanitizeBrowserSiteRules(parsed.browserSiteRules, knownModeIds);
+      // Modes were retired. Capture what they persisted before anything is
+      // dropped, then fold it into profiles and globals below.
+      const legacyModes = readLegacyModeState(parsed as unknown as Record<string, unknown>);
 
       // appProfiles drives per-app delivery and transformation overrides. Drop
       // malformed entries and coerce a non-array back to the empty default so
@@ -1144,9 +1009,9 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
         parsed.appProfiles = DEFAULT_SETTINGS.appProfiles;
       } else {
         parsed.appProfiles = parsed.appProfiles
-          .filter((p): p is AppProfile =>
+          .filter((p): p is AppProfile & { modeId?: unknown } =>
             !!p && typeof (p as AppProfile).bundleId === 'string' && (p as AppProfile).bundleId.trim() !== '')
-          .map((p) => ({
+          .map((p): AppProfile & { modeId?: string } => ({
             bundleId: p.bundleId.trim(),
             label: typeof p.label === 'string' ? p.label : '',
             autoPasteOverride:
@@ -1171,6 +1036,7 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
                   .filter((root, index, roots) => roots.indexOf(root) === index)
                   .slice(0, 4)
               : [],
+            // Carried only so the legacy Mode migration can read the binding.
             ...(typeof p.modeId === 'string' && p.modeId.trim()
               ? { modeId: p.modeId.trim() }
               : {}),
@@ -1316,8 +1182,29 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
         parsed.homophoneContextEnabled = false;
       }
 
-      const settings = { ...DEFAULT_SETTINGS, ...parsed } as Settings;
-      if (repairCache && ownsSettingsMigrations && storedSettingsVersion < SETTINGS_VERSION) {
+      let settings = { ...DEFAULT_SETTINGS, ...parsed } as Settings;
+      if (legacyModes.present) {
+        const migrated = applyLegacyModes(settings, legacyModes, {
+          installedModelIds: installedModelIdsForLegacyMigration,
+        });
+        settings = {
+          ...settings,
+          model: migrated.model as ModelOption,
+          language: migrated.language,
+          autoPaste: migrated.autoPaste,
+          cleanupEnabled: migrated.cleanupEnabled,
+          smartFormattingEnabled: migrated.smartFormattingEnabled,
+          appProfiles: migrated.appProfiles,
+        };
+        stripLegacyModeKeys(settings as unknown as Record<string, unknown>);
+      }
+      // The migrated document replaces the stored blob whole, so the legacy
+      // keys leave storage only when that save succeeds. A failed save keeps
+      // them, and the next load derives the same result again.
+      if (
+        repairCache && ownsSettingsMigrations
+        && (storedSettingsVersion < SETTINGS_VERSION || legacyModes.present)
+      ) {
         try {
           writePersistedSettings(settings);
         } catch (e) {

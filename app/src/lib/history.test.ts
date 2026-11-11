@@ -99,6 +99,23 @@ describe('persistence', () => {
     expect(loadHistory()[0].id).toBe('e5');
   });
 
+  it('loads records saved with the retired Mode ids and ignores those ids', () => {
+    localStorage.setItem('dictation-history', JSON.stringify([
+      entry({
+        id: 'old', schemaVersion: 2, text: 'kept', rawText: 'kept raw',
+        recording: { recordingId: 7, modelId: 'base.en', modeId: 'builtin.email', profileId: null, stages: [] } as never,
+        derived: { sourceEntryId: 'src', modeId: 'builtin.notes', createdAt: 1, stages: [] } as never,
+      }),
+      { id: 'legacy', text: 'older', timestamp: 1, duration: 1, recording: { modeId: 'custom.x' } },
+    ]));
+    const [old, legacy] = loadHistory();
+    expect(old).toMatchObject({ text: 'kept', recording: { recordingId: 7, modelId: 'base.en' } });
+    expect(old.recording).not.toHaveProperty('modeId');
+    expect(old.derived).toEqual({ sourceEntryId: 'src', createdAt: 1, stages: [] });
+    expect(legacy.recording).toEqual({});
+    expect(JSON.stringify(formatHistoryExport([old, legacy], 'json', new Date(0)))).not.toContain('modeId');
+  });
+
   it('returns an empty list when the stored blob is not an array', () => {
     localStorage.setItem('dictation-history', JSON.stringify({ nope: true }));
     expect(loadHistory()).toEqual([]);
@@ -416,7 +433,7 @@ describe('formatHistoryExport', () => {
     const enriched = entry({
       id: 'v2', schemaVersion: 2, text: 'Delivered text.', rawText: 'delivered text',
       recording: {
-        recordingId: 42, modelId: 'parakeet-v3', modeId: null, profileId: 'Editor',
+        recordingId: 42, modelId: 'parakeet-v3', profileId: 'Editor',
         stages: [{ stage: 'cleanup', outcome: 'applied', changed: true }],
       },
     });

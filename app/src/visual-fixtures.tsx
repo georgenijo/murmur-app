@@ -576,15 +576,7 @@ const fixtureSettings = {
   smartAutoPreferredDeviceIds: requestedState === 'settings-smart-auto' || requestedState === 'settings-smart-auto-no-probes'
     ? ['fixture-built-in']
     : [],
-  siteModeLookupEnabled: requestedState === 'settings-site-modes',
   pasteLastShortcut: fixturePasteLastShortcut,
-  browserSiteRules: requestedState === 'settings-site-modes' ? [{
-    id: 'fixture-github',
-    browserBundleId: 'com.apple.Safari',
-    host: 'github.com',
-    modeId: 'builtin.technical',
-    enabled: true,
-  }] : [],
   vocabularyEntries: [{
     id: 'fixture-term',
     written: 'Murmur',
@@ -643,7 +635,6 @@ function VisualFixture() {
     || requestedState === 'settings-general'
     || requestedState === 'settings-appearance'
     || requestedState === 'settings-shortcuts'
-    || requestedState === 'settings-site-modes'
     || requestedState.startsWith('settings-smart-auto');
   const homeSidebar = useHomeSidebar(requestedState === 'home-sidebar-collapsed', settingsOpen);
   const homeNavId = React.useId();
@@ -835,7 +826,7 @@ function VisualFixture() {
         ]}
       />
       {requestedState === 'discovery-hint' && (
-        <DiscoveryHintToast hint="browser_modes" onAction={() => {}} onDismiss={() => {}} />
+        <DiscoveryHintToast hint="double_tap_timing" onAction={() => {}} onDismiss={() => {}} />
       )}
       <AboutModal isOpen={requestedState === 'about'} onClose={() => {}} />
       <UpdateModal

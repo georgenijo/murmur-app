@@ -124,11 +124,11 @@ describe('main local stats completion ownership', () => {
 
   it('updates the mounted Insights when dictation finishes and when counters reset', async () => {
     await act(async () => {
-      updateStats('one two three four', 2, 'builtin.technical');
+      updateStats('one two three four', 2);
       emit('delivery-retry-feedback', { kind: 'auto_pasted' });
     });
     expect(container.querySelector('[data-stats="headline"]')?.textContent).toContain('Last dictation');
-    expect(loadStats().activity.recordingsByMode).toEqual({ 'builtin.technical': 1 });
+    expect(loadStats().totalRecordings).toBe(1);
     await act(async () => resetStats());
     await act(async () => {
     });
