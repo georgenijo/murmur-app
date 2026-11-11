@@ -127,7 +127,7 @@ export function MeetingDiarizationSettings({
 
   return (
     <>
-      <SettingsRow targetId="meeting-speakers" title="Label remote speakers" onReset={enabled !== DEFAULT_SETTINGS.meetingDiarization ? () => onEnabledChange(DEFAULT_SETTINGS.meetingDiarization) : undefined} disabled={!supported} control={<AnimatedSwitch
+      <SettingsRow targetId="meeting-speakers" title="Label remote speakers" compact onReset={enabled !== DEFAULT_SETTINGS.meetingDiarization ? () => onEnabledChange(DEFAULT_SETTINGS.meetingDiarization) : undefined} disabled={!supported} control={<AnimatedSwitch
           size="md"
           checked={enabled}
           disabled={!supported}
@@ -136,6 +136,7 @@ export function MeetingDiarizationSettings({
         />} />
 
       <SettingsBranch open={enabled} className="settings-branch-stack">
+      <div className="settings-rows">
       <SettingsDisclosure title="How speaker labeling works" layout="stack" open={howItWorksOpen} onOpenChange={setHowItWorksOpen}>
         <p className="text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
           Labels stay on this Mac and apply only within this meeting. Murmur temporarily saves system audio for labeling, up to two hours, then deletes it; Keep meeting audio is separate. Over two hours, labeling is skipped while capture and transcription continue. Uncertain passages stay Them. No cross-meeting voice profiles.
@@ -162,6 +163,7 @@ export function MeetingDiarizationSettings({
         </div>
       )}
       {error && <p role="alert" className="text-[length:var(--ui-font-caption)] text-error">{error}</p>}
+      </div>
       </SettingsBranch>
     </>
   );

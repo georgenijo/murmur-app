@@ -1464,7 +1464,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               <SettingToggle
                 targetId="meeting-audio"
                 title="Keep meeting audio"
-                description=""
+                compact
                 checked={settings.meetingRetainAudio} defaultChecked={DEFAULT_SETTINGS.meetingRetainAudio}
                 onChange={() => onUpdateSettings({ meetingRetainAudio: !settings.meetingRetainAudio })}
               />
