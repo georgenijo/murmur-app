@@ -469,7 +469,8 @@
 .settings-rows > * { padding: var(--settings-row-pad) var(--settings-row-x); border-radius: 0; }
 .settings-rows > * + * { border-top: 1px solid var(--settings-divider); }
 .settings-setting-row { container: settings-row / inline-size; min-width: 0; min-height: var(--settings-row-height); }
-.settings-setting-row:not(:has(.settings-row-description)) { min-height: var(--ui-control-standard); }
+/* Rows keep one shared height; a row shorter than that (a switch with no description) is centred in it instead of leaving a band underneath. */
+.settings-setting-row:has(> .settings-row-layout) { display: grid; grid-template-columns: minmax(0, 1fr); align-content: center; }
 .settings-setting-row[data-compact] { min-height: var(--ui-control-standard); }
 .settings-setting-row:hover { background: transparent; }
 .settings-row-layout[data-align='start'] { align-items: start; }

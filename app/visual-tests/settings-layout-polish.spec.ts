@@ -83,6 +83,15 @@ for (const appearance of ['dark', 'light'] as const) {
     expect(Math.abs(label.y + label.height / 2 - (trigger.y + trigger.height / 2))).toBeLessThanOrEqual(8);
   });
 
+  test(`${appearance} Microphone helper text sits right under the picker`, async ({ page }) => {
+    await open(page, appearance, 'settings', 'Recording');
+    const trigger = await box(page.getByRole('button', { name: 'Microphone input' }));
+    const helper = await box(page.getByText(/Docking, undocking, or changing the system input/));
+    // The gap is the copy gap, not the wide gap that separates label and control columns.
+    expect(helper.y - trigger.bottom).toBeGreaterThanOrEqual(0);
+    expect(helper.y - trigger.bottom).toBeLessThanOrEqual(12);
+  });
+
   test(`${appearance} Advanced disclosure matches the row rhythm`, async ({ page }) => {
     await open(page, appearance, 'settings', 'Recording');
     const toggle = page.locator('.settings-advanced-toggle').first();
@@ -151,6 +160,18 @@ for (const appearance of ['dark', 'light'] as const) {
     for (const row of singleLineRows) expect(row.height).toBeLessThanOrEqual(56);
     expect(Math.abs(singleLineRows[0].height - singleLineRows[1].height)).toBeLessThanOrEqual(2);
     expect((await box(age)).height).toBeGreaterThanOrEqual(singleLineRows[0].height);
+    // A switch row with no description is as tall as a picker row and centres
+    // its label and switch, with no empty band under them.
+    const ageBox = await box(age);
+    for (const row of [audio, speakers]) {
+      const rowBox = await box(row);
+      const middle = rowBox.y + rowBox.height / 2;
+      const title = await box(row.locator('.settings-row-title'));
+      const control = await box(row.getByRole('switch'));
+      expect(Math.abs(rowBox.height - ageBox.height)).toBeLessThanOrEqual(1);
+      expect(Math.abs(title.y + title.height / 2 - middle)).toBeLessThanOrEqual(1);
+      expect(Math.abs(control.y + control.height / 2 - middle)).toBeLessThanOrEqual(1);
+    }
 
     await speakers.getByRole('switch', { name: 'Label remote speakers' }).click();
     const disclosure = speakerGroup.getByRole('button', { name: 'How speaker labeling works' });
