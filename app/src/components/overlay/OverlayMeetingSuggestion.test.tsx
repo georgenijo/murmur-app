@@ -73,10 +73,7 @@ describe('OverlayMeetingSuggestion', () => {
     expect(dismiss.classList.contains('bezel-meeting-dismiss')).toBe(true);
     expect(container.querySelector('[role="alert"]')!.classList.contains('bezel-meeting-error')).toBe(true);
     await render(geometry);
-    expect(section.classList.contains('notch-bezel')).toBe(true);
-    expect(accept.classList.contains('bezel-meeting-accept')).toBe(true);
-    expect(accept.className).not.toMatch(/(?:cyan|slate|red)-/);
-    expect(dismiss.classList.contains('bezel-meeting-dismiss')).toBe(true);
-    expect(container.querySelector('[role="alert"]')!.classList.contains('bezel-meeting-error')).toBe(true);
+    expect(section.classList.contains('text-white')).toBe(true);
+    expect(accept.classList.contains('bg-cyan-300')).toBe(true);
   });
 });

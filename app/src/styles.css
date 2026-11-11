@@ -1410,7 +1410,9 @@ textarea {
 .meeting-transcript-count { color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }
 /* The panel anchors to the transcript header, not the summary, so it never exceeds the detail pane. */
 .meeting-speakers { position: static; }
-.meeting-speakers > summary { max-width: 18rem; cursor: pointer; list-style: none; overflow: hidden; text-overflow: ellipsis; }
+.meeting-speakers > summary { max-width: 18rem; cursor: pointer; list-style: none; overflow: hidden; }
+/* The summary is a flex row, so the ellipsis has to live on the text child; on the row itself a long list is clipped at both ends. */
+.meeting-speakers-summary-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meeting-speakers > summary::-webkit-details-marker { display: none; }
 .meeting-speakers-panel { position: absolute; top: calc(100% + var(--ui-space-3)); right: 0; z-index: 20; width: min(28rem, 100%); border: 1px solid var(--ui-hairline); border-radius: var(--ui-radius-popover); background: var(--murmur-surface-container-lowest); padding: var(--ui-space-6); box-shadow: var(--ui-shadow-3); }
 .meeting-claim-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-3); margin-bottom: var(--ui-space-4); border-radius: var(--ui-radius-control); background: var(--ui-tint-sunken); padding: var(--ui-space-4) var(--ui-space-5); }

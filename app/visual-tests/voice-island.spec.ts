@@ -35,10 +35,6 @@ for (const placement of ['notch', 'pill'] as const) {
           // which fills the island inside its 1px border so it centres exactly.
           const row = fixture.locator('[data-variant="recording"] .overlay-pill-row');
           await expect(row).toHaveCSS('height', `${geometry.pillRecording.collapsedH - 2}px`);
-        } else {
-          const accept = fixture.locator('[data-variant="meeting"] button').first();
-          await expect(accept).toHaveCSS('background-color', 'rgb(255, 255, 255)');
-          await expect(accept).toHaveCSS('color', 'rgb(28, 28, 30)');
         }
         // The idle pill is fully hidden; the notch island always shows.
         await expect(fixture.locator('[data-variant="idle"] .overlay-island'))

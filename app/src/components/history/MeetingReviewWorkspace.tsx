@@ -272,7 +272,7 @@ export function MeetingReviewWorkspace({ meetings, segments, captureBusy, meetin
           <span className="meeting-transcript-count">{segments.length} {segments.length === 1 ? 'segment' : 'segments'}</span>
           <span className="flex-1" />
           <details ref={speakersRef} className="meeting-speakers">
-            <summary className="ui-form-button meeting-header-action">Speakers: {speakerSummary}<ChevronDown aria-hidden="true" className="h-3.5 w-3.5" /></summary>
+            <summary className="ui-form-button meeting-header-action"><span className="meeting-speakers-summary-text">Speakers: {speakerSummary}</span><ChevronDown aria-hidden="true" className="h-3.5 w-3.5 shrink-0" /></summary>
             <div className="meeting-speakers-panel">
               <div className="flex flex-wrap items-end gap-2">
                 <label className="min-w-32 flex-1 text-(length:--ui-font-caption) font-semibold text-on-surface">Me channel

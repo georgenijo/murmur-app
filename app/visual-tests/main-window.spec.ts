@@ -882,6 +882,33 @@ test('meeting transcripts and speaker labels remain usable at normal and narrow 
   expect(speakerLayout.textOverflow).not.toBe('ellipsis');
   expect(speakerLayout.whiteSpace).not.toBe('nowrap');
 
+  // A long speaker list must keep its "Speakers:" prefix and chevron and end in an ellipsis,
+  // instead of being clipped at both ends of the button.
+  const summary = page.locator('.meeting-speakers > summary');
+  const summaryLayout = await summary.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    const text = element.querySelector('.meeting-speakers-summary-text')!;
+    const textBox = text.getBoundingClientRect();
+    const chevron = element.querySelector('svg')!.getBoundingClientRect();
+    return {
+      left: box.left,
+      right: box.right,
+      textLeft: textBox.left,
+      textRight: textBox.right,
+      truncated: text.scrollWidth > text.clientWidth,
+      textOverflow: getComputedStyle(text).textOverflow,
+      chevronLeft: chevron.left,
+      chevronRight: chevron.right,
+      chevronWidth: chevron.width,
+    };
+  });
+  expect(summaryLayout.truncated).toBe(true);
+  expect(summaryLayout.textOverflow).toBe('ellipsis');
+  expect(summaryLayout.textLeft).toBeGreaterThanOrEqual(summaryLayout.left);
+  expect(summaryLayout.textRight).toBeLessThanOrEqual(summaryLayout.chevronLeft);
+  expect(summaryLayout.chevronRight).toBeLessThanOrEqual(summaryLayout.right);
+  expect(summaryLayout.chevronWidth).toBeGreaterThan(0);
+
   await page.setViewportSize({ width: 720, height: 560 });
   await page.goto('/visual-fixtures.html?state=meetings-review&appearance=light');
   await expect(page.getByRole('button', { name: 'Copy transcript' })).toBeVisible();
