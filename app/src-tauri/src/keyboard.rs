@@ -1900,6 +1900,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
 
                 // Fn/Globe only: snapshot the detectors so a press that begins
                 // a fresh gesture can open the microphone at key-down.
+                let fn_event_at = Instant::now();
                 let fn_trigger = fn_capture::trigger_active();
                 let fn_gesture_was_idle = fn_trigger && fn_capture::gesture_idle_before(mode);
 
@@ -2148,6 +2149,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                         &event.event_type,
                         shortcut_modifiers.any(),
                         fn_gesture_was_idle,
+                        fn_event_at,
                     );
                 }
             };

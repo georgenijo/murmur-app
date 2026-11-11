@@ -192,6 +192,14 @@ pub enum ProductionHostMessage {
         device_id: Option<String>,
         backend: CaptureBackend,
     },
+    /// Interactive capture that must never request authorization: the helper
+    /// re-checks an existing microphone grant immediately before creating the
+    /// native capture and refuses with `PermissionDenied` otherwise. Used for
+    /// Fn key-down capture, which starts before any confirmed gesture.
+    StartPreauthorized {
+        device_id: Option<String>,
+        backend: CaptureBackend,
+    },
     /// Requires an existing microphone grant and never requests authorization.
     /// The absolute deadline includes IPC, HAL setup, and streaming time.
     StartAutomaticProbe {
@@ -840,6 +848,23 @@ mod tests {
         );
         assert!(serde_json::from_str::<ProductionHostMessage>(
             r#"{"type":"startAutomaticProbe","deviceId":"test","backend":"cpal"}"#
+        )
+        .is_err());
+        let preauthorized = ProductionHostMessage::StartPreauthorized {
+            device_id: None,
+            backend: CaptureBackend::Auhal,
+        };
+        let encoded = serde_json::to_string(&preauthorized).unwrap();
+        assert_eq!(
+            encoded,
+            r#"{"type":"startPreauthorized","deviceId":null,"backend":"auhal"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ProductionHostMessage>(&encoded).unwrap(),
+            preauthorized
+        );
+        assert!(serde_json::from_str::<ProductionHostMessage>(
+            r#"{"type":"startPreauthorized","deviceId":null,"backend":"auhal","prompt":true}"#
         )
         .is_err());
         assert_eq!(

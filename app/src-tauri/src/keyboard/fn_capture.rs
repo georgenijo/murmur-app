@@ -10,7 +10,8 @@
 //! detectors return to idle (released before the hold arms, a second tap that
 //! never comes, Fn plus another key), or on Escape, a listener change,
 //! processing, or disable. The audio supervisor's 1.5 s backstop
-//! (`SPECULATIVE_CAPTURE_TTL`) bounds any path this module could miss.
+//! (`SPECULATIVE_CAPTURE_TTL`), measured from the listener callback's key-down
+//! stamp, bounds any path this module could miss.
 //!
 //! Lock order: the hold-promotion lock may be held while taking `TRACKER`,
 //! and `TRACKER` may be held while taking a detector lock. Never take
@@ -25,6 +26,7 @@ use crate::MutexExt;
 use rdev::{EventType, Key};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::Instant;
 
 /// Settled tracker transitions the caller must carry out, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -191,7 +193,7 @@ pub(super) fn listener_changed(target: Option<Key>, active: bool) {
 pub(super) fn abandon(reason: DiscardReason) {
     let mut tracker = TRACKER.lock_or_recover();
     if let Some(action) = tracker.abandon(reason) {
-        run(None, action, DetectorMode::DoubleTap, 0);
+        run(None, action, DetectorMode::DoubleTap, 0, Instant::now());
     }
 }
 
@@ -203,7 +205,7 @@ pub(super) fn confirm(gesture_token: u64) {
     }
     let mut tracker = TRACKER.lock_or_recover();
     if let Some(action) = tracker.confirm(gesture_token) {
-        run(None, action, DetectorMode::DoubleTap, 0);
+        run(None, action, DetectorMode::DoubleTap, 0, Instant::now());
     }
 }
 
@@ -216,7 +218,7 @@ pub(super) fn settle(mode: DetectorMode) {
     let mut tracker = TRACKER.lock_or_recover();
     let in_progress = live_in_progress(mode);
     if let Some(action) = tracker.settle(in_progress) {
-        run(None, action, mode, 0);
+        run(None, action, mode, 0, Instant::now());
     }
 }
 
@@ -226,6 +228,9 @@ pub(super) fn gesture_idle_before(mode: DetectorMode) -> bool {
 }
 
 /// Apply one keyboard event after the detectors have consumed it.
+/// `event_at` is stamped when the listener callback received the event, so a
+/// capture's backstop is measured from physical key-down.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn after_event(
     handle: &tauri::AppHandle,
     mode: DetectorMode,
@@ -234,6 +239,7 @@ pub(super) fn after_event(
     event: &EventType,
     shortcut_modifiers_held: bool,
     gesture_was_idle: bool,
+    event_at: Instant,
 ) {
     let mut tracker = TRACKER.lock_or_recover();
     let facts = EventFacts {
@@ -246,7 +252,7 @@ pub(super) fn after_event(
         blocked: IS_PROCESSING.load(Ordering::SeqCst) || APP_DISABLED.load(Ordering::SeqCst),
     };
     for action in decide(&mut tracker, &facts) {
-        run(Some(handle), action, mode, listener_generation);
+        run(Some(handle), action, mode, listener_generation, event_at);
     }
 }
 
@@ -257,11 +263,12 @@ fn run(
     action: Action,
     mode: DetectorMode,
     listener_generation: u64,
+    event_at: Instant,
 ) {
     match action {
         Action::Open(id) => {
             if let Some(handle) = handle {
-                spawn_open(handle.clone(), id, mode, listener_generation);
+                spawn_open(handle.clone(), id, mode, listener_generation, event_at);
             }
         }
         Action::Discard(id, reason) => {
@@ -278,7 +285,13 @@ fn run(
 /// transition, an already granted microphone (never prompting), and the
 /// dictation start guards. The supervisor additionally refuses while any
 /// capture, standby, or teardown owns the microphone.
-fn spawn_open(handle: tauri::AppHandle, id: u64, mode: DetectorMode, listener_generation: u64) {
+fn spawn_open(
+    handle: tauri::AppHandle,
+    id: u64,
+    mode: DetectorMode,
+    listener_generation: u64,
+    pressed_at: Instant,
+) {
     use tauri::Manager;
     tauri::async_runtime::spawn(async move {
         let Some(state) = handle.try_state::<crate::State>() else {
@@ -322,7 +335,12 @@ fn spawn_open(handle: tauri::AppHandle, id: u64, mode: DetectorMode, listener_ge
             if !tracker.is_active(id) {
                 return;
             }
-            crate::audio_lifecycle::request_speculative_capture(id, device_id, Some(handle.clone()))
+            crate::audio_lifecycle::request_speculative_capture(
+                id,
+                pressed_at,
+                device_id,
+                Some(handle.clone()),
+            )
         };
         // Hold the transition until the supervisor has published ownership,
         // so no other capture claim can interleave with this one.

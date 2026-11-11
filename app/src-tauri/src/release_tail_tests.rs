@@ -454,3 +454,91 @@ fn first_word_standby_sweep() {
     // Cold misses are measured, not assumed: report even if ASR reconstructs a
     // partly clipped word and the hypothesis does not hold for these fixtures.
 }
+
+/// Fn key-down capture: once an unconfirmed capture is discarded, neither
+/// PCM racing the revocation nor PCM the helper flushes while draining Stop
+/// can repopulate the buffer, even though protocol accounting still sees it.
+#[test]
+fn revoked_key_down_buffer_drops_racing_and_stop_flushed_pcm() {
+    let owner = crate::audio_lifecycle::AudioOwner::Speculative(7);
+    let shared = std::sync::Arc::new(Mutex::new(CaptureSamples::default()));
+    retain_pcm(&shared, owner, &[0.4; CALLBACK_FRAMES], RATE);
+    assert_eq!(shared.lock().unwrap().len(), CALLBACK_FRAMES);
+
+    // A live reader keeps appending while the supervisor revokes.
+    let racing = {
+        let shared = std::sync::Arc::clone(&shared);
+        std::thread::spawn(move || {
+            for _ in 0..2_000 {
+                retain_pcm(&shared, owner, &[0.5; 64], RATE);
+            }
+        })
+    };
+    shared.lock().unwrap().revoke_retention();
+    assert!(shared.lock().unwrap().is_empty());
+    racing.join().unwrap();
+    assert!(
+        shared.lock().unwrap().is_empty(),
+        "late live PCM was retained"
+    );
+
+    // The helper then flushes its ring in response to Stop.
+    let (sender, receiver) = mpsc::channel();
+    sender.send(pcm(0, vec![0.6; CALLBACK_FRAMES])).unwrap();
+    sender.send(pcm(1, vec![0.7; 100])).unwrap();
+    sender
+        .send(control(ProductionHelperMessage::Stopped {
+            retained_samples: 612,
+        }))
+        .unwrap();
+    let events = AudioWorkerEventSender::new(|_| Ok(()));
+    let mut sequence = 0;
+    let mut received = 0;
+    let outcome = drain_stopping_recording(
+        &receiver,
+        Instant::now() + Duration::from_secs(1),
+        &mut sequence,
+        Some(RATE),
+        owner,
+        &events,
+        &mut received,
+        &mut |samples| retain_pcm(&shared, owner, samples, RATE),
+    );
+    assert_eq!(
+        outcome,
+        StopReadOutcome::Stopped {
+            retained_samples: 612
+        }
+    );
+    assert_eq!(received, 612);
+    let buffer = shared.lock().unwrap();
+    assert!(buffer.is_empty(), "Stop-flushed PCM was retained");
+    assert!(buffer.retention_revoked());
+}
+
+#[test]
+fn adopted_key_down_buffer_keeps_stop_flushed_pcm() {
+    let owner = crate::audio_lifecycle::AudioOwner::Speculative(8);
+    let shared = Mutex::new(CaptureSamples::default());
+    retain_pcm(&shared, owner, &[0.4; 10], RATE);
+    let (sender, receiver) = mpsc::channel();
+    sender.send(pcm(0, vec![0.6; 20])).unwrap();
+    sender
+        .send(control(ProductionHelperMessage::Stopped {
+            retained_samples: 20,
+        }))
+        .unwrap();
+    let events = AudioWorkerEventSender::new(|_| Ok(()));
+    let (mut sequence, mut received) = (0, 0);
+    drain_stopping_recording(
+        &receiver,
+        Instant::now() + Duration::from_secs(1),
+        &mut sequence,
+        Some(RATE),
+        owner,
+        &events,
+        &mut received,
+        &mut |samples| retain_pcm(&shared, owner, samples, RATE),
+    );
+    assert_eq!(shared.lock().unwrap().len(), 30);
+}

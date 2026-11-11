@@ -3,9 +3,19 @@ use super::*;
 
 /// Each spawn retains a distinct sample value so tests can prove which worker's
 /// audio reached a recording.
+/// Production helpers keep producing PCM after Stop: in-flight callbacks and
+/// the ring flush. This worker models that, and can withhold confirmed exit.
+#[derive(Clone)]
+struct AfterStop {
+    appended: Arc<AtomicUsize>,
+    unconfirmed: bool,
+    exit: Gate,
+}
+
 struct KeyDownFactory {
     first_buffer: Option<Gate>,
     teardown: Option<Gate>,
+    after_stop: Option<AfterStop>,
     buffers: Arc<Mutex<Vec<Arc<Mutex<audio::CaptureSamples>>>>>,
     owners: Arc<Mutex<Vec<AudioOwner>>>,
     active: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
@@ -23,20 +33,38 @@ impl WorkerFactory for KeyDownFactory {
         self.active.lock().unwrap().push(spec.active.clone());
         let first_buffer = if index == 0 { self.first_buffer.clone() } else { None };
         let teardown = if index == 0 { self.teardown.clone() } else { None };
+        let after_stop = if index == 0 { self.after_stop.clone() } else { None };
         let value = if index == 0 { KEY_DOWN_PCM } else { COLD_PCM };
         Ok(std::thread::spawn(move || {
             if let Some(gate) = first_buffer {
                 gate.wait();
             }
-            spec.shared.lock().unwrap().append_pcm(&[value; 160], 16_000);
+            audio::retain_pcm(&spec.shared, spec.owner, &[value; 160], 16_000);
             events.send(AudioWorkerEvent::FirstBuffer { owner: spec.owner, sample_rate: 16_000, sent_at: Instant::now() }).unwrap();
             while let Ok(command) = spec.command_receiver.recv() {
                 if matches!(command, AudioCommand::Stop) {
                     break;
                 }
             }
+            if let Some(after) = &after_stop {
+                // The ring flush the helper sends in reply to Stop.
+                audio::retain_pcm(&spec.shared, spec.owner, &[value; 512], 16_000);
+                after.appended.fetch_add(1, Ordering::SeqCst);
+            }
             if let Some(gate) = teardown {
                 gate.wait();
+            }
+            if let Some(after) = &after_stop {
+                // A callback still in the pipe while exit is being confirmed.
+                audio::retain_pcm(&spec.shared, spec.owner, &[value; 64], 16_000);
+                after.appended.fetch_add(1, Ordering::SeqCst);
+                if after.unconfirmed {
+                    let _ = events.send(AudioWorkerEvent::TerminationUnconfirmed {
+                        owner: spec.owner,
+                        failure: AudioFailure::new(AudioFailureKind::TerminationUnconfirmed, AudioInitPhase::Runtime),
+                    });
+                }
+                after.exit.wait();
             }
             let _ = events.send(AudioWorkerEvent::StreamStopped { owner: spec.owner });
             let _ = events.send(AudioWorkerEvent::ThreadExited { owner: spec.owner });
@@ -54,13 +82,17 @@ struct KeyDown {
 }
 
 fn key_down(first_buffer: Option<Gate>, teardown: Option<Gate>) -> KeyDown {
+    key_down_with(first_buffer, teardown, None)
+}
+
+fn key_down_with(first_buffer: Option<Gate>, teardown: Option<Gate>, after_stop: Option<AfterStop>) -> KeyDown {
     let buffers = Arc::new(Mutex::new(Vec::new()));
     let owners = Arc::new(Mutex::new(Vec::new()));
     let active = Arc::new(Mutex::new(Vec::new()));
     let spawns = Arc::new(AtomicUsize::new(0));
     let sink = Arc::new(RecordingSink::default());
     let supervisor = spawn_supervisor(
-        Arc::new(KeyDownFactory { first_buffer, teardown, buffers: buffers.clone(), owners: owners.clone(), active: active.clone(), spawns: spawns.clone() }),
+        Arc::new(KeyDownFactory { first_buffer, teardown, after_stop, buffers: buffers.clone(), owners: owners.clone(), active: active.clone(), spawns: spawns.clone() }),
         sink.clone(),
         SupervisorConfig::default(),
     );
@@ -68,10 +100,14 @@ fn key_down(first_buffer: Option<Gate>, teardown: Option<Gate>) -> KeyDown {
 }
 
 fn open(supervisor: &AudioSupervisor, id: u64, device_id: Option<&str>) -> bool {
+    open_pressed(supervisor, id, device_id, Instant::now())
+}
+
+fn open_pressed(supervisor: &AudioSupervisor, id: u64, device_id: Option<&str>, pressed_at: Instant) -> bool {
     let (response, admitted) = mpsc::channel();
     supervisor
         .sender
-        .send(SupervisorMessage::SpeculativeStart(SpeculativeStartRequest { id, device_id: device_id.map(str::to_string), app_handle: None, response }))
+        .send(SupervisorMessage::SpeculativeStart(SpeculativeStartRequest { id, pressed_at, device_id: device_id.map(str::to_string), app_handle: None, response }))
         .unwrap();
     admitted.recv_timeout(Duration::from_secs(1)).unwrap()
 }
@@ -127,6 +163,7 @@ fn flowing_key_down_audio_is_adopted_by_its_confirmed_start_without_a_second_wor
     assert!(!t.active.lock().unwrap()[0].load(Ordering::SeqCst));
 
     let owner = AudioOwner::Dictation(21);
+    assert_eq!(sample_cursor_in(&t.supervisor.public, 21), None, "no cursor before adoption");
     assert_eq!(confirmed_start(&t.supervisor, owner, Some(11), None).recv().unwrap(), Ok(()));
     assert!(t.supervisor.public.is_recording_for(owner), "flowing adoption skips the connecting phase");
     assert_eq!(t.spawns.load(Ordering::SeqCst), 1);
@@ -136,10 +173,14 @@ fn flowing_key_down_audio_is_adopted_by_its_confirmed_start_without_a_second_wor
     let ready = events.iter().position(|e| *e == (owner, AudioLifecycleEvent::Ready)).unwrap();
     assert!(accepted < ready);
     assert_eq!(t.supervisor.public.flowing_speculative.load(Ordering::SeqCst), 0);
+    // The native stop-press stamp can read the adopted buffer (16 kHz here).
+    assert_eq!(sample_cursor_in(&t.supervisor.public, 21), Some(160));
+    assert_eq!(sample_cursor_in(&t.supervisor.public, 22), None);
 
     // Audio retained since key-down is the start of the transcribed recording.
     assert_eq!(stop_samples(&t.supervisor, owner), vec![KEY_DOWN_PCM; 160]);
     wait_until("adopted worker joined", || t.supervisor.public.phase() == PublicPhase::Idle);
+    assert_eq!(sample_cursor_in(&t.supervisor.public, 21), None);
     shutdown(&t.supervisor);
 }
 
@@ -194,6 +235,27 @@ fn backstop_discards_a_capture_no_start_adopted() {
     wait_until("expired capture joined", || t.supervisor.public.phase() == PublicPhase::Idle);
     assert!(t.buffers.lock().unwrap()[0].lock().unwrap().is_empty());
     assert!(dictation_events(&t.sink).is_empty());
+    shutdown(&t.supervisor);
+}
+
+#[test]
+fn backstop_runs_from_physical_key_down_not_supervisor_acceptance() {
+    let t = key_down(None, None);
+    // Admission was delayed: Fn went down 1.3 s before the supervisor saw it.
+    let lag = speculative::SPECULATIVE_CAPTURE_TTL - Duration::from_millis(200);
+    assert!(open_pressed(&t.supervisor, 34, None, Instant::now() - lag));
+    wait_flowing(&t.supervisor, 34);
+    // `check_deadlines` measures from acceptance, which is at least `lag`
+    // after key-down, so the capture expires about 200 ms after acceptance.
+    check_deadlines(&t.supervisor, Duration::from_millis(100));
+    assert_eq!(t.supervisor.public.phase(), PublicPhase::Speculative);
+    check_deadlines(&t.supervisor, Duration::from_millis(200));
+    wait_until("key-down backstop joined", || t.supervisor.public.phase() == PublicPhase::Idle);
+    assert!(t.buffers.lock().unwrap()[0].lock().unwrap().is_empty());
+
+    // A request whose backstop already elapsed is never opened.
+    assert!(!open_pressed(&t.supervisor, 35, None, Instant::now() - speculative::SPECULATIVE_CAPTURE_TTL));
+    assert_eq!(t.spawns.load(Ordering::SeqCst), 1);
     shutdown(&t.supervisor);
 }
 
@@ -283,5 +345,58 @@ fn busy_microphone_refuses_key_down_capture() {
     assert!(!open(&t.supervisor, 27, None));
     assert_eq!(t.spawns.load(Ordering::SeqCst), 1);
     assert_eq!(stop_samples(&t.supervisor, owner), vec![KEY_DOWN_PCM; 160]);
+    shutdown(&t.supervisor);
+}
+
+#[test]
+fn discarded_capture_stays_empty_through_stop_flush_late_pcm_and_unconfirmed_exit() {
+    let teardown = Gate::closed();
+    let exit = Gate::closed();
+    let appended = Arc::new(AtomicUsize::new(0));
+    let after = AfterStop { appended: appended.clone(), unconfirmed: true, exit: exit.clone() };
+    let t = key_down_with(None, Some(teardown.clone()), Some(after));
+    assert!(open(&t.supervisor, 31, None));
+    wait_flowing(&t.supervisor, 31);
+    discard(&t.supervisor, 31);
+    let buffer = t.buffers.lock().unwrap()[0].clone();
+    wait_until("helper flushed its ring after Stop", || appended.load(Ordering::SeqCst) == 1);
+    assert!(buffer.lock().unwrap().is_empty(), "Stop-flushed PCM repopulated the discarded buffer");
+    teardown.open();
+    wait_until("late PCM arrived while exit was pending", || appended.load(Ordering::SeqCst) == 2);
+    assert!(buffer.lock().unwrap().is_empty(), "late PCM repopulated the discarded buffer");
+    // Quarantine keeps the attempt (and its buffer) while exit is unconfirmed;
+    // it must hold nothing.
+    let (response, peeked) = mpsc::channel();
+    t.supervisor.sender.send(SupervisorMessage::Peek { owner: AudioOwner::Dictation(31), max_output_samples: None, response }).unwrap();
+    assert_eq!(peeked.recv().unwrap(), None);
+    assert_eq!(t.supervisor.public.phase(), PublicPhase::Recovering);
+    assert!(t.supervisor.public.is_active(), "ownership kept until exit is confirmed");
+    {
+        let samples = buffer.lock().unwrap();
+        assert!(samples.is_empty());
+        assert!(samples.retention_revoked());
+    }
+    assert!(dictation_events(&t.sink).is_empty());
+    exit.open();
+    wait_until("worker exit confirmed", || t.supervisor.public.phase() == PublicPhase::Idle);
+    assert!(buffer.lock().unwrap().is_empty());
+    shutdown(&t.supervisor);
+}
+
+#[test]
+fn adopted_capture_keeps_stop_flushed_pcm() {
+    let exit = Gate::closed();
+    exit.open();
+    let appended = Arc::new(AtomicUsize::new(0));
+    let after = AfterStop { appended: appended.clone(), unconfirmed: false, exit };
+    let t = key_down_with(None, None, Some(after));
+    assert!(open(&t.supervisor, 32, None));
+    wait_flowing(&t.supervisor, 32);
+    let owner = AudioOwner::Dictation(33);
+    assert_eq!(confirmed_start(&t.supervisor, owner, Some(32), None).recv().unwrap(), Ok(()));
+    // Key-down PCM, the Stop ring flush, and the last in-flight callback all
+    // belong to the adopted recording.
+    assert_eq!(stop_samples(&t.supervisor, owner), vec![KEY_DOWN_PCM; 160 + 512 + 64]);
+    assert_eq!(appended.load(Ordering::SeqCst), 2);
     shutdown(&t.supervisor);
 }

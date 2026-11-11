@@ -76,6 +76,12 @@ impl AudioOwner {
         }
     }
 
+    /// Fn key-down capture before its gesture is confirmed. Its worker keeps
+    /// this identity even after a confirmed start adopts it.
+    pub(crate) fn is_speculative(self) -> bool {
+        matches!(self, Self::Speculative(_))
+    }
+
     pub(crate) fn dictation_id(self) -> Option<u64> {
         match self {
             Self::Dictation(id) => Some(id),
@@ -493,6 +499,9 @@ enum SupervisorMessage {
 
 struct SpeculativeStartRequest {
     id: u64,
+    /// When Fn went down, as stamped by the keyboard callback. The backstop
+    /// runs from here, not from supervisor acceptance.
+    pressed_at: Instant,
     device_id: Option<String>,
     app_handle: Option<tauri::AppHandle>,
     response: Sender<bool>,
@@ -796,7 +805,17 @@ fn run_supervisor(
                         continue;
                     }
                     SupervisorMessage::SpeculativeStart(request) => {
-                        if attempt.is_none()
+                        let expired = Instant::now()
+                            >= request.pressed_at + speculative::SPECULATIVE_CAPTURE_TTL;
+                        if expired {
+                            tracing::info!(target: "audio",
+                                event_code = "audio.speculative_capture_refused",
+                                capture_id = request.id,
+                                reason = "expired",
+                                "key-down capture refused; its backstop elapsed before admission"
+                            );
+                            let _ = request.response.send(false);
+                        } else if attempt.is_none()
                             && pending_start.is_none()
                             && !crate::keyboard::is_app_disabled()
                         {
@@ -1437,6 +1456,7 @@ fn start_speculative(
 ) {
     let (response, accepted) = mpsc::channel();
     let owner = AudioOwner::Speculative(request.id);
+    let deadline = request.pressed_at + speculative::SPECULATIVE_CAPTURE_TTL;
     handle_start(
         StartRequest {
             gesture: gesture::StartGesture::default(),
@@ -1460,7 +1480,7 @@ fn start_speculative(
         current.phase = AttemptPhase::Speculative;
         current.speculative = Some(SpeculativeAttempt {
             id: request.id,
-            deadline: current.accepted_at + speculative::SPECULATIVE_CAPTURE_TTL,
+            deadline,
         });
         public.set_phase(PublicPhase::Speculative);
     }
@@ -1529,6 +1549,16 @@ fn adopt_speculative(
         current.ready_at = Some(Instant::now());
         current.phase = AttemptPhase::Recording;
         current.active.store(true, Ordering::SeqCst);
+        // Stop-press stamps read the adopted buffer through this cursor, as
+        // they do after cold readiness and standby resume.
+        *public
+            .diagnostic_cursor
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some((
+            current.owner,
+            Arc::clone(&current.shared),
+            current.sample_rate,
+        ));
         public.set_phase(PublicPhase::Recording);
         publish_gesture_ready(current, sink, Instant::now());
         sink.notify(
@@ -1867,6 +1897,17 @@ fn handle_worker_event(
             }
         },
         AudioWorkerEvent::InitFailed { failure, .. } => {
+            if let Some(speculative) = current
+                .speculative
+                .filter(|_| current.phase == AttemptPhase::Speculative)
+            {
+                // A refused grant or failed open; the worker exits on its own.
+                log_speculative_discard(
+                    current,
+                    speculative.id,
+                    speculative::DiscardReason::CaptureFailed,
+                );
+            }
             sink.invalidate_input_health(current.device_id.as_deref());
             current.failure = Some(failure.clone());
             if let Some(response) = current.start_response.take() {
@@ -2226,13 +2267,15 @@ fn begin_recovery(
     }
     // Standby pre-roll and unconfirmed key-down audio belong to no recording:
     // drop them before teardown and never surface a recovery to the UI.
+    // Revocation and the clear share the buffer lock, so no live or drained
+    // helper PCM can land after this point, even if exit is never confirmed.
     let was_standby = current.phase == AttemptPhase::Standby || current.speculative.is_some();
     if was_standby {
         current
             .shared
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .clear();
+            .revoke_retention();
     }
     if let Some(speculative) = current.speculative {
         public
@@ -2698,8 +2741,11 @@ pub(crate) fn stop_dictation_recording(
 /// Read only the retained sample count at a native stop-key press. Never queue,
 /// copy PCM, or wait for capture. Contention means unavailable, not zero.
 pub(crate) fn dictation_sample_cursor(recording_id: u64) -> Option<usize> {
+    sample_cursor_in(&supervisor().public, recording_id)
+}
+
+fn sample_cursor_in(public: &PublicState, recording_id: u64) -> Option<usize> {
     use crate::MutexExt;
-    let public = &supervisor().public;
     if public.phase() != PublicPhase::Recording {
         return None;
     }
@@ -2899,12 +2945,14 @@ pub(crate) fn retire_standby() {
 /// wait outside it. `false` means the microphone was busy; nothing was opened.
 pub(crate) fn request_speculative_capture(
     id: u64,
+    pressed_at: Instant,
     device_id: Option<String>,
     app_handle: Option<tauri::AppHandle>,
 ) -> Receiver<bool> {
     let (response, admitted) = mpsc::channel();
     let request = SpeculativeStartRequest {
         id,
+        pressed_at,
         device_id,
         app_handle,
         response,

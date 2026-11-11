@@ -20,8 +20,12 @@ means the detectors were idle, no Command/Shift/Option/Control is held, the
 press is not the single tap that stops a toggle recording, and Murmur is neither
 processing nor disabled. The capture opens the same input the next dictation
 would use, which the frontend mirrors through `set_fn_capture_input`. It is
-admitted only when microphone permission is already granted (it never prompts)
-and nothing else owns the microphone. It shows no UI and publishes no levels.
+admitted only when microphone permission is already granted and nothing else
+owns the microphone. It never prompts. The grant is checked at keyboard
+admission, at attempt start, after the helper handshake, and finally by the
+capture helper itself immediately before it creates the native capture
+(`StartPreauthorized`). A grant lost at any of those points refuses the
+capture. It shows no UI and publishes no levels.
 
 - **Confirmed** (`hold-down-start` or `double-tap-toggle`): the listener binds
   the capture to that gesture token before emitting the event. If
@@ -32,13 +36,17 @@ and nothing else owns the microphone. It shows no UI and publishes no levels.
 - **Not confirmed**: a stray tap, Fn plus another key, holding too long for a
   tap, a second tap that never comes, Escape, a trigger-key or listener change,
   processing, disable, or a refused start. The capture is discarded as soon as
-  the gesture is known to have ended. Its retained samples are cleared, and the
-  exact worker is stopped through the supervisor's confirmed teardown:
+  the gesture is known to have ended. Under the buffer lock, its retained
+  samples are cleared and retention is revoked, so PCM still in flight or
+  flushed by the helper while it drains Stop is dropped too. The exact worker
+  is then stopped through the supervisor's confirmed teardown:
   cooperative stop within 250 ms, then a process-group kill within the 2 s
   termination budget. Ownership is kept until exit is confirmed. Discarded
   audio is never transcribed, written to disk, or logged.
 - **Backstop**: the supervisor discards any capture that no start adopted
-  within 1.5 s of key-down (`SPECULATIVE_CAPTURE_TTL`).
+  within 1.5 s of key-down (`SPECULATIVE_CAPTURE_TTL`). It is measured from the
+  keyboard listener's key-down stamp, not from supervisor acceptance, and a
+  request that arrives after it has elapsed is never opened.
 
 In Hold mode, the microphone is on only while Fn is held, and after that only
 if the hold became a dictation. In Double-Tap mode, the capture stays open
