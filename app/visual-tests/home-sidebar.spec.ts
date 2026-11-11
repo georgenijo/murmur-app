@@ -20,7 +20,7 @@ for (const appearance of ['light', 'dark']) {
       await expectNativeChromeClearance(page, page.locator('.ui-window-header'), 1, !collapsed);
       const selected = sidebar.locator('[aria-current="page"]');
       await expect(selected).toHaveCSS('box-shadow', 'none');
-      await expect(sidebar.getByRole('note')).toHaveCount(collapsed ? 0 : 1);
+      await expect(sidebar.getByRole('note')).toHaveCount(0);
       const indicator = await selected.evaluate(el => { const style = getComputedStyle(el, '::before'); return { content: style.content, top: style.top, height: style.height, transform: style.transform }; });
       if (collapsed) expect(indicator.content).toBe('none');
       else {

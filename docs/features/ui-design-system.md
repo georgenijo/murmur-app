@@ -52,9 +52,7 @@ lifecycle in React so every native resize subscription is disposed on unmount.
 surfaces, actions, navigation rows, section headings, statistic groups, and
 secondary-page headers. Feature callers choose a named variant and cannot pass
 arbitrary style classes through the primitive API. `components/ui/DayChart.tsx`
-owns the day-summary bar, line, and heatmap structures, including keyboard
-targets, a fixed tooltip region, a separate plot region, and a separate weekday
-axis.
+owns the day-summary bar, line, and heatmap structures, including keyboard targets, a tooltip anchored to the active mark, a separate plot region, and a separate weekday axis.
 
 The reusable CSS contracts are:
 
@@ -83,17 +81,17 @@ Use these before creating a feature-local control or surface.
 |------|----------|
 | Native chrome | Traffic lights, Home sidebar toggle, status, updates, and Settings share one row. The toggle starts after the zoom-compensated 80pt controls inset and never acts as a drag region; recording actions live in the dashboard. Collapsed Home and narrow Settings leave the header background unpainted; expanded header paint aligns with its sidebar |
 | Status | Minimum 72px; state changes do not remove its container. Home hides the title-bar chip because its talk card already states the dictation status |
-| Record | Home owns one talk card with a single talk-row action and a passive month strip, a plain-language state title, and one short hint; title and hint never truncate at 880×720 or 1120×820. Transcribing a file lives in the history `···` menu |
+| Record | Home owns one talk card with a single talk action and a passive month summary, a plain-language state title, and one short hint; title and hint never truncate at 880×720 or 1120×820. Transcribing a file lives in the history `···` menu |
 | Sidebar | App owns Home collapsed state, resizing, and a 208–384px expanded width. Below 768 CSS px Home defaults to a 48px icon rail; explicit expansion is available. The header owns its toggle and restores focus there when a focused resize separator disappears. Sidebar heading retains the brand. Settings uses the separate #848 contract below: 208px / 56px rail. Home contains Home, Notetaker, and Insights; selection is a surface state with no shadow, a vertically centred expanded marker, and no collapsed marker |
 | Customize | The gear and `⌘,` open General; Customize is an unordered set of independent destinations, and detail pages expose Back to Customize and restore the originating row's focus |
 | Content | Home uses the whole window with 24px desktop and 16px compact insets. Settings uses a centered 728px shell with 680px of content |
-| Toolbar | 28px controls; one line holding the page title, search, the Filter menu, and `···` at 880×720 and wider, wrapping rather than clipping when narrower; no resting entry count |
+| Toolbar | 28px controls; one line holding the page title and `···`, search, and the Filter menu at 880×720 and wider, wrapping rather than clipping when narrower; no resting entry count |
 | History | Home uses 28px above and 8px below day labels; rows use an 8px vertical inset, with aligned hover fills and within-day hairlines |
 | Metadata | Time/source only; word count and duration stay out of transcript rows |
 | Copy | The non-interactive card surface copies its full transcript; Space does the same when focused |
 | Correct & Teach | Compact muted action on the newest entry only |
 | Secondary pages | Insights uses a page header with a Back action. Notetaker uses a title/capture header with sidebar navigation; see the Notetaker contract below |
-| Charts | Tooltip, plot, and axis are separate regions; each day is keyboard reachable, hover/focus/click share exact values, Escape or blur dismisses, tooltips never move the plot, and heatmaps expose date-range/month/weekday labels; Insights exposes daily values in assistive-technology tables, while other heatmaps retain the Daily values disclosure |
+| Charts | Tooltips follow the active mark without moving the plot; each day is keyboard reachable, hover/focus/click share exact values, Escape or blur dismisses, tooltips never move the plot, and heatmaps expose date-range/month/weekday labels; Insights exposes daily values in assistive-technology tables, while other heatmaps retain the Daily values disclosure |
 
 ## Input contracts
 
@@ -330,8 +328,7 @@ paint with no shadow, transform or hover feedback. Focus is a 2px primary
 outline with a 2px offset. Keep 28px compact and 32px standard geometry.
 
 Home uses one scroll range and a 208px initial/minimum expanded sidebar.
-Its footer is the one-line “Audio and transcripts stay local.”; the icon rail
-retains the full accessible note. The talk row owns Start/Stop dictation and
+The talk control owns Start/Stop dictation and
 recording tint; its neutral border and passive month summary do not react to
 recording or hover. Empty Home omits the usage strip. Only confirmed microphone
 denial replaces the talk row with an inline recovery action; unknown and

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState, type CSSProperties, type FocusEvent, type MouseEvent } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type FocusEvent, type MouseEvent } from 'react';
 import type { DaySummary } from '../../lib/stats';
 import { dayChartScale, hasSpeed, heatmapIntensity, speedPoints, speedSegments, type ChartScale } from '../../lib/dayChartScale';
 
@@ -32,6 +32,7 @@ interface ActiveDay {
   key: string;
   day: DaySummary;
   metric: DayMetric;
+  target: HTMLElement;
 }
 
 function metricValue(day: DaySummary, metric: DayMetric): number {
@@ -63,28 +64,82 @@ function useActiveDay() {
   const [hovered, setHovered] = useState<ActiveDay | null>(null);
   const [focused, setFocused] = useState<ActiveDay | null>(null);
   const [selected, setSelected] = useState<ActiveDay | null>(null);
-  const value = (day: DaySummary, metric: DayMetric): ActiveDay => ({ key: day.key, day, metric });
+  const value = (day: DaySummary, metric: DayMetric, target: HTMLElement): ActiveDay => ({ key: day.key, day, metric, target });
   const dismiss = useCallback(() => {
     setHovered(null);
     setFocused(null);
     setSelected(null);
   }, []);
   const markEvents = (day: DaySummary, metric: DayMetric) => ({
-    onMouseEnter: (_event: MouseEvent) => setHovered(value(day, metric)),
+    onMouseEnter: (event: MouseEvent<HTMLElement>) => setHovered(value(day, metric, event.currentTarget)),
     onMouseLeave: () => setHovered((current) => current?.key === day.key ? null : current),
-    onFocus: (_event: FocusEvent) => setFocused(value(day, metric)),
+    onFocus: (event: FocusEvent<HTMLElement>) => setFocused(value(day, metric, event.currentTarget)),
     onBlur: () => {
       setFocused((current) => current?.key === day.key ? null : current);
       setSelected((current) => current?.key === day.key ? null : current);
     },
-    onClick: () => setSelected(value(day, metric)),
+    onClick: (event: MouseEvent<HTMLElement>) => setSelected(value(day, metric, event.currentTarget)),
   });
   return { active: hovered ?? focused ?? selected, dismiss, markEvents };
 }
 
-function ChartTooltip({ active, id }: { active: ActiveDay | null; id: string }) {
+function ChartTooltip({ active, id, insights }: { active: ActiveDay | null; id: string; insights: boolean }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const tooltip = ref.current;
+    if (!insights || !active || !tooltip) return;
+    const chart = tooltip.parentElement!;
+    const clippingAncestors: HTMLElement[] = [];
+    for (let node = chart.parentElement; node; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (/(auto|scroll|hidden|clip)/.test(`${style.overflowX} ${style.overflowY}`)) clippingAncestors.push(node);
+    }
+    const place = () => {
+      const mark = active.target.querySelector('span') ?? active.target;
+      const anchor = mark.getBoundingClientRect();
+      const parent = chart.getBoundingClientRect();
+      const box = tooltip.getBoundingClientRect();
+      const bounds = { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight };
+      for (const node of clippingAncestors) {
+        const rect = node.getBoundingClientRect();
+        const style = getComputedStyle(node);
+        if (/(auto|scroll|hidden|clip)/.test(style.overflowX)) {
+          bounds.left = Math.max(bounds.left, rect.left + node.clientLeft);
+          bounds.right = Math.min(bounds.right, rect.left + node.clientLeft + node.clientWidth);
+        }
+        if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) {
+          bounds.top = Math.max(bounds.top, rect.top + node.clientTop);
+          bounds.bottom = Math.min(bounds.bottom, rect.top + node.clientTop + node.clientHeight);
+        }
+      }
+      const left = Math.max(bounds.left, Math.min(bounds.right - box.width, anchor.left + anchor.width / 2 - box.width / 2));
+      const above = anchor.top - box.height - 8;
+      const preferredTop = above >= bounds.top ? above : anchor.bottom + 8;
+      const top = Math.max(bounds.top, Math.min(bounds.bottom - box.height, preferredTop));
+      tooltip.style.left = `${left - parent.left}px`;
+      tooltip.style.top = `${top - parent.top}px`;
+    };
+    let frame = 0;
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(place);
+    };
+    const observer = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(schedule);
+    observer?.observe(chart);
+    observer?.observe(active.target);
+    clippingAncestors.forEach(node => observer?.observe(node));
+    place();
+    window.addEventListener('resize', schedule);
+    window.addEventListener('scroll', schedule, true);
+    return () => {
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener('resize', schedule);
+      window.removeEventListener('scroll', schedule, true);
+    };
+  }, [active, insights]);
   return (
-    <div id={id} className="ui-day-chart-tooltip" role="status" aria-live="polite">
+    <div ref={ref} id={id} className="ui-day-chart-tooltip" role="status" aria-live="polite">
       {active ? (
         <>
           <strong>{dayLabel(active.day)}</strong>
@@ -221,7 +276,7 @@ export function DayChart(props: DayChartProps) {
 
   return (
     <figure ref={chartRef} className="ui-day-chart" data-density={props.density ?? 'standard'} aria-label={accessibleLabel}>
-      <ChartTooltip active={active} id={tooltipId} />
+      <ChartTooltip active={active} id={tooltipId} insights={insights} />
       {props.kind === 'bars' ? (
         <BarsChart
           days={props.days}

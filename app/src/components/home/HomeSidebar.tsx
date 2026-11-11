@@ -60,12 +60,6 @@ export function HomeSidebar({ active, homeButtonRef, onNavigate, sidebar, navId,
         </nav>
       </FluidTooltip.Group>
 
-      <div className="home-sidebar-bottom">
-        <div className="home-privacy-note" role="note" aria-label="Audio and transcripts stay local." title="Audio and transcripts stay local.">
-          <span className="home-privacy-dot" aria-hidden="true" />
-          <span className="home-nav-label">Audio and transcripts stay local.</span>
-        </div>
-      </div>
       {!sidebar.collapsed && <div className="home-sidebar-resize" role="separator" tabIndex={0}
         aria-label="Sidebar width" aria-orientation="vertical" aria-controls={navId}
         aria-valuemin={HOME_SIDEBAR_MIN} aria-valuemax={HOME_SIDEBAR_MAX} aria-valuenow={sidebar.width}
