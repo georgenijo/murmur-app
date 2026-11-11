@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Pack single-appearance theme cards into half-width grid cells without unused preview space, and use distinct primary and success preview rings instead of redundant selection check badges.
+
 ## [0.63.2] - 2026-11-11
 
 ### Fixed

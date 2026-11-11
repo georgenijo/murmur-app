@@ -78,8 +78,7 @@ for (const appearance of ['light', 'dark'] as const) {
     await expect(card).toHaveAttribute('data-active', 'true');
     await expect(card.getByRole('button', { name: `Use OpenCode for ${appearance} mode` }))
       .toHaveAttribute('aria-pressed', 'true');
-    await expect(card.locator('.settings-theme-variant-check')).toHaveCount(1);
-    await expect(card.locator('.settings-theme-variant-assigned')).toHaveCount(1);
+    await expect(card.locator('.settings-theme-variant-check, .settings-theme-variant-assigned')).toHaveCount(0);
     await expect(card.locator('.settings-theme-caption, .settings-theme-mode-status')).toHaveCount(0);
     expect(await murmurTokens(page)).toEqual(resolved[appearance]);
 

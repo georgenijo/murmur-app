@@ -636,6 +636,7 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   } as const;
   const collection = { id: 'open-vsx:h1dr0n.claude-theme', label: 'Catppuccin for VSCode' };
   const longerCollection = { id: 'open-vsx:long-name', label: 'Catppuccin for VSCode — Extended Edition' };
+  const singleCollection = { id: 'open-vsx:single-dark', label: 'Midnight Dark' };
   const entry = (
     id: string,
     label: string,
@@ -672,6 +673,9 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
         light: { background: '#eff1f5', foreground: '#4c4f69', accent: '#8839ef' },
         dark: { background: '#1e1e2e', foreground: '#cdd6f4', accent: '#cba6f7' },
       }, longerCollection),
+      entry('midnight-dark', 'Midnight Dark', ['dark'], {
+        dark: { background: '#111111', foreground: '#eeeeee', accent: '#4aa56c' },
+      }, singleCollection),
     ],
   };
   await page.addInitScript((value) => {
@@ -685,6 +689,7 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   const sonicCard = page.locator('[data-theme-collection="Sonic"]');
   const catppuccinCard = page.locator('[data-theme-collection="Catppuccin for VSCode"]');
   const longerCard = page.locator('[data-theme-collection="Catppuccin for VSCode — Extended Edition"]');
+  const singleCard = page.locator('[data-theme-collection="Midnight Dark"]');
   await expect(catppuccinCard).toHaveCount(1);
   await expect(longerCard).toHaveCount(1);
   await expect(sonicCard).toHaveCSS('width', '280px');
@@ -693,8 +698,7 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   await expect(catppuccinCard).toHaveCSS('height', '130px');
   await expect(catppuccinCard.locator('button[aria-label*="light variant"][aria-pressed="true"]')).toBeVisible();
   await expect(catppuccinCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
-  await expect(catppuccinCard.locator('.settings-theme-variant-check')).toHaveCount(1);
-  await expect(catppuccinCard.locator('.settings-theme-variant-assigned')).toHaveCount(1);
+  await expect(catppuccinCard.locator('.settings-theme-variant-check, .settings-theme-variant-assigned')).toHaveCount(0);
   await expect(catppuccinCard.locator('.settings-theme-caption, .settings-theme-mode-status')).toHaveCount(0);
   const previewGeometry = await catppuccinCard.evaluate((card) => {
     const previews = card.querySelector('.settings-theme-previews')!.getBoundingClientRect();
@@ -714,6 +718,55 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   expect(Math.abs(previewGeometry.previewsRight - previewGeometry.footerRight)).toBeLessThanOrEqual(1);
   expect(Math.abs(previewGeometry.firstPreviewLeft - previewGeometry.footerLeft)).toBeLessThanOrEqual(1);
   expect(Math.abs(previewGeometry.lastPreviewRight - previewGeometry.footerRight)).toBeLessThanOrEqual(1);
+  const singleGeometry = await singleCard.evaluate((card) => {
+    const cardBox = card.getBoundingClientRect();
+    const previewBox = card.querySelector('.settings-theme-preview')!.getBoundingClientRect();
+    const nameBox = card.querySelector('.settings-theme-name')!.getBoundingClientRect();
+    const actionsBox = card.querySelector('.settings-theme-action')!.getBoundingClientRect();
+    return { cardBox, previewBox, nameBox, actionsBox };
+  });
+  expect(singleGeometry.cardBox.width).toBeLessThan(previewGeometry.footerRight - previewGeometry.footerLeft);
+  expect(Math.abs(singleGeometry.cardBox.right - singleGeometry.previewBox.right)).toBeLessThanOrEqual(6);
+  expect(singleGeometry.actionsBox.left).toBeGreaterThanOrEqual(singleGeometry.cardBox.left);
+  expect(singleGeometry.actionsBox.right).toBeLessThanOrEqual(singleGeometry.cardBox.right);
+  expect(singleGeometry.nameBox.right).toBeLessThanOrEqual(singleGeometry.actionsBox.left);
+  const moreActions = singleCard.getByRole('button', { name: 'Theme actions for Midnight Dark' });
+  await moreActions.focus();
+  await expect(moreActions).toBeFocused();
+  await moreActions.press('Space');
+  await expect(singleCard.getByRole('button', { name: 'Export Midnight Dark' })).toBeVisible();
+  await expect(singleCard.getByRole('button', { name: 'Duplicate Midnight Dark' })).toBeVisible();
+  await expect(singleCard.getByRole('button', { name: 'Remove Midnight Dark' })).toBeVisible();
+  await moreActions.press('Escape');
+  await expect(singleCard.getByRole('group', { name: 'Midnight Dark theme actions' })).toHaveCount(0);
+  const ringColors = await catppuccinCard.evaluate((card) => {
+    const colorFor = (name: string) => {
+      const probe = document.createElement('span');
+      probe.style.color = `var(${name})`;
+      document.body.append(probe);
+      const color = getComputedStyle(probe).color;
+      probe.remove();
+      return color;
+    };
+    const variants = Array.from(card.querySelectorAll<HTMLButtonElement>('.settings-theme-variant'));
+    const showing = variants.find((variant) => variant.dataset.showingNow);
+    const assigned = variants.find((variant) => variant.dataset.assigned && !variant.dataset.showingNow);
+    return {
+      showingBorder: getComputedStyle(showing!.querySelector('.settings-theme-preview')!).borderColor,
+      assignedBorder: getComputedStyle(assigned!.querySelector('.settings-theme-preview')!).borderColor,
+      primary: colorFor('--murmur-primary'),
+      success: colorFor('--murmur-success'),
+      showingShadow: getComputedStyle(showing!.querySelector('.settings-theme-preview')!).boxShadow,
+      assignedShadow: getComputedStyle(assigned!.querySelector('.settings-theme-preview')!).boxShadow,
+    };
+  });
+  expect(ringColors.showingBorder).toBe(ringColors.primary);
+  expect(ringColors.assignedBorder).toBe(ringColors.success);
+  expect(ringColors.showingShadow).not.toBe(ringColors.assignedShadow);
+  const nonSelectedPreview = page.locator('[data-theme-collection="OpenCode"] button[aria-label*="light mode"]');
+  await nonSelectedPreview.focus();
+  await expect(nonSelectedPreview).toHaveCSS('outline-offset', '3px');
+  await expect(nonSelectedPreview).toHaveCSS('outline-color', ringColors.primary);
   const themeName = catppuccinCard.getByRole('button', { name: 'Use Catppuccin for VSCode theme' });
   await expect(themeName).toHaveAttribute('title', 'Catppuccin for VSCode');
   const themeNameLabel = themeName.locator('.settings-theme-name-label');
@@ -734,6 +787,9 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   await page.getByRole('radio', { name: /dark/i }).click();
   await expect(catppuccinCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
   await expect(fixture).toHaveScreenshot('dark-settings-appearance.png');
+
+  await page.setViewportSize({ width: 840, height: 620 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(840);
 
   const cardHeight = await catppuccinCard.evaluate((element) => element.getBoundingClientRect().height);
   const chooser = catppuccinCard.locator('button[aria-label^="Choose dark variant"]');
@@ -761,6 +817,70 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   await expect(chooser).toBeFocused();
   await expect(chooser).toHaveAttribute('aria-expanded', 'false');
   await expect.poll(() => catppuccinCard.evaluate((element) => element.getBoundingClientRect().height)).toBe(cardHeight);
+});
+
+test('single-variant cards pack at half width without clipping actions at the Settings minimum', async ({ page }) => {
+  await page.setViewportSize({ width: 840, height: 620 });
+  const darkOnly = (id: string, label: string) => ({
+    version: 1,
+    id,
+    label,
+    modes: ['dark'],
+    theme: { version: 1, presetId: 'custom', dark: { background: '#151923', foreground: '#e5e7eb', accent: '#4aa56c' } },
+    source: { kind: 'local' as const },
+  });
+  await page.addInitScript((library) => {
+    localStorage.setItem('murmur-theme-library', JSON.stringify(library));
+  }, {
+    version: 1,
+    revision: 1,
+    themes: [
+      darkOnly('single-one', 'Single One'),
+      darkOnly('single-two', 'Single Two'),
+      darkOnly('single-three', 'Single Three'),
+      darkOnly('single-four', 'Single Four'),
+      darkOnly('single-five', 'Single Five'),
+    ],
+  });
+  await page.goto('/visual-fixtures.html?state=settings-appearance&appearance=dark');
+  await page.getByRole('button', { name: 'Appearance', exact: true }).click();
+
+  const singleCards = page.locator('[data-theme-variants="1"]');
+  const doubleCard = page.locator('[data-theme-collection="Sonic"]');
+  await expect(singleCards).toHaveCount(5);
+  const geometry = await page.evaluate(() => {
+    const cards = Array.from(document.querySelectorAll<HTMLElement>('[data-theme-variants="1"]'));
+    const double = document.querySelector<HTMLElement>('[data-theme-collection="Sonic"]')!;
+    return {
+      viewportWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+      doubleWidth: double.getBoundingClientRect().width,
+      cards: cards.map((card) => {
+        const cardBox = card.getBoundingClientRect();
+        const previewBox = card.querySelector('.settings-theme-preview')!.getBoundingClientRect();
+        const nameBox = card.querySelector('.settings-theme-name')!.getBoundingClientRect();
+        const actionBox = card.querySelector('.settings-theme-action')!.getBoundingClientRect();
+        return { cardBox, previewBox, nameBox, actionBox };
+      }),
+    };
+  });
+  expect(geometry.scrollWidth).toBe(geometry.viewportWidth);
+  for (const card of geometry.cards) {
+    expect(card.cardBox.width).toBeLessThan(geometry.doubleWidth);
+    expect(Math.abs(card.cardBox.right - card.previewBox.right)).toBeLessThanOrEqual(6);
+    expect(card.actionBox.left).toBeGreaterThanOrEqual(card.cardBox.left);
+    expect(card.actionBox.right).toBeLessThanOrEqual(card.cardBox.right);
+    expect(card.nameBox.right).toBeLessThanOrEqual(card.actionBox.left);
+  }
+  const lastCard = page.locator('[data-theme-collection="Single Five"]');
+  await lastCard.getByRole('button', { name: 'Theme actions for Single Five' }).click();
+  const menu = lastCard.getByRole('group', { name: 'Single Five theme actions' });
+  await expect(menu.getByRole('button', { name: 'Export Single Five' })).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Duplicate Single Five' })).toBeVisible();
+  await expect(menu.getByRole('button', { name: 'Remove Single Five' })).toBeVisible();
+  const menuBox = await menu.boundingBox();
+  expect(menuBox!.y).toBeGreaterThanOrEqual(0);
+  expect(menuBox!.y + menuBox!.height).toBeLessThanOrEqual(620);
 });
 
 test('the main recording waveform reacts to audio without pulse animation', async ({ page }) => {
