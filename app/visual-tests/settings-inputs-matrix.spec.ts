@@ -47,5 +47,34 @@ for (const { appearance, width, height, label } of surfaceCases([{ width: 840, h
       await expect(slider).toHaveValue(pointerValue);
       await testInfo.attach(`sensitivity-${appearance}.png`, { body: await page.screenshot(), contentType: 'image/png' });
     });
+    if (width === 840) {
+      test('Auto-paste stays a standard-height row in every file-saving state', async ({ page }) => {
+        await page.goto(`/visual-fixtures.html?state=settings-copy&page=delivery&appearance=${appearance}`);
+        const autoPaste = page.locator('[data-setting-target="auto-paste"]');
+        const description = autoPaste.locator('.settings-row-description');
+        const assertRow = async (copy: string) => {
+          await expect(description).toHaveText(copy);
+          await expect(description).toHaveCSS('height', '16px');
+          await expect(autoPaste).toHaveCSS('min-height', '52px');
+          expect((await autoPaste.boundingBox())!.height).toBe(52);
+        };
+
+        await assertRow('Always copied to clipboard. Also paste into active app.');
+        await page.getByRole('switch', { name: 'Auto paste', exact: true }).check();
+        await assertRow('Always copied to clipboard. Also paste into active app.');
+
+        const transcriptFile = page.getByRole('switch', { name: 'Save transcript to file', exact: true });
+        const audioFile = page.getByRole('switch', { name: 'Save audio to file', exact: true });
+        await transcriptFile.check();
+        await assertRow('Always copied to clipboard. Auto-paste is paused.');
+        await transcriptFile.uncheck();
+
+        await page.getByRole('switch', { name: 'Auto paste', exact: true }).uncheck();
+        await audioFile.check();
+        await assertRow('Always copied to clipboard. Auto-paste is off.');
+        await transcriptFile.check();
+        await assertRow('Always copied to clipboard. Auto-paste is off.');
+      });
+    }
   });
 }

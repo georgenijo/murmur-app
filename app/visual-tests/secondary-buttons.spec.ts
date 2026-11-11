@@ -58,15 +58,15 @@ for (const appearance of ['light', 'dark'] as const) {
     test('real General actions and quiet actions use the shared control boundary', async ({ page }) => {
       await page.goto(`/visual-fixtures.html?state=settings-general&appearance=${appearance}`);
       const setup = page.getByRole('button', { name: 'Open setup assistant', exact: true });
-      await expect(setup).toHaveCSS('border-top-color', await semanticColor(setup, '--murmur-on-surface-variant'));
+      await expect(setup).toHaveCSS('border-top-color', await semanticColor(setup, '--ui-control-border'));
       await page.getByRole('button', { name: /^Advanced/ }).click();
       const reset = page.getByRole('button', { name: 'Reset statistics', exact: true });
-      await expect(reset).toHaveCSS('border-top-color', await semanticColor(reset, '--murmur-on-surface-variant'));
+      await expect(reset).toHaveCSS('border-top-color', await semanticColor(reset, '--ui-control-border'));
       await reset.click();
       await danger(page.getByRole('button', { name: 'Confirm reset statistics', exact: true }));
       await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=knowledge&appearance=${appearance}`);
       const quiet = page.getByRole('button', { name: 'Enable all shown', exact: true });
-      await expect(quiet).toHaveCSS('border-top-color', await semanticColor(quiet, '--murmur-on-surface-variant'));
+      await expect(quiet).toHaveCSS('border-top-color', await semanticColor(quiet, '--ui-control-border'));
       await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=knowledge&knowledge=empty&appearance=${appearance}`);
       const disabledQuiet = page.getByRole('button', { name: 'Enable all shown', exact: true });
       await expect(disabledQuiet).toBeDisabled();
