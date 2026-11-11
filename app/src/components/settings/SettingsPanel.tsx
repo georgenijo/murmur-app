@@ -1169,7 +1169,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               </p>
             </SettingsRow>
             </SettingsGroup>
-            <SettingsGroup title="Advanced">
+            <SettingsGroup>
             <SettingsDisclosure title="Advanced" layout="rows">
             <SettingToggle
               targetId="standby" title="Warm microphone standby"
@@ -1422,7 +1422,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             />
             {notchPillInstalled && <SettingToggle title="Mirror captions to NotchPill" description="Show your latest dictation in NotchPill" checked={settings.mirrorToNotchPill} defaultChecked={DEFAULT_SETTINGS.mirrorToNotchPill} onChange={() => onUpdateSettings({ mirrorToNotchPill: !settings.mirrorToNotchPill })} />}
             </SettingsGroup>
-            <SettingsGroup title="Advanced">
+            <SettingsGroup>
             <SettingsDisclosure title="Advanced" description="Per-app delivery and writing" layout="rows" targetId="app-overrides">
               <button type="button" data-setting-target="app-overrides" onClick={(event) => openEditor('app-overrides', event.currentTarget)} className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">
                 <span className="settings-title-description">

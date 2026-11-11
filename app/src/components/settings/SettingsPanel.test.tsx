@@ -743,13 +743,13 @@ describe('SettingsPanel information architecture', () => {
     const recording = nav.find((button) => button.textContent === 'Recording')!;
     await act(async () => recording.click());
     expect(Array.from(container.querySelectorAll('h2')).map((heading) => heading.textContent)).toEqual([
-      'Input', 'Controls', 'Advanced',
+      'Input', 'Controls',
     ]);
 
     const delivery = nav.find((button) => button.textContent === 'Delivery')!;
     await act(async () => delivery.click());
     expect(Array.from(container.querySelectorAll('h2')).map((heading) => heading.textContent)).toEqual([
-      'Pasting', 'Files', 'History', 'Advanced',
+      'Pasting', 'Files', 'History',
     ]);
     await act(async () => (container.querySelector('.settings-advanced-toggle') as HTMLButtonElement).click());
     const overrides = container.querySelector<HTMLButtonElement>('[data-setting-target="app-overrides"]:not(.settings-advanced)')!;
