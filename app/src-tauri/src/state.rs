@@ -57,10 +57,10 @@ impl WritingStyle {
     }
 }
 
-/// Content-free text register for one recording. It names the built-in Mode
-/// family that the frozen writing style resolves to (custom Modes map by their
-/// style), so pipeline stages can gate context-sensitive rules without
-/// receiving Mode names, settings values, or transcript text.
+/// Content-free text register for one recording. It names the register that
+/// the frozen writing style resolves to, so pipeline stages can gate
+/// context-sensitive rules without receiving profile names, settings values,
+/// or transcript text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TextRegister {
@@ -124,51 +124,6 @@ pub struct AppProfile {
     /// contents remain memory-only and are rebuilt locally.
     #[serde(default)]
     pub ide_project_roots: Vec<String>,
-    /// Reusable Mode resolved before the profile's legacy fine-tuning fields.
-    #[serde(default)]
-    pub mode_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ModeVocabularyPolicy {
-    Inherit,
-    General,
-    Technical,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ModeContextPolicy {
-    None,
-    Project,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MurmurMode {
-    pub id: String,
-    pub name: String,
-    pub enabled: bool,
-    pub writing_style: Option<WritingStyle>,
-    pub cleanup_enabled: Option<bool>,
-    pub smart_formatting_enabled: Option<bool>,
-    pub cli_formatting_enabled: Option<bool>,
-    pub vocabulary_policy: ModeVocabularyPolicy,
-    pub context_policy: ModeContextPolicy,
-    pub model_id: Option<String>,
-    pub language: Option<String>,
-    pub auto_paste: Option<bool>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct BrowserSiteRule {
-    pub id: String,
-    pub browser_bundle_id: String,
-    pub host: String,
-    pub mode_id: String,
-    pub enabled: bool,
 }
 
 /// Resolve the effective technical-context signal for an app profile. A
@@ -262,21 +217,6 @@ pub struct DictationState {
     pub output_dir: String,
     /// Per-app profiles resolved once from the frontmost app at recording start.
     pub app_profiles: Vec<AppProfile>,
-    pub modes: Vec<MurmurMode>,
-    /// Explicit opt-in to read only the frontmost allowed browser's document
-    /// URL and reduce it immediately to an exact host for Mode activation.
-    pub site_mode_lookup_enabled: bool,
-    pub browser_site_rules: Vec<BrowserSiteRule>,
-    /// Last explicit Mode selected from a native quick surface or Settings.
-    pub manual_mode_id: String,
-    /// App-scoped native override. Cleared as soon as focus leaves its bundle.
-    #[serde(skip)]
-    pub temporary_mode_id: Option<String>,
-    #[serde(skip)]
-    pub temporary_mode_bundle_id: Option<String>,
-    /// Palette/tray intent for one recording, never serialized or persisted.
-    #[serde(skip)]
-    pub next_recording_mode: crate::commands::mode_runtime::NextRecordingMode,
     pub voice_commands_enabled: bool,
     /// User-defined voice commands applied after the built-in set.
     #[serde(default)]
@@ -346,13 +286,6 @@ impl Default for DictationState {
             mirror_to_notchpill: false,
             output_dir: String::new(),
             app_profiles: Vec::new(),
-            modes: Vec::new(),
-            site_mode_lookup_enabled: false,
-            browser_site_rules: Vec::new(),
-            manual_mode_id: "builtin.everyday".to_string(),
-            temporary_mode_id: None,
-            temporary_mode_bundle_id: None,
-            next_recording_mode: Default::default(),
             voice_commands_enabled: false,
             voice_command_pairs: Vec::new(),
             cleanup_enabled: false,
@@ -618,7 +551,7 @@ impl Default for AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dictation_context::{resolve, ResolverInputs, SessionOverrides};
+    use crate::dictation_context::{resolve, ResolverInputs};
 
     #[test]
     fn model_idle_policy_maps_settings_and_power_source() {
@@ -683,14 +616,12 @@ mod tests {
         };
         Arc::new(resolve(ResolverInputs {
             bundle_id: None,
-            site_mode_id: None,
             global: &settings,
             prompt: None,
             correction_matcher: None,
             ide_context_index: None,
             vocabulary_version: 0,
             voice_commands: None,
-            session_overrides: SessionOverrides::default(),
         }))
     }
 

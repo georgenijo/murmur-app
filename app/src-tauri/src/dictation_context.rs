@@ -8,9 +8,7 @@
 use crate::cli_command::CliFormattingMode;
 use crate::correction::CorrectionMatcher;
 use crate::ide_context::IdeContextIndex;
-use crate::state::{
-    AppProfile, DictationState, ModeContextPolicy, ModeVocabularyPolicy, MurmurMode, WritingStyle,
-};
+use crate::state::{AppProfile, DictationState, WritingStyle};
 use crate::voice_commands::ResolvedVoiceCommand;
 use std::sync::Arc;
 
@@ -36,7 +34,6 @@ pub struct MatchedAppProfile {
     pub smart_formatting_override: Option<bool>,
     pub writing_style: Option<WritingStyle>,
     pub ide_context_enabled: bool,
-    pub mode_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,171 +130,10 @@ pub struct DictationContextSnapshot {
     pub enabled_command_groups: EnabledCommandGroups,
     pub context_capture: ContextCapturePermissions,
     pub writing_style: WritingStyle,
-    pub resolved_mode_id: Option<String>,
-    /// Exact in-memory selection captured at acceptance; never a durable setting.
-    pub next_mode_token: Option<u64>,
-}
-
-pub(crate) fn builtin_mode(id: &str) -> Option<MurmurMode> {
-    let (name, writing_style, vocabulary_policy, cli_formatting_enabled) = match id {
-        "builtin.everyday" => ("Everyday", None, ModeVocabularyPolicy::Inherit, None),
-        "builtin.messages" => (
-            "Messages",
-            Some(WritingStyle::Conversational),
-            ModeVocabularyPolicy::Inherit,
-            None,
-        ),
-        "builtin.email" => (
-            "Email",
-            Some(WritingStyle::Polished),
-            ModeVocabularyPolicy::Inherit,
-            None,
-        ),
-        "builtin.notes" => (
-            "Notes",
-            Some(WritingStyle::Notes),
-            ModeVocabularyPolicy::Inherit,
-            None,
-        ),
-        "builtin.technical" => (
-            "Technical",
-            Some(WritingStyle::CodeTechnical),
-            ModeVocabularyPolicy::Technical,
-            None,
-        ),
-        "builtin.terminal" => (
-            "Terminal",
-            Some(WritingStyle::CodeTechnical),
-            ModeVocabularyPolicy::Technical,
-            Some(true),
-        ),
-        "builtin.verbatim" => (
-            "Verbatim",
-            Some(WritingStyle::Verbatim),
-            ModeVocabularyPolicy::Inherit,
-            None,
-        ),
-        _ => return None,
-    };
-    Some(MurmurMode {
-        id: id.to_string(),
-        name: name.to_string(),
-        enabled: true,
-        writing_style,
-        cleanup_enabled: None,
-        smart_formatting_enabled: None,
-        cli_formatting_enabled,
-        vocabulary_policy,
-        context_policy: ModeContextPolicy::None,
-        model_id: None,
-        language: None,
-        auto_paste: None,
-    })
-}
-
-pub(crate) fn enabled_mode(global: &DictationState, id: &str) -> Option<MurmurMode> {
-    builtin_mode(id).or_else(|| {
-        global
-            .modes
-            .iter()
-            .find(|mode| mode.id == id && mode.enabled)
-            .cloned()
-    })
-}
-
-pub(crate) fn enabled_site_mode_id<'a>(
-    global: &'a DictationState,
-    site: Option<&crate::browser_site::BrowserSiteIdentity>,
-) -> Option<&'a str> {
-    if !global.site_mode_lookup_enabled {
-        return None;
-    }
-    let id = crate::browser_site::matching_rule(&global.browser_site_rules, site?)?
-        .mode_id
-        .as_str();
-    enabled_mode(global, id).is_some().then_some(id)
-}
-
-fn selected_mode(
-    global: &DictationState,
-    profile: Option<&AppProfile>,
-    bundle_id: Option<&str>,
-    site_mode_id: Option<&str>,
-) -> (Option<MurmurMode>, bool) {
-    let temporary = (global.temporary_mode_bundle_id.as_deref() == bundle_id)
-        .then_some(global.temporary_mode_id.as_deref())
-        .flatten();
-    let id = temporary
-        .or(site_mode_id)
-        .or_else(|| profile.and_then(|profile| profile.mode_id.as_deref()))
-        .unwrap_or(global.manual_mode_id.as_str());
-    let mode = enabled_mode(global, id);
-    let invalid = mode.is_none();
-    (mode, invalid)
-}
-
-/// Ephemeral overrides supplied by the recording trigger, after app fine-tuning.
-#[derive(Debug, Clone, Default)]
-pub struct SessionOverrides {
-    pub mode: Option<MurmurMode>,
-    pub next_mode_token: Option<u64>,
-    pub auto_paste: Option<bool>,
-    pub cleanup_enabled: Option<bool>,
-    pub cli_formatting_enabled: Option<bool>,
-    pub smart_formatting_enabled: Option<bool>,
-}
-
-impl SessionOverrides {
-    /// Resource scopes must honor the same one-session project-context policy
-    /// as the resolved snapshot, rather than the durable profile's old opt-in.
-    pub(crate) fn resource_profiles<'a>(
-        &self,
-        profiles: &'a [AppProfile],
-    ) -> std::borrow::Cow<'a, [AppProfile]> {
-        let Some(mode) = &self.mode else {
-            return std::borrow::Cow::Borrowed(profiles);
-        };
-        std::borrow::Cow::Owned(
-            profiles
-                .iter()
-                .cloned()
-                .map(|mut profile| {
-                    profile.ide_context_enabled = mode.context_policy == ModeContextPolicy::Project
-                        && !profile.ide_project_roots.is_empty();
-                    if let Some(style) = mode.writing_style {
-                        profile.writing_style = Some(style);
-                    }
-                    profile
-                })
-                .collect(),
-        )
-    }
-
-    pub(crate) fn code_vocabulary_override(
-        &self,
-        global: &DictationState,
-        bundle_id: Option<&str>,
-    ) -> Option<bool> {
-        self.mode.as_ref().map(|mode| match mode.vocabulary_policy {
-            ModeVocabularyPolicy::Technical => true,
-            ModeVocabularyPolicy::General => false,
-            ModeVocabularyPolicy::Inherit => match mode.writing_style {
-                Some(WritingStyle::CodeTechnical) => true,
-                Some(WritingStyle::Verbatim) => false,
-                _ => bundle_id.is_some_and(|bundle_id| {
-                    crate::state::app_profiles_enable_code_vocabulary(
-                        &self.resource_profiles(&global.app_profiles),
-                        bundle_id,
-                    )
-                }),
-            },
-        })
-    }
 }
 
 pub struct ResolverInputs<'a> {
     pub bundle_id: Option<&'a str>,
-    pub site_mode_id: Option<&'a str>,
     pub global: &'a DictationState,
     pub prompt: Option<String>,
     pub correction_matcher: Option<Arc<CorrectionMatcher>>,
@@ -306,10 +142,9 @@ pub struct ResolverInputs<'a> {
     /// Repository-backed commands already filtered for the active app. `None`
     /// preserves legacy in-memory pairs when the local store is unavailable.
     pub voice_commands: Option<Vec<ResolvedVoiceCommand>>,
-    pub session_overrides: SessionOverrides,
 }
 
-/// Resolve global defaults -> matching app profiles -> one-session overrides.
+/// Resolve global defaults -> matching app profiles.
 ///
 /// Duplicate profiles intentionally preserve the legacy behavior: for each
 /// field, the first matching profile that supplies that override wins. A
@@ -322,173 +157,50 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             .iter()
             .find(|profile| profile.bundle_id == bundle_id)
     });
-    let (mode, invalid_mode) = selected_mode(
-        global,
-        explicit_profile,
-        inputs.bundle_id,
-        inputs.site_mode_id,
-    );
-    let session_mode = inputs.session_overrides.mode.as_ref();
-    let effective_mode = session_mode.or(mode.as_ref());
-    let invalid_mode = invalid_mode && session_mode.is_none();
-    let ide_context_enabled = !invalid_mode
-        && explicit_profile.is_some_and(|profile| {
-            session_mode.map_or(
-                profile.ide_context_enabled
-                    || (mode
-                        .as_ref()
-                        .is_some_and(|mode| mode.context_policy == ModeContextPolicy::Project)
-                        && !profile.ide_project_roots.is_empty()),
-                |mode| {
-                    mode.context_policy == ModeContextPolicy::Project
-                        && !profile.ide_project_roots.is_empty()
-                },
-            )
-        });
-    let writing_style = if invalid_mode {
-        WritingStyle::Verbatim
-    } else {
-        session_mode
-            .and_then(|mode| mode.writing_style)
-            .or_else(|| {
-                resolve_profile_optional(inputs.bundle_id, &global.app_profiles, |profile| {
-                    profile
-                        .writing_style
-                        .filter(|style| *style != WritingStyle::Inherit)
-                })
-            })
-            .or_else(|| mode.as_ref().and_then(|mode| mode.writing_style))
-            .unwrap_or(WritingStyle::Inherit)
-    };
+    let ide_context_enabled = explicit_profile.is_some_and(|profile| profile.ide_context_enabled);
+    let writing_style =
+        resolve_profile_optional(inputs.bundle_id, &global.app_profiles, |profile| {
+            profile
+                .writing_style
+                .filter(|style| *style != WritingStyle::Inherit)
+        })
+        .unwrap_or(WritingStyle::Inherit);
     let style = StylePolicy::for_style(writing_style);
-    let session_style = session_mode
-        .and_then(|mode| mode.writing_style)
-        .map(StylePolicy::for_style);
-    let auto_paste = !invalid_mode
-        && inputs
-            .session_overrides
-            .auto_paste
-            .or_else(|| session_mode.and_then(|mode| mode.auto_paste))
-            .unwrap_or_else(|| {
-                resolve_profile_override(
-                    if invalid_mode {
-                        false
-                    } else {
-                        mode.as_ref()
-                            .and_then(|mode| mode.auto_paste)
-                            .unwrap_or(global.auto_paste)
-                    },
-                    inputs.bundle_id,
-                    &global.app_profiles,
-                    |profile| profile.auto_paste_override,
-                )
-            });
-    let cleanup_enabled = !invalid_mode
-        && inputs
-            .session_overrides
-            .cleanup_enabled
-            .or_else(|| session_mode.and_then(|mode| mode.cleanup_enabled))
-            .or_else(|| {
-                session_style
-                    .as_ref()
-                    .and_then(|style| style.cleanup_enabled)
-            })
-            .unwrap_or_else(|| {
-                resolve_profile_override(
-                    if invalid_mode {
-                        false
-                    } else {
-                        mode.as_ref()
-                            .and_then(|mode| mode.cleanup_enabled)
-                            .unwrap_or_else(|| {
-                                style.cleanup_enabled.unwrap_or(global.cleanup_enabled)
-                            })
-                    },
-                    inputs.bundle_id,
-                    &global.app_profiles,
-                    |profile| profile.cleanup_override,
-                )
-            });
+    let auto_paste = resolve_profile_override(
+        global.auto_paste,
+        inputs.bundle_id,
+        &global.app_profiles,
+        |profile| profile.auto_paste_override,
+    );
+    let cleanup_enabled = resolve_profile_override(
+        style.cleanup_enabled.unwrap_or(global.cleanup_enabled),
+        inputs.bundle_id,
+        &global.app_profiles,
+        |profile| profile.cleanup_override,
+    );
     // Keep Auto distinct from explicit On/Off throughout precedence resolution.
-    // Reducing a session style to a bool would silently turn Auto into Disabled.
-    let explicit_cli_mode = |enabled| {
-        if enabled {
-            CliFormattingMode::Enabled
-        } else {
-            CliFormattingMode::Disabled
-        }
-    };
-    let cli_override = if invalid_mode {
-        Some(CliFormattingMode::Disabled)
-    } else {
-        inputs
-            .session_overrides
-            .cli_formatting_enabled
-            .map(explicit_cli_mode)
-            .or_else(|| {
-                session_mode
-                    .and_then(|mode| mode.cli_formatting_enabled)
-                    .map(explicit_cli_mode)
-            })
-            .or_else(|| {
-                session_style
-                    .as_ref()
-                    .and_then(|style| style.cli_formatting_mode)
-            })
-            .or_else(|| {
-                resolve_profile_optional(inputs.bundle_id, &global.app_profiles, |profile| {
-                    profile.cli_formatting_override
-                })
-                .map(explicit_cli_mode)
-            })
-            .or_else(|| {
-                mode.as_ref()
-                    .and_then(|mode| mode.cli_formatting_enabled)
-                    .map(explicit_cli_mode)
-            })
-    };
+    let cli_override =
+        resolve_profile_optional(inputs.bundle_id, &global.app_profiles, |profile| {
+            profile.cli_formatting_override
+        })
+        .map(|enabled| {
+            if enabled {
+                CliFormattingMode::Enabled
+            } else {
+                CliFormattingMode::Disabled
+            }
+        });
     let cli_formatting_mode = cli_override
         .unwrap_or_else(|| style.cli_formatting_mode.unwrap_or(CliFormattingMode::Auto));
-    let session_cli_explicit = inputs.session_overrides.cli_formatting_enabled.is_some()
-        || session_mode.is_some_and(|mode| mode.cli_formatting_enabled.is_some());
-    let cli_formatting_enabled = !invalid_mode
-        && if session_style
-            .as_ref()
-            .is_some_and(|style| !style.cli_formatting_enabled)
-            && !session_cli_explicit
-        {
-            false
-        } else {
-            cli_override.is_some() || style.cli_formatting_enabled
-        };
-    let resolved_smart_formatting = !invalid_mode
-        && inputs
-            .session_overrides
+    let cli_formatting_enabled = cli_override.is_some() || style.cli_formatting_enabled;
+    let resolved_smart_formatting = resolve_profile_override(
+        style
             .smart_formatting_enabled
-            .or_else(|| session_mode.and_then(|mode| mode.smart_formatting_enabled))
-            .or_else(|| {
-                session_style
-                    .as_ref()
-                    .and_then(|style| style.smart_formatting_enabled)
-            })
-            .unwrap_or_else(|| {
-                resolve_profile_override(
-                    if invalid_mode {
-                        false
-                    } else {
-                        mode.as_ref()
-                            .and_then(|mode| mode.smart_formatting_enabled)
-                            .unwrap_or_else(|| {
-                                style
-                                    .smart_formatting_enabled
-                                    .unwrap_or(global.smart_formatting_enabled)
-                            })
-                    },
-                    inputs.bundle_id,
-                    &global.app_profiles,
-                    |profile| profile.smart_formatting_override,
-                )
-            });
+            .unwrap_or(global.smart_formatting_enabled),
+        inputs.bundle_id,
+        &global.app_profiles,
+        |profile| profile.smart_formatting_override,
+    );
     // The explicit local-project opt-in defines a code context. Deterministic
     // prose rewriting is always bypassed there, even if another style or
     // fine-tuning override would otherwise enable it.
@@ -502,35 +214,20 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         smart_formatting_override: profile.smart_formatting_override,
         writing_style: profile.writing_style,
         ide_context_enabled: profile.ide_context_enabled,
-        mode_id: profile.mode_id.clone(),
     });
     let teaching_project_root = explicit_profile
         .filter(|profile| ide_context_enabled && profile.ide_project_roots.len() == 1)
         .and_then(|profile| profile.ide_project_roots.first())
         .cloned();
-    let custom_vocab = !invalid_mode
-        && crate::vocabulary_alias::has_applicable_entries(
-            &global.vocabulary_entries,
-            inputs.bundle_id,
-            &inputs
-                .session_overrides
-                .resource_profiles(&global.app_profiles),
-        );
-    let code_vocab = !invalid_mode
-        && global.code_vocab_enabled
-        && inputs
-            .session_overrides
-            .code_vocabulary_override(global, inputs.bundle_id)
-            .unwrap_or_else(|| match effective_mode.map(|mode| mode.vocabulary_policy) {
-                Some(ModeVocabularyPolicy::Technical) => true,
-                Some(ModeVocabularyPolicy::General) => false,
-                _ => inputs.bundle_id.is_some_and(|bundle_id| {
-                    crate::state::app_profiles_enable_code_vocabulary(
-                        &global.app_profiles,
-                        bundle_id,
-                    )
-                }),
-            });
+    let custom_vocab = crate::vocabulary_alias::has_applicable_entries(
+        &global.vocabulary_entries,
+        inputs.bundle_id,
+        &global.app_profiles,
+    );
+    let code_vocab = global.code_vocab_enabled
+        && inputs.bundle_id.is_some_and(|bundle_id| {
+            crate::state::app_profiles_enable_code_vocabulary(&global.app_profiles, bundle_id)
+        });
     let source = match (custom_vocab, code_vocab) {
         (false, false) => VocabularySource::None,
         (true, false) => VocabularySource::Custom,
@@ -576,12 +273,8 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
         matched_profile,
         teaching_project_root,
         transcription: TranscriptionSettings {
-            model_name: effective_mode
-                .and_then(|mode| mode.model_id.clone())
-                .unwrap_or_else(|| global.model_name.clone()),
-            language: effective_mode
-                .and_then(|mode| mode.language.clone())
-                .unwrap_or_else(|| global.language.clone()),
+            model_name: global.model_name.clone(),
+            language: global.language.clone(),
             vad_sensitivity: global.vad_sensitivity,
             prompt: inputs.prompt,
             smart_punctuation: global.smart_punctuation,
@@ -642,8 +335,6 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             ..ContextCapturePermissions::default()
         },
         writing_style,
-        resolved_mode_id: effective_mode.map(|mode| mode.id.clone()),
-        next_mode_token: inputs.session_overrides.next_mode_token,
     }
 }
 
@@ -800,25 +491,18 @@ mod tests {
             writing_style: None,
             ide_context_enabled: false,
             ide_project_roots: Vec::new(),
-            mode_id: None,
         }
     }
 
-    fn resolve_test(
-        global: &DictationState,
-        bundle_id: Option<&str>,
-        session_overrides: SessionOverrides,
-    ) -> DictationContextSnapshot {
+    fn resolve_test(global: &DictationState, bundle_id: Option<&str>) -> DictationContextSnapshot {
         resolve(ResolverInputs {
             bundle_id,
-            site_mode_id: None,
             global,
             prompt: None,
             correction_matcher: None,
             ide_context_index: None,
             vocabulary_version: 7,
             voice_commands: None,
-            session_overrides,
         })
     }
 
@@ -831,11 +515,7 @@ mod tests {
         };
         global.app_profiles = vec![profile("com.apple.Terminal", Some(false), Some(true))];
 
-        let snapshot = resolve_test(
-            &global,
-            Some("com.apple.Terminal"),
-            SessionOverrides::default(),
-        );
+        let snapshot = resolve_test(&global, Some("com.apple.Terminal"));
 
         assert!(!snapshot.delivery.auto_paste);
         assert!(snapshot.transformations.cleanup_enabled);
@@ -858,7 +538,7 @@ mod tests {
         global.app_profiles = vec![profile("com.apple.Terminal", Some(false), Some(true))];
 
         for bundle_id in [None, Some("com.apple.Safari")] {
-            let snapshot = resolve_test(&global, bundle_id, SessionOverrides::default());
+            let snapshot = resolve_test(&global, bundle_id);
             assert!(snapshot.delivery.auto_paste);
             assert!(!snapshot.transformations.cleanup_enabled);
             assert!(snapshot.matched_profile.is_none());
@@ -866,12 +546,14 @@ mod tests {
     }
 
     #[test]
-    fn technical_mode_preserves_prose_punctuation_through_the_pipeline() {
+    fn technical_style_preserves_prose_punctuation_through_the_pipeline() {
+        let mut app = profile("com.example.Editor", None, None);
+        app.writing_style = Some(WritingStyle::CodeTechnical);
         let global = DictationState {
-            manual_mode_id: "builtin.technical".to_string(),
+            app_profiles: vec![app],
             ..DictationState::default()
         };
-        let snapshot = resolve_test(&global, None, SessionOverrides::default());
+        let snapshot = resolve_test(&global, Some("com.example.Editor"));
         assert_eq!(
             snapshot.transformations.cli_formatting_mode,
             CliFormattingMode::Auto
@@ -905,20 +587,12 @@ mod tests {
         let mut app = profile("com.example.Editor", None, None);
         app.writing_style = Some(WritingStyle::CodeTechnical);
         global.app_profiles = vec![app];
-        let snapshot = resolve_test(
-            &global,
-            Some("com.example.Editor"),
-            SessionOverrides::default(),
-        );
+        let snapshot = resolve_test(&global, Some("com.example.Editor"));
         let prose = "Please inspect this. Is it ready?";
         assert_eq!(transform_with_snapshot(prose, &snapshot), prose);
 
         global.app_profiles[0].cli_formatting_override = Some(true);
-        let forced = resolve_test(
-            &global,
-            Some("com.example.Editor"),
-            SessionOverrides::default(),
-        );
+        let forced = resolve_test(&global, Some("com.example.Editor"));
         assert_eq!(
             forced.transformations.cli_formatting_mode,
             CliFormattingMode::Enabled
@@ -929,11 +603,7 @@ mod tests {
         );
 
         global.app_profiles[0].cli_formatting_override = Some(false);
-        let disabled = resolve_test(
-            &global,
-            Some("com.example.Editor"),
-            SessionOverrides::default(),
-        );
+        let disabled = resolve_test(&global, Some("com.example.Editor"));
         assert_eq!(
             disabled.transformations.cli_formatting_mode,
             CliFormattingMode::Disabled
@@ -946,183 +616,6 @@ mod tests {
             transform_with_snapshot("command mytool dash dash help", &disabled),
             "mytool --help"
         );
-
-        let terminal = resolve_test(
-            &global,
-            None,
-            SessionOverrides {
-                mode: builtin_mode("builtin.terminal"),
-                ..SessionOverrides::default()
-            },
-        );
-        assert_eq!(
-            terminal.transformations.cli_formatting_mode,
-            CliFormattingMode::Enabled
-        );
-        assert_eq!(
-            transform_with_snapshot("mytool dash dash help", &terminal),
-            "mytool --help"
-        );
-    }
-
-    #[test]
-    fn session_technical_mode_keeps_auto_detection_above_background_overrides() {
-        let mut global = DictationState {
-            manual_mode_id: "builtin.terminal".to_string(),
-            ..DictationState::default()
-        };
-        let mut app = profile("com.example.Editor", None, None);
-        app.mode_id = Some("builtin.terminal".to_string());
-        app.cli_formatting_override = Some(true);
-        global.app_profiles = vec![app];
-        for command_override in [None, Some(false), Some(true)] {
-            global.app_profiles[0].cli_formatting_override = command_override;
-            let snapshot = resolve_test(
-                &global,
-                Some("com.example.Editor"),
-                SessionOverrides {
-                    mode: builtin_mode("builtin.technical"),
-                    ..SessionOverrides::default()
-                },
-            );
-            assert_eq!(
-                snapshot.transformations.cli_formatting_mode,
-                CliFormattingMode::Auto
-            );
-            assert!(snapshot.transformations.cli_formatting_enabled);
-            let prose = "Please inspect this. Is it ready?";
-            assert_eq!(transform_with_snapshot(prose, &snapshot), prose);
-            assert_eq!(
-                transform_with_snapshot("git checkout dash b topic", &snapshot),
-                "git checkout -b topic"
-            );
-        }
-        for (enabled, expected) in [
-            (true, CliFormattingMode::Enabled),
-            (false, CliFormattingMode::Disabled),
-        ] {
-            let snapshot = resolve_test(
-                &global,
-                None,
-                SessionOverrides {
-                    mode: builtin_mode("builtin.technical"),
-                    cli_formatting_enabled: Some(enabled),
-                    ..SessionOverrides::default()
-                },
-            );
-            assert_eq!(snapshot.transformations.cli_formatting_mode, expected);
-        }
-    }
-
-    #[test]
-    fn every_builtin_mode_resolves_to_its_stable_identity() {
-        for id in [
-            "builtin.everyday",
-            "builtin.messages",
-            "builtin.email",
-            "builtin.notes",
-            "builtin.technical",
-            "builtin.terminal",
-            "builtin.verbatim",
-        ] {
-            let mut global = DictationState::default();
-            let mut bound = profile("com.example.App", None, None);
-            bound.mode_id = Some(id.to_string());
-            global.app_profiles = vec![bound];
-            let snapshot = resolve_test(
-                &global,
-                Some("com.example.App"),
-                SessionOverrides::default(),
-            );
-            assert_eq!(snapshot.resolved_mode_id.as_deref(), Some(id));
-        }
-    }
-
-    #[test]
-    fn site_mode_precedes_the_matching_app_mode_in_the_immutable_snapshot() {
-        let mut global = DictationState::default();
-        let mut bound = profile("com.apple.Safari", None, None);
-        bound.mode_id = Some("builtin.email".into());
-        global.app_profiles = vec![bound];
-        let snapshot = resolve(ResolverInputs {
-            bundle_id: Some("com.apple.Safari"),
-            site_mode_id: Some("builtin.technical"),
-            global: &global,
-            prompt: None,
-            correction_matcher: None,
-            ide_context_index: None,
-            vocabulary_version: 1,
-            voice_commands: None,
-            session_overrides: SessionOverrides::default(),
-        });
-        assert_eq!(
-            snapshot.resolved_mode_id.as_deref(),
-            Some("builtin.technical")
-        );
-        assert_eq!(snapshot.writing_style, WritingStyle::CodeTechnical);
-    }
-
-    #[test]
-    fn custom_mode_resolves_model_language_and_profile_fine_tuning() {
-        let mut global = DictationState {
-            auto_paste: false,
-            ..DictationState::default()
-        };
-        global.modes.push(MurmurMode {
-            id: "mode.focus".to_string(),
-            name: "Focus".to_string(),
-            enabled: true,
-            writing_style: Some(WritingStyle::Notes),
-            cleanup_enabled: Some(true),
-            smart_formatting_enabled: Some(true),
-            cli_formatting_enabled: None,
-            vocabulary_policy: ModeVocabularyPolicy::General,
-            context_policy: ModeContextPolicy::None,
-            model_id: Some("small.en".to_string()),
-            language: Some("en".to_string()),
-            auto_paste: Some(true),
-        });
-        let mut bound = profile("com.example.App", Some(false), None);
-        bound.mode_id = Some("mode.focus".to_string());
-        global.app_profiles = vec![bound];
-        let snapshot = resolve_test(
-            &global,
-            Some("com.example.App"),
-            SessionOverrides::default(),
-        );
-        assert_eq!(snapshot.resolved_mode_id.as_deref(), Some("mode.focus"));
-        assert_eq!(snapshot.transcription.model_name, "small.en");
-        assert_eq!(snapshot.transcription.language, "en");
-        assert!(
-            !snapshot.delivery.auto_paste,
-            "profile fine-tuning wins over Mode"
-        );
-    }
-
-    #[test]
-    fn unknown_mode_reference_fails_closed() {
-        let mut global = DictationState {
-            auto_paste: true,
-            cleanup_enabled: true,
-            smart_formatting_enabled: true,
-            code_vocab_enabled: true,
-            ..DictationState::default()
-        };
-        let mut bound = profile("com.example.App", None, None);
-        bound.mode_id = Some("missing.mode".to_string());
-        bound.ide_context_enabled = true;
-        bound.ide_project_roots = vec!["/private/project".to_string()];
-        global.app_profiles = vec![bound];
-        let snapshot = resolve_test(
-            &global,
-            Some("com.example.App"),
-            SessionOverrides::default(),
-        );
-        assert_eq!(snapshot.resolved_mode_id, None);
-        assert_eq!(snapshot.writing_style, WritingStyle::Verbatim);
-        assert!(!snapshot.delivery.auto_paste);
-        assert!(!snapshot.transformations.ide_context_enabled);
-        assert_eq!(snapshot.vocabulary.source, VocabularySource::None);
     }
 
     #[test]
@@ -1140,146 +633,33 @@ mod tests {
         global.app_profiles = vec![ordinary, technical, indexed];
 
         assert_eq!(
-            resolve_test(&global, None, SessionOverrides::default())
+            resolve_test(&global, None).vocabulary.source,
+            VocabularySource::None
+        );
+        assert_eq!(
+            resolve_test(&global, Some("com.example.Chat"))
                 .vocabulary
                 .source,
             VocabularySource::None
         );
         assert_eq!(
-            resolve_test(
-                &global,
-                Some("com.example.Chat"),
-                SessionOverrides::default(),
-            )
-            .vocabulary
-            .source,
+            resolve_test(&global, Some("com.example.Unconfigured"))
+                .vocabulary
+                .source,
             VocabularySource::None
         );
         assert_eq!(
-            resolve_test(
-                &global,
-                Some("com.example.Unconfigured"),
-                SessionOverrides::default(),
-            )
-            .vocabulary
-            .source,
-            VocabularySource::None
-        );
-        assert_eq!(
-            resolve_test(
-                &global,
-                Some("com.example.Editor"),
-                SessionOverrides::default(),
-            )
-            .vocabulary
-            .source,
+            resolve_test(&global, Some("com.example.Editor"))
+                .vocabulary
+                .source,
             VocabularySource::CodeAware
         );
         assert_eq!(
-            resolve_test(
-                &global,
-                Some("com.example.IDE"),
-                SessionOverrides::default(),
-            )
-            .vocabulary
-            .source,
+            resolve_test(&global, Some("com.example.IDE"))
+                .vocabulary
+                .source,
             VocabularySource::CodeAware
         );
-    }
-
-    #[test]
-    fn session_overrides_have_highest_precedence() {
-        let mut global = DictationState {
-            auto_paste: false,
-            cleanup_enabled: true,
-            ..DictationState::default()
-        };
-        global.app_profiles = vec![profile("com.apple.Terminal", Some(true), Some(false))];
-
-        let snapshot = resolve_test(
-            &global,
-            Some("com.apple.Terminal"),
-            SessionOverrides {
-                auto_paste: Some(false),
-                cleanup_enabled: Some(true),
-                cli_formatting_enabled: Some(false),
-                ..SessionOverrides::default()
-            },
-        );
-
-        assert!(!snapshot.delivery.auto_paste);
-        assert!(snapshot.transformations.cleanup_enabled);
-        assert_eq!(
-            snapshot.transformations.cli_formatting_mode,
-            CliFormattingMode::Disabled
-        );
-    }
-
-    #[test]
-    fn next_verbatim_mode_overrides_bound_style_and_all_profile_fine_tuning() {
-        let mut app = profile("com.example.Editor", Some(true), Some(true));
-        app.mode_id = Some("builtin.email".into());
-        app.writing_style = Some(WritingStyle::Polished);
-        app.cli_formatting_override = Some(true);
-        app.smart_formatting_override = Some(true);
-        app.ide_context_enabled = true;
-        app.ide_project_roots = vec!["/project".into()];
-        let global = DictationState {
-            app_profiles: vec![app],
-            ..Default::default()
-        };
-        let once = resolve_test(
-            &global,
-            Some("com.example.Editor"),
-            SessionOverrides {
-                mode: builtin_mode("builtin.verbatim"),
-                next_mode_token: Some(42),
-                ..Default::default()
-            },
-        );
-        assert_eq!(once.resolved_mode_id.as_deref(), Some("builtin.verbatim"));
-        assert_eq!(once.writing_style, WritingStyle::Verbatim);
-        assert_eq!(once.next_mode_token, Some(42));
-        assert!(!once.transformations.cleanup_enabled);
-        assert!(!once.transformations.correction_enabled);
-        assert!(!once.transformations.smart_formatting_enabled);
-        assert!(!once.transformations.cli_formatting_enabled);
-        assert!(!once.transformations.spoken_numbers_enabled);
-        assert!(!once.transformations.ide_context_enabled);
-        assert!(!once.enabled_command_groups.built_in_voice_commands);
-        assert!(!once.context_capture.clipboard);
-        let next = resolve_test(
-            &global,
-            Some("com.example.Editor"),
-            SessionOverrides::default(),
-        );
-        assert_eq!(next.resolved_mode_id.as_deref(), Some("builtin.email"));
-        assert_eq!(next.writing_style, WritingStyle::Polished);
-        assert!(next.transformations.cleanup_enabled);
-        assert_eq!(once.writing_style, WritingStyle::Verbatim);
-    }
-
-    #[test]
-    fn session_mode_carries_custom_model_language_and_delivery_policy() {
-        let global = DictationState::default();
-        let mut mode = builtin_mode("builtin.technical").unwrap();
-        mode.model_id = Some("base.en".into());
-        mode.language = Some("en".into());
-        mode.auto_paste = Some(false);
-        let snapshot = resolve_test(
-            &global,
-            None,
-            SessionOverrides {
-                mode: Some(mode),
-                ..Default::default()
-            },
-        );
-        assert_eq!(snapshot.transcription.model_name, "base.en");
-        assert_eq!(snapshot.transcription.language, "en");
-        assert_eq!(snapshot.writing_style, WritingStyle::CodeTechnical);
-        assert!(!snapshot.delivery.auto_paste);
-        assert!(!snapshot.context_capture.local_project_index);
-        assert!(!snapshot.context_capture.selected_text);
     }
 
     #[test]
@@ -1297,11 +677,7 @@ mod tests {
         global.app_profiles[0].label = "first match".to_string();
         global.app_profiles[1].label = "second match".to_string();
 
-        let snapshot = resolve_test(
-            &global,
-            Some("com.apple.Terminal"),
-            SessionOverrides::default(),
-        );
+        let snapshot = resolve_test(&global, Some("com.apple.Terminal"));
 
         assert!(!snapshot.delivery.auto_paste);
         assert!(!snapshot.transformations.cleanup_enabled);
@@ -1316,7 +692,7 @@ mod tests {
             cleanup_enabled: false,
             ..DictationState::default()
         };
-        let snapshot = resolve_test(&global, None, SessionOverrides::default());
+        let snapshot = resolve_test(&global, None);
 
         global.model_name = "small.en".to_string();
         global.auto_paste = true;
@@ -1331,7 +707,7 @@ mod tests {
     fn cli_profile_override_resolves_auto_enabled_and_disabled_modes() {
         let mut global = DictationState::default();
         assert_eq!(
-            resolve_test(&global, None, SessionOverrides::default())
+            resolve_test(&global, None)
                 .transformations
                 .cli_formatting_mode,
             CliFormattingMode::Auto
@@ -1344,39 +720,21 @@ mod tests {
         global.app_profiles = vec![enabled, disabled];
 
         assert_eq!(
-            resolve_test(
-                &global,
-                Some("com.apple.Terminal"),
-                SessionOverrides::default(),
-            )
-            .transformations
-            .cli_formatting_mode,
+            resolve_test(&global, Some("com.apple.Terminal"))
+                .transformations
+                .cli_formatting_mode,
             CliFormattingMode::Enabled
         );
         assert_eq!(
-            resolve_test(&global, Some("com.apple.mail"), SessionOverrides::default(),)
+            resolve_test(&global, Some("com.apple.mail"))
                 .transformations
                 .cli_formatting_mode,
-            CliFormattingMode::Disabled
-        );
-
-        assert_eq!(
-            resolve_test(
-                &global,
-                Some("com.apple.Terminal"),
-                SessionOverrides {
-                    cli_formatting_enabled: Some(false),
-                    ..SessionOverrides::default()
-                },
-            )
-            .transformations
-            .cli_formatting_mode,
             CliFormattingMode::Disabled
         );
     }
 
     #[test]
-    fn smart_formatting_resolves_global_profile_and_session_precedence() {
+    fn smart_formatting_resolves_global_and_profile_precedence() {
         let mut global = DictationState {
             smart_formatting_enabled: false,
             ..DictationState::default()
@@ -1385,26 +743,11 @@ mod tests {
         terminal.smart_formatting_override = Some(true);
         global.app_profiles = vec![terminal];
 
-        let profile_snapshot = resolve_test(
-            &global,
-            Some("com.apple.Terminal"),
-            SessionOverrides::default(),
-        );
+        let profile_snapshot = resolve_test(&global, Some("com.apple.Terminal"));
         assert!(profile_snapshot.transformations.smart_formatting_enabled);
-
-        let session_snapshot = resolve_test(
-            &global,
-            Some("com.apple.Terminal"),
-            SessionOverrides {
-                smart_formatting_enabled: Some(false),
-                ..SessionOverrides::default()
-            },
-        );
-        assert!(!session_snapshot.transformations.smart_formatting_enabled);
 
         global.smart_formatting_enabled = true;
         assert!(profile_snapshot.transformations.smart_formatting_enabled);
-        assert!(!session_snapshot.transformations.smart_formatting_enabled);
     }
 
     #[test]
@@ -1413,7 +756,7 @@ mod tests {
             auto_paste: true,
             ..DictationState::default()
         };
-        let snapshot = resolve_test(&global, None, SessionOverrides::default());
+        let snapshot = resolve_test(&global, None);
 
         assert_eq!(
             snapshot.context_capture,
@@ -1434,11 +777,7 @@ mod tests {
         editor.ide_project_roots = vec!["/explicit/project".to_string()];
         global.app_profiles = vec![editor];
 
-        let opted_in = resolve_test(
-            &global,
-            Some("com.example.Editor"),
-            SessionOverrides::default(),
-        );
+        let opted_in = resolve_test(&global, Some("com.example.Editor"));
         assert!(opted_in.transformations.ide_context_enabled);
         assert!(!opted_in.transformations.smart_formatting_enabled);
         assert_eq!(
@@ -1454,11 +793,7 @@ mod tests {
         assert!(!opted_in.context_capture.selected_text);
         assert!(!opted_in.context_capture.clipboard);
 
-        let ide_named_but_unconfigured = resolve_test(
-            &global,
-            Some("com.apple.dt.Xcode"),
-            SessionOverrides::default(),
-        );
+        let ide_named_but_unconfigured = resolve_test(&global, Some("com.apple.dt.Xcode"));
         assert!(
             !ide_named_but_unconfigured
                 .transformations
@@ -1477,11 +812,7 @@ mod tests {
         global.app_profiles[0]
             .ide_project_roots
             .push("/another/project".to_string());
-        let ambiguous = resolve_test(
-            &global,
-            Some("com.example.Editor"),
-            SessionOverrides::default(),
-        );
+        let ambiguous = resolve_test(&global, Some("com.example.Editor"));
         assert!(ambiguous.teaching_project_root.is_none());
     }
 
@@ -1503,11 +834,7 @@ mod tests {
         profile.writing_style = Some(WritingStyle::CodeTechnical);
         global.app_profiles = vec![profile];
 
-        let snapshot = resolve_test(
-            &global,
-            Some("com.example.Editor"),
-            SessionOverrides::default(),
-        );
+        let snapshot = resolve_test(&global, Some("com.example.Editor"));
 
         assert_eq!(snapshot.writing_style, WritingStyle::CodeTechnical);
         assert!(!snapshot.transformations.cleanup_enabled);
@@ -1578,11 +905,7 @@ mod tests {
             let mut app = profile("com.example.App", None, None);
             app.writing_style = Some(style);
             global.app_profiles = vec![app];
-            let snapshot = resolve_test(
-                &global,
-                Some("com.example.App"),
-                SessionOverrides::default(),
-            );
+            let snapshot = resolve_test(&global, Some("com.example.App"));
             assert_eq!(snapshot.writing_style, style);
             assert_eq!(snapshot.transformations.cleanup_enabled, cleanup);
             assert_eq!(
@@ -1601,88 +924,88 @@ mod tests {
     }
 
     #[test]
-    fn built_in_modes_freeze_a_content_free_text_register() {
+    fn writing_styles_freeze_a_content_free_text_register() {
         use crate::state::TextRegister;
 
         let mut global = DictationState::default();
-        let resolve_mode = |global: &mut DictationState, mode_id: &str| {
-            let mut app = profile("com.example.App", None, None);
-            app.mode_id = Some(mode_id.to_string());
-            global.app_profiles = vec![app];
-            resolve_test(global, Some("com.example.App"), SessionOverrides::default())
-        };
-        for (mode_id, register, numbers, two_of_them) in [
+        let resolve_style =
+            |global: &mut DictationState, style: WritingStyle, commands_override: Option<bool>| {
+                let mut app = profile("com.example.App", None, None);
+                app.writing_style = Some(style);
+                app.cli_formatting_override = commands_override;
+                global.app_profiles = vec![app];
+                resolve_test(global, Some("com.example.App"))
+            };
+        for (label, style, commands_override, register, numbers, two_of_them) in [
             (
-                "builtin.everyday",
+                "inherit",
+                WritingStyle::Inherit,
+                None,
                 TextRegister::Everyday,
                 true,
                 "two of them",
             ),
             (
-                "builtin.messages",
+                "conversational",
+                WritingStyle::Conversational,
+                None,
                 TextRegister::Messages,
                 true,
                 "Two of them",
             ),
-            ("builtin.email", TextRegister::Email, true, "Two of them"),
-            ("builtin.notes", TextRegister::Notes, true, "two of them"),
             (
-                "builtin.technical",
+                "polished",
+                WritingStyle::Polished,
+                None,
+                TextRegister::Email,
+                true,
+                "Two of them",
+            ),
+            (
+                "notes",
+                WritingStyle::Notes,
+                None,
+                TextRegister::Notes,
+                true,
+                "two of them",
+            ),
+            (
+                "technical",
+                WritingStyle::CodeTechnical,
+                None,
                 TextRegister::Technical,
                 true,
                 "2 of them",
             ),
             (
-                "builtin.terminal",
+                "technical with commands forced on",
+                WritingStyle::CodeTechnical,
+                Some(true),
                 TextRegister::Terminal,
                 true,
                 "2 of them",
             ),
             (
-                "builtin.verbatim",
+                "verbatim",
+                WritingStyle::Verbatim,
+                None,
                 TextRegister::Verbatim,
                 false,
                 "two of them",
             ),
         ] {
-            let snapshot = resolve_mode(&mut global, mode_id);
-            assert_eq!(
-                snapshot.transformations.text_register, register,
-                "{mode_id}"
-            );
+            let snapshot = resolve_style(&mut global, style, commands_override);
+            assert_eq!(snapshot.transformations.text_register, register, "{label}");
             assert_eq!(
                 snapshot.transformations.spoken_numbers_enabled, numbers,
-                "{mode_id}"
+                "{label}"
             );
             assert_eq!(
                 transform_with_snapshot("two of them", &snapshot),
                 two_of_them,
-                "{mode_id}"
+                "{label}"
             );
         }
-
-        // An unknown Mode fails closed to Verbatim, and a one-recording Mode
-        // override replaces the bound register.
-        let snapshot = resolve_mode(&mut global, "custom.missing");
-        assert_eq!(
-            snapshot.transformations.text_register,
-            TextRegister::Verbatim
-        );
-        let mut app = profile("com.example.App", None, None);
-        app.mode_id = Some("builtin.everyday".to_string());
-        global.app_profiles = vec![app];
-        let snapshot = resolve_test(
-            &global,
-            Some("com.example.App"),
-            SessionOverrides {
-                mode: builtin_mode("builtin.terminal"),
-                ..SessionOverrides::default()
-            },
-        );
-        assert_eq!(
-            snapshot.transformations.text_register,
-            TextRegister::Terminal
-        );
     }
 
     #[test]
@@ -1701,7 +1024,7 @@ mod tests {
         global.app_profiles = vec![terminal];
 
         for bundle_id in [Some("com.apple.Terminal"), Some("com.apple.dt.Xcode"), None] {
-            let snapshot = resolve_test(&global, bundle_id, SessionOverrides::default());
+            let snapshot = resolve_test(&global, bundle_id);
             assert_eq!(snapshot.writing_style, WritingStyle::Inherit);
             assert!(snapshot.transformations.cleanup_enabled);
             assert!(!snapshot.transformations.cleanup_remove_filler);
@@ -1735,11 +1058,7 @@ mod tests {
         };
         global.app_profiles = vec![first, second];
 
-        let snapshot = resolve_test(
-            &global,
-            Some("com.example.Editor"),
-            SessionOverrides::default(),
-        );
+        let snapshot = resolve_test(&global, Some("com.example.Editor"));
 
         assert_eq!(snapshot.writing_style, WritingStyle::Polished);
         assert_eq!(snapshot.matched_profile.unwrap().label, "first identity");
@@ -1750,7 +1069,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_profile_and_session_overrides_fine_tune_style() {
+    fn explicit_profile_overrides_fine_tune_a_style() {
         let mut app = profile("com.example.Editor", None, Some(true));
         app.writing_style = Some(WritingStyle::Verbatim);
         app.smart_formatting_override = Some(true);
@@ -1760,26 +1079,19 @@ mod tests {
             ..Default::default()
         };
 
-        let snapshot = resolve_test(
-            &global,
-            Some("com.example.Editor"),
-            SessionOverrides {
-                cleanup_enabled: Some(false),
-                smart_formatting_enabled: Some(false),
-                cli_formatting_enabled: Some(false),
-                ..SessionOverrides::default()
-            },
-        );
+        let snapshot = resolve_test(&global, Some("com.example.Editor"));
 
-        assert!(!snapshot.transformations.cleanup_enabled);
-        assert!(!snapshot.transformations.smart_formatting_enabled);
+        assert_eq!(snapshot.writing_style, WritingStyle::Verbatim);
+        assert!(snapshot.transformations.cleanup_enabled);
+        assert!(snapshot.transformations.smart_formatting_enabled);
+        assert!(!snapshot.enabled_command_groups.built_in_voice_commands);
         assert_eq!(
             snapshot.transformations.spoken_structure_policy,
-            crate::spoken_structure::SpokenStructurePolicy::Off
+            crate::spoken_structure::SpokenStructurePolicy::resolve(false, true)
         );
         assert_eq!(
             snapshot.transformations.cli_formatting_mode,
-            CliFormattingMode::Disabled
+            CliFormattingMode::Enabled
         );
         assert!(snapshot.transformations.cli_formatting_enabled);
     }
@@ -1792,11 +1104,7 @@ mod tests {
             app_profiles: vec![app],
             ..Default::default()
         };
-        let snapshot = resolve_test(
-            &global,
-            Some("com.example.Editor"),
-            SessionOverrides::default(),
-        );
+        let snapshot = resolve_test(&global, Some("com.example.Editor"));
 
         global.app_profiles[0].writing_style = Some(WritingStyle::Verbatim);
 
@@ -1852,7 +1160,7 @@ mod tests {
             let mut app = profile(bundle_id, None, None);
             app.writing_style = Some(style);
             global.app_profiles = vec![app];
-            let snapshot = resolve_test(&global, Some(bundle_id), SessionOverrides::default());
+            let snapshot = resolve_test(&global, Some(bundle_id));
             assert_eq!(transform_with_snapshot(raw, &snapshot), expected);
         }
     }
@@ -1887,22 +1195,14 @@ mod tests {
         };
         global.app_profiles = vec![app];
 
-        let verbatim = resolve_test(
-            &global,
-            Some("com.example.Verbatim"),
-            SessionOverrides::default(),
-        );
+        let verbatim = resolve_test(&global, Some("com.example.Verbatim"));
         assert_eq!(
             transform_with_snapshot(raw, &verbatim).as_bytes(),
             raw.as_bytes()
         );
 
         // A terminal/editor-looking bundle id does not imply a style.
-        let inherit = resolve_test(
-            &global,
-            Some("com.apple.Terminal"),
-            SessionOverrides::default(),
-        );
+        let inherit = resolve_test(&global, Some("com.apple.Terminal"));
         assert_eq!(inherit.writing_style, WritingStyle::Inherit);
         assert_eq!(
             transform_with_snapshot(raw, &inherit).as_bytes(),

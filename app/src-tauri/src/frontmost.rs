@@ -1367,25 +1367,6 @@ fn query_identity(process_id: i32, bundle_id: Option<String>) -> FrontmostAppIde
     }
 }
 
-/// Site lookup requires the exact native PID and bundle pair. Partial
-/// identities are deliberately never accepted because they cannot prove that
-/// per-app privacy exclusions were resolved for the same application.
-pub(crate) fn query_identity_matches(
-    expected: &FrontmostAppIdentity,
-    actual: &FrontmostAppIdentity,
-) -> bool {
-    matches!(
-        (
-            expected.process_id,
-            expected.bundle_id.as_deref(),
-            actual.process_id,
-            actual.bundle_id.as_deref(),
-        ),
-        (Some(expected_pid), Some(expected_bundle), Some(actual_pid), Some(actual_bundle))
-            if expected_pid == actual_pid && expected_bundle == actual_bundle
-    )
-}
-
 #[cfg(target_os = "macos")]
 fn ax_window_token(process_id: i32) -> Option<WindowToken> {
     use std::ffi::{c_char, c_void, CString};
