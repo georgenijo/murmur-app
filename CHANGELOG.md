@@ -6,7 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
-- Keep the Settings content width stable when Advanced sections open, and group Recording and Delivery settings into clearer cards.
+### Fixed
+
+- Consolidate Settings cards and Advanced disclosures, compact Meetings and single-variant theme cards, and standardize editor controls, labels, and actions.
 
 ## [0.63.2] - 2026-11-11
 

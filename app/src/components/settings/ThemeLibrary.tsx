@@ -62,6 +62,16 @@ function CopyIcon() {
   );
 }
 
+function MoreIcon() {
+  return (
+    <svg aria-hidden="true" className="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 24 24">
+      <circle cx="5" cy="12" r="1.75" />
+      <circle cx="12" cy="12" r="1.75" />
+      <circle cx="19" cy="12" r="1.75" />
+    </svg>
+  );
+}
+
 /** Preview the resolved palette, including imported per-mode colors. */
 function ThemePreview({ tokens }: { tokens: MurmurTokens }) {
   const style = Object.fromEntries(['surface', 'surface-container-low', 'on-surface', 'on-surface-variant', 'primary', 'outline-variant']
@@ -126,8 +136,6 @@ function ModePreview({ mode, options, selected, assigned, showingNow, labels, op
         else onChoose(selected.entry);
       }}>
       <ThemePreview tokens={selected.tokens} />
-      {showingNow && <span aria-hidden="true" className="settings-theme-variant-check">✓</span>}
-      {assigned && !showingNow && <span aria-hidden="true" className="settings-theme-variant-assigned">✓</span>}
     </button>
     {options.length > 1 && open && <div className="settings-theme-options" role="group" aria-label={`${modeLabel} variants`}
       onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onOpen(); openerRef.current?.focus(); } }}>
@@ -194,6 +202,7 @@ function CollectionCard({
   resolvedAppearance: ResolvedAppearance;
 }) {
   const [radialOpen, setRadialOpen] = useState<ResolvedAppearance | null>(null);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const labels = shortVariantLabels(entries);
   const groups = (['light', 'dark'] as const).flatMap((mode) => {
     const options = entries
@@ -207,6 +216,7 @@ function CollectionCard({
   const dark = groups.find((group) => group.mode === 'dark')?.selected.entry ?? null;
   const ids = new Set(entries.map((entry) => entry.id));
   const activeNow = ids.has(selection[resolvedAppearance]);
+  const isSingleVariant = groups.length === 1;
   const exportEntry = groups.find((group) => group.mode === 'dark')?.selected.entry
     ?? groups[0]?.selected.entry;
   const applyPair = () => onApplyPair(light, dark);
@@ -214,10 +224,34 @@ function CollectionCard({
     if (event.defaultPrevented) return;
     applyPair();
   };
+  const hasActions = Boolean(onCustomize || onDuplicate || onExport || onRemove);
+  const renderActions = (compact = false) => <>
+    {onCustomize && (
+      <ActionButton label={customizeAsCopy ? `Create theme from ${label}` : `Edit ${label}`} onClick={event => {
+        onCustomize(event.currentTarget);
+        if (compact) setActionsOpen(false);
+      }}>
+        {customizeAsCopy ? <CopyIcon /> : <EditIcon />}
+      </ActionButton>
+    )}
+    {onExport && exportEntry && <ActionButton label={`Export ${label}`} onClick={() => {
+      onExport(exportEntry);
+      if (compact) setActionsOpen(false);
+    }}><UploadIcon /></ActionButton>}
+    {onDuplicate && exportEntry && <ActionButton label={`Duplicate ${label}`} disabled={duplicateDisabled} onClick={() => {
+      onDuplicate(exportEntry);
+      if (compact) setActionsOpen(false);
+    }}><CopyIcon /></ActionButton>}
+    {onRemove && <ActionButton label={`Remove ${label}`} onClick={() => {
+      onRemove();
+      if (compact) setActionsOpen(false);
+    }} danger><TrashIcon /></ActionButton>}
+  </>;
 
   return (
     <article
       data-theme-collection={label}
+      data-theme-variants={groups.length}
       data-active={activeNow ? "true" : undefined}
       onClick={handleCardClick}
       className={`settings-theme-collection ${activeNow ? 'settings-theme-active' : ''}`}
@@ -268,16 +302,29 @@ function CollectionCard({
         >
           <span className="settings-theme-name-label">{label}</span>
         </button>
-        {(onCustomize || onDuplicate || onExport || onRemove) && (
+        {hasActions && !isSingleVariant && (
           <div className="flex shrink-0 items-center gap-0.5">
-            {onCustomize && (
-              <ActionButton label={customizeAsCopy ? `Create theme from ${label}` : `Edit ${label}`} onClick={event => onCustomize(event.currentTarget)}>
-                {customizeAsCopy ? <CopyIcon /> : <EditIcon />}
-              </ActionButton>
+            {renderActions()}
+          </div>
+        )}
+        {hasActions && isSingleVariant && (
+          <div className="settings-theme-action-menu" onBlurCapture={(event) => {
+            const next = event.relatedTarget;
+            if (!(next instanceof Node) || !event.currentTarget.contains(next)) setActionsOpen(false);
+          }} onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              event.stopPropagation();
+              setActionsOpen(false);
+            }
+          }}>
+            <ActionButton label={`Theme actions for ${label}`} onClick={() => setActionsOpen((open) => !open)}>
+              <MoreIcon />
+            </ActionButton>
+            {actionsOpen && (
+              <div className="settings-theme-options settings-theme-actions" role="group" aria-label={`${label} theme actions`}>
+                {renderActions(true)}
+              </div>
             )}
-            {onExport && exportEntry && <ActionButton label={`Export ${label}`} onClick={() => onExport(exportEntry)}><UploadIcon /></ActionButton>}
-            {onDuplicate && exportEntry && <ActionButton label={`Duplicate ${label}`} disabled={duplicateDisabled} onClick={() => onDuplicate(exportEntry)}><CopyIcon /></ActionButton>}
-            {onRemove && <ActionButton label={`Remove ${label}`} onClick={onRemove} danger><TrashIcon /></ActionButton>}
           </div>
         )}
       </div>
