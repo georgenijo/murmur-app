@@ -177,7 +177,7 @@ describe('home dashboard interactions', () => {
       'Home', 'Notetaker', 'Insights',
     ]);
     expect(container.textContent).not.toContain('Customize');
-    expect(container.querySelector('.home-sidebar-bottom')?.textContent).toContain('Audio and transcripts stay local.');
+    expect(container.textContent).not.toContain('Audio and transcripts stay local.');
   });
 
   it('describes auditable milestones rather than an opaque score', async () => {

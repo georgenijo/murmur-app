@@ -213,7 +213,7 @@ test('native default keeps the sidebar and one-column dashboard geometry', async
 
   expect(sidebarBox?.width).toBe(208);
   expect(mainBox?.width).toBe(1120 - 208 - 32);
-  // The month summary lives in the composer's footer strip, not a separate card.
+  // The month summary remains inside the composer.
   expect(monthBox!.y).toBeGreaterThan(talkBox!.y);
   expect(monthBox!.y + monthBox!.height).toBeLessThanOrEqual(talkBox!.y + talkBox!.height);
   expect(talkBox?.width).toBe(mainBox?.width);
@@ -243,7 +243,7 @@ for (const size of [{ width: 1120, height: 820 }, { width: 880, height: 720 }] a
 
     const talk = page.locator('.home-talk');
     await expect(talk).toContainText('Click to start dictating');
-    // The prompt row stays one compact line; the footer strip adds one more.
+    // The action and summary share the composer when space permits.
     const promptBox = await page.getByTestId('home-record-button').boundingBox();
     expect(promptBox?.height).toBeLessThanOrEqual(56);
     expect((await talk.boundingBox())?.height).toBeLessThanOrEqual(96);
@@ -256,7 +256,7 @@ for (const size of [{ width: 1120, height: 820 }, { width: 880, height: 720 }] a
       const box = child.getBoundingClientRect();
       return box.top + box.height / 2;
     }));
-    expect(centers.length).toBe(4);
+    expect(centers.length).toBe(3);
     expect(Math.max(...centers) - Math.min(...centers)).toBeLessThanOrEqual(1);
   });
 }
@@ -1309,3 +1309,31 @@ for (const { appearance, width, height, label } of surfaceCases([{ width: 720, h
     });
   });
 }
+
+test('Insights tooltips follow the hovered speed point and heatmap cell', async ({ page }) => {
+  await page.setViewportSize({ width: 1120, height: 820 });
+  await page.goto('/visual-fixtures.html?state=insights-speed&appearance=light');
+  const svg = page.locator('.ui-day-chart-plot[data-plot="line"] svg');
+  await expect(svg).toHaveCSS('z-index', '1');
+  await expect(svg).toHaveCSS('pointer-events', 'none');
+  for (const selector of ['.ui-day-chart-line-targets button', '.ui-day-chart-heatmap button']) {
+    const marks = page.locator(selector);
+    const positions: { x: number; y: number }[] = [];
+    for (const index of selector.includes('heatmap') ? [1, 17, 33] : [1, 3, 5]) {
+      const mark = marks.nth(index);
+      await mark.scrollIntoViewIfNeeded();
+      const target = (await mark.boundingBox())!;
+      await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2);
+      await expect(mark).toHaveAttribute('data-active', 'true');
+      const chart = mark.locator('xpath=ancestor::figure');
+      const tooltip = chart.locator('.ui-day-chart-tooltip');
+      await expect(tooltip).toContainText((await mark.getAttribute('aria-label'))!.split(', ')[0]);
+      const box = (await tooltip.boundingBox())!;
+      const anchor = selector.includes('heatmap') ? target : (await mark.locator('span').boundingBox())!;
+      expect(box.y + box.height <= anchor.y || box.y >= anchor.y + anchor.height).toBe(true);
+      expect(Math.abs((box.x + box.width / 2) - (anchor.x + anchor.width / 2))).toBeLessThan(box.width / 2 + 8);
+      positions.push({ x: box.x, y: box.y });
+    }
+    expect(new Set(positions.map(position => `${position.x},${position.y}`)).size).toBe(3);
+  }
+});

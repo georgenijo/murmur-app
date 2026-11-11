@@ -771,9 +771,10 @@ textarea {
   box-shadow: var(--ui-shadow-1), 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 10%, transparent);
 }
 
+.history-heading { display: flex; align-items: center; gap: var(--ui-space-2); margin-right: auto; }
+
 .history-title {
   flex-shrink: 0;
-  margin-right: auto;
   white-space: nowrap;
   color: var(--murmur-on-surface);
   font-size: 0.9375rem;
@@ -1146,6 +1147,9 @@ textarea {
 }
 
 .home-talk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   min-width: 0;
   flex: 1 1 100%;
   overflow: visible;
@@ -1156,7 +1160,7 @@ textarea {
 }
 .home-talk-action {
   display: flex;
-  width: 100%;
+  width: auto;
   align-items: center;
   gap: var(--ui-space-6);
   padding: var(--ui-space-4) var(--ui-space-6);
@@ -1164,7 +1168,7 @@ textarea {
 }
 .home-talk-action:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: -2px; border-radius: var(--ui-radius-card) var(--ui-radius-card) 0 0; }
 .home-talk-action:disabled { cursor: not-allowed; }
-.home-talk > .home-talk-action { border-radius: var(--ui-radius-card) var(--ui-radius-card) 0 0; min-height: var(--ui-control-compact); }
+.home-talk > .home-talk-action { flex: 1 1 14rem; border-radius: var(--ui-radius-card) var(--ui-radius-card) 0 0; min-height: var(--ui-control-compact); }
 .home-talk:not(:has(.home-talk-footer)) > .home-talk-action { border-radius: var(--ui-radius-card); }
 .home-talk > .home-talk-action:hover:not(:disabled) { background: var(--ui-dashboard-hover); }
 .home-talk > .home-talk-action:active:not(:disabled) { background: var(--ui-dashboard-pressed); }
@@ -1229,9 +1233,9 @@ textarea {
 /* Passive month summary stays neutral while the talk row responds to input. */
 .home-talk-footer {
   display: flex;
-  min-width: 0;
+  min-width: min(100%, 22rem);
   align-items: center;
-  border-top: 1px solid var(--ui-hairline);
+  flex: 1 1 22rem;
   background: transparent;
   padding: 0.1875rem var(--ui-space-3) 0.1875rem var(--ui-space-6);
 }

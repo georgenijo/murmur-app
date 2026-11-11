@@ -192,7 +192,7 @@ export function UpdateModal({
           )}
 
           {hasReleaseNotes && status.phase === 'available' && (
-            <div className="leading-6 text-on-surface-variant [&_a]:font-medium [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-2 [&_code]:rounded [&_code]:bg-surface-container-high [&_code]:px-1 [&_h1]:mb-2 [&_h1]:mt-5 [&_h1]:font-semibold [&_h1]:text-on-surface [&_h1:first-child]:mt-0 [&_h2]:mb-2 [&_h2]:mt-5 [&_h2]:font-semibold [&_h2]:text-on-surface [&_h2:first-child]:mt-0 [&_h3]:mb-1.5 [&_h3]:mt-4 [&_h3]:font-semibold [&_h3]:text-on-surface [&_li]:my-1 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_strong]:font-semibold [&_strong]:text-on-surface [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
+            <div className="leading-6 text-on-surface-variant [&_a]:font-medium [&_a]:text-primary [&_a]:underline [&_a]:underline-offset-2 [&_code]:rounded [&_code]:bg-surface-container-high [&_code]:px-1 [&_h1]:mb-2 [&_h1]:mt-2 [&_h1]:font-semibold [&_h1]:text-on-surface [&_h1:first-child]:mt-0 [&_h2]:mb-2 [&_h2]:mt-2 [&_h2]:font-semibold [&_h2]:text-on-surface [&_h2:first-child]:mt-0 [&_h3]:mb-1.5 [&_h3]:mt-2 [&_h3]:font-semibold [&_h3]:text-on-surface [&_li]:my-1 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_strong]:font-semibold [&_strong]:text-on-surface [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
               <Markdown rehypePlugins={[rehypeSanitize]}>{status.notes.replace(/^(#{1,3}\s+)What's Changed\s*$/gm, "$1What's new")}</Markdown>
             </div>
           )}
