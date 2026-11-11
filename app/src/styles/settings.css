@@ -484,7 +484,7 @@
   .settings-field:has(> .ui-select):not(:has(> .ui-select ~ .ui-select)) { grid-template-columns: minmax(0, 1fr); row-gap: 12px; }
   .settings-field:has(> .ui-select):not(:has(> .ui-select ~ .ui-select)) > .ui-select { grid-column: 1; grid-row: auto; width: 100%; max-width: none; justify-self: stretch; }
 }
-.settings-segmented { display: inline-flex; align-items: center; height: 34px; border-radius: var(--ui-radius-pill); padding: 2px; gap: 2px; border: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 22%, transparent); background: var(--ui-tint-sunken); }
+.settings-segmented { display: inline-flex; align-items: center; height: var(--ui-control-standard); border-radius: var(--ui-radius-pill); padding: 2px; gap: 2px; border: 1px solid color-mix(in srgb, var(--murmur-outline-variant) 22%, transparent); background: var(--ui-tint-sunken); }
 .settings-segmented-btn { min-width: 64px; padding-inline: 10px; white-space: nowrap; height: 28px; border: 0; border-radius: var(--ui-radius-control); background: transparent; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); font-weight: var(--ui-weight-label); letter-spacing: var(--ui-track-tight); }
 .settings-segmented-btn[data-selected='true'] { background: var(--ui-tint-raised); color: var(--murmur-on-surface); box-shadow: var(--ui-shadow-1); }
 .settings-segmented-btn[data-selected='true']:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 1px; }
