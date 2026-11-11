@@ -8,7 +8,7 @@
  * Returns true when the Return key was consumed. Modified Return never presses
  * a button, including the browser's native activation of a focused button.
  */
-export function returnPressesDefault(
+function returnPressesDefault(
   event: Pick<KeyboardEvent, 'key' | 'shiftKey' | 'metaKey' | 'ctrlKey' | 'altKey' | 'isComposing' | 'target' | 'repeat' | 'preventDefault'>,
   pressDefault: (() => void) | null,
 ): boolean {

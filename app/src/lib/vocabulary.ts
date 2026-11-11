@@ -1,4 +1,4 @@
-import type { VocabularyEntry, VocabularyScope, VoiceCommand } from './settings';
+import type { VocabularyEntry, VocabularyScope } from './settings';
 
 const BUILTIN_COMMAND_PHRASES = [
   'new paragraph', 'new line', 'scratch that', 'open paren', 'close paren',
@@ -18,16 +18,10 @@ function scopesOverlap(left: VocabularyScope, right: VocabularyScope): boolean {
   return left.bundleId === right.bundleId;
 }
 
-export function validateVocabularyEntries(
-  entries: VocabularyEntry[],
-  voiceCommands: VoiceCommand[] = [],
-): string | null {
+export function validateVocabularyEntries(entries: VocabularyEntry[]): string | null {
   if (entries.length > 500) return 'Vocabulary supports at most 500 entries.';
   const enabled = entries.filter((entry) => entry.enabled);
-  const commandPhrases = new Set([
-    ...BUILTIN_COMMAND_PHRASES,
-    ...voiceCommands.map((command) => command.phrase),
-  ].map(normalizeVocabularyValue));
+  const commandPhrases = new Set(BUILTIN_COMMAND_PHRASES.map(normalizeVocabularyValue));
 
   for (const entry of enabled) {
     if (!entry.written.trim()) return 'Every enabled vocabulary entry needs a written form.';
@@ -81,7 +75,7 @@ export function validateVocabularyEntries(
         return `'${alias.trim()}' is already the written form; remove it from Spoken aliases.`;
       }
       if (commandPhrases.has(normalized)) {
-        return `'${alias.trim()}' is a Voice Command phrase. Aliases cannot override commands.`;
+        return `'${alias.trim()}' is a built-in spoken formatting phrase. Aliases cannot override it.`;
       }
       for (let j = 0; j < enabled.length; j += 1) {
         const other = enabled[j];

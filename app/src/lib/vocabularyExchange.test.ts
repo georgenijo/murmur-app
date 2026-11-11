@@ -13,8 +13,8 @@ const scopedEntries: VocabularyEntry[] = [
   { id: 'editor', written: 'Editor', aliases: ['ed'], enabled: true, scope: { kind: 'app', bundleId: 'com.example.Editor' } },
   { id: 'project', written: 'Project', aliases: ['proj'], enabled: false, scope: { kind: 'project', bundleId: 'com.example.Editor', root: '/private/project' } },
 ];
-const empty: VocabularyExchangeSettings = { vocabularyEntries: [], voiceCommands: [] };
-const source: VocabularyExchangeSettings = { vocabularyEntries: scopedEntries, voiceCommands: [] };
+const empty: VocabularyExchangeSettings = { vocabularyEntries: [] };
+const source: VocabularyExchangeSettings = { vocabularyEntries: scopedEntries };
 const file = () => parseVocabularyFile(exportVocabularyFile(source));
 
 function expectRejected(update: object) {
@@ -42,9 +42,9 @@ describe('Vocabulary JSON boundary', () => {
   });
 
   it('rejects invalid enabled entries while preserving disabled entries in a valid export', () => {
-    expect(() => exportVocabularyFile({ vocabularyEntries: [{ ...globalEntry, written: '' }], voiceCommands: [] })).toThrow();
+    expect(() => exportVocabularyFile({ vocabularyEntries: [{ ...globalEntry, written: '' }] })).toThrow();
     const disabled = { ...globalEntry, enabled: false, written: 'Disabled' };
-    expect(parseVocabularyFile(exportVocabularyFile({ vocabularyEntries: [disabled], voiceCommands: [] })).entries).toEqual([disabled]);
+    expect(parseVocabularyFile(exportVocabularyFile({ vocabularyEntries: [disabled] })).entries).toEqual([disabled]);
   });
 });
 

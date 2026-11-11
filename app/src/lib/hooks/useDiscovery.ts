@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import {
   DISCOVERY_CHANGED_EVENT,
@@ -7,11 +7,9 @@ import {
   loadDiscoveryState,
   type DiscoveryHintId,
 } from '../discovery';
-import type { HistoryEntry } from '../history';
 
 interface UseDiscoveryOptions {
   enabled: boolean;
-  historyEntries: HistoryEntry[];
 }
 
 function isSecondTapExpired(value: unknown): boolean {
@@ -19,24 +17,14 @@ function isSecondTapExpired(value: unknown): boolean {
     && value.reason === 'second_tap_expired';
 }
 
-export function useDiscovery({ enabled, historyEntries }: UseDiscoveryOptions) {
+export function useDiscovery({ enabled }: UseDiscoveryOptions) {
   const [state, setState] = useState(loadDiscoveryState);
-  const newestHistoryId = historyEntries[historyEntries.length - 1]?.id ?? null;
-  const newestHistoryIdRef = useRef(newestHistoryId);
 
   useEffect(() => {
     const refresh = () => setState(loadDiscoveryState());
     window.addEventListener(DISCOVERY_CHANGED_EVENT, refresh);
     return () => window.removeEventListener(DISCOVERY_CHANGED_EVENT, refresh);
   }, []);
-
-
-  useEffect(() => {
-    const previousId = newestHistoryIdRef.current;
-    newestHistoryIdRef.current = newestHistoryId;
-    if (!enabled || newestHistoryId === null || newestHistoryId === previousId) return;
-    setState(enqueueDiscoveryHint('correct_and_teach'));
-  }, [enabled, newestHistoryId]);
 
   useEffect(() => {
     if (!enabled) return;

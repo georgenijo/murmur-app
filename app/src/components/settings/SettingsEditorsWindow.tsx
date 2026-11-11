@@ -8,10 +8,8 @@ import type { VocabScanStats, VocabScanStatus, WalkerRow } from '../../lib/hooks
 import type { Settings } from '../../lib/settings';
 import { vocabularyPrompt } from '../../lib/settings';
 import { AppOverridesEditor } from './AppOverridesEditor';
-import { KnowledgeManager } from './KnowledgeManager';
 import { VocabScanStrip } from './VocabScanStrip';
 import { VocabularyAliasesEditor } from './VocabularyAliasesEditor';
-import { VoiceCommandsManager } from './VoiceCommandsManager';
 import { Button, Input } from '../ui/FormControls';
 import { Select } from '../ui/Select';
 
@@ -19,16 +17,12 @@ export type SettingsEditorTab =
   | 'app-overrides'
   | 'vocabulary'
   | 'aliases'
-  | 'knowledge'
-  | 'commands'
   | 'scan';
 
 export const SETTINGS_EDITOR_LABELS: Record<SettingsEditorTab, string> = {
   'app-overrides': 'App overrides',
   vocabulary: 'Vocabulary',
   aliases: 'Aliases',
-  knowledge: 'Knowledge',
-  commands: 'Voice commands',
   scan: 'Project scan',
 };
 
@@ -44,7 +38,6 @@ interface SettingsEditorsWindowProps {
   onScan: () => void;
   onCancelScan: () => void;
   onBack: () => void;
-  onOpenVoiceCommandSettings?: () => void;
   restoreFocus?: () => HTMLElement | null;
   target?: { id: string } | null;
 }
@@ -124,19 +117,13 @@ export function SettingsEditorsWindow({
   onScan,
   onCancelScan,
   onBack,
-  onOpenVoiceCommandSettings,
   restoreFocus,
   target,
 }: SettingsEditorsWindowProps) {
   const revealedTargetRef = useRef<typeof target>(null);
   const [advancedOpen, setAdvancedOpen] = useSettingsAdvanced(initialTab);
   const titleId = useId();
-  const navigatingToSettingsRef = useRef(false);
-  // A cross-page link owns its visible destination's focus in SettingsPanel.
-  // Closing this sheet must not compete with that landing or refocus a hidden switch.
-  const dialogRef = useDialogFocus(onBack, () => navigatingToSettingsRef.current
-    ? document.activeElement as HTMLElement | null
-    : restoreFocus?.() ?? null, true);
+  const dialogRef = useDialogFocus(onBack, () => restoreFocus?.() ?? null, true);
   useLayoutEffect(() => {
     if (target?.id !== 'app-overrides-manual' || revealedTargetRef.current === target) return;
     if (!advancedOpen) { setAdvancedOpen(true); return; }
@@ -171,23 +158,10 @@ export function SettingsEditorsWindow({
         {initialTab === 'aliases' && (
           <VocabularyAliasesEditor
             entries={settings.vocabularyEntries}
-            voiceCommands={settings.voiceCommands}
             onChange={(vocabularyEntries) => onUpdateSettings({
               vocabularyEntries,
               customVocabulary: vocabularyPrompt(vocabularyEntries),
             })}
-          />
-        )}
-        {initialTab === 'knowledge' && <KnowledgeManager active profiles={settings.appProfiles} />}
-        {initialTab === 'commands' && (
-          <VoiceCommandsManager
-            active
-            globallyEnabled={settings.voiceCommandsEnabled}
-            profiles={settings.appProfiles}
-            onOpenVoiceCommandSettings={onOpenVoiceCommandSettings ? () => {
-              navigatingToSettingsRef.current = true;
-              onOpenVoiceCommandSettings();
-            } : undefined}
           />
         )}
         {initialTab === 'scan' && (

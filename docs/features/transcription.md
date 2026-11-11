@@ -672,12 +672,12 @@ Uses `IdleGuard` (RAII) to reset status on any early return or error — prevent
 `transform_transcript()` is the authoritative post-recognition entry point for both live and imported-file transcription. It owns a fixed internal sequence:
 
 ```text
-raw transcript → cleanup → voice commands → Smart Correction (explicit aliases, scoped replacement knowledge, exact/derived terms, then fuzzy) → optional homophone context → Smart Formatting → Spoken Structure → spoken numbers → IDE context → CLI formatting → final text
+raw transcript → cleanup → Smart Correction (explicit aliases, exact/derived terms, then fuzzy) → optional homophone context → Smart Formatting → Spoken Structure → spoken numbers → IDE context → CLI formatting → final text
 ```
 
-Each stage receives immutable session/source metadata plus privacy-safe enablement flags and produces privacy-safe execution metadata (`duration_us`, changed/not-changed, outcome, and required/optional failure policy). Structured stage logs never include transcript text, model/language settings, app/profile values, custom replacement values, correction vocabulary, package/script names, or project paths.
+Each stage receives immutable session/source metadata plus privacy-safe enablement flags and produces privacy-safe execution metadata (`duration_us`, changed/not-changed, outcome, and required/optional failure policy). Structured stage logs never include transcript text, model/language settings, app/profile values, correction vocabulary, package/script names, or project paths.
 
-Cleanup, voice commands, Smart Formatting, Spoken Structure, spoken numbers, IDE context, and CLI formatting are required deterministic stages when enabled. Smart Correction is optional-fallback: a future recoverable correction failure leaves the preceding text intact. Explicit vocabulary aliases outrank enabled replacement knowledge; knowledge then uses project/app/global scope and repository provenance precedence before derived and fuzzy vocabulary. A bounded built-in homophone rule resolves `Maine`/`me` to the Git branch name `main` only when nearby branch or version-control language establishes that meaning, with geographic cues failing closed. The compiled matcher is captured at recording start and never queries SQLite in the stage. Smart Formatting is live-only and opt-in, fails closed outside its bounded prose grammar, and skips any utterance owned by the CLI grammar. Spoken Structure is live-only, applies the immutable Off/Basic/Extended/Union policy, and owns punctuation, layout, symbols, and `scratch that`. Spoken-number rendering is live-only and enabled by default outside the explicit Verbatim profile; it runs after Spoken Structure so fractions receive numeric separators while list ordinals remain authoritative. Explicit IDE opt-in bypasses Smart Formatting, then applies only the matching profile's fresh memory-only project index. The final CLI stage remains authoritative, uses conservative prefix/trigger/profile activation, and returns non-command prose byte-for-byte unchanged. Imported-file transcription invokes the same entry point with every stage disabled so its existing raw-ASR output remains unchanged.
+Cleanup, Smart Formatting, Spoken Structure, spoken numbers, IDE context, and CLI formatting are required deterministic stages when enabled. Smart Correction is optional-fallback: a future recoverable correction failure leaves the preceding text intact. Explicit vocabulary aliases outrank derived and fuzzy vocabulary. A bounded built-in homophone rule resolves `Maine`/`me` to the Git branch name `main` only when nearby branch or version-control language establishes that meaning, with geographic cues failing closed. The compiled matcher is captured at recording start. Smart Formatting is live-only and opt-in, fails closed outside its bounded prose grammar, and skips any utterance owned by the CLI grammar. Spoken Structure is live-only, applies the immutable Off/Basic/Extended/Union policy, and owns punctuation, layout, symbols, and `scratch that`. Spoken-number rendering is live-only and enabled by default outside the explicit Verbatim profile; it runs after Spoken Structure so fractions receive numeric separators while list ordinals remain authoritative. Explicit IDE opt-in bypasses Smart Formatting, then applies only the matching profile's fresh memory-only project index. The final CLI stage remains authoritative, uses conservative prefix/trigger/profile activation, and returns non-command prose byte-for-byte unchanged. Imported-file transcription invokes the same entry point with every stage disabled so its existing raw-ASR output remains unchanged.
 
 The pipeline result can compare its original and final strings in memory for tests and diagnostics, but only privacy-safe stage metadata is logged. Only the final string reaches optional file output, clipboard/paste, history, and stats; delivery remains final-only and happens once.
 
@@ -686,7 +686,7 @@ File persistence, clipboard/paste, history, and stats are intentionally outside 
 See [Per-App Dictation Context](per-app-profiles.md) for resolver precedence, duplicate-profile compatibility, lifetime, and privacy boundaries.
 See [Spoken CLI Command Formatting](cli-command-formatting.md) for activation, grammar, local lexicon layering, and safety guarantees.
 See [Explicit Spoken Vocabulary Aliases](vocabulary-aliases.md) for migration, precedence, scope, validation, and privacy guarantees.
-See [Voice Commands 2.0](voice-commands.md) for typed replacements, multiline snippets, variables, app scopes, conflicts, and clipboard permission boundaries.
+See [Spoken Structure](spoken-structure.md#built-in-spoken-commands) for the built-in spoken commands and the Spoken formatting switch.
 See [Smart Formatting and Same-Utterance Backtracking](smart-formatting.md) for its explicit prose grammar, bounds, bypass rules, and privacy contract.
 See [Spoken Number Formatting](spoken-number-formatting.md) for supported English scales, decimals, bounds, and fail-closed rules.
 See [Local IDE Symbols and `@file` Context](ide-context.md) for opt-in, scan boundaries, ambiguity, expiry, and privacy guarantees.
@@ -731,8 +731,8 @@ files, or deterministic evaluation fixtures.
 
 The trigger matches whole word cores against curated confusable groups (including
 cue/queue, cloud/Claude, CPO/CPU, there/their/they're, Maine/main) and close phonetic
-matches to enabled, scoped, single-word user vocabulary. Explicit aliases and
-learned replacements remain authoritative: their output spans are protected, and
+matches to enabled, scoped, single-word user vocabulary. Explicit aliases
+remain authoritative: their output spans are protected, and
 already canonical vocabulary spellings are skipped. Multiword aliases continue
 through deterministic correction; this tier does not rewrite phrases.
 

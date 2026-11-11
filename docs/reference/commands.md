@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 167 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 150 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -14,14 +14,14 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 |---------|-----------|---------|-------------|
 | `init_dictation` | — | `Result<JSON, String>` | Static `{"type":"initialized","state":"idle"}` marker. |
 | `get_status` | — | `Result<JSON, String>` | Current status, model name, and language. |
-| `configure_dictation` | `options: JSON` | `Result<JSON, String>` | Pushes settings into `DictationState`: model, language, auto-paste and delay (clamped 10–500), VAD sensitivity (0–100), punctuation, file output, vocabulary entries, voice commands, app profiles, cleanup/formatting/correction toggles, code-vocab folder, idle timeout. A model change reselects the runtime backend, deferring across an active recording generation. Rejects conflicting vocabulary/command configurations without mutating prior state. |
+| `configure_dictation` | `options: JSON` | `Result<JSON, String>` | Pushes settings into `DictationState`: model, language, auto-paste and delay (clamped 10–500), VAD sensitivity (0–100), punctuation, file output, vocabulary entries, the spoken-formatting toggle, app profiles, cleanup/formatting/correction toggles, code-vocab folder, idle timeout. A model change reselects the runtime backend, deferring across an active recording generation. Rejects invalid vocabulary, such as cyclic aliases or an alias that overrides a built-in spoken formatting phrase, without mutating prior state. |
 | `start_native_recording` | `device_name: Option<String>`, `smart_auto: Option<SmartAutoRequest>`, `origin: Option<String>`, `gesture_token: Option<String>` | `Result<JSON, String>` | Consumes the originating keyboard gesture token at entry (omitted for toolbar/overlay), then resolves the immutable context, claims the single audio owner, starts model preparation, emits `starting`, and returns `{"type":"recording_starting","state":"starting","recordingId":N}` without waiting for Core Audio. Readiness later emits `recording`. |
 | `stop_native_recording` | `stopTrigger?: "hold_release" \| "toggle" \| "overlay" \| "auto_stop" \| "other"` | `Result<JSON, String>` | Cancels a `starting` attempt, or stops a ready capture and runs VAD → inference → transcript transform → delivery. Recordings under 0.3s are discarded. |
 | `cancel_native_recording` | `expected_recording_id: Option<u64>` | `Result<(), String>` | With an expected ID, acts only when that generation still owns dictation. Cancels initialization or capture through a brief `recovering` transition to `idle`, or discards a processing run without delivery. Detached audio cleanup continues asynchronously. |
 | `cancel_audio_initialization` | `reason: "device_changed"` | `Result<(), String>` | Cancels only a `starting` attempt after the selected microphone changes; a ready recording is left alone. |
 | `process_audio` | `audio_data: String` | `Result<JSON, String>` | Runs the full pipeline over base64-encoded 16kHz mono WAV. |
 | `transcribe_file` | `file_path: String` | `Result<JSON, String>` | Decodes and transcribes an audio file through the same pipeline with live-only stages skipped. Emits `file-transcription-status-changed`. |
-| `preview_vocabulary_aliases` | `entries`, `voice_commands`, `text`, `cli_formatting` | `Result<String, String>` | Runs alias + command resolution over sample text in memory. No persistence, no delivery. |
+| `preview_vocabulary_aliases` | `entries`, `text`, `cli_formatting` | `Result<String, String>` | Runs explicit alias resolution (and optional CLI formatting) over sample text in memory. No persistence, no delivery. |
 | `scan_code_vocab` | `folder: String`, `scan_id: String` | `Result<VocabScanSummary, String>` | Breadth-first identifier scan of a project folder with throttled progress events. Returns ranked terms, counts, cap state, and whether the result was adopted. |
 | `cancel_code_vocab_scan` | `scan_id: String` | `bool` | Cancels only the matching scan. |
 | `get_ide_context_status` | `bundle_id: String` | `IdeContextStatus` | Index state for one profile. |
@@ -202,24 +202,6 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `cancel_model_download` | `model_name: String`, `request_id: String` | `Result<(), String>` | Cancels only that install owner, including a pending lock wait; waits for active work and confirmed Core ML termination before returning. Safe HTTP partials and complete archives are retained for Retry. |
 | `remove_diarization_model` | — | `Result<(), String>` | Cancels active diarization work, waits for model-use ownership, and removes the installed speaker-model directory after acquiring the shared model-cache lease. |
 
-## Personal knowledge (`commands/knowledge.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `get_knowledge_store_status` | — | `KnowledgeStoreStatus` | Ready / recovered / reinitialized / unavailable, schema version, record count, store revision, privacy-safe recovery info. |
-| `retry_knowledge_store` | — | `KnowledgeStoreStatus` | Re-runs local initialization after an unavailable state. |
-| `list_knowledge` | `request: KnowledgeListRequest` | `Result<KnowledgeListResponse, String>` | Bounded search/filter page (default 50, cap 100), with an optional Voice Command filter. |
-| `get_knowledge` | `id: String` | `Result<KnowledgeEntry, String>` | One record by stable ID. |
-| `upsert_knowledge` | `draft: KnowledgeDraft` | `Result<KnowledgeEntry, String>` | Creates or edits with an expected revision. Voice Commands additionally validate payload/type, scope, built-ins, duplicate phrases, variables, clipboard permission, and vocabulary conflicts. |
-| `set_knowledge_enabled` | `id`, `enabled`, `expected_revision` | `Result<KnowledgeEntry, String>` | Enable/disable with optimistic concurrency. |
-| `delete_knowledge` | `id`, `expected_revision` | `Result<u64, String>` | Deletes one record, returns the new store revision. |
-| `resolve_knowledge` | `request: KnowledgeResolveRequest` | `Result<Option<KnowledgeEntry>, String>` | Deterministic exact-trigger resolution using the same scope/provenance precedence that feeds the Smart Correction matcher. |
-| `preview_voice_command` | `request: VoiceCommandPreviewRequest` | `Result<VoiceCommandPreviewResponse, String>` | Runs the real matcher and variable expansion with no clipboard output and no paste. Clipboard input requires both saved permission and an explicit preview request. |
-| `export_knowledge_to_file` | `path: String` | `Result<u64, String>` | Atomic export to versioned JSON. |
-| `inspect_knowledge_import` | `path: String` | `Result<KnowledgeImportSummary, String>` | Validates an import and reports new / duplicate / conflicting records without writing. |
-| `import_knowledge_from_file` | `path: String` | `Result<KnowledgeImportResult, String>` | Atomically imports validated new records; never overwrites local records. |
-| `delete_all_knowledge` | `expected_revision: u64` | `Result<u64, String>` | Deletes all records and in-store recovery artifacts after typed confirmation. |
-
 ## Appearance file transport (`commands/theme.rs`)
 
 These commands are strictly gated to the main webview. The native dialog
@@ -231,15 +213,6 @@ frontend.
 |---------|-----------|---------|-------------|
 | `read_theme_file` | `path: String` | `Result<String, String>` | Reads at most 256 KiB of UTF-8 from a regular, non-symlink file, enough for bounded VS Code JSON/JSONC themes and vocabulary import files. Returns clear errors for invalid paths, oversized files, invalid UTF-8, and I/O failure. |
 | `write_theme_file` | `path: String`, `contents: String` | `Result<(), String>` | Rejects content over 64 KiB and symlink/non-regular destinations, writes and fsyncs a unique sibling temporary file, atomically renames it over the destination, then syncs the parent directory. New Unix files use mode `0600`; replacements preserve the existing regular target's permissions. A failed write/publish cleans the temporary file and preserves an existing target. |
-
-## Correct and Teach (`commands/correct_and_teach.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `propose_learned_correction` | `request: CorrectionProposalRequest` | `CorrectionProposalOutcome` | Computes one bounded local diff and stores an ephemeral proposal. Never writes knowledge. Ambiguous alignments fail closed. |
-| `propose_specific_learned_correction` | `request: SpecificCorrectionProposalRequest` | `CorrectionProposalOutcome` | Validates one user-selected whole-term replacement, counts and previews exact matches locally, stores an ephemeral proposal. |
-| `confirm_learned_correction` | `proposal_id: u64`, `scope: KnowledgeScope` | `Result<KnowledgeEntry, String>` | Persists the reviewed replacement with `learned_correction` provenance and refreshes the next matcher generation. |
-| `discard_learned_correction_proposal` | `proposal_id: u64` | `()` | Discards the proposal without persistence. |
 
 ## Performance Lab (`commands/benchmark.rs`)
 

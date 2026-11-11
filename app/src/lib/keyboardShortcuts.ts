@@ -49,7 +49,7 @@ export function isEditableTarget(target: EventTarget | null): boolean {
  * to emacs-style editing (⌃F forward, ⌃K kill-to-end-of-line), so while the
  * user is typing only the Command form is accepted — otherwise the shortcuts
  * would eat those bindings inside the search box, settings fields, and the
- * knowledge editor.
+ * aliases editor.
  */
 export function mainWindowShortcut(
   event: ShortcutEvent,

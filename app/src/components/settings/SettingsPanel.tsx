@@ -252,18 +252,16 @@ const GENERAL_DETAIL_PAGES = ['shortcuts'] as const;
 
 interface SettingTargetRequest {
   id: string;
-  focusSwitch?: boolean;
 }
 
-function settingTargetRequest(id: string | undefined, focusSwitch = false): SettingTargetRequest | null {
-  return id === undefined ? null : { id, focusSwitch };
+function settingTargetRequest(id: string | undefined): SettingTargetRequest | null {
+  return id === undefined ? null : { id };
 }
 
 function customizationDestinationForRequest(
   request: Pick<SettingsPageRequest, 'page' | 'editorTab' | 'target'> | null | undefined,
 ): CustomizationDestination | null {
   if (!request) return null;
-  if (request.page === 'text' && request.editorTab === 'commands') return 'commands';
   if (request.page === 'text' && request.editorTab === 'aliases') return 'text';
   if (request.page === 'text' && !request.editorTab) return 'text';
   if (request.page === 'delivery' && request.target === 'app-overrides') return 'styles';
@@ -277,7 +275,6 @@ function customizationRoute(destination: CustomizationDestination): {
 } {
   switch (destination) {
     case 'text': return { page: 'text' };
-    case 'commands': return { page: 'text', editorTab: 'commands' };
     case 'styles': return { page: 'delivery', target: 'app-overrides' };
   }
 }
@@ -320,7 +317,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'text', target: 'fuzzy-correction', title: 'Correct close mishearings', detail: 'Match sounds against preferred spellings', keywords: 'smart correction fuzzy' },
   { page: 'text', target: 'homophone-context', title: 'Resolve homophones', detail: 'Currently unavailable; deterministic spelling retained', keywords: 'experimental correction' },
   { page: 'text', target: 'smart-formatting', title: 'Structured writing', detail: 'Format spoken lists and symbols', keywords: 'smart formatting' },
-  { page: 'text', target: 'voice-commands', title: 'Voice commands & spoken formatting', detail: 'Enable custom commands and spoken formatting tokens', keywords: 'voice commands snippets replacement new line period scratch that' },
+  { page: 'text', target: 'voice-commands', title: 'Spoken formatting', detail: 'Say “new line,” “period,” or “scratch that”', keywords: 'spoken formatting voice commands punctuation new line period scratch that' },
   { page: 'ai-transcription', target: 'model-idle-timeout', title: 'Release model after inactivity', detail: 'Free idle model memory', keywords: 'timeout power adapter' },
   { page: 'meetings', target: 'meeting-calendar', title: 'Calendar suggestion access', detail: 'Manage permission for meeting suggestions', keywords: 'calendar settings permission' },
   { page: 'meetings', target: 'meeting-echo-cancellation', title: 'Reduce speaker echo', detail: 'Experimental meeting echo removal', keywords: 'audio processing' },
@@ -346,8 +343,6 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'text', target: 'cleanup', title: 'Transcript cleanup', detail: 'Remove filler words and tidy transcript spacing', keywords: 'filler capitalization' },
   { page: 'text', target: 'vocabulary', title: 'Vocabulary', detail: 'Review identifiers retained from project scans', keywords: 'names spelling project scan developer terms' },
   { page: 'text', target: 'aliases', title: 'Aliases', detail: 'Map spoken variants to canonical spellings', keywords: 'spoken variants canonical spellings replacement' },
-  { page: 'text', target: 'knowledge', title: 'Knowledge', detail: 'Manage corrections, terms, and snippets', keywords: 'corrections terms snippets' },
-  { page: 'text', target: 'commands', title: 'Voice commands', detail: 'Create exact spoken replacements and snippets', keywords: 'voice commands spoken replacements snippets' },
   { page: 'appearance', target: 'appearance', title: 'Appearance', detail: 'Theme, accent, contrast, and color controls', keywords: 'dark light colors palette community open vsx vscode import' },
   { page: 'general', target: 'launch-login', title: 'Launch at login', detail: 'Start Murmur when you sign in', keywords: 'startup autostart' },
   { page: 'general', target: 'overlay-calibration', title: 'Calibrate overlay position', detail: 'Fine-tune the overlay position around your Mac’s notch', keywords: 'calibrate calibration overlay position vertical notch dynamic island' },
@@ -519,18 +514,6 @@ export const SettingsPanel = memo(function SettingsPanel({
     revealedTargetRef.current = targetRequest;
     // Wait for the folding clip to finish before centering the destination.
     let flashed: HTMLElement | null = null;
-    let focusPending = targetRequest.focusSwitch === true;
-    const cancelFocus = () => { focusPending = false; };
-    const focusSwitch = () => {
-      if (!focusPending) return;
-      const control = flashed?.querySelector<HTMLElement>('[role="switch"]');
-      if (!control || getComputedStyle(control).visibility === 'hidden') return;
-      focusPending = false;
-      control.focus({ preventScroll: true });
-    };
-    // Link-only focus is one-shot, and must not override a subsequent user action.
-    window.addEventListener('pointerdown', cancelFocus, true);
-    window.addEventListener('keydown', cancelFocus, true);
     const flash = () => {
       const target = Array.from(content.querySelectorAll<HTMLElement>('[data-setting-target]'))
         .find(element => element.dataset.settingTarget === id);
@@ -538,7 +521,6 @@ export const SettingsPanel = memo(function SettingsPanel({
       if (!target || getComputedStyle(target).visibility === 'hidden') return;
       flashed = target;
       target.scrollIntoView({ block: 'center' });
-      focusSwitch();
       target.classList.remove('settings-target-flash');
       void target.offsetWidth;
       target.classList.add('settings-target-flash');
@@ -549,8 +531,7 @@ export const SettingsPanel = memo(function SettingsPanel({
     const layoutDeadline = performance.now() + 500;
     const landAfterLayout = () => {
       if (!flashed) flash();
-      focusSwitch();
-      if ((!flashed || focusPending) && performance.now() < layoutDeadline) {
+      if (!flashed && performance.now() < layoutDeadline) {
         layoutFrame = requestAnimationFrame(landAfterLayout);
         return;
       }
@@ -565,8 +546,6 @@ export const SettingsPanel = memo(function SettingsPanel({
     const timeout = window.setTimeout(() => flashed?.classList.remove('settings-target-flash'), 1300);
     return () => {
       cancelAnimationFrame(layoutFrame);
-      window.removeEventListener('pointerdown', cancelFocus, true);
-      window.removeEventListener('keydown', cancelFocus, true);
       if (reveal !== null) window.clearTimeout(reveal);
       window.clearTimeout(timeout);
       flashed?.classList.remove('settings-target-flash');
@@ -1294,8 +1273,6 @@ export const SettingsPanel = memo(function SettingsPanel({
             {([
               ['vocabulary', 'Vocabulary', 'Review identifiers retained from project scans'],
               ['aliases', 'Aliases', 'Map spoken variants to canonical spellings'],
-              ['knowledge', 'Knowledge', 'Manage corrections, terms, and snippets'],
-              ['commands', 'Voice commands', 'Create exact spoken replacements and snippets'],
             ] as const).map(([tab, title, detail]) => (
               <button
                 key={tab}
@@ -1326,7 +1303,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 <SettingToggle targetId="homophone-context" title="Resolve homophones" label="On-device context (experimental)" description="Currently unavailable: on-device responses exceed the dictation time budget. Your preference is saved; deterministic spelling is used." checked={settings.homophoneContextEnabled} defaultChecked={DEFAULT_SETTINGS.homophoneContextEnabled} onChange={() => onUpdateSettings({ homophoneContextEnabled: !settings.homophoneContextEnabled })} />
               </SettingsBranch>
               <SettingToggle targetId="smart-formatting" title="Structured writing" label="Smart formatting" description="Format spoken lists, symbols, and corrections" checked={settings.smartFormattingEnabled} defaultChecked={DEFAULT_SETTINGS.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
-              <SettingToggle targetId="voice-commands" title="Voice commands & spoken formatting" label="Voice commands & spoken formatting" description="Say “new line,” “period,” or your own commands" checked={settings.voiceCommandsEnabled} defaultChecked={DEFAULT_SETTINGS.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
+              <SettingToggle targetId="voice-commands" title="Spoken formatting" label="Spoken formatting" description="Say “new line,” “period,” or “scratch that”" checked={settings.voiceCommandsEnabled} defaultChecked={DEFAULT_SETTINGS.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
             </SettingsDisclosure>
           </SettingsSection>
 
@@ -1587,15 +1564,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               onScan={() => void runVocabScan(settings.codeVocabFolder)}
               onCancelScan={vocabScan.cancel}
               onBack={closeEditor}
-              onOpenVoiceCommandSettings={() => {
-                beginCurrentUiTransition('settings.text', 'pointer');
-                setEditorTab(null);
-                setActiveCat('text');
-                setSearchQuery('');
-                setTargetRequest(settingTargetRequest('voice-commands', true));
-                if (activeCat === 'customize') setCustomizationDetail('commands');
-              }}
-              restoreFocus={() => editorOpenerRef.current?.isConnected ? editorOpenerRef.current : contentRef.current?.querySelector<HTMLElement>('[data-setting-target="vocabulary"], [data-setting-target="aliases"], [data-setting-target="knowledge"], [data-setting-target="commands"], [data-setting-target="app-overrides"] button, .settings-back-btn') ?? searchRef.current}
+              restoreFocus={() => editorOpenerRef.current?.isConnected ? editorOpenerRef.current : contentRef.current?.querySelector<HTMLElement>('[data-setting-target="vocabulary"], [data-setting-target="aliases"], [data-setting-target="app-overrides"] button, .settings-back-btn') ?? searchRef.current}
             />
       )}
     </div>

@@ -244,7 +244,7 @@ function App() {
     window.addEventListener('focus', check);
     return () => window.removeEventListener('focus', check);
   }, []);
-  const { historyEntries, addEntry, updateEntry, togglePinned, deleteEntries, clearHistory } = useHistoryManagement(settings.retainHistory);
+  const { historyEntries, addEntry, togglePinned, deleteEntries, clearHistory } = useHistoryManagement(settings.retainHistory);
   const {
     status, isCaptureBusy, recordingDuration, error: recordingError,
     canRetryDelivery: recordingCanRetryDelivery,
@@ -261,7 +261,6 @@ function App() {
   const combinedStatsVersion = useLocalStats();
   const discovery = useDiscovery({
     enabled: onboardingState === 'done' && modelReady === true,
-    historyEntries,
   });
   const handleResetStats = useCallback(() => {
     resetStats();
@@ -400,8 +399,6 @@ function App() {
 
   // Bumped to move focus into the history search box (command palette action).
   const [historySearchToken, setHistorySearchToken] = useState<number | undefined>(undefined);
-  const [teachLatestToken, setTeachLatestToken] = useState<number | undefined>(undefined);
-  const handleTeachLatestHandled = useCallback(() => setTeachLatestToken(undefined), []);
   const focusHistorySearch = useCallback((trigger: UiLatencyTrigger = 'programmatic') => {
     closeSettings(trigger);
     setMainDestination('home');
@@ -470,24 +467,10 @@ function App() {
     openSettingsTarget({ page });
   }, [openSettingsTarget]);
 
-  const openLatestTeaching = useCallback(() => {
-    closeSettings('programmatic');
-    setMainDestination('home');
-    setTeachLatestToken((token) => (token ?? 0) + 1);
-  }, [closeSettings]);
-
   const runDiscoveryHintAction = useCallback((id: DiscoveryHintId) => {
     discovery.dismissHint(id);
-    const destination = hintDestination(id);
-    switch (destination.kind) {
-      case 'settings': openSettingsTarget(destination); break;
-      case 'teach': openLatestTeaching(); break;
-      default: {
-        const exhaustive: never = destination;
-        return exhaustive;
-      }
-    }
-  }, [discovery.dismissHint, openLatestTeaching, openSettingsTarget]);
+    openSettingsTarget(hintDestination(id));
+  }, [discovery.dismissHint, openSettingsTarget]);
 
   useEffect(() => {
     if (!mainAppReady) return;
@@ -813,11 +796,8 @@ function App() {
                   historyEntries={historyEntries}
                   onClearHistory={clearHistory}
                   onDeleteHistoryEntries={deleteEntries}
-                  onUpdateHistoryEntry={updateEntry}
                   onToggleHistoryPinned={togglePinned}
                   focusSearchToken={historySearchToken}
-                  teachLatestToken={teachLatestToken}
-                  onTeachLatestHandled={handleTeachLatestHandled}
                   onTranscribeFile={pickMediaFiles}
                   status={status}
                   microphonePermission={microphonePermission}

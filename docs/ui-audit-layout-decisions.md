@@ -18,7 +18,7 @@ a workspace, a task, and a saved record:
 | App overrides | Customize destination for per-app behavior. The internal `styles` ID remains a compatibility detail, not user-facing terminology. A **writing style** can describe an output preference, but help must not direct users to an absent “Styles” destination. |
 | Modes | Named bundles of dictation behavior that can be selected or bound to an app. A mode is not the delivery destination. |
 | Delivery | Where/how the produced text is delivered (clipboard, auto-paste, files). It is not a synonym for a writing style or mode. |
-| Voice commands & spoken formatting | Global switch that gates both replacement commands and spoken formatting. Individual task labels may name the specific capability, not only one half of that global switch. |
+| Spoken formatting | Global switch for the built-in spoken commands (`period`, `new line`, `scratch that` and the rest). It also feeds the Basic Spoken Structure policy. |
 
 The Customize hub owns the canonical visible destinations, including **App overrides** and **Modes**, without ordered step numbers. Palette Settings entries
 are derived from category labels. This lane groups the palette's default list;

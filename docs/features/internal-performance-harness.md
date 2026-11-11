@@ -93,8 +93,9 @@ local inputs:
 1. **Save audio** and **Save transcript** enabled while dictating, so each
    recording leaves `murmur-NNNN.wav` plus the delivered `murmur-NNNN.txt` in
    the output folder (default `~/Documents/Murmur`).
-2. A History JSON export (History → Export → JSON) after correcting entries
-   with Correct and Teach (**Save correction only** is enough).
+2. A History JSON export (History → Export → JSON) in which you have corrected
+   each entry's `text` by hand. History no longer edits entries in the app.
+   Entries whose text still matches the delivered `.txt` are skipped.
 
 ```bash
 python3 scripts/murmur_accuracy.py export \

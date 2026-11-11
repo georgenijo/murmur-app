@@ -16,8 +16,8 @@ emitted through `dictation-settings`.
 
 The native Settings workspace opens on **General**. The gear button, `⌘,`, and
 overlay Settings action all open this same page. **Customize** remains available
-in the sidebar as a hub of independent destinations: **Text & vocabulary**,
-**Voice commands**, **App overrides**.
+in the sidebar as a hub of independent destinations: **Text & vocabulary** and
+**App overrides**.
 Each destination opens its owning page or editor, shows **Back to Customize**,
 and restores focus to its source row on return. Contextual links from Home use
 the same routes, so they cannot leave the user trapped in a detail page.
@@ -113,8 +113,7 @@ interface Settings {
   smartFormattingEnabled: boolean;
   correctionEnabled: boolean;
   correctionFuzzy: boolean;
-  voiceCommandsEnabled: boolean;
-  voiceCommands: VoiceCommand[];           // legacy pairs, migration-only
+  voiceCommandsEnabled: boolean;           // shown as "Spoken formatting"
   vocabularyEntries: VocabularyEntry[];
   customVocabulary: string;                // @deprecated derived mirror
   codeVocabEnabled: boolean;
@@ -184,7 +183,6 @@ export const DEFAULT_SETTINGS: Settings = {
   benchmarkAutoSave: false,
   appProfiles: [],
   voiceCommandsEnabled: false,
-  voiceCommands: [],
   cleanupEnabled: false,
   smartFormattingEnabled: false,
   cleanupRemoveFiller: true,
@@ -305,13 +303,7 @@ delivery) and media apps without a remembered field stay clipboard-only.
 
 `vocabularyEntries` is an array of `{ id, written, aliases, enabled, scope }`. `written` is the canonical surface form used by Whisper prompt bias and post-model correction. `aliases` contains exact spoken variants applied locally on every backend. Settings currently creates `{ kind: 'global' }` scopes; typed app/project scopes are selected from the existing immutable dictation context. The legacy `customVocabulary` string is migration-only and is re-derived from enabled global canonical terms. Built-in and scanned developer terms are a separate pool: the global toggle makes that pool available, while a matching Code / technical profile or Local IDE project-context opt-in activates it for a recording. Unmatched apps never receive that pool.
 
-Aliases are limited to 16 per entry and values to 256 characters. Ambiguous aliases, canonical collisions, Voice Command collisions, and direct or indirect cycles are rejected atomically.
-
-## Personal Knowledge
-
-Settings → Knowledge manages a separate local SQLite store for replacement rules, vocabulary terms, and snippets. It is not part of the `Settings` object or `localStorage`. Users can search and filter bounded pages, inspect scope/provenance, create and edit records, enable/disable them, export/import a versioned JSON file, delete individual records, and delete all records with typed confirmation.
-
-The store reports recovered, reinitialized, and unavailable states visibly. Enabled replacement rules apply through Smart Correction; snippet triggers remain inert until their separate Voice Commands integration. See [Personal Knowledge Store](../features/personal-knowledge-store.md) and [Correct and Teach](../features/correct-and-teach.md).
+Aliases are limited to 16 per entry and values to 256 characters. Ambiguous aliases, canonical collisions, collisions with built-in spoken formatting phrases, and direct or indirect cycles are rejected atomically.
 
 ## Per-App Profiles
 
@@ -321,20 +313,17 @@ The store reports recovered, reinitialized, and unavailable states visibly. Enab
 
 `cliFormattingOverride` uses the immutable recording-start context. `true` enables profile-mode CLI recognition, `false` disables implicit CLI formatting for that app, and `null` keeps conservative automatic recognition. An explicit spoken `command` trigger remains available in every mode.
 
-At recording start, the backend resolves one immutable context using global settings → matching style → matching profile fine-tuning. It also records one Spoken Structure policy: Off, Basic from Voice Commands, Extended from Smart Formatting, or Union when both are enabled. Settings or focus changes during recording apply only to the next session. Explicit IDE opt-in disables extended Smart Formatting for that recording but retains Basic structure when Voice Commands remains enabled, and can capture only the matching profile's fresh local index. See [Spoken Structure](../features/spoken-structure.md), [Per-App Dictation Context](../features/per-app-profiles.md), and [Local IDE Symbols and `@file` Context](../features/ide-context.md).
+At recording start, the backend resolves one immutable context using global settings → matching style → matching profile fine-tuning. It also records one Spoken Structure policy: Off, Basic from Spoken formatting, Extended from Smart Formatting, or Union when both are enabled. Settings or focus changes during recording apply only to the next session. Explicit IDE opt-in disables extended Smart Formatting for that recording but retains Basic structure when Spoken formatting remains enabled, and can capture only the matching profile's fresh local index. See [Spoken Structure](../features/spoken-structure.md), [Per-App Dictation Context](../features/per-app-profiles.md), and [Local IDE Symbols and `@file` Context](../features/ide-context.md).
 
-## Voice Commands
+## Spoken formatting
 
-`voiceCommandsEnabled` remains the global execution switch, shown in Settings as
-**Voice commands & spoken formatting** under Text → Advanced. It controls both
-custom commands and built-in spoken formatting tokens. When it is off, the Voice
-commands editor keeps commands saved but offers a direct route to that switch;
-the route does not enable it automatically. Legacy `voiceCommands` pairs in
-`dictation-settings` are migration-only compatibility input: Rust imports them
-once into the personal knowledge store as global `text_replacement` commands,
-while retaining the old in-memory path if the store is unavailable.
-
-New text replacements and snippets are Rust-owned knowledge records rather than localStorage settings. They support global/app scope, enabled state, multiline snippet bodies, deterministic `{{date}}` / `{{time}}`, and explicitly granted `{{clipboard}}`. See [Voice Commands 2.0](../features/voice-commands.md).
+`voiceCommandsEnabled` is the global switch for the built-in spoken commands
+(`period`, `comma`, `question mark`, `open paren`, `close paren`, `new line`,
+`new paragraph`, and `scratch that`). Settings shows it as **Spoken formatting**
+under Text & vocabulary → Advanced. The key keeps its old name so existing
+settings files carry over. Custom Voice Command pairs (`voiceCommands`) are
+retired: the field is dropped when settings load and nothing reads it. See
+[Spoken Structure](../features/spoken-structure.md#built-in-spoken-commands).
 
 ---
 
@@ -445,8 +434,8 @@ A `settings.json` that is oversized, not UTF-8, not valid JSON, or not a JSON ob
 3. Applies migration: if `recordingMode` is missing or invalid (including the legacy `'hotkey'` value), resets to `'hold_down'`.
 4. Strips the legacy `hotkey` field if present.
 5. Validates `model` against the macOS catalog allow-list. Any invalid or removed model (e.g. `moonshine-tiny`, `moonshine-base`) resets to Core ML Parakeet v3. `language` is validated against `LANGUAGE_OPTIONS` the same way.
-6. Coerces `smartDestinationEnabled` to `false` unless it is a boolean, sanitizes every structured field — `appProfiles`, `voiceCommands`, `vocabularyEntries`, `codeVocabLastScan` — dropping malformed entries and clamping list lengths so a tampered blob can't reach the Rust side or render bad numbers.
-7. Removes fields from deleted features (`hotkey`, `liveTranscriptPreview`).
+6. Coerces `smartDestinationEnabled` to `false` unless it is a boolean, sanitizes every structured field — `appProfiles`, `vocabularyEntries`, `codeVocabLastScan` — dropping malformed entries and clamping list lengths so a tampered blob can't reach the Rust side or render bad numbers.
+7. Removes fields from deleted features (`hotkey`, `liveTranscriptPreview`, `voiceCommands`).
 8. If not found or on parse error, returns `DEFAULT_SETTINGS`.
 
 ### Backend Synchronization

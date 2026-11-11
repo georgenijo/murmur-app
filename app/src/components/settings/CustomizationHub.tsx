@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef } from 'react';
 import { SettingsChevron } from './SettingsChevron';
 import { SettingsGroup } from './SettingsLayout';
 
-export type CustomizationDestination = 'text' | 'commands' | 'styles';
+export type CustomizationDestination = 'text' | 'styles';
 
 const DESTINATIONS: ReadonlyArray<{
   id: CustomizationDestination;
@@ -13,11 +13,6 @@ const DESTINATIONS: ReadonlyArray<{
     id: 'text',
     title: 'Text & vocabulary',
     description: 'Tune cleanup, punctuation, preferred spellings, and local vocabulary',
-  },
-  {
-    id: 'commands',
-    title: 'Voice commands',
-    description: 'Create exact spoken replacements and reusable snippets',
   },
   {
     id: 'styles',

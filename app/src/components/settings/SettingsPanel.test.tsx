@@ -56,7 +56,6 @@ vi.mock('../../lib/hooks/useVocabScan', () => ({
 }));
 vi.mock('./AppOverridesEditor', () => ({ AppOverridesEditor: () => <div>App overrides editor</div> }));
 vi.mock('./AppearanceSettings', () => ({ AppearanceSettings: () => <div>Appearance settings</div> }));
-vi.mock('./KnowledgeManager', () => ({ KnowledgeManager: () => <div>Knowledge manager</div> }));
 vi.mock('./PerformanceLab', () => ({ PerformanceLab: () => <div>Performance lab</div> }));
 vi.mock('../log-viewer/DiagnosticsWorkspace', () => ({
   DiagnosticsWorkspace: (props: unknown) => {
@@ -65,11 +64,6 @@ vi.mock('../log-viewer/DiagnosticsWorkspace', () => ({
   },
 }));
 vi.mock('./VocabularyAliasesEditor', () => ({ VocabularyAliasesEditor: () => <div>Vocabulary editor</div> }));
-vi.mock('./VoiceCommandsManager', () => ({ VoiceCommandsManager: ({ globallyEnabled, onOpenVoiceCommandSettings }: {
-  globallyEnabled: boolean; onOpenVoiceCommandSettings?: () => void;
-}) => <div>Voice commands editor{!globallyEnabled && <button type="button" onClick={onOpenVoiceCommandSettings}>
-  Open Voice commands &amp; spoken formatting
-</button>}</div> }));
 vi.mock('./VocabScanStrip', () => ({ VocabScanStrip: () => <div>Vocabulary scan</div> }));
 
 beforeEach(() => {
@@ -209,7 +203,6 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => customize.click());
     expect(Array.from(container.querySelectorAll('[aria-label="Customization destinations"] button')).map((button) => button.textContent)).toEqual([
       expect.stringContaining('Text & vocabulary'),
-      expect.stringContaining('Voice commands'),
       expect.stringContaining('App overrides'),
     ]);
     const hubButton = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Customization destinations"] button'))
@@ -217,7 +210,6 @@ describe('SettingsPanel information architecture', () => {
 
     for (const [label, heading] of [
       ['Text & vocabulary', 'Text & vocabulary'],
-      ['Voice commands', 'Voice commands'],
       ['App overrides', 'Delivery'],
     ] as const) {
       const row = hubButton(label);
@@ -241,7 +233,7 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'customize', token: 1 }));
     const list = container.querySelector('[aria-label="Customization destinations"]')!;
     expect(list.tagName).toBe('UL');
-    expect(list.children).toHaveLength(3);
+    expect(list.children).toHaveLength(2);
     expect(Array.from(list.children).every(element => element.tagName === 'LI')).toBe(true);
     expect(Array.from(list.children).every(element => element.firstElementChild?.tagName === 'BUTTON')).toBe(true);
     expect(list.textContent).not.toMatch(/0[1-5]/);
@@ -260,10 +252,10 @@ describe('SettingsPanel information architecture', () => {
   it('uses full-width rows with individual text-editor search targets and keeps clipboard delivery copy with Auto-paste', async () => {
     await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'text', token: 1 }));
     const editorRows = Array.from(container.querySelectorAll<HTMLButtonElement>('button.settings-setting-row'))
-      .filter((button) => ['Vocabulary', 'Aliases', 'Knowledge', 'Voice commands'].some((title) => button.textContent?.startsWith(title)));
-    expect(editorRows).toHaveLength(4);
+      .filter((button) => ['Vocabulary', 'Aliases'].some((title) => button.textContent?.startsWith(title)));
+    expect(editorRows).toHaveLength(2);
     expect(editorRows.every((button) => !button.classList.contains('settings-card'))).toBe(true);
-    expect(editorRows.map((button) => button.dataset.settingTarget)).toEqual(['vocabulary', 'aliases', 'knowledge', 'commands']);
+    expect(editorRows.map((button) => button.dataset.settingTarget)).toEqual(['vocabulary', 'aliases']);
     expect(editorRows.every((button) => button.classList.contains('[&.settings-target-flash]:ring-2'))).toBe(true);
 
     await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'delivery', token: 2 }));
@@ -302,107 +294,7 @@ describe('SettingsPanel information architecture', () => {
     expect(container.textContent).toContain('Your preference is saved; deterministic spelling is used.');
   });
 
-  it('closes the commands sheet and focuses the actual disabled switch without enabling it', async () => {
-    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, voiceCommandsEnabled: false }, { page: 'customize', token: 1 }));
-    const commandsRow = () => Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Customization destinations"] button'))
-      .find(button => button.textContent?.includes('Voice commands'))!;
-    await act(async () => commandsRow().click());
-    const link = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'))
-      .find(button => button.textContent === 'Open Voice commands & spoken formatting')!;
-    expect(link).toBeDefined();
-    await act(async () => link.click());
-    expect(container.querySelector('[role="dialog"]')).toBeNull();
-    expect(container.querySelector('h1')?.textContent).toBe('Text & vocabulary');
-    expect(container.querySelector('.settings-sidebar')?.closest('[inert]')).toBeNull();
-    const row = container.querySelector('[data-setting-target="voice-commands"]')!;
-    const toggle = row.querySelector('[role="switch"]')!;
-    expect(toggle.getAttribute('aria-label')).toBe('Voice commands & spoken formatting');
-    expect(toggle.getAttribute('aria-checked')).toBe('false');
-    expect(row.textContent).toContain('Voice commands & spoken formatting');
-    expect(document.activeElement).toBe(toggle);
-    expect(row.classList.contains('settings-target-flash')).toBe(true);
-    expect(onUpdateSettings).not.toHaveBeenCalled();
-    const back = container.querySelector<HTMLButtonElement>('.settings-back-btn')!;
-    await act(async () => back.click());
-    expect(container.querySelector('h1')?.textContent).toBe('Customize');
-    expect(document.activeElement).toBe(commandsRow());
-  });
-
-  it.each(['none', 'pointer', 'keyboard'] as const)('waits for the editor link destination, preserves it across updates, and cancels pending focus on %s interaction', async (interaction) => {
-    const frames = new Map<number, FrameRequestCallback>();
-    let frameId = 0;
-    let rowVisible = false;
-    let switchVisible = false;
-    const computedStyle = window.getComputedStyle.bind(window);
-    const styleSpy = vi.spyOn(window, 'getComputedStyle').mockImplementation((element, pseudo) => {
-      const visibility = element.matches('[data-setting-target="voice-commands"]') ? rowVisible
-        : element.matches('[role="switch"][aria-label="Voice commands & spoken formatting"]') ? switchVisible
-        : null;
-      return visibility === null ? computedStyle(element, pseudo)
-        : { visibility: visibility ? 'visible' : 'hidden' } as CSSStyleDeclaration;
-    });
-    const requestFrame = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
-      frames.set(++frameId, callback);
-      return frameId;
-    });
-    const cancelFrame = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(id => { frames.delete(id); });
-    const nextFrame = async () => act(async () => {
-      const pending = Array.from(frames.values());
-      frames.clear();
-      pending.forEach(callback => callback(performance.now()));
-    });
-    const settings = { ...DEFAULT_SETTINGS, voiceCommandsEnabled: false };
-    const request: SettingsPageRequest = { page: 'text', editorTab: 'commands', token: 1 };
-    try {
-      await act(async () => renderPanel(true, settings, request));
-      const link = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="dialog"] button'))
-        .find(button => button.textContent === 'Open Voice commands & spoken formatting')!;
-      await act(async () => link.click());
-      const row = container.querySelector<HTMLElement>('[data-setting-target="voice-commands"]')!;
-      const toggle = row.querySelector<HTMLElement>('[role="switch"]')!;
-      const focus = vi.spyOn(toggle, 'focus');
-      await nextFrame();
-      await nextFrame();
-      expect(row.classList.contains('settings-target-flash')).toBe(false);
-      expect(focus).not.toHaveBeenCalled();
-      rowVisible = true;
-      await nextFrame();
-      expect(row.classList.contains('settings-target-flash')).toBe(true);
-      expect(focus).not.toHaveBeenCalled();
-      await act(async () => renderPanel(true, { ...settings, soundCuesEnabled: !settings.soundCuesEnabled }, request));
-      const elsewhere = container.querySelector<HTMLInputElement>('input[type="search"]')!;
-      if (interaction !== 'none') {
-        await act(async () => {
-          elsewhere.dispatchEvent(interaction === 'pointer'
-            ? new Event('pointerdown', { bubbles: true })
-            : new KeyboardEvent('keydown', { key: 'Tab', bubbles: true }));
-          elsewhere.focus();
-        });
-      }
-      switchVisible = true;
-      await nextFrame();
-      if (interaction === 'none') {
-        expect(document.activeElement).toBe(toggle);
-        expect(focus).toHaveBeenCalledTimes(1);
-        elsewhere.focus();
-        await nextFrame();
-        expect(document.activeElement).toBe(elsewhere);
-        expect(focus).toHaveBeenCalledTimes(1);
-      } else {
-        expect(document.activeElement).toBe(elsewhere);
-        expect(focus).not.toHaveBeenCalled();
-      }
-      expect(scrollIntoView.mock.instances).toContain(row);
-      expect(onUpdateSettings).not.toHaveBeenCalled();
-      focus.mockRestore();
-    } finally {
-      styleSpy.mockRestore();
-      requestFrame.mockRestore();
-      cancelFrame.mockRestore();
-    }
-  });
-
-  it('reveals Voice commands from external navigation and search without moving focus to its switch', async () => {
+  it('reveals Spoken formatting from external navigation and search without moving focus to its switch', async () => {
     await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'text', target: 'voice-commands', token: 1 }));
     const toggle = container.querySelector<HTMLElement>('[data-setting-target="voice-commands"] [role="switch"]')!;
     expect(document.activeElement).not.toBe(toggle);
@@ -410,11 +302,11 @@ describe('SettingsPanel information architecture', () => {
     const search = container.querySelector<HTMLInputElement>('input[type="search"]')!;
     search.focus();
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'Voice commands');
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'Spoken formatting');
       search.dispatchEvent(new Event('input', { bubbles: true }));
     });
     const result = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find(button => button.textContent?.includes('Enable custom commands and spoken formatting tokens'))!;
+      .find(button => button.textContent?.includes('Say “new line,” “period,” or “scratch that”'))!;
     expect(result).toBeDefined();
     await act(async () => result.click());
     const revealedRow = container.querySelector<HTMLElement>('[data-setting-target="voice-commands"]')!;
@@ -1059,8 +951,7 @@ describe('SettingsPanel information architecture', () => {
     ['speaker names', 'Remote speaker labels', 'meeting-speakers', 'Meetings'],
     ['vocabulary', 'Vocabulary', 'vocabulary', 'Text & vocabulary'],
     ['aliases', 'Aliases', 'aliases', 'Text & vocabulary'],
-    ['knowledge', 'Knowledge', 'knowledge', 'Text & vocabulary'],
-    ['spoken replacements', 'Voice commands', 'commands', 'Text & vocabulary'],
+    ['spoken formatting', 'Spoken formatting', 'voice-commands', 'Text & vocabulary'],
   ])('searches for %s, opens its disclosure and preserves the target landing', async (query, title, targetId, heading) => {
     await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, autoPaste: true }));
     vi.useFakeTimers();

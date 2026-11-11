@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { microphoneDeviceNameArg, Settings, AppProfile, VoiceCommand, VocabularyEntry, type SmartAutoMicrophoneRequest } from './settings';
+import { microphoneDeviceNameArg, Settings, AppProfile, VocabularyEntry, type SmartAutoMicrophoneRequest } from './settings';
 
 export interface DictationResponse {
   type: string;
@@ -114,7 +114,6 @@ export interface ConfigureOptions {
   outputDir?: string;
   appProfiles?: AppProfile[];
   voiceCommandsEnabled?: boolean;
-  voiceCommands?: VoiceCommand[];
   cleanupEnabled?: boolean;
   smartFormattingEnabled?: boolean;
   cleanupRemoveFiller?: boolean;
@@ -182,7 +181,6 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     outputDir: s.outputDir,
     appProfiles: s.appProfiles,
     voiceCommandsEnabled: s.voiceCommandsEnabled,
-    voiceCommands: s.voiceCommands,
     cleanupEnabled: s.cleanupEnabled,
     smartFormattingEnabled: s.smartFormattingEnabled,
     cleanupRemoveFiller: s.cleanupRemoveFiller,
@@ -197,13 +195,11 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
 
 export async function previewVocabularyAliases(
   entries: VocabularyEntry[],
-  voiceCommands: VoiceCommand[],
   text: string,
   cliFormatting: boolean,
 ): Promise<string> {
   return await invoke('preview_vocabulary_aliases', {
     entries,
-    voiceCommands,
     text,
     cliFormatting,
   });

@@ -134,7 +134,8 @@ test('copied transcripts keep their geometry and actions reachable', async ({ pa
 
   const newestCard = page.locator('.home-history .transcript-card').first();
   await newestCard.getByRole('button', { name: 'More transcript actions' }).click();
-  await expect(page.getByText('Correct & teach…', { exact: true }).last()).toBeVisible();
+  await expect(page.getByText('Copy as Markdown', { exact: true }).last()).toBeVisible();
+  await expect(page.getByText(/teach/i)).toHaveCount(0);
   await page.keyboard.press('Escape');
 
   await page.setViewportSize({ width: 680, height: 720 });
@@ -370,20 +371,20 @@ test('customization hub stays legible and restores focus at native and narrow wi
 
   const fixture = page.locator('[data-visual-ready="true"]');
   const customizationList = page.getByRole('list', { name: 'Customization destinations' });
-  const voiceCommands = customizationList.getByRole('button').filter({ hasText: 'Voice commands' });
+  const textDestination = customizationList.getByRole('button').filter({ hasText: 'Text & vocabulary' });
   await expect(page.getByRole('heading', { name: 'Customize' })).toBeVisible();
-  await expect(customizationList.getByRole('listitem')).toHaveCount(3);
-  await expect(customizationList.getByRole('button')).toHaveCount(3);
+  await expect(customizationList.getByRole('listitem')).toHaveCount(2);
+  await expect(customizationList.getByRole('button')).toHaveCount(2);
   expect(await customizationList.evaluate(element => element.tagName)).toBe('UL');
-  for (const label of ['Text & vocabulary', 'Voice commands', 'App overrides']) {
+  for (const label of ['Text & vocabulary', 'App overrides']) {
     await expect(customizationList.getByRole('button', { name: new RegExp(`^${label}`) })).toHaveCount(1);
   }
   await expect(customizationList).not.toContainText(/\b0[1-5]\b/);
 
-  await voiceCommands.click();
-  await expect(page.getByRole('heading', { name: 'Voice commands', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Close editor' }).click();
-  await expect(voiceCommands).toBeFocused();
+  await textDestination.click();
+  await expect(page.getByRole('heading', { name: 'Text & vocabulary', exact: true, level: 1 })).toBeVisible();
+  await page.locator('.settings-back-btn').click();
+  await expect(textDestination).toBeFocused();
 
   await page.setViewportSize({ width: 720, height: 560 });
   await expect(page.getByRole('heading', { name: 'Customize', level: 1 })).toBeVisible();

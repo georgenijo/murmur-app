@@ -40,7 +40,6 @@ describe('local activity statistics', () => {
     expect(stats.activity).toEqual({
       meetings: { count: 0, totalMinutes: 0, summariesGenerated: 0 },
       transforms: { runs: 0, approved: 0, undone: 0, byPresetName: {} },
-      corrections: { proposed: 0, taught: 0, byScope: { global: 0, app: 0, project: 0 } },
       pasteLastUses: 0, monthlyBuckets: {},
     });
   });
@@ -49,8 +48,6 @@ describe('local activity statistics', () => {
     updateActivityStats({ kind: 'meeting', durationMs: 90_000 }, '2026-08');
     updateActivityStats({ kind: 'transform', outcome: 'runs', presetName: 'Exact saved name' }, '2026-08');
     updateActivityStats({ kind: 'transform', outcome: 'approved', presetName: 'Exact saved name' }, '2026-08');
-    updateActivityStats({ kind: 'correction_proposed' });
-    updateActivityStats({ kind: 'correction_taught', scope: 'project' });
     updateActivityStats({ kind: 'paste_last' });
     updateStats('one two three four', 3);
     const stats = loadStats();
@@ -60,7 +57,6 @@ describe('local activity statistics', () => {
     expect(stats.activity).toMatchObject({
       meetings: { count: 1, totalMinutes: 1.5, summariesGenerated: 0 },
       transforms: { runs: 1, approved: 1, byPresetName: { 'Exact saved name': { runs: 1, approved: 1 } } },
-      corrections: { proposed: 1, taught: 1, byScope: { project: 1 } },
       pasteLastUses: 1,
     });
     expect(getActivityInsights(stats, new Date(2026, 7, 1)).month.meetingMinutes).toBe(1.5);
@@ -86,7 +82,6 @@ describe('local activity statistics', () => {
       activity: {
         meetings: { count: -1, totalMinutes: Infinity, summariesGenerated: 2, summary: 'PRIVATE_SUMMARY' },
         transforms: { runs: 3, approved: 1, undone: 0, instruction: 'PRIVATE_INSTRUCTION', byPresetName: { SafeLabel: { runs: 3, approved: 1, undone: 0, body: 'PRIVATE_BODY' } } },
-        corrections: { proposed: 2, taught: 1, byScope: { global: 1, app: 0, project: 0, root: 'PRIVATE_ROOT' }, text: 'PRIVATE_CORRECTION' },
         recordingsByMode: { SafeId: 1, Bad: -1 }, pasteLastUses: NaN,
         monthlyBuckets: { '2026-08': { meetings: 2, meetingMinutes: 3, runs: 0, approved: 0, undone: 0, text: 'PRIVATE_TEXT' }, 'PRIVATE_DATE': { meetings: 1, meetingMinutes: 0, runs: 0, approved: 0, undone: 0 } },
       },
@@ -109,6 +104,17 @@ describe('local activity statistics', () => {
     expect(getActivityInsights(stats)).not.toHaveProperty('mostUsedModeId');
     saveStats(stats);
     expect(localStorage.getItem(STATS_STORE.storageKey)).not.toContain('recordingsByMode');
+  });
+
+  it('ignores and drops the retired Correct and Teach counters from older blobs', () => {
+    const legacy = { ...loadStats(), totalWords: 9, activity: { ...loadStats().activity,
+      corrections: { proposed: 2, taught: 1, byScope: { global: 1, app: 0, project: 0 } } } };
+    localStorage.setItem(STATS_STORE.storageKey, JSON.stringify(legacy));
+    const stats = loadStats();
+    expect(stats.totalWords).toBe(9);
+    expect(stats.activity).not.toHaveProperty('corrections');
+    saveStats(stats);
+    expect(localStorage.getItem(STATS_STORE.storageKey)).not.toContain('corrections');
   });
 
   it('states a fixed typing-rate assumption and never reports negative time saved', () => {

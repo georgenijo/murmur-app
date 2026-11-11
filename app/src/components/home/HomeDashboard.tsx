@@ -15,11 +15,8 @@ interface HomeDashboardProps {
   historyEntries: HistoryEntry[];
   onClearHistory: () => void;
   onDeleteHistoryEntries: (entries: readonly HistoryEntry[]) => void;
-  onUpdateHistoryEntry: (id: string, text: string) => void;
   onToggleHistoryPinned: (entry: HistoryEntry) => void;
   focusSearchToken?: number;
-  teachLatestToken?: number;
-  onTeachLatestHandled?: () => void;
   onTranscribeFile: () => void;
   status: DictationStatus;
   microphonePermission?: MicPermissionStatus;
@@ -40,11 +37,8 @@ export function HomeDashboard({
   historyEntries,
   onClearHistory,
   onDeleteHistoryEntries,
-  onUpdateHistoryEntry,
   onToggleHistoryPinned,
   focusSearchToken,
-  teachLatestToken,
-  onTeachLatestHandled,
   onTranscribeFile,
   status,
   initialized,
@@ -90,12 +84,9 @@ export function HomeDashboard({
             entries={historyEntries}
             onClear={onClearHistory}
             onDeleteEntries={onDeleteHistoryEntries}
-            onUpdateEntry={onUpdateHistoryEntry}
             onTogglePinned={onToggleHistoryPinned}
             pinnedCount={historyEntries.filter((entry) => entry.pinned === true).length}
             focusSearchToken={focusSearchToken}
-            teachLatestToken={teachLatestToken}
-            onTeachLatestHandled={onTeachLatestHandled}
             onTranscribeFile={onTranscribeFile}
           />
         </section>

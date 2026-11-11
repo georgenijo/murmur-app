@@ -23,7 +23,6 @@ export function InsightsView({ statsVersion, onBackToHome, initialMetric = 'word
   const samples = stats.wpmSamples.length;
   const details: DashboardStatItem[] = [];
   if (Math.round(activity.dictationMinutes * 10) > 0) details.push({ id: 'dictation-time', label: 'Total dictation time', value: `${minutes(activity.dictationMinutes)} min`, detail: '· All time' });
-  if (stats.activity.corrections.taught > 0) details.push({ id: 'corrections', label: 'Corrections taught', value: stats.activity.corrections.taught.toLocaleString(), detail: `· ${stats.activity.corrections.proposed.toLocaleString()} proposed` });
   if (activity.month.meetings > 0) details.push({ id: 'meetings', label: 'Meetings this month', value: activity.month.meetings.toLocaleString(), detail: `· ${minutes(activity.month.meetingMinutes)} minutes` });
 
   return (

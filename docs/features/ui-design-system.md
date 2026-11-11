@@ -67,7 +67,7 @@ The reusable CSS contracts are:
 - `.ui-day-chart-tooltip` / `.ui-day-chart-plot` / `.ui-day-chart-axis`
 - `.history-toolbar` / `.history-search` / `.history-list`
 - `.transcript-card` / `.transcript-meta` / `.transcript-text`
-- `.transcript-copy-feedback` / `.transcript-teach`
+- `.transcript-copy-feedback`
 - `.home-sidebar`
 - `.home-dashboard` / `.home-dashboard-grid`
 - `.home-talk` (the Home talk card) / `.history-filter-trigger` / `.history-filter-menu`
@@ -89,7 +89,6 @@ Use these before creating a feature-local control or surface.
 | History | Home uses 28px above and 8px below day labels; rows use an 8px vertical inset, with aligned hover fills and within-day hairlines |
 | Metadata | Time/source only; word count and duration stay out of transcript rows |
 | Copy | The non-interactive card surface copies its full transcript; Space does the same when focused |
-| Correct & Teach | Compact muted action on the newest entry only |
 | Secondary pages | Insights uses a page header with a Back action. Notetaker uses a title/capture header with sidebar navigation; see the Notetaker contract below |
 | Charts | Tooltips follow the active mark without moving the plot; each day is keyboard reachable, hover/focus/click share exact values, Escape or blur dismisses, tooltips never move the plot, and heatmaps expose date-range/month/weekday labels; Insights exposes daily values in assistive-technology tables, while other heatmaps retain the Daily values disclosure |
 
@@ -274,7 +273,7 @@ these rules govern Murmur’s copy and interactions.
   and native macOS menu title case. Named features such as
   Smart Auto retain their names; generic commands, modes, and settings do not.
 - Use one `…` character for progress and actions that open a further choice:
-  `Saving…`, `Choose folder…`, `Create knowledge…`. Use normal punctuation when
+  `Saving…`, `Choose folder…`, `Create theme…`. Use normal punctuation when
   mentioning an action inside a sentence.
 - A row description is one direct phrase without a closing period. Necessary
   multi-sentence instructions, permission disclosures, and error explanations
@@ -347,8 +346,7 @@ rules must not assign a neutral border color to shared or destructive consumers.
 (`data-tone="danger"`, confirming/destructive variants, `.settings-modes-danger`
 and error text utilities) receive shared geometry/focus and retain their own
 paint at rest, on hover and when armed. Computed-style coverage exercises actual
-meeting deletion, mode deletion, knowledge actions and General setup/reset
-buttons in both appearances.
+meeting deletion and General setup/reset buttons in both appearances.
 
 ### Notetaker redesign
 

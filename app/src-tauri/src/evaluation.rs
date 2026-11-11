@@ -5,7 +5,7 @@
 //! models. Neither tier reads dictation history, app settings, the system
 //! clipboard, microphone input, or frontmost-window state.
 
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -15,12 +15,10 @@ use std::time::Instant;
 
 use crate::cli_command::{CliFormattingMode, CliLexicon};
 use crate::correction::CorrectionMatcher;
-use crate::knowledge_store::VoiceCommandKind;
 use crate::transcript_transform::{
     transform_transcript_observed, StageReport, StageTextObserver, TranscriptContext,
     TranscriptSource, TranscriptStageConfig, TranscriptTransformResources,
 };
-use crate::voice_commands::{ResolvedVoiceCommand, VoiceCommandRuntime};
 
 pub const FIXTURE_VERSION: u32 = 1;
 pub const REPORT_VERSION: u32 = 1;
@@ -137,10 +135,6 @@ struct FixtureContext {
     stages: FixtureStageConfig,
     #[serde(default)]
     resources: FixtureResources,
-    #[serde(default = "default_fixed_now")]
-    fixed_now: String,
-    #[serde(default)]
-    clipboard_text: Option<String>,
 }
 
 impl Default for FixtureContext {
@@ -153,14 +147,8 @@ impl Default for FixtureContext {
             mode: None,
             stages: FixtureStageConfig::default(),
             resources: FixtureResources::default(),
-            fixed_now: default_fixed_now(),
-            clipboard_text: None,
         }
     }
-}
-
-fn default_fixed_now() -> String {
-    "2026-07-20T09:07:00-04:00".to_string()
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -224,7 +212,6 @@ struct FixtureResources {
     vocabulary_aliases: Vec<FixturePair>,
     fuzzy_correction: bool,
     include_builtin_corrections: bool,
-    voice_commands: Vec<FixtureVoiceCommand>,
     cli_prompt: Option<String>,
     ide_symbols: Vec<String>,
     ide_files: Vec<String>,
@@ -235,17 +222,6 @@ struct FixtureResources {
 struct FixturePair {
     spoken: String,
     written: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct FixtureVoiceCommand {
-    id: String,
-    phrase: String,
-    command_type: VoiceCommandKind,
-    content: String,
-    allow_clipboard_read: bool,
-    app_scoped: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -474,24 +450,6 @@ pub struct RuntimeMetadata {
     pub memory_delta_mb: Option<i64>,
 }
 
-#[derive(Clone)]
-struct FixedVoiceCommandRuntime {
-    now: DateTime<FixedOffset>,
-    clipboard: Option<String>,
-}
-
-impl VoiceCommandRuntime for FixedVoiceCommandRuntime {
-    fn now(&self) -> DateTime<FixedOffset> {
-        self.now
-    }
-
-    fn clipboard_text(&self) -> Result<String, String> {
-        self.clipboard
-            .clone()
-            .ok_or_else(|| "Fixture clipboard is unavailable.".to_string())
-    }
-}
-
 #[derive(Default)]
 struct InMemoryStageObserver {
     stages: Vec<(StageReport, String)>,
@@ -680,12 +638,9 @@ fn validate_fixture(
             "Murmur is final-only: attempts must be 1, partialCount must be 0, firstPartialMs null, and finalOnly true",
         ));
     }
-    DateTime::parse_from_rfc3339(&fixture.context.fixed_now)
-        .map_err(|error| fail(&format!("fixedNow must be RFC 3339: {error}")))?;
 
     const STAGES: &[&str] = &[
         crate::transcript_transform::CLEANUP_STAGE,
-        crate::transcript_transform::VOICE_COMMANDS_STAGE,
         crate::transcript_transform::SMART_CORRECTION_STAGE,
         crate::transcript_transform::SMART_FORMATTING_STAGE,
         crate::transcript_transform::SPOKEN_STRUCTURE_STAGE,
@@ -710,25 +665,6 @@ fn validate_fixture(
         }
     }
 
-    let mut command_ids = HashSet::new();
-    for command in &fixture.context.resources.voice_commands {
-        if command.id.trim().is_empty() || command.phrase.trim().is_empty() {
-            return Err(fail("voice-command id and phrase must be non-empty"));
-        }
-        if !command_ids.insert(command.id.as_str()) {
-            return Err(fail(&format!(
-                "duplicate voice-command id '{}'",
-                command.id
-            )));
-        }
-        if command.command_type == VoiceCommandKind::Snippet {
-            crate::voice_commands::validate_snippet_template(
-                &command.content,
-                command.allow_clipboard_read,
-            )
-            .map_err(|error| fail(&format!("invalid voice-command snippet: {error}")))?;
-        }
-    }
     for file in &fixture.context.resources.ide_files {
         if !is_clean_relative_path(file) {
             return Err(fail("IDE fixture files must be clean root-relative paths"));
@@ -1113,10 +1049,6 @@ fn run_transform(
     fixture: &EvaluationFixture,
     raw_asr: &str,
 ) -> (Option<String>, Vec<(StageReport, String)>, Option<String>) {
-    let fixed_now = match DateTime::parse_from_rfc3339(&fixture.context.fixed_now) {
-        Ok(value) => value,
-        Err(error) => return (None, Vec::new(), Some(format!("invalid fixedNow: {error}"))),
-    };
     let pairs = fixture
         .context
         .resources
@@ -1130,20 +1062,6 @@ fn run_transform(
         fixture.context.resources.fuzzy_correction,
         fixture.context.resources.include_builtin_corrections,
     );
-    let voice_commands = fixture
-        .context
-        .resources
-        .voice_commands
-        .iter()
-        .map(|command| ResolvedVoiceCommand {
-            id: command.id.clone(),
-            phrase: command.phrase.clone(),
-            command_type: command.command_type,
-            content: command.content.clone(),
-            allow_clipboard_read: command.allow_clipboard_read,
-            app_scoped: command.app_scoped,
-        })
-        .collect::<Vec<_>>();
     let resources = &fixture.context.resources;
     let context = TranscriptContext {
         session_id: fixture.context.session_id,
@@ -1154,7 +1072,6 @@ fn run_transform(
             cleanup_enabled: fixture.context.stages.cleanup,
             cleanup_remove_filler: fixture.context.stages.cleanup_remove_filler,
             cleanup_capitalize: fixture.context.stages.cleanup_capitalize,
-            voice_commands_enabled: fixture.context.stages.voice_commands,
             smart_correction_enabled: fixture.context.stages.smart_correction,
             // Deterministic fixtures never invoke hardware inference.
             homophone_context_enabled: false,
@@ -1184,9 +1101,7 @@ fn run_transform(
         raw_asr.to_string(),
         &context,
         TranscriptTransformResources {
-            custom_commands: Vec::new(),
             homophone_engine: None,
-            voice_commands,
             correction_matcher: (!matcher.is_empty()).then(|| Arc::new(matcher)),
             cli_lexicon: CliLexicon::from_context(resources.cli_prompt.as_deref(), &pairs),
             ide_context_index: fixture.context.stages.ide_context.then(|| {
@@ -1195,10 +1110,6 @@ fn run_transform(
                     &resources.ide_files,
                 )
             }),
-            voice_command_runtime: Some(Arc::new(FixedVoiceCommandRuntime {
-                now: fixed_now,
-                clipboard: fixture.context.clipboard_text.clone(),
-            })),
         },
         &mut observer,
     );

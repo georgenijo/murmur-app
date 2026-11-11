@@ -10,7 +10,7 @@ import {
 import { validateVocabularyEntries } from './vocabulary';
 
 export const MAX_VOCABULARY_FILE_BYTES = 256 * 1024;
-export type VocabularyExchangeSettings = Pick<Settings, 'vocabularyEntries' | 'voiceCommands'>;
+export type VocabularyExchangeSettings = Pick<Settings, 'vocabularyEntries'>;
 
 export interface VocabularyFile {
   format: 'murmur-vocabulary';
@@ -121,7 +121,7 @@ export function parseVocabularyFile(contents: string): VocabularyFile {
     throw new Error('This Vocabulary file format or version is not supported.');
   }
   const entries = array(file.entries, MAX_VOCABULARY_ENTRIES, parseEntry);
-  const validationError = validateVocabularyEntries(entries, []);
+  const validationError = validateVocabularyEntries(entries);
   if (validationError) throw new Error(`The Vocabulary file is invalid: ${validationError}`);
   return { format: 'murmur-vocabulary', version: 1, entries };
 }
@@ -195,13 +195,13 @@ export function previewVocabularyImport(
   if (entries.length > MAX_VOCABULARY_ENTRIES) {
     conflicts.push(`Import would exceed the ${MAX_VOCABULARY_ENTRIES} vocabulary entry limit.`);
   }
-  const validationError = validateVocabularyEntries(entries, settings.voiceCommands);
+  const validationError = validateVocabularyEntries(entries);
   if (validationError) conflicts.push(validationError);
   const base = { baseline: vocabularySettingsSnapshot(settings), file, counts };
   return conflicts.length ? { ...base, kind: 'conflict', conflicts } : {
     ...base,
     kind: 'ready',
-    next: { vocabularyEntries: entries, voiceCommands: settings.voiceCommands },
+    next: { vocabularyEntries: entries },
   };
 }
 

@@ -57,7 +57,7 @@ as words.
 The live order is:
 
 ```text
-cleanup → voice commands → Smart Correction → Smart Formatting → Spoken Structure → spoken numbers → IDE context → CLI formatting → final text
+cleanup → Smart Correction → Smart Formatting → Spoken Structure → spoken numbers → IDE context → CLI formatting → final text
 ```
 
 Only the final transformed text reaches optional file output, the clipboard, auto-paste, history, and stats. Clipboard and paste therefore still happen once, after all stages complete. Imported audio keeps the existing raw-ASR behavior with every transformation stage skipped.

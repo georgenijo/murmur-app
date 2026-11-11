@@ -26,7 +26,7 @@ Built with **Tauri 2** (Rust backend + React frontend). Transcription backends:
 | Transcription | FluidAudio (Core ML/ANE), whisper-rs → whisper.cpp (Metal), sherpa-onnx (CPU) | Selected per model from one catalog |
 | Text injection | arboard + CGEvent (osascript fallback) | Clipboard-first |
 | Keyboard listening | rdev (git main branch) | Global key events; one background thread for dictation and Paste Last |
-| Local storage | rusqlite (SQLite) | Personal knowledge store + performance diagnostics |
+| Local storage | rusqlite (SQLite) | Performance diagnostics + meetings |
 | Telemetry | tracing + tracing-subscriber | Structured events: ring buffer, JSONL file, real-time frontend emission |
 | System info | sysinfo + custom malloc zone | CPU, RSS, and separated Rust/FFI heap accounting |
 | Release | GitHub Actions + Apple notarization | Signed DMG, hardened runtime, sidecar entitlements |
@@ -69,14 +69,13 @@ injector::inject_text() --> arboard clipboard write
 The **transcript transform pipeline** (`transcript_transform.rs`) runs stages in exactly this order, each with a declared failure policy and per-stage timing/outcome telemetry:
 
 1. `cleanup` — filler removal, capitalization
-2. `voice_commands` — typed replacements/snippets from the knowledge store
-3. `smart_correction` — vocabulary matcher (explicit aliases, register/cue-gated contextual variants, exact tier + optional fuzzy tier)
-4. `homophone_context` — opt-in live-only bounded homophone scan; eligible passes promptly use the existing unavailable fallback (#1081), with no FoundationModels preparation/generation; deterministic text retained
-5. `smart_formatting` — deterministic prose grammar, lists, same-utterance backtracking (live only)
-6. `spoken_structure` — punctuation, breaks, paired delimiters, symbols, and sentence-boundary editing (live only)
-7. `spoken_numbers` — English cardinals, times, dates, years, labels, and versions rendered under the frozen text register's prose or technical policy (live dictation)
-8. `ide_context` — project symbol correction and `@file` canonicalization (live only, opt-in)
-9. `cli_command` — spoken CLI command formatting
+2. `smart_correction` — vocabulary matcher (explicit aliases, register/cue-gated contextual variants, exact tier + optional fuzzy tier)
+3. `homophone_context` — opt-in live-only bounded homophone scan; eligible passes promptly use the existing unavailable fallback (#1081), with no FoundationModels preparation/generation; deterministic text retained
+4. `smart_formatting` — deterministic prose grammar, lists, same-utterance backtracking (live only)
+5. `spoken_structure` — punctuation, breaks, paired delimiters, symbols, and sentence-boundary editing (live only)
+6. `spoken_numbers` — English cardinals, times, dates, years, labels, and versions rendered under the frozen text register's prose or technical policy (live dictation)
+7. `ide_context` — project symbol correction and `@file` canonicalization (live only, opt-in)
+8. `cli_command` — spoken CLI command formatting
 
 ### Meeting capture
 
@@ -222,7 +221,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 167 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 150 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -238,7 +237,6 @@ stay local and never reach logs or telemetry. See
 | `commands/microphone_startup_benchmark.rs` | Main-window-gated production capture startup cycles, exact-owner progress/cancel, and typed privacy-safe export |
 | `cleanup.rs` | Filler removal and capitalization |
 | `cli_command.rs` | Spoken CLI command grammar and lexicon |
-| `correct_and_teach.rs` | Bounded local diff proposals from a user's edit; never writes without confirmation |
 | `correction.rs` | Smart Correction matcher (exact + fuzzy tiers) |
 | `delivery_recovery.rs` | Generation-bound last-delivery memory and one-at-a-time clipboard or paste retry |
 | `diarization_assignment.rs` | Validation of bounded speaker turns and conservative assignment to complete remote meeting segments |
@@ -262,7 +260,6 @@ stay local and never reach logs or telemetry. See
 | `ide_context.rs` | Memory-only bounded IDE symbol / root-relative file index |
 | `injector.rs` | Clipboard write, CGEvent paste (osascript fallback), focused-field AX role checks |
 | `keyboard.rs` | Dictation and Paste Last detectors on one shared rdev thread; `keyboard/fn_capture.rs` opens, binds, or discards Fn / Globe key-down capture from detector state |
-| `knowledge_store/` | SQLite personal knowledge store: migrations, repository, backup/recovery |
 | `meeting_capture.rs` | Meeting supervisor: worker protocol, per-channel resample/VAD chunking, durable spool publication, serialized inference, teardown |
 | `meeting_store/` | SQLite meeting sessions/segments/FTS: migrations, backup/recovery, search, retention, audio ownership |
 | `meeting_artifact.rs` | Legacy stored artifact validation for database compatibility |
@@ -289,9 +286,8 @@ stay local and never reach logs or telemetry. See
 | `transcript_transform.rs` | The ordered post-recognition pipeline and its stage contracts |
 | `vad.rs` | Silero VAD filtering, thread-local context cache |
 | `vocab.rs`, `vocabulary_alias.rs` | Code-vocabulary scanning and explicit spoken aliases |
-| `voice_commands.rs` | Typed voice command execution and variable expansion |
 
-Commands and command-side window transports live under `commands/`: `benchmark`, `corpus`, `correct_and_teach`, `dictation_diagnostics`, `dictation_preview`, `export`, `integrations`, `keyboard`, `knowledge`, `logging`, `meeting`, `microphone_preview`, `microphone_startup_benchmark`, `models`, `native_window`, `overlay`, `performance`, `permissions`, `recording`, `settings_store`, `theme`, `tray`, and `updater`. Theme resolution remains frontend-only. `commands/theme.rs` is a main-window-gated UTF-8 file transport with 256 KiB regular-file reads and 64 KiB atomic sibling-temp exports. `commands/settings_store.rs` provides the independent main-only 1 MiB `theme-library.json` blob boundary.
+Commands and command-side window transports live under `commands/`: `benchmark`, `corpus`, `dictation_diagnostics`, `dictation_preview`, `export`, `integrations`, `keyboard`, `logging`, `meeting`, `microphone_preview`, `microphone_startup_benchmark`, `models`, `native_window`, `overlay`, `performance`, `permissions`, `recording`, `settings_store`, `theme`, `tray`, and `updater`. Theme resolution remains frontend-only. `commands/theme.rs` is a main-window-gated UTF-8 file transport with 256 KiB regular-file reads and 64 KiB atomic sibling-temp exports. `commands/settings_store.rs` provides the independent main-only 1 MiB `theme-library.json` blob boundary.
 
 ### `state.rs` — Shared State
 
@@ -409,11 +405,10 @@ Six active streams plus the retired `query` stream for reading old diagnostics: 
 
 ### Local storage
 
-Three SQLite databases, all stored locally:
+Two SQLite databases, all stored locally:
 
 | Store | File | Retention |
 |-------|------|-----------|
-| Personal knowledge | `knowledge/knowledge.sqlite3` | User-managed; versioned migrations, backups, quarantine on corruption |
 | Performance diagnostics | `diagnostics/performance.sqlite3` | 200 completed runs, 600 resource samples, 8 follow-ups per run |
 | Meetings | `meetings/meetings.sqlite3` | User-managed searchable sessions; age/count caps applied before start; audio off by default |
 
@@ -458,8 +453,7 @@ History mutations use React snapshots; stats use synchronous read/modify/write;
 theme startup can repair and persist a library and reconcile active selections.
 Deferring only the reads could overwrite durable data with empty or stale
 snapshots. A later change needs mutation replay and a theme readiness boundary.
-Native stores also remain synchronous: knowledge feeds the frozen recording
-context, while diagnostics and meeting recovery currently
+Native stores also remain synchronous: diagnostics and meeting recovery currently
 assume initialization before their commands run. No webview declarations change.
 
 Content-free `system.launch_*` events carry `launch_elapsed_ms` in the structured
@@ -488,7 +482,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-167 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+150 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 
@@ -518,10 +512,13 @@ Murmur uses two roots — a legacy one from before the rename, and the Tauri app
 └── logs/                      # app.log, events.jsonl (+ .dev variants)
 
 ~/Library/Application Support/com.localdictation/        (com.localdictation.dev in dev)
-├── knowledge/                 # knowledge.sqlite3, backups/, quarantine/
 ├── diagnostics/               # performance.sqlite3
 └── meetings/                  # meetings.sqlite3, backups/, quarantine/, audio/
 ```
+
+Earlier versions also kept a `knowledge/` folder here (`knowledge.sqlite3` with
+`backups/` and `quarantine/`). Murmur no longer opens, reads, migrates, or
+deletes it; the folder can be removed by hand.
 
 Core ML models are managed by FluidAudio under `~/Library/Application Support/FluidAudio/Models/`.
 

@@ -4,21 +4,15 @@ import { surfaceCases } from './surface-matrix';
 for (const { appearance, width, height, label } of surfaceCases([{ width: 840, height: 620 }, { width: 880, height: 720 }, { width: 720, height: 560 }])) {
   test.describe(`Settings inputs ${label}`, () => {
     test.use({ viewport: { width, height }, colorScheme: appearance });
-    test('Voice commands search reveals without switch focus; editor handoff focuses once', async ({ page }) => {
+    test('Spoken formatting search reveals its switch without moving focus to it', async ({ page }) => {
       await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&appearance=${appearance}`);
       const search = page.getByRole('searchbox', { name: 'Search all settings' });
       if (width < 768) await page.getByRole('button', { name: 'Search settings', exact: true }).click();
-      await search.fill('Voice commands');
-      await page.getByRole('button', { name: /Voice commands & spoken formatting.*Enable custom commands/ }).click();
-      const toggle = page.getByRole('switch', { name: 'Voice commands & spoken formatting', exact: true });
+      await search.fill('Spoken formatting');
+      await page.getByRole('button', { name: /Spoken formatting.*scratch that/ }).click();
+      const toggle = page.getByRole('switch', { name: 'Spoken formatting', exact: true });
       await expect(toggle).toBeVisible();
       await expect(toggle).not.toBeFocused();
-      await expect(toggle).toHaveAttribute('aria-checked', 'false');
-      await page.getByRole('button', { name: 'Voice commands Create exact spoken replacements and snippets', exact: true }).click();
-      await page.getByRole('button', { name: 'Open Voice commands & spoken formatting', exact: true }).click();
-      await expect(toggle).toBeVisible();
-      await expect(toggle).toBeFocused();
-      await expect(toggle).toHaveAttribute('aria-checked', 'false');
       if (width < 768) await page.getByRole('button', { name: 'Search settings', exact: true }).click();
       await search.click();
       // Outlast the bounded reveal retry, so a delayed refocus would be detected.

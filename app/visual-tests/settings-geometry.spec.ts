@@ -5,10 +5,9 @@ const panes = [
   ['Delivery'], ['Meetings'], ['Text & vocabulary'], ['AI & models'],
   ['Appearance'], ['Performance Lab'], ['Diagnostics'],
   ['AI & models', 'Speech-to-text'],
-  ['Customize', 'Voice commands'],
   ['Customize', 'App overrides'],
   ['Text & vocabulary', 'Vocabulary'], ['Text & vocabulary', 'Aliases'],
-  ['Text & vocabulary', 'Knowledge'], ['Text & vocabulary', 'Manage project scan'],
+  ['Text & vocabulary', 'Manage project scan'],
 ] as const;
 
 async function openPane(page: Page, path: readonly string[], appearance: string) {
@@ -34,7 +33,7 @@ for (const appearance of ['light', 'dark']) {
       if (path[0] === 'Appearance') await expect(page.getByRole('button', { name: 'Use OpenCode theme', exact: true })).toBeVisible();
       if (path.length === 1 && path[0] === 'Customize') {
         const rows = page.locator('[aria-label="Customization destinations"] > li > .settings-setting-row');
-        await expect(rows).toHaveCount(3);
+        await expect(rows).toHaveCount(2);
         for (const row of await rows.all()) expect((await row.boundingBox())!.height).toBeGreaterThanOrEqual(52);
       }
       if (path[0] === 'Performance Lab') {

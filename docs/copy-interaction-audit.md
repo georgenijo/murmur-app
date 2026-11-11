@@ -121,11 +121,7 @@ Native delta to verify after integration, using disposable local data:
    must retain the editor and error. Enter a valid hex and Return; reopen to
    confirm the committed value. An invalid Background must also block Return
    from another field.
-4. Voice commands → New command… and Knowledge → overflow → Delete all…:
-   verify initial focus, both Tab wrap directions, Escape cancellation, and
-   opener restoration without first clicking inside the dialog. Recoverable
-   Save command / Import still use Return; typed DELETE still needs Space.
-5. General → Run setup assistant…: check all four permission steps before,
+4. General → Run setup assistant…: check all four permission steps before,
    during, and after a grant or denial. At most one button is primary, disabled
    Continue is secondary, Return cannot skip an unmet step, and enabled
    Continue remains its default. Run these native checks in light and dark.
@@ -145,34 +141,25 @@ Use the integrated build with isolated test data, in light and dark:
 3. Customize → Text & vocabulary → Aliases: arm Delete… on a synthetic alias;
    Return must keep it, Escape/blur must disarm, and two Space activations must
    remove it. Add/import/export a synthetic alias and verify the import preview
-   only applies after its default confirmation. Repeat Mode import/export.
-4. Customize → Voice commands: New command…; enter a synthetic phrase and
-   replacement. Focus Cancel and press Return: the enabled Save command default
-   must save once. In a multiline snippet, Return adds a newline. Space on Cancel
-   cancels. Check the preview action is secondary. Check default validation and
-   busy/disabled handling. Repeat Knowledge and saved-transform recoverable Save.
-5. Knowledge: use arrow keys in More knowledge actions; open Delete all… and
-   type DELETE. Return must never delete, including with Delete everything…
-   focused; Space confirms. Cancel must write nothing. Repeat Delete all shown…
-   under a filter and verify the captured-scope count remains truthful.
-6. Delivery → Advanced: verify app-override and project-root removals require
+   only applies after its default confirmation.
+4. Delivery → Advanced: verify app-override and project-root removals require
    two activations, while normal switches still work with Space.
-7. AI → Speech-to-text: unused-model Remove… needs a second activation; selected
+5. AI → Speech-to-text: unused-model Remove… needs a second activation; selected
    and active models remain protected. Recording →
    Smart Auto-Stop, and Meetings → remote speaker model: verify remove/confirm
    copy, blur disarming, Return protection, busy states, and removal/re-download
    only against disposable test models. No transcription or native lifecycle
    behavior was changed by this child.
-8. General → Run setup assistant…: verify sentence case, one default Continue
+6. General → Run setup assistant…: verify sentence case, one default Continue
    per step, disabled Continue while unmet/loading, Space on Back/Skip, and
    Return never selecting Skip as a default. Check microphone, Accessibility,
    system audio, Calendar, model, shortcut, and completion steps.
-9. Appearance: inspect the custom editor's phrase help and Done default;
+7. Appearance: inspect the custom editor's phrase help and Done default;
    text-field validation must still work. Inspect Community themes consent and
    loading/error copy. Check About and What's New dismissal defaults; update
    download/restart/quit remain deliberate actions with no Return default.
-10. Diagnostics: Clear events… requires a second activation. Performance Lab
-    and microphone startup saved-report Clear reports… require confirmation.
+8. Diagnostics: Clear events… requires a second activation. Performance Lab
+   and microphone startup saved-report Clear reports… require confirmation.
     Verify recording/cancellation stays secondary and does not acquire delete
     styling. Native startup/capture checks and Retina captures are run serially
     by the lead after integration.

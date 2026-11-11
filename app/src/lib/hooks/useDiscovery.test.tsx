@@ -13,17 +13,15 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
 
 import { DISCOVERY_STORAGE_KEY, initializeDiscoveryAfterSetup, initializeGrandfatheredDiscovery, loadDiscoveryState, dismissDiscoveryHint, enqueueDiscoveryHint } from '../discovery';
-import { addHistoryEntry, type HistoryEntry } from '../history';
 import { useDiscovery } from './useDiscovery';
 
 
 describe('discovery event receipts', () => {
   let container: HTMLDivElement;
   let root: Root;
-  let entries: HistoryEntry[];
 
   function Harness() {
-    const discovery = useDiscovery({ enabled: true, historyEntries: entries });
+    const discovery = useDiscovery({ enabled: true });
     return <>
       <output>{discovery.state?.pendingHints.join(',')}</output>
       {discovery.state?.pendingHints.map((id) => (
@@ -36,7 +34,6 @@ describe('discovery event receipts', () => {
     localStorage.clear();
     mocks.listeners.clear();
     initializeDiscoveryAfterSetup();
-    entries = [];
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -48,7 +45,7 @@ describe('discovery event receipts', () => {
     container.remove();
   });
 
-  it('queues each content-free first-use hint once and restores the queue after remount', async () => {
+  it('queues the content-free first-use hint once and restores the queue after remount', async () => {
     const emit = (name: string, payload: unknown) => {
       const listener = mocks.listeners.get(name);
       if (!listener) throw new Error(`Missing listener: ${name}`);
@@ -57,40 +54,18 @@ describe('discovery event receipts', () => {
     await act(async () => {
       emit('hotkey-tap-rejected', { reason: 'second_tap_expired', privateText: 'SECRET' });
       emit('hotkey-tap-rejected', { reason: 'second_tap_expired' });
-      entries = [{ id: 'SECRET ENTRY', text: 'SECRET HISTORY', timestamp: 1, duration: 1 }];
-      root.render(<Harness />);
     });
 
-    expect(loadDiscoveryState()?.pendingHints).toEqual([
-      'double_tap_timing', 'correct_and_teach',
-    ]);
+    expect(loadDiscoveryState()?.pendingHints).toEqual(['double_tap_timing']);
     expect(localStorage.getItem('murmur_discovery_v2')).not.toContain('SECRET');
 
     await act(async () => root.unmount());
     root = createRoot(container);
     await act(async () => root.render(<Harness />));
-    expect(loadDiscoveryState()?.pendingHints).toHaveLength(2);
+    expect(loadDiscoveryState()?.pendingHints).toEqual(['double_tap_timing']);
   });
 
-  it('detects a new entry by identity when retained history stays at its cap', async () => {
-    await act(async () => root.unmount());
-    initializeDiscoveryAfterSetup();
-    entries = Array.from({ length: 200 }, (_, index) => ({
-      id: `entry-${index}`,
-      text: 'fixture',
-      timestamp: index,
-      duration: 1,
-    }));
-    root = createRoot(container);
-    await act(async () => root.render(<Harness />));
-    expect(loadDiscoveryState()?.pendingHints).toEqual([]);
-    entries = addHistoryEntry(entries, 'new fixture', 1);
-    expect(entries).toHaveLength(200);
-    await act(async () => root.render(<Harness />));
-    expect(loadDiscoveryState()?.pendingHints).toContain('correct_and_teach');
-  });
-
-  it('visibly dismisses and queues hints while legacy cleanup keeps failing, including after remount', async () => {
+  it('visibly dismisses a hint and keeps it dismissed while legacy cleanup keeps failing, including after remount', async () => {
     await act(async () => root.unmount());
     const pending = { version: 2, pendingHints: ['double_tap_timing'], dismissedHints: [] };
     localStorage.setItem(DISCOVERY_STORAGE_KEY, JSON.stringify(pending));
@@ -104,16 +79,13 @@ describe('discovery event receipts', () => {
       expect(container.querySelector('output')?.textContent).toBe('');
       expect(container.querySelector('button')).toBeNull();
       expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual({ ...pending, pendingHints: [], dismissedHints: ['double_tap_timing'] });
-      await act(async () => {
-        entries = [{ id: 'new-fixture', text: 'fixture', timestamp: 1, duration: 1 }];
-        root.render(<Harness />);
-      });
-      expect(container.querySelector('output')?.textContent).toBe('correct_and_teach');
-      expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual({ version: 2, pendingHints: ['correct_and_teach'], dismissedHints: ['double_tap_timing'] });
+      await act(async () => mocks.listeners.get('hotkey-tap-rejected')!({ payload: { reason: 'second_tap_expired' } }));
+      expect(container.querySelector('output')?.textContent).toBe('');
+      expect(JSON.parse(localStorage.getItem(DISCOVERY_STORAGE_KEY)!)).toEqual({ version: 2, pendingHints: [], dismissedHints: ['double_tap_timing'] });
       await act(async () => root.unmount());
       root = createRoot(container);
       await act(async () => root.render(<Harness />));
-      expect(container.querySelector('output')?.textContent).toBe('correct_and_teach');
+      expect(container.querySelector('output')?.textContent).toBe('');
       expect(container.textContent).not.toContain('double_tap_timing');
       expect(localStorage.getItem('murmur_discovery_v1')).not.toBeNull();
     } finally { cleanup.mockRestore(); }
@@ -145,7 +117,7 @@ describe('discovery storage failure matrix', () => {
       { name: 'initial load/migration', steps: ['load'] },
       { name: 'grandfathered initialization', steps: ['initialize'] },
       { name: 'dismiss pending hint', steps: ['dismiss'] },
-      { name: 'queue new hint', steps: ['queue'] },
+      { name: 'queue dismissed hint', steps: ['queue'] },
       { name: 'dismiss then queue', steps: ['dismiss', 'queue'] },
       { name: 'queue then dismiss', steps: ['queue', 'dismiss'] },
     ];
@@ -226,12 +198,11 @@ describe('discovery storage failure matrix', () => {
             }
             let root: Root | undefined;
             const container = document.createElement('div');
-            let entries: HistoryEntry[] = [];
             function Harness() {
-              const discovery = useDiscovery({ enabled: true, historyEntries: entries });
+              const discovery = useDiscovery({ enabled: true });
               return <>
                 <output>{JSON.stringify(discovery.state)}</output>
-                <button onClick={() => discovery.dismissHint('correct_and_teach')}>Dismiss</button>
+                <button onClick={() => discovery.dismissHint('double_tap_timing')}>Dismiss</button>
               </>;
             }
             const checkpoint = (returned?: State) => {
@@ -248,7 +219,7 @@ describe('discovery storage failure matrix', () => {
                 for (const step of operation.steps) {
                   const state = step === 'load' ? loadDiscoveryState()
                     : step === 'initialize' ? initializeGrandfatheredDiscovery()
-                      : step === 'dismiss' ? dismissDiscoveryHint('correct_and_teach') : enqueueDiscoveryHint('correct_and_teach');
+                      : step === 'dismiss' ? dismissDiscoveryHint('double_tap_timing') : enqueueDiscoveryHint('double_tap_timing');
                   checkpoint(state);
                 }
               } else {
@@ -262,10 +233,7 @@ describe('discovery storage failure matrix', () => {
                   if (step === 'load' || step === 'initialize') continue;
                   await act(async () => {
                     if (step === 'dismiss') container.querySelector('button')!.click();
-                    else {
-                      entries = [{ id: 'matrix-fixture', text: 'fixture', timestamp: 1, duration: 1 }];
-                      root!.render(<Harness />);
-                    }
+                    else mocks.listeners.get('hotkey-tap-rejected')!({ payload: { reason: 'second_tap_expired' } });
                   });
                   checkpoint();
                 }

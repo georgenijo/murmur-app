@@ -5,12 +5,8 @@
 //! sentence-boundary-aware `scratch that` action. Higher-level prose grammars
 //! (email, URL, enumeration, and backtracking) remain in `smart_formatting`.
 
-use base64::Engine;
-
 const MAX_INPUT_BYTES: usize = 16 * 1024;
 const MAX_PAIRED_CONTENT_CHARS: usize = 240;
-const PROTECTED_PREFIX: &str = "\u{e000}murmur-structure:";
-const PROTECTED_SUFFIX: char = '\u{e001}';
 
 pub(crate) const BASIC_COMMAND_PHRASES: &[&str] = &[
     "new paragraph",
@@ -104,11 +100,8 @@ const UNION_ONLY_MARKERS: &[(&str, Marker)] = &[
 ];
 
 pub(crate) fn apply_spoken_structure(input: &str, policy: SpokenStructurePolicy) -> String {
-    if !policy.is_enabled() || input.trim().is_empty() {
+    if !policy.is_enabled() || input.trim().is_empty() || input.len() > MAX_INPUT_BYTES {
         return input.to_string();
-    }
-    if input.len() > MAX_INPUT_BYTES {
-        return restore_protected_literals(input);
     }
 
     let paired = if policy.includes_extended() {
@@ -117,44 +110,6 @@ pub(crate) fn apply_spoken_structure(input: &str, policy: SpokenStructurePolicy)
         input.to_string()
     };
     replace_markers(&paired, policy)
-}
-
-/// Make command-generated text opaque to later spoken-structure scanning.
-///
-/// The placeholder exists only inside one in-memory pipeline run and is
-/// restored by `apply_spoken_structure`, including its over-limit fail-closed
-/// path. This prevents a snippet containing literal words such as `period` or
-/// `new line` from being interpreted as fresh speech.
-pub(crate) fn protect_literal_output(input: &str) -> String {
-    if input.is_empty() || !contains_structural_phrase(input) {
-        return input.to_string();
-    }
-    let encoded = base64::engine::general_purpose::STANDARD_NO_PAD.encode(input.as_bytes());
-    format!("{PROTECTED_PREFIX}{encoded}{PROTECTED_SUFFIX}")
-}
-
-pub(crate) fn restore_literal_output(input: &str) -> String {
-    restore_protected_literals(input)
-}
-
-fn contains_structural_phrase(input: &str) -> bool {
-    const PAIRED_PHRASES: &[&str] = &[
-        "open double quote",
-        "close double quote",
-        "open single quote",
-        "close single quote",
-        "open quote",
-        "close quote",
-        "open parenthesis",
-        "close parenthesis",
-    ];
-    let lower = input.to_ascii_lowercase();
-    BASIC_MARKERS
-        .iter()
-        .chain(EXTENDED_MARKERS)
-        .map(|(phrase, _)| *phrase)
-        .chain(PAIRED_PHRASES.iter().copied())
-        .any(|phrase| find_bounded_phrase(&lower, phrase, 0).is_some())
 }
 
 fn replace_paired_markers(input: &str, policy: SpokenStructurePolicy) -> String {
@@ -225,11 +180,6 @@ fn replace_markers(input: &str, policy: SpokenStructurePolicy) -> String {
     let mut used_extended_semantics = false;
 
     while index < input.len() {
-        if let Some((length, literal)) = protected_literal_at(input, index) {
-            output.push_str(&literal);
-            index += length;
-            continue;
-        }
         let Some((_, character)) = input[index..].char_indices().next() else {
             break;
         };
@@ -264,36 +214,6 @@ fn replace_markers(input: &str, policy: SpokenStructurePolicy) -> String {
     } else {
         output
     }
-}
-
-fn protected_literal_at(input: &str, index: usize) -> Option<(usize, String)> {
-    let suffix = input.get(index..)?;
-    let encoded = suffix.strip_prefix(PROTECTED_PREFIX)?;
-    let encoded_end = encoded.find(PROTECTED_SUFFIX)?;
-    let decoded = base64::engine::general_purpose::STANDARD_NO_PAD
-        .decode(&encoded[..encoded_end])
-        .ok()?;
-    let literal = String::from_utf8(decoded).ok()?;
-    let length = PROTECTED_PREFIX.len() + encoded_end + PROTECTED_SUFFIX.len_utf8();
-    Some((length, literal))
-}
-
-fn restore_protected_literals(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    let mut index = 0;
-    while index < input.len() {
-        if let Some((length, literal)) = protected_literal_at(input, index) {
-            output.push_str(&literal);
-            index += length;
-            continue;
-        }
-        let Some(character) = input[index..].chars().next() else {
-            break;
-        };
-        output.push(character);
-        index += character.len_utf8();
-    }
-    output
 }
 
 fn marker_at(
@@ -502,7 +422,7 @@ mod tests {
     }
 
     #[test]
-    fn basic_mode_preserves_legacy_voice_command_semantics() {
+    fn basic_mode_preserves_the_built_in_spoken_command_semantics() {
         assert_eq!(
             apply_spoken_structure(
                 "hello comma world period new line bye",
@@ -645,24 +565,133 @@ mod tests {
         }
     }
 
+    /// Built-in spoken commands run under the Basic policy, which is what the
+    /// "Spoken formatting" switch selects when Smart Formatting is off.
+    fn basic(input: &str) -> String {
+        apply_spoken_structure(input, SpokenStructurePolicy::Basic)
+    }
+
     #[test]
-    fn protected_command_output_is_restored_without_reinterpretation() {
-        let protected = protect_literal_output("literal period and new line");
-        let input = format!("before {protected} after period");
+    fn off_policy_returns_text_unchanged() {
+        let input = "say new line period now";
         assert_eq!(
-            apply_spoken_structure(&input, SpokenStructurePolicy::Union),
-            "before literal period and new line after."
+            apply_spoken_structure(input, SpokenStructurePolicy::Off),
+            input
         );
     }
 
     #[test]
-    fn protected_output_is_restored_on_the_over_limit_fail_closed_path() {
-        let protected = protect_literal_output("literal period");
-        let input = format!("{} {protected}", "a".repeat(MAX_INPUT_BYTES));
-        let expected = format!("{} literal period", "a".repeat(MAX_INPUT_BYTES));
+    fn new_line_inserts_newline() {
+        assert_eq!(basic("hello new line world"), "hello\nworld");
+    }
+
+    #[test]
+    fn new_paragraph_inserts_double_newline() {
+        assert_eq!(basic("first new paragraph second"), "first\n\nsecond");
+    }
+
+    #[test]
+    fn new_paragraph_wins_over_new_line() {
+        assert_eq!(basic("a new paragraph b"), "a\n\nb");
+    }
+
+    #[test]
+    fn period_attaches_to_prior_word() {
+        assert_eq!(basic("done period"), "done.");
+    }
+
+    #[test]
+    fn comma_attaches_to_prior_word() {
+        assert_eq!(basic("one comma two"), "one, two");
+    }
+
+    #[test]
+    fn question_mark_attaches_to_prior_word() {
+        assert_eq!(basic("really question mark"), "really?");
+    }
+
+    #[test]
+    fn open_and_close_paren() {
+        assert_eq!(basic("call open paren x close paren"), "call (x)");
+    }
+
+    #[test]
+    fn built_in_phrases_match_case_insensitively() {
+        assert_eq!(basic("hello New Line world"), "hello\nworld");
+        assert_eq!(basic("done PERIOD"), "done.");
+    }
+
+    #[test]
+    fn built_in_phrases_respect_word_boundaries() {
+        assert_eq!(basic("newline"), "newline");
+        assert_eq!(basic("periodic table"), "periodic table");
+        assert_eq!(basic("commando"), "commando");
+    }
+
+    #[test]
+    fn scratch_that_deletes_previous_sentence() {
         assert_eq!(
-            apply_spoken_structure(&input, SpokenStructurePolicy::Basic),
-            expected
+            basic("First sentence. Second sentence scratch that"),
+            "First sentence."
         );
+    }
+
+    #[test]
+    fn scratch_that_with_no_prior_delimiter_clears_buffer() {
+        assert_eq!(basic("just one line scratch that"), "");
+    }
+
+    #[test]
+    fn scratch_that_stops_at_newline() {
+        assert_eq!(
+            basic("line one new line line two scratch that"),
+            "line one\n"
+        );
+    }
+
+    #[test]
+    fn empty_input_and_plain_prose_pass_through() {
+        assert_eq!(basic(""), "");
+        let input = "just a normal sentence with words";
+        assert_eq!(basic(input), input);
+    }
+
+    #[test]
+    fn multiple_commands_in_sequence() {
+        assert_eq!(
+            basic("hello comma world period new line bye"),
+            "hello, world.\nbye"
+        );
+    }
+
+    #[test]
+    fn punctuation_commands_absorb_adjacent_model_auto_punctuation() {
+        assert_eq!(basic("I have one idea. period"), "I have one idea.");
+        assert_eq!(basic("Are we ready? question mark"), "Are we ready?");
+        assert_eq!(basic("Are we ready. question mark."), "Are we ready?");
+        assert_eq!(
+            basic("Count one comma, two comma, three period."),
+            "Count one, two, three."
+        );
+    }
+
+    #[test]
+    fn command_at_start_of_input_emits_the_mark() {
+        assert_eq!(basic("period"), ".");
+    }
+
+    #[test]
+    fn over_limit_input_is_returned_unchanged_under_basic() {
+        let input = format!("{} period", "a".repeat(MAX_INPUT_BYTES));
+        assert_eq!(basic(&input), input);
+    }
+
+    #[test]
+    fn the_phrase_list_matches_the_basic_marker_table() {
+        let table = BASIC_MARKERS
+            .iter()
+            .map(|(phrase, _)| *phrase)
+            .collect::<Vec<_>>();
+        assert_eq!(table, BASIC_COMMAND_PHRASES);
     }
 }

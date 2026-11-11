@@ -20,7 +20,6 @@ mod cli_command;
 mod code_signing;
 mod commands;
 pub mod coreml_installer;
-mod correct_and_teach;
 mod correction;
 mod delivery_recovery;
 mod diarization_assignment;
@@ -43,7 +42,6 @@ mod hotkey_release;
 mod ide_context;
 mod injector;
 mod keyboard;
-mod knowledge_store;
 pub mod launch;
 mod legacy_query_cleanup;
 mod legacy_transform_cleanup;
@@ -88,7 +86,6 @@ mod transcript_transform;
 mod vad;
 mod vocab;
 mod vocabulary_alias;
-mod voice_commands;
 mod window_state;
 
 #[cfg(target_os = "macos")]
@@ -181,12 +178,10 @@ pub(crate) struct State {
         commands::microphone_startup_benchmark::MicrophoneStartupBenchmarkState,
     #[cfg(feature = "internal-benchmark")]
     pub(crate) corpus: commands::corpus::CorpusRecorderState,
-    pub(crate) knowledge: knowledge_store::KnowledgeStore,
     pub(crate) meeting_store: meeting_store::MeetingStore,
     pub(crate) meetings: meeting_capture::MeetingCoordinator,
     pub(crate) meeting_suggestions: meeting_suggestions::MeetingSuggestions,
     pub(crate) delivery_recovery: delivery_recovery::DeliveryRecoveryState,
-    pub(crate) correct_and_teach: correct_and_teach::CorrectAndTeachState,
     pub(crate) capture_health: capture_health::CaptureHealthDiagnostics,
     pub(crate) performance: performance_metrics::PerformanceMetrics,
     pub(crate) dictation_diagnostics: dictation_diagnostics::DictationDiagnostics,
@@ -235,12 +230,10 @@ pub fn run() {
                 commands::microphone_startup_benchmark::MicrophoneStartupBenchmarkState::default(),
             #[cfg(feature = "internal-benchmark")]
             corpus: commands::corpus::CorpusRecorderState::default(),
-            knowledge: knowledge_store::KnowledgeStore::default(),
             meeting_store: meeting_store::MeetingStore::default(),
             meetings: meeting_capture::MeetingCoordinator::default(),
             meeting_suggestions: meeting_suggestions::MeetingSuggestions::default(),
             delivery_recovery: delivery_recovery::DeliveryRecoveryState::default(),
-            correct_and_teach: correct_and_teach::CorrectAndTeachState::default(),
             capture_health: capture_health::CaptureHealthDiagnostics::default(),
             performance: performance_metrics::PerformanceMetrics::default(),
             dictation_diagnostics: dictation_diagnostics::DictationDiagnostics::default(),
@@ -267,10 +260,6 @@ pub fn run() {
             commands::recording::get_ide_context_status,
             commands::recording::refresh_ide_context,
             commands::recording::clear_ide_context,
-            commands::correct_and_teach::propose_learned_correction,
-            commands::correct_and_teach::propose_specific_learned_correction,
-            commands::correct_and_teach::confirm_learned_correction,
-            commands::correct_and_teach::discard_learned_correction_proposal,
             commands::permissions::open_system_preferences,
             commands::permissions::open_system_audio_preferences,
             commands::permissions::check_accessibility_permission,
@@ -304,19 +293,6 @@ pub fn run() {
             commands::keyboard::set_app_disabled,
             commands::keyboard::get_app_disabled,
             commands::keyboard::set_paste_last_shortcut,
-            commands::knowledge::get_knowledge_store_status,
-            commands::knowledge::retry_knowledge_store,
-            commands::knowledge::list_knowledge,
-            commands::knowledge::get_knowledge,
-            commands::knowledge::upsert_knowledge,
-            commands::knowledge::preview_voice_command,
-            commands::knowledge::set_knowledge_enabled,
-            commands::knowledge::delete_knowledge,
-            commands::knowledge::resolve_knowledge,
-            commands::knowledge::export_knowledge_to_file,
-            commands::knowledge::inspect_knowledge_import,
-            commands::knowledge::import_knowledge_from_file,
-            commands::knowledge::delete_all_knowledge,
             commands::meeting::start_meeting,
             commands::meeting::rename_meeting_remote_speaker,
             diarization_model::get_diarization_model_status,
@@ -517,21 +493,6 @@ pub fn run() {
                     "dictation diagnostic capture store unavailable"
                 );
             }
-
-            let knowledge_root = app.path().app_data_dir()?.join("knowledge");
-            let knowledge_status = app.state::<State>().knowledge.initialize(knowledge_root);
-            if knowledge_status.availability != knowledge_store::StoreAvailability::Unavailable {
-                if let Err(error) = commands::knowledge::refresh_correction_rules(&app.state::<State>()) {
-                    tracing::warn!(target: "system", error, "initial knowledge correction matcher refresh failed");
-                }
-            }
-            tracing::info!(
-                target: "system",
-                availability = ?knowledge_status.availability,
-                schema_version = knowledge_status.schema_version,
-                record_count = knowledge_status.record_count,
-                "personal knowledge store initialized"
-            );
 
             let meeting_root = app.path().app_data_dir()?.join("meetings");
             diarization_audio::sweep_abandoned(&meeting_root);

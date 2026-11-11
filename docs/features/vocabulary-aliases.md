@@ -9,12 +9,12 @@ Aliases are deterministic, local, Unicode-aware, case-insensitive exact phrase m
 The live transformation order remains:
 
 ```text
-cleanup -> Voice Commands -> explicit aliases -> built-in contextual variants -> derived/exact vocabulary -> fuzzy correction -> Smart Formatting -> Spoken Structure -> spoken numbers -> IDE context -> CLI formatting
+cleanup -> explicit aliases -> built-in contextual variants -> derived/exact vocabulary -> fuzzy correction -> Smart Formatting -> Spoken Structure -> spoken numbers -> IDE context -> CLI formatting
 ```
 
 Explicit alias output is literal to spoken-number rendering. Aliases whose spoken form contains a digit are matched again at the end of the spoken-numbers stage, but only against digits that stage just rendered and never against text an alias already wrote. A variant such as `GPT 5` therefore still matches when the recognizer said `GPT five`, and no rule applies twice.
 
-Voice Commands intentionally trigger insertions/actions and remain separate. Settings reject an alias that collides with a built-in or custom Voice Command phrase. Already-canonical terms are protected. Explicit user aliases outrank future learned rules, built-in vocabulary, derived exact forms, and generic fuzzy matching. IDE symbols remain context-specific after generic correction, and CLI formatting remains final and authoritative. Thus `npm run Tori dev` becomes `npm run Tauri dev` in correction and then `npm run tauri dev` in the CLI stage.
+Built-in spoken formatting phrases such as `new line` stay owned by Spoken Structure, so Settings reject an alias that collides with one. Already-canonical terms are protected. Explicit user aliases outrank built-in vocabulary, derived exact forms, and generic fuzzy matching. IDE symbols remain context-specific after generic correction, and CLI formatting remains final and authoritative. Thus `npm run Tori dev` becomes `npm run Tauri dev` in correction and then `npm run tauri dev` in the CLI stage.
 
 Ambiguous aliases, canonical collisions, and direct or indirect cycles are rejected rather than resolved by insertion order. Disabled entries and entries outside the immutable recording-start app/project scope do not participate.
 
@@ -50,7 +50,7 @@ Technical: open the Tori config                 → open the Tauri config
 Terminal:  npm run Tori dev                     → npm run tauri dev
 ```
 
-Explicit user aliases and learned replacements outrank built-in variants. For example, an explicit `Tori` → `Tori` entry keeps the name in every register.
+Explicit user aliases outrank built-in variants. For example, an explicit `Tori` → `Tori` entry keeps the name in every register.
 
 Context requirements are internal data on the built-in pack. Vocabulary entries have no user-authored `context` field. User-authored context rules are a follow-up: they need Settings support and a storage shape that an older build cannot read as an unrestricted alias.
 

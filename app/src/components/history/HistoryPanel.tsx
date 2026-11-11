@@ -1,5 +1,5 @@
 import { Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
-import { Copy, GraduationCap, Star, Trash2 } from 'lucide-react';
+import { Copy, Star, Trash2 } from 'lucide-react';
 import {
   HISTORY_EXPORT_FORMATS,
   entrySource,
@@ -27,7 +27,6 @@ import {
 } from '@/components/ui/animated-dropdown/animated-dropdown';
 import HoldToDeleteButton from '@/components/ui/hold-to-delete-button/hold-to-delete-button';
 import SmartOverflow, { SmartOverflowAction } from '@/components/ui/smart-overflow/smart-overflow';
-import { CorrectAndTeachDialog } from './CorrectAndTeachDialog';
 import { HistoryFilterMenu } from './HistoryFilterMenu';
 
 interface HistoryPanelProps {
@@ -39,15 +38,11 @@ interface HistoryPanelProps {
   onClear: () => void;
   /** Delete a narrowed set of history entries. */
   onDeleteEntries: (entries: readonly HistoryEntry[]) => void;
-  onUpdateEntry: (id: string, text: string) => void;
   onTogglePinned?: (entry: HistoryEntry) => void;
   pinnedCount?: number;
   /** Bumped by the command palette to move focus into the search box. */
   focusSearchToken?: number;
   onTranscribeFile?: () => void;
-  /** Bumped by a discovery action to open the newest entry for teaching. */
-  teachLatestToken?: number;
-  onTeachLatestHandled?: () => void;
 }
 
 const HISTORY_RENDER_BATCH = 30;
@@ -116,16 +111,12 @@ function HistoryPanelComponent({
   entries,
   onClear,
   onDeleteEntries,
-  onUpdateEntry,
   onTogglePinned = () => {},
   pinnedCount = 0,
   focusSearchToken,
   onTranscribeFile = () => {},
-  teachLatestToken,
-  onTeachLatestHandled = () => {},
 }: HistoryPanelProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [teachingEntry, setTeachingEntry] = useState<HistoryEntry | null>(null);
   const [confirmDeleteEntry, setConfirmDeleteEntry] = useState<HistoryEntry | null>(null);
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<HistoryFilter>('all');
@@ -139,7 +130,6 @@ function HistoryPanelComponent({
   const searchRef = useRef<HTMLInputElement>(null);
   const noticeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const handledTeachTokenRef = useRef<number | undefined>(undefined);
   const deleteEntryTokensRef = useRef(new WeakMap<HistoryEntry, number>());
   const nextDeleteEntryTokenRef = useRef(0);
 
@@ -181,19 +171,6 @@ function HistoryPanelComponent({
     noticeTimerRef.current = setTimeout(() => setNotice(null), 4000);
   }, []);
 
-  useEffect(() => {
-    if (teachLatestToken === undefined) {
-      handledTeachTokenRef.current = undefined;
-      return;
-    }
-    if (handledTeachTokenRef.current === teachLatestToken) return;
-    handledTeachTokenRef.current = teachLatestToken;
-    const newest = entries[entries.length - 1];
-    if (newest) setTeachingEntry(newest);
-    else showNotice('Make a dictation first, then use Correct & Teach on the newest entry.');
-    onTeachLatestHandled();
-  }, [entries, onTeachLatestHandled, showNotice, teachLatestToken]);
-
   const visible = useMemo(
     // The clock state triggers rollover/resume refreshes; each new entry must
     // still be compared with the current time, not the last refresh time.
@@ -207,8 +184,8 @@ function HistoryPanelComponent({
   useEffect(() => {
     setRenderLimit(HISTORY_RENDER_BATCH);
   }, [query, filter, dateFilter, pinnedFilter]);
-  // Correct-and-Teach only ever targets the newest entry in the whole history,
-  // not the first row on screen — sorting and filtering reorder the list.
+  // The newest entry in the whole history, not the first row on screen:
+  // sorting and filtering reorder the list.
   const newestId = entries[entries.length - 1]?.id;
   const handleCopy = async (entry: HistoryEntry) => {
     try {
@@ -548,16 +525,6 @@ function HistoryPanelComponent({
                   >
                     {entry.pinned ? 'Unpin transcript' : 'Pin transcript'}
                   </SmartOverflowAction>
-                  {isNewest && (
-                    <SmartOverflowAction
-                      id="teach"
-                      priority="overflow"
-                      icon={<GraduationCap />}
-                      onSelect={() => setTeachingEntry(entry)}
-                    >
-                      Correct &amp; teach…
-                    </SmartOverflowAction>
-                  )}
                   <SmartOverflowAction
                     id="delete"
                     priority="overflow"
@@ -592,13 +559,6 @@ function HistoryPanelComponent({
         )}
       </div>
 
-      {teachingEntry && (
-        <CorrectAndTeachDialog
-          entry={teachingEntry}
-          onClose={() => setTeachingEntry(null)}
-          onSaveCorrection={(text) => onUpdateEntry(teachingEntry.id, text)}
-        />
-      )}
     </div>
   );
 }

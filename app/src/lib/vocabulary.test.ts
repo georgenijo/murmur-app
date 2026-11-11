@@ -32,7 +32,7 @@ describe('validateVocabularyEntries', () => {
     const editor = entry('Story', ['Tori']);
     editor.scope = { kind: 'app', bundleId: 'com.example.Editor' };
     expect(validateVocabularyEntries([terminal, editor])).toBeNull();
-    expect(validateVocabularyEntries([entry('LineBreak', ['new line'])])).toContain('Voice Command');
+    expect(validateVocabularyEntries([entry('LineBreak', ['new line'])])).toContain('built-in spoken formatting phrase');
   });
 
   it('bounds alias values and rejects duplicate aliases deterministically', () => {

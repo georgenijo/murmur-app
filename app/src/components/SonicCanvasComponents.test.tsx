@@ -143,7 +143,6 @@ describe('Sonic Canvas component details', () => {
           }]}
           onClear={vi.fn()}
           onDeleteEntries={vi.fn()}
-          onUpdateEntry={vi.fn()}
         />,
       );
     });
@@ -332,7 +331,6 @@ describe('Sonic Canvas component details', () => {
           }]}
           onClear={onClear}
           onDeleteEntries={vi.fn()}
-          onUpdateEntry={vi.fn()}
         />,
       );
     });
@@ -361,18 +359,17 @@ describe('Sonic Canvas component details', () => {
     vi.useRealTimers();
   });
 
-  it('offers Correct and Teach only on the newest history entry', async () => {
+  it('does not offer Correct and Teach in the transcript actions menu', async () => {
     await act(async () => {
       root.render(<HistoryPanel entries={[
         { id: 'older', text: 'older transcript', timestamp: 1, duration: 1 },
         { id: 'newer', text: 'newest transcript', timestamp: 2, duration: 1 },
-      ]} onClear={vi.fn()} onDeleteEntries={vi.fn()} onUpdateEntry={vi.fn()} />);
+      ]} onClear={vi.fn()} onDeleteEntries={vi.fn()} />);
     });
     const more = container.querySelector('[aria-label="More transcript actions"]') as HTMLButtonElement;
     await act(async () => more.click());
-    const actions = Array.from(document.querySelectorAll<HTMLElement>('button, [role="menuitem"]')).filter((candidate) => candidate.textContent === 'Correct & teach…');
-    expect(actions).toHaveLength(1);
-    await act(async () => actions[0].click());
-    expect((container.querySelector('[aria-label="Corrected transcript"]') as HTMLTextAreaElement).value).toBe('newest transcript');
+    const labels = Array.from(document.querySelectorAll<HTMLElement>('button, [role="menuitem"]')).map((candidate) => candidate.textContent);
+    expect(labels).toContain('Pin transcript');
+    expect(labels.some((label) => /teach/i.test(label ?? ''))).toBe(false);
   });
 });
