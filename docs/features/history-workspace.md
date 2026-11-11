@@ -18,7 +18,7 @@ a special history state.
 
 Stored transcript entries use schema version 2. New live-dictation entries keep
 the exact raw backend recognition separately from the delivered text, together
-with the local model ID, recording correlation, resolved Mode/profile identity,
+with the local model ID, recording correlation, resolved profile identity,
 and content-free transform-stage outcomes. Legacy entries migrate to v2 without
 copying delivered text into the unknown raw-recognition field. Normal dictation
 audio is never part of history.

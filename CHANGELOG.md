@@ -34,8 +34,12 @@ The first launch after upgrading folds each Mode into your settings once:
 What no longer applies:
 
 - The global Mode's writing style, command formatting, vocabulary policy and
-  project context no longer reach apps that have no profile. Give the app a
-  profile to keep a style.
+  project context no longer reach apps that have no profile. The writing style
+  controls more than tone: it also decides whether correction, cleanup steps,
+  spoken commands and prose or number formatting run. For example, an app with
+  no profile that used a global Verbatim Mode now gets your global correction,
+  spoken-command and formatting settings, including spoken-number formatting.
+  Give the app a profile with a writing style to keep the old behavior.
 - A profile that followed a global project-context Mode without being bound to
   one loses that context.
 - A model or language set on a Mode that was bound to a profile is dropped; the

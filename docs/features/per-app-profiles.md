@@ -38,8 +38,8 @@ profiles and every stored field retain their values across the Settings redesign
 | Notes | Removes filler without forcing sentence capitalization, applies deterministic correction, and formats explicitly cued lists, paragraphs, lines, and symbols. |
 
 Code / technical now uses automatic command detection. Existing profiles that
-relied on forced formatting for unknown tools can select Terminal mode, set
-Commands On, or use an explicit `command` cue. Stored profile values are unchanged.
+relied on forced formatting for unknown tools can set Commands On or use an
+explicit `command` cue. Stored profile values are unchanged.
 
 These policies use only Murmur's existing reviewed local formatting APIs. They do not call a cloud service or perform open-ended rewriting. The per-profile Clean, Prose, and Commands controls apply after the preset, so users can visibly fine-tune a category.
 
