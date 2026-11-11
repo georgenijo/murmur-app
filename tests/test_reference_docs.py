@@ -50,11 +50,20 @@ class ReferenceDocsTests(unittest.TestCase):
         self.assertIn("get_model_hardware_guidance", commands)
         self.assertIn("get_model_hardware_guidance", documented)
 
-    def test_mode_file_reader_is_registered_and_documented(self) -> None:
+    def test_retired_mode_commands_are_neither_registered_nor_documented(self) -> None:
         commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())
         documented = documented_commands((ROOT / "docs/reference/commands.md").read_text())
-        self.assertIn("read_modes_file", commands)
-        self.assertIn("read_modes_file", documented)
+        for retired in (
+            "get_mode_runtime_status",
+            "set_next_recording_mode",
+            "cycle_mode",
+            "clear_temporary_mode_override",
+            "probe_browser_site",
+            "read_modes_file",
+        ):
+            with self.subTest(command=retired):
+                self.assertNotIn(retired, commands)
+                self.assertNotIn(retired, documented)
 
     def test_remove_model_command_is_registered_and_documented(self) -> None:
         commands = registered_commands((ROOT / "app/src-tauri/src/lib.rs").read_text())

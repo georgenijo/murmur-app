@@ -842,7 +842,6 @@ mod tests {
             writing_style: None,
             ide_context_enabled: true,
             ide_project_roots: vec!["/project".to_string()],
-            mode_id: None,
         });
         let outcome = state.propose(
             CorrectionProposalRequest {

@@ -1,5 +1,5 @@
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent, AudioStartError};
-use crate::dictation_context::{self, DictationContextSnapshot, ResolverInputs, SessionOverrides};
+use crate::dictation_context::{self, DictationContextSnapshot, ResolverInputs};
 use crate::dictation_diagnostics::DictationCaptureCompletion;
 use crate::dictation_telemetry::{DictationErrorCode, DictationTerminalOutcome};
 use crate::microphone_auto::SmartAutoRequest;
@@ -617,18 +617,12 @@ fn whisper_prefix(prompt: &str) -> String {
 /// folder is scanned (and cached) and its identifiers are placed *first* — they're
 /// more specific than the generic built-ins, so they survive Whisper's prompt
 /// truncation. Folder scanning still happens at most once per folder/enable change.
-fn resolve_code_vocab_prompt(
-    app_state: &AppState,
-    bundle_id: Option<&str>,
-    code_override: Option<bool>,
-) -> String {
+fn resolve_code_vocab_prompt(app_state: &AppState, bundle_id: Option<&str>) -> String {
     // Fast path under the lock: feature off => nothing to do.
     let (enabled, folder, cached) = {
         let dictation = app_state.dictation.lock_or_recover();
         (
-            dictation.code_vocab_enabled
-                && code_override
-                    .unwrap_or_else(|| dictation.code_vocabulary_enabled_for(bundle_id)),
+            dictation.code_vocab_enabled && dictation.code_vocabulary_enabled_for(bundle_id),
             dictation.code_vocab_folder.clone(),
             dictation.code_vocab_prompt.clone(),
         )
@@ -680,10 +674,9 @@ fn resolve_code_vocab_prompt(
 fn cached_code_vocab_prompt(
     dictation: &crate::state::DictationState,
     bundle_id: Option<&str>,
-    code_override: Option<bool>,
 ) -> Option<String> {
-    let enabled_for_context = dictation.code_vocab_enabled
-        && code_override.unwrap_or_else(|| dictation.code_vocabulary_enabled_for(bundle_id));
+    let enabled_for_context =
+        dictation.code_vocab_enabled && dictation.code_vocabulary_enabled_for(bundle_id);
     if !enabled_for_context {
         return Some(String::new());
     }
@@ -709,8 +702,6 @@ pub(crate) fn resolve_live_context(
     knowledge: &crate::knowledge_store::KnowledgeStore,
     app_identity: &crate::frontmost::FrontmostAppIdentity,
     delivery_target: &crate::frontmost::DeliveryTargetSnapshot,
-    site_identity: Option<&crate::browser_site::BrowserSiteIdentity>,
-    session_overrides: SessionOverrides,
 ) -> Arc<DictationContextSnapshot> {
     let bundle_id = app_identity.bundle_id.as_deref();
     let repository_voice_commands = match knowledge.voice_commands_for_context(bundle_id) {
@@ -725,83 +716,32 @@ pub(crate) fn resolve_live_context(
         }
     };
     loop {
-        let code_override = session_overrides
-            .code_vocabulary_override(&app_state.dictation.lock_or_recover(), bundle_id);
-        let code_vocab = resolve_code_vocab_prompt(app_state, bundle_id, code_override);
+        let code_vocab = resolve_code_vocab_prompt(app_state, bundle_id);
         let dictation = app_state.dictation.lock_or_recover();
-        if session_overrides.code_vocabulary_override(&dictation, bundle_id) != code_override {
-            continue;
-        }
-        let Some(current_code_vocab) =
-            cached_code_vocab_prompt(&dictation, bundle_id, code_override)
-        else {
+        let Some(current_code_vocab) = cached_code_vocab_prompt(&dictation, bundle_id) else {
             continue;
         };
         if current_code_vocab != code_vocab {
             continue;
         }
-        let resource_profiles = session_overrides.resource_profiles(&dictation.app_profiles);
         let sanitized = crate::vocabulary_alias::prompt_terms(
             &dictation.vocabulary_entries,
             bundle_id,
-            &resource_profiles,
+            &dictation.app_profiles,
         )
         .replace('\0', "");
         let prompt = combine_prompts(&sanitized, &code_vocab);
-        let correction_matcher = if session_overrides.mode.is_some() {
-            // Build only this explicit one-recording policy's immutable matcher.
-            // Scoped aliases/replacements still use the same app/project inputs.
-            let include_code = code_override
-                .unwrap_or_else(|| dictation.code_vocabulary_enabled_for(bundle_id))
-                && dictation.code_vocab_enabled;
-            let terms = if include_code {
-                crate::vocab::builtin_terms_prompt()
-                    .split_whitespace()
-                    .chain(
-                        dictation
-                            .code_vocab_prompt
-                            .as_deref()
-                            .unwrap_or("")
-                            .split_whitespace(),
-                    )
-                    .map(str::to_owned)
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-            let knowledge = app_state.knowledge_replacements.lock_or_recover();
-            Some(
-                crate::vocabulary_alias::CorrectionMatcherSet::build_with_knowledge(
-                    &terms,
-                    &dictation.vocabulary_entries,
-                    &resource_profiles,
-                    &knowledge,
-                    dictation.correction_fuzzy,
-                    include_code,
-                )
-                .select(bundle_id),
-            )
-        } else {
-            app_state
-                .correction_matcher
-                .lock_or_recover()
-                .as_ref()
-                .map(|matchers| matchers.select(bundle_id))
-        };
+        let correction_matcher = app_state
+            .correction_matcher
+            .lock_or_recover()
+            .as_ref()
+            .map(|matchers| matchers.select(bundle_id));
         let ide_context_index = bundle_id.and_then(|bundle_id| {
-            resource_profiles
+            dictation
+                .app_profiles
                 .iter()
                 .find(|profile| profile.bundle_id == bundle_id)
-                .filter(|profile| {
-                    profile.ide_context_enabled
-                        || (session_overrides.mode.is_none()
-                            && dictation.modes.iter().any(|mode| {
-                                mode.enabled
-                                    && profile.mode_id.as_deref() == Some(mode.id.as_str())
-                                    && mode.context_policy
-                                        == crate::state::ModeContextPolicy::Project
-                            }))
-                })
+                .filter(|profile| profile.ide_context_enabled)
                 .and_then(|profile| {
                     app_state
                         .ide_context
@@ -810,18 +750,14 @@ pub(crate) fn resolve_live_context(
                 })
         });
         let vocabulary_version = app_state.settings_revision.load(Ordering::SeqCst);
-        let site_mode_id =
-            crate::dictation_context::enabled_site_mode_id(&dictation, site_identity);
         let mut context = dictation_context::resolve(ResolverInputs {
             bundle_id,
-            site_mode_id,
             global: &dictation,
             prompt,
             correction_matcher,
             ide_context_index,
             vocabulary_version,
             voice_commands: repository_voice_commands.clone(),
-            session_overrides: session_overrides.clone(),
         });
         context.app.process_id = app_identity.process_id;
         context.app.delivery_target = delivery_target.clone();
@@ -833,31 +769,22 @@ pub(crate) fn resolve_live_context(
 ///
 /// A smart destination may point at a different application than the one that
 /// is temporarily frontmost (for example, an editor retained across a media
-/// interaction). In that case browser-site context from the temporary app must
-/// not leak into the intended destination's profile resolution.
-struct RecordingDestination<'a> {
+/// interaction). The profile is resolved for the intended destination.
+struct RecordingDestination {
     target: crate::frontmost::DeliveryTargetSnapshot,
-    site_identity: Option<&'a crate::browser_site::BrowserSiteIdentity>,
     smart_destination: crate::smart_destination::Snapshot,
 }
 
-fn select_recording_destination<'a>(
+fn select_recording_destination(
     accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
-    accepted_site_identity: Option<&'a crate::browser_site::BrowserSiteIdentity>,
     smart_destination: crate::smart_destination::Snapshot,
-) -> RecordingDestination<'a> {
-    let Some(intended_target) = smart_destination.identity() else {
-        return RecordingDestination {
-            target: accepted_target.clone(),
-            site_identity: accepted_site_identity,
-            smart_destination,
-        };
-    };
-    let same_app = crate::frontmost::profile_identity_from_delivery_target(intended_target)
-        == crate::frontmost::profile_identity_from_delivery_target(accepted_target);
+) -> RecordingDestination {
+    let target = smart_destination
+        .identity()
+        .cloned()
+        .unwrap_or_else(|| accepted_target.clone());
     RecordingDestination {
-        target: intended_target.clone(),
-        site_identity: same_app.then_some(accepted_site_identity).flatten(),
+        target,
         smart_destination,
     }
 }
@@ -868,18 +795,11 @@ fn select_recording_destination<'a>(
 fn resolve_recording_context(
     app_state: &AppState,
     knowledge: &crate::knowledge_store::KnowledgeStore,
-    destination: RecordingDestination<'_>,
-    session_overrides: SessionOverrides,
+    destination: RecordingDestination,
 ) -> Arc<DictationContextSnapshot> {
     let app_identity = crate::frontmost::profile_identity_from_delivery_target(&destination.target);
-    let mut context = resolve_live_context(
-        app_state,
-        knowledge,
-        &app_identity,
-        &destination.target,
-        destination.site_identity,
-        session_overrides,
-    );
+    let mut context =
+        resolve_live_context(app_state, knowledge, &app_identity, &destination.target);
     Arc::make_mut(&mut context).app.smart_destination = destination.smart_destination;
     context
 }
@@ -980,7 +900,6 @@ struct IdleGuard<'a> {
     app_state: &'a AppState,
     recording_id: u64,
     disarmed: bool,
-    next_mode_token: Option<u64>,
 }
 
 impl<'a> IdleGuard<'a> {
@@ -989,16 +908,11 @@ impl<'a> IdleGuard<'a> {
             app_state,
             recording_id,
             disarmed: false,
-            next_mode_token: None,
         }
     }
 
     fn disarm(&mut self) {
         self.disarmed = true;
-    }
-
-    fn consume_next_mode_after_processing(&mut self, token: Option<u64>, sample_count: usize) {
-        self.next_mode_token = (sample_count >= 4_800).then_some(token).flatten();
     }
 }
 
@@ -1014,11 +928,6 @@ impl IdleGuard<'_> {
             let current_rid = self.app_state.recording_id.load(Ordering::SeqCst);
             if current_rid != self.recording_id {
                 return;
-            }
-            if dictation.status == DictationStatus::Processing
-                && !self.app_state.is_cancelled(self.recording_id)
-            {
-                dictation.next_recording_mode.consume(self.next_mode_token);
             }
             transition_dictation_status(self.recording_id, &mut dictation, DictationStatus::Idle);
             keyboard::set_processing(false);
@@ -2681,9 +2590,6 @@ async fn run_transcription_pipeline(
     // Guard resets status to Idle on any return path (error or success),
     // but only if this recording is still the active one
     let mut _guard = IdleGuard::new(app_state, recording_id);
-    // Only the native path supplies a token. Phantom captures never enter the
-    // pipeline; retain the boundary here so other sources cannot consume one.
-    _guard.consume_next_mode_after_processing(context.next_mode_token, samples.len());
 
     let transcription = &context.transcription;
     let transformations = &context.transformations;
@@ -3455,7 +3361,7 @@ pub async fn process_audio(
     if state.app_state.meeting_blocks_asr() {
         return Err("Cannot process audio while a meeting transcript is active.".to_string());
     }
-    let (rid, delivery_target, site_identity, smart_enabled) = {
+    let (rid, delivery_target, smart_enabled) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         // Same mutual exclusion as start_native_recording: this legacy base64
         // path also runs the shared Whisper backend, so refuse while a file
@@ -3477,16 +3383,9 @@ pub async fn process_audio(
         let recording_id = state.app_state.next_recording_id();
         transition_dictation_status(recording_id, &mut dictation, DictationStatus::Processing);
         let delivery_target = crate::frontmost::capture_delivery_target_snapshot();
-        let app_identity =
-            crate::frontmost::profile_identity_from_delivery_target(&delivery_target);
-        let site_identity = dictation
-            .site_mode_lookup_enabled
-            .then(|| crate::browser_site::query_for_identity(&app_identity))
-            .flatten();
         (
             recording_id,
             delivery_target,
-            site_identity,
             smart_destination_eligible(&dictation),
         )
     };
@@ -3523,14 +3422,8 @@ pub async fn process_audio(
             "state": "idle"
         }));
     }
-    let destination =
-        select_recording_destination(&delivery_target, site_identity.as_ref(), smart_destination);
-    let context = resolve_recording_context(
-        &state.app_state,
-        &state.knowledge,
-        destination,
-        SessionOverrides::default(),
-    );
+    let destination = select_recording_destination(&delivery_target, smart_destination);
+    let context = resolve_recording_context(&state.app_state, &state.knowledge, destination);
     if smart_enabled {
         emit_smart_destination(
             &app_handle,
@@ -3828,39 +3721,60 @@ fn stage_vocabulary_configuration(
     })
 }
 
-fn sanitize_browser_site_rules(
-    values: &[serde_json::Value],
-    modes: &[crate::state::MurmurMode],
-) -> Vec<crate::state::BrowserSiteRule> {
-    let mut seen_ids = std::collections::HashSet::new();
-    let mut seen_sites = std::collections::HashSet::new();
-    values
+pub(crate) fn sanitize_app_profiles(
+    profiles: &[serde_json::Value],
+) -> Vec<crate::state::AppProfile> {
+    profiles
         .iter()
-        .take(128)
-        .filter_map(|value| {
-            let id = value.get("id")?.as_str()?.trim();
-            let browser_bundle_id = value.get("browserBundleId")?.as_str()?.trim();
-            let host = crate::browser_site::normalize_host(value.get("host")?.as_str()?)?;
-            let mode_id = value.get("modeId")?.as_str()?.trim();
-            if id.is_empty()
-                || id.len() > 128
-                || !seen_ids.insert(id.to_string())
-                || !seen_sites.insert((browser_bundle_id.to_string(), host.clone()))
-                || !crate::browser_site::allowed_browser(browser_bundle_id)
-                || (crate::dictation_context::builtin_mode(mode_id).is_none()
-                    && !modes.iter().any(|mode| mode.id == mode_id))
-            {
+        .filter_map(|p| {
+            let bundle_id = p
+                .get("bundleId")
+                .and_then(|v| v.as_str())?
+                .trim()
+                .to_string();
+            if bundle_id.is_empty() {
                 return None;
             }
-            Some(crate::state::BrowserSiteRule {
-                id: id.to_string(),
-                browser_bundle_id: browser_bundle_id.to_string(),
-                host,
-                mode_id: mode_id.to_string(),
-                enabled: value
-                    .get("enabled")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(true),
+            let label = p
+                .get("label")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            // null/absent -> None (use global); otherwise the boolean override.
+            let auto_paste_override = p.get("autoPasteOverride").and_then(|v| v.as_bool());
+            let cleanup_override = p.get("cleanupOverride").and_then(|v| v.as_bool());
+            let cli_formatting_override = p.get("cliFormattingOverride").and_then(|v| v.as_bool());
+            let smart_formatting_override =
+                p.get("smartFormattingOverride").and_then(|v| v.as_bool());
+            let writing_style = parse_writing_style(p.get("writingStyle"));
+            let ide_context_enabled = p
+                .get("ideContextEnabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let ide_project_roots = p
+                .get("ideProjectRoots")
+                .and_then(|value| value.as_array())
+                .map(|roots| {
+                    let roots = roots
+                        .iter()
+                        .filter_map(|root| root.as_str())
+                        .map(str::trim)
+                        .filter(|root| !root.is_empty())
+                        .map(str::to_string)
+                        .collect::<Vec<_>>();
+                    crate::ide_context::normalize_config_roots(&roots)
+                })
+                .unwrap_or_default();
+            Some(crate::state::AppProfile {
+                bundle_id,
+                label,
+                auto_paste_override,
+                cleanup_override,
+                cli_formatting_override,
+                smart_formatting_override,
+                writing_style,
+                ide_context_enabled,
+                ide_project_roots,
             })
         })
         .collect()
@@ -4044,254 +3958,16 @@ pub async fn configure_dictation(
         dictation.output_dir = output_dir.to_string();
     }
 
-    if let Some(modes) = options.get("modes").and_then(|value| value.as_array()) {
-        let mut seen = std::collections::HashSet::new();
-        dictation.modes = modes
-            .iter()
-            .take(100)
-            .filter_map(|value| {
-                let id = value.get("id")?.as_str()?.trim();
-                let name = value.get("name")?.as_str()?.trim();
-                if id.is_empty()
-                    || name.is_empty()
-                    || id.len() > 128
-                    || name.len() > 128
-                    || id.starts_with("builtin.")
-                    || !seen.insert(id.to_string())
-                {
-                    return None;
-                }
-                let writing_style = parse_writing_style(value.get("writingStyle"));
-                if value
-                    .get("writingStyle")
-                    .is_some_and(|field| !field.is_null())
-                    && writing_style.is_none()
-                {
-                    return None;
-                }
-                for field in [
-                    "enabled",
-                    "cleanupEnabled",
-                    "smartFormattingEnabled",
-                    "cliFormattingEnabled",
-                    "autoPaste",
-                ] {
-                    if value
-                        .get(field)
-                        .is_some_and(|field| !field.is_null() && !field.is_boolean())
-                    {
-                        return None;
-                    }
-                }
-                if !matches!(
-                    value
-                        .get("vocabularyPolicy")
-                        .and_then(|value| value.as_str()),
-                    None | Some("inherit" | "general" | "technical")
-                ) || !matches!(
-                    value.get("contextPolicy").and_then(|value| value.as_str()),
-                    None | Some("none" | "project")
-                ) {
-                    return None;
-                }
-                let model_id = match value.get("modelId") {
-                    None | Some(serde_json::Value::Null) => None,
-                    Some(value) => {
-                        let model = value.as_str()?;
-                        model_runtime::model_definition(model).ok()?;
-                        Some(model.to_string())
-                    }
-                };
-                let language = match value.get("language") {
-                    None | Some(serde_json::Value::Null) => None,
-                    Some(value) => {
-                        let language = value.as_str()?;
-                        if !matches!(
-                            language,
-                            "auto"
-                                | "en"
-                                | "es"
-                                | "fr"
-                                | "de"
-                                | "it"
-                                | "pt"
-                                | "nl"
-                                | "ja"
-                                | "ko"
-                                | "zh"
-                                | "ru"
-                                | "pl"
-                                | "tr"
-                                | "hi"
-                                | "ar"
-                        ) {
-                            return None;
-                        }
-                        Some(language.to_string())
-                    }
-                };
-                Some(crate::state::MurmurMode {
-                    id: id.to_string(),
-                    name: name.to_string(),
-                    enabled: value
-                        .get("enabled")
-                        .and_then(|value| value.as_bool())
-                        .unwrap_or(true),
-                    writing_style,
-                    cleanup_enabled: value
-                        .get("cleanupEnabled")
-                        .and_then(|value| value.as_bool()),
-                    smart_formatting_enabled: value
-                        .get("smartFormattingEnabled")
-                        .and_then(|value| value.as_bool()),
-                    cli_formatting_enabled: value
-                        .get("cliFormattingEnabled")
-                        .and_then(|value| value.as_bool()),
-                    vocabulary_policy: match value
-                        .get("vocabularyPolicy")
-                        .and_then(|value| value.as_str())
-                    {
-                        Some("technical") => crate::state::ModeVocabularyPolicy::Technical,
-                        Some("general") => crate::state::ModeVocabularyPolicy::General,
-                        _ => crate::state::ModeVocabularyPolicy::Inherit,
-                    },
-                    context_policy: match value
-                        .get("contextPolicy")
-                        .and_then(|value| value.as_str())
-                    {
-                        Some("project") => crate::state::ModeContextPolicy::Project,
-                        _ => crate::state::ModeContextPolicy::None,
-                    },
-                    model_id,
-                    language,
-                    auto_paste: value.get("autoPaste").and_then(|value| value.as_bool()),
-                })
-            })
-            .collect();
-    }
-    if let Some(id) = options.get("activeModeId").and_then(|value| value.as_str()) {
-        let id = id.trim();
-        if crate::dictation_context::builtin_mode(id).is_some()
-            || dictation
-                .modes
-                .iter()
-                .any(|mode| mode.id == id && mode.enabled)
-        {
-            dictation.manual_mode_id = id.to_string();
-        } else {
-            dictation.manual_mode_id = "builtin.everyday".to_string();
-        }
-    }
-    if dictation.temporary_mode_id.as_deref().is_some_and(|id| {
-        crate::dictation_context::builtin_mode(id).is_none()
-            && !dictation
-                .modes
-                .iter()
-                .any(|mode| mode.id == id && mode.enabled)
-    }) {
-        dictation.temporary_mode_id = None;
-        dictation.temporary_mode_bundle_id = None;
-    }
-
-    if let Some(enabled) = options
-        .get("siteModeLookupEnabled")
-        .and_then(|value| value.as_bool())
-    {
-        dictation.site_mode_lookup_enabled = enabled;
-    }
-    if let Some(rules) = options
-        .get("browserSiteRules")
-        .and_then(|value| value.as_array())
-    {
-        dictation.browser_site_rules = sanitize_browser_site_rules(rules, &dictation.modes);
-    }
-
     // Per-app profiles carry nullable delivery/transformation overrides. A
     // missing/null value means "no override". Entries without a bundleId are
     // skipped. Replaces the whole list when the key is present.
     if let Some(profiles) = options.get("appProfiles").and_then(|v| v.as_array()) {
-        dictation.app_profiles = profiles
-            .iter()
-            .filter_map(|p| {
-                let bundle_id = p
-                    .get("bundleId")
-                    .and_then(|v| v.as_str())?
-                    .trim()
-                    .to_string();
-                if bundle_id.is_empty() {
-                    return None;
-                }
-                let label = p
-                    .get("label")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                // null/absent -> None (use global); otherwise the boolean override.
-                let auto_paste_override = p.get("autoPasteOverride").and_then(|v| v.as_bool());
-                let cleanup_override = p.get("cleanupOverride").and_then(|v| v.as_bool());
-                let cli_formatting_override =
-                    p.get("cliFormattingOverride").and_then(|v| v.as_bool());
-                let smart_formatting_override =
-                    p.get("smartFormattingOverride").and_then(|v| v.as_bool());
-                let writing_style = parse_writing_style(p.get("writingStyle"));
-                let ide_context_enabled = p
-                    .get("ideContextEnabled")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let ide_project_roots = p
-                    .get("ideProjectRoots")
-                    .and_then(|value| value.as_array())
-                    .map(|roots| {
-                        let roots = roots
-                            .iter()
-                            .filter_map(|root| root.as_str())
-                            .map(str::trim)
-                            .filter(|root| !root.is_empty())
-                            .map(str::to_string)
-                            .collect::<Vec<_>>();
-                        crate::ide_context::normalize_config_roots(&roots)
-                    })
-                    .unwrap_or_default();
-                let mode_id = p
-                    .get("modeId")
-                    .and_then(|value| value.as_str())
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(str::to_string);
-                Some(crate::state::AppProfile {
-                    bundle_id,
-                    label,
-                    auto_paste_override,
-                    cleanup_override,
-                    cli_formatting_override,
-                    smart_formatting_override,
-                    writing_style,
-                    ide_context_enabled,
-                    ide_project_roots,
-                    mode_id,
-                })
-            })
-            .collect();
-        let effective_ide_profiles = dictation
-            .app_profiles
-            .iter()
-            .cloned()
-            .map(|mut profile| {
-                if dictation.modes.iter().any(|mode| {
-                    mode.enabled
-                        && profile.mode_id.as_deref() == Some(mode.id.as_str())
-                        && mode.context_policy == crate::state::ModeContextPolicy::Project
-                }) {
-                    profile.ide_context_enabled = true;
-                }
-                profile
-            })
-            .collect::<Vec<_>>();
+        dictation.app_profiles = sanitize_app_profiles(profiles);
         let requests = state
             .app_state
             .ide_context
             .lock_or_recover()
-            .reconcile_profiles(&effective_ide_profiles);
+            .reconcile_profiles(&dictation.app_profiles);
         for request in requests {
             schedule_ide_scan(app_handle.clone(), request);
         }
@@ -5505,10 +5181,8 @@ pub async fn start_native_recording(
         performance_started_at_ms,
         smart_enabled,
         delivery_target,
-        site_identity,
         selected_device_name,
         smart_auto_reason,
-        session_overrides,
     ) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
         if let Some(blocker) = dictation_start_blocker(state.inner(), dictation.status) {
@@ -5599,22 +5273,14 @@ pub async fn start_native_recording(
                 // ownership lock. This startup work is therefore included in
                 // request-to-first-PCM SLO timing.
                 let delivery_target = crate::frontmost::capture_delivery_target_snapshot();
-                let app_identity =
-                    crate::frontmost::profile_identity_from_delivery_target(&delivery_target);
-                let site_identity = dictation
-                    .site_mode_lookup_enabled
-                    .then(|| crate::browser_site::query_for_identity(&app_identity))
-                    .flatten();
                 (
                     rid,
                     gesture,
                     performance_started_at_ms,
                     smart_destination_eligible(&dictation),
                     delivery_target,
-                    site_identity,
                     selected_device_name,
                     smart_auto_reason,
-                    super::mode_runtime::next_recording_overrides(&dictation),
                 )
             }
         }
@@ -5712,20 +5378,14 @@ pub async fn start_native_recording(
     } else {
         crate::smart_destination::Snapshot::Disabled
     };
-    let destination =
-        select_recording_destination(&delivery_target, site_identity.as_ref(), smart_destination);
+    let destination = select_recording_destination(&delivery_target, smart_destination);
     let app_identity = crate::frontmost::profile_identity_from_delivery_target(&destination.target);
     refresh_expired_ide_context(
         &app_handle,
         &state.app_state,
         app_identity.bundle_id.as_deref(),
     );
-    let mut context = resolve_recording_context(
-        &state.app_state,
-        &state.knowledge,
-        destination,
-        session_overrides,
-    );
+    let mut context = resolve_recording_context(&state.app_state, &state.knowledge, destination);
     // Install the resource in the immutable recording snapshot before publishing
     // it. The live-dictation engine currently refuses generation and preparation
     // (#1081); if re-enabled, preparation waits for Activate below.
@@ -6359,7 +6019,6 @@ async fn stop_native_recording_for(
                 "recording": {
                     "recordingId": rid,
                     "modelId": model_name,
-                    "modeId": context.resolved_mode_id,
                     "profileId": context.matched_profile.as_ref().map(|profile| profile.label.as_str()),
                     "stages": history.stages,
                 }
@@ -6709,7 +6368,7 @@ pub async fn transcribe_file(
     let sanitized = custom_vocabulary.replace('\0', "");
     // Imported files have no frontmost-app context, so developer vocabulary is
     // not applied. Explicit preferred terms remain in `custom_vocabulary`.
-    let code_vocab = resolve_code_vocab_prompt(&state.app_state, None, None);
+    let code_vocab = resolve_code_vocab_prompt(&state.app_state, None);
     let prompt = combine_prompts(&sanitized, &code_vocab);
     let mut decode_ms = 0;
     let (text, load_report) = state.app_state.model_runtime.with_ready_backend(
@@ -8318,7 +7977,6 @@ pub(crate) mod tests {
             writing_style: None,
             ide_context_enabled: false,
             ide_project_roots: Vec::new(),
-            mode_id: None,
         };
         let mut technical = ordinary.clone();
         technical.bundle_id = "com.example.Editor".to_string();
@@ -8326,19 +7984,19 @@ pub(crate) mod tests {
         dictation.app_profiles = vec![ordinary, technical];
 
         assert_eq!(
-            cached_code_vocab_prompt(&dictation, None, None).as_deref(),
+            cached_code_vocab_prompt(&dictation, None).as_deref(),
             Some("")
         );
         assert_eq!(
-            cached_code_vocab_prompt(&dictation, Some("com.example.Chat"), None).as_deref(),
+            cached_code_vocab_prompt(&dictation, Some("com.example.Chat")).as_deref(),
             Some("")
         );
         assert_eq!(
-            cached_code_vocab_prompt(&dictation, Some("com.example.Unknown"), None).as_deref(),
+            cached_code_vocab_prompt(&dictation, Some("com.example.Unknown")).as_deref(),
             Some("")
         );
         let technical_prompt =
-            cached_code_vocab_prompt(&dictation, Some("com.example.Editor"), None).unwrap();
+            cached_code_vocab_prompt(&dictation, Some("com.example.Editor")).unwrap();
         assert!(technical_prompt.starts_with("all__ toBe"));
         assert!(technical_prompt.contains("useEffect"));
     }
@@ -8557,52 +8215,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn real_recording_consumes_once_before_idle_but_cancel_and_phantom_do_not() {
-        for outcome in [
-            "real",
-            "cancelled",
-            "phantom",
-            "cancel_committed",
-            "superseded",
-        ] {
-            let app_state = AppState::default();
-            let rid = app_state.next_recording_id();
-            let token = {
-                let mut dictation = app_state.dictation.lock_or_recover();
-                dictation.status = DictationStatus::Processing;
-                dictation.next_recording_mode.set(Some(
-                    dictation_context::builtin_mode("builtin.verbatim").unwrap(),
-                ));
-                dictation.next_recording_mode.snapshot().next_mode_token
-            };
-            let mut guard = IdleGuard::new(&app_state, rid);
-            guard.consume_next_mode_after_processing(
-                token,
-                if outcome == "phantom" { 4_799 } else { 4_800 },
-            );
-            if outcome == "cancelled" {
-                app_state.cancel_recording(rid);
-            }
-            if outcome == "cancel_committed" {
-                app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
-            }
-            if outcome == "superseded" {
-                app_state.next_recording_id();
-            }
-            drop(guard);
-            let dictation = app_state.dictation.lock_or_recover();
-            assert_eq!(
-                dictation.next_recording_mode.snapshot().mode.is_none(),
-                outcome == "real",
-                "{outcome}"
-            );
-            if outcome == "real" {
-                assert_eq!(dictation.status, DictationStatus::Idle);
-            }
-        }
-    }
-
-    #[test]
     fn paused_smart_preference_preserves_per_app_auto_paste() {
         let app_state = AppState::default();
         {
@@ -8619,7 +8231,6 @@ pub(crate) mod tests {
                 writing_style: None,
                 ide_context_enabled: false,
                 ide_project_roots: vec![],
-                mode_id: None,
             }];
             assert!(!smart_destination_eligible(&dictation));
             dictation.auto_paste = true;
@@ -8641,8 +8252,6 @@ pub(crate) mod tests {
                 process_id: Some(42),
             },
             &crate::frontmost::DeliveryTargetSnapshot::Incomplete,
-            None,
-            SessionOverrides::default(),
         );
         assert!(context.delivery.auto_paste);
         assert!(matches!(
@@ -8717,7 +8326,6 @@ pub(crate) mod tests {
 
     #[test]
     fn smart_destination_resolves_and_freezes_the_intended_targets_profile() {
-        use crate::browser_site::BrowserSiteIdentity;
         use crate::frontmost::{
             AppTransitionSnapshot, DeliveryTargetIdentity, DeliveryTargetSnapshot,
             ProcessInstanceToken,
@@ -8746,14 +8354,9 @@ pub(crate) mod tests {
             writing_style: None,
             ide_context_enabled: false,
             ide_project_roots: Vec::new(),
-            mode_id: None,
         };
         let media_target = target("com.brave.Browser", 41, 1);
         let editor_target = target("com.example.Editor", 42, 2);
-        let media_site = BrowserSiteIdentity {
-            browser_bundle_id: "com.brave.Browser".into(),
-            host: "example.com".into(),
-        };
         let app_state = AppState::default();
         app_state.dictation.lock_or_recover().app_profiles = vec![
             profile("com.brave.Browser", "Media browser"),
@@ -8785,19 +8388,9 @@ pub(crate) mod tests {
             ),
             "unavailable",
         );
-        let destination =
-            select_recording_destination(&media_target, Some(&media_site), smart.clone());
+        let destination = select_recording_destination(&media_target, smart.clone());
         assert!(destination.target == editor_target);
-        assert!(
-            destination.site_identity.is_none(),
-            "browser context from temporary media focus must not follow a cross-app destination",
-        );
-        let context = resolve_recording_context(
-            &app_state,
-            &knowledge,
-            destination,
-            SessionOverrides::default(),
-        );
+        let context = resolve_recording_context(&app_state, &knowledge, destination);
         assert_eq!(context.app.bundle_id.as_deref(), Some("com.example.Editor"));
         assert_eq!(
             context
@@ -8814,17 +8407,10 @@ pub(crate) mod tests {
 
         let disabled = select_recording_destination(
             &media_target,
-            Some(&media_site),
             crate::smart_destination::Snapshot::Disabled,
         );
         assert!(disabled.target == media_target);
-        assert!(disabled.site_identity.is_some());
-        let context = resolve_recording_context(
-            &app_state,
-            &knowledge,
-            disabled,
-            SessionOverrides::default(),
-        );
+        let context = resolve_recording_context(&app_state, &knowledge, disabled);
         assert_eq!(
             context
                 .matched_profile
@@ -8840,39 +8426,45 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn session_mode_scopes_prompt_and_matcher_to_its_effective_context_and_style() {
+    fn live_context_scopes_prompt_and_matcher_to_the_apps_explicit_profile() {
         use crate::knowledge_store::{
             KnowledgeEntry, KnowledgePayload, KnowledgeProvenance, KnowledgeScope,
         };
-        use crate::state::{
-            AppProfile, ModeContextPolicy, VocabularyEntry, VocabularyScope, WritingStyle,
-        };
+        use crate::state::{AppProfile, VocabularyEntry, VocabularyScope, WritingStyle};
         let app_state = AppState::default();
-        let bundle = "com.example.Editor";
+        let editor = "com.example.Editor";
+        let chat = "com.example.Chat";
+        let profile = |bundle_id: &str, style: Option<WritingStyle>, project: bool| AppProfile {
+            bundle_id: bundle_id.into(),
+            label: bundle_id.into(),
+            auto_paste_override: None,
+            cleanup_override: None,
+            cli_formatting_override: None,
+            smart_formatting_override: None,
+            writing_style: style,
+            ide_context_enabled: project,
+            ide_project_roots: if project {
+                vec!["/project".into()]
+            } else {
+                Vec::new()
+            },
+        };
         {
             let mut dictation = app_state.dictation.lock_or_recover();
             dictation.code_vocab_enabled = true;
             dictation.code_vocab_folder = "/project".into();
             dictation.code_vocab_prompt = Some("all__ toBe".into());
-            dictation.app_profiles = vec![AppProfile {
-                bundle_id: bundle.into(),
-                label: "Editor".into(),
-                auto_paste_override: None,
-                cleanup_override: None,
-                cli_formatting_override: None,
-                smart_formatting_override: None,
-                writing_style: Some(WritingStyle::CodeTechnical),
-                ide_context_enabled: true,
-                ide_project_roots: vec!["/project".into()],
-                mode_id: None,
-            }];
+            dictation.app_profiles = vec![
+                profile(editor, Some(WritingStyle::CodeTechnical), true),
+                profile(chat, Some(WritingStyle::Conversational), false),
+            ];
             dictation.vocabulary_entries = vec![VocabularyEntry {
                 id: "project-term".into(),
                 written: "ProjectWord".into(),
                 aliases: vec!["project alias".into()],
                 enabled: true,
                 scope: VocabularyScope::Project {
-                    bundle_id: bundle.into(),
+                    bundle_id: editor.into(),
                     root: "/project".into(),
                 },
             }];
@@ -8885,7 +8477,7 @@ pub(crate) mod tests {
             },
             enabled: true,
             scope: KnowledgeScope::Project {
-                bundle_id: bundle.into(),
+                bundle_id: editor.into(),
                 root: "/project".into(),
             },
             provenance: KnowledgeProvenance::LearnedCorrection,
@@ -8894,46 +8486,27 @@ pub(crate) mod tests {
             revision: 1,
             voice_command: None,
         }]);
-        let identity = crate::frontmost::FrontmostAppIdentity {
-            bundle_id: Some(bundle.into()),
-            process_id: Some(1),
-        };
+        rebuild_correction_matcher(&app_state, &app_state.dictation.lock_or_recover());
         let knowledge = crate::knowledge_store::KnowledgeStore::default();
-        for id in [
-            "builtin.email",
-            "builtin.notes",
-            "builtin.messages",
-            "builtin.technical",
-            "builtin.verbatim",
-            "project",
-        ] {
-            let mut mode = dictation_context::builtin_mode(if id == "project" {
-                "builtin.technical"
-            } else {
-                id
-            })
-            .unwrap();
-            if id == "project" {
-                mode.context_policy = ModeContextPolicy::Project;
-            }
+        for bundle in [editor, chat] {
             let context = resolve_live_context(
                 &app_state,
                 &knowledge,
-                &identity,
-                &crate::frontmost::DeliveryTargetSnapshot::Incomplete,
-                None,
-                SessionOverrides {
-                    mode: Some(mode),
-                    ..Default::default()
+                &crate::frontmost::FrontmostAppIdentity {
+                    bundle_id: Some(bundle.into()),
+                    process_id: Some(1),
                 },
+                &crate::frontmost::DeliveryTargetSnapshot::Incomplete,
             );
             let prompt = context.transcription.prompt.as_deref().unwrap_or("");
             let matcher = context.transformations.correction_matcher.as_ref().unwrap();
-            let project = id == "project";
-            let technical = project || id == "builtin.technical";
-            assert_eq!(context.context_capture.local_project_index, project, "{id}");
-            assert_eq!(prompt.contains("ProjectWord"), project, "{id}");
-            assert_eq!(prompt.contains("all__"), technical, "{id}");
+            let project = bundle == editor;
+            assert_eq!(
+                context.context_capture.local_project_index, project,
+                "{bundle}"
+            );
+            assert_eq!(prompt.contains("ProjectWord"), project, "{bundle}");
+            assert_eq!(prompt.contains("all__"), project, "{bundle}");
             assert_eq!(
                 matcher.apply("project alias"),
                 if project {
@@ -8941,7 +8514,7 @@ pub(crate) mod tests {
                 } else {
                     "project alias"
                 },
-                "{id}"
+                "{bundle}"
             );
             assert_eq!(
                 matcher.apply("learned alias"),
@@ -8950,16 +8523,7 @@ pub(crate) mod tests {
                 } else {
                     "learned alias"
                 },
-                "{id}"
-            );
-            assert_eq!(
-                matcher.apply("all the machines"),
-                if technical {
-                    "all__ the machines"
-                } else {
-                    "all the machines"
-                },
-                "{id}"
+                "{bundle}"
             );
         }
     }
@@ -9064,30 +8628,6 @@ pub(crate) mod tests {
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
         assert_eq!(id3, 3);
-    }
-
-    #[test]
-    fn browser_site_rule_boundary_deduplicates_normalized_browser_hosts() {
-        let rules = vec![
-            serde_json::json!({
-                "id": "first",
-                "browserBundleId": "com.apple.Safari",
-                "host": "GitHub.com.",
-                "modeId": "builtin.technical"
-            }),
-            serde_json::json!({
-                "id": "second",
-                "browserBundleId": "com.apple.Safari",
-                "host": "github.com",
-                "modeId": "builtin.email"
-            }),
-        ];
-
-        let sanitized = sanitize_browser_site_rules(&rules, &[]);
-
-        assert_eq!(sanitized.len(), 1);
-        assert_eq!(sanitized[0].id, "first");
-        assert_eq!(sanitized[0].host, "github.com");
     }
 
     #[test]

@@ -1077,7 +1077,6 @@ mod tests {
             writing_style: None,
             ide_context_enabled: enabled,
             ide_project_roots: roots,
-            mode_id: None,
         }
     }
 

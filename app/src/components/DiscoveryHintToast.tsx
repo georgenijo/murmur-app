@@ -11,11 +11,6 @@ const HINTS: Record<DiscoveryHintId, { title: string; detail: string; action: st
     detail: 'Correct & Teach on your latest dictation can remember the spelling for next time.',
     action: 'Correct & Teach',
   },
-  browser_modes: {
-    title: 'Use a mode for this site',
-    detail: 'Murmur can apply a mode to an exact browser site without storing the page or its text.',
-    action: 'Set up site modes',
-  },
 };
 
 interface DiscoveryHintToastProps {

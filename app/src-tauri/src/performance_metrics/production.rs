@@ -707,7 +707,7 @@ pub(crate) fn local_machine_id(root: &Path) -> Option<String> {
 mod tests {
     use super::*;
     use crate::audio::{AudioBackendOrderSource, AudioInitPhase};
-    use crate::dictation_context::{resolve, ResolverInputs, SessionOverrides};
+    use crate::dictation_context::{resolve, ResolverInputs};
 
     fn accumulator() -> ProductionAccumulator {
         ProductionAccumulator {
@@ -719,14 +719,12 @@ mod tests {
     fn context() -> DictationContextSnapshot {
         resolve(ResolverInputs {
             bundle_id: None,
-            site_mode_id: None,
             global: &crate::state::DictationState::default(),
             prompt: None,
             correction_matcher: None,
             ide_context_index: None,
             vocabulary_version: 1,
             voice_commands: Some(Vec::new()),
-            session_overrides: SessionOverrides::default(),
         })
     }
     fn plan() -> AudioStartupDiagnostic {

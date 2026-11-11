@@ -17,13 +17,13 @@ emitted through `dictation-settings`.
 The native Settings workspace opens on **General**. The gear button, `⌘,`, and
 overlay Settings action all open this same page. **Customize** remains available
 in the sidebar as a hub of independent destinations: **Text & vocabulary**,
-**Voice commands**, **App overrides**, **Modes**.
+**Voice commands**, **App overrides**.
 Each destination opens its owning page or editor, shows **Back to Customize**,
 and restores focus to its source row on return. Contextual links from Home use
 the same routes, so they cannot leave the user trapped in a detail page.
 
 The persistent navigation (`SETTINGS_CATEGORIES` in `SettingsPanel.tsx`) keeps
-the complete workspace available: Customize, Modes, General, Recording,
+the complete workspace available: Customize, General, Recording,
 Delivery, Meetings, Text & Vocabulary, AI & Models, and Appearance. Performance
 Lab and Diagnostics remain in the Tools group. The search field routes matching
 rows to their owning page. Power-user controls are collapsed under **Advanced**
@@ -38,13 +38,6 @@ from the `Settings: Keyboard Shortcuts` command in the command palette. When
 Murmur is disabled, the page marks recording
 shortcuts as paused while retaining their configured binding labels.
 Paste Last remains available, matching the native listener behavior.
-
-Modes may optionally activate from exact browser hosts under Settings → Modes.
-The global switch is off by default. Each rule stores only a
-rule ID, allowed browser bundle ID, exact host, Mode ID, and enabled flag. Live
-URL identity is memory-only and reduced to the host before it crosses the
-native boundary; paths, page text, selections, clipboard content, and browsing
-history are never part of Settings.
 
 Changing pages only changes presentation. It does not rename, discard, or
 reinterpret persisted fields. A round-trip compatibility test serializes and
@@ -72,14 +65,6 @@ aggregate.
 **TypeScript interface and defaults** (full current shape from `settings.ts`):
 
 ```typescript
-interface BrowserSiteRule {
-  id: string;
-  browserBundleId: string;
-  host: string;
-  modeId: string;
-  enabled: boolean;
-}
-
 interface Settings {
   // Transcription
   model: ModelOption;
@@ -137,11 +122,7 @@ interface Settings {
   codeVocabLastScan: VocabScanSummary | null;
 
   // Per-app
-  modes: MurmurMode[];                     // user Modes; built-ins are code-owned
-  activeModeId: string;                    // last native/manual Mode selection
   appProfiles: AppProfile[];
-  siteModeLookupEnabled: boolean;
-  browserSiteRules: BrowserSiteRule[];
 
   // Performance Lab
   benchmarkOutputDir: string;
@@ -202,10 +183,6 @@ export const DEFAULT_SETTINGS: Settings = {
   benchmarkOutputDir: '',
   benchmarkAutoSave: false,
   appProfiles: [],
-  modes: [],
-  activeModeId: 'builtin.everyday',
-  siteModeLookupEnabled: false,
-  browserSiteRules: [],
   voiceCommandsEnabled: false,
   voiceCommands: [],
   cleanupEnabled: false,
@@ -340,17 +317,11 @@ The store reports recovered, reinitialized, and unavailable states visibly. Enab
 
 `ideContextEnabled` defaults to `false` and must be enabled on the exact matching profile. `ideProjectRoots` persists only the explicit user-selected root strings, trimmed, deduplicated, and capped at four. Filenames, symbols, source snippets, and scan results are memory-only and are not settings fields. The roots therefore remain visible in Settings and in any direct inspection or backup of the existing settings JSON; there is no hidden export path.
 
-`siteModeLookupEnabled` defaults to `false`. When enabled,
-`browserSiteRules` contains `BrowserSiteRule {id, browserBundleId, host,
-modeId, enabled}` records. Rust matches only an allowlisted browser bundle and
-an exact normalized host. The persisted rules contain no URL path or live
-browsing state.
-
 `smartFormattingEnabled` is a separate boolean setting, off by default. It enables deterministic list, email/URL, extended Spoken Structure, and bounded same-utterance correction rules for live prose. Missing or malformed persisted values migrate safely to `false`; it is independent of `smartPunctuation`. `smartFormattingOverride` gives profiles the same Default/On/Off choice.
 
 `cliFormattingOverride` uses the immutable recording-start context. `true` enables profile-mode CLI recognition, `false` disables implicit CLI formatting for that app, and `null` keeps conservative automatic recognition. An explicit spoken `command` trigger remains available in every mode.
 
-At recording start, the backend resolves one immutable context using global settings → matching style → matching profile fine-tuning → one-session overrides. It also records one Spoken Structure policy: Off, Basic from Voice Commands, Extended from Smart Formatting, or Union when both are enabled. Settings or focus changes during recording apply only to the next session. Explicit IDE opt-in disables extended Smart Formatting for that recording but retains Basic structure when Voice Commands remains enabled, and can capture only the matching profile's fresh local index. See [Spoken Structure](../features/spoken-structure.md), [Per-App Dictation Context](../features/per-app-profiles.md), and [Local IDE Symbols and `@file` Context](../features/ide-context.md).
+At recording start, the backend resolves one immutable context using global settings → matching style → matching profile fine-tuning. It also records one Spoken Structure policy: Off, Basic from Voice Commands, Extended from Smart Formatting, or Union when both are enabled. Settings or focus changes during recording apply only to the next session. Explicit IDE opt-in disables extended Smart Formatting for that recording but retains Basic structure when Voice Commands remains enabled, and can capture only the matching profile's fresh local index. See [Spoken Structure](../features/spoken-structure.md), [Per-App Dictation Context](../features/per-app-profiles.md), and [Local IDE Symbols and `@file` Context](../features/ide-context.md).
 
 ## Voice Commands
 
@@ -425,6 +396,38 @@ On the first v6 load, Murmur adds the `smartDestinationEnabled` opt-in as
 explicit persisted boolean `true` enables the feature.
 
 Hydration is idempotent, so every window can run it regardless of creation order; concurrent first-run writes are serialized in Rust and write identical content.
+
+### Modes retirement
+
+Murmur used to store reusable Modes (`modes`, `activeModeId`,
+`siteModeLookupEnabled`, `browserSiteRules`, and `appProfiles[].modeId`). The
+feature is gone. The first load that finds any of those keys folds each Mode's
+values into the settings that remain, once, in `lib/legacyModes.ts`, and the
+keys leave storage when the whole migrated document is saved. A failed save
+keeps the keys, and the next load derives the same result. A document without
+those keys is untouched.
+
+- A profile's mode is its `modeId`, else the global `activeModeId`. An unknown or
+  disabled `modeId` folds nothing and does not fall back to the global mode.
+  Built-in modes use their fixed table; custom modes use their sanitized values.
+- Writing style, auto-paste, cleanup, smart formatting and command formatting
+  move into the matching profile field when that profile does not already set it.
+  A profile's own value always wins. Duplicate profiles for one app follow the
+  retired resolver: the first profile supplies each value it sets.
+- A profile bound to a project-context mode that already lists project roots
+  keeps context enabled.
+- When the global mode was not Everyday, its auto-paste, cleanup, smart
+  formatting, language and installed model become the global settings. Profiles
+  that were bound to a different mode and left a value to the global setting get
+  that value pinned as an override, so they keep behaving as before.
+- A model is adopted only when `get_model_runtime_catalog` reports it installed.
+
+Values with no remaining home are dropped: per-mode model and language on a
+mode bound to a profile, the vocabulary policy, the global mode's writing style,
+command formatting and context for apps without a profile, and the fail-closed
+behavior of a profile bound to a missing or disabled mode. The Rust resolver is
+covered by an equivalence test that replays committed migrated settings against
+the recorded pre-removal outputs for every field that kept a home.
 
 ### Saving
 

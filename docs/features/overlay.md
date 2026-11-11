@@ -30,8 +30,8 @@ App → General → **Recording overlay** chooses one of two renditions:
   is the word itself (`Paste`, `Try again`). It is fully hidden and
   click-through while idle, and fades in when recording starts. The native
   window never resizes between activities, so recording never waits on a
-  native resize. Hover controls grow it upward as one segmented strip (Mode,
-  Power, Paste, Settings) above a one-line status. The pill follows the Dock live (see
+  native resize. Hover controls grow it upward as one segmented strip (Power,
+  Paste, Settings) above a one-line status. The pill follows the Dock live (see
   [Dock tracking](#dock-tracking)): it rests low while an auto-hidden Dock is
   hidden and rises above the revealed Dock, including magnified icons and
   their name label. A Dock-only change never collapses the notch island.
@@ -200,7 +200,7 @@ Rust tests compare all layout profiles to the JSON consumed by browser fixtures.
   processing. Expanded controls reserve at least 241pt width and 64pt dropdown
   height. Meeting suggestions reserve 320pt width and a 136pt dropdown; their
   text/actions use the production component, not a stand-in.
-- Status/refusal/delivery cues hide the waveform while they flash. Mode, quick
+- Status/refusal/delivery cues hide the waveform while they flash. Quick
   controls and elapsed time remain in the expanded dropdown.
 - Logical points are resolved on the selected menu-bar display, including
   nonzero monitor origins and 1×/2× scale transitions. Rust alone mutates native
@@ -471,6 +471,3 @@ Overlay glass remains always dark, and its body remains transparent in System,
 Light, and Dark modes. Appearance application must never set an `html` or
 `body` background that can override this invariant.
 
-The expanded Mode control shows an amber **Next: <Mode>** label while a one-recording
-override is pending. The regular resolved Mode label returns after consumption
-or explicit clearing, without changing the app binding. See [Modes](modes.md).

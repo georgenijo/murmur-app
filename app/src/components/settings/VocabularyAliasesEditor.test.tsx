@@ -94,7 +94,7 @@ describe('VocabularyAliasesEditor', () => {
     const importButton = Array.from(container.querySelectorAll('button'))
       .find((button) => button.textContent?.includes('Import saved spellings…')) as HTMLButtonElement;
     await act(async () => importButton.click());
-    expect(mocks.invoke).toHaveBeenCalledWith('read_modes_file', { path: '/private/vocabulary.json' });
+    expect(mocks.invoke).toHaveBeenCalledWith('read_theme_file', { path: '/private/vocabulary.json' });
     expect(container.textContent).toContain('1 new saved spellings');
     expect(onChange).not.toHaveBeenCalled();
     const confirm = Array.from(container.querySelectorAll('button'))

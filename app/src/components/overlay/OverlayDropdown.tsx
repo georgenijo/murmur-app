@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { OverlayGeometry } from '../../lib/overlayGeometry';
 import type { DictationStatus } from '../../lib/types';
-import type { ModeRuntimeStatus } from '../../lib/hooks/useModeRuntime';
 import {
   smartDestinationLabel,
   type SmartDestinationStatus,
@@ -58,8 +57,6 @@ interface OverlayDropdownProps {
   disabled: boolean;
   autoPaste: boolean;
   fileOutputEnabled: boolean;
-  mode?: ModeRuntimeStatus;
-  onCycleMode?: (e: React.MouseEvent) => void;
   onToggleDisabled: (e: React.MouseEvent) => void;
   onToggleAutoPaste: (e: React.MouseEvent) => void;
   onOpenSettings: (e: React.MouseEvent) => void;
@@ -82,8 +79,6 @@ export function OverlayDropdown({
   disabled,
   autoPaste,
   fileOutputEnabled,
-  mode = { id: 'builtin.everyday', name: 'Everyday', source: 'manual' },
-  onCycleMode = () => {},
   onToggleDisabled,
   onToggleAutoPaste,
   onOpenSettings,
@@ -141,8 +136,6 @@ export function OverlayDropdown({
   const showStatus = status === 'recording' || (status === 'processing' && destinationLabel)
     || status === 'starting' || status === 'recovering' || showTapMissed;
   const statusQuiet = status === 'recording' && !showTapMissed;
-  const modeLabel = mode.pending ? `Next recording: ${mode.pending.name}. Current Mode: ${mode.name}` : `Mode: ${mode.name}. Click to cycle${mode.source === 'temporary' ? '; temporary override' : mode.source === 'site_binding' ? '; site binding' : ''}`;
-  const modeTitle = mode.pending ? `Next recording: ${mode.pending.name} · Once` : mode.source === 'temporary' ? `${mode.name} · Temporary` : mode.source === 'site_binding' ? `${mode.name} · Site` : mode.source === 'app_binding' ? `${mode.name} · App` : mode.name;
   const reveal = {
     height: geometry.dropdownH,
     opacity: expanded ? 1 : 0,
@@ -160,10 +153,6 @@ export function OverlayDropdown({
       <div className="overlay-dropdown bezel-strip justify-center" role="group" aria-label="Quick settings"
         aria-hidden={!expanded} style={reveal}>
         <div className="bezel-segments" data-testid="overlay-controls-row">
-          <button type="button" aria-label={modeLabel} title={modeTitle} onClick={onCycleMode} className="bezel-segment">
-            <span className="bezel-segment-caption">{mode.pending ? 'Next' : 'Mode'}</span>
-            <span>{mode.pending ? mode.pending.name : mode.name}</span>
-          </button>
           <button type="button" aria-label={disabled ? 'Enable Murmur' : 'Disable Murmur'} onClick={onToggleDisabled}
             className="bezel-segment">
             <PowerIcon stroke="currentColor" />
@@ -207,19 +196,6 @@ export function OverlayDropdown({
       style={{ ...reveal, padding: '4px 8px 6px' }}
     >
       <div className="flex w-full items-center justify-center gap-3" data-testid="overlay-controls-row">
-      {/* Resolved Mode. The overlay window is non-activating, so cycling keeps
-          keyboard focus in the user's target app. */}
-      <button
-        type="button"
-        aria-label={modeLabel}
-        title={modeTitle}
-        onClick={onCycleMode}
-        className="min-w-0 shrink max-w-[112px] truncate rounded-[9px] px-2 text-[10px] font-medium text-sky-200 transition-colors"
-        style={{ height: 26, background: mode.pending || mode.source === 'temporary' ? 'rgba(245,158,11,0.14)' : 'rgba(56,189,248,0.12)' }}
-      >
-        {mode.pending ? `Next: ${mode.pending.name}` : mode.name}
-      </button>
-
       {/* Global disable */}
       <button
         type="button"

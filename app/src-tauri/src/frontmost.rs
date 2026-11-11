@@ -42,6 +42,23 @@ pub struct FrontmostAppIdentity {
     pub process_id: Option<i32>,
 }
 
+/// Browsers whose web content Murmur treats as a document surface, so delivery
+/// verification requires a retained document ancestor and does not poke the
+/// browser's manual-accessibility switch.
+const KNOWN_BROWSER_BUNDLE_IDS: [&str; 6] = [
+    "com.apple.Safari",
+    "com.google.Chrome",
+    "com.microsoft.edgemac",
+    "com.brave.Browser",
+    "company.thebrowser.Browser",
+    "org.chromium.Chromium",
+];
+
+/// Whether `bundle_id` names one of the supported desktop browsers.
+pub fn is_known_browser(bundle_id: &str) -> bool {
+    KNOWN_BROWSER_BUNDLE_IDS.contains(&bundle_id)
+}
+
 /// Opaque app-launch identity. The value is derived from LaunchServices'
 /// launch date and is never logged or exposed over the Tauri boundary.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1348,25 +1365,6 @@ fn query_identity(process_id: i32, bundle_id: Option<String>) -> FrontmostAppIde
             process_id: None,
         },
     }
-}
-
-/// Site lookup requires the exact native PID and bundle pair. Partial
-/// identities are deliberately never accepted because they cannot prove that
-/// per-app privacy exclusions were resolved for the same application.
-pub(crate) fn query_identity_matches(
-    expected: &FrontmostAppIdentity,
-    actual: &FrontmostAppIdentity,
-) -> bool {
-    matches!(
-        (
-            expected.process_id,
-            expected.bundle_id.as_deref(),
-            actual.process_id,
-            actual.bundle_id.as_deref(),
-        ),
-        (Some(expected_pid), Some(expected_bundle), Some(actual_pid), Some(actual_bundle))
-            if expected_pid == actual_pid && expected_bundle == actual_bundle
-    )
 }
 
 #[cfg(target_os = "macos")]

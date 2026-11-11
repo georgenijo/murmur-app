@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 const panes = [
   ['General'], ['General', 'Keyboard shortcuts'], ['Recording'], ['Customize'],
-  ['Delivery'], ['Meetings'], ['Text & vocabulary'], ['AI & models'], ['Modes'],
+  ['Delivery'], ['Meetings'], ['Text & vocabulary'], ['AI & models'],
   ['Appearance'], ['Performance Lab'], ['Diagnostics'],
   ['AI & models', 'Speech-to-text'],
   ['Customize', 'Voice commands'],
@@ -34,7 +34,7 @@ for (const appearance of ['light', 'dark']) {
       if (path[0] === 'Appearance') await expect(page.getByRole('button', { name: 'Use OpenCode theme', exact: true })).toBeVisible();
       if (path.length === 1 && path[0] === 'Customize') {
         const rows = page.locator('[aria-label="Customization destinations"] > li > .settings-setting-row');
-        await expect(rows).toHaveCount(4);
+        await expect(rows).toHaveCount(3);
         for (const row of await rows.all()) expect((await row.boundingBox())!.height).toBeGreaterThanOrEqual(52);
       }
       if (path[0] === 'Performance Lab') {

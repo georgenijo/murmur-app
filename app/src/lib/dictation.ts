@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { microphoneDeviceNameArg, Settings, AppProfile, BrowserSiteRule, MurmurMode, VoiceCommand, VocabularyEntry, type SmartAutoMicrophoneRequest } from './settings';
+import { microphoneDeviceNameArg, Settings, AppProfile, VoiceCommand, VocabularyEntry, type SmartAutoMicrophoneRequest } from './settings';
 
 export interface DictationResponse {
   type: string;
@@ -113,10 +113,6 @@ export interface ConfigureOptions {
   mirrorToNotchPill?: boolean;
   outputDir?: string;
   appProfiles?: AppProfile[];
-  modes?: MurmurMode[];
-  activeModeId?: string;
-  siteModeLookupEnabled?: boolean;
-  browserSiteRules?: BrowserSiteRule[];
   voiceCommandsEnabled?: boolean;
   voiceCommands?: VoiceCommand[];
   cleanupEnabled?: boolean;
@@ -185,10 +181,6 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     saveAudio: s.saveAudio,
     outputDir: s.outputDir,
     appProfiles: s.appProfiles,
-    modes: s.modes,
-    activeModeId: s.activeModeId,
-    siteModeLookupEnabled: s.siteModeLookupEnabled,
-    browserSiteRules: s.browserSiteRules,
     voiceCommandsEnabled: s.voiceCommandsEnabled,
     voiceCommands: s.voiceCommands,
     cleanupEnabled: s.cleanupEnabled,

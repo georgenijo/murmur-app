@@ -25,9 +25,9 @@ function geometryKey(variant: Variant, pill: boolean, external: boolean): keyof 
   return `${activity}${external ? 'External' : 'Notched'}`;
 }
 
-function FixtureRow({ variant, pill, external, fallback, meetingOnly, controlsState, modeName }: {
+function FixtureRow({ variant, pill, external, fallback, meetingOnly, controlsState }: {
   variant: Variant; pill: boolean; external: boolean; fallback: boolean; meetingOnly: boolean;
-  controlsState: ControlsState; modeName: string;
+  controlsState: ControlsState;
 }) {
   const barRefs = useRef<(HTMLDivElement | null)[]>([]);
   const meeting = variant === 'meeting';
@@ -62,7 +62,6 @@ function FixtureRow({ variant, pill, external, fallback, meetingOnly, controlsSt
           // Production always mounts the dropdown, collapsed or not.
           : <OverlayDropdown geometry={g} expanded={expanded} status={status} stillConnecting={controlsState === 'still-connecting'}
             showTapMissed={false} disabled={false} autoPaste fileOutputEnabled={false}
-            mode={{ id: 'synthetic-mode', name: modeName, source: 'manual' }}
             onToggleDisabled={noop} onToggleAutoPaste={noop} onOpenSettings={noop} />}
       </OverlayIsland>
     </div>
@@ -77,13 +76,12 @@ export function VoiceIslandFixture({ meetingOnly = false }: { meetingOnly?: bool
   const external = query.get('display') === 'external';
   const fallback = query.get('display') === 'fallback';
   const controlsState = controlsStates.find((state) => state === query.get('controls-state')) ?? 'idle';
-  const modeName = query.get('mode-name') ?? 'Everyday';
   const requested = query.get('variant');
   const rows = meetingOnly ? ['meeting' as const] : variants.filter(v => !requested || v === requested);
   return <main data-visual-ready="true" data-fixture-synthetic={meetingOnly ? 'meeting-suggestion' : 'voice-island'}
     style={{ minHeight: '100vh', padding: 24, background: 'linear-gradient(135deg, var(--murmur-surface-container-high), var(--murmur-background))', color: 'var(--murmur-on-surface)' }}>
     {rows.map(variant => <FixtureRow key={variant} variant={variant} pill={pill} external={external} fallback={fallback}
-      controlsState={controlsState} modeName={modeName} meetingOnly={meetingOnly} />)}
+      controlsState={controlsState} meetingOnly={meetingOnly} />)}
     {!requested && !meetingOnly && <section data-live-words style={{ width: 460, height: 104, maxWidth: '100%', margin: '6px auto 0' }}>
       <DictationPreviewCard above={pill} stableText="Synthetic stable context from an authoritative fixture only"
         text="synthetic provisional tail that wraps onto a second line when space runs out" />

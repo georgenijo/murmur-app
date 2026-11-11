@@ -31,9 +31,9 @@ the theme-library implementation.
   actions and delete-all live in an overflow menu; saved transforms keep common
   actions visible and put delete last in overflow. Menus use Base UI menu items
   for arrow-key navigation, Escape dismissal, and trigger focus restoration.
-- [x] One-click permanent removal of optional models, aliases, site rules, app
+- [x] One-click permanent removal of optional models, aliases, app
   overrides/project roots, saved reports, and diagnostics events. These now
-  require a second activation and show an ellipsis. Existing mode/transform/
+  require a second activation and show an ellipsis. Existing transform/
   transcription-model and typed bulk-delete confirmation contracts remain.
   Destructive controls sit last within their action groups. Unsaved draft
   editing and a disposable in-memory index remain directly editable.
@@ -155,10 +155,8 @@ Use the integrated build with isolated test data, in light and dark:
    type DELETE. Return must never delete, including with Delete everything…
    focused; Space confirms. Cancel must write nothing. Repeat Delete all shown…
    under a filter and verify the captured-scope count remains truthful.
-6. Modes: duplicate a built-in, arm its Delete…, Return must keep it, then
-   complete the two-step deletion. Add a synthetic site rule and verify its
-   two-step removal. Delivery → Advanced: verify app-override and project-root
-   removals require two activations, while normal switches still work with Space.
+6. Delivery → Advanced: verify app-override and project-root removals require
+   two activations, while normal switches still work with Space.
 7. AI → Speech-to-text: unused-model Remove… needs a second activation; selected
    and active models remain protected. Recording →
    Smart Auto-Stop, and Meetings → remote speaker model: verify remove/confirm

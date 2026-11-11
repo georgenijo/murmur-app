@@ -19,7 +19,6 @@ export function visibleSettingsTarget(target: string, settings: Settings): strin
   if (['standby-window', 'pre-roll'].includes(target) && !settings.captureStandbyEnabled) return 'standby';
   if (['sound-volume', 'meeting-cues'].includes(target) && !settings.soundCuesEnabled) return 'sound-cues';
   if (target === 'hotkey-feedback' && settings.recordingMode === 'hold_down') return 'recording-trigger';
-  if (target === 'browser-site-rules' && !settings.siteModeLookupEnabled) return 'browser-sites';
   if (target === 'meeting-calendar' && !settings.meetingSuggestionsEnabled) return 'meeting-suggestions';
   return target;
 }

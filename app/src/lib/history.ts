@@ -21,8 +21,6 @@ export interface HistoryStageResult {
 export interface HistoryRecordingContext {
   recordingId: number;
   modelId: string;
-  /** Reserved for the reusable Mode model. Legacy/global dictation has no id. */
-  modeId: string | null;
   /** The resolved profile label at recording start; absent for global settings. */
   profileId: string | null;
   stages: HistoryStageResult[];
@@ -52,7 +50,7 @@ export interface HistoryEntry {
   /** Present for live dictations recorded with the v2 completion contract. */
   recording?: HistoryRecordingContext;
   /** Provenance for a new entry derived by reformatting retained raw text. */
-  derived?: { sourceEntryId: string; modeId: string; createdAt: number; stages: HistoryStageResult[] };
+  derived?: { sourceEntryId: string; createdAt: number; stages: HistoryStageResult[] };
 }
 
 /** Rolling cap on stored entries. */
@@ -104,7 +102,21 @@ export function loadHistory(): HistoryEntry[] {
   return [];
 }
 
-function migrateHistoryEntry(value: Record<string, unknown>): HistoryEntry {
+/** Older records carried the retired Modes' ids; they are ignored, never shown or exported. */
+function withoutRetiredModeIds(value: Record<string, unknown>): Record<string, unknown> {
+  const strip = (field: unknown) => {
+    if (!field || typeof field !== 'object' || Array.isArray(field) || !('modeId' in field)) return field;
+    const { modeId: _modeId, ...rest } = field as Record<string, unknown>;
+    return rest;
+  };
+  const next = { ...value };
+  if ('recording' in next) next.recording = strip(next.recording);
+  if ('derived' in next) next.derived = strip(next.derived);
+  return next;
+}
+
+function migrateHistoryEntry(raw: Record<string, unknown>): HistoryEntry {
+  const value = withoutRetiredModeIds(raw);
   const pinned = value.pinned === true;
   if (value.schemaVersion === 2) return { ...value, pinned } as unknown as HistoryEntry;
   // Deliberately do not copy legacy delivered `text` into `rawText`: that

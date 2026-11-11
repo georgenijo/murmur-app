@@ -36,17 +36,6 @@ for (const appearance of ['light', 'dark'] as const) {
       const fill = await confirm.evaluate(n => getComputedStyle(n).backgroundColor);
       expect(fill).not.toBe('rgba(0, 0, 0, 0)');
     });
-    test('mode deletion keeps its explicit danger color when armed', async ({ page }) => {
-      await page.goto(`/visual-fixtures.html?state=settings&appearance=${appearance}`);
-      await page.getByRole('navigation', { name: 'Settings pages' }).getByRole('button', { name: 'Modes', exact: true }).click();
-      await page.getByRole('button', { name: 'Create mode', exact: true }).click();
-      const remove = page.locator('.settings-modes-danger').first();
-      await danger(remove);
-      await remove.click();
-      await page.mouse.move(0, 0);
-      await expect(remove).toHaveText('Confirm delete…');
-      await danger(remove);
-    });
     test('knowledge actions and their confirmation retain layered danger utilities', async ({ page }) => {
       await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=knowledge&appearance=${appearance}`);
       await danger(page.getByRole('button', { name: 'Delete all shown…', exact: true }));

@@ -1,11 +1,11 @@
 import { expect, test } from '@playwright/test';
 
-const panes = ['general', 'recording', 'delivery', 'meetings', 'text', 'ai', 'ai-transcription', 'modes', 'appearance', 'performance', 'diagnostics', 'shortcuts'];
+const panes = ['general', 'recording', 'delivery', 'meetings', 'text', 'ai', 'ai-transcription', 'appearance', 'performance', 'diagnostics', 'shortcuts'];
 const editors = ['aliases', 'knowledge', 'commands', 'scan', 'vocabulary'];
 const paneTitles: Record<string, string> = {
   general: 'General', recording: 'Recording', delivery: 'Delivery', meetings: 'Meetings',
   text: 'Text & vocabulary', ai: 'AI & models', 'ai-transcription': 'Speech-to-text',
-  modes: 'Modes', appearance: 'Appearance', performance: 'Performance Lab',
+  appearance: 'Appearance', performance: 'Performance Lab',
   diagnostics: 'Diagnostics', shortcuts: 'Keyboard shortcuts',
   'editor-aliases': 'Aliases', 'editor-knowledge': 'Knowledge',
   'editor-commands': 'Voice commands', 'editor-scan': 'Project scan', 'editor-vocabulary': 'Vocabulary',

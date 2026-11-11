@@ -1,0 +1,1272 @@
+{
+  "cases": [
+    {
+      "id": "global-custom-mode-with-everyday-bound-profile",
+      "probes": [
+        {
+          "id": "everyday-bound",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "everyday",
+            "writingStyle": "inherit"
+          }
+        },
+        {
+          "id": "unbound-profile",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "de",
+            "modelName": "small.en",
+            "smartFormattingEnabled": true,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Union",
+            "textRegister": "email",
+            "writingStyle": "polished"
+          }
+        },
+        {
+          "id": "builtin-email-bound",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": true,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Union",
+            "textRegister": "email",
+            "writingStyle": "polished"
+          }
+        },
+        {
+          "id": "profile-override-wins",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "de",
+            "modelName": "small.en",
+            "smartFormattingEnabled": true,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Union",
+            "textRegister": "email",
+            "writingStyle": "polished"
+          }
+        },
+        {
+          "id": "no-profile-app",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "de",
+            "modelName": "small.en",
+            "smartFormattingEnabled": true,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Union",
+            "textRegister": "email",
+            "writingStyle": "polished"
+          }
+        }
+      ]
+    },
+    {
+      "id": "duplicate-profiles-first-match-wins",
+      "probes": [
+        {
+          "id": "first-binds-second-supplies-style",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": false,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": false,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": false,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "verbatim",
+            "writingStyle": "verbatim"
+          }
+        },
+        {
+          "id": "project-mode-first-profile-owns-context",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": true,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "technical",
+            "writingStyle": "code_technical"
+          }
+        },
+        {
+          "id": "second-profile-supplies-cli-override",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "technical",
+            "writingStyle": "code_technical"
+          }
+        },
+        {
+          "id": "first-profile-mode-wins-over-second-binding",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": true,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Union",
+            "textRegister": "email",
+            "writingStyle": "polished"
+          }
+        }
+      ]
+    },
+    {
+      "id": "invalid-and-disabled-mode-ids",
+      "probes": [
+        {
+          "id": "disabled-mode",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": false,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": false,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": false,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "verbatim",
+            "writingStyle": "verbatim"
+          }
+        },
+        {
+          "id": "missing-mode",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": false,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": false,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": false,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "verbatim",
+            "writingStyle": "verbatim"
+          }
+        },
+        {
+          "id": "fake-builtin",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": false,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": false,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": false,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "verbatim",
+            "writingStyle": "verbatim"
+          }
+        },
+        {
+          "id": "invalid-with-own-overrides",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": false,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": false,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": false,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "verbatim",
+            "writingStyle": "verbatim"
+          }
+        }
+      ]
+    },
+    {
+      "id": "inherit-and-null-writing-style",
+      "probes": [
+        {
+          "id": "inherit-falls-to-mode",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": true,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Union",
+            "textRegister": "email",
+            "writingStyle": "polished"
+          }
+        },
+        {
+          "id": "null-falls-to-mode",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "technical",
+            "writingStyle": "code_technical"
+          }
+        },
+        {
+          "id": "explicit-style-wins",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": false,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": true,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Union",
+            "textRegister": "notes",
+            "writingStyle": "notes"
+          }
+        },
+        {
+          "id": "duplicate-inherit-then-style",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": true,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Union",
+            "textRegister": "email",
+            "writingStyle": "polished"
+          }
+        },
+        {
+          "id": "everyday-inherit",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "everyday",
+            "writingStyle": "inherit"
+          }
+        }
+      ]
+    },
+    {
+      "id": "project-context-modes-roots",
+      "probes": [
+        {
+          "id": "roots-present",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": true,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "technical",
+            "writingStyle": "code_technical"
+          }
+        },
+        {
+          "id": "roots-absent",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "technical",
+            "writingStyle": "code_technical"
+          }
+        },
+        {
+          "id": "flag-already-on",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": true,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "technical",
+            "writingStyle": "code_technical"
+          }
+        },
+        {
+          "id": "non-project-mode-with-roots",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "technical",
+            "writingStyle": "code_technical"
+          }
+        },
+        {
+          "id": "two-roots",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": true,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "technical",
+            "writingStyle": "code_technical"
+          }
+        }
+      ]
+    },
+    {
+      "id": "unbound-profile-under-global-terminal",
+      "probes": [
+        {
+          "id": "unbound",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Enabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "terminal",
+            "writingStyle": "code_technical"
+          }
+        },
+        {
+          "id": "unbound-with-own-style",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Enabled",
+            "correctionEnabled": false,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": false,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "verbatim",
+            "writingStyle": "verbatim"
+          }
+        },
+        {
+          "id": "everyday-bound",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "everyday",
+            "writingStyle": "inherit"
+          }
+        },
+        {
+          "id": "no-profile-app",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Enabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "terminal",
+            "writingStyle": "code_technical"
+          }
+        }
+      ]
+    },
+    {
+      "id": "unbound-profile-under-global-technical",
+      "probes": [
+        {
+          "id": "unbound",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "technical",
+            "writingStyle": "code_technical"
+          }
+        },
+        {
+          "id": "unbound-with-own-style",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": false,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": false,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": false,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "verbatim",
+            "writingStyle": "verbatim"
+          }
+        },
+        {
+          "id": "everyday-bound",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "everyday",
+            "writingStyle": "inherit"
+          }
+        },
+        {
+          "id": "no-profile-app",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "technical",
+            "writingStyle": "code_technical"
+          }
+        }
+      ]
+    },
+    {
+      "id": "unbound-profile-under-global-messages",
+      "probes": [
+        {
+          "id": "unbound",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "messages",
+            "writingStyle": "conversational"
+          }
+        },
+        {
+          "id": "unbound-with-own-style",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": false,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": false,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": false,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "verbatim",
+            "writingStyle": "verbatim"
+          }
+        },
+        {
+          "id": "everyday-bound",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "everyday",
+            "writingStyle": "inherit"
+          }
+        },
+        {
+          "id": "no-profile-app",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "messages",
+            "writingStyle": "conversational"
+          }
+        }
+      ]
+    },
+    {
+      "id": "global-project-context-mode-unbound-profile",
+      "probes": [
+        {
+          "id": "unbound-with-roots",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": true,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "technical",
+            "writingStyle": "code_technical"
+          }
+        }
+      ]
+    },
+    {
+      "id": "pin-original-globals-before-changing-globals",
+      "probes": [
+        {
+          "id": "everyday",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": true,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Union",
+            "textRegister": "everyday",
+            "writingStyle": "inherit"
+          }
+        },
+        {
+          "id": "messages",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "messages",
+            "writingStyle": "conversational"
+          }
+        },
+        {
+          "id": "verbatim",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": false,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": false,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": false,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "verbatim",
+            "writingStyle": "verbatim"
+          }
+        },
+        {
+          "id": "notes",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": false,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": true,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Union",
+            "textRegister": "notes",
+            "writingStyle": "notes"
+          }
+        },
+        {
+          "id": "technical",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "technical",
+            "writingStyle": "code_technical"
+          }
+        },
+        {
+          "id": "other",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": true,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Union",
+            "textRegister": "everyday",
+            "writingStyle": "inherit"
+          }
+        },
+        {
+          "id": "bound-g",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "everyday",
+            "writingStyle": "inherit"
+          }
+        },
+        {
+          "id": "unbound",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "everyday",
+            "writingStyle": "inherit"
+          }
+        },
+        {
+          "id": "own-cleanup",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": true,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Union",
+            "textRegister": "everyday",
+            "writingStyle": "inherit"
+          }
+        },
+        {
+          "id": "no-profile-app",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "everyday",
+            "writingStyle": "inherit"
+          }
+        }
+      ]
+    },
+    {
+      "id": "disabled-global-active-mode",
+      "probes": [
+        {
+          "id": "unbound",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "everyday",
+            "writingStyle": "inherit"
+          }
+        },
+        {
+          "id": "no-profile-app",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "everyday",
+            "writingStyle": "inherit"
+          }
+        }
+      ]
+    },
+    {
+      "id": "terminal-and-cli-overrides",
+      "probes": [
+        {
+          "id": "t1",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Enabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "terminal",
+            "writingStyle": "code_technical"
+          }
+        },
+        {
+          "id": "t2",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Off",
+            "textRegister": "technical",
+            "writingStyle": "code_technical"
+          }
+        },
+        {
+          "id": "t3",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": false,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": true,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Extended",
+            "textRegister": "technical",
+            "writingStyle": "code_technical"
+          }
+        },
+        {
+          "id": "t4",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "email",
+            "writingStyle": "polished"
+          }
+        }
+      ]
+    },
+    {
+      "id": "global-mode-model-not-installed",
+      "probes": [
+        {
+          "id": "unbound-profile",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "fr",
+            "modelName": "medium.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "everyday",
+            "writingStyle": "inherit"
+          }
+        },
+        {
+          "id": "no-profile-app",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "fr",
+            "modelName": "medium.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "everyday",
+            "writingStyle": "inherit"
+          }
+        }
+      ]
+    },
+    {
+      "id": "everyday-baseline",
+      "probes": [
+        {
+          "id": "plain",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "everyday",
+            "writingStyle": "inherit"
+          }
+        },
+        {
+          "id": "everyday-with-overrides",
+          "output": {
+            "autoPaste": false,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": false,
+            "cleanupEnabled": true,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Disabled",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": true,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Union",
+            "textRegister": "notes",
+            "writingStyle": "notes"
+          }
+        },
+        {
+          "id": "no-profile-app",
+          "output": {
+            "autoPaste": true,
+            "builtInVoiceCommands": true,
+            "cleanupCapitalize": true,
+            "cleanupEnabled": false,
+            "cleanupRemoveFiller": true,
+            "cliFormattingEnabled": true,
+            "cliFormattingMode": "Auto",
+            "correctionEnabled": true,
+            "ideContextEnabled": false,
+            "language": "en",
+            "modelName": "tiny.en",
+            "smartFormattingEnabled": false,
+            "spokenNumbersEnabled": true,
+            "spokenStructurePolicy": "Basic",
+            "textRegister": "everyday",
+            "writingStyle": "inherit"
+          }
+        }
+      ]
+    }
+  ],
+  "version": 1
+}

@@ -132,7 +132,7 @@ Turns clear spoken enumerations into lists; applies explicitly cued email/URL gr
 Single owner for spoken punctuation, lines, paragraphs, quotes, parentheses, slashes, symbols, ASR-punctuation arbitration, and sentence-boundary-aware `scratch that`. Basic/Extended/Union policy preserves existing Voice Commands and Smart Formatting enablement without double-processing.
 
 ### Spoken numbers — [features/spoken-number-formatting.md](features/spoken-number-formatting.md)
-Renders English cardinals as digits under a Mode-aware policy. Prose Modes keep small counts such as "two of them" as words. Technical and Terminal convert eagerly and join digit runs (`8080`) and dotted versions. Every policy renders times (`4:30 PM`), dates and years (`September 17, 2026`), labels (`step 3`), and versions (`2.17.2`), and leaves hyphenated compounds (`two-factor`) alone. Invalid scale order fails closed at the last unambiguous group. Verbatim and imported audio remain literal.
+Renders English cardinals as digits under a register-aware policy. Prose registers keep small counts such as "two of them" as words. Technical and Terminal convert eagerly and join digit runs (`8080`) and dotted versions. Every policy renders times (`4:30 PM`), dates and years (`September 17, 2026`), labels (`step 3`), and versions (`2.17.2`), and leaves hyphenated compounds (`two-factor`) alone. Invalid scale order fails closed at the last unambiguous group. Verbatim and imported audio remain literal.
 
 ### CLI command formatting — [features/cli-command-formatting.md](features/cli-command-formatting.md)
 Deterministic formatting for spoken npm/npx, Git, Cargo, Docker, kubectl and similar commands — versions, flags, paths, operators, quotes, canonical aliases. Detection is prefix/trigger/profile bounded; project `package.json` names extend the local lexicon; ordinary prose is untouched.
@@ -154,11 +154,6 @@ Versioned local SQLite store for replacement rules, vocabulary terms, snippets. 
 
 ### Per-app dictation context — [features/per-app-profiles.md](features/per-app-profiles.md)
 Per-bundle-ID profiles override auto-paste, cleanup, smart formatting, and CLI formatting, and select an explicit **Writing Style** (Inherit / Conversational / Polished prose / Code-technical / Verbatim / Notes). Resolved once into an immutable recording-start snapshot; app type is never inferred and app content is never captured. A bounded memory-only running-app picker with manual bundle-ID fallback fills the profile list.
-
-### Murmur Modes — [features/modes.md](features/modes.md)
-Reusable local policies compose writing style, pipeline stages, vocabulary and
-project context, model/language, and delivery behavior. Seven stable built-ins
-ship with the app; legacy profiles remain unbound and behavior-compatible.
 
 ### IDE context — [features/ide-context.md](features/ide-context.md)
 Opt-in, per-profile, memory-only index of user-selected local roots. Corrects unique project symbols and canonicalizes explicitly triggered `@file` mentions to root-relative text. Never reads screen, selection, or clipboard. Ambiguous or stale references stay unchanged. Index contents are never persisted — only the chosen root strings are.
@@ -190,11 +185,11 @@ dictation time, corrections taught and this month's completed meetings live
 under More statistics. Estimated typing time saved compares typing at 40 words
 per minute with dictation time.
 
-Local counters retain corrections proposed and taught, scope choices, recordings by Mode, and successful Paste Last uses. Meeting minutes use native capture elapsed time
+Local counters retain corrections proposed and taught, scope choices, and successful Paste Last uses. Meeting minutes use native capture elapsed time
 before processing, excluding the UI timer and transcript processing time.
 
 Main owns stats writes. Other webviews send completion receipts containing
-only counter metadata. Preset names and Mode IDs stay in local statistics;
+only counter metadata. Preset names stay in local statistics;
 text, instructions, preset bodies, app identifiers, and project paths never
 enter stats. Reset clears the new counters along with the existing totals.
 Older stats load with zeroed new counters.
@@ -219,10 +214,10 @@ Notch-anchored Dynamic Island. Idle sits flush with the notch showing a small mi
 ### Settings — [reference/settings.md](reference/settings.md)
 Settings opens on **General**. The **Customize** page is a compact hub of
 independent destinations: **Text & vocabulary**, **Voice commands**, **App
-overrides**, and **Modes**. Every hub destination has
+overrides**. Every hub destination has
 a visible route back. Returning restores keyboard focus to the destination that
 opened it. The persistent Settings navigation also exposes
-Modes, General, Recording, Delivery, Meetings, Text & Vocabulary, AI & Models,
+General, Recording, Delivery, Meetings, Text & Vocabulary, AI & Models,
 Appearance, Performance Lab, and Diagnostics directly. Search spans those
 pages. Power-user controls live in Advanced disclosures.
 
@@ -312,7 +307,7 @@ headless runner, and regression gate are excluded from normal distribution.
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 173 registered commands |
+| Rust backend | `app/src-tauri/src/` — 167 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |
 | Diagnostics MCP tool | `tools/murmur-diag/` |

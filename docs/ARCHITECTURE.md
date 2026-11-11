@@ -74,7 +74,7 @@ The **transcript transform pipeline** (`transcript_transform.rs`) runs stages in
 4. `homophone_context` — opt-in live-only bounded homophone scan; eligible passes promptly use the existing unavailable fallback (#1081), with no FoundationModels preparation/generation; deterministic text retained
 5. `smart_formatting` — deterministic prose grammar, lists, same-utterance backtracking (live only)
 6. `spoken_structure` — punctuation, breaks, paired delimiters, symbols, and sentence-boundary editing (live only)
-7. `spoken_numbers` — English cardinals, times, dates, years, labels, and versions rendered under the frozen Mode register's prose or technical policy (live dictation)
+7. `spoken_numbers` — English cardinals, times, dates, years, labels, and versions rendered under the frozen text register's prose or technical policy (live dictation)
 8. `ide_context` — project symbol correction and `@file` canonicalization (live only, opt-in)
 9. `cli_command` — spoken CLI command formatting
 
@@ -222,7 +222,7 @@ stay local and never reach logs or telemetry. See
 
 | Module | Purpose |
 |--------|---------|
-| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 173 registered commands, setup, tray, run loop |
+| `lib.rs` | App wiring: module declarations, `State`, `MutexExt`, 167 registered commands, setup, tray, run loop |
 | `alloc.rs` | Custom macOS malloc zone ("RustHeapZone") so Rust heap is accounted separately from whisper.cpp's FFI heap |
 | `audio.rs` | AUHAL/CPAL capture-worker supervision, stable device-ID selection, bounded pinned-input re-resolution, durable per-device backend/retry-budget memo, typed resolution/error/phase telemetry, first-buffer readiness, mono mix, 16kHz resample, `audio-level` emission |
 | `audio_inventory.rs` | App-lifetime versioned microphone inventory; supervised passive-worker invalidation, coalesced startup/five-minute fallback refresh, idle-HAL deferral, stale-cache policy, local-only change events, and privacy-safe shipper aggregate |
@@ -233,7 +233,6 @@ stay local and never reach logs or telemetry. See
 | `code_signing.rs` / `managed_child.rs` | Runtime helper identity validation and direct-child/process-group ownership primitives |
 | `accuracy_corpus.rs` | Internal-benchmark-only `accuracy-v1` corpus loader (corrected-history or synthetic clips) for `scripts/murmur_accuracy.py` |
 | `benchmark.rs` | Performance Lab: fixture corpus, scoring (raw/normalized/delivered WER), reports |
-| `browser_site.rs` | Allowlisted browser-host discovery and exact host-rule matching for site-bound modes |
 | `capture_agent_probe.rs` | Opt-in LaunchAgent service and recovery probe CLI. Production dictation does not use this path |
 | `capture_health.rs` | Bounded capture startup and fallback history derived from telemetry, persisted in `capture-health-v1.json` |
 | `commands/microphone_startup_benchmark.rs` | Main-window-gated production capture startup cycles, exact-owner progress/cancel, and typed privacy-safe export |
@@ -249,13 +248,11 @@ stay local and never reach logs or telemetry. See
 | `dictation_diagnostics.rs` | Explicit one-shot private dictation capture store with bounded text, retention, deletion, and upload |
 | `dictation_diagnostics_contract.rs` | Cross-path tests for diagnostic arming, exact recording ownership, content bounds, revocation, and corrupt-data removal |
 | `dictation_telemetry.rs` | Stable content-free lifecycle telemetry and error classification for accepted live dictations |
-| `commands/mode_exchange.rs` | Main-window-only bounded JSON file reader for custom Mode imports |
 | `commands/export.rs` | `save_text_export`: validated, atomic sink for user-chosen text exports |
 | `commands/corpus.rs` | Guided capture-only personal corpus recording, WAV integrity checks, quality reports, and benchmark fixture loading |
 | `commands/dictation_diagnostics.rs` | Window-gated arm, status, list, read, delete, and upload commands for private dictation captures |
 | `commands/integrations.rs` | Local Launch Services availability probe for the optional NotchPill companion app |
 | `commands/microphone_preview.rs` | Main-window microphone test lifecycle, input validation, VAD sensitivity, and exact-owner stop |
-| `commands/mode_runtime.rs` | Foreground app and browser-site mode resolution, mode cycling, temporary overrides, and watcher events |
 | `commands/updater.rs` | App-translocation status and opt-in updater canary file transport |
 | `evaluation.rs` | Versioned fixture evaluation harness (`murmur-eval`) |
 | `file_output.rs` | Numbered `.txt` / `.wav` output |
@@ -294,7 +291,7 @@ stay local and never reach logs or telemetry. See
 | `vocab.rs`, `vocabulary_alias.rs` | Code-vocabulary scanning and explicit spoken aliases |
 | `voice_commands.rs` | Typed voice command execution and variable expansion |
 
-Commands and command-side window transports live under `commands/`: `benchmark`, `corpus`, `correct_and_teach`, `dictation_diagnostics`, `dictation_preview`, `export`, `integrations`, `keyboard`, `knowledge`, `logging`, `meeting`, `microphone_preview`, `microphone_startup_benchmark`, `mode_runtime`, `models`, `native_window`, `overlay`, `performance`, `permissions`, `recording`, `settings_store`, `theme`, `tray`, and `updater`. Theme resolution remains frontend-only. `commands/theme.rs` is a main-window-gated UTF-8 file transport with 256 KiB regular-file reads and 64 KiB atomic sibling-temp exports. `commands/settings_store.rs` provides the independent main-only 1 MiB `theme-library.json` blob boundary.
+Commands and command-side window transports live under `commands/`: `benchmark`, `corpus`, `correct_and_teach`, `dictation_diagnostics`, `dictation_preview`, `export`, `integrations`, `keyboard`, `knowledge`, `logging`, `meeting`, `microphone_preview`, `microphone_startup_benchmark`, `models`, `native_window`, `overlay`, `performance`, `permissions`, `recording`, `settings_store`, `theme`, `tray`, and `updater`. Theme resolution remains frontend-only. `commands/theme.rs` is a main-window-gated UTF-8 file transport with 256 KiB regular-file reads and 64 KiB atomic sibling-temp exports. `commands/settings_store.rs` provides the independent main-only 1 MiB `theme-library.json` blob boundary.
 
 ### `state.rs` — Shared State
 
@@ -491,7 +488,7 @@ Two rules keep the multi-window state coherent:
 
 ## Tauri Commands
 
-173 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
+167 commands are registered in `lib.rs`. See [reference/commands.md](reference/commands.md) for the full signature-level list, grouped by module.
 
 ## Events
 
@@ -603,7 +600,7 @@ Plus tokio `spawn_blocking` for VAD (its context is `!Send`), downloads, and inj
 | Ordered transcript pipeline | One entry point, declared stage order and failure policy, per-stage timing — instead of ad-hoc string munging per backend |
 | Rust owns all window geometry | Pure `geometry_for()` / `popover_geometry_for()` with fixtures on both sides; no drifting CSS pixel constants |
 | Main-thread `NSWindow` mutation | macOS 26 hard-traps on off-main mutation (#325) |
-| Autorelease pool around off-main AppKit queries | Tokio/std threads have no run-loop pool, so AppKit's internal autoreleases (`NSWorkspace`, `NSRunningApplication`, Launch Services) never drain: the 500 ms Mode watcher leaked ~2.5 MB/hour idle. Wrap each synchronous query in `objc2::rc::autoreleasepool` inside the helper, return owned Rust data, and never hold the pool across an `.await` |
+| Autorelease pool around off-main AppKit queries | Tokio/std threads have no run-loop pool, so AppKit's internal autoreleases (`NSWorkspace`, `NSRunningApplication`, Launch Services) never drain: a 500 ms polling watcher leaked ~2.5 MB/hour idle. Wrap each synchronous query in `objc2::rc::autoreleasepool` inside the helper, return owned Rust data, and never hold the pool across an `.await` |
 | CGEvent paste with osascript fallback | Native path avoids process spawn; osascript remains the compatibility net |
 | Custom malloc zone | Separates Rust heap from whisper.cpp's FFI heap; `GlobalAlloc` wrappers drift when FFI frees Rust allocations |
 | `set_is_main_thread(false)` | Prevents the rdev TIS/TSM segfault on the background listener thread |

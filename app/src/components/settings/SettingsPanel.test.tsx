@@ -193,7 +193,7 @@ describe('SettingsPanel information architecture', () => {
 
   it('opens on General and falls back to it for unknown pages', () => {
     expect(SETTINGS_CATEGORIES.map((category) => category.label)).toEqual([
-      'General', 'Recording', 'Customize', 'Delivery', 'Meetings', 'Text & vocabulary', 'AI & models', 'Modes', 'Appearance',
+      'General', 'Recording', 'Customize', 'Delivery', 'Meetings', 'Text & vocabulary', 'AI & models', 'Appearance',
     ]);
     const nav = container.querySelector('nav[aria-label="Settings pages"]') as HTMLElement;
     expect(Array.from(nav.querySelectorAll('button')).map((button) => button.textContent)).toEqual(SETTINGS_CATEGORIES.map((category) => category.label));
@@ -211,7 +211,6 @@ describe('SettingsPanel information architecture', () => {
       expect.stringContaining('Text & vocabulary'),
       expect.stringContaining('Voice commands'),
       expect.stringContaining('App overrides'),
-      expect.stringContaining('Modes'),
     ]);
     const hubButton = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Customization destinations"] button'))
       .find((button) => button.textContent?.includes(label)) as HTMLButtonElement;
@@ -220,7 +219,6 @@ describe('SettingsPanel information architecture', () => {
       ['Text & vocabulary', 'Text & vocabulary'],
       ['Voice commands', 'Voice commands'],
       ['App overrides', 'Delivery'],
-      ['Modes', 'Modes'],
     ] as const) {
       const row = hubButton(label);
       await act(async () => row.click());
@@ -243,7 +241,7 @@ describe('SettingsPanel information architecture', () => {
     await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'customize', token: 1 }));
     const list = container.querySelector('[aria-label="Customization destinations"]')!;
     expect(list.tagName).toBe('UL');
-    expect(list.children).toHaveLength(4);
+    expect(list.children).toHaveLength(3);
     expect(Array.from(list.children).every(element => element.tagName === 'LI')).toBe(true);
     expect(Array.from(list.children).every(element => element.firstElementChild?.tagName === 'BUTTON')).toBe(true);
     expect(list.textContent).not.toMatch(/0[1-5]/);
@@ -425,62 +423,18 @@ describe('SettingsPanel information architecture', () => {
     expect(onUpdateSettings).not.toHaveBeenCalled();
   });
 
-  it('shows Modes and browser site rules on their own page', async () => {
-    const modes = Array.from(container.querySelectorAll<HTMLButtonElement>('nav[aria-label="Settings pages"] button'))
-      .find((button) => button.textContent === 'Modes') as HTMLButtonElement;
+  it('has no Modes page or browser site rules', async () => {
+    const pages = Array.from(container.querySelectorAll<HTMLButtonElement>('nav[aria-label="Settings pages"] button'))
+      .map((button) => button.textContent);
 
-    await act(async () => modes.click());
-
-    expect(container.querySelector('h1')?.textContent).toBe('Modes');
-    const browserSites = container.querySelector('[data-setting-target="browser-sites"]');
-    expect(browserSites?.querySelector('.settings-row-title')?.textContent).toBe('Browser sites');
-    expect(browserSites?.closest('details')).toBeNull();
+    expect(pages).not.toContain('Modes');
+    expect(container.querySelector('[data-setting-target="browser-sites"]')).toBeNull();
   });
 
   it('groups General settings into Startup, Dictation and Maintenance', async () => {
     await act(async () => renderPanel(true));
     expect(Array.from(container.querySelectorAll('.settings-group-heading')).map(node => node.textContent))
       .toEqual(['Startup', 'Dictation', 'Maintenance']);
-  });
-
-  it('routes an empty Mode binding through app creation and returns to binding', async () => {
-    const customMode = {
-      id: 'mode.focus', name: 'Focus', builtIn: false, enabled: true,
-      writingStyle: null, cleanupEnabled: null, smartFormattingEnabled: null,
-      cliFormattingEnabled: null, vocabularyPolicy: 'inherit' as const,
-      contextPolicy: 'none' as const, modelId: null, language: null, autoPaste: null,
-    };
-    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, modes: [customMode] }));
-    const modes = Array.from(container.querySelectorAll<HTMLButtonElement>('nav[aria-label="Settings pages"] button'))
-      .find((button) => button.textContent === 'Modes') as HTMLButtonElement;
-    await act(async () => modes.click());
-    const focusMode = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('Focus')) as HTMLButtonElement;
-    await act(async () => focusMode.click());
-    const addApp = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent === 'Add an app') as HTMLButtonElement;
-    await act(async () => addApp.click());
-    expect(container.querySelector('h1')?.textContent).toBe('Modes');
-    expect(container.querySelector('[role="dialog"] h2')?.textContent).toBe('App overrides');
-
-    await act(async () => renderPanel(true, {
-      ...DEFAULT_SETTINGS,
-      modes: [customMode],
-      appProfiles: [{
-        bundleId: 'com.example.Editor',
-        label: 'Editor',
-        autoPasteOverride: null,
-        cleanupOverride: null,
-        smartFormattingOverride: null,
-        cliFormattingOverride: null,
-        writingStyle: null,
-        ideContextEnabled: false,
-        ideProjectRoots: [],
-      }],
-    }));
-    expect(container.querySelector('h1')?.textContent).toBe('Modes');
-    expect((container.querySelector('[aria-label="Mode name"]') as HTMLInputElement).value).toBe('Focus');
-    expect(container.textContent).toContain('Editor');
   });
 
   it.each([false, true])('resets changed Auto-paste and respects file output=%s', async (saveTranscript) => {

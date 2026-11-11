@@ -1,0 +1,794 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "global-custom-mode-with-everyday-bound-profile",
+      "settings": {
+        "model": "small.en",
+        "language": "de",
+        "autoPaste": false,
+        "cleanupEnabled": true,
+        "smartFormattingEnabled": true,
+        "voiceCommandsEnabled": true,
+        "appProfiles": [
+          {
+            "bundleId": "com.apple.Notes",
+            "label": "com.apple.Notes",
+            "autoPasteOverride": true,
+            "cleanupOverride": false,
+            "smartFormattingOverride": false,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.apple.TextEdit",
+            "label": "com.apple.TextEdit",
+            "autoPasteOverride": false,
+            "cleanupOverride": true,
+            "smartFormattingOverride": true,
+            "cliFormattingOverride": null,
+            "writingStyle": "polished",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.apple.mail",
+            "label": "com.apple.mail",
+            "autoPasteOverride": true,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "polished",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.tinyspeck.slackmacgap",
+            "label": "com.tinyspeck.slackmacgap",
+            "autoPasteOverride": true,
+            "cleanupOverride": true,
+            "smartFormattingOverride": true,
+            "cliFormattingOverride": null,
+            "writingStyle": "polished",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "duplicate-profiles-first-match-wins",
+      "settings": {
+        "model": "tiny.en",
+        "language": "en",
+        "autoPaste": true,
+        "cleanupEnabled": true,
+        "smartFormattingEnabled": false,
+        "voiceCommandsEnabled": true,
+        "appProfiles": [
+          {
+            "bundleId": "com.example.dup",
+            "label": "com.example.dup",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.dup",
+            "label": "com.example.dup",
+            "autoPasteOverride": false,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "verbatim",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.dup2",
+            "label": "com.example.dup2",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "code_technical",
+            "ideContextEnabled": true,
+            "ideProjectRoots": [
+              "/tmp/murmur-fixture-a"
+            ]
+          },
+          {
+            "bundleId": "com.example.dup2",
+            "label": "com.example.dup2",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": true,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.dup3",
+            "label": "com.example.dup3",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "code_technical",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.dup3",
+            "label": "com.example.dup3",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": false,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.dup4",
+            "label": "com.example.dup4",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "polished",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.dup4",
+            "label": "com.example.dup4",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "invalid-and-disabled-mode-ids",
+      "settings": {
+        "model": "tiny.en",
+        "language": "en",
+        "autoPaste": true,
+        "cleanupEnabled": false,
+        "smartFormattingEnabled": false,
+        "voiceCommandsEnabled": true,
+        "appProfiles": [
+          {
+            "bundleId": "com.example.disabled",
+            "label": "com.example.disabled",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.missing",
+            "label": "com.example.missing",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.fakebuiltin",
+            "label": "com.example.fakebuiltin",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.invalid-with-own",
+            "label": "com.example.invalid-with-own",
+            "autoPasteOverride": false,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "notes",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "inherit-and-null-writing-style",
+      "settings": {
+        "model": "tiny.en",
+        "language": "en",
+        "autoPaste": true,
+        "cleanupEnabled": false,
+        "smartFormattingEnabled": false,
+        "voiceCommandsEnabled": true,
+        "appProfiles": [
+          {
+            "bundleId": "com.example.inherit",
+            "label": "com.example.inherit",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "polished",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.null",
+            "label": "com.example.null",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "code_technical",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.own",
+            "label": "com.example.own",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "notes",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.dupinherit",
+            "label": "com.example.dupinherit",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "inherit",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.dupinherit",
+            "label": "com.example.dupinherit",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "polished",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.everyday-inherit",
+            "label": "com.example.everyday-inherit",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "inherit",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "project-context-modes-roots",
+      "settings": {
+        "model": "tiny.en",
+        "language": "en",
+        "autoPaste": true,
+        "cleanupEnabled": false,
+        "smartFormattingEnabled": false,
+        "voiceCommandsEnabled": true,
+        "appProfiles": [
+          {
+            "bundleId": "com.example.roots",
+            "label": "com.example.roots",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "code_technical",
+            "ideContextEnabled": true,
+            "ideProjectRoots": [
+              "/tmp/murmur-fixture-a"
+            ]
+          },
+          {
+            "bundleId": "com.example.noroots",
+            "label": "com.example.noroots",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "code_technical",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.already",
+            "label": "com.example.already",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "code_technical",
+            "ideContextEnabled": true,
+            "ideProjectRoots": [
+              "/tmp/murmur-fixture-b"
+            ]
+          },
+          {
+            "bundleId": "com.example.nonproject",
+            "label": "com.example.nonproject",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "code_technical",
+            "ideContextEnabled": false,
+            "ideProjectRoots": [
+              "/tmp/murmur-fixture-c"
+            ]
+          },
+          {
+            "bundleId": "com.example.tworoots",
+            "label": "com.example.tworoots",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "code_technical",
+            "ideContextEnabled": true,
+            "ideProjectRoots": [
+              "/tmp/murmur-fixture-d",
+              "/tmp/murmur-fixture-e"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "unbound-profile-under-global-terminal",
+      "settings": {
+        "model": "tiny.en",
+        "language": "en",
+        "autoPaste": false,
+        "cleanupEnabled": false,
+        "smartFormattingEnabled": false,
+        "voiceCommandsEnabled": true,
+        "appProfiles": [
+          {
+            "bundleId": "com.example.unbound",
+            "label": "com.example.unbound",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": true,
+            "writingStyle": "code_technical",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.unbound-own",
+            "label": "com.example.unbound-own",
+            "autoPasteOverride": null,
+            "cleanupOverride": true,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": true,
+            "writingStyle": "verbatim",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.everyday-bound",
+            "label": "com.example.everyday-bound",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "unbound-profile-under-global-technical",
+      "settings": {
+        "model": "tiny.en",
+        "language": "en",
+        "autoPaste": false,
+        "cleanupEnabled": false,
+        "smartFormattingEnabled": false,
+        "voiceCommandsEnabled": true,
+        "appProfiles": [
+          {
+            "bundleId": "com.example.unbound",
+            "label": "com.example.unbound",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "code_technical",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.unbound-own",
+            "label": "com.example.unbound-own",
+            "autoPasteOverride": null,
+            "cleanupOverride": true,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "verbatim",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.everyday-bound",
+            "label": "com.example.everyday-bound",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "unbound-profile-under-global-messages",
+      "settings": {
+        "model": "tiny.en",
+        "language": "en",
+        "autoPaste": false,
+        "cleanupEnabled": false,
+        "smartFormattingEnabled": false,
+        "voiceCommandsEnabled": true,
+        "appProfiles": [
+          {
+            "bundleId": "com.example.unbound",
+            "label": "com.example.unbound",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "conversational",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.unbound-own",
+            "label": "com.example.unbound-own",
+            "autoPasteOverride": null,
+            "cleanupOverride": true,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "verbatim",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.everyday-bound",
+            "label": "com.example.everyday-bound",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "global-project-context-mode-unbound-profile",
+      "settings": {
+        "model": "tiny.en",
+        "language": "en",
+        "autoPaste": true,
+        "cleanupEnabled": false,
+        "smartFormattingEnabled": false,
+        "voiceCommandsEnabled": true,
+        "appProfiles": [
+          {
+            "bundleId": "com.example.unbound-roots",
+            "label": "com.example.unbound-roots",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "code_technical",
+            "ideContextEnabled": false,
+            "ideProjectRoots": [
+              "/tmp/murmur-fixture-a"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "pin-original-globals-before-changing-globals",
+      "settings": {
+        "model": "tiny.en",
+        "language": "en",
+        "autoPaste": false,
+        "cleanupEnabled": true,
+        "smartFormattingEnabled": false,
+        "voiceCommandsEnabled": true,
+        "appProfiles": [
+          {
+            "bundleId": "com.example.everyday",
+            "label": "com.example.everyday",
+            "autoPasteOverride": true,
+            "cleanupOverride": false,
+            "smartFormattingOverride": true,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.messages",
+            "label": "com.example.messages",
+            "autoPasteOverride": true,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "conversational",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.verbatim",
+            "label": "com.example.verbatim",
+            "autoPasteOverride": true,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "verbatim",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.notes",
+            "label": "com.example.notes",
+            "autoPasteOverride": true,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "notes",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.technical",
+            "label": "com.example.technical",
+            "autoPasteOverride": true,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "code_technical",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.other",
+            "label": "com.example.other",
+            "autoPasteOverride": true,
+            "cleanupOverride": false,
+            "smartFormattingOverride": true,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.bound-g",
+            "label": "com.example.bound-g",
+            "autoPasteOverride": false,
+            "cleanupOverride": true,
+            "smartFormattingOverride": false,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.unbound",
+            "label": "com.example.unbound",
+            "autoPasteOverride": false,
+            "cleanupOverride": true,
+            "smartFormattingOverride": false,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.own-cleanup",
+            "label": "com.example.own-cleanup",
+            "autoPasteOverride": true,
+            "cleanupOverride": true,
+            "smartFormattingOverride": true,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "disabled-global-active-mode",
+      "settings": {
+        "model": "tiny.en",
+        "language": "en",
+        "autoPaste": true,
+        "cleanupEnabled": false,
+        "smartFormattingEnabled": false,
+        "voiceCommandsEnabled": true,
+        "appProfiles": [
+          {
+            "bundleId": "com.example.unbound",
+            "label": "com.example.unbound",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "terminal-and-cli-overrides",
+      "settings": {
+        "model": "tiny.en",
+        "language": "en",
+        "autoPaste": false,
+        "cleanupEnabled": true,
+        "smartFormattingEnabled": false,
+        "voiceCommandsEnabled": true,
+        "appProfiles": [
+          {
+            "bundleId": "com.example.t1",
+            "label": "com.example.t1",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": true,
+            "writingStyle": "code_technical",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.t2",
+            "label": "com.example.t2",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": false,
+            "writingStyle": "code_technical",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.t3",
+            "label": "com.example.t3",
+            "autoPasteOverride": true,
+            "cleanupOverride": false,
+            "smartFormattingOverride": true,
+            "cliFormattingOverride": false,
+            "writingStyle": "code_technical",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.t4",
+            "label": "com.example.t4",
+            "autoPasteOverride": false,
+            "cleanupOverride": true,
+            "smartFormattingOverride": false,
+            "cliFormattingOverride": false,
+            "writingStyle": "polished",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "global-mode-model-not-installed",
+      "settings": {
+        "model": "tiny.en",
+        "language": "fr",
+        "autoPaste": false,
+        "cleanupEnabled": false,
+        "smartFormattingEnabled": false,
+        "voiceCommandsEnabled": true,
+        "appProfiles": [
+          {
+            "bundleId": "com.example.unbound",
+            "label": "com.example.unbound",
+            "autoPasteOverride": false,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          }
+        ]
+      }
+    },
+    {
+      "id": "everyday-baseline",
+      "settings": {
+        "model": "tiny.en",
+        "language": "en",
+        "autoPaste": true,
+        "cleanupEnabled": false,
+        "smartFormattingEnabled": false,
+        "voiceCommandsEnabled": true,
+        "appProfiles": [
+          {
+            "bundleId": "com.example.plain",
+            "label": "com.example.plain",
+            "autoPasteOverride": null,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": null,
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          },
+          {
+            "bundleId": "com.example.everyday",
+            "label": "com.example.everyday",
+            "autoPasteOverride": false,
+            "cleanupOverride": null,
+            "smartFormattingOverride": null,
+            "cliFormattingOverride": null,
+            "writingStyle": "notes",
+            "ideContextEnabled": false,
+            "ideProjectRoots": []
+          }
+        ]
+      }
+    }
+  ]
+}

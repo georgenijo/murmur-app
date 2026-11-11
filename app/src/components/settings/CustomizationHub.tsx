@@ -2,7 +2,7 @@ import { useLayoutEffect, useRef } from 'react';
 import { SettingsChevron } from './SettingsChevron';
 import { SettingsGroup } from './SettingsLayout';
 
-export type CustomizationDestination = 'text' | 'commands' | 'styles' | 'modes';
+export type CustomizationDestination = 'text' | 'commands' | 'styles';
 
 const DESTINATIONS: ReadonlyArray<{
   id: CustomizationDestination;
@@ -23,11 +23,6 @@ const DESTINATIONS: ReadonlyArray<{
     id: 'styles',
     title: 'App overrides',
     description: 'Choose how Murmur writes and delivers text in each app',
-  },
-  {
-    id: 'modes',
-    title: 'Modes',
-    description: 'Build reusable behavior and assign it to apps or browser sites',
   },
 ];
 

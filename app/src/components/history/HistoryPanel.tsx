@@ -511,7 +511,7 @@ function HistoryPanelComponent({
                   </div>
                 )}
                 <ClampedTranscript text={entry.text} query={query} />
-                {entry.derived && <span className="transcript-derived">Reformatted · {entry.derived.modeId}</span>}
+                {entry.derived && <span className="transcript-derived">Reformatted</span>}
               </div>
               <span className="transcript-copy-feedback ui-visually-hidden" role="status" aria-live="polite">
                 {copiedId === entry.id ? 'Copied' : ''}

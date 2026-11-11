@@ -37,7 +37,8 @@ export function VocabularyFileActions({ settings, onChange }: {
       const path = await open({ multiple: false, directory: false, filters: [{ name: 'Murmur Vocabulary', extensions: ['json'] }] });
       if (!mounted.current) return;
       if (typeof path !== 'string') { setState({ kind: 'idle' }); return; }
-      const contents = await invoke<string>('read_modes_file', { path });
+      // Shares the bounded, main-window-only UTF-8 reader that theme import uses.
+      const contents = await invoke<string>('read_theme_file', { path });
       if (!mounted.current) return;
       const file = parseVocabularyFile(contents);
       setState({ kind: 'preview', preview: previewVocabularyImport(file, current.current) });
