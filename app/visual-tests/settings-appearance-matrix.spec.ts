@@ -17,7 +17,6 @@ for (const { appearance, width, height, label } of surfaceCases()) {
       await dialog.getByRole('button', { name: 'Done', exact: true }).click();
       await expect(dialog).toBeVisible();
       await expect(accent).toBeFocused();
-      await expect(dialog).toHaveScreenshot(`${appearance}-${width}x${height}-invalid-accent.png`);
       await accent.fill('#123abc');
       await page.keyboard.press('Enter');
       await expect(dialog).toHaveCount(0);

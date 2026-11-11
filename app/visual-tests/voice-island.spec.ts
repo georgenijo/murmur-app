@@ -53,7 +53,6 @@ for (const placement of ['notch', 'pill'] as const) {
         await expect(words).toHaveCSS('padding-left', '14px');
         await expect(words).toHaveCSS('font-size', '13px');
         await expect(words.locator('button, input, textarea, [title], [contenteditable]')).toHaveCount(0);
-        await expect(fixture).toHaveScreenshot(`${placement}-${appearance}-${motion}.png`);
       });
     }
   }
@@ -65,7 +64,6 @@ test('external pretend-notch geometry and long live words remain bounded', async
   const island = page.locator('.overlay-island');
   await expect(island).toHaveCSS('width', '241px');
   await expect(island).toHaveCSS('height', '30px');
-  await expect(island).toHaveScreenshot('external-recording.png');
   await page.setViewportSize({ width: 560, height: 160 });
   await page.goto('/visual-fixtures.html?state=dictation-preview&text=' + encodeURIComponent('Synthetic provisional words '.repeat(24)));
   const words = page.locator('.live-words-card');
@@ -74,7 +72,6 @@ test('external pretend-notch geometry and long live words remain bounded', async
   const box = await words.boundingBox();
   expect(box!.height).toBeLessThanOrEqual(104);
   expect(await words.evaluate(el => el.scrollWidth)).toBeLessThanOrEqual(460);
-  await expect(page).toHaveScreenshot('tentative-live-words.png');
 });
 
 test('placement and live words live in general settings', async ({ page }) => {

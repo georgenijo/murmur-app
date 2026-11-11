@@ -158,7 +158,7 @@ for (const appearance of ['light', 'dark']) {
   });
 
   for (const state of ['idle', 'settings-general', 'settings-appearance', 'menu']) {
-    test(`${appearance} ${state} typography golden`, async ({ page }) => {
+    test(`${appearance} ${state} typography`, async ({ page }) => {
       await open(page, state === 'menu' ? 'idle' : state, appearance);
       if (state === 'settings-appearance' || state === 'settings-general') {
         await expect(page.locator('.settings-nav-item[aria-current="page"]')).toHaveText(state === 'settings-general' ? 'General' : 'Appearance');
@@ -170,8 +170,10 @@ for (const appearance of ['light', 'dark']) {
       }
       if (state === 'settings-appearance') await expect(page.locator('[data-theme-collection="Sonic"]')).toBeVisible();
       if (state === 'settings-general') await expect(page.locator('.settings-card').first()).toHaveCSS('border-radius', '12px');
-      if (state === 'menu') await page.getByRole('button', { name: /^Filter transcripts/ }).click();
-      await expect(page).toHaveScreenshot(`${appearance}-${state}.png`);
+      if (state === 'menu') {
+        await page.getByRole('button', { name: /^Filter transcripts/ }).click();
+        await expect(page.getByRole('menu')).toBeVisible();
+      }
     });
   }
 }

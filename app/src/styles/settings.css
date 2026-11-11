@@ -457,12 +457,16 @@
 .settings-stack > .settings-dependent-branch { margin-top: 0; }
 .settings-advanced-toggle { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 20px; padding: 0; text-align: left; color: var(--murmur-on-surface); font-size: 14px; line-height: 20px; font-weight: 500; background: transparent; border: 0; border-radius: 8px; cursor: pointer; }
 .settings-advanced-toggle:focus-visible { outline: 2px solid var(--murmur-primary); outline-offset: 2px; }
-.settings-advanced-chevron { width: 16px; height: 16px; flex: none; color: var(--murmur-on-surface-variant); transition: transform 150ms ease-out; }
+/* One size and colour for every Settings chevron: navigation rows and disclosures. */
+.settings-chevron { width: 16px; height: 16px; flex: none; color: var(--murmur-on-surface-variant); }
+.settings-advanced-chevron { transition: transform 150ms ease-out; }
 .settings-advanced-toggle[aria-expanded='true'] .settings-advanced-chevron { transform: rotate(180deg); }
 /* Keep row width and toggle spacing constant throughout entry and exit; moving
-   the insets on click rewraps controls before the fold can animate. */
+   the insets on click rewraps controls before the fold can animate. The gap
+   under the toggle lives inside the fold, so it opens and closes with the
+   rows instead of snapping when `data-expanded` flips. */
 .settings-advanced:has(> .settings-advanced-rows) { padding-bottom: 0; }
-.settings-advanced:has(> .settings-advanced-rows[data-expanded='true']) > .settings-advanced-toggle { margin-bottom: var(--settings-row-pad); }
+.settings-advanced > .settings-advanced-rows > .settings-dependent-branch-clip > .settings-dependent-branch-content { padding-top: var(--settings-row-pad); }
 .settings-advanced > .settings-advanced-rows { margin-inline: calc(-1 * var(--settings-row-x)); }
 .settings-branch-stack > .settings-dependent-branch-clip > .settings-dependent-branch-content.settings-stack { padding-top: var(--settings-stack-gap); }
 .settings-branch-stack > .settings-dependent-branch-clip > .settings-dependent-branch-content.settings-stack > * + * { margin-top: var(--settings-stack-gap); }
@@ -635,6 +639,8 @@
 .settings-group-heading { margin: 0 16px 6px; color: var(--murmur-on-surface-variant); font-size: var(--ui-font-settings-group); line-height: var(--ui-leading-micro); font-weight: 500; }
 .settings-groups .settings-advanced { padding-block: 0; border-top: 0; }
 .settings-groups .settings-advanced:not(:first-child) { box-shadow: inset 0 1px 0 var(--settings-divider); }
+/* An Advanced group revealed by a switch row above it divides from that row. */
+.settings-groups .settings-dependent-branch-content > .settings-advanced:first-child { box-shadow: inset 0 1px 0 var(--settings-divider); }
 .settings-advanced-toggle { justify-content: space-between; min-height: var(--settings-row-height); font-size: var(--ui-font-label); line-height: var(--ui-leading-label); }
 .settings-advanced-copy { display: flex; flex-direction: column; gap: var(--settings-copy-gap); }
 .settings-advanced-description { color: var(--murmur-on-surface-variant); font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); font-weight: 400; }

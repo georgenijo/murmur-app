@@ -20,9 +20,8 @@ display labels, copy or export the transcript, and play retained audio. See
   [local remote-speaker labels](meeting-diarization.md) can refine unambiguous
   Them passages after transcription. Experimental speaker-echo reduction is off by
   default. When enabled, it removes the System reference only from Me and
-  bypasses to the original microphone stream if processing fails. The
-  [AEC feasibility spike](aec-feasibility-spike.md) defines the physical matrix
-  that must pass before Murmur enables the setting by default.
+  bypasses to the original microphone stream if processing fails. This opt-in
+  AEC3 path has no recorded acceptance gate for enabling it by default.
 - The overlay shows a persistent two-dot meeting state from accepted start
   through capture stop. A spinner remains while final durable chunks transcribe.
 - Dictation, file transcription, benchmarks, corpus capture, selected-text

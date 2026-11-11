@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { SmartAutoMicrophoneRequest } from './settings';
 
-export type MicrophonePreviewPhase = 'idle' | 'connecting' | 'active' | 'stopping' | 'error';
+type MicrophonePreviewPhase = 'idle' | 'connecting' | 'active' | 'stopping' | 'error';
 export type MicrophoneSignalClassification =
   | 'no_signal'
   | 'too_quiet'
@@ -23,7 +23,7 @@ export interface MicrophonePreviewLevel {
   classification: MicrophoneSignalClassification;
 }
 
-export type MicrophonePreviewVadDecision = 'speech_detected' | 'no_speech' | 'unavailable';
+type MicrophonePreviewVadDecision = 'speech_detected' | 'no_speech' | 'unavailable';
 
 export interface MicrophonePreviewVad {
   previewId: number;
@@ -41,21 +41,6 @@ export const IDLE_MICROPHONE_PREVIEW: MicrophonePreviewStatus = {
 
 export function getMicrophonePreviewStatus(): Promise<MicrophonePreviewStatus> {
   return invoke('get_microphone_preview_status');
-}
-
-export type MicrophoneSignalVerificationResult = 'verified' | 'no_pcm' | 'insufficient_signal' | 'interrupted';
-
-export function verifyMicrophonePreviewSignal(previewId: number): Promise<MicrophoneSignalVerificationResult> {
-  return invoke('verify_microphone_preview_signal', { previewId });
-}
-
-export function microphoneSignalVerificationLabel(result: MicrophoneSignalVerificationResult): string {
-  switch (result) {
-    case 'verified': return 'Sustained input signal verified. This checks sound level, not speech or microphone identity.';
-    case 'no_pcm': return 'No audio arrived during the check. Reconnect this microphone or choose another input.';
-    case 'insufficient_signal': return 'No sustained usable signal. Speak normally, check input volume, or choose another microphone.';
-    case 'interrupted': return 'The microphone changed or stopped during the check. Try again when the live meter is ready.';
-  }
 }
 
 export function startMicrophonePreview(

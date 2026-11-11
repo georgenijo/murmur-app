@@ -52,21 +52,8 @@ the theme-library implementation.
 
 ## Coverage and evidence
 
-The `settings-copy` visual fixture renders real Settings panes and editors with
-synthetic local data. It sends editor requests after mount, then waits for the
-actual editor heading; an overview screenshot cannot satisfy editor coverage.
-Both light and dark cover General, Recording, Delivery, Meetings, Text,
-AI overview, speech recognition, Modes, Appearance,
-Performance Lab, Diagnostics, shortcuts, and every text editor. Disclosures are
-also captured expanded, scrolled to the final controls. Additional snapshots
-show a recoverable command default, Knowledge overflow, typed bulk deletion,
-and an armed alias deletion.
-
-Existing Home, discovery, meeting, first-run, updater, and theme goldens cover
-changed copy in those surfaces. The exact new/updated paths are in
-[the golden manifest](copy-interaction-goldens.txt). Darwin snapshots are
-Darwin evidence; Linux screenshot proof is reserved for the lead's local Docker
-run on the mini. No MacBook, native app, or GUI session was operated here.
+The `settings-copy` fixture renders real Settings panes and editors with
+synthetic local data. Playwright assertions cover their behavior and geometry.
 
 The alias action column is 120px so an armed confirmation and switch cannot
 overlap; the browser test checks its computed size and control bounds.
@@ -118,21 +105,6 @@ dedicated port-14850 configuration keeps
 `~/scratch/e846/850-evidence/c1-c5-*`; the lead retains final Sol review,
 integration, and native verification. This correction does not change fonts,
 App.tsx, styles.css, SettingsPanel, or #848's shared settings controls.
-
-The prior 54-new / 18-updated golden manifest remains unchanged. This correction
-adds only these 16 Darwin goldens under
-`app/visual-tests/copy-review-850.spec.ts-snapshots/` (each row is both files):
-
-| Light | Dark |
-| --- | --- |
-| `light-850-transform-confirm-darwin.png` | `dark-850-transform-confirm-darwin.png` |
-| `light-850-dictation-confirm-darwin.png` | `dark-850-dictation-confirm-darwin.png` |
-| `light-850-runs-confirm-darwin.png` | `dark-850-runs-confirm-darwin.png` |
-| `light-850-invalid-accent-darwin.png` | `dark-850-invalid-accent-darwin.png` |
-| `light-850-microphone-permission-darwin.png` | `dark-850-microphone-permission-darwin.png` |
-| `light-850-accessibility-permission-darwin.png` | `dark-850-accessibility-permission-darwin.png` |
-| `light-850-system-permission-darwin.png` | `dark-850-system-permission-darwin.png` |
-| `light-850-calendar-permission-darwin.png` | `dark-850-calendar-permission-darwin.png` |
 
 Native delta to verify after integration, using disposable local data:
 

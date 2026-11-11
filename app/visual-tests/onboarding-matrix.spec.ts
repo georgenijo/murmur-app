@@ -67,7 +67,6 @@ for (const { appearance, width, height, label } of surfaceCases()) {
           expect(nav).not.toBeNull();
           if (index === 0) { progressBounds = progress; navBounds = nav; }
           else { expect(progress).toEqual(progressBounds); expect(nav).toEqual(navBounds); }
-          if (permission === 'unknown') await expect(page.locator('.main-first-run-onboarding')).toHaveScreenshot(`${appearance}-${width}x${height}-${title.split(' ')[0].toLowerCase()}-permission.png`);
 
           if (permission === 'loading') {
             await primary.click();

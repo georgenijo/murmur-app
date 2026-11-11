@@ -305,7 +305,79 @@ function HistoryPanelComponent({
     <div className="flex flex-1 flex-col overflow-hidden" data-empty={entries.length === 0}>
       <div className="shrink-0">
         <div className="history-toolbar">
+          <div className="history-heading">
           {title && <h2 id={titleId} className="history-title">{title}</h2>}
+          <AnimatedDropdown disabled={entries.length === 0} open={exportOpen} onOpenChange={setExportOpen}>
+            <AnimatedDropdownTrigger className="history-export-trigger" aria-label="More history actions">
+              <span aria-hidden="true" className="leading-none">···</span>
+            </AnimatedDropdownTrigger>
+            <AnimatedDropdownContent align="end" side="bottom" className="history-export-menu min-w-56">
+              <AnimatedDropdownItem
+                onClick={() => {
+                  setExportOpen(false);
+                  onTranscribeFile();
+                }}
+              >
+                Transcribe audio or video file…
+              </AnimatedDropdownItem>
+              <AnimatedDropdownSeparator />
+              <p className="ui-menu-label">
+                Copy {visible.length} shown
+              </p>
+              {HISTORY_EXPORT_FORMATS.map((format) => (
+                <AnimatedDropdownItem
+                  key={`copy-${format.value}`}
+                  aria-label={`Copy ${visible.length} shown as ${format.label}`}
+                  onClick={() => void handleCopyExport(format.value)}
+                >
+                  {format.label}
+                </AnimatedDropdownItem>
+              ))}
+              <AnimatedDropdownSeparator />
+              <p className="ui-menu-label">Save to file</p>
+              {HISTORY_EXPORT_FORMATS.map((format) => (
+                <AnimatedDropdownItem
+                  key={`save-${format.value}`}
+                  aria-label={`Save ${visible.length} shown as ${format.label}`}
+                  onClick={() => void handleSaveExport(format.value)}
+                >
+                  {format.label}…
+                </AnimatedDropdownItem>
+              ))}
+              <AnimatedDropdownSeparator />
+              {narrowed && (
+                <>
+                  <HoldToDeleteButton
+                    key={deleteScopeKey}
+                    label={`Hold to delete ${visible.length} shown`}
+                    confirmLabel={`Click again to delete ${visible.length} shown`}
+                    holdDuration={1200}
+                    onDelete={() => {
+                      const count = visible.length;
+                      onDeleteEntries(visible);
+                      setExportOpen(false);
+                      showNotice(`Deleted ${count} ${count === 1 ? 'entry' : 'entries'}.`);
+                    }}
+                    disabled={visible.length === 0}
+                    className="h-auto min-h-(--ui-menu-row) w-full min-w-0 justify-start gap-2 rounded-(--ui-radius-menu-item) px-2 py-1 shadow-none"
+                  />
+                  <AnimatedDropdownSeparator />
+                </>
+              )}
+              <HoldToDeleteButton
+                label="Hold to clear history"
+                confirmLabel="Click again to clear history"
+                holdDuration={1200}
+                onDelete={() => {
+                  onClear();
+                  setExportOpen(false);
+                }}
+                disabled={entries.length === 0}
+                className="h-auto min-h-(--ui-menu-row) w-full min-w-0 justify-start gap-2 rounded-(--ui-radius-menu-item) px-2 py-1 shadow-none"
+              />
+            </AnimatedDropdownContent>
+          </AnimatedDropdown>
+          </div>
           <div
             data-testid="history-search-shell"
             data-expanded="true"
@@ -360,76 +432,7 @@ function HistoryPanelComponent({
             onClear={clearFilters}
           />
 
-          <AnimatedDropdown disabled={entries.length === 0} open={exportOpen} onOpenChange={setExportOpen}>
-            <AnimatedDropdownTrigger className="history-export-trigger" aria-label="More history actions">
-              <span aria-hidden="true" className="text-base leading-none">···</span>
-            </AnimatedDropdownTrigger>
-            <AnimatedDropdownContent align="end" side="bottom" className="history-export-menu min-w-56">
-              <AnimatedDropdownItem
-                onClick={() => {
-                  setExportOpen(false);
-                  onTranscribeFile();
-                }}
-              >
-                Transcribe audio or video file…
-              </AnimatedDropdownItem>
-              <AnimatedDropdownSeparator />
-              <p className="ui-menu-label">
-                Copy {visible.length} shown
-              </p>
-              {HISTORY_EXPORT_FORMATS.map((format) => (
-                <AnimatedDropdownItem
-                  key={`copy-${format.value}`}
-                  aria-label={`Copy ${visible.length} shown as ${format.label}`}
-                  onClick={() => void handleCopyExport(format.value)}
-                >
-                  {format.label}
-                </AnimatedDropdownItem>
-              ))}
-              <AnimatedDropdownSeparator />
-              <p className="ui-menu-label">Save to file</p>
-              {HISTORY_EXPORT_FORMATS.map((format) => (
-                <AnimatedDropdownItem
-                  key={`save-${format.value}`}
-                  aria-label={`Save ${visible.length} shown as ${format.label}`}
-                  onClick={() => void handleSaveExport(format.value)}
-                >
-                  {format.label}…
-                </AnimatedDropdownItem>
-              ))}
-              <AnimatedDropdownSeparator />
-              {narrowed && (
-                <>
-                  <HoldToDeleteButton
-                    key={deleteScopeKey}
-                    label={`Hold to delete ${visible.length} shown`}
-                    confirmLabel={`Click again to delete ${visible.length} shown`}
-                    holdDuration={1200}
-                    onDelete={() => {
-                      const count = visible.length;
-                      onDeleteEntries(visible);
-                      setExportOpen(false);
-                      showNotice(`Deleted ${count} ${count === 1 ? 'entry' : 'entries'}.`);
-                    }}
-                    disabled={visible.length === 0}
-                    className="h-auto min-h-(--ui-menu-row) w-full min-w-0 justify-start gap-2 rounded-(--ui-radius-menu-item) px-2 py-1 text-sm shadow-none"
-                  />
-                  <AnimatedDropdownSeparator />
-                </>
-              )}
-              <HoldToDeleteButton
-                label="Hold to clear history"
-                confirmLabel="Click again to clear history"
-                holdDuration={1200}
-                onDelete={() => {
-                  onClear();
-                  setExportOpen(false);
-                }}
-                disabled={entries.length === 0}
-                className="h-auto min-h-(--ui-menu-row) w-full min-w-0 justify-start gap-2 rounded-(--ui-radius-menu-item) px-2 py-1 text-sm shadow-none"
-              />
-            </AnimatedDropdownContent>
-          </AnimatedDropdown>
+
         </div>
 
         {narrowed && entries.length > 0 && (

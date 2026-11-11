@@ -4,7 +4,7 @@ import { surfaceCases } from './surface-matrix';
 for (const { appearance, width, height, label } of surfaceCases([{ width: 840, height: 620 }, { width: 880, height: 720 }, { width: 720, height: 560 }])) {
   test.describe(`Settings inputs ${label}`, () => {
     test.use({ viewport: { width, height }, colorScheme: appearance });
-    test('Voice commands search reveals without switch focus; editor handoff focuses once', async ({ page }, testInfo) => {
+    test('Voice commands search reveals without switch focus; editor handoff focuses once', async ({ page }) => {
       await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&appearance=${appearance}`);
       const search = page.getByRole('searchbox', { name: 'Search all settings' });
       if (width < 768) await page.getByRole('button', { name: 'Search settings', exact: true }).click();
@@ -19,14 +19,13 @@ for (const { appearance, width, height, label } of surfaceCases([{ width: 840, h
       await expect(toggle).toBeVisible();
       await expect(toggle).toBeFocused();
       await expect(toggle).toHaveAttribute('aria-checked', 'false');
-      await testInfo.attach(`voice-commands-${appearance}.png`, { body: await page.screenshot(), contentType: 'image/png' });
       if (width < 768) await page.getByRole('button', { name: 'Search settings', exact: true }).click();
       await search.click();
       // Outlast the bounded reveal retry, so a delayed refocus would be detected.
       await page.waitForTimeout(550);
       await expect(search).toBeFocused();
     });
-    test('Sensitivity keyboard and pointer values survive navigation', async ({ page }, testInfo) => {
+    test('Sensitivity keyboard and pointer values survive navigation', async ({ page }) => {
       await page.goto(`/visual-fixtures.html?state=settings-copy&page=recording&appearance=${appearance}`);
       const slider = page.getByRole('slider', { name: 'Sensitivity', exact: true });
       await slider.focus();
@@ -45,7 +44,6 @@ for (const { appearance, width, height, label } of surfaceCases([{ width: 840, h
       await page.getByRole('button', { name: 'General', exact: true }).click();
       await page.getByRole('button', { name: 'Recording', exact: true }).click();
       await expect(slider).toHaveValue(pointerValue);
-      await testInfo.attach(`sensitivity-${appearance}.png`, { body: await page.screenshot(), contentType: 'image/png' });
     });
     if (width === 840) {
       test('Auto-paste stays a standard-height row in every file-saving state', async ({ page }) => {

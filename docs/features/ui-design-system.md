@@ -52,9 +52,7 @@ lifecycle in React so every native resize subscription is disposed on unmount.
 surfaces, actions, navigation rows, section headings, statistic groups, and
 secondary-page headers. Feature callers choose a named variant and cannot pass
 arbitrary style classes through the primitive API. `components/ui/DayChart.tsx`
-owns the day-summary bar, line, and heatmap structures, including keyboard
-targets, a fixed tooltip region, a separate plot region, and a separate weekday
-axis.
+owns the day-summary bar, line, and heatmap structures, including keyboard targets, a tooltip anchored to the active mark, a separate plot region, and a separate weekday axis.
 
 The reusable CSS contracts are:
 
@@ -83,17 +81,17 @@ Use these before creating a feature-local control or surface.
 |------|----------|
 | Native chrome | Traffic lights, Home sidebar toggle, status, updates, and Settings share one row. The toggle starts after the zoom-compensated 80pt controls inset and never acts as a drag region; recording actions live in the dashboard. Collapsed Home and narrow Settings leave the header background unpainted; expanded header paint aligns with its sidebar |
 | Status | Minimum 72px; state changes do not remove its container. Home hides the title-bar chip because its talk card already states the dictation status |
-| Record | Home owns one talk card with a single talk-row action and a passive month strip, a plain-language state title, and one short hint; title and hint never truncate at 880×720 or 1120×820. Transcribing a file lives in the history `···` menu |
+| Record | Home owns one talk card with a single talk action and a passive month summary, a plain-language state title, and one short hint; title and hint never truncate at 880×720 or 1120×820. Transcribing a file lives in the history `···` menu |
 | Sidebar | App owns Home collapsed state, resizing, and a 208–384px expanded width. Below 768 CSS px Home defaults to a 48px icon rail; explicit expansion is available. The header owns its toggle and restores focus there when a focused resize separator disappears. Sidebar heading retains the brand. Settings uses the separate #848 contract below: 208px / 56px rail. Home contains Home, Notetaker, and Insights; selection is a surface state with no shadow, a vertically centred expanded marker, and no collapsed marker |
 | Customize | The gear and `⌘,` open General; Customize is an unordered set of independent destinations, and detail pages expose Back to Customize and restore the originating row's focus |
 | Content | Home uses the whole window with 24px desktop and 16px compact insets. Settings uses a centered 728px shell with 680px of content |
-| Toolbar | 28px controls; one line holding the page title, search, the Filter menu, and `···` at 880×720 and wider, wrapping rather than clipping when narrower; no resting entry count |
+| Toolbar | 28px controls; one line holding the page title and `···`, search, and the Filter menu at 880×720 and wider, wrapping rather than clipping when narrower; no resting entry count |
 | History | Home uses 28px above and 8px below day labels; rows use an 8px vertical inset, with aligned hover fills and within-day hairlines |
 | Metadata | Time/source only; word count and duration stay out of transcript rows |
 | Copy | The non-interactive card surface copies its full transcript; Space does the same when focused |
 | Correct & Teach | Compact muted action on the newest entry only |
 | Secondary pages | Insights uses a page header with a Back action. Notetaker uses a title/capture header with sidebar navigation; see the Notetaker contract below |
-| Charts | Tooltip, plot, and axis are separate regions; each day is keyboard reachable, hover/focus/click share exact values, Escape or blur dismisses, tooltips never move the plot, and heatmaps expose date-range/month/weekday labels; Insights exposes daily values in assistive-technology tables, while other heatmaps retain the Daily values disclosure |
+| Charts | Tooltips follow the active mark without moving the plot; each day is keyboard reachable, hover/focus/click share exact values, Escape or blur dismisses, tooltips never move the plot, and heatmaps expose date-range/month/weekday labels; Insights exposes daily values in assistive-technology tables, while other heatmaps retain the Daily values disclosure |
 
 ## Input contracts
 
@@ -133,34 +131,28 @@ refuses new violations rather than accepting them. Never add entries to silence
 a failure. Inspect the baseline diff, then run the normal tests without the env
 flag. The initial baseline records existing debt without changing rendered UI.
 
-Every main-dashboard change should be checked at the native 1120×820 default,
-the 880×720 golden size, and the compact 720×560 target in both appearance modes. Home and Insights must also
-be checked with the low-contrast and high-saturation imported-theme fixtures.
-Recording transitions must be checked in idle, recording, and processing
-states. Native title-bar work must be verified in a bundled Tauri app because a
-browser cannot reproduce the macOS traffic-light layout.
+Use the 1120×820 default, 880×720 fixture, and compact 720×560 sizes when
+relevant to the change. Home and Insights have low-contrast and high-saturation
+imported-theme fixtures. Test recording transitions in idle, recording, and
+processing states when affected. Native title-bar work must be verified in a
+bundled Tauri app because a browser cannot reproduce the traffic-light layout.
 
 Component tests enforce the stable header contracts and confirm click-anywhere
-copy, keyboard copy, and nested-action isolation. Native smoke testing covers Settings
-navigation, transcript-card actions, and the history overflow menu.
+copy, keyboard copy, and nested-action isolation. Exercise affected native
+flows as described in `CLAUDE.md`.
 
-`npm run test:visual` runs Playwright goldens at 880×720 for light and dark
-appearances across idle, recording, processing, Insights, and Settings, plus
-720×560 compact Home and Insights fixtures; a layout test also checks the talk
-card and history toolbar at the 1120×820 window default. Its dashboard theme matrix renders Home and
-Insights with Sonic light/dark and repaired low-contrast/high-saturation
-Open VSX-like inputs. The 880×720 fixture must retain a 200px Insights rail
-beside the history column. Update those baselines only after comparing the
-rendered fixture with the Open Design source and repeating the bundled native
-smoke test.
+`npm run test:visual` runs Playwright assertions against fixtures in light and
+dark at standard and compact sizes, including theme, geometry, and interaction
+coverage. When fixing a layout bug, add a geometry or DOM assertion that would
+have caught it. Native verification follows the rules in `CLAUDE.md`.
 
 ### UI PR checklist
 
 - Check native controls clearance and the header centreline independently of sidebar width.
 - Keep the shared type scale; use sans prose and tabular statistics, mono technical text.
 - Exercise expanded, collapsed, narrow and attainable 0.5/1.0/1.1/1.2 zoom states.
-- Compare light and dark rendering and inspect platform-specific golden diffs.
-- Verify the signed bundled native app: pointer/keyboard toggle, separator focus restore, window drag and title-bar double-click; include narrow Settings at 1.1.
+- Inspect light and dark rendering in the built native app.
+- For affected behavior or native chrome, exercise the relevant pointer, keyboard, window, and focus flows in the built app.
 
 ## T3 Code typography and floating surfaces (#853)
 
@@ -215,28 +207,8 @@ Customize drill-in, plus exposed selects and history menus, at 880×720 and
 720×560 in both modes. Intentional ellipsis and horizontally scrollable tab
 strips are distinguished from unreachable clipped text.
 
-Dedicated light/dark goldens cover Home (`state=idle`), General
-(`state=settings-general`), Appearance (`state=settings-appearance`), and an
-open Home filter menu. The existing dashboard, settings, updater and theme
-matrix goldens also change with the shared typography. These are Chromium
-browser fixtures, not native WKWebView evidence. CI currently runs on macOS;
-Linux proof must be generated and identified separately and must never reuse
-Darwin screenshots as Linux results.
-
-Before merge, the lead must verify the exact integrated revision in an
-isolated native Mac mini build, including Home, Settings → General,
-Settings → Appearance, Home → Filter / history overflow, and an Insights chart
-tooltip, in Light and Dark. Exercise pointer and keyboard navigation, Escape,
-menu selection, compact scrolling, and Reduce Motion. Required Retina
-WKWebView and native T3 side-by-side evidence remain gates until captured;
-a 1× capture or browser device-scale emulation does not satisfy Retina proof.
-The MacBook must not be operated for this task.
-
-On Linux, run `npm ci`, `npx playwright install chromium`, then
-`npx playwright test typography.spec.ts typography-overflow.spec.ts` from
-`app/`. The dedicated `*-linux.png` baselines live beside their Darwin
-counterparts. This focused Linux gate complements the existing full macOS
-suite; it does not claim that macOS-only native behavior was tested on Linux.
+Playwright checks typography and overflow in light and dark Chromium fixtures.
+Native WKWebView verification follows `CLAUDE.md`.
 
 ## T3 Code settings geometry (#848)
 
@@ -287,9 +259,9 @@ states, input focus, active buttons, semantic colors, and search motion/highligh
 `settings-rhythm.spec.ts` measures real cards across ten default/expanded panes.
 `settings-geometry.spec.ts` navigates the real SettingsPanel for 22 destinations
 in both modes. It complements the existing imported-theme contrast matrix and
-all-pane overflow audit. Goldens are kept separately for Darwin and Linux;
-Linux CI uses `mcr.microsoft.com/playwright:v1.62.1-noble`. These browser checks
-do not replace the lead's serial native WKWebView all-pane and Retina checks.
+all-pane overflow audit. Linux CI runs the Playwright suite in
+`mcr.microsoft.com/playwright:v1.62.1-noble`. Browser checks do not replace
+native verification.
 
 ## Copy and interaction
 
@@ -356,8 +328,7 @@ paint with no shadow, transform or hover feedback. Focus is a 2px primary
 outline with a 2px offset. Keep 28px compact and 32px standard geometry.
 
 Home uses one scroll range and a 208px initial/minimum expanded sidebar.
-Its footer is the one-line “Audio and transcripts stay local.”; the icon rail
-retains the full accessible note. The talk row owns Start/Stop dictation and
+The talk control owns Start/Stop dictation and
 recording tint; its neutral border and passive month summary do not react to
 recording or hover. Empty Home omits the usage strip. Only confirmed microphone
 denial replaces the talk row with an inline recovery action; unknown and

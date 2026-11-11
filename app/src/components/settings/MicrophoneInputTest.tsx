@@ -1,6 +1,6 @@
 import { SettingsRow } from './SettingsRow';
+import { SettingsChevron } from './SettingsChevron';
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
 import { Popover } from '@base-ui/react/popover';
 import { listen } from '@tauri-apps/api/event';
 import type { AudioDeviceDescriptor, AudioInputLidState } from '../../lib/audioDevices';
@@ -849,7 +849,7 @@ export function MicrophoneInputTest({
         >
           <span>Smart Auto microphones</span>
           <span className="settings-microphone-disclosure-summary">{smartAutoIncludedSummary(smartAuto.smartAutoApprovedDeviceIds.length)}</span>
-          <ChevronDown aria-hidden="true" className="settings-advanced-chevron" />
+          <SettingsChevron direction="down" className="settings-advanced-chevron" />
         </button>
       )}
       {smartAuto && onSmartAutoChange && (

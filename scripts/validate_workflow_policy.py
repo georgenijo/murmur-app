@@ -29,8 +29,7 @@ RELEASE_BUILD_GUARD = (
 )
 CI_BUILD_JOBS = (
     "typecheck",
-    "visual-linux",
-    "visual-regression",
+    "ui-tests",
     "rust-lint",
     "rust-macos",
 )

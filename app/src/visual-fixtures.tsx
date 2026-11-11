@@ -41,6 +41,7 @@ import type { DictationStatus } from './lib/types';
 import type { MainDestination } from './lib/homeDashboard';
 import { removeHistoryEntries, toggleHistoryEntryPinned, type HistoryEntry } from './lib/history';
 import { dayKey, loadStats } from './lib/stats';
+import { getUpdateReleaseNotes } from './lib/updater';
 import { sanitizeActivityStats } from './lib/activityStats';
 import { useMeetings } from './lib/hooks/useMeetings';
 import type { MeetingSession } from './lib/meetings';
@@ -151,6 +152,26 @@ const longUpdateNotes = `## New Features
 
 - Settings use consistent row spacing and branch alignment.
 - Long-session echo-cancellation checks support thirty-minute captures.`;
+
+const olderNotes = `## What's Changed
+
+### Other Changes
+
+- Refine the local controls.
+- Improve the activity view.
+
+**Full Changelog**: https://example.com/releases/v0.63.3`;
+const latestNotes = `## What's Changed
+
+### Other Changes
+
+- Improve the update flow.
+- Polish the Home layout.
+
+**Full Changelog**: https://example.com/releases/v0.63.4`;
+const cumulativeNotes = getUpdateReleaseNotes({ release_history: [
+  { version: '0.63.3', notes: olderNotes },
+] }, '0.63.2', '0.63.4', latestNotes);
 
 const meetingFixture = {
   session: {
@@ -818,7 +839,9 @@ function VisualFixture() {
       )}
       <AboutModal isOpen={requestedState === 'about'} onClose={() => {}} />
       <UpdateModal
-        status={requestedState === 'update-dialog-short'
+        status={requestedState === 'update-dialog-cumulative'
+          ? { phase: 'available', version: '0.63.4', notes: cumulativeNotes, isForced: false }
+          : requestedState === 'update-dialog-short'
           ? { phase: 'available', version: '0.43.1', notes: shortUpdateNotes, isForced: false }
           : requestedState === 'update-dialog-long'
             ? { phase: 'available', version: '0.43.1', notes: longUpdateNotes, isForced: false }

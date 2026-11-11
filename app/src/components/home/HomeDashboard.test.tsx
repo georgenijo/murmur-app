@@ -7,7 +7,6 @@ vi.mock('../../lib/dictation', () => ({ openMicrophoneSettings: native.openSetti
 import { HomeRecordingBar } from './HomeRecordingBar';
 import { HomeSidebar as ControlledHomeSidebar } from './HomeSidebar';
 import { useHomeSidebar } from '../../lib/hooks/useHomeSidebar';
-import { PersonalizationCard } from './PersonalizationCard';
 
 function HomeSidebar(props: Pick<React.ComponentProps<typeof ControlledHomeSidebar>, 'active' | 'onNavigate'>) {
   const sidebar = useHomeSidebar();
@@ -177,32 +176,6 @@ describe('home dashboard interactions', () => {
       'Home', 'Notetaker', 'Insights',
     ]);
     expect(container.textContent).not.toContain('Customize');
-    expect(container.querySelector('.home-sidebar-bottom')?.textContent).toContain('Audio and transcripts stay local.');
-  });
-
-  it('describes auditable milestones rather than an opaque score', async () => {
-    await act(async () => root.render(
-      <PersonalizationCard
-        summary={{
-          stage: 'Developing',
-          completed: 1,
-          total: 3,
-          milestones: [
-            { id: 'vocabulary', label: 'Preferred terms', detail: '2 enabled', complete: true },
-            { id: 'styles', label: 'App styles', detail: 'Choose a style for an app', complete: false },
-            { id: 'usage', label: 'Regular use', detail: '2 of 5 active days', complete: false },
-          ],
-          nextAction: 'Configure an app style.',
-        }}
-        expanded
-        onOpenVocabulary={vi.fn()}
-        onOpenStyles={vi.fn()}
-      />,
-    ));
-
-    expect(container.textContent).toContain('Developing');
-    expect(container.textContent).toContain('1 of 3 set up');
-    expect(container.textContent).toContain('not a voice-training or confidence score');
-    expect(container.textContent).not.toContain('%');
+    expect(container.textContent).not.toContain('Audio and transcripts stay local.');
   });
 });

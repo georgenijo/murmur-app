@@ -1,6 +1,7 @@
 import { Search } from 'lucide-react';
 import { useSettingsAdvanced } from '../../lib/hooks/useSettingsAdvanced';
 import { ADVANCED_TARGETS, visibleSettingsTarget } from './settingsDisclosureRouting';
+import { SettingsChevron } from './SettingsChevron';
 import { SettingsDisclosureContext } from './SettingsLayout';
 import { SettingsRow } from './SettingsRow';
 import { Button, Input } from '../ui/FormControls';
@@ -1016,7 +1017,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                       <span className="rounded-full bg-surface-container-high px-2.5 py-1 text-[length:var(--ui-font-micro)] font-medium text-on-surface-variant">
                         {searchPageLabel(result.page)}
                       </span>
-                      <span aria-hidden="true" className="text-on-surface-variant">›</span>
+                      <SettingsChevron direction="right" />
                     </button>
                   ))}
                 </div>
@@ -1263,7 +1264,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                   <span className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">Speech-to-text</span>
                   <span className="mt-0.5 block text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">{selectedRuntime?.label ?? AVAILABLE_MODEL_OPTIONS.find((option) => option.value === settings.model)?.label ?? settings.model} · {selectedRuntime?.installState ?? 'Local model'}</span>
                 </span>
-                <span aria-hidden="true" className="text-on-surface-variant">›</span>
+                <SettingsChevron direction="right" />
               </button>
             </SettingsGroup>
 
@@ -1341,7 +1342,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                   <span className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">{title}</span>
                   <span className="mt-0.5 block text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">{detail}</span>
                 </span>
-                <span aria-hidden="true" className="text-on-surface-variant">›</span>
+                <SettingsChevron direction="right" />
               </button>
             ))}
             <SettingsDisclosure title="Advanced" layout="rows">
@@ -1445,7 +1446,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                   <span className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">Manage app overrides</span>
                   <span className="mt-0.5 block text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">Set delivery and writing preferences for specific apps</span>
                 </span>
-                <span aria-hidden="true" className="text-on-surface-variant">›</span>
+                <SettingsChevron direction="right" />
               </button>
             </SettingsDisclosure>
             </SettingsGroup>
@@ -1476,7 +1477,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 checked={settings.meetingSuggestionsEnabled} defaultChecked={DEFAULT_SETTINGS.meetingSuggestionsEnabled}
                 onChange={() => onUpdateSettings({ meetingSuggestionsEnabled: !settings.meetingSuggestionsEnabled })}
               />
-              <SettingsBranch open={settings.meetingSuggestionsEnabled} className="settings-branch-stack">
+              <SettingsBranch open={settings.meetingSuggestionsEnabled}>
                 <SettingsDisclosure title="Calendar details" layout="stack" targetId="meeting-calendar" open={calendarDetailsOpen} onOpenChange={setCalendarDetailsOpen}>
                   <p className="text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
                     Supports Zoom, Teams, Slack, Webex, FaceTime, and browsers without reading URLs or window titles
@@ -1580,7 +1581,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                     <span className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">Keyboard shortcuts</span>
                     <span className="mt-0.5 block text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">See global and main-window shortcuts in one place</span>
                   </span>
-                  <span aria-hidden="true" className="text-on-surface-variant">›</span>
+                  <SettingsChevron direction="right" />
                 </button>
               </SettingsGroup>
               <SettingsGroup title="Dictation">

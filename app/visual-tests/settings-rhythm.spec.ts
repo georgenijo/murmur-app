@@ -46,9 +46,9 @@ for (const { path, state } of pages) {
             const advancedRows = row.matches('.settings-advanced:has(> .settings-advanced-rows)');
             const label = row.textContent?.trim().slice(0, 40);
             if (style.paddingTop !== (branch || groupedAdvanced ? '0px' : '7px') || style.paddingBottom !== (branch || groupedAdvanced || advancedRows ? '0px' : '7px')) failures.push(`${label}: vertical padding ${style.paddingTop}/${style.paddingBottom}`);
-            // A closed Advanced card is only its header row. Its trailing gap
-            // appears with the revealed rows, without moving card edges.
-            if (advancedRows && getComputedStyle(row.querySelector('.settings-advanced-toggle')!).marginBottom !== (row.querySelector('.settings-advanced-rows')?.getAttribute('data-expanded') === 'true' ? '7px' : '0px')) failures.push(`${label}: Advanced toggle spacing`);
+            // A closed Advanced card is only its header row. The gap under the toggle is
+            // padding inside the fold, so it opens and closes with the rows rather than snapping.
+            if (advancedRows && (getComputedStyle(row.querySelector('.settings-advanced-toggle')!).marginBottom !== '0px' || getComputedStyle(row.querySelector('.settings-advanced-rows .settings-dependent-branch-content')!).paddingTop !== '7px')) failures.push(`${label}: Advanced toggle spacing`);
             if (style.paddingLeft !== (branch ? '0px' : '16px') || style.paddingRight !== (branch ? '0px' : '16px')) failures.push(`${label}: horizontal padding ${style.paddingLeft}/${style.paddingRight}`);
             if (style.borderRadius !== '0px' && !row.matches('button:last-child')) failures.push(`${label}: rounded row ${style.borderRadius}`);
             if (Math.abs(bounds.width - (card.width - 2)) > .1) failures.push(`${label}: inset divider (${bounds.width}/${card.width})`);
