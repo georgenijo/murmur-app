@@ -1404,13 +1404,14 @@ describe('effectiveAutoPaste', () => {
 
   it.each([
     [false, false, false, 'Always copied to clipboard. Also paste into active app.'],
+    [true, false, false, 'Always copied to clipboard. Also paste into active app.'],
     [true, true, false, 'Always copied to clipboard. Auto-paste is paused.'],
     [false, true, false, 'Always copied to clipboard. Auto-paste is off.'],
     [true, false, true, 'Always copied to clipboard. Auto-paste is paused.'],
     [false, false, true, 'Always copied to clipboard. Auto-paste is off.'],
     [true, true, true, 'Always copied to clipboard. Auto-paste is paused.'],
     [false, true, true, 'Always copied to clipboard. Auto-paste is off.'],
-  ])('keeps clipboard-first delivery copy in every file-saving state', (autoPaste, saveTranscript, saveAudio, description) => {
+  ])('keeps the clipboard fact in the delivery copy for every Auto-paste and file-saving state', (autoPaste, saveTranscript, saveAudio, description) => {
     expect(autoPasteDeliveryDescription({ autoPaste, saveTranscript, saveAudio })).toBe(description);
     expect(description.length).toBeLessThanOrEqual(70);
   });
