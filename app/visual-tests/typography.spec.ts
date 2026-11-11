@@ -170,7 +170,10 @@ for (const appearance of ['light', 'dark']) {
       }
       if (state === 'settings-appearance') await expect(page.locator('[data-theme-collection="Sonic"]')).toBeVisible();
       if (state === 'settings-general') await expect(page.locator('.settings-card').first()).toHaveCSS('border-radius', '12px');
-      if (state === 'menu') await page.getByRole('button', { name: /^Filter transcripts/ }).click();
+      if (state === 'menu') {
+        await page.getByRole('button', { name: /^Filter transcripts/ }).click();
+        await expect(page.getByRole('menu')).toBeVisible();
+      }
     });
   }
 }

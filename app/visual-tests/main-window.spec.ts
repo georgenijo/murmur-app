@@ -11,10 +11,10 @@ test.beforeEach(async ({ page }) => {
 const states = ['idle', 'recording', 'processing', 'update-recovering', 'settings'] as const;
 const appearances = ['light', 'dark'] as const;
 const dashboardThemeMatrix = [
-  { id: 'sonic-light', appearance: 'light', theme: null },
-  { id: 'sonic-dark', appearance: 'dark', theme: null },
-  { id: 'open-vsx-low-contrast', appearance: 'light', theme: 'open-vsx-low-contrast' },
-  { id: 'open-vsx-high-saturation', appearance: 'dark', theme: 'open-vsx-high-saturation' },
+  { id: 'sonic-light', appearance: 'light', theme: null, primary: '#036785' },
+  { id: 'sonic-dark', appearance: 'dark', theme: null, primary: '#92dbfe' },
+  { id: 'open-vsx-low-contrast', appearance: 'light', theme: 'open-vsx-low-contrast', primary: '#6f6447' },
+  { id: 'open-vsx-high-saturation', appearance: 'dark', theme: 'open-vsx-high-saturation', primary: '#ff85de' },
 ] as const;
 
 for (const appearance of appearances) {
@@ -41,6 +41,7 @@ for (const themeCase of dashboardThemeMatrix) {
 
       const fixture = page.locator('[data-visual-ready="true"]');
       await expect(fixture).toHaveAttribute('data-theme-fixture', themeCase.theme ?? 'sonic');
+      await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--murmur-primary').trim())).toBe(themeCase.primary);
     });
   }
 }
@@ -770,6 +771,7 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   await expect(page.getByText('Import a file or browse Open VSX')).toHaveCount(0);
 
   await page.getByRole('radio', { name: /dark/i }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-appearance', 'dark');
   await expect(catppuccinCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
 
   await page.setViewportSize({ width: 840, height: 620 });

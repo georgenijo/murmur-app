@@ -108,6 +108,7 @@ test('a dark-only theme applies from Light and keeps Appearance and Customize le
   await expect(page.getByRole('radio', { name: /dark/i })).toBeChecked();
   await page.mouse.move(0, 0);
   await page.getByRole('button', { name: 'Customize', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Customize', level: 1 })).toBeVisible();
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-appearance', 'dark');
   await page.getByRole('button', { name: 'Appearance', exact: true }).click();

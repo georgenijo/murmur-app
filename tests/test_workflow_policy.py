@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from scripts.validate_workflow_policy import (
     named_step_block,
@@ -22,8 +23,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def screenshot_policy_violations(app: Path) -> list[str]:
+    for required in (app / "src", app / "visual-tests"):
+        if not required.is_dir():
+            raise FileNotFoundError(f"required app source directory missing: {required}")
+
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
     violations = []
-    for directory, dirs, files in os.walk(app):
+    for directory, dirs, files in os.walk(app, onerror=raise_walk_error):
         # Installed and generated dependencies are not repository source.
         current = Path(directory)
         visual = app / "visual-tests"
@@ -50,10 +58,33 @@ class ScreenshotPolicyTests(unittest.TestCase):
             app = Path(temp)
             visual = app / "visual-tests"
             visual.mkdir()
+            (app / "src").mkdir()
             (app / "test.ts").write_text("toHave" + "Screenshot")
             (visual / "example-snapshots").mkdir()
             (visual / "example.png").write_bytes(b"png")
             self.assertEqual(len(screenshot_policy_violations(app)), 3)
+
+    def test_guard_rejects_missing_source_roots(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app = Path(temp)
+            with self.assertRaises(FileNotFoundError):
+                screenshot_policy_violations(app)
+            (app / "src").mkdir()
+            with self.assertRaises(FileNotFoundError):
+                screenshot_policy_violations(app)
+            (app / "src").rmdir()
+            (app / "visual-tests").mkdir()
+            with self.assertRaises(FileNotFoundError):
+                screenshot_policy_violations(app)
+
+    def test_guard_propagates_traversal_errors(self):
+        with tempfile.TemporaryDirectory() as temp:
+            app = Path(temp)
+            (app / "src").mkdir()
+            (app / "visual-tests").mkdir()
+            with patch("os.scandir", side_effect=PermissionError("unreadable")):
+                with self.assertRaises(PermissionError):
+                    screenshot_policy_violations(app)
 
 
 class WorkflowPolicyMutationTests(unittest.TestCase):
