@@ -1,7 +1,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { KnowledgeEntry, KnowledgeListResponse } from '../../lib/knowledge';
+import type { KnowledgeEntry, KnowledgeListResponse, KnowledgeStoreStatus } from '../../lib/knowledge';
 import { KnowledgeManager } from './KnowledgeManager';
 
 const mocks = vi.hoisted(() => ({
@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   importFile: vi.fn(),
   open: vi.fn(),
   save: vi.fn(),
+  status: { availability: 'ready', schemaVersion: 2, recordCount: 1, storeRevision: 9, recoveryAtMs: null, message: null } as KnowledgeStoreStatus,
 }));
 
 const ENTRY: KnowledgeEntry = {
@@ -35,7 +36,7 @@ const ENTRY: KnowledgeEntry = {
 vi.mock('@tauri-apps/plugin-dialog', () => ({ open: mocks.open, save: mocks.save }));
 vi.mock('../../lib/hooks/useKnowledge', () => ({
   useKnowledge: () => ({
-    status: { availability: 'ready', schemaVersion: 2, recordCount: 1, storeRevision: 9, recoveryAtMs: null, message: null },
+    status: mocks.status,
     entries: [ENTRY],
     total: 1,
     nextOffset: null,
@@ -88,6 +89,7 @@ describe('KnowledgeManager', () => {
     mocks.retry.mockResolvedValue({ availability: 'ready', schemaVersion: 2, recordCount: 1, storeRevision: 9, recoveryAtMs: null, message: null });
     mocks.inspectImport.mockResolvedValue({ total: 2, new: 1, duplicates: 1, conflicts: 0 });
     mocks.importFile.mockResolvedValue({ imported: 1, duplicates: 1, storeRevision: 10 });
+    mocks.status = { availability: 'ready', schemaVersion: 2, recordCount: 1, storeRevision: 9, recoveryAtMs: null, message: null };
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -96,6 +98,20 @@ describe('KnowledgeManager', () => {
       cleanupOverride: null, smartFormattingOverride: null, cliFormattingOverride: null,
       writingStyle: null, ideContextEnabled: false, ideProjectRoots: [],
     }]} />));
+  });
+
+  it('shows store status only when the local store is unavailable', async () => {
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+
+    mocks.status = { ...mocks.status, availability: 'unavailable', message: 'The local store is unavailable.' };
+    await act(async () => root.render(<KnowledgeManager active profiles={[]} />));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('The local store is unavailable.');
+
+    mocks.status = { ...mocks.status, availability: 'recovered', message: 'Recovered from a local backup.' };
+    await act(async () => root.render(<KnowledgeManager active profiles={[]} />));
+    expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
   afterEach(async () => {

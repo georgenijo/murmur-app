@@ -256,10 +256,10 @@ export function VoiceCommandsManager({ active, globallyEnabled, profiles, onOpen
 
   return (
     <div className="mt-4 space-y-3">
-      {!globallyEnabled && <div className="rounded-lg border border-primary/70 bg-primary/10 px-3 py-2 text-xs text-on-surface">
-        <p>Commands are saved but will not run until “Voice commands & spoken formatting” is turned on in Text → Advanced.</p>
-        {onOpenVoiceCommandSettings && <Button type="button" variant="ghost" size="xs" onClick={onOpenVoiceCommandSettings} className="mt-2">Open Voice commands &amp; spoken formatting</Button>}
-      </div>}
+      {!globallyEnabled && <p className="text-[length:var(--ui-font-caption)] leading-[var(--ui-leading-caption)] text-on-surface-variant">
+        Commands are saved but will not run until Voice commands &amp; spoken formatting is turned on in Text → Advanced.
+        {onOpenVoiceCommandSettings && <Button type="button" size="xs" onClick={onOpenVoiceCommandSettings} className="ml-2">Open Voice commands &amp; spoken formatting</Button>}
+      </p>}
       <div className="flex items-start justify-between gap-3"><div><p className="text-sm font-medium text-on-surface">Custom commands</p></div><Button type="button" variant="primary" size="sm" ref={newCommandRef} onClick={(event) => openEditor(null, false, event.currentTarget)} disabled={knowledge.status.availability === 'unavailable'}>New command…</Button></div>
       {(error || knowledge.error) && <p role="alert" className="rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error">{error ?? knowledge.error}</p>}
       {knowledge.entries.length === 0 && !knowledge.loading ? <p className="rounded-lg border border-dashed border-outline-variant/40 px-3 py-6 text-center text-xs text-on-surface-variant">No custom voice commands yet.</p> : <ul className="space-y-2">{knowledge.entries.map((entry) => <li key={entry.id} className={`settings-card flex items-start gap-3 p-3 ${entry.enabled ? '' : 'opacity-60'}`}>

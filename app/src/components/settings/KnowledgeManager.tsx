@@ -49,29 +49,18 @@ function formatUpdated(timestamp: number) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(timestamp);
 }
 
-function StatusBanner({ availability, message, recoveryAtMs, onRetry }: {
+function StatusBanner({ availability, message, onRetry }: {
   availability: 'ready' | 'recovered' | 'reinitialized' | 'unavailable';
   message: string | null;
-  recoveryAtMs: number | null;
   onRetry: () => void;
 }) {
-  if (availability === 'ready') return (
-    <div className="flex items-center gap-2 rounded-lg border border-success/60 bg-success/10 px-3 py-2 text-xs text-success" role="status">
-      <span className="h-2 w-2 rounded-full bg-success" /> Local store ready
-    </div>
-  );
   if (availability === 'unavailable') return (
     <div className="flex items-center justify-between gap-3 rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error" role="alert">
       <span>{message ?? 'The local knowledge store is unavailable.'}</span>
       <Button type="button" variant="ghost" size="xs" onClick={onRetry} className="shrink-0">Retry</Button>
     </div>
   );
-  return (
-    <div className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-on-surface" role="status">
-      <strong>{availability === 'recovered' ? 'Recovered from a local backup.' : 'Started with a new local store.'}</strong>{' '}
-      {message}{recoveryAtMs ? ` (${formatUpdated(recoveryAtMs)})` : ''}
-    </div>
-  );
+  return null;
 }
 
 export function KnowledgeManager({ active, profiles }: Props) {
@@ -213,7 +202,6 @@ export function KnowledgeManager({ active, profiles }: Props) {
       <StatusBanner
         availability={knowledge.status.availability}
         message={knowledge.status.message}
-        recoveryAtMs={knowledge.status.recoveryAtMs}
         onRetry={() => void retry()}
       />
 
