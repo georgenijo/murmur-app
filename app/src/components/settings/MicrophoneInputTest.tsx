@@ -863,9 +863,10 @@ export function MicrophoneInputTest({
         </SettingsBranch>
       )}
       <SettingsRow
+        className="settings-live-input-level-row"
         title="Live input level"
         description={actionError || vadError || status.message ? undefined : helperText}
-        control={<div className="flex w-full items-center gap-3">
+        control={<div className="settings-live-input-level-control flex items-center gap-3">
           <div
             ref={meterRef}
             role="meter"

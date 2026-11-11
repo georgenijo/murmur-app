@@ -140,6 +140,7 @@
 
 .settings-meter-track {
   background: var(--settings-tint-sunken);
+  box-shadow: inset 0 0 0 1px var(--settings-divider);
 }
 
 .settings-workspace ul[role='listbox'] {
@@ -709,9 +710,11 @@
 .settings-microphone-input .settings-row-controls { grid-column: 2; grid-row: 1; }
 .settings-microphone-input .settings-row-title ~ p { grid-column: 1 / -1; grid-row: 2; }
 .settings-microphone-input .settings-row-title ~ p:not(:first-child) { margin-top: var(--settings-copy-gap); }
-.settings-microphone-input > .settings-setting-row + .settings-setting-row { border-top: 1px solid var(--settings-divider); }
+.settings-live-input-level-row { border-top: 1px solid var(--settings-divider); }
+.settings-live-input-level-control { width: 160px; max-width: 100%; }
 @container settings-row (width < 512px) {
   .settings-microphone-input .settings-row-title,
   .settings-microphone-input .settings-row-controls,
   .settings-microphone-input .settings-row-title ~ p { grid-column: 1; grid-row: auto; }
+  .settings-live-input-level-control { width: 100%; }
 }
