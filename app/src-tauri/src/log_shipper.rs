@@ -652,6 +652,19 @@ pub fn start(app_handle: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn main_thread_diagnostics_ship_unchanged() {
+        let lines = concat!(
+            r#"{"timestamp":"t","stream":"pipeline","level":"info","summary":"pipeline.main_thread_paste_wait","data":{"event_code":"pipeline.main_thread_paste_wait","recording_id":4,"inject_queue_us":80000,"preview_hide":"after_paste","longest_label":"preview.hide","slow":true}}"#,
+            "\n",
+            r#"{"timestamp":"t","stream":"system","level":"info","summary":"system.main_thread_paste_span","data":{"event_code":"system.main_thread_paste_span","recording_id":4,"kind":"command","label":"list_performance_runs","duration_us":45000}}"#,
+            "\n",
+            r#"{"timestamp":"t","stream":"pipeline","level":"info","summary":"Structured event","data":{"event_code":"pipeline.dictation_preview_presentation","recording_id":4,"outcome":"hidden","trigger":"after_paste"}}"#,
+            "\n",
+        );
+        assert_eq!(shippable_payload(lines.as_bytes()), lines.as_bytes());
+    }
     use std::io::Write;
     use std::net::TcpListener;
     use std::sync::mpsc;

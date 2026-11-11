@@ -124,6 +124,16 @@ class ReferenceDocsTests(unittest.TestCase):
                 with self.assertRaisesRegex(AssertionError, r"stale command count"):
                     validate_reference_docs(root)
 
+    def test_plain_and_instrumented_handlers_register_the_same_commands(self) -> None:
+        body = "\n            commands::a::first,\n            second\n        "
+        plain = f".invoke_handler(tauri::generate_handler![{body}])"
+        wrapped = (
+            ".invoke_handler(main_thread_watch::instrument_invoke_handler("
+            f"tauri::generate_handler![{body}]))"
+        )
+        self.assertEqual(registered_commands(plain), ["first", "second"])
+        self.assertEqual(registered_commands(wrapped), ["first", "second"])
+
     def test_duplicate_handler_or_documentation_entries_fail(self) -> None:
         lib_rs = (ROOT / "app/src-tauri/src/lib.rs").read_text()
         duplicated_handler = lib_rs.replace(
