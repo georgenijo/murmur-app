@@ -8,13 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- Consolidate Settings cards and Advanced disclosures, compact Meetings and single-variant theme cards, and standardize editor controls, labels, and actions.
 - Soften auxiliary dialog outlines and actions, prevent meeting-speaker truncation, and hide the collapsed-sidebar privacy dot.
 
 ## [0.63.2] - 2026-11-11
 
 ### Fixed
 
-- Consolidate Settings cards and Advanced disclosures, compact Meetings and single-variant theme cards, and standardize editor controls, labels, and actions.
 - Soften shared secondary-control borders, replace nested Text & vocabulary tiles with standard navigation rows, clarify clipboard-first Auto-paste behavior, and remove the redundant Settings title divider.
 - Make Settings callouts visibly distinct across built-in themes.
 - Make active theme variants unmistakable in Appearance, and compact theme cards by removing redundant preview captions and status rows.

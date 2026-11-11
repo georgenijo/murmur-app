@@ -54,6 +54,8 @@ export function VocabTermsModal({
     const previouslyFocused =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const onKey = (e: KeyboardEvent) => {
+      // An open dropdown inside the sheet consumes Escape to close itself.
+      if (e.defaultPrevented) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         onCloseRef.current();

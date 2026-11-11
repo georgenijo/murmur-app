@@ -143,6 +143,19 @@ describe('KnowledgeManager', () => {
     expect(help.open).toBe(false);
   });
 
+  it('Escape closes an open dropdown before it closes the editor', async () => {
+    await act(async () => button(container, 'Create knowledge…').click());
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="Knowledge visibility"]')!;
+    const escape = () => trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    await act(async () => trigger.click());
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    await act(async () => { escape(); });
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[aria-label="Heard phrase"]')).not.toBeNull();
+    await act(async () => { escape(); });
+    expect(container.querySelector('[aria-label="Heard phrase"]')).toBeNull();
+  });
+
   it('previews import, exports, and requires typed DELETE before delete-all', async () => {
     mocks.save.mockResolvedValue('/tmp/knowledge.json');
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="More knowledge actions"]')!.click());

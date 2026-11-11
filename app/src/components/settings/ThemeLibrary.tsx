@@ -207,8 +207,9 @@ function CollectionCard({
   const [actionsOpen, setActionsOpen] = useState(false);
   const actionsTriggerRef = useRef<HTMLButtonElement>(null);
   const closeActions = (restoreFocus = false) => {
+    // Move focus to the trigger first: the focused action is about to unmount.
+    if (restoreFocus) actionsTriggerRef.current?.focus();
     setActionsOpen(false);
-    if (restoreFocus) requestAnimationFrame(() => actionsTriggerRef.current?.focus());
   };
   const labels = shortVariantLabels(entries);
   const groups = (['light', 'dark'] as const).flatMap((mode) => {

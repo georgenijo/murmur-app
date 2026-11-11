@@ -1092,6 +1092,26 @@ describe('SettingsPanel information architecture', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it('opens Calendar details when search lands on Calendar suggestion access', async () => {
+    await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, meetingSuggestionsEnabled: true }));
+    const input = container.querySelector('input[type="search"]') as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(input, 'calendar suggestion access');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const result = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.includes('Calendar suggestion access'),
+    ) as HTMLButtonElement;
+    await act(async () => result.click());
+    expect(container.querySelector('h1')?.textContent).toBe('Meetings');
+    const action = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.includes('Open Calendar settings'),
+    );
+    expect(action).toBeDefined();
+    expect(action!.closest('[inert], [aria-hidden="true"]')).toBeNull();
+  });
+
   it('preserves the parent scroll while entering a sheet and restores its page on close', async () => {
     const input = container.querySelector('input[type="search"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
