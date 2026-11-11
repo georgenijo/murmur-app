@@ -5,7 +5,7 @@ export const SETTINGS_ADVANCED_KEY = 'murmur.settings-disclosure.v1';
 export const SETTINGS_PANE_KEYS = [
   'general', 'shortcuts', 'recording', 'customize', 'delivery', 'meetings', 'text',
   'ai', 'ai-query', 'ai-transform', 'ai-transcription', 'appearance',
-  'performance', 'diagnostics', 'vocabulary', 'aliases', 'knowledge', 'transforms', 'commands', 'scan', 'app-overrides',
+  'performance', 'diagnostics', 'vocabulary', 'aliases', 'transforms', 'scan', 'app-overrides',
 ] as const;
 export type SettingsPaneKey = typeof SETTINGS_PANE_KEYS[number];
 type AdvancedState = Partial<Record<SettingsPaneKey, boolean>>;

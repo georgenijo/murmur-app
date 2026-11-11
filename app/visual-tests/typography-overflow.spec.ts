@@ -6,7 +6,7 @@ const destinations = [
   ['Performance Lab'], ['Diagnostics'],
   ['AI & models', 'Speech-to-text'],
 
-  ['Customize', 'Voice commands'], ['Customize', 'App overrides'],
+  ['Customize', 'App overrides'],
 ] as const;
 
 async function audit(page: Page) {

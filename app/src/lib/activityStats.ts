@@ -1,5 +1,3 @@
-import type { KnowledgeScope } from './knowledge';
-
 export interface TransformCounts {
   runs: number;
   approved: number;
@@ -14,11 +12,6 @@ export interface ActivityMonth extends TransformCounts {
 export interface ActivityStats {
   meetings: { count: number; totalMinutes: number; summariesGenerated: number };
   transforms: TransformCounts & { byPresetName: Record<string, TransformCounts> };
-  corrections: {
-    proposed: number;
-    taught: number;
-    byScope: Record<KnowledgeScope['kind'], number>;
-  };
   pasteLastUses: number;
   monthlyBuckets: Record<string, ActivityMonth>;
 }
@@ -26,8 +19,6 @@ export interface ActivityStats {
 export type ActivityCompletion =
   | { kind: 'meeting'; durationMs: number }
   | { kind: 'transform'; outcome: keyof TransformCounts; presetName: string | null }
-  | { kind: 'correction_proposed' }
-  | { kind: 'correction_taught'; scope: KnowledgeScope['kind'] }
   | { kind: 'paste_last' };
 
 function record(value: unknown): Record<string, unknown> {
@@ -56,13 +47,12 @@ export function activityMonth(value?: unknown): ActivityMonth {
 
 // Preset names are the only private labels accepted here. Never pass the stats
 // blob or these keys to diagnostics, logs, or telemetry. `recordingsByMode` from
-// older blobs is ignored and dropped on the next save.
+// older blobs and the retired `corrections` counters are ignored and dropped on
+// the next save.
 export function sanitizeActivityStats(value: unknown): ActivityStats {
   const raw = record(value);
   const meetings = record(raw.meetings);
   const transforms = record(raw.transforms);
-  const corrections = record(raw.corrections);
-  const scopes = record(corrections.byScope);
   return {
     meetings: {
       count: count(meetings.count),
@@ -74,11 +64,6 @@ export function sanitizeActivityStats(value: unknown): ActivityStats {
       byPresetName: Object.fromEntries(Object.entries(record(transforms.byPresetName))
         .filter(([name]) => name.length > 0)
         .map(([name, totals]) => [name, transformCounts(totals)])),
-    },
-    corrections: {
-      proposed: count(corrections.proposed),
-      taught: count(corrections.taught),
-      byScope: { global: count(scopes.global), app: count(scopes.app), project: count(scopes.project) },
     },
     pasteLastUses: count(raw.pasteLastUses),
     monthlyBuckets: Object.fromEntries(Object.entries(record(raw.monthlyBuckets))
@@ -123,11 +108,6 @@ export function addActivityCompletion(
       }
       break;
     }
-    case 'correction_proposed': next.corrections.proposed++; break;
-    case 'correction_taught':
-      next.corrections.taught++;
-      next.corrections.byScope[completion.scope]++;
-      break;
     case 'paste_last': next.pasteLastUses++; break;
     default: {
       const exhaustive: never = completion;

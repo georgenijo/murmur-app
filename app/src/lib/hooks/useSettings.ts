@@ -351,7 +351,6 @@ export function useSettings() {
               outputDir: confirmed.outputDir,
               appProfiles: confirmed.appProfiles,
               voiceCommandsEnabled: confirmed.voiceCommandsEnabled,
-              voiceCommands: confirmed.voiceCommands,
               cleanupEnabled: confirmed.cleanupEnabled,
               smartFormattingEnabled: confirmed.smartFormattingEnabled,
               cleanupRemoveFiller: confirmed.cleanupRemoveFiller,

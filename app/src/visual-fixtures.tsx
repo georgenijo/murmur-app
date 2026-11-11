@@ -54,9 +54,6 @@ const requestedState = query.get('state') ?? 'idle';
 const longSpeakerLabels = query.get('speaker-labels') === 'long';
 const homeFixture = query.get('proposal') ?? requestedState;
 const copyFixture = requestedState === 'settings-copy';
-const copyKnowledge = query.get('knowledge') === 'empty' ? [] : [
-  { id: 'copy-command', payload: { kind: 'replacement_rule', source: 'insert greeting', replacement: 'Hello, team' }, enabled: true, scope: { kind: 'global' }, provenance: 'manual', voiceCommand: { commandType: 'text_replacement', allowClipboardRead: false }, createdAtMs: 1, updatedAtMs: 2, revision: 1 },
-];
 const appearance = query.get('appearance') === 'dark' ? 'dark' : 'light';
 const importedThemeFixture = query.get('theme');
 const status: DictationStatus = requestedState === 'recording'
@@ -492,23 +489,6 @@ mockIPC((command, payload) => {
       errorCode: null,
     };
   }
-  if (command === 'get_knowledge_store_status') {
-    return {
-      availability: 'ready',
-      schemaVersion: 1,
-      recordCount: copyFixture ? copyKnowledge.length : 0,
-      storeRevision: 0,
-      recoveryAtMs: null,
-      message: null,
-    };
-  }
-  if (command === 'list_knowledge') {
-    const request = (payload as Record<string, unknown> | undefined)?.request as { kind?: string; voiceCommand?: boolean } | undefined;
-    const entries = copyFixture ? copyKnowledge.filter((entry) => request?.voiceCommand ? !!entry.voiceCommand : !request?.kind || entry.payload.kind === request.kind) : [];
-    return { entries, total: entries.length, nextOffset: null, storeRevision: 0 };
-  }
-  if (command === 'upsert_knowledge') return { ...copyKnowledge[1], ...((payload as Record<string, unknown> | undefined)?.draft as object) };
-  if (command === 'delete_knowledge') return 1;
   if (command === 'get_model_runtime_catalog' || command.startsWith('list_')) return [];
 
   if (command.includes('version')) return '0.27.0';
@@ -622,7 +602,6 @@ localStorage.setItem('dictation-stats', JSON.stringify({
     ...fixtureStats.activity,
     meetings: { count: 2, totalMinutes: 44, summariesGenerated: 1 },
     transforms: { runs: 4, approved: 3, undone: 0, byPresetName: {} },
-    corrections: { proposed: 3, taught: 2, byScope: { global: 1, app: 1, project: 0 } },
   },
 }));
 
@@ -794,7 +773,6 @@ function VisualFixture() {
                 historyEntries={homeFixture === 'home-empty' ? [] : historyEntries}
                 onClearHistory={() => setHistoryEntries([])}
                 onDeleteHistoryEntries={(targets) => setHistoryEntries((current) => removeHistoryEntries(current, targets))}
-                onUpdateHistoryEntry={() => {}}
                 onToggleHistoryPinned={(entry) => setHistoryEntries((current) => toggleHistoryEntryPinned(current, entry).entries)}
                 onTranscribeFile={() => {}}
                 microphonePermission={homeFixture === 'home-mic-denied' ? 'denied' : 'granted'}

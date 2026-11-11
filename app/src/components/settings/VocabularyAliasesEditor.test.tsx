@@ -35,7 +35,7 @@ describe('VocabularyAliasesEditor', () => {
     mocks.open.mockReset();
     mocks.save.mockReset();
     await act(async () => root.render(
-      <VocabularyAliasesEditor entries={[TAURI_ENTRY]} voiceCommands={[]} onChange={onChange} />,
+      <VocabularyAliasesEditor entries={[TAURI_ENTRY]} onChange={onChange} />,
     ));
   });
 
@@ -90,7 +90,7 @@ describe('VocabularyAliasesEditor', () => {
       id: 'react', written: 'React', aliases: ['ree-act'], enabled: true, scope: { kind: 'global' },
     };
     mocks.open.mockResolvedValue('/private/vocabulary.json');
-    mocks.invoke.mockResolvedValue(exportVocabularyFile({ vocabularyEntries: [imported], voiceCommands: [] }));
+    mocks.invoke.mockResolvedValue(exportVocabularyFile({ vocabularyEntries: [imported] }));
     const importButton = Array.from(container.querySelectorAll('button'))
       .find((button) => button.textContent?.includes('Import saved spellings…')) as HTMLButtonElement;
     await act(async () => importButton.click());
@@ -109,7 +109,7 @@ describe('VocabularyAliasesEditor', () => {
       .find((button) => button.textContent?.includes('Export saved spellings…')) as HTMLButtonElement).click());
     expect(mocks.invoke).toHaveBeenCalledWith('save_text_export', {
       path: '/private/vocabulary.json',
-      contents: exportVocabularyFile({ vocabularyEntries: [TAURI_ENTRY], voiceCommands: [] }),
+      contents: exportVocabularyFile({ vocabularyEntries: [TAURI_ENTRY] }),
     });
   });
 });

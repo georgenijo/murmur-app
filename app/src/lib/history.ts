@@ -1,5 +1,4 @@
 /** Where a history entry's text came from. */
-import type { TeachingContext } from './correctAndTeach';
 import { clearDurableBlob, HISTORY_STORE, saveDurableBlob } from './durableUserData';
 
 export type HistorySource = 'recording' | 'file';
@@ -43,8 +42,6 @@ export interface HistoryEntry {
   source?: HistorySource;
   /** For file transcriptions, the source file's base name (for display). */
   sourceName?: string;
-  /** Local recording-start scope metadata used only for explicit teaching. */
-  teachingContext?: TeachingContext;
   /** Capture ended unexpectedly; the retained prefix was still transcribed. */
   interruption?: HistoryInterruption;
   /** Present for live dictations recorded with the v2 completion contract. */
@@ -102,21 +99,26 @@ export function loadHistory(): HistoryEntry[] {
   return [];
 }
 
-/** Older records carried the retired Modes' ids; they are ignored, never shown or exported. */
-function withoutRetiredModeIds(value: Record<string, unknown>): Record<string, unknown> {
+/**
+ * Older records carried the retired Modes' ids and the retired Correct and
+ * Teach scope metadata (`teachingContext`: a bundle id and project root).
+ * Both are ignored, never shown or exported, and leave storage on the next
+ * save.
+ */
+function withoutRetiredFields(value: Record<string, unknown>): Record<string, unknown> {
   const strip = (field: unknown) => {
     if (!field || typeof field !== 'object' || Array.isArray(field) || !('modeId' in field)) return field;
     const { modeId: _modeId, ...rest } = field as Record<string, unknown>;
     return rest;
   };
-  const next = { ...value };
+  const { teachingContext: _teachingContext, ...next } = value;
   if ('recording' in next) next.recording = strip(next.recording);
   if ('derived' in next) next.derived = strip(next.derived);
   return next;
 }
 
 function migrateHistoryEntry(raw: Record<string, unknown>): HistoryEntry {
-  const value = withoutRetiredModeIds(raw);
+  const value = withoutRetiredFields(raw);
   const pinned = value.pinned === true;
   if (value.schemaVersion === 2) return { ...value, pinned } as unknown as HistoryEntry;
   // Deliberately do not copy legacy delivered `text` into `rawText`: that
@@ -139,7 +141,6 @@ export function addHistoryEntry(
   duration: number,
   source: HistorySource = 'recording',
   sourceName?: string,
-  teachingContext?: TeachingContext,
   interruption?: HistoryInterruption,
   details?: { rawText: string; recording: HistoryRecordingContext },
 ): HistoryEntry[] {
@@ -151,7 +152,6 @@ export function addHistoryEntry(
     duration,
     source,
     ...(sourceName ? { sourceName } : {}),
-    ...(teachingContext ? { teachingContext } : {}),
     ...(interruption ? { interruption } : {}),
     ...(details ? { rawText: details.rawText, recording: details.recording } : {}),
   };
@@ -166,14 +166,6 @@ let entrySequence = 0;
 function nextEntryId(): string {
   entrySequence += 1;
   return `${Date.now()}-${entrySequence}`;
-}
-
-export function updateHistoryEntry(
-  entries: HistoryEntry[],
-  id: string,
-  text: string,
-): HistoryEntry[] {
-  return entries.map((entry) => entry.id === id ? { ...entry, text } : entry);
 }
 
 /** Remove the exact entry objects selected from the current history. */
@@ -417,9 +409,9 @@ function sourceLabel(entry: HistoryEntry): string {
  * Render entries for export, newest first.
  *
  * Only what the user can already see is written out: text, timestamp,
- * duration and source. `teachingContext` (bundle ids and project
- * roots captured at recording start) is deliberately excluded — it is local
- * scope metadata for teaching, not part of a transcript the user shares.
+ * duration and source. Fields are written from an explicit list, so stored
+ * metadata that is not part of a transcript (such as the retired
+ * `teachingContext`) can never leak into an export.
  */
 export function formatHistoryExport(
   entries: HistoryEntry[],

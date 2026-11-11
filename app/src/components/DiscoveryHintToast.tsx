@@ -6,11 +6,6 @@ const HINTS: Record<DiscoveryHintId, { title: string; detail: string; action: st
     detail: 'The two taps need to land close together. You can turn on visual timing feedback in Recording settings.',
     action: 'Timing settings',
   },
-  correct_and_teach: {
-    title: 'Fix a word once, then teach Murmur',
-    detail: 'Correct & Teach on your latest dictation can remember the spelling for next time.',
-    action: 'Correct & Teach',
-  },
 };
 
 interface DiscoveryHintToastProps {

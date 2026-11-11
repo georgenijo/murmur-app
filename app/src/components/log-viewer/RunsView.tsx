@@ -134,7 +134,7 @@ export function RunsView({
     <div className="flex min-h-full flex-col p-4">
       {clearOpen && <ConfirmDialog title="Clear local Performance runs and resource samples?" confirmLabel="Clear performance data…" dangerous disabled={clearing}
         onCancel={() => setClearOpen(false)} onConfirm={() => void confirmClear()}>
-        This does not remove Events, logs, transcription history, settings, knowledge, or benchmark reports.
+        This does not remove Events, logs, transcription history, settings, or benchmark reports.
       </ConfirmDialog>}
       {store && (
         <div className="mb-4">

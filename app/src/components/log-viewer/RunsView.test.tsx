@@ -196,7 +196,7 @@ describe('RunsView', () => {
       await Promise.resolve();
     });
     const dialog = container.querySelector('[role="dialog"]')!;
-    expect(dialog.textContent).toContain('This does not remove Events, logs, transcription history, settings, knowledge, or benchmark reports.');
+    expect(dialog.textContent).toContain('This does not remove Events, logs, transcription history, settings, or benchmark reports.');
     expect(onClear).not.toHaveBeenCalled();
     const confirm = dialog.querySelectorAll('button')[1];
     await act(async () => confirm.click());

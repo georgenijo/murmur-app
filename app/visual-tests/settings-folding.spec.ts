@@ -12,11 +12,8 @@ const advanced = (page: Page) => page.getByRole('button', { name: /^Advanced/ })
 for (const [pane, label, sheet] of [
   ['text', 'Vocabulary Review', 'Vocabulary'],
   ['text', 'Aliases Map', 'Aliases'],
-  ['text', 'Knowledge Manage', 'Knowledge'],
-  ['text', 'Voice commands Create', 'Voice commands'],
   ['text', 'Manage project scan', 'Project scan'],
   ['delivery', 'Manage app overrides', 'App overrides'],
-  ['customize', 'Voice commands', 'Voice commands'],
 ] as const) {
   test(`non-focusing ${pane} ${label} activation restores the actual caller`, async ({ page }) => {
     await open(page, pane);
@@ -66,7 +63,7 @@ for (const appearance of ['light', 'dark']) {
     await page.keyboard.press('Escape');
     await expect(page.getByRole('button', { name: 'Create theme', exact: true })).toBeFocused();
   });
-  for (const [tab, label] of [['vocabulary', 'Vocabulary'], ['aliases', 'Aliases'], ['knowledge', 'Knowledge'], ['commands', 'Voice commands'], ['scan', 'Manage project scan'], ['app-overrides', 'Manage app overrides']] as const) {
+  for (const [tab, label] of [['vocabulary', 'Vocabulary'], ['aliases', 'Aliases'], ['scan', 'Manage project scan'], ['app-overrides', 'Manage app overrides']] as const) {
     test(`${appearance} ${tab} editor sheet retains owner`, async ({ page }) => {
       await open(page, tab === 'app-overrides' ? 'delivery' : 'text', appearance);
       if (tab === 'app-overrides') await advanced(page).click();

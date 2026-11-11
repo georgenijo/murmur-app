@@ -311,7 +311,6 @@ describe('useRecordingState transition ordering', () => {
           text: 'one final transcript',
           rawText: 'one final transcript',
           duration: 12,
-          teachingContext: { appBundleId: 'com.example.Editor', appLabel: 'Editor' },
           recording: {
             recordingId: 7,
             modelId: 'parakeet-v3',
@@ -339,7 +338,6 @@ describe('useRecordingState transition ordering', () => {
       12,
       'recording',
       undefined,
-      { appBundleId: 'com.example.Editor', appLabel: 'Editor' },
       undefined,
       {
         rawText: 'one final transcript',

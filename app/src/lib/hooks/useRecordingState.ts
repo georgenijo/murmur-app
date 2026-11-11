@@ -6,7 +6,6 @@ import { isDictationStatus } from '../types';
 import type { DictationStatus } from '../types';
 import { updateStats } from '../stats';
 import { flog } from '../log';
-import type { TeachingContext } from '../correctAndTeach';
 import type { HistoryInterruption, HistoryRecordingContext } from '../history';
 import {
   cleanupStalledPresentationFromPayload,
@@ -20,7 +19,7 @@ import {
 } from '../smartDestination';
 
 interface UseRecordingStateProps {
-  addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string, teachingContext?: TeachingContext, interruption?: HistoryInterruption, details?: { rawText: string; recording: HistoryRecordingContext }) => void;
+  addEntry: (text: string, duration: number, source?: 'recording' | 'file', sourceName?: string, interruption?: HistoryInterruption, details?: { rawText: string; recording: HistoryRecordingContext }) => void;
   microphone: string;
   smartAuto?: SmartAutoMicrophoneRequest | null;
   /** Synchronous admission check, including for already queued hotkey callbacks. */
@@ -428,14 +427,14 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
-    listen<{ text: string; rawText?: string; duration: number; teachingContext?: TeachingContext; interrupted?: HistoryInterruption; recording?: HistoryRecordingContext }>('transcription-complete', (event) => {
+    listen<{ text: string; rawText?: string; duration: number; interrupted?: HistoryInterruption; recording?: HistoryRecordingContext }>('transcription-complete', (event) => {
       flog.info('recording', 'transcription-complete event', {
         textLen: event.payload.text?.length, duration: event.payload.duration,
         isStopping: isStoppingRef.current,
       });
       // Single source of truth for history entries — always handle here,
       // never in handleStop, to avoid race-condition duplicates.
-      const { text, rawText, duration, teachingContext, interrupted, recording } = event.payload;
+      const { text, rawText, duration, interrupted, recording } = event.payload;
       if (text) {
         if (recording) {
           if (completedRecordingIds.current.has(recording.recordingId)) return;
@@ -446,9 +445,9 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
           ? { rawText, recording }
           : undefined;
         if (details) {
-          addEntry(text, duration, 'recording', undefined, teachingContext, interrupted, details);
+          addEntry(text, duration, 'recording', undefined, interrupted, details);
         } else {
-          addEntry(text, duration, 'recording', undefined, teachingContext, interrupted);
+          addEntry(text, duration, 'recording', undefined, interrupted);
         }
         updateStats(text, duration);
         setStatsVersion(v => v + 1);

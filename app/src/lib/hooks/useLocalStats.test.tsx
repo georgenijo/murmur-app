@@ -4,9 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InsightsView } from '../../components/home/InsightsView';
 import { useLocalStats } from './useLocalStats';
 import { loadStats, resetStats, updateStats } from '../stats';
-import { LOCAL_STATS_COMPLETION } from '../localStatsEvents';
 import { IDLE_MEETING_STATUS } from '../meetings';
-import { confirmLearnedCorrection, proposeLearnedCorrection, proposeSpecificLearnedCorrection } from '../correctAndTeach';
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -82,44 +80,6 @@ describe('main local stats completion ownership', () => {
     });
     expect(loadStats().activity.pasteLastUses).toBe(3);
     expect(JSON.stringify(loadStats())).not.toContain('PRIVATE_MESSAGE');
-  });
-
-  it('routes both correction proposal commands and taught scope through main without content', async () => {
-    mocks.invoke.mockResolvedValueOnce({ kind: 'unsafe', reason: 'no safe diff' });
-    await act(async () => { await proposeLearnedCorrection('secret transcript', 'secret edit'); });
-    mocks.invoke.mockResolvedValueOnce({ kind: 'proposal', proposalId: 21, originalText: 'PRIVATE_TEXT' });
-    await act(async () => { await proposeLearnedCorrection('secret transcript', 'secret edit'); });
-    mocks.invoke.mockResolvedValueOnce({ kind: 'proposal', proposalId: 22, source: 'PRIVATE_TERM' });
-    await act(async () => { await proposeSpecificLearnedCorrection('secret transcript', 'secret', 'private'); });
-    for (const [proposalId, scope] of [
-      [21, { kind: 'global' }],
-      [22, { kind: 'app', bundleId: 'PRIVATE_APP' }],
-      [23, { kind: 'project', bundleId: 'PRIVATE_APP', root: 'PRIVATE_ROOT' }],
-    ] as const) {
-      mocks.invoke.mockResolvedValueOnce({ id: 'entry', payload: { source: 'PRIVATE_RULE' } });
-      await act(async () => { await confirmLearnedCorrection(proposalId, scope); });
-    }
-    await act(async () => emit(LOCAL_STATS_COMPLETION, { kind: 'correction_taught', proposalId: 22, scope: 'app' }));
-    expect(loadStats().activity.corrections).toEqual({ proposed: 2, taught: 3, byScope: { global: 1, app: 1, project: 1 } });
-    expect(mocks.emitTo.mock.calls).toEqual([
-      ['main', LOCAL_STATS_COMPLETION, { kind: 'correction_proposed', proposalId: 21 }],
-      ['main', LOCAL_STATS_COMPLETION, { kind: 'correction_proposed', proposalId: 22 }],
-      ['main', LOCAL_STATS_COMPLETION, { kind: 'correction_taught', proposalId: 21, scope: 'global' }],
-      ['main', LOCAL_STATS_COMPLETION, { kind: 'correction_taught', proposalId: 22, scope: 'app' }],
-      ['main', LOCAL_STATS_COMPLETION, { kind: 'correction_taught', proposalId: 23, scope: 'project' }],
-    ]);
-    expect(JSON.stringify(loadStats())).not.toContain('PRIVATE');
-    expect(container.textContent).toContain('Corrections taught');
-  });
-
-  it('does not turn a successful correction into a failure when stats delivery fails', async () => {
-    mocks.emitTo.mockRejectedValueOnce(new Error('stats unavailable'));
-    const entry = { id: 'confirmed' };
-    mocks.invoke.mockResolvedValueOnce(entry);
-    await expect(confirmLearnedCorrection(1, { kind: 'global' })).resolves.toEqual(entry);
-    mocks.invoke.mockRejectedValueOnce(new Error('confirmation failed'));
-    await expect(confirmLearnedCorrection(2, { kind: 'global' })).rejects.toThrow('confirmation failed');
-    expect(mocks.emitTo).toHaveBeenCalledTimes(1);
   });
 
   it('updates the mounted Insights when dictation finishes and when counters reset', async () => {

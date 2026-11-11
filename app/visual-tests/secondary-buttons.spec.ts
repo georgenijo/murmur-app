@@ -36,15 +36,7 @@ for (const appearance of ['light', 'dark'] as const) {
       const fill = await confirm.evaluate(n => getComputedStyle(n).backgroundColor);
       expect(fill).not.toBe('rgba(0, 0, 0, 0)');
     });
-    test('knowledge actions and their confirmation retain layered danger utilities', async ({ page }) => {
-      await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=knowledge&appearance=${appearance}`);
-      await danger(page.getByRole('button', { name: 'Delete all shown…', exact: true }));
-      const remove = page.locator('button.text-error[aria-label^="Delete "]').first();
-      await danger(remove);
-      await remove.click();
-      await danger(page.getByRole('dialog').getByRole('button', { name: 'Delete…', exact: true }));
-    });
-    test('real General actions and quiet actions use the shared control boundary', async ({ page }) => {
+    test('real General actions and the editor close action use the shared control boundary', async ({ page }) => {
       await page.goto(`/visual-fixtures.html?state=settings-general&appearance=${appearance}`);
       const setup = page.getByRole('button', { name: 'Open setup assistant', exact: true });
       await expect(setup).toHaveCSS('border-top-color', await semanticColor(setup, '--ui-control-border'));
@@ -53,18 +45,7 @@ for (const appearance of ['light', 'dark'] as const) {
       await expect(reset).toHaveCSS('border-top-color', await semanticColor(reset, '--ui-control-border'));
       await reset.click();
       await danger(page.getByRole('button', { name: 'Confirm reset statistics', exact: true }));
-      await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=knowledge&appearance=${appearance}`);
-      const quiet = page.getByRole('button', { name: 'Enable all shown', exact: true });
-      await expect(quiet).toHaveCSS('border-top-color', await semanticColor(quiet, '--ui-control-border'));
-      await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=knowledge&knowledge=empty&appearance=${appearance}`);
-      const disabledQuiet = page.getByRole('button', { name: 'Enable all shown', exact: true });
-      await expect(disabledQuiet).toBeDisabled();
-      const disabledRestingFill = await disabledQuiet.evaluate(element => getComputedStyle(element).backgroundColor);
-      await disabledQuiet.hover();
-      await expect(disabledQuiet).toHaveCSS('background-color', disabledRestingFill);
-      await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=knowledge&appearance=${appearance}`);
-      const enabledQuiet = page.getByRole('button', { name: 'Enable all shown', exact: true });
-      await sharedHoverFill(enabledQuiet);
+      await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=aliases&appearance=${appearance}`);
       const close = page.getByRole('button', { name: 'Close editor', exact: true });
       await expect(close).toBeVisible();
       await sharedHoverFill(close);

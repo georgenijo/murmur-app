@@ -76,16 +76,6 @@ export interface AppProfile {
 
 const MAX_IDE_PROJECT_ROOT_BYTES = 4096;
 
-/**
- * A user-defined voice command. When `phrase` is spoken it is replaced by
- * `replacement` (case-insensitive, word-boundary). Applied after the built-in
- * commands, so users extend rather than override the defaults.
- */
-export interface VoiceCommand {
-  phrase: string;
-  replacement: string;
-}
-
 export type VocabularyScope =
   | { kind: 'global' }
   | { kind: 'app'; bundleId: string }
@@ -302,9 +292,9 @@ export interface Settings {
    * completes, so reports survive the 10-slot localStorage cap. */
   benchmarkAutoSave: boolean;
   appProfiles: AppProfile[];
+  /** Built-in spoken formatting ("new line," "period," "scratch that"). Shown
+   * in Settings as "Spoken formatting". */
   voiceCommandsEnabled: boolean;
-  /** User-defined voice commands applied after the built-in set. */
-  voiceCommands: VoiceCommand[];
   cleanupEnabled: boolean;
   /** Deterministic live prose formatting and bounded same-utterance correction. */
   smartFormattingEnabled: boolean;
@@ -537,7 +527,6 @@ export const DEFAULT_SETTINGS: Settings = {
   benchmarkAutoSave: false,
   appProfiles: [],
   voiceCommandsEnabled: false,
-  voiceCommands: [],
   cleanupEnabled: false,
   smartFormattingEnabled: false,
   cleanupRemoveFiller: true,
@@ -1043,19 +1032,9 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
           }));
       }
 
-      // voiceCommands: array of { phrase, replacement }. Drop malformed entries
-      // and coerce a non-array (or absent on older blobs) back to the default.
-      if (!Array.isArray(parsed.voiceCommands)) {
-        parsed.voiceCommands = DEFAULT_SETTINGS.voiceCommands;
-      } else {
-        parsed.voiceCommands = parsed.voiceCommands
-          .filter((c): c is VoiceCommand =>
-            !!c && typeof (c as VoiceCommand).phrase === 'string' && (c as VoiceCommand).phrase.trim() !== '')
-          .map((c) => ({
-            phrase: c.phrase.trim(),
-            replacement: typeof c.replacement === 'string' ? c.replacement : '',
-          }));
-      }
+      // Custom Voice Commands were retired. Drop the stored list so it leaves
+      // storage on the next save; built-in spoken formatting is unaffected.
+      delete (parsed as unknown as Record<string, unknown>).voiceCommands;
 
       // cleanup sub-toggles default to on; coerce non-booleans back to the default.
       if (typeof parsed.cleanupRemoveFiller !== 'boolean') {
@@ -1065,7 +1044,7 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
         parsed.cleanupCapitalize = DEFAULT_SETTINGS.cleanupCapitalize;
       }
 
-      // Voice commands gate the Rust transform — coerce non-booleans (or a
+      // Spoken formatting gates the Rust transform — coerce non-booleans (or a
       // missing field on pre-feature stored settings) back to the default.
       if (typeof parsed.voiceCommandsEnabled !== 'boolean') {
         parsed.voiceCommandsEnabled = DEFAULT_SETTINGS.voiceCommandsEnabled;

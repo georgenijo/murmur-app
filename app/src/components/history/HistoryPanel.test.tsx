@@ -58,7 +58,6 @@ describe('HistoryPanel', () => {
           entries={ENTRIES}
           onClear={vi.fn()}
           onDeleteEntries={vi.fn()}
-          onUpdateEntry={vi.fn()}
           {...props}
         />,
       );
@@ -109,42 +108,6 @@ describe('HistoryPanel', () => {
     expect(container.querySelector<HTMLButtonElement>('[aria-label="More history actions"]')?.disabled).toBe(true);
     expect(container.textContent).not.toMatch(/\d+ entr/);
     expect(container.querySelector('.history-filtered-note')).toBeNull();
-  });
-
-  it('consumes a teach request once and explains when history is empty', async () => {
-    const onHandled = vi.fn();
-    await render({ entries: [], teachLatestToken: 1, onTeachLatestHandled: onHandled });
-    expect(container.textContent).toContain('Make a dictation first');
-    expect(onHandled).toHaveBeenCalledOnce();
-
-    await render({ entries: [entry({ id: 'later' })], teachLatestToken: undefined, onTeachLatestHandled: onHandled });
-    expect(document.querySelector('[aria-label="Close Correct and Teach"]')).toBeNull();
-  });
-
-  it('does not replay a consumed teach request after close, history updates, or remount', async () => {
-    const onHandled = vi.fn();
-    await render({ teachLatestToken: 2, onTeachLatestHandled: onHandled });
-    const close = document.querySelector('[aria-label="Close Correct and Teach"]') as HTMLButtonElement;
-    expect(close).not.toBeNull();
-    await act(async () => close.click());
-    await render({ entries: [...ENTRIES, entry({ id: 'newer', timestamp: Date.UTC(2026, 6, 18, 14) })], teachLatestToken: undefined, onTeachLatestHandled: onHandled });
-    expect(document.querySelector('[aria-label="Close Correct and Teach"]')).toBeNull();
-
-    await act(async () => root.unmount());
-    root = createRoot(container);
-    await render({ teachLatestToken: undefined, onTeachLatestHandled: onHandled });
-    expect(document.querySelector('[aria-label="Close Correct and Teach"]')).toBeNull();
-    expect(onHandled).toHaveBeenCalledOnce();
-  });
-
-  it('opens teaching for each explicit request even when the parent reuses token one', async () => {
-    const onHandled = vi.fn();
-    await render({ teachLatestToken: 1, onTeachLatestHandled: onHandled });
-    await act(async () => (document.querySelector('[aria-label="Close Correct and Teach"]') as HTMLButtonElement).click());
-    await render({ teachLatestToken: undefined, onTeachLatestHandled: onHandled });
-    await render({ teachLatestToken: 1, onTeachLatestHandled: onHandled });
-    expect(document.querySelector('[aria-label="Close Correct and Teach"]')).not.toBeNull();
-    expect(onHandled).toHaveBeenCalledTimes(2);
   });
 
   it('orders entries newest first', async () => {
@@ -521,7 +484,7 @@ describe('HistoryPanel', () => {
       '[aria-label="More transcript actions"]',
     ) as HTMLButtonElement;
     await act(async () => moreTranscriptActions.click());
-    await act(async () => byText('Correct & teach…')!.click());
+    await act(async () => byText('Pin transcript')!.click());
     expect(writeText).not.toHaveBeenCalled();
   });
 

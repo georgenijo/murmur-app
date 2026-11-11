@@ -1,6 +1,6 @@
 import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { useEffect, useRef, useState } from 'react';
-import type { VocabularyEntry, VoiceCommand } from '../../lib/settings';
+import type { VocabularyEntry } from '../../lib/settings';
 import { previewVocabularyAliases } from '../../lib/dictation';
 import { validateVocabularyEntries } from '../../lib/vocabulary';
 import { VocabularyFileActions } from './VocabularyFileActions';
@@ -13,11 +13,9 @@ function newEntryId(): string {
 
 export function VocabularyAliasesEditor({
   entries,
-  voiceCommands,
   onChange,
 }: {
   entries: VocabularyEntry[];
-  voiceCommands: VoiceCommand[];
   onChange: (entries: VocabularyEntry[]) => void;
 }) {
   const [draft, setDraft] = useState(entries);
@@ -34,7 +32,7 @@ export function VocabularyAliasesEditor({
   const update = (next: VocabularyEntry[]) => {
     setDraft(next);
     setPreviewOutput('');
-    const validationError = validateVocabularyEntries(next, voiceCommands);
+    const validationError = validateVocabularyEntries(next);
     setError(validationError);
     if (!validationError) onChange(next);
   };
@@ -60,12 +58,12 @@ export function VocabularyAliasesEditor({
   };
 
   const runPreview = async () => {
-    const validationError = validateVocabularyEntries(draft, voiceCommands);
+    const validationError = validateVocabularyEntries(draft);
     if (validationError) { setError(validationError); return; }
     setPreviewing(true);
     setError(null);
     try {
-      setPreviewOutput(await previewVocabularyAliases(draft, voiceCommands, previewInput, includeCli));
+      setPreviewOutput(await previewVocabularyAliases(draft, previewInput, includeCli));
     } catch (previewError) {
       setError(String(previewError));
     } finally {
@@ -96,7 +94,7 @@ export function VocabularyAliasesEditor({
       </div>
 
       <VocabularyFileActions
-        settings={{ vocabularyEntries: draft, voiceCommands }}
+        settings={{ vocabularyEntries: draft }}
         onChange={({ vocabularyEntries }) => update(vocabularyEntries)}
       />
 

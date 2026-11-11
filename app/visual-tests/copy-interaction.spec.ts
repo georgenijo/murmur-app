@@ -1,14 +1,13 @@
 import { expect, test } from '@playwright/test';
 
 const panes = ['general', 'recording', 'delivery', 'meetings', 'text', 'ai', 'ai-transcription', 'appearance', 'performance', 'diagnostics', 'shortcuts'];
-const editors = ['aliases', 'knowledge', 'commands', 'scan', 'vocabulary'];
+const editors = ['aliases', 'scan', 'vocabulary'];
 const paneTitles: Record<string, string> = {
   general: 'General', recording: 'Recording', delivery: 'Delivery', meetings: 'Meetings',
   text: 'Text & vocabulary', ai: 'AI & models', 'ai-transcription': 'Speech-to-text',
   appearance: 'Appearance', performance: 'Performance Lab',
   diagnostics: 'Diagnostics', shortcuts: 'Keyboard shortcuts',
-  'editor-aliases': 'Aliases', 'editor-knowledge': 'Knowledge',
-  'editor-commands': 'Voice commands', 'editor-scan': 'Project scan', 'editor-vocabulary': 'Vocabulary',
+  'editor-aliases': 'Aliases', 'editor-scan': 'Project scan', 'editor-vocabulary': 'Vocabulary',
 };
 for (const appearance of ['light', 'dark']) {
   for (const pane of [...panes, ...editors.map((editor) => `editor-${editor}`)]) {
@@ -55,33 +54,6 @@ for (const appearance of ['light', 'dark']) {
       }
     });
   }
-
-  test(`${appearance} recoverable default and destructive confirmation`, async ({ page }) => {
-    await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=commands&appearance=${appearance}`);
-    const create = page.getByRole('button', { name: 'New command…', exact: true });
-    await create.focus(); await page.keyboard.press('Enter');
-    await expect(page.locator('[role="dialog"]:not(.settings-editor-sheet)')).toHaveCount(0);
-    await page.keyboard.press('Space');
-    const dialog = page.locator('[role="dialog"]:not(.settings-editor-sheet)');
-    await expect(dialog).toBeVisible();
-    await dialog.getByLabel('Voice command phrase', { exact: true }).fill('insert farewell');
-    await dialog.getByLabel('Voice command content', { exact: true }).fill('See you soon');
-    await dialog.getByRole('button', { name: 'Cancel', exact: true }).focus();
-    await page.keyboard.press('Enter');
-    await expect(dialog).toHaveCount(0);
-
-    await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=knowledge&appearance=${appearance}`);
-    await page.getByRole('button', { name: 'More knowledge actions' }).click();
-    await page.getByRole('menuitem', { name: 'Delete all…', exact: true }).click();
-    await page.getByLabel('Type DELETE to confirm', { exact: true }).fill('DELETE');
-    const remove = page.getByRole('button', { name: 'Delete everything', exact: true });
-    await expect(remove).toBeEnabled();
-    await remove.focus();
-    await page.keyboard.press('Enter');
-    await expect(dialog).toBeVisible();
-    await page.keyboard.press('Space');
-    await expect(dialog).toHaveCount(0);
-  });
 
   test(`${appearance} armed alias delete ignores Return and respects Space`, async ({ page }) => {
     await page.goto(`/visual-fixtures.html?state=settings-copy&page=text&editor=aliases&appearance=${appearance}`);

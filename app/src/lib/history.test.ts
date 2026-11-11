@@ -17,7 +17,6 @@ import {
   trimHistory,
   toggleHistoryEntryPinned,
   MAX_PINNED_ENTRIES,
-  updateHistoryEntry,
   type HistoryEntry,
 } from './history';
 
@@ -116,6 +115,17 @@ describe('persistence', () => {
     expect(JSON.stringify(formatHistoryExport([old, legacy], 'json', new Date(0)))).not.toContain('modeId');
   });
 
+  it('drops the retired Correct and Teach scope metadata when loading', () => {
+    localStorage.setItem('dictation-history', JSON.stringify([
+      { id: 'taught', text: 'kept', timestamp: 1, duration: 1, schemaVersion: 2,
+        teachingContext: { bundleId: 'com.example.app', projectRoot: '/private/project' } },
+    ]));
+    const [loaded] = loadHistory();
+    expect(loaded.text).toBe('kept');
+    expect(loaded).not.toHaveProperty('teachingContext');
+    expect(JSON.stringify(loaded)).not.toContain('com.example.app');
+  });
+
   it('returns an empty list when the stored blob is not an array', () => {
     localStorage.setItem('dictation-history', JSON.stringify({ nope: true }));
     expect(loadHistory()).toEqual([]);
@@ -149,15 +159,6 @@ describe('addHistoryEntry', () => {
     for (let i = 0; i < 210; i++) entries = addHistoryEntry(entries, `text ${i}`, 1);
     expect(entries).toHaveLength(200);
     expect(entries[entries.length - 1].text).toBe('text 209');
-  });
-});
-
-describe('updateHistoryEntry', () => {
-  it('replaces only the addressed entry text', () => {
-    const entries = [entry({ id: 'a', text: 'old' }), entry({ id: 'b', text: 'keep' })];
-    const next = updateHistoryEntry(entries, 'a', 'new');
-    expect(next[0].text).toBe('new');
-    expect(next[1].text).toBe('keep');
   });
 });
 
@@ -390,7 +391,6 @@ describe('formatHistoryExport', () => {
       text: 'first transcript',
       timestamp: new Date(2026, 6, 27, 9, 0, 0).getTime(),
       duration: 4,
-      teachingContext: { bundleId: 'com.example.app' } as never,
     }),
     entry({
       id: 'b',

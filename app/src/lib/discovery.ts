@@ -3,19 +3,16 @@ export const DISCOVERY_CHANGED_EVENT = 'murmur-discovery-changed';
 
 export const DISCOVERY_HINT_IDS = [
   'double_tap_timing',
-  'correct_and_teach',
 ] as const;
 
 export type DiscoveryHintId = (typeof DISCOVERY_HINT_IDS)[number];
 
 export type DiscoveryDestination =
-  | { kind: 'settings'; page: string; target: string }
-  | { kind: 'teach' };
+  | { kind: 'settings'; page: string; target: string };
 
 export function hintDestination(id: DiscoveryHintId): DiscoveryDestination {
   switch (id) {
     case 'double_tap_timing': return { kind: 'settings', page: 'recording', target: 'hotkey-feedback' };
-    case 'correct_and_teach': return { kind: 'teach' };
     default: {
       const exhaustive: never = id;
       return exhaustive;
