@@ -65,8 +65,8 @@ for (const appearance of ['light', 'dark'] as const) {
     await page.getByRole('radio', { name: new RegExp(appearance, 'i') }).click();
 
     const card = page.locator('[data-theme-collection="OpenCode"]');
-    await expect(card).toHaveCSS('width', '242px');
-    await expect(card).toHaveCSS('height', '166px');
+    await expect(card).toHaveCSS('width', '280px');
+    await expect(card).toHaveCSS('height', '130px');
     await expect(card.getByRole('button', { name: 'Use OpenCode for light mode' })).toBeVisible();
     await expect(card.getByRole('button', { name: 'Use OpenCode for dark mode' })).toBeVisible();
     await expect(card.getByRole('button', { name: 'Export OpenCode' })).toBeVisible();
@@ -78,6 +78,9 @@ for (const appearance of ['light', 'dark'] as const) {
     await expect(card).toHaveAttribute('data-active', 'true');
     await expect(card.getByRole('button', { name: `Use OpenCode for ${appearance} mode` }))
       .toHaveAttribute('aria-pressed', 'true');
+    await expect(card.locator('.settings-theme-variant-check')).toHaveCount(1);
+    await expect(card.locator('.settings-theme-variant-assigned')).toHaveCount(1);
+    await expect(card.locator('.settings-theme-caption, .settings-theme-mode-status')).toHaveCount(0);
     expect(await murmurTokens(page)).toEqual(resolved[appearance]);
 
     const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('murmur-appearance') ?? '{}'));

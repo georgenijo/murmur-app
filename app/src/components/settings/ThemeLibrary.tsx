@@ -91,11 +91,12 @@ interface ModeOption {
   tokens: MurmurTokens;
 }
 
-function ModePreview({ mode, options, selected, active, labels, open, onOpen, onChoose }: {
+function ModePreview({ mode, options, selected, assigned, showingNow, labels, open, onOpen, onChoose }: {
   mode: ResolvedAppearance;
   options: readonly ModeOption[];
   selected: ModeOption;
-  active: boolean;
+  assigned: boolean;
+  showingNow: boolean;
   labels: ReadonlyMap<string, string>;
   open: boolean;
   onOpen: () => void;
@@ -104,20 +105,29 @@ function ModePreview({ mode, options, selected, active, labels, open, onOpen, on
   const openerRef = useRef<HTMLButtonElement>(null);
   const modeLabel = mode === 'light' ? 'Light' : 'Dark';
   const selectedLabel = labels.get(selected.entry.id) ?? selected.entry.label;
+  const usage = showingNow
+    ? 'showing now'
+    : assigned
+    ? `used in ${mode} mode`
+    : 'not in use';
   return <div className="settings-theme-mode">
     <button ref={openerRef} type="button" className="settings-theme-variant"
+      data-assigned={assigned || undefined}
+      data-showing-now={showingNow || undefined}
       aria-label={options.length > 1
-        ? `Choose ${mode} variant, ${options.length} options, currently ${selectedLabel}`
-        : `Use ${selectedLabel} for ${mode} mode`}
-      aria-pressed={active}
+        ? `Choose ${mode} variant, ${options.length} options, currently ${selectedLabel}, ${usage}`
+        : `Use ${selectedLabel} for ${mode} mode, ${usage}`}
+      aria-pressed={assigned}
       aria-expanded={options.length > 1 ? open : undefined}
+      title={`${modeLabel} preview — ${usage}`}
       onClick={event => {
         event.stopPropagation();
         if (options.length > 1) onOpen();
         else onChoose(selected.entry);
       }}>
       <ThemePreview tokens={selected.tokens} />
-      <span className="settings-theme-caption">{modeLabel}</span>
+      {showingNow && <span aria-hidden="true" className="settings-theme-variant-check">✓</span>}
+      {assigned && !showingNow && <span aria-hidden="true" className="settings-theme-variant-assigned">✓</span>}
     </button>
     {options.length > 1 && open && <div className="settings-theme-options" role="group" aria-label={`${modeLabel} variants`}
       onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); onOpen(); openerRef.current?.focus(); } }}>
@@ -197,7 +207,6 @@ function CollectionCard({
   const dark = groups.find((group) => group.mode === 'dark')?.selected.entry ?? null;
   const ids = new Set(entries.map((entry) => entry.id));
   const activeNow = ids.has(selection[resolvedAppearance]);
-  const selectedModes = groups.filter(group => selection[group.mode] === group.selected.entry.id).map(group => group.mode);
   const exportEntry = groups.find((group) => group.mode === 'dark')?.selected.entry
     ?? groups[0]?.selected.entry;
   const applyPair = () => onApplyPair(light, dark);
@@ -232,7 +241,8 @@ function CollectionCard({
               mode={group.mode}
               options={group.options}
               selected={group.selected}
-              active={selection[group.mode] === group.selected.entry.id}
+              assigned={selection[group.mode] === group.selected.entry.id}
+              showingNow={group.mode === resolvedAppearance && selection[group.mode] === group.selected.entry.id}
               labels={labels}
               open={radialOpen === group.mode}
               onOpen={() => setRadialOpen(current => current === group.mode ? null : group.mode)}
@@ -253,10 +263,10 @@ function CollectionCard({
             event.stopPropagation();
             applyPair();
           }}
-          className="block min-w-0 flex-1 truncate rounded-sm text-left text-[length:var(--ui-font-label)] font-medium text-on-surface outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="settings-theme-name block min-w-0 flex-1 truncate rounded-sm text-left text-[length:var(--ui-font-label)] font-medium text-on-surface outline-none focus-visible:ring-2 focus-visible:ring-primary"
           title={label}
         >
-          {activeNow && <span aria-hidden="true" className="settings-theme-check">✓</span>}{label}
+          <span className="settings-theme-name-label">{label}</span>
         </button>
         {(onCustomize || onDuplicate || onExport || onRemove) && (
           <div className="flex shrink-0 items-center gap-0.5">
@@ -270,9 +280,6 @@ function CollectionCard({
             {onRemove && <ActionButton label={`Remove ${label}`} onClick={onRemove} danger><TrashIcon /></ActionButton>}
           </div>
         )}
-        {selectedModes.length > 0 && <p className="settings-theme-mode-status">
-          {selectedModes.length === 2 ? 'Used for light and dark' : `Used for ${selectedModes[0]}`}
-        </p>}
       </div>
     </article>
   );
