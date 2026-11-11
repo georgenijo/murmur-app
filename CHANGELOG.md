@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Soften auxiliary dialog outlines and actions, prevent meeting-speaker truncation, and hide the collapsed-sidebar privacy dot.
+
 ## [0.63.2] - 2026-11-11
 
 ### Fixed
