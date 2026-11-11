@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
-- Remove obsolete Settings status banners, unify Customize and AI navigation rows, use parent-labelled back controls with closeable editor sheets, keep Recording's live-level track visible and divided, standardize meeting naming controls, and simplify the Notetaker status strip.
+- Remove obsolete Settings status banners, unify Customize and AI navigation rows, use parent-labelled back controls with closeable editor sheets, keep Recording's live-level track visible and divided, standardize meeting naming controls, simplify the Notetaker status strip, and shorten Settings copy.
 
 ## [0.63.3] - 2026-11-11
 

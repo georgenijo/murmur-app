@@ -1175,7 +1175,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             <SettingsDisclosure title="Advanced" layout="rows">
             <SettingToggle
               targetId="standby" title="Warm microphone standby"
-              description="Keep the mic ready between dictations; its indicator stays on. Only pre-roll joins the next recording."
+              description="Keep the mic ready between dictations"
               checked={settings.captureStandbyEnabled} defaultChecked={DEFAULT_SETTINGS.captureStandbyEnabled}
               onChange={() => onUpdateSettings({ captureStandbyEnabled: !settings.captureStandbyEnabled })}
               disabled={isRecording}
@@ -1350,7 +1350,7 @@ export const SettingsPanel = memo(function SettingsPanel({
               <SettingToggle targetId="smart-correction" title="Apply preferred spellings" label="Smart correction" description="Fix words using your aliases and vocabulary" checked={settings.correctionEnabled} defaultChecked={DEFAULT_SETTINGS.correctionEnabled} onChange={() => onUpdateSettings({ correctionEnabled: !settings.correctionEnabled })} />
               <SettingsBranch open={settings.correctionEnabled}>
                 <SettingToggle targetId="fuzzy-correction" title="Correct close mishearings" label="Sounds-like matching" description="Fix near-misses of your vocabulary words" checked={settings.correctionFuzzy} defaultChecked={DEFAULT_SETTINGS.correctionFuzzy} onChange={() => onUpdateSettings({ correctionFuzzy: !settings.correctionFuzzy })} />
-                <SettingToggle targetId="homophone-context" title="Resolve homophones" label="On-device context (experimental)" description="Currently unavailable: on-device responses exceed the dictation time budget. Your preference is saved; deterministic spelling is used." checked={settings.homophoneContextEnabled} defaultChecked={DEFAULT_SETTINGS.homophoneContextEnabled} onChange={() => onUpdateSettings({ homophoneContextEnabled: !settings.homophoneContextEnabled })} />
+                <SettingToggle targetId="homophone-context" title="Resolve homophones" label="On-device context (experimental)" description="Use deterministic spelling while on-device responses exceed the dictation time budget" checked={settings.homophoneContextEnabled} defaultChecked={DEFAULT_SETTINGS.homophoneContextEnabled} onChange={() => onUpdateSettings({ homophoneContextEnabled: !settings.homophoneContextEnabled })} />
               </SettingsBranch>
               <SettingToggle targetId="smart-formatting" title="Structured writing" label="Smart formatting" description="Format spoken lists, symbols, and corrections" checked={settings.smartFormattingEnabled} defaultChecked={DEFAULT_SETTINGS.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
               <SettingToggle targetId="voice-commands" title="Voice commands & spoken formatting" label="Voice commands & spoken formatting" description="Say “new line,” “period,” or your own commands" checked={settings.voiceCommandsEnabled} defaultChecked={DEFAULT_SETTINGS.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
@@ -1405,7 +1405,7 @@ export const SettingsPanel = memo(function SettingsPanel({
 {pasteLastShortcutError && <p role="alert" className="text-[length:var(--ui-font-caption)] text-error">{pasteLastShortcutError}</p>}
 {accessibilityGranted === false && settings.pasteLastShortcut !== null && (
                 <div className="flex items-center gap-2 text-[length:var(--ui-font-caption)] text-primary">
-                  <span>Accessibility permission is required for the global Paste Last shortcut.</span>
+                  <span>Accessibility permission is required for the global Paste Last shortcut</span>
                   <Button type="button" variant="ghost" size="xs" onClick={requestAccessibility}>Grant</Button>
                 </div>
               )}</SettingsRow>
@@ -1426,7 +1426,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             <SettingToggle
               targetId="history"
               title="Save transcription history"
-              description="Save new transcripts on this Mac. Turning off keeps existing history."
+              description="Save new transcripts on this Mac"
               checked={settings.retainHistory} defaultChecked={DEFAULT_SETTINGS.retainHistory}
               onChange={() => onUpdateSettings({ retainHistory: !settings.retainHistory })}
             />
@@ -1473,10 +1473,10 @@ export const SettingsPanel = memo(function SettingsPanel({
               <SettingsBranch open={settings.meetingSuggestionsEnabled} className="settings-branch-stack">
                 <SettingsDisclosure title="Calendar details" layout="stack" targetId="meeting-calendar" open={calendarDetailsOpen} onOpenChange={setCalendarDetailsOpen}>
                   <p className="text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
-                    Supports Zoom, Teams, Slack, Webex, FaceTime, and browsers. Murmur never reads URLs or window titles.
+                    Supports Zoom, Teams, Slack, Webex, FaceTime, and browsers without reading URLs or window titles
                   </p>
                   <p className="text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">
-                    Nothing records until you accept a meeting suggestion.
+                    Record only after you accept a meeting suggestion
                   </p>
                   <button
                     type="button"

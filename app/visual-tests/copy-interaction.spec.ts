@@ -64,7 +64,7 @@ for (const appearance of ['light', 'dark']) {
     await expect(page.getByRole('menu')).toHaveScreenshot(`${appearance}-copy-knowledge-overflow.png`);
     await page.getByRole('menuitem', { name: 'Delete all…', exact: true }).click();
     await page.getByLabel('Type DELETE to confirm', { exact: true }).fill('DELETE');
-    const remove = page.getByRole('button', { name: 'Delete everything…', exact: true });
+    const remove = page.getByRole('button', { name: 'Delete everything', exact: true });
     await expect(remove).toBeEnabled();
     await remove.focus();
     await page.keyboard.press('Enter');

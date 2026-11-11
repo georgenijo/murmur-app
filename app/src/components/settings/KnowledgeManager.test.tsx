@@ -187,12 +187,12 @@ describe('KnowledgeManager', () => {
 
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="More knowledge actions"]')!.click());
     await act(async () => button(document.body, 'Delete all…').click());
-    const confirm = button(container, 'Delete everything…');
+    const confirm = button(container, 'Delete everything');
     expect(confirm.disabled).toBe(true);
     const input = container.querySelector('[aria-label="Type DELETE to confirm"]') as HTMLInputElement;
     await act(async () => setValue(input, 'DELETE'));
-    expect(button(container, 'Delete everything…').disabled).toBe(false);
-    await act(async () => button(container, 'Delete everything…').click());
+    expect(button(container, 'Delete everything').disabled).toBe(false);
+    await act(async () => button(container, 'Delete everything').click());
     expect(mocks.removeAll).toHaveBeenCalledWith(9);
   });
 

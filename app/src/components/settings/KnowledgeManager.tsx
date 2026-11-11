@@ -224,7 +224,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
           <Button type="button" size="sm" onClick={() => void chooseImport()} disabled={unavailable || bulkBusy}>Import…</Button>
           <Button type="button" size="sm" onClick={() => setDeleteAllOpen(true)} disabled={unavailable || bulkBusy || knowledge.status.recordCount === 0} data-tone="danger">Delete all…</Button>
           </ActionsOverflow>
-          <span className="ml-auto self-center text-xs text-on-surface-variant">{knowledge.status.recordCount} stored locally · schema v{knowledge.status.schemaVersion}</span>
+          <span className="ml-auto self-center text-xs text-on-surface-variant">{knowledge.status.recordCount} stored locally</span>
         </div>
       </div>
 
@@ -327,7 +327,7 @@ export function KnowledgeManager({ active, profiles }: Props) {
         </label>
       </ConfirmDialog>}
 
-      {deleteAllOpen && <ConfirmDialog restoreFocus={restoreConfirmFocus} title="Delete all personal knowledge?" confirmLabel="Delete everything…" dangerous disabled={deletePhrase !== 'DELETE'} onCancel={() => { setDeleteAllOpen(false); setDeletePhrase(''); }} onConfirm={() => void run(() => deleteAllKnowledge(knowledge.status.storeRevision), 'All personal knowledge deleted.').then(() => { setDeleteAllOpen(false); setDeletePhrase(''); }).catch(() => {})}>
+      {deleteAllOpen && <ConfirmDialog restoreFocus={restoreConfirmFocus} title="Delete all personal knowledge?" confirmLabel="Delete everything" dangerous disabled={deletePhrase !== 'DELETE'} onCancel={() => { setDeleteAllOpen(false); setDeletePhrase(''); }} onConfirm={() => void run(() => deleteAllKnowledge(knowledge.status.storeRevision), 'All personal knowledge deleted.').then(() => { setDeleteAllOpen(false); setDeletePhrase(''); }).catch(() => {})}>
         <p>This permanently deletes all knowledge plus local recovery backups. Export first if you may need it later.</p>
         <label className="mt-3 block text-xs font-medium text-on-surface">Type DELETE to confirm
           <input aria-label="Type DELETE to confirm" value={deletePhrase} onChange={(event) => setDeletePhrase(event.target.value)} className="mt-1 w-full rounded-(--ui-radius-control) border border-error bg-(--ui-tint-raised) px-3 py-2 font-mono text-sm text-on-surface outline-none focus:border-error focus:ring-2 focus:ring-error" />

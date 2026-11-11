@@ -66,3 +66,9 @@ it('does not offer removal or download during installation', async () => {
   await render([model('tiny.en', { installState: 'installing' })]);
   expect(container.querySelector('button')).toBeNull();
 });
+
+it('uses one concise storage description', async () => {
+  await render();
+  expect(container.textContent).toContain('Remove unused models after choosing another model');
+  expect(container.textContent).not.toContain('free storage');
+});

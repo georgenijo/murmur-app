@@ -37,7 +37,7 @@ export function TranscriptionModelStorage({ models, selectedModel, busy }: {
   return (
     <div className="settings-field" aria-label="Transcription model storage">
       <p className="text-sm font-medium text-on-surface">Model storage</p>
-      <p className="text-xs text-on-surface-variant">Remove unused models to free storage. Choose another model before removing the selected one.</p>
+      <p className="text-xs text-on-surface-variant">Remove unused models after choosing another model</p>
       {models.map((model) => {
         const installed = model.installState === 'installed';
         const active = model.modelName === selectedModel
