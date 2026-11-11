@@ -37,6 +37,29 @@ for (const appearance of ['light', 'dark']) {
         await expect(rows).toHaveCount(4);
         for (const row of await rows.all()) expect((await row.boundingBox())!.height).toBeGreaterThanOrEqual(52);
       }
+      if (path[0] === 'Performance Lab') {
+        // Two-line test-length options must stay inside their button and the track.
+        await expect(page.locator('.settings-segmented-stacked > .settings-segmented-btn')).toHaveCount(3);
+        // Measure in one pass so a late layout shift cannot fall between two readings.
+        const { track, options } = await page.locator('.settings-segmented-stacked').evaluate(element => {
+          const box = (node: Element) => { const rect = node.getBoundingClientRect(); return { top: rect.top, bottom: rect.bottom }; };
+          return {
+            track: box(element),
+            options: Array.from(element.querySelectorAll(':scope > .settings-segmented-btn'), button => ({
+              button: box(button),
+              lines: Array.from(button.querySelectorAll('span'), box),
+            })),
+          };
+        });
+        for (const { button, lines } of options) {
+          expect(button.bottom).toBeLessThanOrEqual(track.bottom);
+          expect(lines).toHaveLength(2);
+          for (const line of lines) {
+            expect(line.top).toBeGreaterThanOrEqual(button.top);
+            expect(line.bottom).toBeLessThanOrEqual(button.bottom);
+          }
+        }
+      }
       if (process.env.E848_BEFORE) await page.screenshot({ path: `${process.env.E848_BEFORE}/${name}.png` });
       else await expect(page).toHaveScreenshot(`${name}.png`);
     });

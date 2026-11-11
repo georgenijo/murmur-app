@@ -491,7 +491,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
 
       <section>
         <h3 className="m-0 text-[length:var(--ui-font-settings-group)] leading-[length:var(--ui-leading-micro)] font-medium text-on-surface-variant">Test length</h3>
-        <div className="settings-segmented grid h-auto grid-cols-3 gap-1 rounded-lg">
+        <div className="settings-segmented settings-segmented-stacked grid-cols-3">
           {PRESETS.map((option) => (
             <button
               type="button"
@@ -499,7 +499,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
               disabled={running || microphoneBenchmarkRunning || corpusBusy}
               onClick={() => setPreset(option.id)}
               data-selected={preset === option.id}
-              className="settings-segmented-btn h-auto min-w-0 whitespace-normal px-2 py-2"
+              className="settings-segmented-btn min-w-0 px-2 py-2"
             >
               <span className="block text-[length:var(--ui-font-caption)] font-semibold">{option.label}</span>
               <span className="mt-0.5 block text-[length:var(--ui-font-micro)] whitespace-normal leading-tight">{presetDetail(INTERNAL_BENCHMARK_BUILD ? corpusSource : 'bundled', option.id)}</span>
