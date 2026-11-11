@@ -1264,6 +1264,8 @@ export const SettingsPanel = memo(function SettingsPanel({
           </SettingsSection>
 
           <SettingsSection hideHeading pageId="ai-transcription" activePage={activeCat} title="Speech-to-text">
+            <div className="settings-groups">
+            <SettingsGroup title="Model and language">
             <SettingsRow title={<>Transcription model</>} targetId="transcription-model" disabled={isRecording} onReset={settings.model !== DEFAULT_SETTINGS.model ? () => onUpdateSettings({ model: DEFAULT_SETTINGS.model }) : undefined} control={<Select
                 value={settings.model}
                 onChange={(model) => onUpdateSettings({ model })}
@@ -1306,18 +1308,26 @@ export const SettingsPanel = memo(function SettingsPanel({
 {modelDownload.phase === 'error' && <div className="flex items-center rounded-lg border border-error/30 bg-error/10 px-3 py-2 text-xs text-error"><span>{modelDownload.message}</span><Button type="button" variant="ghost" size="xs" onClick={() => void downloadModel()} className="ml-auto">Retry</Button></div>}</SettingsRow>
             <TranscriptionModelStorage models={runtimeModels} selectedModel={settings.model} busy={isRecording} />
             <SettingsRow title={<>Language</>} targetId="language" disabled={isRecording || englishOnly} onReset={settings.language !== DEFAULT_SETTINGS.language ? () => onUpdateSettings({ language: DEFAULT_SETTINGS.language }) : undefined} control={<Select value={settings.language} onChange={(language) => onUpdateSettings({ language })} disabled={isRecording || englishOnly} items={LANGUAGE_OPTIONS} />}><p className="text-xs text-on-surface-variant">{englishOnly ? 'English only — use Whisper Large Turbo for others' : 'Auto-detect picks the language each time'}</p></SettingsRow>
-            <SettingsDisclosure title="Advanced" layout="rows">
+            </SettingsGroup>
+            <SettingsGroup>
+            <SettingsDisclosure title="Advanced" description="Manage model memory" layout="rows">
             <SettingsRow targetId="model-idle-timeout" title={<>Release model after inactivity</>} disabled={isRecording} onReset={settings.idleTimeoutMinutes !== DEFAULT_SETTINGS.idleTimeoutMinutes ? () => onUpdateSettings({ idleTimeoutMinutes: DEFAULT_SETTINGS.idleTimeoutMinutes }) : undefined} control={<Select value={String(settings.idleTimeoutMinutes)} onChange={(value) => onUpdateSettings({ idleTimeoutMinutes: Number(value) })} disabled={isRecording} items={IDLE_TIMEOUT_OPTIONS.map((option) => ({ value: String(option.value), label: option.label }))} />}><p className="text-xs text-on-surface-variant">Unload an idle model to free memory</p></SettingsRow>
             </SettingsDisclosure>
+            </SettingsGroup>
+            </div>
           </SettingsSection>
 
           <SettingsSection hideHeading pageId="text" activePage={activeCat} title="Text & vocabulary">
+            <div className="settings-groups">
+            <SettingsGroup title="Writing">
             <SettingToggle targetId="punctuation" title="Automatic punctuation" label="Smart punctuation" description="Add periods, commas, and capitalization to transcriptions" checked={settings.smartPunctuation} defaultChecked={DEFAULT_SETTINGS.smartPunctuation} onChange={() => onUpdateSettings({ smartPunctuation: !settings.smartPunctuation })} />
             <SettingToggle targetId="cleanup" title="Transcript cleanup" description="Remove filler and tidy spacing before delivery" checked={settings.cleanupEnabled} defaultChecked={DEFAULT_SETTINGS.cleanupEnabled} onChange={() => onUpdateSettings({ cleanupEnabled: !settings.cleanupEnabled })} />
             <SettingsBranch open={settings.cleanupEnabled}>
               <SettingToggle targetId="cleanup-filler" title="Remove filler words" description="Remove filler tokens such as um and uh" checked={settings.cleanupRemoveFiller} defaultChecked={DEFAULT_SETTINGS.cleanupRemoveFiller} onChange={() => onUpdateSettings({ cleanupRemoveFiller: !settings.cleanupRemoveFiller })} />
               <SettingToggle targetId="cleanup-capitalize" title="Capitalize sentences" description="Capitalize detected sentence starts" checked={settings.cleanupCapitalize} defaultChecked={DEFAULT_SETTINGS.cleanupCapitalize} onChange={() => onUpdateSettings({ cleanupCapitalize: !settings.cleanupCapitalize })} />
             </SettingsBranch>
+            </SettingsGroup>
+            <SettingsGroup title="Vocabulary">
             {([
               ['vocabulary', 'Vocabulary', 'Review identifiers retained from project scans'],
               ['aliases', 'Aliases', 'Map spoken variants to canonical spellings'],
@@ -1338,7 +1348,9 @@ export const SettingsPanel = memo(function SettingsPanel({
                 <span aria-hidden="true" className="text-on-surface-variant">›</span>
               </button>
             ))}
-            <SettingsDisclosure title="Advanced" layout="rows">
+            </SettingsGroup>
+            <SettingsGroup>
+            <SettingsDisclosure title="Advanced" description="Refine local vocabulary and formatting" layout="rows">
               <SettingToggle targetId="developer-terms" title="Developer terms" description="Use developer vocabulary in technical modes and IDE contexts" checked={settings.codeVocabEnabled} defaultChecked={DEFAULT_SETTINGS.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
               <SettingsBranch open={settings.codeVocabEnabled}>
                 <div data-setting-target="project-scan" className="settings-field">
@@ -1355,6 +1367,8 @@ export const SettingsPanel = memo(function SettingsPanel({
               <SettingToggle targetId="smart-formatting" title="Structured writing" label="Smart formatting" description="Format spoken lists, symbols, and corrections" checked={settings.smartFormattingEnabled} defaultChecked={DEFAULT_SETTINGS.smartFormattingEnabled} onChange={() => onUpdateSettings({ smartFormattingEnabled: !settings.smartFormattingEnabled })} />
               <SettingToggle targetId="voice-commands" title="Voice commands & spoken formatting" label="Voice commands & spoken formatting" description="Say “new line,” “period,” or your own commands" checked={settings.voiceCommandsEnabled} defaultChecked={DEFAULT_SETTINGS.voiceCommandsEnabled} onChange={() => onUpdateSettings({ voiceCommandsEnabled: !settings.voiceCommandsEnabled })} />
             </SettingsDisclosure>
+            </SettingsGroup>
+            </div>
           </SettingsSection>
 
           <SettingsSection hideHeading card={false} pageId="delivery" activePage={activeCat} title="Delivery">
