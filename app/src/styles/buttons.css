@@ -32,7 +32,7 @@
   [data-tone="danger"], [data-confirming="true"], [data-variant="destructive"],
   .settings-modes-danger, .text-error, .text-on-error-container
 )) {
-  border: 1px solid var(--murmur-on-surface-variant);
+  border: 1px solid var(--ui-control-border);
   background: var(--ui-control-bg);
   color: var(--murmur-on-surface);
   box-shadow: var(--ui-control-shadow);

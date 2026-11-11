@@ -109,7 +109,7 @@
 .settings-callout {
   border-radius: var(--settings-radius-control);
   padding: 12px 14px;
-  background: var(--settings-tint-sunken);
+  background: color-mix(in srgb, var(--murmur-on-surface) 5%, transparent);
 }
 
 .settings-callout[data-tone='accent'] {
@@ -434,8 +434,7 @@
 .settings-rail-search { display: none; }
 .settings-content-container { margin-inline: auto; width: 100%; max-width: var(--settings-content-max); padding: var(--settings-content-top) var(--settings-content-x) var(--settings-content-bottom); }
 .settings-workspace main { container-type: inline-size; }
-.settings-content-topbar { position: relative; flex: none; min-height: 44px; display: flex; align-items: center; padding: 8px max(var(--settings-content-x), calc((100cqw - 680px) / 2)); }
-.settings-content-topbar::after { content: ''; position: absolute; bottom: 0; left: max(var(--settings-content-x), calc((100cqw - 680px) / 2)); right: max(var(--settings-content-x), calc((100cqw - 680px) / 2)); height: 1px; background: var(--settings-divider); }
+.settings-content-topbar { flex: none; min-height: 44px; display: flex; align-items: center; padding: 8px max(var(--settings-content-x), calc((100cqw - 680px) / 2)); }
 /* WebKit needs scroll to reserve the gutter; expanding a fold must not change
  * the content width. The idle scrollbar track is transparent. */
 .settings-workspace main > .settings-content-topbar + .overflow-y-auto { overflow-y: auto; scrollbar-gutter: auto; }

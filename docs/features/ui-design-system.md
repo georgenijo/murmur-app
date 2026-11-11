@@ -256,7 +256,7 @@ Home and native window lifecycle remain separate.
 | `--settings-search-radius` | Search is 32px tall with 6px corners; a labelled search button opens it from the narrow rail |
 | `--settings-content-max`, `--settings-content-x`, `--settings-content-top`, `--settings-content-bottom` | 728px maximum including padding (680px content), centered; 24px horizontal (20px below 640px), 24px top, 48px bottom |
 | `--settings-section-gap`, `--settings-heading-gap`, `--settings-heading-height` | 32px between legacy sections; 16px between named card groups; 10px legacy heading-to-card; group labels 11/16/500, muted, 16px horizontal inset and 6px below; legacy section-head wrappers retain their 28px minimum |
-| Page title | One H1 in the content top bar; section headings are H2. Settings uses 18/24/600 with a hairline bounded by the centered content column |
+| Page title | One H1 in the content top bar; section headings are H2. Settings uses 18/24/600 |
 | `--settings-card-border`, `--settings-card-bg`, `--settings-card-shadow` | 12px radius; 1px border using the muted foreground at 17%; card role at 40%; no shadow; no card-body padding; plain groups have a 4px gap |
 | `--settings-row-pad`, `--settings-row-x`, `--settings-divider` | 7px vertical / 16px horizontal (12px below 640px); 52px minimum row height; square interior row corners; subsequent rows have a 1px top divider using the same 17% hairline, across the full interior card width |
 | `--settings-copy-gap`, `--settings-description-max` | Title 13/18/500; description 12/16/400, 2px below, max 672px, pretty wrapping, no clamp |
@@ -349,7 +349,7 @@ continues to use the #848 measurements above.
 FormControls outline, meeting header actions, Settings quiet/back/header actions,
 and secondary dialog/model actions. New consumers can use `.ui-secondary-button`.
 Use this family rather than defining a local border or fill. It has a 1px
-`--murmur-on-surface-variant` border, `--ui-control-bg` fill, on-surface text,
+`--ui-control-border` border, `--ui-control-bg` fill, on-surface text,
 8px control radius and `--ui-control-shadow`. Hover/pressed use dashboard
 hover/pressed tokens. Disabled applies 0.64 opacity once, retaining resting
 paint with no shadow, transform or hover feedback. Focus is a 2px primary
@@ -400,8 +400,7 @@ hover or keyboard focus in an absolute slot, keeping timestamps aligned.
 
 Settings uses one muted 11/16px section-heading style and grouped cards on
 General, Shortcuts, and Appearance; other pages retain their content with the
-same shared row/card/control-column geometry. The page title is 18/24px and its
-hairline is bounded by the centered content column. The window title is centered
+same shared row/card/control-column geometry. The page title is 18/24px. The window title is centered
 independently of navigation width. Done consumes the shared secondary button.
 Settings' segmented control is local CSS: a 34px sunken pill track, 2px padding,
 28px selected surface with an 8px radius and `--ui-shadow-1`, matching Insights.

@@ -244,6 +244,20 @@ describe('SettingsPanel information architecture', () => {
     expect(list.textContent).not.toMatch(/0[1-5]/);
   });
 
+  it('uses full-width rows for text editors and keeps clipboard delivery copy with Auto-paste', async () => {
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'text', token: 1 }));
+    const editorRows = Array.from(container.querySelectorAll<HTMLButtonElement>('button.settings-setting-row'))
+      .filter((button) => ['Vocabulary', 'Aliases', 'Knowledge', 'Voice commands'].some((title) => button.textContent?.startsWith(title)));
+    expect(editorRows).toHaveLength(4);
+    expect(editorRows.every((button) => !button.classList.contains('settings-card'))).toBe(true);
+    expect(container.querySelector('[data-setting-target="text-editors"]')).toBe(editorRows[0]);
+
+    await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'delivery', token: 2 }));
+    expect(container.textContent).not.toContain('Always copied to clipboard');
+    expect(container.querySelector('[data-setting-target="auto-paste"]')?.textContent)
+      .toContain('Transcripts are always copied to the clipboard. Also paste into the active app.');
+  });
+
   it('closes the commands sheet and focuses the actual disabled switch without enabling it', async () => {
     await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, voiceCommandsEnabled: false }, { page: 'customize', token: 1 }));
     const commandsRow = () => Array.from(container.querySelectorAll<HTMLButtonElement>('[aria-label="Customization destinations"] button'))
@@ -1384,6 +1398,9 @@ describe('effectiveAutoPaste', () => {
   });
 
   it('describes paused and already-off preferences without conflating them', () => {
+    expect(autoPasteDeliveryDescription({ autoPaste: false, saveTranscript: false, saveAudio: false })).toBe(
+      'Transcripts are always copied to the clipboard. Also paste into the active app.',
+    );
     expect(autoPasteDeliveryDescription({ autoPaste: true, saveTranscript: true, saveAudio: false })).toContain('Paused');
     expect(fileOutputDeliveryDescription({ autoPaste: true })).toContain('paused');
 

@@ -390,7 +390,7 @@ export function effectiveAutoPaste(settings: Pick<Settings, 'autoPaste' | 'saveT
 
 export function autoPasteDeliveryDescription(settings: Pick<Settings, 'autoPaste' | 'saveTranscript' | 'saveAudio'>): string {
   if (!settings.saveTranscript && !settings.saveAudio) {
-    return 'Paste into the active app';
+    return 'Transcripts are always copied to the clipboard. Also paste into the active app.';
   }
   return settings.autoPaste
     ? 'Paused while saving to file'
@@ -1297,22 +1297,26 @@ export const SettingsPanel = memo(function SettingsPanel({
               <SettingToggle targetId="cleanup-filler" title="Remove filler words" description="Remove filler tokens such as um and uh" checked={settings.cleanupRemoveFiller} defaultChecked={DEFAULT_SETTINGS.cleanupRemoveFiller} onChange={() => onUpdateSettings({ cleanupRemoveFiller: !settings.cleanupRemoveFiller })} />
               <SettingToggle targetId="cleanup-capitalize" title="Capitalize sentences" description="Capitalize detected sentence starts" checked={settings.cleanupCapitalize} defaultChecked={DEFAULT_SETTINGS.cleanupCapitalize} onChange={() => onUpdateSettings({ cleanupCapitalize: !settings.cleanupCapitalize })} />
             </SettingsBranch>
-            <div data-setting-target="text-editors" className="grid gap-2 rounded-lg transition-shadow sm:grid-cols-2 [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40">
-              {([
-                ['vocabulary', 'Vocabulary', 'Review identifiers retained from project scans'],
-                ['aliases', 'Aliases', 'Map spoken variants to canonical spellings'],
-                ['knowledge', 'Knowledge', 'Manage corrections, terms, and snippets'],
-                ['commands', 'Voice commands', 'Create exact spoken replacements and snippets'],
-              ] as const).map(([tab, title, detail]) => (
-                <button key={tab} type="button" onClick={(event) => openEditor(tab, event.currentTarget)} className="settings-card flex items-center gap-3 px-3 py-3 text-left transition-shadow hover:shadow-[var(--settings-shadow-2)]">
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-semibold text-on-surface">{title}</span>
-                    <span className="mt-0.5 block text-[11px] leading-relaxed text-on-surface-variant">{detail}</span>
-                  </span>
-                  <span className="text-on-surface-variant" aria-hidden="true">›</span>
-                </button>
-              ))}
-            </div>
+            {([
+              ['vocabulary', 'Vocabulary', 'Review identifiers retained from project scans'],
+              ['aliases', 'Aliases', 'Map spoken variants to canonical spellings'],
+              ['knowledge', 'Knowledge', 'Manage corrections, terms, and snippets'],
+              ['commands', 'Voice commands', 'Create exact spoken replacements and snippets'],
+            ] as const).map(([tab, title, detail]) => (
+              <button
+                key={tab}
+                type="button"
+                data-setting-target={tab === 'vocabulary' ? 'text-editors' : undefined}
+                onClick={(event) => openEditor(tab, event.currentTarget)}
+                className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              >
+                <span className="settings-title-description">
+                  <span className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">{title}</span>
+                  <span className="mt-0.5 block text-[length:var(--ui-font-caption)] leading-relaxed text-on-surface-variant">{detail}</span>
+                </span>
+                <span aria-hidden="true" className="text-on-surface-variant">›</span>
+              </button>
+            ))}
             <SettingsDisclosure title="Advanced" layout="rows">
               <SettingToggle targetId="developer-terms" title="Developer terms" description="Use developer vocabulary in technical modes and IDE contexts" checked={settings.codeVocabEnabled} defaultChecked={DEFAULT_SETTINGS.codeVocabEnabled} onChange={() => onUpdateSettings({ codeVocabEnabled: !settings.codeVocabEnabled })} />
               <SettingsBranch open={settings.codeVocabEnabled}>
@@ -1333,9 +1337,6 @@ export const SettingsPanel = memo(function SettingsPanel({
           </SettingsSection>
 
           <SettingsSection hideHeading pageId="delivery" activePage={activeCat} title="Delivery">
-            <SettingsCallout title="Always copied to clipboard">
-              Paste and file saving happen after.
-            </SettingsCallout>
             <SettingToggle targetId="auto-paste" title="Auto-paste" label="Auto paste" description={autoPasteDeliveryDescription(settings)} checked={autoPasteOn} defaultChecked={DEFAULT_SETTINGS.autoPaste} disabled={saveToFile} onChange={() => onUpdateSettings({ autoPaste: !settings.autoPaste })} />
             <SettingsBranch open={settings.autoPaste}>
               {saveToFile && <p role="status" data-tone="accent" className="settings-callout text-xs text-on-surface">Auto-paste is paused; the stored preference remains on.</p>}
@@ -1608,7 +1609,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 setTargetRequest(settingTargetRequest('voice-commands', true));
                 if (activeCat === 'customize') setCustomizationDetail('commands');
               }}
-              restoreFocus={() => editorOpenerRef.current?.isConnected ? editorOpenerRef.current : contentRef.current?.querySelector<HTMLElement>('[data-setting-target="text-editors"] button, [data-setting-target="app-overrides"] button, [aria-label="Modes"] [aria-pressed="true"], .settings-back-btn') ?? searchRef.current}
+              restoreFocus={() => editorOpenerRef.current?.isConnected ? editorOpenerRef.current : contentRef.current?.querySelector<HTMLElement>('[data-setting-target="text-editors"], [data-setting-target="app-overrides"] button, [aria-label="Modes"] [aria-pressed="true"], .settings-back-btn') ?? searchRef.current}
               backLabel={activeCat === 'customize' ? 'Back to Customize' : undefined}
             />
       )}
