@@ -1,7 +1,5 @@
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod aec;
-#[cfg(all(target_os = "macos", target_arch = "aarch64", feature = "aec-spike"))]
-mod aec_spike;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 mod production;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -391,24 +389,6 @@ fn main() {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-        #[cfg(feature = "aec-spike")]
-        match arguments.first().map(String::as_str) {
-            Some("--aec-spike-analyze") => {
-                if let Err(error) = aec_spike::run(&arguments[1..]) {
-                    eprintln!("murmur-aec-spike: {error}");
-                    std::process::exit(64);
-                }
-                return;
-            }
-            Some("--aec-spike-capture") => {
-                if let Err(error) = aec_spike::run_capture(&arguments[1..]) {
-                    eprintln!("murmur-aec-spike: {error}");
-                    std::process::exit(64);
-                }
-                return;
-            }
-            _ => {}
-        }
         if arguments.first().map(String::as_str) == Some("--production-v11") {
             if production::run(&arguments[1..]).is_ok() {
                 return;

@@ -2810,7 +2810,6 @@ dependencies = [
  "coreaudio-rs 0.11.3",
  "coreaudio-rs 0.14.2",
  "cpal",
- "hound",
  "libc",
  "loom",
  "mach2",
@@ -2820,9 +2819,6 @@ dependencies = [
  "objc2-core-audio-types",
  "objc2-core-foundation",
  "objc2-foundation",
- "serde",
- "serde_json",
- "sha2",
  "webrtc-audio-processing",
 ]
 

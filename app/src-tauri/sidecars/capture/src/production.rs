@@ -264,9 +264,7 @@ pub(super) struct SpscRing {
 /// The latest Core Audio callback clock observed for one channel.
 ///
 /// Production AEC uses the anchors to align the render and microphone clocks
-/// before processing and to detect drift. The private Stage 0 tool also stores
-/// snapshots beside its local fixtures.
-#[cfg_attr(not(feature = "aec-spike"), allow(dead_code))]
+/// before processing and to detect drift.
 pub(super) struct CallbackClock {
     revision: ProcessAtomicU64,
     first_host_time: ProcessAtomicU64,
@@ -288,7 +286,6 @@ struct CallbackAnchor {
     total_samples: u64,
 }
 
-#[cfg_attr(not(feature = "aec-spike"), allow(dead_code))]
 impl CallbackClock {
     pub(super) fn new() -> Self {
         Self {
@@ -329,14 +326,6 @@ impl CallbackClock {
             .store(frame_count as u64, ProcessOrdering::Relaxed);
         self.host_time.store(host_time, ProcessOrdering::Relaxed);
         self.revision.fetch_add(1, ProcessOrdering::Release);
-    }
-
-    pub(super) fn snapshot(&self) -> (u64, f64) {
-        self.anchor()
-            .ok()
-            .flatten()
-            .map(|anchor| (anchor.host_time, anchor.sample_time))
-            .unwrap_or((0, 0.0))
     }
 
     fn anchor(&self) -> Result<Option<CallbackAnchor>, ()> {
@@ -846,11 +835,6 @@ impl SpscRing {
         } else {
             self.slots.len() - tail + head
         }
-    }
-
-    #[cfg_attr(not(feature = "aec-spike"), allow(dead_code))]
-    pub(super) fn overflowed(&self) -> bool {
-        self.overflowed.load(Ordering::Acquire)
     }
 }
 
