@@ -832,6 +832,11 @@ fn run_supervisor(
                                 event_code = "audio.speculative_capture_refused",
                                 capture_id = request.id,
                                 reason = "microphone_busy",
+                                busy_owner = attempt
+                                    .as_ref()
+                                    .map(|a| a.owner.kind())
+                                    .or(pending_start.as_ref().map(|_| "pending_start"))
+                                    .unwrap_or("app_disabled"),
                                 "key-down capture refused; the confirmed start takes the ordinary path"
                             );
                             let _ = request.response.send(false);
@@ -1444,6 +1449,21 @@ fn log_speculative_discard(current: &Attempt, id: u64, reason: speculative::Disc
     );
 }
 
+/// A key-down capture the worker could not open or keep. The typed kind and
+/// phase are content-free and say why; they never carry native error text.
+fn log_speculative_failure(current: &Attempt, id: u64, kind: &'static str, phase: &'static str) {
+    tracing::info!(target: "audio",
+        event_code = "audio.speculative_capture_discarded",
+        capture_id = id,
+        reason = speculative::DiscardReason::CaptureFailed.as_str(),
+        failure_kind = kind,
+        failure_phase = phase,
+        flowing = current.ready_at.is_some(),
+        open_ms = current.accepted_at.elapsed().as_millis() as u64,
+        "key-down capture failed; samples cleared and the confirmed press takes the ordinary path"
+    );
+}
+
 /// Open the Fn key-down capture through the ordinary capture start, then mark
 /// it speculative before any worker event can be processed.
 fn start_speculative(
@@ -1640,10 +1660,11 @@ fn handle_worker_event(
             if current.phase == AttemptPhase::Speculative {
                 // Key-down capture never waits on or presents a TCC prompt.
                 if let Some(speculative) = current.speculative {
-                    log_speculative_discard(
+                    log_speculative_failure(
                         current,
                         speculative.id,
-                        speculative::DiscardReason::CaptureFailed,
+                        "permission_prompt_required",
+                        AudioInitPhase::StreamBuild.as_str(),
                     );
                 }
                 begin_recovery(attempt, AudioCancelReason::User, sink, public, None);
@@ -1902,10 +1923,11 @@ fn handle_worker_event(
                 .filter(|_| current.phase == AttemptPhase::Speculative)
             {
                 // A refused grant or failed open; the worker exits on its own.
-                log_speculative_discard(
+                log_speculative_failure(
                     current,
                     speculative.id,
-                    speculative::DiscardReason::CaptureFailed,
+                    failure.kind.as_str(),
+                    failure.phase.as_str(),
                 );
             }
             sink.invalidate_input_health(current.device_id.as_deref());
@@ -1928,10 +1950,11 @@ fn handle_worker_event(
                 }
                 if current.phase == AttemptPhase::Speculative {
                     if let Some(speculative) = current.speculative {
-                        log_speculative_discard(
+                        log_speculative_failure(
                             current,
                             speculative.id,
-                            speculative::DiscardReason::CaptureFailed,
+                            failure.kind.as_str(),
+                            failure.phase.as_str(),
                         );
                     }
                     begin_recovery(attempt, AudioCancelReason::User, sink, public, None);
@@ -2991,6 +3014,26 @@ pub(crate) fn speculative_capture_is_flowing(id: u64) -> bool {
 
 pub(crate) fn is_audio_active() -> bool {
     supervisor().public.is_active()
+}
+
+/// The microphone is held only by an unconfirmed Fn key-down capture (open or
+/// still tearing down). It belongs to no dictation, so an explicit capture such
+/// as the Settings microphone test may supersede it.
+pub(crate) fn is_unconfirmed_key_down_capture() -> bool {
+    SUPERVISOR
+        .get()
+        .is_some_and(|supervisor| holds_only_unconfirmed_key_down(&supervisor.public))
+}
+
+fn holds_only_unconfirmed_key_down(public: &PublicState) -> bool {
+    public.is_active()
+        && matches!(
+            *public
+                .owner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            Some(AudioOwner::Speculative(_))
+        )
 }
 
 /// A new logical dictation generation must not supersede cleanup guidance

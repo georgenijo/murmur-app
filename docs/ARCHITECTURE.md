@@ -83,7 +83,7 @@ The **transcript transform pipeline** (`transcript_transform.rs`) runs stages in
 ```text
 explicit Start Meeting
     |
-signed murmur-capture-worker --production-v10
+signed murmur-capture-worker --production-v11
     |-- microphone AUHAL callback --> preallocated SPSC ring --> optional AEC3 --> Me frames
     +-- private unmuted CATap + aggregate IOProc --> SPSC ring --> Them frames
     |
@@ -182,7 +182,7 @@ always-dark glass surfaces.
 ### Capture worker boundary
 
 The signed `murmur-capture-worker` owns production microphone capture and the
-phase-one System Audio CATap. Production protocol v10 has capture-scoped
+phase-one System Audio CATap. Production protocol v11 has capture-scoped
 identity, nonce, strict bounded frames, and separate mic/system channel
 sequences. Before each live backend opens the microphone, an `InputResolution`
 message reports only bounded resolution evidence: backend, enumeration success,

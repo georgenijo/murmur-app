@@ -48,6 +48,28 @@ capture. It shows no UI and publishes no levels.
   keyboard listener's key-down stamp, not from supervisor acceptance, and a
   request that arrives after it has elapsed is never opened.
 
+- **Settings microphone test**: while the test owns the microphone, an Fn press
+  opens no key-down capture (`preview_active`); a confirmed dictation stops the
+  test as before and takes the ordinary start path. If the test starts while
+  an unconfirmed key-down capture is open, it supersedes that capture. A
+  dictation that wins the race pauses the test quietly ("Level monitoring
+  pauses…") rather than showing an error, and the test resumes when the
+  dictation ends.
+- **Diagnostics**: `keyboard.fn_capture_skipped` carries the first blocking
+  fact as `reason` (`listener_changed`, `processing_skipped`, `disabled`,
+  `gesture_ended`, `permission_not_granted`, `dictation_busy`,
+  `preview_active`, `microphone_busy`, `cleanup_pending`,
+  `input_unconfigured`, or `smart_auto_unavailable`). A capture the helper
+  could not open or keep logs `audio.speculative_capture_discarded` with
+  `reason=capture_failed` and the typed `failure_kind` and `failure_phase`. A
+  supervisor refusal names the busy owner kind. None of these carry device
+  names, error text, or audio.
+
+The key-down start uses production helper protocol v11, which adds
+`StartPreauthorized`. A helper built before that change fails the handshake
+instead of exiting on the unknown message, so rebuild the helpers
+(`python3 scripts/build_capture_helpers.py`) after pulling this change.
+
 In Hold mode, the microphone is on only while Fn is held, and after that only
 if the hold became a dictation. In Double-Tap mode, the capture stays open
 through the gap between taps, so the microphone indicator can stay on for up
@@ -60,6 +82,23 @@ Keyboard › "Press 🌐 key to". Murmur's listener is listen-only and does not
 suppress it. Murmur does not change that setting for you. When Fn is selected,
 the trigger-key picker in Settings and onboarding shows a hint to set it to
 "Do Nothing".
+
+**Globe companion event.** When macOS performs the Globe action it also posts
+an ordinary key-down/key-up pair for the Globe key (keycode 179). rdev reports
+it as `Key::Unknown`, and it arrives within a few milliseconds of the Fn
+release. With Fn as the trigger, the listener drops an unmapped key press that
+arrives within 100 ms of an Fn edge, and that key's release, before any
+detector sees them. Without this, every Fn double-tap is cancelled as a chord.
+Each dropped event logs `keyboard.globe_companion_ignored` with
+`companion=globe` or `unmapped`. Mapped keys are never dropped, and an
+unmapped key later than the window is still a chord.
+
+**Fn held with other shortcuts.** Murmur cannot consume or alter keys, so it
+cannot block a system shortcut. Pressing a non-modifier key during a promoted
+Fn hold ends that hold, as it does for every hold trigger. macOS does not
+treat ⇧⌘4 with Fn/Globe held as the plain ⇧⌘4 screenshot shortcut, so the
+screenshot does not fire. Release Fn before using such a shortcut, or choose a
+different trigger key.
 
 ## Hold-Down Mode (default)
 

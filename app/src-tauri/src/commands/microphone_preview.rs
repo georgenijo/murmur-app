@@ -124,6 +124,12 @@ pub async fn start_microphone_preview(
         stop_exact_preview(&app_handle, state.inner(), id).await?;
     }
     let transition = state.app_state.recording_transition.lock().await;
+    // An Fn key-down capture admitted between the retire above and this lock
+    // is unconfirmed; it is not a dictation and must not make the mic test
+    // report the microphone as busy. Its own teardown discards its audio.
+    if audio_lifecycle::is_unconfirmed_key_down_capture() {
+        audio_lifecycle::retire_standby();
+    }
     {
         let dictation = state.app_state.dictation.lock_or_recover();
         if dictation.status != DictationStatus::Idle {

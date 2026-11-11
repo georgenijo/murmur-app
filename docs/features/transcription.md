@@ -196,7 +196,7 @@ waits for worker exit and thread join before claiming ownership. Unconfirmed
 teardown retains the owner and blocks another microphone open.
 
 Host and signed worker require microphone permission already granted. A probe
-never enters the interactive TCC prompt path. Protocol v10 carries an absolute,
+never enters the interactive TCC prompt path. Protocol v11 carries an absolute,
 sleep-inclusive deadline stamped when the permit is created. A worker watchdog
 exits at that deadline even if native setup or stop is blocked. Revocation uses
 the existing bounded cancellation path; it does not promise instantaneous

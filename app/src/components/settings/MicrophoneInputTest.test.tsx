@@ -755,7 +755,10 @@ describe('MicrophoneInputTest', () => {
     dictationBusy = true;
     await render();
     await act(async () => rejectStart('Finish the current dictation before testing the microphone'));
-    expect(container.textContent).toContain('Finish the current dictation before testing the microphone');
+    // A dictation owning the microphone is a pause, never an error alert.
+    expect(container.textContent).not.toContain('Finish the current dictation before testing the microphone');
+    expect(container.textContent).toContain('Level monitoring pauses while Murmur records and resumes automatically.');
+    expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(starts).toBe(1);
 
     dictationBusy = false;
@@ -763,6 +766,42 @@ describe('MicrophoneInputTest', () => {
     expect(starts).toBe(2);
     expect(container.textContent).not.toContain('Finish the current dictation before testing the microphone');
     expect(container.textContent).not.toContain('Retry microphone preview');
+  });
+
+  it('pauses quietly when a Fn dictation stops the preview before its busy state renders', async () => {
+    // Observed natively: a Fn/Globe hold promoted while the mic test was live.
+    // The dictation start stopped the preview (status previewId -> null) before
+    // Settings saw the recording status, so the auto-start raced the dictation
+    // and the backend rejected it as dictation-busy.
+    let starts = 0;
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_microphone_preview_status') return idle;
+      if (command === 'start_microphone_preview') {
+        starts += 1;
+        if (starts === 2) throw 'Finish the current dictation before testing the microphone';
+        return active;
+      }
+      if (command === 'update_microphone_preview_vad_sensitivity' || command === 'cancel_microphone_preview') return true;
+      throw new Error(`unexpected command: ${command}`);
+    });
+    await render();
+    expect(starts).toBe(1);
+    await emitStatus(idle);
+    expect(starts).toBe(2);
+    expect(container.textContent).not.toContain('Finish the current dictation before testing the microphone');
+    expect(container.textContent).toContain('Level monitoring pauses while Murmur records and resumes automatically.');
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+
+    dictationBusy = true;
+    await render();
+    expect(starts).toBe(2);
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    const retry = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Retry microphone preview');
+    expect(retry?.disabled ?? true).toBe(true);
+    dictationBusy = false;
+    await render();
+    expect(starts).toBe(3);
+    expect(container.textContent).toContain('Speak normally and watch the live level.');
   });
 
   it('retries once when a dictation rejection arrives after dictation finishes', async () => {

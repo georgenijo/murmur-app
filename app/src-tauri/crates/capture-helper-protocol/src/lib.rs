@@ -13,7 +13,7 @@ pub const SYNTHETIC_FIXTURE_DIGEST: &str =
 // Production capture uses a separate, binary-framed protocol. Probe v1 above
 // remains stable so shipped attribution/recovery evidence stays readable.
 pub const PRODUCTION_PROTOCOL_NAME: &str = "murmur.capture";
-pub const PRODUCTION_PROTOCOL_VERSION: u16 = 10;
+pub const PRODUCTION_PROTOCOL_VERSION: u16 = 11;
 pub const MAX_AUTOMATIC_PROBE_NS: u64 = 8_000_000_000;
 
 /// Cross-process, sleep-inclusive monotonic clock for automatic capture leases.

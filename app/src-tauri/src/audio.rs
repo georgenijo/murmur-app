@@ -672,7 +672,7 @@ fn spawn_helper_checked(
     }
     let signature_ms = signature_started.elapsed().as_millis() as u64;
     let capture_id_text = capture_id.to_string();
-    let mut arguments = vec!["--production-v10", capture_id_text.as_str(), nonce_hex];
+    let mut arguments = vec!["--production-v11", capture_id_text.as_str(), nonce_hex];
     if let Some(fault) = fault {
         arguments.extend(["--fault", fault]);
     }

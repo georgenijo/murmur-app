@@ -301,21 +301,24 @@ fn spawn_open(
             log_refused(id, "input_unconfigured");
             return;
         };
+        let mut refusal = None;
         let Some(_transition) = crate::audio::prepare::admission_transition(
             &state.app_state.recording_transition,
             || {
-                listener_context_matches(mode, listener_generation)
-                    && !IS_PROCESSING.load(Ordering::SeqCst)
-                    && !APP_DISABLED.load(Ordering::SeqCst)
-                    && TRACKER.lock_or_recover().is_active(id)
-                    && crate::commands::permissions::check_microphone_permission_status()
-                        == "granted"
-                    && crate::commands::recording::dictation_prepare_admitted(&state)
+                refusal = admission_refusal(
+                    listener_context_matches(mode, listener_generation),
+                    IS_PROCESSING.load(Ordering::SeqCst),
+                    APP_DISABLED.load(Ordering::SeqCst),
+                    TRACKER.lock_or_recover().is_active(id),
+                    &crate::commands::permissions::check_microphone_permission_status(),
+                    || crate::commands::recording::dictation_prepare_refusal(&state),
+                );
+                refusal.is_none()
             },
         )
         .await
         else {
-            log_refused(id, "not_admitted");
+            log_refused(id, refusal.unwrap_or("not_admitted"));
             return;
         };
         let device_id = match input {
@@ -348,6 +351,32 @@ fn spawn_open(
     });
 }
 
+/// The first content-free reason a key-down capture may not open, checked in
+/// the order the cheapest and most decisive facts are known. Permission is an
+/// existing-grant check only; anything but "granted" refuses, never prompts.
+fn admission_refusal(
+    listener_matches: bool,
+    processing: bool,
+    disabled: bool,
+    gesture_active: bool,
+    microphone_permission: &str,
+    capture_refusal: impl FnOnce() -> Option<&'static str>,
+) -> Option<&'static str> {
+    if !listener_matches {
+        Some("listener_changed")
+    } else if processing {
+        Some("processing_skipped")
+    } else if disabled {
+        Some("disabled")
+    } else if !gesture_active {
+        Some("gesture_ended")
+    } else if microphone_permission != "granted" {
+        Some("permission_not_granted")
+    } else {
+        capture_refusal()
+    }
+}
+
 fn log_refused(id: u64, reason: &'static str) {
     tracing::info!(
         target: "keyboard",
@@ -367,7 +396,8 @@ pub(super) fn reset_for_test() {
 mod tests {
     use super::super::{
         arming_combo_resets_double_tap, hold_arming_ms, hotkey_to_rdev_key, DoubleTapDetector,
-        HoldDownDetector, HoldDownEvent, DICTATION_KEY_IDS, DOUBLE_TAP_WINDOW_MS,
+        GlobeCompanion, HoldDownDetector, HoldDownEvent, RejectionReason, DICTATION_KEY_IDS,
+        DOUBLE_TAP_WINDOW_MS, GLOBE_COMPANION_WINDOW, GLOBE_KEYCODE,
     };
     use super::*;
     use std::time::{Duration, Instant};
@@ -383,6 +413,7 @@ mod tests {
         tracker: Tracker,
         actions: Vec<Action>,
         hold_token: u64,
+        companion: GlobeCompanion,
     }
 
     impl Sim {
@@ -406,6 +437,7 @@ mod tests {
                 tracker: Tracker::new(),
                 actions: Vec::new(),
                 hold_token: 10_000,
+                companion: GlobeCompanion::default(),
             }
         }
 
@@ -422,6 +454,19 @@ mod tests {
         }
 
         fn event_with(&mut self, event: EventType, modifiers: bool) -> Vec<Action> {
+            self.event_at(event, modifiers, Instant::now())
+        }
+
+        /// The listener callback: the Globe companion filter runs before
+        /// every detector and the key-down tracker.
+        fn event_at(&mut self, event: EventType, modifiers: bool, now: Instant) -> Vec<Action> {
+            if self
+                .companion
+                .filter(&event, Some(self.target), now)
+                .is_some()
+            {
+                return Vec::new();
+            }
             let start = self.actions.len();
             let was_idle = !self.in_progress();
             let mut fired_token = None;
@@ -527,6 +572,48 @@ mod tests {
         }
     }
 
+    #[test]
+    fn admission_refusal_names_the_first_blocking_fact() {
+        let ok = || None;
+        assert_eq!(
+            admission_refusal(true, false, false, true, "granted", ok),
+            None
+        );
+        assert_eq!(
+            admission_refusal(false, true, true, false, "denied", ok),
+            Some("listener_changed")
+        );
+        assert_eq!(
+            admission_refusal(true, true, false, true, "granted", ok),
+            Some("processing_skipped")
+        );
+        assert_eq!(
+            admission_refusal(true, false, true, true, "granted", ok),
+            Some("disabled")
+        );
+        assert_eq!(
+            admission_refusal(true, false, false, false, "granted", ok),
+            Some("gesture_ended")
+        );
+        // Anything but an existing grant refuses; it never prompts.
+        for status in ["not_determined", "denied", "restricted", ""] {
+            assert_eq!(
+                admission_refusal(true, false, false, true, status, || {
+                    panic!("capture checks run only after the grant check")
+                }),
+                Some("permission_not_granted"),
+                "{status}"
+            );
+        }
+        // The Settings mic test owns the microphone: the observed skips.
+        assert_eq!(
+            admission_refusal(true, false, false, true, "granted", || Some(
+                "preview_active"
+            )),
+            Some("preview_active")
+        );
+    }
+
     fn bound(actions: &[Action], capture_id: u64) -> bool {
         matches!(actions, [Action::Bind { capture_id: id, .. }] if *id == capture_id)
     }
@@ -551,6 +638,90 @@ mod tests {
             assert_eq!(sim.press(), vec![], "{mode:?}: second press reuses capture");
             assert!(bound(&sim.release(), 1), "{mode:?}");
             assert_eq!(sim.opened(), 1);
+        }
+    }
+
+    /// The observed native shape (dev log, Fn/Globe, mode Both): every Fn
+    /// release was followed 0–30 ms later by a `key_press` with
+    /// `is_target_key=false key_class="other"`, which cancelled the double-tap
+    /// in `WaitingSecondDown`. That event is macOS's Globe companion,
+    /// `Key::Unknown(179)`.
+    fn globe_companion() -> [EventType; 2] {
+        [
+            EventType::KeyPress(Key::Unknown(GLOBE_KEYCODE)),
+            EventType::KeyRelease(Key::Unknown(GLOBE_KEYCODE)),
+        ]
+    }
+
+    #[test]
+    fn observed_globe_companion_cancels_an_unfiltered_double_tap() {
+        let mut tap = DoubleTapDetector::new();
+        tap.set_target(Some(Key::Function));
+        tap.handle_event_with_shortcut_modifiers(&EventType::KeyPress(Key::Function), false);
+        tap.handle_event_with_shortcut_modifiers(&EventType::KeyRelease(Key::Function), false);
+        assert_eq!(tap.state, DetectorState::WaitingSecondDown);
+        let [companion, _] = globe_companion();
+        tap.handle_event_with_shortcut_modifiers(&companion, false);
+        assert_eq!(tap.state, DetectorState::Idle);
+        assert_eq!(tap.take_rejection(), Some(RejectionReason::ComboCancelled));
+    }
+
+    #[test]
+    fn fn_double_tap_fires_through_the_globe_companion() {
+        for mode in [DetectorMode::DoubleTap, DetectorMode::Both] {
+            let mut sim = Sim::new(mode, Key::Function);
+            assert_eq!(sim.press(), vec![Action::Open(1)], "{mode:?}");
+            assert_eq!(sim.release(), vec![], "{mode:?}");
+            for event in globe_companion() {
+                assert_eq!(sim.event_with(event, false), vec![], "{mode:?}");
+            }
+            assert_eq!(
+                sim.tap.as_ref().unwrap().state,
+                DetectorState::WaitingSecondDown,
+                "{mode:?}: companion must not cancel the first tap"
+            );
+            assert_eq!(sim.press(), vec![], "{mode:?}");
+            assert!(bound(&sim.release(), 1), "{mode:?}: double-tap confirmed");
+            // The second release has its own companion; it changes nothing.
+            for event in globe_companion() {
+                assert_eq!(sim.event_with(event, false), vec![], "{mode:?}");
+            }
+            assert_eq!(sim.opened(), 1, "{mode:?}");
+            assert!(
+                !sim.actions.iter().any(|a| matches!(a, Action::Discard(..))),
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_real_key_after_fn_still_cancels() {
+        for mode in [DetectorMode::DoubleTap, DetectorMode::Both] {
+            // A mapped key inside the window is a chord, not a companion.
+            let mut sim = Sim::new(mode, Key::Function);
+            sim.press();
+            sim.release();
+            sim.event_with(EventType::KeyPress(Key::KeyE), false);
+            assert_eq!(
+                sim.tap.as_ref().unwrap().state,
+                DetectorState::Idle,
+                "{mode:?}"
+            );
+            // An unmapped key well after the edge is a real key too.
+            let mut sim = Sim::new(mode, Key::Function);
+            sim.press();
+            sim.release();
+            let late = Instant::now() + GLOBE_COMPANION_WINDOW + Duration::from_millis(50);
+            sim.event_at(
+                EventType::KeyPress(Key::Unknown(GLOBE_KEYCODE)),
+                false,
+                late,
+            );
+            assert_eq!(
+                sim.tap.as_ref().unwrap().state,
+                DetectorState::Idle,
+                "{mode:?}"
+            );
         }
     }
 

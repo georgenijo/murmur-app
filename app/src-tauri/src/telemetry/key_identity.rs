@@ -195,6 +195,14 @@ fn is_safe_keyboard_string(key: &str, value: &str) -> bool {
                 | "input_unconfigured"
                 | "not_admitted"
                 | "smart_auto_unavailable"
+                | "listener_changed"
+                | "disabled"
+                | "gesture_ended"
+                | "permission_not_granted"
+                | "dictation_busy"
+                | "preview_active"
+                | "microphone_busy"
+                | "cleanup_pending"
         ),
         "detector" => matches!(value, "double_tap" | "hold_down"),
         "mode" => matches!(
@@ -222,6 +230,7 @@ fn is_safe_keyboard_string(key: &str, value: &str) -> bool {
             matches!(value, "none" | "other") || crate::keyboard::is_dictation_key_id(value)
         }
         "modifier_edge" => matches!(value, "press" | "release" | "not_modifier"),
+        "companion" => matches!(value, "globe" | "unmapped"),
         "caller_file" => {
             value.ends_with(".rs")
                 && value
@@ -501,6 +510,15 @@ mod tests {
             "input_unconfigured",
             "not_admitted",
             "smart_auto_unavailable",
+            "listener_changed",
+            "processing_skipped",
+            "disabled",
+            "gesture_ended",
+            "permission_not_granted",
+            "dictation_busy",
+            "preview_active",
+            "microphone_busy",
+            "cleanup_pending",
         ] {
             let mut data = serde_json::json!({
                 "event_code": "keyboard.fn_capture_skipped",

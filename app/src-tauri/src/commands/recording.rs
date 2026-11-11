@@ -5345,13 +5345,26 @@ pub(crate) fn dictation_start_blocker(
 /// It shares the confirmed start's admission guards and additionally refuses
 /// while a previous dictation's capture cleanup is still pending.
 pub(crate) fn dictation_prepare_admitted(state: &State) -> bool {
+    dictation_prepare_refusal(state).is_none()
+}
+
+/// The first content-free reason a prepared or key-down capture may not open
+/// now, or `None` when it may.
+pub(crate) fn dictation_prepare_refusal(state: &State) -> Option<&'static str> {
     let dictation = state.app_state.dictation.lock_or_recover();
-    dictation_start_blocker(state, dictation.status).is_none()
-        && !state.app_state.microphone_preview.is_active()
-        && !audio_lifecycle::is_audio_active()
-        && !audio_lifecycle::is_dictation_cleanup_pending(
-            state.app_state.recording_id.load(Ordering::SeqCst),
-        )
+    if dictation_start_blocker(state, dictation.status).is_some() {
+        Some("dictation_busy")
+    } else if state.app_state.microphone_preview.is_active() {
+        Some("preview_active")
+    } else if audio_lifecycle::is_audio_active() {
+        Some("microphone_busy")
+    } else if audio_lifecycle::is_dictation_cleanup_pending(
+        state.app_state.recording_id.load(Ordering::SeqCst),
+    ) {
+        Some("cleanup_pending")
+    } else {
+        None
+    }
 }
 
 #[tauri::command]
