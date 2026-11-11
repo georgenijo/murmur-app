@@ -1,222 +1,151 @@
 <p align="center">
-  <img src="docs/readme-hero.svg" alt="Murmur — your voice, already typed" width="100%">
+  <img src="docs/readme/icon.png" width="96" height="96" alt="">
+</p>
+
+<h1 align="center">Murmur</h1>
+
+<p align="center">
+  Dictation for macOS. Hold a key, talk, let go.<br>
+  Speech recognition runs on your Mac, so there is no account and no API key.
 </p>
 
 <p align="center">
-  <a href="https://github.com/georgenijo/murmur-app/releases/latest"><img alt="Download Murmur for macOS" src="https://img.shields.io/badge/Download_for_macOS-14%2B-92DBFE?style=for-the-badge&amp;logo=apple&amp;logoColor=081015"></a>
-  <a href="#build-from-source"><img alt="Build from source" src="https://img.shields.io/badge/Build_from_source-Rust_%2B_React-B59CFF?style=for-the-badge&amp;logo=rust&amp;logoColor=white"></a>
+  <a href="https://github.com/georgenijo/murmur-app/releases/latest"><b>Download</b></a>
+  &nbsp;·&nbsp;
+  <a href="docs/FEATURES.md">Features</a>
+  &nbsp;·&nbsp;
+  <a href="#build-from-source">Build from source</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/georgenijo/murmur-app/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/georgenijo/murmur-app?color=91f0c0"></a>
-  <a href="https://github.com/georgenijo/murmur-app/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/georgenijo/murmur-app/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-8ab4ff.svg"></a>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/readme/demo-dark.svg">
+    <img src="docs/readme/demo-light.svg" width="760" alt="Holding the Option key shows a waveform in the notch. Releasing it puts the spoken sentence into the focused app.">
+  </picture>
 </p>
 
-<p align="center">
-  <strong>No cloud inference. No API keys. No subscription.</strong><br>
-  <sub>Speech and rewriting stay on your machine. Release builds send privacy-stripped diagnostic metadata by default—never audio or text. <a href="#privacy-without-the-hand-waving">Details and opt-out.</a></sub>
-</p>
+## Install
 
-## Talk. Don't type.
+1. Download the latest `.dmg` from [Releases](https://github.com/georgenijo/murmur-app/releases/latest).
+2. Drag Murmur into Applications and open it from there. Running it straight
+   from the disk image stops updates from working.
+3. Follow the setup assistant. It asks for Microphone and Accessibility access,
+   downloads a speech model (about 470 MB), and lets you pick a trigger key.
 
-Murmur is the keyboard shortcut for the thought you already finished having.
-Hold a key, say it naturally, and release. Your words show up in the app you
-were already using—cleaned up, copied, and ready to send.
+Murmur needs an Apple Silicon Mac on macOS 14 or later. It updates itself.
 
-<p align="center">
-  <img src="docs/readme-flow.svg" alt="Hold a key, speak naturally, and release to receive polished text" width="100%">
-</p>
+## Using it
 
-## More than a transcription box
+Pick a trigger key: Left Shift, Left Option, Right Control, Fn, or any of
+F1–F20. Then either hold it while you talk, or double-tap to start and tap once
+to stop. You can have both. If you like, a recording started with a double-tap
+ends on its own after a few seconds of silence.
 
-<table>
-  <tr>
-    <td width="33%" valign="top">
-      <h3>⚡ Feels instant</h3>
-      <p>Parakeet on the Apple Neural Engine by default. The model warms while you speak, not after.</p>
-    </td>
-    <td width="33%" valign="top">
-      <h3>✨ Comes out clean</h3>
-      <p>Filler removal, punctuation, structure, numbers, corrections, and formatting—all deterministic and local.</p>
-    </td>
-    <td width="33%" valign="top">
-      <h3>📋 Works anywhere</h3>
-      <p>Clipboard first, with optional auto-paste. Notes, chat, email, terminals, editors—stay in flow.</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="33%" valign="top">
-      <h3>🧠 Learns your language</h3>
-      <p>Teach names, jargon, code symbols, snippets, and per-app writing styles without training a cloud model.</p>
-    </td>
-    <td width="33%" valign="top">
-      <h3>🪄 Rewrites by voice</h3>
-      <p>Select text, say “make this sharper,” review the local LLM's diff, then approve—or don't.</p>
-    </td>
-    <td width="33%" valign="top">
-      <h3>🛡️ Built to fail closed</h3>
-      <p>Secure fields, ambiguous corrections, stale async work, and unknown models are refused instead of guessed.</p>
-    </td>
-  </tr>
-</table>
+The text always lands on your clipboard. Auto-paste into the app you were using
+is optional. While you talk, a small overlay in the notch shows that Murmur is
+listening, and it never takes focus from what you were doing.
 
-## The app gets out of your way
+The main window is a searchable history of your last 200 dictations. You can
+also drop a WAV, MP3, M4A, MP4, or MOV file on it to transcribe a recording.
+
+## What it does to your words
+
+After the speech model, the text goes through a fixed set of rules. There is no
+language model in this step, so the same words give the same result every time.
+
+| You say | You get |
+|---|---|
+| port eight zero eight zero | `port 8080` |
+| four thirty PM | `4:30 PM` |
+| September seventeenth twenty twenty six | `September 17, 2026` |
+| version two point seventeen point two | `version 2.17.2` |
+| cargo test dash dash dash test threads equals one | `cargo test -- --test-threads=1` |
+| npx create vite at latest my app dash dash template react typescript | `npx create-vite@latest my-app --template react-ts` |
+
+The last two only happen where you would type a command, such as a terminal.
+Filler words like "um" are dropped, and "new paragraph" or "scratch that" do
+what you would expect.
+
+You can also teach it:
+
+- **Vocabulary.** Names, jargon, and identifiers scanned from a project folder.
+- **Aliases.** If it keeps hearing "Tori", tell it you mean "Tauri".
+- **Snippets.** Say a short phrase, get a longer block of text.
+- **Per-app styles.** Polished prose in Mail, literal text in a terminal.
+- **Corrections.** Fix a transcript and Murmur offers to remember that one fix.
+
+All of this is stored locally and can be inspected, exported, or deleted in
+Settings.
+
+## Meetings
+
+The Notetaker records a call on two channels, your microphone as "Me" and the
+Mac's audio as "Them", and transcribes while the meeting is running. Sessions
+are searchable, and you can export them as text or as SRT/WebVTT captions.
+This needs macOS 14.2 or later. See [Meeting Capture](docs/features/meeting-capture.md).
+
+## Models
+
+Models download on demand and can be switched in Settings.
+
+| Model | Runs on | Size | Language |
+|---|---|---:|---|
+| Parakeet TDT 0.6B v3 (default) | Apple Neural Engine | ~470 MB | Multilingual |
+| Parakeet TDT 0.6B v2 | CPU | ~1.2 GB | English |
+| Whisper Tiny | Metal GPU | ~75 MB | English |
+| Whisper Base | Metal GPU | ~150 MB | English |
+| Whisper Small | Metal GPU | ~500 MB | English |
+| Whisper Medium | Metal GPU | ~1.5 GB | English |
+| Whisper Large v3 Turbo | Metal GPU | ~3 GB | Multilingual |
+
+The model starts loading when you press the key, so it is usually ready by the
+time you finish talking. If you want to know which one is best on your machine,
+the Performance Lab in Settings benchmarks the ones you have installed.
+
+## Privacy
+
+Your audio and your text never leave your Mac. Transcription, cleanup, history,
+vocabulary, and meeting transcripts are all local. Recordings are kept on disk
+only if you ask for that.
+
+Murmur does use the network for three things:
+
+- Downloading models, from pinned sources.
+- Checking for and downloading signed app updates.
+- Diagnostics. Release builds upload events for support: timings, states, error
+  codes, a random install ID, the computer name, the macOS version, and basic
+  hardware facts. They never include audio, transcripts, clipboard contents, or
+  project paths. To turn this off, launch Murmur with `MURMUR_LOG_SHIPPER=off` in
+  its environment.
+
+The exact contract is in [log shipping](docs/features/log-shipping.md).
+
+## How it works
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/dark-recording-darwin.png">
-  <img src="docs/images/light-recording-darwin.png" alt="Murmur recording in the transcript history workspace" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/readme/pipeline-dark.svg">
+  <img src="docs/readme/pipeline-light.svg" width="100%" alt="Hotkey, capture helper, Silero VAD, speech model, text pipeline, clipboard. Every step runs on your Mac.">
 </picture>
 
-The main window is a searchable transcript workspace, not a giant Record
-button. A notch-anchored overlay gives you status, waveform, and quick controls
-without stealing focus. Drag in WAV, MP3, or M4A files when you want the same
-local transcription pipeline without the microphone.
+Murmur is a Tauri app: Rust for the native side, React for the windows. The
+microphone is owned by a small signed helper process, so if Core Audio hangs,
+Murmur can kill the helper and carry on. Every recording gets a generation
+number, and late results from an older recording are discarded instead of
+overwriting a newer one.
 
-## Pick your rhythm
+The [architecture guide](docs/ARCHITECTURE.md) has the full picture.
 
-| Hold | Tap | Go hands-free |
-|---|---|---|
-| Hold a modifier, speak, release. | Double-tap to start; tap once to stop. | Let trailing silence finish toggle-started recordings. |
+## Build from source
 
-Use **Hold Down**, **Double-Tap**, or **Both** on Left Shift, Left Option, or
-Right Control. Murmur rejects modifier-plus-letter shortcuts, long taps, slow
-double-taps, and repeated-key noise so normal typing stays normal.
-
-## Install in a minute
-
-1. [Download the latest `.dmg`](https://github.com/georgenijo/murmur-app/releases/latest).
-2. Drag **Murmur** into **Applications**.
-3. Launch it. The setup assistant handles Microphone, Accessibility, hotkey
-   choice, and the first local model.
-
-> [!IMPORTANT]
-> Launch Murmur from Applications—not permanently from the disk image. macOS
-> App Translocation can make a quarantined copy read-only and block updates.
-
-| Platform | Experience |
-|---|---|
-| **Apple Silicon · macOS 14+** | Everything: Core ML/ANE, Metal, Transform, native Accessibility, notch overlay, signed updates |
-| **Other platforms** | Not supported |
-
----
-
-## Go deeper
-
-Everything below is for the curious, the cautious, and the people about to
-open a pull request.
-
-<details>
-<summary><strong>🎛️ Seven local transcription models</strong></summary>
-
-Models install on demand and switch from Settings. Murmur prepares the selected
-model while recording and keeps it warm according to the configured idle policy.
-
-| Model | Runtime | Accelerator | Size | Language |
-|---|---|---:|---:|---|
-| Parakeet TDT 0.6B v3 | FluidAudio / Core ML | Apple Neural Engine | ~470 MB | Multilingual |
-| Parakeet TDT 0.6B v2 | sherpa-onnx | CPU | ~1.2 GB | English |
-| Whisper Tiny | whisper.cpp | Metal GPU | ~75 MB | English |
-| Whisper Base | whisper.cpp | Metal GPU | ~150 MB | English |
-| Whisper Small | whisper.cpp | Metal GPU | ~500 MB | English |
-| Whisper Medium | whisper.cpp | Metal GPU | ~1.5 GB | English |
-| Whisper Large v3 Turbo | whisper.cpp | Metal GPU | ~3 GB | Multilingual |
-
-Parakeet v3 is the Apple Silicon default. **Settings → Model → Benchmark**
-compares installed configurations using latency, real-time factor, memory, and
-raw/normalized/delivered word error rate on your machine.
-
-</details>
-
-<a id="privacy-without-the-hand-waving"></a>
-<details>
-<summary><strong>🔒 Privacy without the hand-waving</strong></summary>
-
-Murmur's boundary is based on data type—not a misleading “never touches the
-network” claim.
-
-| Data | What happens |
-|---|---|
-| Microphone audio | Processed locally; never uploaded. Written only when **Save Audio to File** is on |
-| Dictated text | Transcribed and transformed locally; excluded from diagnostic uploads |
-| Selected text, instructions, proposals | Handled by the sandboxed local sidecar; never sent to a hosted model or normal logs |
-| History and usage | Local `localStorage`, with a rolling 200-entry history cap |
-| Knowledge and learned rules | Local SQLite; inspectable, exportable, and deletable in Settings |
-| Performance diagnostics | Content-free, bounded local SQLite history; clearable in Settings |
-| Models and app updates | Downloaded from pinned release/model sources |
-
-Production builds upload privacy-stripped structured events for support. They
-include timing, state, stable error codes, pipeline outcomes, a random install
-ID, computer name, macOS version, and bounded hardware facts. They exclude
-audio, transcript text, selected text, rewrite content, knowledge values,
-project paths, and clipboard content. Development builds do not upload.
-
-Set `MURMUR_LOG_SHIPPER=off` in Murmur's launch environment to opt out. Detailed
-capture-hang bundles remain dormant unless that specific installation is armed
-with its owner's agreement, and collection is recorded in the local event log.
-
-[Full log-shipping contract](docs/features/log-shipping.md) ·
-[Performance diagnostics](docs/features/performance-diagnostics.md)
-
-</details>
-
-<details>
-<summary><strong>⚙️ Under the hood</strong></summary>
-
-```text
-Global hotkey
-    │
-    ▼
-Rust/Tauri coordinator ───────► signed capture worker (CPAL / AUHAL)
-    │                                      │
-    │ policy + generation ownership        │ 16 kHz mono PCM
-    │                                      ▼
-    └──────────────► Silero VAD ─► local ASR backend
-                                      │
-                                      ▼
-                         ordered transcript pipeline
-                                      │
-                                      ▼
-                         clipboard ─► paste / files
-
-                                                        │
-                                                        ▼
-                                               review ─► approved apply
-```
-
-Production microphone ownership is isolated in a signed, killable process. The
-main app owns policy and retained PCM; the worker owns macOS audio objects. A
-blocked Core Audio call can be bounded and its exact process group terminated
-without stale capture work overwriting a newer recording.
-
-Every backend uses one `TranscriptionBackend` interface, then one ordered
-pipeline:
-
-```text
-cleanup → voice commands → smart correction → smart formatting
-        → spoken structure → spoken numbers → IDE context → CLI formatting
-```
-
-Monotonic generation IDs and immutable recording snapshots guard asynchronous
-work. [Read the architecture guide →](docs/ARCHITECTURE.md)
-
-</details>
-
-<a id="build-from-source"></a>
-<details>
-<summary><strong>🛠️ Build from source</strong></summary>
-
-### Prerequisites
-
-- Apple Silicon Mac with macOS 14+ for the full app
-- Xcode Command Line Tools and [CMake](https://cmake.org/)
-- [Node.js](https://nodejs.org/) 18+, [Rust](https://rustup.rs/) stable, Python 3
+You need an Apple Silicon Mac on macOS 14 or later, the Xcode Command Line
+Tools, [CMake](https://cmake.org/), [Node.js](https://nodejs.org/) 18+,
+[Rust](https://rustup.rs/) stable, and Python 3.
 
 ```bash
 git clone https://github.com/georgenijo/murmur-app.git
 cd murmur-app
 
-# Required first on Apple Silicon macOS; builds all three capture helpers.
+# Build the capture helpers first. A fresh clone will not compile without them.
 python3 scripts/build_capture_helpers.py
 
 cd app
@@ -224,69 +153,30 @@ npm ci
 npm run tauri:dev
 ```
 
-The helpers are gitignored Tauri `externalBin` files. On macOS, a fresh clone
-cannot run `tauri dev`, `tauri build`, `cargo check`, or `cargo test` until they
-exist. Build a production app and DMG with `npm run tauri:build`.
-
-### Test
+`npm run tauri:build` produces the app and a DMG. To run the tests:
 
 ```bash
 cd app
 npx tsc --noEmit
 npm test
-npx playwright install chromium  # first run only
-npm run test:visual
 
 cd src-tauri
-cargo fmt --all -- --check
 cargo test -- --test-threads=1
-
-cd ../..
-python3 -m pip install -r requirements-test.txt
-python3 -m unittest discover -s tests
 ```
 
-Model- and microphone-backed suites are explicit opt-ins. See
-[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for permissions, integration tests,
-logs, production builds, and troubleshooting.
+[Development](docs/DEVELOPMENT.md) covers permissions, the remaining test
+suites, release builds, and troubleshooting.
 
-</details>
+## More
 
-<details>
-<summary><strong>🗺️ Repository map</strong></summary>
+[Features](docs/FEATURES.md) ·
+[Architecture](docs/ARCHITECTURE.md) ·
+[Development](docs/DEVELOPMENT.md) ·
+[First run](docs/onboarding.md) ·
+[Commands and events](docs/reference/) ·
+[Decisions](docs/decisions/DECISIONS.md) ·
+[Changelog](CHANGELOG.md) ·
+[Releases](docs/release.md)
 
-```text
-murmur-app/
-├── app/
-│   ├── src/                         React UI, hooks, settings, pure logic
-│   └── src-tauri/
-│       ├── src/                     Rust app, capture policy, ASR, transforms
-│       ├── sidecars/capture/        Signed capture helper/worker
-│       ├── crates/                  Versioned helper protocols
-│       └── tests/                   Rust integration suites
-├── bench/                           Speech/accuracy fixtures
-├── docs/                            Architecture, features, ADRs, references
-├── infra/log-receiver/              Privacy-bounded diagnostics receiver
-├── infra/native-capture-ci/         Private physical-microphone CI controller template
-├── scripts/                         Build, signing, release, and QA tooling
-├── tests/                           Workflow/artifact policy tests
-└── tools/murmur-diag/               Local diagnostics inspection tool
-```
-
-</details>
-
-## Explore the docs
-
-[**Features**](docs/FEATURES.md) ·
-[**Architecture**](docs/ARCHITECTURE.md) ·
-[**Development**](docs/DEVELOPMENT.md) ·
-[**First run**](docs/onboarding.md) ·
-[**Commands & events**](docs/reference/) ·
-[**Decisions**](docs/decisions/DECISIONS.md) ·
-[**Changelog**](CHANGELOG.md) ·
-[**Releases**](docs/release.md)
-
-## License
-
-Murmur is [MIT licensed](LICENSE). Third-party licenses and attributions live
-in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+MIT licensed. See [LICENSE](LICENSE) and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
