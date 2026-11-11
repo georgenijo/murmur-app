@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.63.3] - 2026-11-11
+
 ### Fixed
 
 - Consolidate Settings cards and Advanced disclosures, compact Meetings and single-variant theme cards, and standardize editor controls, labels, and actions.
