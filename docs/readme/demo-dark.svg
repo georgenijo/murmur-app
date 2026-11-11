@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 284" width="760" height="284" role="img" aria-labelledby="t d">
   <title id="t">Dictating with Murmur</title>
-  <desc id="d">The Option key is held and a waveform appears in the notch. When the key is released, the spoken sentence appears in a text window.</desc>
+  <desc id="d">The Option key is held and a small pill with a waveform appears at the bottom of the screen. When the key is released, the pill says Transcribing, then Pasted, and the spoken sentence appears in a text window.</desc>
   <style>
     :root {
       --screen: #161b22;
@@ -11,37 +11,40 @@
       --key: #21262d;
       --key-down: #161b22;
       --key-edge: #484f58;
+      --pill: #2a3038;
+      --pill-edge: #484f58;
     }
 
     /* One loop is 9s: idle, hold the key for about 3.5s, a short wait, then the text. */
     .loop { animation-duration: 9s; animation-iteration-count: infinite; animation-timing-function: ease-out; }
 
-    .notch { transform-origin: 380px 10px; transform: scaleX(.728); animation-name: notch; }
+    .pill { opacity: 0; animation-name: pill; }
     .rec { opacity: 0; animation-name: rec; }
     .busy { opacity: 0; animation-name: busy; }
+    .done { opacity: 0; animation-name: done; }
     .typed { opacity: 1; animation-name: typed; }
     .waiting { opacity: 0; animation-name: waiting; }
     .keytop { animation-name: key; }
     .keyface { fill: var(--key); animation-name: keyface; }
 
     .bar { transform-box: fill-box; transform-origin: center; animation: bar .7s ease-in-out infinite alternate; }
-    .bar:nth-child(2) { animation-duration: .52s; animation-delay: -.2s; }
-    .bar:nth-child(3) { animation-duration: .83s; animation-delay: -.5s; }
-    .bar:nth-child(4) { animation-duration: .61s; animation-delay: -.1s; }
-    .bar:nth-child(5) { animation-duration: .74s; animation-delay: -.4s; }
-    .bar:nth-child(6) { animation-duration: .49s; animation-delay: -.3s; }
-    .bar:nth-child(7) { animation-duration: .9s; animation-delay: -.6s; }
+    .bar:nth-child(5n+2) { animation-duration: .52s; animation-delay: -.2s; }
+    .bar:nth-child(5n+3) { animation-duration: .83s; animation-delay: -.5s; }
+    .bar:nth-child(5n+4) { animation-duration: .61s; animation-delay: -.1s; }
+    .bar:nth-child(5n) { animation-duration: .47s; animation-delay: -.35s; }
+    .bar:nth-child(3n) { animation-delay: -.62s; }
     .spin { transform-box: fill-box; transform-origin: center; animation: spin .8s linear infinite; }
     .blink { animation: blink 1.1s steps(1) infinite; }
 
-    @keyframes notch { 0%, 11% { transform: scaleX(.728); } 13.5%, 59% { transform: scaleX(1); } 61.5%, 100% { transform: scaleX(.728); } }
-    @keyframes rec { 0%, 13% { opacity: 0; } 14.5%, 51% { opacity: 1; } 52%, 100% { opacity: 0; } }
-    @keyframes busy { 0%, 52% { opacity: 0; } 53%, 58.5% { opacity: 1; } 59.5%, 100% { opacity: 0; } }
-    @keyframes typed { 0%, 59.5% { opacity: 0; } 60.5%, 95% { opacity: 1; } 100% { opacity: 0; } }
-    @keyframes waiting { 0%, 59.5% { opacity: 1; } 60%, 99% { opacity: 0; } 100% { opacity: 1; } }
+    @keyframes pill { 0%, 12% { opacity: 0; } 14%, 78% { opacity: 1; } 81%, 100% { opacity: 0; } }
+    @keyframes rec { 0%, 12% { opacity: 0; } 14%, 51% { opacity: 1; } 52%, 100% { opacity: 0; } }
+    @keyframes busy { 0%, 52% { opacity: 0; } 53%, 59% { opacity: 1; } 60%, 100% { opacity: 0; } }
+    @keyframes done { 0%, 60% { opacity: 0; } 61%, 78% { opacity: 1; } 81%, 100% { opacity: 0; } }
+    @keyframes typed { 0%, 60% { opacity: 0; } 61%, 95% { opacity: 1; } 100% { opacity: 0; } }
+    @keyframes waiting { 0%, 60% { opacity: 1; } 60.5%, 99% { opacity: 0; } 100% { opacity: 1; } }
     @keyframes key { 0%, 11% { transform: translateY(0); } 12%, 51% { transform: translateY(3px); } 52%, 100% { transform: translateY(0); } }
     @keyframes keyface { 0%, 11% { fill: var(--key); } 12%, 51% { fill: var(--key-down); } 52%, 100% { fill: var(--key); } }
-    @keyframes bar { from { transform: scaleY(.25); } to { transform: scaleY(1); } }
+    @keyframes bar { from { transform: scaleY(.2); } to { transform: scaleY(1); } }
     @keyframes spin { to { transform: rotate(360deg); } }
     @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0; } }
 
@@ -55,37 +58,55 @@
   <!-- Display -->
   <rect x="20.5" y="10.5" width="719" height="196" rx="14" fill="var(--screen)" stroke="var(--line)"/>
 
-  <!-- Notch overlay: status on the left wing, waveform on the right -->
-  <path class="notch loop" d="M277 10H483V24a10 10 0 0 1-10 10H287a10 10 0 0 1-10-10Z" fill="#0b0b0c"/>
-  <g class="rec loop">
-    <circle cx="291" cy="22" r="3.5" fill="#ff5f57"/>
-    <g fill="#ffffff">
-      <rect class="bar" x="459" y="16" width="2" height="12" rx="1"/>
-      <rect class="bar" x="462" y="16" width="2" height="12" rx="1"/>
-      <rect class="bar" x="465" y="16" width="2" height="12" rx="1"/>
-      <rect class="bar" x="468" y="16" width="2" height="12" rx="1"/>
-      <rect class="bar" x="471" y="16" width="2" height="12" rx="1"/>
-      <rect class="bar" x="474" y="16" width="2" height="12" rx="1"/>
-      <rect class="bar" x="477" y="16" width="2" height="12" rx="1"/>
-    </g>
-  </g>
-  <g class="busy loop">
-    <circle class="spin" cx="291" cy="22" r="4" fill="none" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round" stroke-dasharray="14 30"/>
-  </g>
-
   <!-- The app you were already typing in -->
-  <rect x="110.5" y="64.5" width="539" height="110" rx="10" fill="var(--window)" stroke="var(--line)"/>
+  <rect x="110.5" y="32.5" width="539" height="106" rx="10" fill="var(--window)" stroke="var(--line)"/>
   <g fill="var(--line)">
-    <circle cx="131" cy="83" r="4.5"/>
-    <circle cx="147" cy="83" r="4.5"/>
-    <circle cx="163" cy="83" r="4.5"/>
+    <circle cx="131" cy="51" r="4.5"/>
+    <circle cx="147" cy="51" r="4.5"/>
+    <circle cx="163" cy="51" r="4.5"/>
   </g>
   <g class="waiting loop">
-    <rect class="blink" x="134" y="112" width="1.5" height="21" fill="var(--text)"/>
+    <rect class="blink" x="134" y="78" width="1.5" height="21" fill="var(--text)"/>
   </g>
   <g class="typed loop" fill="var(--text)" font-size="19">
-    <text x="134" y="128">Can we move the launch to Thursday?</text>
-    <text x="134" y="156">I still need to check the numbers with Priya.<tspan class="blink" dx="1" font-weight="300">|</tspan></text>
+    <text x="134" y="94">Can we move the launch to Thursday?</text>
+    <text x="134" y="122">I still need to check the numbers with Priya.<tspan class="blink" dx="1" font-weight="300">|</tspan></text>
+  </g>
+
+  <!-- Floating pill: hidden while idle, one shape and one word per state -->
+  <g class="pill loop">
+    <rect x="320.5" y="157.5" width="119" height="33" rx="16.5" fill="var(--pill)" stroke="var(--pill-edge)"/>
+    <g class="rec loop">
+      <circle cx="337" cy="174" r="3.5" fill="#ff5f57"/>
+      <g fill="var(--text)">
+        <rect class="bar" x="349" y="167" width="2" height="14" rx="1"/>
+        <rect class="bar" x="353.5" y="167" width="2" height="14" rx="1"/>
+        <rect class="bar" x="358" y="167" width="2" height="14" rx="1"/>
+        <rect class="bar" x="362.5" y="167" width="2" height="14" rx="1"/>
+        <rect class="bar" x="367" y="167" width="2" height="14" rx="1"/>
+        <rect class="bar" x="371.5" y="167" width="2" height="14" rx="1"/>
+        <rect class="bar" x="376" y="167" width="2" height="14" rx="1"/>
+        <rect class="bar" x="380.5" y="167" width="2" height="14" rx="1"/>
+        <rect class="bar" x="385" y="167" width="2" height="14" rx="1"/>
+        <rect class="bar" x="389.5" y="167" width="2" height="14" rx="1"/>
+        <rect class="bar" x="394" y="167" width="2" height="14" rx="1"/>
+        <rect class="bar" x="398.5" y="167" width="2" height="14" rx="1"/>
+        <rect class="bar" x="403" y="167" width="2" height="14" rx="1"/>
+        <rect class="bar" x="407.5" y="167" width="2" height="14" rx="1"/>
+        <rect class="bar" x="412" y="167" width="2" height="14" rx="1"/>
+        <rect class="bar" x="416.5" y="167" width="2" height="14" rx="1"/>
+        <rect class="bar" x="421" y="167" width="2" height="14" rx="1"/>
+        <rect class="bar" x="425.5" y="167" width="2" height="14" rx="1"/>
+      </g>
+    </g>
+    <g class="busy loop">
+      <circle class="spin" cx="337" cy="174" r="4.5" fill="none" stroke="var(--text)" stroke-width="1.5" stroke-linecap="round" stroke-dasharray="16 30"/>
+      <text x="348" y="178.5" font-size="12" font-weight="500" fill="var(--text)">Transcribing…</text>
+    </g>
+    <g class="done loop">
+      <path d="M353.5 174.5l3.5 3.5 7-8" fill="none" stroke="var(--text)" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="371" y="178.5" font-size="12" font-weight="500" fill="var(--text)">Pasted</text>
+    </g>
   </g>
 
   <!-- The trigger key -->

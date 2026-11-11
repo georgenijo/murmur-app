@@ -20,7 +20,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/readme/demo-dark.svg">
-    <img src="docs/readme/demo-light.svg" width="760" alt="Holding the Option key shows a waveform in the notch. Releasing it puts the spoken sentence into the focused app.">
+    <img src="docs/readme/demo-light.svg" width="760" alt="Holding the Option key shows a small pill with a waveform. Releasing it puts the spoken sentence into the focused app.">
   </picture>
 </p>
 
@@ -42,8 +42,9 @@ to stop. You can have both. If you like, a recording started with a double-tap
 ends on its own after a few seconds of silence.
 
 The text always lands on your clipboard. Auto-paste into the app you were using
-is optional. While you talk, a small overlay in the notch shows that Murmur is
-listening, and it never takes focus from what you were doing.
+is optional. While you talk, a small overlay shows that Murmur is listening,
+either in the notch or as a pill above the Dock. It never takes focus from what
+you were doing.
 
 The main window is a searchable history of your last 200 dictations. You can
 also drop a WAV, MP3, M4A, MP4, or MOV file on it to transcribe a recording.
