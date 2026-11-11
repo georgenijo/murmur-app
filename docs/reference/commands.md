@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 173 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 167 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -229,7 +229,7 @@ frontend.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `read_theme_file` | `path: String` | `Result<String, String>` | Reads at most 256 KiB of UTF-8 from a regular, non-symlink file, enough for bounded VS Code JSON/JSONC themes. Returns clear errors for invalid paths, oversized files, invalid UTF-8, and I/O failure. |
+| `read_theme_file` | `path: String` | `Result<String, String>` | Reads at most 256 KiB of UTF-8 from a regular, non-symlink file, enough for bounded VS Code JSON/JSONC themes and vocabulary import files. Returns clear errors for invalid paths, oversized files, invalid UTF-8, and I/O failure. |
 | `write_theme_file` | `path: String`, `contents: String` | `Result<(), String>` | Rejects content over 64 KiB and symlink/non-regular destinations, writes and fsyncs a unique sibling temporary file, atomically renames it over the destination, then syncs the parent directory. New Unix files use mode `0600`; replacements preserve the existing regular target's permissions. A failed write/publish cleans the temporary file and preserves an existing target. |
 
 ## Correct and Teach (`commands/correct_and_teach.rs`)
@@ -276,17 +276,11 @@ frontend.
 | `clear_logs` | — | `Result<(), String>` | Removes log files (including rotated and JSONL variants) and clears the ring buffer. |
 | `log_frontend` | `level`, `message`, `transform_pass_id: Option<u64>`, `event_code: Option<String>` | `()` | Logs a content-free frontend event with an allowlisted code, optionally correlated to a transform pass. The main hydration code records native monotonic launch time once. Message contents are discarded. |
 
-## Mode file exchange (`commands/mode_exchange.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `read_modes_file` | `path: String` | `Result<String, String>` | Main-window-only reader for absolute regular non-symlink `.json` files, bounded to 256 KiB of UTF-8. Errors omit paths and contents. Schema validation and preview happen in the frontend before Settings changes. |
-
 ## Export (`commands/export.rs`)
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `save_text_export` | `path: String`, `contents: String` | `Result<u64, String>` | Writes a user-authored text export (including custom Modes) to a path chosen in the native save dialog, returning bytes written. Refuses relative paths, directories, dotfiles, missing parents, extensions outside `.json`/`.md`/`.txt`/`.srt`/`.vtt`, and payloads over 8 MB. The write is atomic (temp sibling, then rename). |
+| `save_text_export` | `path: String`, `contents: String` | `Result<u64, String>` | Writes a user-authored text export to a path chosen in the native save dialog, returning bytes written. Refuses relative paths, directories, dotfiles, missing parents, extensions outside `.json`/`.md`/`.txt`/`.srt`/`.vtt`, and payloads over 8 MB. The write is atomic (temp sibling, then rename). |
 
 ## Durable frontend data store (`commands/settings_store.rs`)
 
@@ -342,27 +336,12 @@ without logging their content.
 |---------|-----------|---------|-------------|
 | `list_running_applications` | — | `Vec<RunningApplication>` | Bounded memory-only list of running apps (bundle ID + name) for the per-app profile picker. Empty on non-macOS. |
 
-## Browser sites (`browser_site.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `probe_browser_site` | — | `Result<BrowserSiteProbe, String>` | After explicit opt-in, waits up to five seconds for an allowlisted browser, reads only its frontmost `AXDocument` URL, and returns only the exact host and browser bundle ID. URL paths and other page content are discarded. |
-
 ## Tray (`commands/tray.rs`)
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `update_tray_icon` | `_icon_state: String` | `Result<(), String>` | No-op; the tray icon is always the static waveform template image, tinted by macOS to match the menu bar. Retained for API compatibility. |
 | `set_tray_update_available` | `version: Option<String>` | `Result<(), String>` | Changes the native menu item between `Check for Updates…` and a bounded, validated `Update Murmur to vX.Y.Z…` label. |
-
-## Native Modes (`commands/mode_runtime.rs`)
-
-| Command | Parameters | Returns | Description |
-|---------|-----------|---------|-------------|
-| `get_mode_runtime_status` | — | `ModeRuntimeStatus` | Resolves the current context using temporary override → exact site binding → app binding → last manual Mode precedence. |
-| `set_next_recording_mode` | `modeId?: string` | `Result<ModeRuntimeStatus>` | Main-window-only: arm an enabled Mode for one real recording, or clear with null. Memory-only; frozen at acceptance. |
-| `cycle_mode` | — | `ModeRuntimeStatus` | Cycles enabled Modes without focusing Murmur; persists a manual selection outside bindings or creates a memory-only bundle override inside a site or app binding. |
-| `clear_temporary_mode_override` | — | `ModeRuntimeStatus` | Clears the app-scoped override and returns to its site binding, app binding, or last manual Mode. |
 
 ## Updater (`commands/updater.rs`)
 

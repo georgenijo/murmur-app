@@ -49,7 +49,7 @@ No email or URL structure is inferred from ordinary prose without its cue.
 Punctuation, quotes, parentheses, paragraphs, and symbols are owned by the
 following [Spoken Structure](spoken-structure.md) stage. Number words are
 owned by the later [Spoken Number Formatting](spoken-number-formatting.md)
-stage, whose Mode-aware policy keeps small prose counts such as `two of them`
+stage, whose register-aware policy keeps small prose counts such as `two of them`
 as words.
 
 ## Pipeline, delivery, and privacy

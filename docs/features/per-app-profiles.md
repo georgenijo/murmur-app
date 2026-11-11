@@ -2,20 +2,17 @@
 
 Murmur resolves one immutable `DictationContextSnapshot` for every live recording. The snapshot is created when recording starts from the frontmost application's bundle identifier and the current backend configuration. Final transcription, transformations, file output, clipboard output, and auto-paste all use that same snapshot.
 
-Profiles may optionally bind a reusable [Murmur Mode](modes.md). Profiles saved
-before Modes have no `modeId` and preserve their delivered behavior exactly.
+Reusable Modes were retired. The one-time settings migration folded each
+profile's Mode into the profile's own fields; see
+[Modes retirement](../reference/settings.md#modes-retirement).
 
 ## Resolution and precedence
 
 `dictation_context::resolve` is the only profile resolver. It applies values in this order:
 
 1. Global dictation settings
-2. The matching profile's selected Mode
-3. The matching profile's explicit writing style
-4. Matching per-app fine-tuning overrides
-5. One-session overrides
-
-The command palette and tray supply a memory-only **Next recording: <Mode>** selection through the typed one-session input. Its Mode policy applies after profile fine-tuning and is frozen at recording acceptance. Cancelled recordings, failed starts, and phantom captures shorter than 0.3 seconds retain it; a real recording consumes that exact selection before returning Idle. Imported/audio-processing sources do not claim it.
+2. The matching profile's explicit writing style
+3. Matching per-app fine-tuning overrides
 
 Profiles select an optional `writingStyle` and can fine-tune `autoPaste`, transcript cleanup, Smart Formatting, CLI formatting, and local IDE project context. A style and IDE-context opt-in are always explicit user choices; Murmur never infers either one from an app name or bundle identifier.
 
@@ -44,9 +41,9 @@ Code / technical now uses automatic command detection. Existing profiles that
 relied on forced formatting for unknown tools can select Terminal mode, set
 Commands On, or use an explicit `command` cue. Stored profile values are unchanged.
 
-These policies use only Murmur's existing reviewed local formatting APIs. They do not call a cloud service or perform open-ended rewriting. The per-profile Clean, Prose, and Commands controls apply after the preset, so users can visibly fine-tune a category. One-session overrides remain highest precedence.
+These policies use only Murmur's existing reviewed local formatting APIs. They do not call a cloud service or perform open-ended rewriting. The per-profile Clean, Prose, and Commands controls apply after the preset, so users can visibly fine-tune a category.
 
-Existing stored profile objects remain valid; missing, `null`, or malformed styles and overrides mean Inherit. CLI defaults to conservative automatic detection; Commands On enables command-shaped unknown tools for that profile, while Off disables implicit detection but preserves the explicit spoken `command` trigger. Verbatim bypasses the command stage entirely unless a later explicit profile/session CLI override fine-tunes it. The settings UI prevents duplicates, but persisted or programmatic configuration can contain them. To preserve legacy behavior exactly, each field uses the first matching profile that provides that field; a `null` value falls through to the next duplicate.
+Existing stored profile objects remain valid; missing, `null`, or malformed styles and overrides mean Inherit. CLI defaults to conservative automatic detection; Commands On enables command-shaped unknown tools for that profile, while Off disables implicit detection but preserves the explicit spoken `command` trigger. Verbatim bypasses the command stage entirely unless an explicit profile CLI override fine-tunes it. The settings UI prevents duplicates, but persisted or programmatic configuration can contain them. To preserve legacy behavior exactly, each field uses the first matching profile that provides that field; a `null` value falls through to the next duplicate.
 
 ## Snapshot contents and lifetime
 

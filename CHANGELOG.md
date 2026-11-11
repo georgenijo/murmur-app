@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Removed
+
+- **Modes are retired.** The Settings → Modes page, custom Modes and their
+  import/export, browser site rules, the ⌘K and menu-bar "Next recording" rows,
+  the overlay Mode chip and cycling, the browser-sites discovery hint, and the
+  Mode breakdowns in Insights and history are gone, along with six native
+  commands (`get_mode_runtime_status`, `set_next_recording_mode`, `cycle_mode`,
+  `clear_temporary_mode_override`, `probe_browser_site`, `read_modes_file`).
+  Recording modes (Hold Down, Double-Tap) and Writing Styles are unchanged.
+
+### Migration
+
+The first launch after upgrading folds each Mode into your settings once:
+
+- A profile bound to a Mode keeps that Mode's writing style, auto-paste,
+  cleanup, smart formatting and command formatting as its own overrides, except
+  where the profile already sets that value itself.
+- If your global Mode was not Everyday, its auto-paste, cleanup, smart
+  formatting and language become your global settings, and its model does too
+  when that model is installed. Profiles that were bound to a different Mode
+  and left a value to the global setting keep their old behavior through a
+  pinned override.
+- A profile bound to a project-context Mode that already lists project roots
+  keeps project context enabled.
+
+What no longer applies:
+
+- The global Mode's writing style, command formatting, vocabulary policy and
+  project context no longer reach apps that have no profile. Give the app a
+  profile to keep a style.
+- A profile that followed a global project-context Mode without being bound to
+  one loses that context.
+- A model or language set on a Mode that was bound to a profile is dropped; the
+  global model and language apply.
+- A profile bound to a disabled or missing Mode used to record as verbatim, with
+  no auto-paste and no command formatting. It now follows its own overrides.
+- The Technical vocabulary policy has no replacement. A Code / technical
+  writing style or project context still enables developer vocabulary.
+- Old Mode data in history and statistics is ignored, never shown or exported.
+
 ## [0.64.3] - 2026-11-11
 
 <!-- Release notes generated using configuration in .github/release.yml at 1bd443f63cc2f1dcb963f4556b976e49bf35a524 -->

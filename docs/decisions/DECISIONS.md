@@ -179,7 +179,7 @@ fixes that without reordering the pipeline.
 
 **References:** `docs/features/spoken-number-formatting.md`,
 `docs/features/vocabulary-aliases.md#context-cued-variants`,
-`docs/features/modes.md#text-register`,
+`docs/features/spoken-number-formatting.md#text-register`,
 `app/src-tauri/src/spoken_numbers.rs`, `app/src-tauri/src/correction.rs`
 
 ## 2026-10-17: Unknown menu-bar occupancy retains the last proven slot

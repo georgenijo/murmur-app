@@ -141,9 +141,6 @@ controller.
 
 ## Overlay window
 
-### `useModeRuntime`
-Hydrates the current Mode, validates `mode-runtime-changed`, and exposes native cycle and temporary-override clearing actions. Invalid payloads leave the last valid Mode in place.
-
 ### `useOverlayRecordingStatus`
 Subscribes before reading `get_status`, so an event received during hydration wins over an older snapshot. It validates every status and returns both React state and a current ref for overlay callbacks.
 

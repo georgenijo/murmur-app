@@ -1,6 +1,6 @@
 # Spoken Number Formatting
 
-Murmur renders English number words as decimal digits during live dictation. This is a deterministic, local pipeline stage. It is enabled by default and runs independently of Smart Formatting. How eagerly it converts depends on the recording's Mode.
+Murmur renders English number words as decimal digits during live dictation. This is a deterministic, local pipeline stage. It is enabled by default and runs independently of Smart Formatting. How eagerly it converts depends on the recording's text register.
 
 ```text
 eight hundred fifty-seven
@@ -10,15 +10,31 @@ ten million one hundred three thousand four hundred forty-five
 10,103,445
 ```
 
-## Mode-aware policy
+## Text register
 
-The stage reads one content-free register that is frozen at recording start: the built-in Mode family that the effective writing style resolves to (see [Modes](modes.md#text-register)). Custom Modes and app profiles map by their writing style. Murmur never infers the policy from transcript text.
+At recording start the effective writing style resolves to one content-free
+text register. The register is frozen in the snapshot and copied into the
+transcript stage configuration. Stages gate context-sensitive rules on it,
+never on transcript text, and Murmur never infers the policy from transcript
+text.
 
-| Register | Policy |
+| Writing style | Register |
 |---|---|
-| Everyday, Messages, Email, Notes | **Prose** |
-| Technical, Terminal, or any recording with Local IDE project context | **Technical** |
-| Verbatim | Stage off; text is byte-for-byte unchanged |
+| Inherit | Everyday |
+| Conversational | Messages |
+| Polished prose | Email |
+| Notes | Notes |
+| Code / technical | Technical |
+| Code / technical with Commands On | Terminal |
+| Verbatim | Verbatim |
+
+| Register | Policy | Context-cued vocabulary |
+|---|---|---|
+| Everyday, Messages, Email, Notes | **Prose** | Built-in developer variants need project context or, for Tauri, a nearby cue word |
+| Technical, Terminal, or any recording with Local IDE project context | **Technical** | Built-in developer variants (`Tori` → `Tauri`, `Postgres SQL` → `PostgreSQL`, ...) apply |
+| Verbatim | Stage off; text is byte-for-byte unchanged | Smart Correction is off |
+
+See [context-cued variants](vocabulary-aliases.md#context-cued-variants).
 
 ### Prose
 
@@ -102,4 +118,4 @@ Only final transformed text reaches file output, clipboard/paste, history, and s
 - Grammar and policy: `app/src-tauri/src/spoken_numbers.rs`
 - Register plumbing and pipeline integration: `app/src-tauri/src/transcript_transform.rs`
 - Register resolution: `app/src-tauri/src/state.rs` (`TextRegister`) and `app/src-tauri/src/dictation_context.rs`
-- Mode-aware evaluation fixtures: `app/src-tauri/eval/fixtures/deterministic/corpus-v1.json`
+- Register-aware evaluation fixtures: `app/src-tauri/eval/fixtures/deterministic/corpus-v1.json`

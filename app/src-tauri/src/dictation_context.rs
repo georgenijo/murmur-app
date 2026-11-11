@@ -1,7 +1,7 @@
 //! Immutable, per-recording dictation context resolution.
 //!
-//! The resolver is the only place where global settings, per-app profiles, and
-//! one-session overrides are combined. The resulting snapshot contains only the
+//! The resolver is the only place where global settings and per-app profiles
+//! are combined. The resulting snapshot contains only the
 //! typed values consumed by the live pipeline; later settings or focus changes
 //! cannot alter an in-flight dictation.
 
