@@ -6,7 +6,7 @@
   --ui-leading-settings-title: 24px;
   --ui-font-settings-group: 11px;
   --settings-row-height: 52px;
-  --settings-theme-width: 242px;
+  --settings-theme-width: 280px;
   --settings-nav-group-pad: 8px;
   --settings-nav-group-gap: 16px;
   --settings-nav-item-gap: 4px;
@@ -697,8 +697,10 @@
 .settings-theme-previews { display: flex; gap: 8px; }
 .settings-theme-mode { position: relative; flex: 1; min-width: 0; }
 .settings-theme-variant { position: relative; display: flex; flex-direction: column; align-items: center; width: 100%; border: 0; padding: 0; background: transparent; border-radius: 6px; }
-.settings-theme-variant[aria-pressed='true'] .settings-theme-preview { border-color: var(--murmur-primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 35%, transparent); }
+.settings-theme-variant[data-assigned] .settings-theme-preview { border-color: color-mix(in srgb, var(--murmur-outline-variant) 65%, var(--murmur-on-surface-variant)); }
+.settings-theme-variant[data-showing-now] .settings-theme-preview { border-color: var(--murmur-primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--murmur-primary) 35%, transparent); }
 .settings-theme-variant-check { position: absolute; top: 4px; right: 4px; display: grid; width: 16px; height: 16px; place-items: center; border-radius: 50%; background: var(--murmur-primary); color: var(--murmur-on-primary); font-size: var(--ui-font-micro); line-height: var(--ui-leading-micro); font-weight: 600; }
+.settings-theme-variant-assigned { position: absolute; top: 4px; right: 4px; display: grid; width: 14px; height: 14px; place-items: center; border: 1px solid var(--murmur-outline-variant); border-radius: 50%; background: var(--murmur-surface-container-lowest); color: var(--murmur-on-surface-variant); font-size: var(--ui-font-micro); line-height: var(--ui-leading-micro); font-weight: 600; }
 .settings-theme-preview { display: flex; width: 104px; max-width: 100%; height: 68px; overflow: hidden; border: 1px solid var(--preview-outline-variant); border-radius: 6px; background: var(--preview-surface); }
 .settings-theme-preview-sidebar { width: 25px; flex: none; height: 100%; background: var(--preview-surface-container-low); border-right: 1px solid var(--preview-outline-variant); }
 .settings-theme-preview-copy { display: flex; flex: 1; flex-direction: column; align-items: flex-start; gap: 5px; padding: 12px 8px; }
@@ -709,8 +711,8 @@
 .settings-theme-footer { display: flex; align-items: center; gap: 4px; padding-top: 8px; }
 .settings-theme-footer > button { display: flex; align-items: center; gap: 4px; min-width: 0; min-height: 28px; font-size: var(--ui-font-label); line-height: var(--ui-leading-label); }
 .settings-theme-footer > div { margin-left: auto; }
-.settings-theme-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.settings-theme-check { color: var(--murmur-primary); }
+.settings-theme-name { flex: 1 1 0; }
+.settings-theme-name-label { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-theme-action { width: 28px; height: 28px; }
 .settings-theme-options { position: absolute; top: 100%; left: 0; z-index: 30; display: flex; flex-direction: column; min-width: 144px; padding: 4px; border-radius: var(--ui-radius-control); border: 1px solid var(--ui-hairline); background: var(--murmur-surface-container-lowest); box-shadow: var(--ui-shadow-1); }
 .settings-theme-options button { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 28px; padding: 4px 8px; text-align: left; font-size: var(--ui-font-caption); line-height: var(--ui-leading-caption); }

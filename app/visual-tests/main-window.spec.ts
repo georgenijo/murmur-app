@@ -635,11 +635,13 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
     license: 'MIT',
   } as const;
   const collection = { id: 'open-vsx:h1dr0n.claude-theme', label: 'Catppuccin for VSCode' };
+  const longerCollection = { id: 'open-vsx:long-name', label: 'Catppuccin for VSCode — Extended Edition' };
   const entry = (
     id: string,
     label: string,
     modes: Array<'light' | 'dark'>,
     theme: Record<string, unknown>,
+    themeCollection = collection,
   ) => ({
     version: 1,
     id,
@@ -647,7 +649,7 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
     modes,
     theme: { version: 1, presetId: 'custom', ...theme },
     source,
-    collection,
+    collection: themeCollection,
   });
   const library = {
     version: 1,
@@ -666,6 +668,10 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
       entry('claude-midnight-light', 'Claude Midnight Light (Pure High-Contrast)', ['light'], {
         light: { background: '#ffffff', foreground: '#000000', accent: '#000000' },
       }),
+      entry('catppuccin-long', 'Catppuccin for VSCode — Extended Edition', ['light', 'dark'], {
+        light: { background: '#eff1f5', foreground: '#4c4f69', accent: '#8839ef' },
+        dark: { background: '#1e1e2e', foreground: '#cdd6f4', accent: '#cba6f7' },
+      }, longerCollection),
     ],
   };
   await page.addInitScript((value) => {
@@ -678,18 +684,27 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   const fixture = page.locator('[data-visual-ready="true"]');
   const sonicCard = page.locator('[data-theme-collection="Sonic"]');
   const catppuccinCard = page.locator('[data-theme-collection="Catppuccin for VSCode"]');
+  const longerCard = page.locator('[data-theme-collection="Catppuccin for VSCode — Extended Edition"]');
   await expect(catppuccinCard).toHaveCount(1);
-  await expect(sonicCard).toHaveCSS('width', '242px');
+  await expect(longerCard).toHaveCount(1);
+  await expect(sonicCard).toHaveCSS('width', '280px');
   await expect(sonicCard).toHaveCSS('height', '130px');
-  await expect(catppuccinCard).toHaveCSS('width', '242px');
+  await expect(catppuccinCard).toHaveCSS('width', '280px');
   await expect(catppuccinCard).toHaveCSS('height', '130px');
   await expect(catppuccinCard.locator('button[aria-label*="light variant"][aria-pressed="true"]')).toBeVisible();
   await expect(catppuccinCard.locator('button[aria-label*="dark variant"][aria-pressed="true"]')).toBeVisible();
-  await expect(catppuccinCard.locator('.settings-theme-variant-check')).toHaveCount(2);
+  await expect(catppuccinCard.locator('.settings-theme-variant-check')).toHaveCount(1);
+  await expect(catppuccinCard.locator('.settings-theme-variant-assigned')).toHaveCount(1);
   await expect(catppuccinCard.locator('.settings-theme-caption, .settings-theme-mode-status')).toHaveCount(0);
   const themeName = catppuccinCard.getByRole('button', { name: 'Use Catppuccin for VSCode theme' });
   await expect(themeName).toHaveAttribute('title', 'Catppuccin for VSCode');
-  expect(await themeName.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+  const themeNameLabel = themeName.locator('.settings-theme-name-label');
+  expect(await themeNameLabel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  const longerName = longerCard.getByRole('button', { name: 'Use Catppuccin for VSCode — Extended Edition theme' });
+  const longerNameLabel = longerName.locator('.settings-theme-name-label');
+  await expect(longerName).toHaveAttribute('title', 'Catppuccin for VSCode — Extended Edition');
+  await expect(longerNameLabel).toHaveCSS('text-overflow', 'ellipsis');
+  expect(await longerNameLabel.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
   await expect(page.locator('section[aria-labelledby="active-theme-heading"]')).toHaveCount(0);
   await expect(catppuccinCard.getByText('Active', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('radio', { name: /system/i })).not.toContainText('Active');

@@ -510,7 +510,7 @@ describe("AppearanceSettings", () => {
     vi.mocked(mocks.controller!.library.previewSelection).mockClear();
     vi.mocked(mocks.controller!.commitImport).mockClear();
     const darkSwatch = container.querySelector(
-      'button[aria-label="Use Dark for dark mode"]',
+      'button[aria-label^="Use Dark for dark mode"]',
     ) as HTMLButtonElement;
     expect(darkSwatch).not.toBeNull();
     await act(async () => darkSwatch.click());
@@ -533,7 +533,7 @@ describe("AppearanceSettings", () => {
     await act(async () => root.render(<AppearanceSettings />));
 
     const darkSwatch = container.querySelector(
-      '[data-theme-collection="Custom"] button[aria-label="Use Custom for dark mode"]',
+      '[data-theme-collection="Custom"] button[aria-label^="Use Custom for dark mode"]',
     ) as HTMLButtonElement;
     await act(async () => darkSwatch.click());
 
@@ -616,13 +616,25 @@ describe("AppearanceSettings", () => {
     expect(document.activeElement).toBe(choose);
     expect(mocks.controller!.library.previewSelection).toHaveBeenCalledWith(dark.id, 'dark');
     expect(claudeCard.querySelector('button[aria-label*="dark variant"]')?.getAttribute("aria-pressed")).toBe("true");
-    expect(claudeCard.querySelectorAll('.settings-theme-variant-check')).toHaveLength(2);
-    expect(claudeCard.querySelector('button[aria-label="Use Dusk Light for light mode"]')).not.toBeNull();
+    const lightVariant = claudeCard.querySelector<HTMLButtonElement>('button[aria-label^="Use Dusk Light for light mode"]')!;
+    const darkVariant = claudeCard.querySelector<HTMLButtonElement>('button[aria-label*="dark variant"]')!;
+    expect(lightVariant.getAttribute('aria-pressed')).toBe('true');
+    expect(darkVariant.getAttribute('aria-pressed')).toBe('true');
+    expect(lightVariant.getAttribute('title')).toContain('used in light mode');
+    expect(darkVariant.getAttribute('title')).toContain('showing now');
+    expect(claudeCard.querySelectorAll('.settings-theme-variant-check')).toHaveLength(1);
+    expect(claudeCard.querySelectorAll('.settings-theme-variant-assigned')).toHaveLength(1);
+    mocks.controller!.resolvedAppearance = 'light';
+    await act(async () => root.render(<AppearanceSettings />));
+    expect(lightVariant.getAttribute('title')).toContain('showing now');
+    expect(darkVariant.getAttribute('title')).toContain('used in dark mode');
+    expect(claudeCard.querySelectorAll('.settings-theme-variant-check')).toHaveLength(1);
+    expect(claudeCard.querySelectorAll('.settings-theme-variant-assigned')).toHaveLength(1);
+    expect(claudeCard.querySelector('button[aria-label^="Use Dusk Light for light mode"]')).not.toBeNull();
     expect(claudeCard.querySelector('button[aria-label="Use Claude Theme theme"]')?.getAttribute("aria-pressed")).toBe("true");
     expect(container.textContent).not.toContain("Active theme");
     expect(claudeCard.textContent).not.toContain("Active");
     const claudeTitle = claudeCard.querySelector('button[aria-label="Use Claude Theme theme"]')!;
-    expect(claudeTitle.classList.contains("truncate")).toBe(true);
     expect(claudeTitle.getAttribute("title")).toBe("Claude Theme");
     expect(claudeCard.querySelector('button[aria-label="Export Claude Theme"]')).not.toBeNull();
     expect(claudeCard.querySelector('button[aria-label="Remove Claude Theme"]')).not.toBeNull();
@@ -652,8 +664,8 @@ describe("AppearanceSettings", () => {
         button.getAttribute("aria-label"),
       ),
     ).toEqual([
-      "Use OpenCode for light mode",
-      "Use OpenCode for dark mode",
+      "Use OpenCode for light mode, not in use",
+      "Use OpenCode for dark mode, not in use",
       "Use OpenCode theme",
       "Export OpenCode",
       "Duplicate OpenCode",
