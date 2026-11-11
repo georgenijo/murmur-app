@@ -100,7 +100,7 @@ describe('KnowledgeManager', () => {
     }]} />));
   });
 
-  it('shows store status only when the local store is unavailable', async () => {
+  it('shows unavailable errors and recovery notices without announcing a ready store', async () => {
     expect(container.querySelector('[role="status"]')).toBeNull();
     expect(container.querySelector('[role="alert"]')).toBeNull();
 
@@ -110,8 +110,16 @@ describe('KnowledgeManager', () => {
 
     mocks.status = { ...mocks.status, availability: 'recovered', message: 'Recovered from a local backup.' };
     await act(async () => root.render(<KnowledgeManager active profiles={[]} />));
-    expect(container.querySelector('[role="status"]')).toBeNull();
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('Recovered from a local backup.');
     expect(container.querySelector('[role="alert"]')).toBeNull();
+
+    mocks.status = { ...mocks.status, availability: 'reinitialized', message: 'Created an empty local store.' };
+    await act(async () => root.render(<KnowledgeManager active profiles={[]} />));
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('Created an empty local store.');
+
+    mocks.status = { ...mocks.status, availability: 'ready', message: null };
+    await act(async () => root.render(<KnowledgeManager active profiles={[]} />));
+    expect(container.querySelector('[role="status"]')).toBeNull();
   });
 
   afterEach(async () => {

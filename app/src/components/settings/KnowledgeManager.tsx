@@ -60,6 +60,13 @@ function StatusBanner({ availability, message, onRetry }: {
       <Button type="button" variant="ghost" size="xs" onClick={onRetry} className="shrink-0">Retry</Button>
     </div>
   );
+  if (availability === 'recovered' || availability === 'reinitialized') return (
+    <div className="rounded-lg border border-outline-variant/50 bg-surface-container-low px-3 py-2 text-xs text-on-surface-variant" role="status">
+      {message ?? (availability === 'recovered'
+        ? 'Murmur restored personal knowledge from a local backup.'
+        : 'Murmur created an empty local knowledge store after recovering from database damage.')}
+    </div>
+  );
   return null;
 }
 
