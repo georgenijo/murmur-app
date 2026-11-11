@@ -87,9 +87,13 @@ for (const appearance of ['dark', 'light'] as const) {
     await open(page, appearance, 'settings', 'Recording');
     const trigger = await box(page.getByRole('button', { name: 'Microphone input' }));
     const helper = await box(page.getByText(/Docking, undocking, or changing the system input/));
+    const liveLevelRow = await box(page.locator('.settings-live-input-level-row'));
     // The gap is the copy gap, not the wide gap that separates label and control columns.
     expect(helper.y - trigger.bottom).toBeGreaterThanOrEqual(0);
     expect(helper.y - trigger.bottom).toBeLessThanOrEqual(12);
+    // The next row's divider leaves the same deliberate breathing room after
+    // wrapped helper copy as standard settings rows do before their dividers.
+    expect(liveLevelRow.y - helper.bottom).toBeGreaterThanOrEqual(7);
   });
 
   test(`${appearance} Advanced disclosure matches the row rhythm`, async ({ page }) => {

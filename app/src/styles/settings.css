@@ -710,7 +710,7 @@
 .settings-microphone-input .settings-row-controls { grid-column: 2; grid-row: 1; }
 .settings-microphone-input .settings-row-title ~ p { grid-column: 1 / -1; grid-row: 2; }
 .settings-microphone-input .settings-row-title ~ p:not(:first-child) { margin-top: var(--settings-copy-gap); }
-.settings-live-input-level-row { border-top: 1px solid var(--settings-divider); }
+.settings-live-input-level-row { margin-top: var(--settings-row-pad); border-top: 1px solid var(--settings-divider); }
 .settings-live-input-level-control { width: 160px; max-width: 100%; }
 @container settings-row (width < 512px) {
   .settings-microphone-input .settings-row-title,
