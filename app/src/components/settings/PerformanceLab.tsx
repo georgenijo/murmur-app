@@ -1,5 +1,6 @@
 import { MiddleTruncate } from '../ui/middle-truncate';
 import { ConfirmActionButton } from '../ui/ConfirmActionButton';
+import { Button } from '../ui/FormControls';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -37,16 +38,16 @@ import type { AudioInputInventoryV2 } from '../../lib/audioDevices';
 import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
 
 const PRESETS: { id: BenchmarkPreset; label: string; detail: string }[] = [
-  { id: 'quick', label: 'Quick', detail: '2 clips x 3 runs' },
-  { id: 'standard', label: 'Standard', detail: '7 clips x 5 runs' },
-  { id: 'thorough', label: 'Thorough', detail: '9 clips x 10 runs' },
+  { id: 'quick', label: 'Quick', detail: '2 clips × 3 runs' },
+  { id: 'standard', label: 'Standard', detail: '7 clips × 5 runs' },
+  { id: 'thorough', label: 'Thorough', detail: '9 clips × 10 runs' },
 ];
 
 function presetDetail(source: BenchmarkCorpusSource, preset: BenchmarkPreset): string {
   if (source === 'bundled') return PRESETS.find((option) => option.id === preset)?.detail ?? '';
-  if (preset === 'quick') return '5 clips x 1 run';
-  if (preset === 'standard') return '20 clips x 1 run';
-  return '20 clips x 3 runs';
+  if (preset === 'quick') return '5 clips × 1 run';
+  if (preset === 'standard') return '20 clips × 1 run';
+  return '20 clips × 3 runs';
 }
 
 function milliseconds(value: number | null): string {
@@ -372,14 +373,11 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
 
   return (
     <div className="space-y-6">
-      <div className="rounded-xl border border-primary/30 bg-primary/10 p-3 text-xs text-on-surface">
-        <p className="font-medium text-on-surface">Directional results, not a universal model ranking</p>
-        <p className="mt-1">
-          {INTERNAL_BENCHMARK_BUILD && corpusSource === 'personal'
-            ? 'This mode replays your fixed, private recordings so every model and future build receives the same voice, microphone, room, and words.'
-            : 'This mode compares installed models with a small, clean synthetic English corpus. It does not represent your voice, microphone, accent, room, or every dictation workload.'}
-        </p>
-      </div>
+      <p className="text-[length:var(--ui-font-caption)] leading-[length:var(--ui-leading-caption)] text-on-surface-variant">
+        Directional local comparison only; {INTERNAL_BENCHMARK_BUILD && corpusSource === 'personal'
+          ? 'each model uses the same private recordings.'
+          : 'results depend on the input, room, accent, and workload.'}
+      </p>
       <MicrophoneStartupBenchmark
         status={status}
         deviceId={settings.microphone}
@@ -401,7 +399,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
         onBusyChange={setCorpusBusy}
       />}
       {INTERNAL_BENCHMARK_BUILD && <section>
-        <h3 className="settings-group-heading">Benchmark audio</h3>
+        <h3 className="m-0 text-[length:var(--ui-font-settings-group)] leading-[length:var(--ui-leading-micro)] font-medium text-on-surface-variant">Benchmark audio</h3>
         <div className="grid grid-cols-2 gap-1 rounded-lg bg-surface-container-low p-1">
           {([
             ['personal', 'Your voice', '20 verified recordings'],
@@ -433,7 +431,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
       <section>
         <div className="flex items-end justify-between gap-4 mb-3">
           <div>
-            <h3 className="settings-group-heading">Models</h3>
+            <h3 className="m-0 text-[length:var(--ui-font-settings-group)] leading-[length:var(--ui-leading-micro)] font-medium text-on-surface-variant">Models</h3>
             <p className="mt-0.5 text-xs text-on-surface-variant">
               {installedCount} installed. All tests run locally.
             </p>
@@ -492,19 +490,16 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
       </section>
 
       <section>
-        <h3 className="settings-group-heading">Test length</h3>
-        <div className="grid grid-cols-3 gap-1 p-1 bg-surface-container-low rounded-lg">
+        <h3 className="m-0 text-[length:var(--ui-font-settings-group)] leading-[length:var(--ui-leading-micro)] font-medium text-on-surface-variant">Test length</h3>
+        <div className="settings-segmented grid h-auto grid-cols-3 gap-1 rounded-lg">
           {PRESETS.map((option) => (
             <button
               type="button"
               key={option.id}
               disabled={running || microphoneBenchmarkRunning || corpusBusy}
               onClick={() => setPreset(option.id)}
-              className={`min-w-0 px-2 py-2 rounded-md transition-colors disabled:opacity-50 ${
-                preset === option.id
-                  ? 'bg-surface-container-lowest shadow-sm text-on-surface'
-                  : 'text-on-surface-variant hover:text-on-surface'
-              }`}
+              data-selected={preset === option.id}
+              className="settings-segmented-btn h-auto min-w-0 whitespace-normal px-2 py-2"
             >
               <span className="block text-xs font-semibold">{option.label}</span>
               <span className="block mt-0.5 text-[10px] whitespace-normal leading-tight">{presetDetail(INTERNAL_BENCHMARK_BUILD ? corpusSource : 'bundled', option.id)}</span>
@@ -525,23 +520,25 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
             <div className="h-1.5 overflow-hidden rounded-full bg-surface-container-high">
               <div className="h-full bg-success transition-all duration-200" style={{ width: `${progressPercent}%` }} />
             </div>
-            <button
-              type="button"
+            <div className="flex justify-end">
+            <Button
+              size="sm"
               onClick={handleCancel}
-              className="w-full rounded-lg border border-outline-variant/30 px-3 py-2 text-xs font-medium text-on-surface hover:bg-surface-container-low"
             >
               Cancel
-            </button>
+            </Button>
+            </div>
           </div>
         ) : (
-          <button
-            type="button"
+          <div className="flex justify-end">
+          <Button
+            variant="primary"
             onClick={handleRun}
             disabled={!canRun}
-            className="w-full px-4 py-2.5 text-sm font-semibold rounded-(--ui-radius-control) bg-primary shadow-(--ui-shadow-accent) text-on-primary hover:bg-primary-dim disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {INTERNAL_BENCHMARK_BUILD && corpusSource === 'personal' ? 'Run personal benchmark' : 'Run benchmark'}
-          </button>
+          </Button>
+          </div>
         )}
         {status !== 'idle' && (
           <p className="mt-2 text-xs text-primary">Finish the current recording first.</p>
@@ -560,8 +557,8 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
         )}
       </section>
 
-      <section className="border-t border-outline-variant/30 pt-5">
-        <h3 className="settings-group-heading">Report export</h3>
+      <section>
+        <h3 className="m-0 text-[length:var(--ui-font-settings-group)] leading-[length:var(--ui-leading-micro)] font-medium text-on-surface-variant">Report export</h3>
         <p className="mt-0.5 text-xs text-on-surface-variant">
           Where saved reports are written, and whether every run is saved automatically. Configure before running.
         </p>
@@ -588,10 +585,10 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
       </section>
 
       {report && !running && !microphoneBenchmarkRunning && (
-        <section className="space-y-4 border-t border-outline-variant/30 pt-5">
+        <section className="space-y-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h3 className="settings-group-heading">Results</h3>
+              <h3 className="m-0 text-[length:var(--ui-font-settings-group)] leading-[length:var(--ui-leading-micro)] font-medium text-on-surface-variant">Results</h3>
               <p className="mt-0.5 text-[11px] text-on-surface-variant">
                 {report.environment
                   ? `${report.environment.os}${report.environment.osVersion ? ` ${report.environment.osVersion}` : ''} / ${report.environment.chip ?? report.environment.hardwareModel ?? report.environment.architecture}${report.environment.memoryMb ? ` / ${Math.round(report.environment.memoryMb / 1024)} GB RAM` : ''}`

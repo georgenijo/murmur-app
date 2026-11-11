@@ -1,4 +1,5 @@
 import { ConfirmActionButton } from '../ui/ConfirmActionButton';
+import { Button } from '../ui/FormControls';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import type { AudioInputInventoryV2 } from '../../lib/audioDevices';
@@ -275,7 +276,7 @@ export function MicrophoneStartupBenchmark({
   };
 
   return (
-    <section className="space-y-3 border-y border-outline-variant/30 py-5" aria-labelledby="microphone-startup-heading">
+    <section className="space-y-3" aria-labelledby="microphone-startup-heading">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
@@ -311,24 +312,26 @@ export function MicrophoneStartupBenchmark({
           >
             <div className="h-full bg-primary transition-all duration-200" style={{ width: `${progressPercent}%` }} />
           </div>
-          <button
-            type="button"
+          <div className="flex justify-end">
+          <Button
+            size="sm"
             onClick={() => void handleCancel()}
             disabled={cancelling}
-            className="mt-3 w-full rounded-lg border border-outline-variant/30 px-3 py-2 text-xs font-medium text-on-surface hover:bg-surface-container-low disabled:opacity-50"
           >
             {cancelling ? 'Stopping safely…' : 'Cancel microphone test'}
-          </button>
+          </Button>
+          </div>
         </div>
       ) : (
-        <button
-          type="button"
+        <div className="flex justify-end">
+        <Button
+          variant="primary"
           onClick={() => void handleRun()}
           disabled={blocked !== null || !listenerReady}
-          className="w-full rounded-lg border border-primary/40 bg-primary/10 px-4 py-2.5 text-sm font-semibold text-on-surface hover:bg-primary/15 disabled:cursor-not-allowed disabled:opacity-40"
         >
           Test microphone startup
-        </button>
+        </Button>
+        </div>
       )}
       {!running && blocked && <p className="text-xs text-primary">{blocked}</p>}
       {!running && !listenerReady && !blocked && !error && (
