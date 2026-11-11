@@ -244,18 +244,19 @@ describe('SettingsPanel information architecture', () => {
     expect(list.textContent).not.toMatch(/0[1-5]/);
   });
 
-  it('uses full-width rows for text editors and keeps clipboard delivery copy with Auto-paste', async () => {
+  it('uses full-width rows with individual text-editor search targets and keeps clipboard delivery copy with Auto-paste', async () => {
     await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'text', token: 1 }));
     const editorRows = Array.from(container.querySelectorAll<HTMLButtonElement>('button.settings-setting-row'))
       .filter((button) => ['Vocabulary', 'Aliases', 'Knowledge', 'Voice commands'].some((title) => button.textContent?.startsWith(title)));
     expect(editorRows).toHaveLength(4);
     expect(editorRows.every((button) => !button.classList.contains('settings-card'))).toBe(true);
-    expect(container.querySelector('[data-setting-target="text-editors"]')).toBe(editorRows[0]);
+    expect(editorRows.map((button) => button.dataset.settingTarget)).toEqual(['vocabulary', 'aliases', 'knowledge', 'commands']);
+    expect(editorRows.every((button) => button.classList.contains('[&.settings-target-flash]:ring-2'))).toBe(true);
 
     await act(async () => renderPanel(true, DEFAULT_SETTINGS, { page: 'delivery', token: 2 }));
-    expect(container.textContent).not.toContain('Always copied to clipboard');
+    expect(container.querySelector('.settings-callout')).toBeNull();
     expect(container.querySelector('[data-setting-target="auto-paste"]')?.textContent)
-      .toContain('Transcripts are always copied to the clipboard. Also paste into the active app.');
+      .toContain('Always copied to clipboard. Also paste into active app.');
   });
 
   it('closes the commands sheet and focuses the actual disabled switch without enabling it', async () => {
@@ -1015,6 +1016,10 @@ describe('SettingsPanel information architecture', () => {
     ['overlay position', 'Calibrate overlay position', 'overlay-calibration', 'General'],
     ['paste delay', 'Paste delay', 'paste-delay', 'Delivery'],
     ['sound cues', 'Sound cues', 'sound-cues', 'Recording'],
+    ['vocabulary', 'Vocabulary', 'vocabulary', 'Text & vocabulary'],
+    ['aliases', 'Aliases', 'aliases', 'Text & vocabulary'],
+    ['knowledge', 'Knowledge', 'knowledge', 'Text & vocabulary'],
+    ['spoken replacements', 'Voice commands', 'commands', 'Text & vocabulary'],
   ])('searches for %s, opens its disclosure and preserves the target landing', async (query, title, targetId, heading) => {
     await act(async () => renderPanel(true, { ...DEFAULT_SETTINGS, autoPaste: true }));
     vi.useFakeTimers();
@@ -1062,11 +1067,11 @@ describe('SettingsPanel information architecture', () => {
     const input = container.querySelector('input[type="search"]') as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
     await act(async () => {
-      setter.call(input, 'vocabulary aliases');
+      setter.call(input, 'aliases');
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     const result = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
-      (button) => button.textContent?.includes('Vocabulary & aliases'),
+      (button) => button.textContent?.includes('Map spoken variants to canonical spellings'),
     ) as HTMLButtonElement;
     await act(async () => result.click());
     expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center' });
@@ -1397,15 +1402,25 @@ describe('effectiveAutoPaste', () => {
     expect(effectiveAutoPaste({ autoPaste: true, saveTranscript: false, saveAudio: true })).toBe(false);
   });
 
+  it.each([
+    [false, false, false, 'Always copied to clipboard. Also paste into active app.'],
+    [true, true, false, 'Always copied to clipboard. Auto-paste is paused.'],
+    [false, true, false, 'Always copied to clipboard. Auto-paste is off.'],
+    [true, false, true, 'Always copied to clipboard. Auto-paste is paused.'],
+    [false, false, true, 'Always copied to clipboard. Auto-paste is off.'],
+    [true, true, true, 'Always copied to clipboard. Auto-paste is paused.'],
+    [false, true, true, 'Always copied to clipboard. Auto-paste is off.'],
+  ])('keeps clipboard-first delivery copy in every file-saving state', (autoPaste, saveTranscript, saveAudio, description) => {
+    expect(autoPasteDeliveryDescription({ autoPaste, saveTranscript, saveAudio })).toBe(description);
+    expect(description.length).toBeLessThanOrEqual(70);
+  });
+
   it('describes paused and already-off preferences without conflating them', () => {
-    expect(autoPasteDeliveryDescription({ autoPaste: false, saveTranscript: false, saveAudio: false })).toBe(
-      'Transcripts are always copied to the clipboard. Also paste into the active app.',
-    );
-    expect(autoPasteDeliveryDescription({ autoPaste: true, saveTranscript: true, saveAudio: false })).toContain('Paused');
+    expect(autoPasteDeliveryDescription({ autoPaste: true, saveTranscript: true, saveAudio: false })).toContain('paused');
     expect(fileOutputDeliveryDescription({ autoPaste: true })).toContain('paused');
 
     expect(autoPasteDeliveryDescription({ autoPaste: false, saveTranscript: false, saveAudio: true })).toBe(
-      'Unavailable while saving to file',
+      'Always copied to clipboard. Auto-paste is off.',
     );
     expect(fileOutputDeliveryDescription({ autoPaste: false })).toBe(
       'Auto-paste stays off.',

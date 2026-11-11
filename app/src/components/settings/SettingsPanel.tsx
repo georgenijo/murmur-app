@@ -352,7 +352,10 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'ai-transcription', target: 'language', title: 'Transcription language', detail: 'Choose a fixed language or automatic detection', keywords: 'multilingual auto detect' },
   { page: 'text', target: 'punctuation', title: 'Smart punctuation', detail: 'Add punctuation and sentence capitalization', keywords: 'automatic punctuation' },
   { page: 'text', target: 'cleanup', title: 'Transcript cleanup', detail: 'Remove filler words and tidy transcript spacing', keywords: 'filler capitalization' },
-  { page: 'text', target: 'text-editors', title: 'Vocabulary & aliases', detail: 'Manage preferred words and spoken variants', keywords: 'names spelling project scan developer terms knowledge voice commands replacement' },
+  { page: 'text', target: 'vocabulary', title: 'Vocabulary', detail: 'Review identifiers retained from project scans', keywords: 'names spelling project scan developer terms' },
+  { page: 'text', target: 'aliases', title: 'Aliases', detail: 'Map spoken variants to canonical spellings', keywords: 'spoken variants canonical spellings replacement' },
+  { page: 'text', target: 'knowledge', title: 'Knowledge', detail: 'Manage corrections, terms, and snippets', keywords: 'corrections terms snippets' },
+  { page: 'text', target: 'commands', title: 'Voice commands', detail: 'Create exact spoken replacements and snippets', keywords: 'voice commands spoken replacements snippets' },
   { page: 'appearance', target: 'appearance', title: 'Appearance', detail: 'Theme, accent, contrast, and color controls', keywords: 'dark light colors palette community open vsx vscode import' },
   { page: 'general', target: 'launch-login', title: 'Launch at login', detail: 'Start Murmur when you sign in', keywords: 'startup autostart' },
   { page: 'general', target: 'overlay-calibration', title: 'Calibrate overlay position', detail: 'Fine-tune the overlay position around your Mac’s notch', keywords: 'calibrate calibration overlay position vertical notch dynamic island' },
@@ -390,11 +393,11 @@ export function effectiveAutoPaste(settings: Pick<Settings, 'autoPaste' | 'saveT
 
 export function autoPasteDeliveryDescription(settings: Pick<Settings, 'autoPaste' | 'saveTranscript' | 'saveAudio'>): string {
   if (!settings.saveTranscript && !settings.saveAudio) {
-    return 'Transcripts are always copied to the clipboard. Also paste into the active app.';
+    return 'Always copied to clipboard. Also paste into active app.';
   }
   return settings.autoPaste
-    ? 'Paused while saving to file'
-    : 'Unavailable while saving to file';
+    ? 'Always copied to clipboard. Auto-paste is paused.'
+    : 'Always copied to clipboard. Auto-paste is off.';
 }
 
 export function fileOutputDeliveryDescription(settings: Pick<Settings, 'autoPaste'>): string {
@@ -1306,9 +1309,9 @@ export const SettingsPanel = memo(function SettingsPanel({
               <button
                 key={tab}
                 type="button"
-                data-setting-target={tab === 'vocabulary' ? 'text-editors' : undefined}
+                data-setting-target={tab}
                 onClick={(event) => openEditor(tab, event.currentTarget)}
-                className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                className="settings-setting-row flex w-full items-center justify-between gap-6 rounded-lg text-left transition-colors hover:bg-surface-container-low focus:outline-none focus-visible:ring-2 focus-visible:ring-primary [&.settings-target-flash]:ring-2 [&.settings-target-flash]:ring-primary/40"
               >
                 <span className="settings-title-description">
                   <span className="block text-[length:var(--ui-font-label)] font-medium text-on-surface">{title}</span>
@@ -1609,7 +1612,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                 setTargetRequest(settingTargetRequest('voice-commands', true));
                 if (activeCat === 'customize') setCustomizationDetail('commands');
               }}
-              restoreFocus={() => editorOpenerRef.current?.isConnected ? editorOpenerRef.current : contentRef.current?.querySelector<HTMLElement>('[data-setting-target="text-editors"], [data-setting-target="app-overrides"] button, [aria-label="Modes"] [aria-pressed="true"], .settings-back-btn') ?? searchRef.current}
+              restoreFocus={() => editorOpenerRef.current?.isConnected ? editorOpenerRef.current : contentRef.current?.querySelector<HTMLElement>('[data-setting-target="vocabulary"], [data-setting-target="aliases"], [data-setting-target="knowledge"], [data-setting-target="commands"], [data-setting-target="app-overrides"] button, [aria-label="Modes"] [aria-pressed="true"], .settings-back-btn') ?? searchRef.current}
               backLabel={activeCat === 'customize' ? 'Back to Customize' : undefined}
             />
       )}
