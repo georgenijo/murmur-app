@@ -38,7 +38,19 @@ background thread does every log write, every 200 ms.
 | `system.main_thread_paste_span` | every span that overlapped a paste wait ≥ 20 ms (at most 48) | the span fields plus `recording_id` and `overlap_us` |
 
 `kind` is one of `job`, `command`, `callback`, `section`, `runloop_busy`, or
-`runloop_segment`. The paste-wait window runs from dispatch (`queued_us`) to the
+`runloop_segment`. `preview_hide` on the paste-wait event says where that recording's
+live-preview hide started relative to the paste:
+
+- `before_paste`: before the paste was queued.
+- `during_wait`: while the paste waited.
+- `after_paste`: after the paste job started.
+- `none`: no hide ran, for example because the card was never used.
+
+`pipeline.dictation_preview_presentation` carries the hide's `trigger`:
+
+- `after_paste`: queued behind delivery.
+- `no_paste`: the stop ended without delivery.
+- `recording_ended`: cancel or interruption while recording. The paste-wait window runs from dispatch (`queued_us`) to the
 start of the paste job (`started_us`).
 
 How to read the summary fields:

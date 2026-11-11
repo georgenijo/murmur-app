@@ -235,6 +235,7 @@ fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
         PARTIAL_INTERVAL
     };
     let preview: WhisperPreview = Arc::new(Mutex::new(None));
+    crate::commands::dictation_preview::note_ticker_started(recording_id);
     drop(tauri::async_runtime::spawn(async move {
         loop {
             tokio::time::sleep(interval).await;
@@ -249,7 +250,9 @@ fn spawn_dictation_partial_ticker(app: tauri::AppHandle, recording_id: u64) {
                 decode_one_dictation_partial(&tick_app, recording_id, tick_preview).await;
             }));
         }
-        crate::commands::dictation_preview::hide_for_recording(&app, recording_id);
+        // An accepted stop hands this hide to delivery, which queues it
+        // behind the paste; only cancels and interruptions hide here.
+        crate::commands::dictation_preview::hide_on_ticker_exit(&app, recording_id);
     }));
 }
 
@@ -2596,6 +2599,8 @@ fn register_shadow_measurement(
 #[derive(Default)]
 struct PipelineStopContext {
     delivery_target: Option<crate::frontmost::DeliveryTargetSnapshot>,
+    /// The live preview's hide, owned by delivery from the accepted stop.
+    preview_hide: Option<crate::commands::dictation_preview::PreviewHideOwner>,
 }
 
 /// Shared transcription pipeline: model init -> transcribe -> inject text -> set idle.
@@ -2612,7 +2617,10 @@ async fn run_transcription_pipeline(
 ) -> Result<PipelineResult, String> {
     let PipelineStopContext {
         delivery_target: stop_delivery_target,
+        preview_hide,
     } = stop;
+    // Dropped on every return without a delivery job, which hides at once.
+    let mut preview_hide = preview_hide;
     // Guard resets status to Idle on any return path (error or success),
     // but only if this recording is still the active one
     let mut _guard = IdleGuard::new(app_state, recording_id);
@@ -3082,58 +3090,71 @@ async fn run_transcription_pipeline(
         // submitted when this scope ends, after the reply or timeout.
         let paste_probe = crate::main_thread_watch::PasteProbe::new(recording_id);
         let worker_probe = paste_probe.worker();
-        app_handle
-            .run_on_main_thread(crate::main_thread_watch::job("injector.paste", move || {
-                worker_probe.started();
-                let _timing_scope = inject_timing.bind();
-                drop(inject_queue);
-                let state = injection_app_handle.state::<State>();
-                let attempt = with_current_delivery_owner_timed(
-                    &state.app_state,
-                    recording_id,
-                    false,
-                    || {
-                        let _work = dt::Timer::new(|r| &mut r.inject_work_us);
-                        injector::inject_with_destination_authorized(
-                            &text_to_inject,
-                            effective_auto_paste,
-                            paste_delay_ms,
-                            &delivery_target,
-                            &smart_destination,
-                            Some(&worker_authority),
-                        )
-                    },
-                );
-                {
-                    let _cleanup = dt::Timer::new(|r| &mut r.cleanup_us);
-                    crate::smart_destination::abort(&smart_destination, None);
-                }
-                match &attempt {
-                    Some(Ok(result)) => {
-                        if let Some(evidence) = result.verification {
-                            emit_delivery_target_verification(
+        // The preview hide is queued only after the paste job, so it can never
+        // sit ahead of the paste on the main thread.
+        crate::commands::dictation_preview::dispatch_then_hide(
+            || {
+                app_handle
+                    .run_on_main_thread(crate::main_thread_watch::job(
+                        "injector.paste",
+                        move || {
+                            worker_probe.started();
+                            let _timing_scope = inject_timing.bind();
+                            drop(inject_queue);
+                            let state = injection_app_handle.state::<State>();
+                            let attempt = with_current_delivery_owner_timed(
+                                &state.app_state,
                                 recording_id,
-                                delivery_anchor,
-                                stop_sample,
-                                evidence,
+                                false,
+                                || {
+                                    let _work = dt::Timer::new(|r| &mut r.inject_work_us);
+                                    injector::inject_with_destination_authorized(
+                                        &text_to_inject,
+                                        effective_auto_paste,
+                                        paste_delay_ms,
+                                        &delivery_target,
+                                        &smart_destination,
+                                        Some(&worker_authority),
+                                    )
+                                },
                             );
-                        }
-                    }
-                    None => emit_delivery_target_verification(
-                        recording_id,
-                        delivery_anchor,
-                        stop_sample,
-                        crate::frontmost::verify_delivery_target(&delivery_target, false),
-                    ),
-                    Some(Err(_)) => {}
-                }
-                worker_probe.finished();
-                let _ = tx.send((attempt, std::time::Instant::now()));
-            }))
-            .map_err(|e| {
-                delivery_timing.update(|r| dt::set_outcome(r, dt::Outcome::DispatchFailed));
-                format!("Failed to dispatch to main thread: {}", e)
-            })?;
+                            {
+                                let _cleanup = dt::Timer::new(|r| &mut r.cleanup_us);
+                                crate::smart_destination::abort(&smart_destination, None);
+                            }
+                            match &attempt {
+                                Some(Ok(result)) => {
+                                    if let Some(evidence) = result.verification {
+                                        emit_delivery_target_verification(
+                                            recording_id,
+                                            delivery_anchor,
+                                            stop_sample,
+                                            evidence,
+                                        );
+                                    }
+                                }
+                                None => emit_delivery_target_verification(
+                                    recording_id,
+                                    delivery_anchor,
+                                    stop_sample,
+                                    crate::frontmost::verify_delivery_target(
+                                        &delivery_target,
+                                        false,
+                                    ),
+                                ),
+                                Some(Err(_)) => {}
+                            }
+                            worker_probe.finished();
+                            let _ = tx.send((attempt, std::time::Instant::now()));
+                        },
+                    ))
+                    .map_err(|e| {
+                        delivery_timing.update(|r| dt::set_outcome(r, dt::Outcome::DispatchFailed));
+                        format!("Failed to dispatch to main thread: {}", e)
+                    })
+            },
+            preview_hide.take(),
+        )?;
         let paste_hint = if cfg!(target_os = "macos") {
             "Text is in your clipboard -- press Cmd+V to paste manually."
         } else {
@@ -5832,6 +5853,10 @@ async fn stop_native_recording_for(
             "state": "idle"
         }));
     }
+    // Owns the live preview's hide from the accepted stop: queued behind the
+    // paste by delivery, or hidden at once when this function or the pipeline
+    // returns without one.
+    let mut preview_hide = None;
     // Atomic check-and-set + generation capture in a single lock.
     let (status, rid, interrupted_capture, stop_delivery_target) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
@@ -5854,6 +5879,10 @@ async fn stop_native_recording_for(
             DictationStatus::Starting => (DictationStatus::Starting, rid, None, None),
             DictationStatus::Recovering => {
                 if let Some(capture) = audio_lifecycle::take_interrupted_dictation(rid) {
+                    preview_hide = crate::commands::dictation_preview::PreviewHideOwner::claim(
+                        &app_handle,
+                        rid,
+                    );
                     transition_dictation_status(rid, &mut dictation, DictationStatus::Processing);
                     // Freeze the native delivery target at the accepted stop
                     // transition, under the same ownership lock that commits
@@ -5872,6 +5901,10 @@ async fn stop_native_recording_for(
                 }
             }
             DictationStatus::Recording => {
+                // Before status leaves Recording: the ticker then sees this
+                // claim whenever it sees the stop, and leaves the hide to it.
+                preview_hide =
+                    crate::commands::dictation_preview::PreviewHideOwner::claim(&app_handle, rid);
                 transition_dictation_status(rid, &mut dictation, DictationStatus::Processing);
                 // Freeze the native delivery target at the accepted stop
                 // transition, under the same ownership lock that commits
@@ -6101,6 +6134,7 @@ async fn stop_native_recording_for(
         Arc::clone(&context),
         PipelineStopContext {
             delivery_target: stop_delivery_target,
+            preview_hide: preview_hide.take(),
         },
     )
     .await;

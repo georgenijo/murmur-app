@@ -580,6 +580,10 @@ fn sanitize_main_thread_watch_event(data: &mut serde_json::Map<String, serde_jso
                 | "span_count"
                 | "spans_logged" => number,
                 "slow" | "spans_truncated" => boolean,
+                "preview_hide" => matches!(
+                    value.as_str(),
+                    Some("none" | "before_paste" | "during_wait" | "after_paste")
+                ),
                 _ => false,
             },
             _ => false,
@@ -603,6 +607,9 @@ fn sanitize_dictation_preview_presentation_event(
         "outcome" => value.as_str().is_some_and(|value| {
             matches!(value, "shown" | "show_failed" | "hidden" | "hide_failed")
         }),
+        "trigger" => value
+            .as_str()
+            .is_some_and(|value| matches!(value, "after_paste" | "no_paste" | "recording_ended")),
         _ => false,
     });
 }
@@ -3828,6 +3835,21 @@ mod tests {
                 assert_eq!(data["recording_id"], 9);
                 assert_eq!(data["outcome"], outcome);
                 assert_eq!(data.as_object().unwrap().len(), 3);
+                let mut hide = serde_json::json!({
+                    "event_code": "pipeline.dictation_preview_presentation",
+                    "recording_id": 9,
+                    "outcome": outcome,
+                    "trigger": "after_paste",
+                });
+                sanitize_event_data("pipeline", &mut hide, debug_build);
+                assert_eq!(hide["trigger"], "after_paste");
+                let mut free_trigger = serde_json::json!({
+                    "event_code": "pipeline.dictation_preview_presentation",
+                    "recording_id": 9,
+                    "trigger": "SENTINEL",
+                });
+                sanitize_event_data("pipeline", &mut free_trigger, debug_build);
+                assert!(free_trigger.get("trigger").is_none());
                 assert!(!serde_json::to_string(&data).unwrap().contains("SENTINEL"));
                 assert!(!serde_json::to_string(&data).unwrap().contains("private"));
             }
@@ -3882,6 +3904,7 @@ mod tests {
                 "longest_label": "preview.hide",
                 "longest_kind": "job",
                 "event_loop_drain_us": 70_000,
+                "preview_hide": "after_paste",
                 "text": "SENTINEL_TRANSCRIPT"
             });
             sanitize_event_data("pipeline", &mut wait, debug_build);
@@ -3889,7 +3912,8 @@ mod tests {
             assert_eq!(wait["longest_label"], "preview.hide");
             assert_eq!(wait["event_loop_drain_us"], 70_000);
             assert!(!serde_json::to_string(&wait).unwrap().contains("SENTINEL"));
-            assert_eq!(wait.as_object().unwrap().len(), 8);
+            assert_eq!(wait["preview_hide"], "after_paste");
+            assert_eq!(wait.as_object().unwrap().len(), 9);
             assert_eq!(
                 sanitized_summary("pipeline", Some("free text".into()), &wait, debug_build),
                 "pipeline.main_thread_paste_wait"

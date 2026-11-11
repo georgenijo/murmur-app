@@ -157,6 +157,8 @@ static PENDING_PASTES: Mutex<Vec<Arc<PasteState>>> = Mutex::new(Vec::new());
 /// Start of the run-loop busy span in progress (µs since epoch), or 0 while
 /// the main thread is waiting. Read by the reporter for an unclosed span.
 static BUSY_SINCE_US: AtomicU64 = AtomicU64::new(0);
+/// The last few live-preview hides that ran: (recording id, start µs).
+static PREVIEW_HIDES: Mutex<[(u64, u64); 8]> = Mutex::new([(0, 0); 8]);
 
 thread_local! {
     static IS_MAIN: Cell<bool> = const { Cell::new(false) };
@@ -360,6 +362,51 @@ pub(crate) fn is_safe_label(value: &str) -> bool {
         && value
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.')
+}
+
+/// Record that the live-preview hide for `recording_id` started now. Called
+/// on the main thread inside the hide job; overwrites the oldest entry.
+pub(crate) fn note_preview_hide(recording_id: u64) {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
+    let start = now_us();
+    let mut hides = PREVIEW_HIDES.lock().unwrap_or_else(|p| p.into_inner());
+    let slot = hides
+        .iter()
+        .position(|(id, _)| *id == recording_id)
+        .unwrap_or_else(|| {
+            hides
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, (_, at))| *at)
+                .map(|(index, _)| index)
+                .unwrap_or(0)
+        });
+    hides[slot] = (recording_id, start);
+}
+
+/// Where the preview hide for this paste ran: before the paste was queued,
+/// while it waited, after it started, or not at all.
+fn preview_hide_order(recording_id: u64, queued_us: u64, started_us: u64) -> &'static str {
+    let hides = PREVIEW_HIDES.lock().unwrap_or_else(|p| p.into_inner());
+    classify_preview_hide(
+        hides
+            .iter()
+            .find(|(id, _)| *id == recording_id)
+            .map(|(_, at)| *at),
+        queued_us,
+        started_us,
+    )
+}
+
+fn classify_preview_hide(hide_us: Option<u64>, queued_us: u64, started_us: u64) -> &'static str {
+    match hide_us {
+        None => "none",
+        Some(at) if at < queued_us => "before_paste",
+        Some(at) if started_us == 0 || at < started_us => "during_wait",
+        Some(_) => "after_paste",
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -619,6 +666,7 @@ impl Reporter {
             span_count = summary.span_count,
             spans_logged = overlapping.len() as u64,
             spans_truncated = truncated,
+            preview_hide = preview_hide_order(paste.recording_id, queued, started),
             "main-thread paste wait"
         );
         for (span, overlap) in overlapping {
@@ -1086,6 +1134,28 @@ mod tests {
         );
         assert_eq!(summary.busy_us, 0);
         assert_eq!(summary.longest_label, "none");
+    }
+
+    #[test]
+    fn preview_hide_order_is_relative_to_the_paste_window() {
+        assert_eq!(classify_preview_hide(None, 10, 20), "none");
+        assert_eq!(classify_preview_hide(Some(5), 10, 20), "before_paste");
+        assert_eq!(classify_preview_hide(Some(15), 10, 20), "during_wait");
+        assert_eq!(classify_preview_hide(Some(15), 10, 0), "during_wait");
+        assert_eq!(classify_preview_hide(Some(20), 10, 20), "after_paste");
+    }
+
+    #[test]
+    fn preview_hides_keep_the_latest_per_recording() {
+        let _guard = enable_for_test();
+        note_preview_hide(91);
+        note_preview_hide(91);
+        for id in 100..110 {
+            note_preview_hide(id);
+        }
+        let hides = PREVIEW_HIDES.lock().unwrap();
+        assert!(hides.iter().any(|(id, _)| *id == 109));
+        assert_eq!(hides.iter().filter(|(id, _)| *id == 109).count(), 1);
     }
 
     #[test]
