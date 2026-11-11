@@ -696,6 +696,24 @@ test('appearance matches the compact collection-card layout', async ({ page }) =
   await expect(catppuccinCard.locator('.settings-theme-variant-check')).toHaveCount(1);
   await expect(catppuccinCard.locator('.settings-theme-variant-assigned')).toHaveCount(1);
   await expect(catppuccinCard.locator('.settings-theme-caption, .settings-theme-mode-status')).toHaveCount(0);
+  const previewGeometry = await catppuccinCard.evaluate((card) => {
+    const previews = card.querySelector('.settings-theme-previews')!.getBoundingClientRect();
+    const footer = card.querySelector('.settings-theme-footer')!.getBoundingClientRect();
+    const variants = Array.from(card.querySelectorAll('.settings-theme-preview'))
+      .map((preview) => preview.getBoundingClientRect());
+    return {
+      previewsLeft: previews.left,
+      previewsRight: previews.right,
+      footerLeft: footer.left,
+      footerRight: footer.right,
+      firstPreviewLeft: variants[0]!.left,
+      lastPreviewRight: variants.at(-1)!.right,
+    };
+  });
+  expect(Math.abs(previewGeometry.previewsLeft - previewGeometry.footerLeft)).toBeLessThanOrEqual(1);
+  expect(Math.abs(previewGeometry.previewsRight - previewGeometry.footerRight)).toBeLessThanOrEqual(1);
+  expect(Math.abs(previewGeometry.firstPreviewLeft - previewGeometry.footerLeft)).toBeLessThanOrEqual(1);
+  expect(Math.abs(previewGeometry.lastPreviewRight - previewGeometry.footerRight)).toBeLessThanOrEqual(1);
   const themeName = catppuccinCard.getByRole('button', { name: 'Use Catppuccin for VSCode theme' });
   await expect(themeName).toHaveAttribute('title', 'Catppuccin for VSCode');
   const themeNameLabel = themeName.locator('.settings-theme-name-label');
