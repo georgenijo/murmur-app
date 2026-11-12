@@ -54,8 +54,7 @@ active, until its exact native download owner confirms cancellation or completio
    standard-function-key setting and notes that Murmur does not suppress the
    key's normal action. Selecting Fn / Globe explains key-down capture and the
    "Press 🌐 key to" → "Do Nothing" system setting.
-8. **Done** — live summary of the checks plus a quick-start card derived from
-   the selected recording mode and trigger key.
+8. **Done** — live summary of the checks.
 
 Permission rows also expose an inline **Allow…** action while access is missing.
 It uses the same native handler as the footer: microphone requests TCC unless

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { expectConcentricSegments } from './segmented-geometry';
 
 for (const appearance of ['light', 'dark'] as const) {
   for (const width of [1100, 840]) {
@@ -33,7 +34,7 @@ for (const appearance of ['light', 'dark'] as const) {
       await page.goto(`/visual-fixtures.html?state=settings-appearance&appearance=${appearance}`);
       await expect(page.locator('.settings-appearance-mode')).toHaveCSS('border-radius', '12px');
       await expect(page.locator('.settings-segmented')).toHaveCSS('height', '32px');
-      await expect(page.locator('.settings-segmented-btn').first()).toHaveCSS('border-radius', '8px');
+      await expectConcentricSegments(page.locator('.settings-segmented').first());
       const initialShowing = page.locator('.settings-theme-variant[data-showing-now]');
       await expect(initialShowing).toHaveCount(1);
       const currentMode = /for (light|dark) mode/.exec(await initialShowing.getAttribute('aria-label') ?? '')?.[1] as 'light' | 'dark';

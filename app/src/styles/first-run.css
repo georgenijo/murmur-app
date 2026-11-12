@@ -50,6 +50,8 @@
 .onboarding-segmented { display: flex; background: var(--ui-tint-sunken); }
 .onboarding-segmented button { flex: 1; color: var(--murmur-on-surface-variant); }
 .onboarding-segmented button[data-selected='true'] { color: var(--murmur-on-surface); }
+/* `.onboarding-flow button` sets a flat 8px radius; keep the shared concentric segment radius. */
+.onboarding-flow .onboarding-segmented .settings-segmented-btn { border-radius: calc(var(--ui-segmented-radius) - var(--ui-segmented-inset)); }
 .onboarding-summary { overflow: hidden; }
 .onboarding-summary-row { display: grid; grid-template-columns: 16px 100px 1fr; gap: 8px; padding: 8px 12px; font-size: var(--ui-font-caption); color: var(--murmur-on-surface-variant); }
 .onboarding-summary-row + .onboarding-summary-row { border-top: 1px solid var(--ui-hairline); }

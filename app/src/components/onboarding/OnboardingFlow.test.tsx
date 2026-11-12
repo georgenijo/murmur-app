@@ -482,7 +482,8 @@ describe('OnboardingFlow', () => {
     expect(container.textContent).toContain("does not suppress the key's normal system or app action");
 
     await clickButton('Continue');
-    expect(container.querySelector('kbd')?.textContent).toBe('F12');
+    expect(container.textContent).toContain("You're all set");
+    expect(container.textContent).not.toContain('Try it out');
     await clickButton('Start using Murmur');
     expect(onComplete).toHaveBeenCalledWith('base.en', 'hold_down', 'f12');
   });
