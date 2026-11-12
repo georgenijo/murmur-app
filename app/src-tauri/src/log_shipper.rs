@@ -662,6 +662,12 @@ mod tests {
             "\n",
             r#"{"timestamp":"t","stream":"pipeline","level":"info","summary":"Structured event","data":{"event_code":"pipeline.dictation_preview_presentation","recording_id":4,"outcome":"hidden","trigger":"after_paste"}}"#,
             "\n",
+            r#"{"timestamp":"t","stream":"system","level":"info","summary":"system.main_thread_stack","data":{"event_code":"system.main_thread_stack","sample":1,"busy_us":61000,"frame_count":2,"frames":"AppKit!-[NSView layout];?!?","held_us":9,"sampling_stopped":false}}"#,
+            "\n",
+            r#"{"timestamp":"t","stream":"system","level":"info","summary":"system.main_thread_rates","data":{"event_code":"system.main_thread_rates","window_us":1000123,"audio_level_emits":33,"ipc_invokes":60}}"#,
+            "\n",
+            r#"{"timestamp":"t","stream":"pipeline","level":"info","summary":"pipeline.dictation_stage_gaps","data":{"event_code":"pipeline.dictation_stage_gaps","recording_id":4,"total_us":160000,"unattributed_us":700,"vad_us":9000}}"#,
+            "\n",
         );
         assert_eq!(shippable_payload(lines.as_bytes()), lines.as_bytes());
     }

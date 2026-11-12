@@ -3073,6 +3073,7 @@ fn run_backend(
                             );
                         } else {
                             let _ = handle.emit("audio-level", compute_rms(&pcm.samples));
+                            crate::main_thread_watch::count_audio_level_emit();
                         }
                     }
                     last_level_emit = Instant::now();

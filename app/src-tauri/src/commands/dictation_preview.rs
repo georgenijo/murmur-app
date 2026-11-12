@@ -97,10 +97,12 @@ pub(crate) fn follow_overlay_if_visible(app: &tauri::AppHandle) {
     if !window.is_visible().unwrap_or(false) {
         return;
     }
-    if let Err(error) = POPOVER.reposition(app, frame(app, notch_height(app))) {
-        tracing::warn!(target: "system", "dictation preview could not follow overlay: {}", error);
-    }
-    refit_material(app);
+    crate::main_thread_watch::section("preview.follow_overlay", || {
+        if let Err(error) = POPOVER.reposition(app, frame(app, notch_height(app))) {
+            tracing::warn!(target: "system", "dictation preview could not follow overlay: {}", error);
+        }
+        refit_material(app);
+    });
 }
 
 #[derive(Clone, Copy)]

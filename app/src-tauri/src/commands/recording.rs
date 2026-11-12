@@ -1143,6 +1143,117 @@ pub(crate) struct PipelineTimings {
     /// Clipboard write (and paste, when enabled) confirmed; the
     /// `releaseToPaste` endpoint exists only then (#826).
     pub delivery_confirmed: bool,
+    /// Sub-millisecond marks between the named stages (A4).
+    pub gaps: StageGaps,
+}
+
+/// Content-free microsecond marks along the stop path, so the time between
+/// the named stages and `totalProcessing` is accounted for. The segments are
+/// disjoint and ordered; `pipeline.dictation_stage_gaps` reports each and the
+/// remainder (`unattributed_us`) against the exact total.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct StageGaps {
+    /// Set when `run_transcription_pipeline` starts and when it returns.
+    pub entered_at: Option<std::time::Instant>,
+    pub ended_at: Option<std::time::Instant>,
+    /// Entry to the VAD stage: signal level logging and the cancel check.
+    pub prologue_us: u64,
+    /// The whole VAD stage, including the `spawn_blocking` hop.
+    pub vad_us: u64,
+    /// Inside `vad_us`: time the blocking pool took to start the VAD closure.
+    pub vad_blocking_queue_us: u64,
+    /// VAD end to the backend request: memory read and stage bookkeeping.
+    pub pre_backend_us: u64,
+    /// The backend request to the start of decode: diarization reservation,
+    /// lock wait, and any model load.
+    pub backend_acquire_us: u64,
+    /// Inside `backend_acquire_us`, at millisecond resolution.
+    pub backend_model_queue_us: u64,
+    pub backend_model_load_us: u64,
+    pub backend_decode_us: u64,
+    /// End of decode to the backend request returning: lease release.
+    pub backend_release_us: u64,
+    /// Backend return to the start of the transform stage.
+    pub transform_setup_us: u64,
+    pub transform_us: u64,
+    /// Transform end to the start of delivery: history, file output.
+    pub post_transform_us: u64,
+    /// Delivery: clipboard write, paste, and their bookkeeping.
+    pub delivery_us: u64,
+}
+
+fn micros(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX)
+}
+
+fn micros_between(earlier: std::time::Instant, later: std::time::Instant) -> u64 {
+    u64::try_from(later.saturating_duration_since(earlier).as_micros()).unwrap_or(u64::MAX)
+}
+
+/// What the stop command measured itself, around the pipeline.
+struct StopPathMarks {
+    t_total: std::time::Instant,
+    capture_finalization_us: u64,
+    handoff_started_at: std::time::Instant,
+    pipeline_returned_at: std::time::Instant,
+    idle_status_emit_us: u64,
+    idle_block_ended_at: std::time::Instant,
+    delivered_at: std::time::Instant,
+}
+
+fn emit_dictation_stage_gaps(recording_id: u64, gaps: &StageGaps, marks: &StopPathMarks) {
+    let (Some(entered_at), Some(ended_at)) = (gaps.entered_at, gaps.ended_at) else {
+        return;
+    };
+    let total_us = micros_between(marks.t_total, marks.delivered_at);
+    let handoff_us = micros_between(marks.handoff_started_at, entered_at);
+    let pipeline_return_us = micros_between(ended_at, marks.pipeline_returned_at);
+    let tail_us = micros_between(marks.idle_block_ended_at, marks.delivered_at);
+    let accounted_us = [
+        marks.capture_finalization_us,
+        handoff_us,
+        gaps.prologue_us,
+        gaps.vad_us,
+        gaps.pre_backend_us,
+        gaps.backend_acquire_us,
+        gaps.backend_decode_us,
+        gaps.backend_release_us,
+        gaps.transform_setup_us,
+        gaps.transform_us,
+        gaps.post_transform_us,
+        gaps.delivery_us,
+        pipeline_return_us,
+        marks.idle_status_emit_us,
+        tail_us,
+    ]
+    .iter()
+    .fold(0u64, |sum, part| sum.saturating_add(*part));
+    tracing::info!(
+        target: "pipeline",
+        event_code = "pipeline.dictation_stage_gaps",
+        recording_id,
+        total_us,
+        unattributed_us = total_us.saturating_sub(accounted_us),
+        capture_finalization_us = marks.capture_finalization_us,
+        handoff_us,
+        pipeline_prologue_us = gaps.prologue_us,
+        vad_us = gaps.vad_us,
+        vad_blocking_queue_us = gaps.vad_blocking_queue_us,
+        pre_backend_us = gaps.pre_backend_us,
+        backend_acquire_us = gaps.backend_acquire_us,
+        backend_model_queue_us = gaps.backend_model_queue_us,
+        backend_model_load_us = gaps.backend_model_load_us,
+        backend_decode_us = gaps.backend_decode_us,
+        backend_release_us = gaps.backend_release_us,
+        transform_setup_us = gaps.transform_setup_us,
+        transform_us = gaps.transform_us,
+        post_transform_us = gaps.post_transform_us,
+        delivery_us = gaps.delivery_us,
+        pipeline_return_us,
+        idle_status_emit_us = marks.idle_status_emit_us,
+        tail_us,
+        "dictation stop-path stage gaps"
+    );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2569,6 +2680,11 @@ async fn run_transcription_pipeline(
     } = stop;
     // Dropped on every return without a delivery job, which hides at once.
     let mut preview_hide = preview_hide;
+    let t_pipeline = std::time::Instant::now();
+    let mut gaps = StageGaps {
+        entered_at: Some(t_pipeline),
+        ..StageGaps::default()
+    };
     // Guard resets status to Idle on any return path (error or success),
     // but only if this recording is still the active one
     let mut _guard = IdleGuard::new(app_state, recording_id);
@@ -2608,6 +2724,7 @@ async fn run_transcription_pipeline(
     // the authoritative full-buffer VAD + inference pass after recording stops.
     performance_guard.enter(PerformanceStageV1::Vad);
     let t_vad = std::time::Instant::now();
+    gaps.prologue_us = micros_between(t_pipeline, t_vad);
     let (samples_for_transcription, vad_trimmed) = if !vad::is_enabled(
         transcription.vad_sensitivity,
     ) {
@@ -2619,11 +2736,22 @@ async fn run_transcription_pipeline(
             Some(vad_path) if vad_path.exists() => {
                 let vad_path_str = vad_path.to_string_lossy().to_string();
                 let samples_owned = samples.to_vec();
-                let vad_result = tokio::task::spawn_blocking(move || {
-                    vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold)
+                let vad_queued_at = std::time::Instant::now();
+                let vad_result = match tokio::task::spawn_blocking(move || {
+                    let queue_us = micros(vad_queued_at);
+                    (
+                        vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold),
+                        queue_us,
+                    )
                 })
                 .await
-                .unwrap_or_else(|e| Err(format!("VAD task panicked: {}", e)));
+                {
+                    Ok((result, queue_us)) => {
+                        gaps.vad_blocking_queue_us = queue_us;
+                        result
+                    }
+                    Err(e) => Err(format!("VAD task panicked: {}", e)),
+                };
 
                 match vad_result {
                     Ok(vad::VadResult::NoSpeech) => {
@@ -2667,6 +2795,8 @@ async fn run_transcription_pipeline(
         }
     };
     let vad_ms = t_vad.elapsed().as_millis() as u64;
+    gaps.vad_us = micros(t_vad);
+    let t_after_vad = std::time::Instant::now();
 
     if app_state.is_cancelled(recording_id) {
         tracing::info!(target: "pipeline", "cancelled before transcription (recording_id={})", recording_id);
@@ -2686,12 +2816,16 @@ async fn run_transcription_pipeline(
     performance_guard.enter(PerformanceStageV1::InferenceDecode);
     let t_transcribe = std::time::Instant::now();
     let mut decode_ms = 0;
+    let t_backend = std::time::Instant::now();
+    gaps.pre_backend_us = micros_between(t_after_vad, t_backend);
+    let mut decode_ended_at = None;
     let (transcription_attempt, load_report) = app_state.model_runtime.with_ready_backend(
         Some(app_handle),
         &transcription.model_name,
         PreparationReason::Pipeline,
         |backend| {
             let decode_started = std::time::Instant::now();
+            gaps.backend_acquire_us = micros_between(t_backend, decode_started);
             // Take only after acquiring the backend, so a preview already in
             // flight has either finished or still owns its lease. In the latter
             // case discard reuse rather than racing a late decode failure.
@@ -2719,9 +2853,18 @@ async fn run_transcription_pipeline(
                 }),
             );
             decode_ms = decode_started.elapsed().as_millis() as u64;
+            let decode_ended = std::time::Instant::now();
+            gaps.backend_decode_us = micros_between(decode_started, decode_ended);
+            decode_ended_at = Some(decode_ended);
             result
         },
     )?;
+    let t_after_backend = std::time::Instant::now();
+    gaps.backend_release_us = decode_ended_at
+        .map(|ended| micros_between(ended, t_after_backend))
+        .unwrap_or(0);
+    gaps.backend_model_queue_us = load_report.lock_wait_ms.saturating_mul(1_000);
+    gaps.backend_model_load_us = load_report.load_ms.saturating_mul(1_000);
     let backend_empty_error = transcription_attempt.empty_error;
     let text = transcription_attempt.text;
     let model_load_ms = load_report.load_ms;
@@ -2775,6 +2918,7 @@ async fn run_transcription_pipeline(
         homophone_engine: context.homophone_engine.clone(),
     };
     let transform_started = std::time::Instant::now();
+    gaps.transform_setup_us = micros_between(t_after_backend, transform_started);
     performance_guard.enter(PerformanceStageV1::TranscriptTransform);
     let transformed = crate::transcript_transform::transform_transcript(
         text,
@@ -2783,6 +2927,8 @@ async fn run_transcription_pipeline(
     )
     .map_err(|error| error.to_string())?;
     let transform_ms = transform_started.elapsed().as_millis() as u64;
+    let transform_ended_at = std::time::Instant::now();
+    gaps.transform_us = micros_between(transform_started, transform_ended_at);
     tracing::info!(
         target: "pipeline",
         changed = transformed.was_changed(),
@@ -2854,6 +3000,7 @@ async fn run_transcription_pipeline(
 
     // Phase: Text injection (clipboard write + optional verified native paste)
     let t_inject = std::time::Instant::now();
+    gaps.post_transform_us = micros_between(transform_ended_at, t_inject);
     performance_guard.enter(PerformanceStageV1::ClipboardPaste);
     let delivery_timing = dt::DeliveryTiming::new(t_inject);
     performance_guard.set_delivery(delivery_timing.clone());
@@ -3287,6 +3434,7 @@ async fn run_transcription_pipeline(
         delivery_timing.update(|r| dt::set_outcome(r, dt::Outcome::NoText));
     }
     let paste_ms = t_inject.elapsed().as_millis() as u64;
+    gaps.delivery_us = micros(t_inject);
     tracing::info!(target: "pipeline", "inject (clipboard + paste): {:?}", t_inject.elapsed());
 
     timings.correction_ms = correction_ms;
@@ -3294,6 +3442,8 @@ async fn run_transcription_pipeline(
     timings.transform_stages = transform_stages;
     timings.file_output_ms = file_output_ms;
     timings.paste_ms = paste_ms;
+    gaps.ended_at = Some(std::time::Instant::now());
+    timings.gaps = gaps;
     let terminal = if text.trim().is_empty() {
         PipelineTerminal::NoSpeech(backend_empty_error.unwrap_or(DictationErrorCode::EmptyOutput))
     } else {
@@ -5643,10 +5793,12 @@ async fn stop_native_recording_for(
         "dictation capture handed off for processing"
     );
     tracing::info!(target: "pipeline", "audio teardown + resample: {:?}", t_total.elapsed());
+    let capture_finalization_us = micros(t_total);
     performance_guard.record(StageTimingV1::measured(
         PerformanceStageV1::CaptureFinalization,
         t_total.elapsed().as_millis() as u64,
     ));
+    let handoff_started_at = std::time::Instant::now();
 
     if samples.is_empty() {
         emit_dictation_terminal(
@@ -5728,6 +5880,7 @@ async fn stop_native_recording_for(
         },
     )
     .await;
+    let pipeline_returned_at = std::time::Instant::now();
     // Only emit idle if this recording wasn't cancelled/superseded by a new one.
     // Hold the dictation lock across the check+emit to prevent a concurrent
     // start from interleaving a "recording" status between our check and emit.
@@ -5738,6 +5891,8 @@ async fn stop_native_recording_for(
             let _ = app_handle.emit("recording-status-changed", "idle");
         }
     }
+    let idle_block_ended_at = std::time::Instant::now();
+    let idle_status_emit_us = micros_between(pipeline_returned_at, idle_block_ended_at);
     let pipeline = match pipeline_result {
         Ok(result) => result,
         Err(error) => {
@@ -5819,6 +5974,19 @@ async fn stop_native_recording_for(
         model_name: &model_name,
         backend_name: &backend_name,
     });
+    emit_dictation_stage_gaps(
+        rid,
+        &timings.gaps,
+        &StopPathMarks {
+            t_total,
+            capture_finalization_us,
+            handoff_started_at,
+            pipeline_returned_at,
+            idle_status_emit_us,
+            idle_block_ended_at,
+            delivered_at,
+        },
+    );
 
     let outcome = match pipeline.terminal {
         PipelineTerminal::Success => RunOutcomeV1::Success,
