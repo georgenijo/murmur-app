@@ -180,6 +180,38 @@ describe('useAutoUpdater presentation state', () => {
     expect(install).toHaveBeenCalledOnce();
   });
 
+  it('tells the backend while the update downloads and installs, and clears it even when they fail', async () => {
+    let flag = false;
+    const calls: boolean[] = [];
+    mocks.invoke.mockImplementation(async (command: string, args?: { active?: boolean }) => {
+      if (command === 'set_update_install_in_progress') {
+        flag = Boolean(args?.active);
+        calls.push(flag);
+      }
+      return { path: null, result: null };
+    });
+    const seenDuringDownload: boolean[] = [];
+    const seenDuringInstall: boolean[] = [];
+    const download = vi.fn().mockImplementation(async () => { seenDuringDownload.push(flag); });
+    const install = vi.fn().mockImplementation(async () => {
+      seenDuringInstall.push(flag);
+      throw new Error('install failed');
+    });
+    mocks.check.mockResolvedValueOnce({
+      available: true, version: '0.23.0', body: '', rawJson: {}, download, install,
+    });
+    await act(async () => current.checkForUpdate());
+    // Before anything runs the flag is off.
+    expect(flag).toBe(false);
+    await act(async () => current.startDownload());
+    expect(seenDuringDownload).toEqual([true]);
+    expect(flag).toBe(false);
+    await act(async () => current.restartUpdate());
+    expect(seenDuringInstall).toEqual([true]);
+    expect(flag).toBe(false);
+    expect(calls).toEqual([true, false, true, false]);
+  });
+
   async function relaunchWithPendingUpdate(version: string) {
     await act(async () => root.unmount());
     localStorage.setItem('pending-update-release-notes', JSON.stringify({

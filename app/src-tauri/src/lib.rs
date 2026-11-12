@@ -200,6 +200,33 @@ pub(crate) struct State {
     pub(crate) overlay_layout: Mutex<commands::overlay::OverlayLayout>,
 }
 
+#[cfg(test)]
+impl State {
+    /// A default `State` for tests of code that reads shared app state.
+    pub(crate) fn for_test() -> Self {
+        State {
+            app_state: AppState::default(),
+            benchmark: std::sync::Arc::new(benchmark::BenchmarkCoordinator::new()),
+            microphone_startup_benchmark:
+                commands::microphone_startup_benchmark::MicrophoneStartupBenchmarkState::default(),
+            #[cfg(feature = "internal-benchmark")]
+            corpus: commands::corpus::CorpusRecorderState::default(),
+            meeting_store: meeting_store::MeetingStore::default(),
+            meetings: meeting_capture::MeetingCoordinator::default(),
+            meeting_suggestions: meeting_suggestions::MeetingSuggestions::default(),
+            delivery_recovery: delivery_recovery::DeliveryRecoveryState::default(),
+            capture_health: capture_health::CaptureHealthDiagnostics::default(),
+            performance: performance_metrics::PerformanceMetrics::default(),
+            dictation_diagnostics: dictation_diagnostics::DictationDiagnostics::default(),
+            notch_info: Mutex::new(None),
+            display_snapshot: Mutex::new(None),
+            overlay_calibration: Mutex::new(commands::overlay::OverlayCalibrationState::default()),
+            overlay_frame: Mutex::new(None),
+            overlay_layout: Mutex::new(commands::overlay::OverlayLayout::default()),
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     launch::process_start();
@@ -261,6 +288,9 @@ pub fn run() {
             commands::permissions::open_system_preferences,
             commands::permissions::open_system_audio_preferences,
             commands::permissions::check_accessibility_permission,
+            commands::permissions::check_accessibility_restart_needed,
+            commands::permissions::restart_murmur_for_permission,
+            commands::permissions::set_update_install_in_progress,
             commands::permissions::request_accessibility_permission,
             commands::permissions::reset_accessibility_permission,
             commands::permissions::request_microphone_permission,
@@ -452,6 +482,11 @@ pub fn run() {
             commands::dictation_preview::apply_initial_size(app.handle());
 
             let app_data_root = app.path().app_data_dir()?;
+            #[cfg(target_os = "macos")]
+            {
+                commands::permissions::register_app_handle(app.handle().clone());
+                commands::permissions::resume_accessibility_request_after_relaunch(&app_data_root);
+            }
             if legacy_query_cleanup::cleanup(&app_data_root).is_err() {
                 tracing::warn!(target: "system", "legacy conversation cleanup failed");
             }

@@ -2309,6 +2309,16 @@ fn start_permission(requires_existing_grant: bool, status: &str) -> StartPermiss
     }
 }
 
+/// An attempt that waits on the system prompt requests access from this process
+/// first. The grant must be recorded here: a prompt raised only by the capture
+/// helper leaves this process's status stale at notDetermined, which the runtime
+/// check then reads as a lost grant and cancels a working recording.
+fn own_prompt_when_awaiting(permission: StartPermission) {
+    if permission == StartPermission::AwaitPrompt {
+        crate::commands::permissions::own_expected_microphone_prompt();
+    }
+}
+
 /// Whether a running attempt must end because the grant is no longer in
 /// force. Key-down capture treats a TCC reset as lost at once instead of
 /// waiting on a prompt; a transient "unknown" never ends an adopted dictation.
@@ -2398,6 +2408,7 @@ fn run_backend(
             active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
         };
     }
+    own_prompt_when_awaiting(permission);
     if permission == StartPermission::AwaitPrompt {
         begin_permission_prompt_pause(
             &mut permission_prompt_started,
@@ -4809,6 +4820,66 @@ mod tests {
             );
             assert!(shared.lock().unwrap().is_empty());
         }
+    }
+
+    #[test]
+    fn the_capture_attempt_requests_access_from_this_process_only_when_it_awaits_the_prompt() {
+        use crate::audio_lifecycle::AudioOwner;
+        use crate::commands::permissions::owned_prompt_requests_for_test as owned;
+        // Through the real call site: an ordinary dictation attempt, then a
+        // speculative key-down attempt, under each authorization status. The
+        // helper binary is absent in the test executable's directory, so an
+        // attempt that gets past the permission check ends as host-unavailable
+        // without opening a device.
+        for (owner, status, expected_requests) in [
+            (AudioOwner::Dictation(51), "notDetermined", 1),
+            (AudioOwner::Dictation(52), "granted", 0),
+            (AudioOwner::Dictation(53), "denied", 0),
+            (AudioOwner::Dictation(54), "unknown", 0),
+            (AudioOwner::Speculative(55), "notDetermined", 0),
+        ] {
+            crate::commands::permissions::override_microphone_permission_status_for_test(Some(
+                status,
+            ));
+            let before = owned();
+            let (_commands, receiver) = mpsc::channel();
+            let events = AudioWorkerEventSender::new(|_event| Ok(()));
+            let shared = Arc::new(Mutex::new(CaptureSamples::default()));
+            let _ = run_backend(
+                owner,
+                CaptureBackend::Auhal,
+                None,
+                AttemptContext {
+                    is_primary: true,
+                    memo_promoted: false,
+                    resolution_pass: 1,
+                    backend_attempt: 1,
+                },
+                &receiver,
+                &WorkerWake::default(),
+                &shared,
+                &Arc::new(AtomicBool::new(false)),
+                &None,
+                &events,
+                None,
+                None,
+            );
+            crate::commands::permissions::override_microphone_permission_status_for_test(None);
+            assert_eq!(
+                owned() - before,
+                expected_requests,
+                "{owner:?} with status {status}"
+            );
+        }
+        // The decision itself: only an ordinary start with no decision awaits it.
+        assert_eq!(
+            start_permission(true, "notDetermined"),
+            StartPermission::Refuse
+        );
+        assert_eq!(
+            start_permission(false, "notDetermined"),
+            StartPermission::AwaitPrompt
+        );
     }
 
     #[test]

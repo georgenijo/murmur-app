@@ -233,12 +233,53 @@ export async function transcribeFile(filePath: string): Promise<DictationRespons
 }
 
 /**
- * Reset this app's stale macOS Accessibility TCC entry, then reopen the
- * Accessibility settings pane. Rejects if the reset fails (see Rust
- * `reset_accessibility_permission`).
+ * What an Accessibility request did. Exactly one surface opens:
+ * - `granted`: already trusted, nothing shown.
+ * - `prompted`: the macOS dialog is showing; its own button opens System Settings.
+ * - `opened_settings`: no dialog appeared, so the Settings pane was opened.
+ * - `restarting`: a stale entry (or a reset) needs a new process for macOS to
+ *   list Murmur again; Murmur restarts when idle and asks once it is back.
+ * - `restart_deferred`: same stale entry, but Murmur is recording, in a meeting,
+ *   or transcribing, so it only opened the pane and did not restart.
+ * - `restart_pending`: the reset is done and Murmur restarts as soon as the
+ *   current recording, meeting, transcription, download or update finishes.
+ * - `in_progress`: an earlier request is still running; nothing new was shown.
  */
-export async function resetAccessibilityPermission(): Promise<void> {
+export type AccessibilityRequestOutcome =
+  | 'granted'
+  | 'prompted'
+  | 'opened_settings'
+  | 'restarting'
+  | 'restart_deferred'
+  | 'restart_pending'
+  | 'in_progress';
+
+/**
+ * Reset this app's stale macOS Accessibility TCC entry and bring up a fresh one
+ * (see Rust `reset_accessibility_permission`). Rejects if the reset fails or
+ * Murmur is busy (recording, meeting, transcription) or not an installed app.
+ */
+export async function resetAccessibilityPermission(): Promise<AccessibilityRequestOutcome> {
   return await invoke('reset_accessibility_permission');
+}
+
+/**
+ * Whether Accessibility is on but this running copy of Murmur cannot use it yet:
+ * a real Accessibility query from this process failed with "API disabled" while
+ * trusted, and none has succeeded since. The cure is a restart (see
+ * `restartMurmurForPermission`); nothing restarts on its own.
+ */
+export async function checkAccessibilityRestartNeeded(): Promise<boolean> {
+  return await invoke('check_accessibility_restart_needed');
+}
+
+/**
+ * Restart Murmur so it picks up an Accessibility grant. Resolves `restarting`;
+ * rejects with the reason while Murmur is recording, in a meeting, transcribing,
+ * downloading or updating, or when it is not running from an installed app.
+ */
+export async function restartMurmurForPermission(): Promise<'restarting'> {
+  return await invoke('restart_murmur_for_permission');
 }
 
 /** Check whether accessibility permission is currently granted (macOS). */
@@ -247,10 +288,11 @@ export async function checkAccessibilityPermission(): Promise<boolean> {
 }
 
 /**
- * Trigger the accessibility permission flow: registers the app in the
- * Accessibility list, shows the system dialog, and opens the settings pane.
+ * Trigger the accessibility permission flow in one step: clears a stale entry,
+ * registers the app in the Accessibility list, and shows either the system dialog
+ * or the settings pane, never both.
  */
-export async function requestAccessibilityPermission(): Promise<void> {
+export async function requestAccessibilityPermission(): Promise<AccessibilityRequestOutcome> {
   return await invoke('request_accessibility_permission');
 }
 
@@ -287,9 +329,12 @@ export async function checkMicrophonePermissionStatus(): Promise<MicPermissionSt
 }
 
 /**
- * Reset this app's stale macOS Microphone TCC entry, then reopen the Microphone
- * settings pane. Rejects if the reset fails (see Rust `reset_microphone_permission`).
+ * Reset this app's stale macOS Microphone TCC entry and relaunch Murmur so the
+ * reset takes effect (a running process keeps reporting the old state). The
+ * next dictation then asks macOS once; the settings pane is not opened. Resolves
+ * `restarting`; rejects if the reset fails or Murmur is busy (recording, meeting,
+ * transcription) or not an installed app (see Rust `reset_microphone_permission`).
  */
-export async function resetMicrophonePermission(): Promise<void> {
+export async function resetMicrophonePermission(): Promise<'restarting' | 'restart_pending'> {
   return await invoke('reset_microphone_permission');
 }

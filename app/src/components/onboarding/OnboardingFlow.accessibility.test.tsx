@@ -15,6 +15,9 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
   let calendarStatus: string;
   let failedCommand: string | undefined;
   let accessibilityGate: Promise<void> | null;
+  let accessibilityOutcome: string | undefined;
+  let resetRefusal: string | undefined;
+  let micResetOutcome: string;
 
   const button = (label: string) => {
     const result = Array.from(container.querySelectorAll('button')).find(
@@ -60,10 +63,15 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     calendarStatus = 'notDetermined';
     failedCommand = undefined;
     accessibilityGate = null;
+    accessibilityOutcome = undefined;
+    resetRefusal = undefined;
+    micResetOutcome = 'restarting';
+    window.localStorage.clear();
     vi.spyOn(document, 'hasFocus').mockReturnValue(true);
     native.listen.mockResolvedValue(() => {});
     native.invoke.mockImplementation(async (command: string) => {
       if (command === failedCommand) throw new Error('Native permission request failed');
+      if (resetRefusal && /^reset_(accessibility|microphone)_permission$/.test(command)) throw resetRefusal;
       switch (command) {
         case 'check_microphone_permission_status': return micStatus;
         case 'check_accessibility_permission': {
@@ -80,12 +88,12 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
         };
         case 'request_calendar_permission': return 'granted';
         case 'show_main_window':
-        case 'request_microphone_access':
         case 'request_accessibility_permission':
+        case 'reset_accessibility_permission': return accessibilityOutcome;
+        case 'request_microphone_access':
         case 'request_microphone_permission':
         case 'open_calendar_preferences':
-        case 'reset_microphone_permission':
-        case 'reset_accessibility_permission':
+        case 'reset_microphone_permission': return micResetOutcome;
         case 'reset_calendar_permission': return undefined;
         default: throw new Error(`Unexpected IPC command: ${command}`);
       }
@@ -467,6 +475,41 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     expect(native.invoke.mock.calls.some(([command]) => /^reset_.*_permission$/.test(command))).toBe(false);
   });
 
+  it('tells the user which single surface a first Accessibility request opened', async () => {
+    axGranted = false;
+    await toStep('accessibility');
+    accessibilityOutcome = 'prompted';
+    await click('Open System Settings…');
+    expect(container.textContent).toContain('Choose Open System Settings in the macOS dialog');
+    // The frontend never opens the pane itself: the request command owns that
+    // choice, so one click cannot raise the dialog and the pane together.
+    const opened = native.invoke.mock.calls.map(([command]) => command);
+    expect(opened.filter(command => command === 'request_accessibility_permission')).toHaveLength(1);
+    expect(opened).not.toContain('request_microphone_permission');
+    expect(opened).not.toContain('open_system_audio_preferences');
+  });
+
+  it('explains the restart when resetting a stale Accessibility entry relaunches Murmur', async () => {
+    axGranted = false;
+    await toStep('accessibility');
+    accessibilityOutcome = 'opened_settings';
+    await click('Open System Settings…');
+    expect(container.textContent).toContain('Turn on Murmur in System Settings');
+    accessibilityOutcome = 'restarting';
+    await click('Murmur is listed but still not detected? Reset permission…');
+    expect(native.invoke).toHaveBeenCalledWith('reset_accessibility_permission');
+    expect(container.textContent).toContain('Murmur is restarting to finish the reset');
+  });
+
+  it('a microphone reset restarts Murmur instead of opening System Settings', async () => {
+    micStatus = 'denied';
+    await toStep('microphone');
+    await click('Reset permission…');
+    expect(native.invoke).toHaveBeenCalledWith('reset_microphone_permission');
+    expect(native.invoke).not.toHaveBeenCalledWith('request_microphone_permission');
+    expect(container.textContent).toContain('Murmur is restarting to finish the reset');
+  });
+
   it('retains working bundle-targeted Reset actions in built apps', async () => {
     micStatus = 'denied';
     axGranted = false;
@@ -484,5 +527,69 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     await click('Skip for now');
     await click('Reset Calendar permission…');
     expect(native.invoke).toHaveBeenCalledWith('reset_calendar_permission');
+  });
+
+  it('shows a deferred restart without claiming Murmur is restarting', async () => {
+    axGranted = false;
+    await toStep('accessibility');
+    accessibilityOutcome = 'restart_deferred';
+    await click('Open System Settings…');
+    expect(container.textContent).toContain('Murmur is busy, so it did not restart');
+    expect(container.textContent).not.toContain('is restarting to finish the reset');
+  });
+
+  it('shows the refusal, not a restart, when a reset is blocked by active work', async () => {
+    axGranted = false;
+    micStatus = 'denied';
+    resetRefusal = 'Finish your recording, meeting or transcription first.';
+    await toStep('microphone');
+    await click('Reset permission…');
+    expect(container.textContent).toContain(resetRefusal);
+    expect(container.textContent).not.toContain('Murmur is restarting to finish the reset');
+    expect(window.localStorage.getItem('murmur.onboarding.resume')).toBeNull();
+    await click('Skip for now');
+    await click('Open System Settings…');
+    await click('Murmur is listed but still not detected? Reset permission…');
+    expect(container.textContent).toContain(resetRefusal);
+    expect(container.textContent).not.toContain('Murmur is restarting to finish the reset');
+  });
+
+  it('resumes the step that was open after a permission restart, once', async () => {
+    axGranted = false;
+    await toStep('accessibility');
+    accessibilityOutcome = 'restarting';
+    await click('Open System Settings…');
+    expect(window.localStorage.getItem('murmur.onboarding.resume')).toContain('accessibility');
+    // The restarted process mounts a fresh wizard.
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render();
+    expect(container.querySelector('h1')?.textContent).toBe('Accessibility access');
+    // The resume is consumed: a later launch starts at Welcome.
+    expect(window.localStorage.getItem('murmur.onboarding.resume')).toBeNull();
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render();
+    expect(container.querySelector('h1')?.textContent).toBe('Welcome to Murmur');
+  });
+
+  it('ignores an old or unknown resume step', async () => {
+    window.localStorage.setItem('murmur.onboarding.resume', JSON.stringify({ step: 'accessibility', at: Date.now() - 10 * 60 * 1000 }));
+    await render();
+    expect(container.querySelector('h1')?.textContent).toBe('Welcome to Murmur');
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    window.localStorage.setItem('murmur.onboarding.resume', JSON.stringify({ step: 'nonsense', at: Date.now() }));
+    await render();
+    expect(container.querySelector('h1')?.textContent).toBe('Welcome to Murmur');
+  });
+
+  it('says a microphone reset restart waits for current work when it is pending', async () => {
+    micStatus = 'denied';
+    micResetOutcome = 'restart_pending';
+    await toStep('microphone');
+    await click('Reset permission…');
+    expect(container.textContent).toContain('restarts as soon as your recording, meeting or download finishes');
+    expect(container.textContent).not.toContain('Murmur is restarting to finish the reset');
   });
 });

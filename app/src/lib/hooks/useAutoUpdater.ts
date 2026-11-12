@@ -94,6 +94,15 @@ export interface UseAutoUpdaterReturn {
   dismissCompletedUpdate: () => void;
 }
 
+/** Best effort: the backend refuses permission restarts while this is true. */
+function reportUpdateInstall(active: boolean): void {
+  try {
+    void Promise.resolve(invoke('set_update_install_in_progress', { active })).catch(() => {});
+  } catch {
+    // Unit tests and previews without the native bridge.
+  }
+}
+
 export function useAutoUpdater(
   options: UseAutoUpdaterOptions = {},
 ): UseAutoUpdaterReturn {
@@ -421,27 +430,33 @@ export function useAutoUpdater(
 
       let totalContentLength = 0;
       let totalDownloaded = 0;
-      await update.download((event) => {
-        switch (event.event) {
-          case 'Started':
-            totalContentLength = event.data.contentLength ?? 0;
-            flog.info('updater', 'download started', { event_code: 'updater.download_started', version, contentLength: totalContentLength });
-            break;
-          case 'Progress':
-            totalDownloaded += event.data.chunkLength;
-            setUpdateStatus({
-              phase: 'downloading',
-              version,
-              progress: totalContentLength > 0
-                ? Math.min(100, Math.round((totalDownloaded / totalContentLength) * 100))
-                : null,
-            });
-            break;
-          case 'Finished':
-            flog.info('updater', 'download finished', { event_code: 'updater.download_finished', version });
-            break;
-        }
-      });
+      // Tell the backend so a permission restart cannot cut the download short.
+      reportUpdateInstall(true);
+      try {
+        await update.download((event) => {
+          switch (event.event) {
+            case 'Started':
+              totalContentLength = event.data.contentLength ?? 0;
+              flog.info('updater', 'download started', { event_code: 'updater.download_started', version, contentLength: totalContentLength });
+              break;
+            case 'Progress':
+              totalDownloaded += event.data.chunkLength;
+              setUpdateStatus({
+                phase: 'downloading',
+                version,
+                progress: totalContentLength > 0
+                  ? Math.min(100, Math.round((totalDownloaded / totalContentLength) * 100))
+                  : null,
+              });
+              break;
+            case 'Finished':
+              flog.info('updater', 'download finished', { event_code: 'updater.download_finished', version });
+              break;
+          }
+        });
+      } finally {
+        reportUpdateInstall(false);
+      }
 
       hasDownloadedUpdateRef.current = true;
       operationRef.current = 'ready';
@@ -497,7 +512,13 @@ export function useAutoUpdater(
 
     try {
       if (!hasInstalledUpdateRef.current) {
-        await update.install();
+        // Tell the backend so a permission restart cannot cut the install short.
+        reportUpdateInstall(true);
+        try {
+          await update.install();
+        } finally {
+          reportUpdateInstall(false);
+        }
         hasInstalledUpdateRef.current = true;
         hasDownloadedUpdateRef.current = false;
       }

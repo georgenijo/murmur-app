@@ -725,6 +725,8 @@ fn ax_systemwide_focused_application_pid() -> Result<i32, LiveFocusUnavailable> 
     }
     let mut value = std::ptr::null();
     let status = unsafe { AXUIElementCopyAttributeValue(system.0, attribute.0, &mut value) };
+    // Evidence for the permissions banner only: one atomic update, no extra query.
+    crate::commands::permissions::note_ax_query_status(status);
     let focused = Owned(value);
     if status != 0 {
         return Err(LiveFocusUnavailable::AxError(status));

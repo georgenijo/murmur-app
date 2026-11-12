@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 154 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 157 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -44,14 +44,17 @@ For Rust → frontend events see [events.md](events.md). For the hooks that call
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `check_accessibility_permission` | — | `bool` | `AXIsProcessTrusted()`. |
-| `request_accessibility_permission` | — | `Result<(), String>` | Triggers the system prompt and opens the Accessibility pane. |
-| `reset_accessibility_permission` | — | `Result<(), String>` | Clears a stale TCC entry so the grant can be re-made. |
+| `check_accessibility_permission` | — | `bool` | `AXIsProcessTrusted()`. A grant seen here is remembered with a build fingerprint (content-free marker) so a missing grant under a different build is recognised as a stale entry. |
+| `check_accessibility_restart_needed` | — | `bool` | True only when Accessibility reads as granted but a real Accessibility query from this process (focus detection or the focus proof) returned `kAXErrorAPIDisabled` (-25211) and none has succeeded since. A plain grant never sets it; -25204 (target-app timeout) is ignored. Drives the banner's "Restart Murmur" notice; nothing restarts automatically. |
+| `restart_murmur_for_permission` | — | `Result<String, String>` | The notice's "Restart Murmur" action. Refused with an error while dictating, transcribing, in a meeting, previewing, downloading a model (including the smart-turn model) or downloading or installing an update, and outside an installed `.app`; otherwise relaunches once idle (one waiter at a time). Returns `restarting`. |
+| `set_update_install_in_progress` | `active: bool` | `()` | Reported by the frontend around `update.download()` and `update.install()` so a permission relaunch cannot interrupt them. |
+| `request_accessibility_permission` | — | `Result<String, String>` | One action, one surface: `granted`, `prompted` (macOS dialog is showing, its own button opens System Settings), `opened_settings` (no dialog appeared, so the pane opened), `restarting` (a grant seen under another build is now missing, so the stale entry is reset and Murmur relaunches when idle and asks again), `restart_pending` (reset done, the relaunch waits for current work to finish), `restart_deferred` (stale, but Murmur is busy: only the pane opened, nothing was reset), or `in_progress` (an earlier request is still running). A failed reset falls back to the ordinary prompt-or-pane request. |
+| `reset_accessibility_permission` | — | `Result<String, String>` | `tccutil reset Accessibility` for this bundle only, then relaunches Murmur once idle (it waits for the old process to exit), and the new process issues the first prompt itself (a running process is never re-listed by macOS after a reset). Refused with an error while dictating, transcribing or in a meeting, and outside an installed `.app`. Returns `granted`, `restarting`, `restart_pending` or `in_progress`. |
 | `check_microphone_permission` | — | `bool` | Whether microphone access is granted. |
 | `check_microphone_permission_status` | — | `String` | Fine-grained state (granted / denied / undetermined / restricted) for the onboarding step. |
-| `request_microphone_access` | — | `Result<(), String>` | Fires the native in-app prompt via `AVCaptureDevice.requestAccess`. |
+| `request_microphone_access` | — | `Result<(), String>` | Fires the native in-app prompt via `AVCaptureDevice.requestAccess` from this process (also issued by the audio worker before an attempt that waits on the prompt, so the grant is recorded where the status is read). |
 | `request_microphone_permission` | — | `Result<(), String>` | Opens the Microphone privacy pane. |
-| `reset_microphone_permission` | — | `Result<(), String>` | Clears a stale microphone TCC entry. |
+| `reset_microphone_permission` | — | `Result<String, String>` | `tccutil reset Microphone` for this bundle only, then relaunches Murmur once idle (a running process keeps its cached state); no settings pane. The next dictation asks once. Refused with an error while dictating, transcribing or in a meeting, and outside an installed `.app`. Returns `restarting` or `restart_pending`. |
 | `open_system_preferences` | — | `Result<(), String>` | Opens System Settings to the Microphone pane. |
 | `open_system_audio_preferences` | — | `Result<(), String>` | Opens Privacy & Security → Screen & System Audio Recording. |
 | `get_audio_input_inventory` | — | `Result<AudioInputInventorySnapshot, String>` | Exact-main-window-gated shared schema-v1 snapshot: monotonic `revision`, `available` / `stale` / `unavailable` status, stable-ID/display-name descriptors, actual `defaultInputId`, and a bounded error code. The window gate runs before any inventory read or refresh request. A cold read may wait for the one coalesced startup refresh; it never bypasses active capture ownership. |

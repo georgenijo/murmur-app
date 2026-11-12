@@ -27,7 +27,7 @@ active, until its exact native download owner confirms cancellation or completio
    native dialog is pending. Unknown status retains a manual Continue fallback;
    denied status offers System Settings and the existing reset path.
 3. **Accessibility** — explains the global recording key + auto-paste need,
-   triggers `request_accessibility_permission` (system dialog + opens the pane).
+   triggers `request_accessibility_permission`, which shows the macOS dialog *or* opens the pane, never both. A reset restarts Murmur only while idle; the wizard remembers the open step (`murmur.onboarding.resume`, valid for 3 minutes, read once) and resumes there instead of Welcome.
    Skippable; never opens System Settings automatically on arrival.
 4. **System Audio (optional)** — creates a short-lived native tap only after an
    explicit Continue click (with copy explaining that macOS will ask for permission),
@@ -92,8 +92,8 @@ The wishy-washy TCC states are handled explicitly:
 | State | UI |
 |-------|-----|
 | mic `notDetermined` / `unknown` | Settled, once-only auto-request for `notDetermined`; manual Continue fallback for `unknown` |
-| mic `denied` | Open System Settings + "Reset the permission" (`tccutil reset` via `reset_microphone_permission`) — the reset returns the status to `notDetermined`, so the in-app dialog works again |
-| accessibility not granted | "Open System Settings…" (dialog + pane); after an attempt, a reset path for the listed-but-stale entry (common after reinstall/rebuild — see DEVELOPMENT.md) |
+| mic `denied` | Open System Settings + "Reset the permission" (`tccutil reset` via `reset_microphone_permission`, then Murmur relaunches because a running process keeps its cached denial) — the new process reads `notDetermined`, so the in-app dialog works again |
+| accessibility not granted | "Open System Settings…" (macOS dialog or pane, one of them). If Accessibility was granted before and is missing now, the entry left in System Settings is stale (common after reinstall/rebuild — see DEVELOPMENT.md): the same click resets it and relaunches Murmur, which asks again. A manual reset link remains after an attempt |
 | system audio `unknown` / `denied` | "Continue" runs an explicit check; denial makes "Open System Settings…" the primary action, with a quiet re-check. Passive status reads never create a tap. |
 | system audio `unsupported` | Meeting capture requires macOS 14.2+, while the rest of Murmur remains available. |
 | calendar `notDetermined` | "Continue" opens the native prompt. No Calendar event query runs during onboarding. |
@@ -134,7 +134,16 @@ dev server. Built apps retain the bundle-targeted Reset actions described above.
 
 - Flag present → straight to the main UI (the existing `PermissionsBanner`
   still catches later permission drift, and the standalone `ModelDownloader`
-  gate still catches a deleted model file).
+  gate still catches a deleted model file). When Accessibility is on but a
+  real Accessibility query from the running process returned API-disabled
+  (`check_accessibility_restart_needed`), the banner also shows a dismissible
+  notice with one **Restart Murmur** button. It restarts only on click, only
+  when idle; nothing restarts automatically, and a successful later query clears
+  the notice. The backend emits `accessibility-restart-needed` when the evidence
+  turns on, so the notice does not wait for the next window focus. While any
+  permission restart is scheduled (`permission-relaunch-scheduled`), the banner
+  keeps a non-dismissable "restarting" line so Murmur never restarts without a
+  visible reason.
 - Flag absent → probe mic + accessibility + the runtime model catalog. **All three already in
   place → set the flag silently** so existing installs never see the wizard on
   upgrade. Anything missing → show `OnboardingFlow`.

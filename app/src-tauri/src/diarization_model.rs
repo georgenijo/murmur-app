@@ -14,6 +14,11 @@ pub const MODEL_BYTES: u64 = 21_599_417;
 static INSTALL_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
 static INSTALLING: AtomicBool = AtomicBool::new(false);
+
+/// Whether the speaker model is downloading right now.
+pub(crate) fn installing() -> bool {
+    INSTALLING.load(Ordering::SeqCst)
+}
 // Native model use and filesystem publication/removal share this reservation.
 pub(crate) static MODEL_USE: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
