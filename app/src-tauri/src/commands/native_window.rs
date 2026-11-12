@@ -391,12 +391,7 @@ impl PopoverSpec {
         // sends it back through the full sequence.
         let ordered_in =
             self.ordered_in.load(Ordering::SeqCst) && window.is_visible().unwrap_or(false);
-        let plan = plan_show(
-            ordered_in,
-            self.is_presented(),
-            self.applied_frame(),
-            frame,
-        );
+        let plan = plan_show(ordered_in, self.is_presented(), self.applied_frame(), frame);
         if plan.set_frame {
             self.resize_and_position(&window, frame)?;
         }

@@ -56,10 +56,9 @@ struct OverlayLevelGate {
 impl OverlayLevelGate {
     fn observe(&mut self, level: f32, now: Instant) -> Option<f32> {
         self.held = self.held.max(level);
-        if self
-            .last_emit
-            .is_some_and(|at| now.duration_since(at) < Duration::from_millis(AUDIO_LEVEL_OVERLAY_MS))
-        {
+        if self.last_emit.is_some_and(|at| {
+            now.duration_since(at) < Duration::from_millis(AUDIO_LEVEL_OVERLAY_MS)
+        }) {
             return None;
         }
         self.last_emit = Some(now);
