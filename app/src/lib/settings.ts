@@ -325,6 +325,13 @@ export interface Settings {
   correctionFuzzy: boolean;
   /** Experimental Apple on-device homophone context tier; opt-in. */
   homophoneContextEnabled: boolean;
+  /**
+   * Experimental streaming pipeline (speed run E1/E2). Today it scores speech
+   * with an incremental VAD while recording so Stop has no whole-clip VAD pass;
+   * decode-while-speaking will share it. Off by default; any doubt at Stop uses
+   * the regular VAD. Fetches a small (2.3 MB) VAD model the first time it is on.
+   */
+  streamingPipelineEnabled: boolean;
 }
 
 export type ModelOption =
@@ -539,6 +546,7 @@ export const DEFAULT_SETTINGS: Settings = {
   correctionEnabled: true,
   correctionFuzzy: true,
   homophoneContextEnabled: false,
+  streamingPipelineEnabled: false,
 };
 
 export const STORAGE_KEY = 'dictation-settings';
@@ -1159,6 +1167,11 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
 
       if (typeof parsed.homophoneContextEnabled !== 'boolean') {
         parsed.homophoneContextEnabled = false;
+      }
+
+      // Experimental and opt-in: absent or malformed values stay off.
+      if (typeof parsed.streamingPipelineEnabled !== 'boolean') {
+        parsed.streamingPipelineEnabled = DEFAULT_SETTINGS.streamingPipelineEnabled;
       }
 
       let settings = { ...DEFAULT_SETTINGS, ...parsed } as Settings;

@@ -12,7 +12,7 @@ thread_local! {
 pub const VAD_MODEL_FILENAME: &str = "ggml-silero-v5.1.2.bin";
 pub const VAD_MODEL_URL: &str =
     "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin";
-const SPEECH_PAD_MS: i32 = 120;
+pub(crate) const SPEECH_PAD_MS: i32 = 120;
 
 /// Expected path for the VAD model under the app's models directory.
 pub fn vad_model_path() -> Option<PathBuf> {
@@ -116,20 +116,31 @@ fn filter_speech_with_context<const COLLECT_BOUNDS: bool>(
         .segments_from_samples(vad_params, samples)
         .map_err(|e| format!("VAD inference failed: {}", e))?;
 
-    let num_segments = segments.num_segments();
-    if num_segments == 0 {
+    if segments.num_segments() == 0 {
         return Ok((VadResult::NoSpeech, Vec::new()));
     }
+    Ok(speech_from_segments::<COLLECT_BOUNDS>(
+        segments.into_iter().map(|seg| (seg.start, seg.end)),
+        samples,
+    ))
+}
 
+/// Turn whisper.cpp-style segments (start/end in centiseconds) into the kept
+/// speech PCM. Shared by the batch VAD above and the incremental VAD in
+/// `vad_stream`, so both produce a `VadResult` the same way.
+pub(crate) fn speech_from_segments<const COLLECT_BOUNDS: bool>(
+    segments: impl IntoIterator<Item = (f32, f32)>,
+    samples: &[f32],
+) -> (VadResult, Vec<(usize, usize)>) {
     let sample_rate = 16_000.0_f32;
     let total_samples = samples.len();
     let mut speech_samples = Vec::new();
     let mut bounds = Vec::new();
 
-    for seg in segments {
+    for (start, end) in segments {
         // Timestamps are in centiseconds (cs); convert to sample indices
-        let start_idx = ((seg.start / 100.0) * sample_rate) as usize;
-        let end_idx = ((seg.end / 100.0) * sample_rate).ceil() as usize;
+        let start_idx = ((start / 100.0) * sample_rate) as usize;
+        let end_idx = ((end / 100.0) * sample_rate).ceil() as usize;
 
         let start_idx = start_idx.min(total_samples);
         let end_idx = end_idx.min(total_samples);
@@ -143,9 +154,9 @@ fn filter_speech_with_context<const COLLECT_BOUNDS: bool>(
     }
 
     if speech_samples.is_empty() {
-        Ok((VadResult::NoSpeech, bounds))
+        (VadResult::NoSpeech, bounds)
     } else {
-        Ok((VadResult::Speech(speech_samples), bounds))
+        (VadResult::Speech(speech_samples), bounds)
     }
 }
 

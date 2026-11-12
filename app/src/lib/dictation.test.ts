@@ -12,6 +12,11 @@ describe('buildConfigureOptions', () => {
     expect(buildConfigureOptions({ ...DEFAULT_SETTINGS, homophoneContextEnabled: true }).homophoneContextEnabled).toBe(true);
   });
 
+  it('sends the experimental streaming pipeline setting, off by default', () => {
+    expect(buildConfigureOptions(DEFAULT_SETTINGS).streamingPipelineEnabled).toBe(false);
+    expect(buildConfigureOptions({ ...DEFAULT_SETTINGS, streamingPipelineEnabled: true }).streamingPipelineEnabled).toBe(true);
+  });
+
   it('sends smart formatting and its independent per-app override to Rust', () => {
     const options = buildConfigureOptions({
       ...DEFAULT_SETTINGS,

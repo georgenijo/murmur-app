@@ -113,6 +113,7 @@ interface Settings {
   smartFormattingEnabled: boolean;
   correctionEnabled: boolean;
   correctionFuzzy: boolean;
+  streamingPipelineEnabled: boolean;       // experimental; Settings → Recording → Advanced
   voiceCommandsEnabled: boolean;           // shown as "Spoken formatting"
   vocabularyEntries: VocabularyEntry[];
   customVocabulary: string;                // @deprecated derived mirror
@@ -194,6 +195,7 @@ export const DEFAULT_SETTINGS: Settings = {
   // non-Whisper engines. A no-op when there's no vocabulary configured.
   correctionEnabled: true,
   correctionFuzzy: true,
+  streamingPipelineEnabled: false,
 };
 ```
 

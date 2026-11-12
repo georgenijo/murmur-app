@@ -344,7 +344,7 @@ fn load_onnx(path: &Path) -> Result<Box<dyn Predictor>, String> {
 }
 
 /// Point `ort` at the ONNX Runtime sherpa-onnx links statically, once.
-fn init_runtime() -> Result<(), String> {
+pub(crate) fn init_runtime() -> Result<(), String> {
     static RUNTIME: OnceLock<Result<(), String>> = OnceLock::new();
     RUNTIME
         .get_or_init(|| {

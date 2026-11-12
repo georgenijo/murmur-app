@@ -543,6 +543,11 @@ enum SupervisorMessage {
         max_output_samples: Option<usize>,
         response: Sender<Option<Vec<f32>>>,
     },
+    PeekSince {
+        owner: AudioOwner,
+        from_output: usize,
+        response: Sender<PeekSince>,
+    },
     ConfigureStandby(StandbyPolicy),
     RetireStandby(Sender<()>),
     SpeculativeStart(SpeculativeStartRequest),
@@ -1287,6 +1292,27 @@ fn handle_message(
                 current.warm_topology_is_current().then_some(snapshot)
             });
             let _ = response.send(samples);
+        }
+        SupervisorMessage::PeekSince {
+            owner,
+            from_output,
+            response,
+        } => {
+            let result = attempt
+                .as_ref()
+                .and_then(|current| {
+                    if current.owner != owner || current.phase != AttemptPhase::Recording {
+                        return None;
+                    }
+                    let shared = current
+                        .shared
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let result = snapshot_since(&shared, current.sample_rate, from_output);
+                    current.warm_topology_is_current().then_some(result)
+                })
+                .unwrap_or(PeekSince::NotCurrent);
+            let _ = response.send(result);
         }
         SupervisorMessage::ConfigureStandby(_)
         | SupervisorMessage::RetireStandby(_)
@@ -2353,6 +2379,68 @@ fn snapshot_for_asr(
     samples
 }
 
+/// What a `peek_dictation_samples_since` call found.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PeekSince {
+    /// 16 kHz samples from the requested offset up to the last sample whose
+    /// value cannot change when more audio arrives (possibly empty).
+    Samples(Vec<f32>),
+    /// The recording is not (or no longer) the live capture, or the supervisor
+    /// did not answer in time.
+    NotCurrent,
+    /// The retained buffer is shorter than the requested offset: it was reset.
+    Reset,
+}
+
+/// The new 16 kHz samples from output offset `from_output`, computed with the
+/// same formula as `audio::resample` so they equal that slice of the whole-clip
+/// resample. Only copies the new samples, never the whole buffer. Output
+/// samples whose interpolation needs a source sample that has not arrived yet
+/// are left for the next call (and for the final stop, which owns the tail).
+pub(crate) fn snapshot_since(shared: &[f32], sample_rate: u32, from_output: usize) -> PeekSince {
+    let target = WHISPER_SAMPLE_RATE;
+    if sample_rate == 0 {
+        return PeekSince::NotCurrent;
+    }
+    if sample_rate == target {
+        return match shared.get(from_output..) {
+            Some(tail) => PeekSince::Samples(tail.to_vec()),
+            None => PeekSince::Reset,
+        };
+    }
+    if sample_rate > target && sample_rate.is_multiple_of(target) {
+        let step = (sample_rate / target) as usize;
+        let available = shared.len() / step;
+        if from_output > available {
+            return PeekSince::Reset;
+        }
+        return PeekSince::Samples(
+            (from_output..available)
+                .map(|index| shared[index * step])
+                .collect(),
+        );
+    }
+    let ratio = f64::from(sample_rate) / f64::from(target);
+    let total = (shared.len() as f64 / ratio) as usize;
+    if from_output > total {
+        return PeekSince::Reset;
+    }
+    let mut out = Vec::new();
+    for index in from_output..total {
+        let source = index as f64 * ratio;
+        let source_index = source as usize;
+        if source_index + 1 >= shared.len() {
+            break;
+        }
+        let fraction = source - source_index as f64;
+        out.push(
+            shared[source_index] * (1.0 - fraction as f32)
+                + shared[source_index + 1] * fraction as f32,
+        );
+    }
+    PeekSince::Samples(out)
+}
+
 fn recording_duration_since_ready(ready_at: Option<Instant>, now: Instant) -> Duration {
     ready_at
         .map(|ready| now.saturating_duration_since(ready))
@@ -2893,6 +2981,27 @@ pub(crate) fn peek_dictation_samples(
     response_receiver
         .recv_timeout(SUPERVISOR_RESPONSE_TIMEOUT)
         .ok()?
+}
+
+/// Clone only the 16 kHz samples recorded since `from_output` (an output-sample
+/// offset) without stopping capture. Used by the incremental VAD so each poll
+/// copies the new audio, not the whole recording.
+pub(crate) fn peek_dictation_samples_since(recording_id: u64, from_output: usize) -> PeekSince {
+    let (response_sender, response_receiver) = mpsc::channel();
+    if supervisor()
+        .sender
+        .send(SupervisorMessage::PeekSince {
+            owner: AudioOwner::Dictation(recording_id),
+            from_output,
+            response: response_sender,
+        })
+        .is_err()
+    {
+        return PeekSince::NotCurrent;
+    }
+    response_receiver
+        .recv_timeout(SUPERVISOR_RESPONSE_TIMEOUT)
+        .unwrap_or(PeekSince::NotCurrent)
 }
 
 pub(crate) fn stop_preview_recording(preview_id: u64) -> Result<Vec<f32>, String> {
