@@ -36,8 +36,11 @@ enforced in `telemetry.rs` in every build.
   stages, so `totalProcessing` is fully accounted for.
 
 The main thread only pushes fixed-size records into a preallocated ring. A
-background thread does every log write; it drains the ring every 200 ms and
-wakes every 25 ms to look for a stretch to sample.
+background thread does every log write. It drains the ring about every 200 ms,
+and it sleeps by what the main thread is doing: parked for the drain interval
+while the main thread waits, and woken by the run-loop observer when a busy
+stretch begins (see [Stack samples](#stack-samples)). An idle app costs the
+reporter about five wakeups a second.
 
 ## Events
 
@@ -75,18 +78,29 @@ How to read the summary fields:
 
 ## Stack samples
 
-A busy stretch is one run-loop wake with no wait in between. The reporter thread
-polls `BUSY_SINCE_US` (one atomic load per 25 ms) and, when the stretch passes
-50 ms, captures the main thread's stack once. A stretch still busy at 250 ms gets
-one more sample. Samples are rate-limited to 8 per minute; the rest are counted in
-`suppressed` on the next event.
+A busy stretch is one run-loop wake with no wait in between. When the stretch
+passes 50 ms the reporter captures the main thread's stack once, and a stretch
+still busy at 250 ms gets one more sample. Samples are rate-limited to 8 per
+minute; the rest are counted in `suppressed` on the next event.
 
-`frames` is `;`-joined `image!symbol` names, innermost first, at most 24 frames and
-2,400 characters. The image is a file name, never a path. Symbols are the raw
-`dladdr` names, so Rust frames are mangled (`rustfilt` or `c++filt` reads them).
-A frame `dladdr` cannot name is `?!?`. There are no arguments, strings, registers,
-or memory contents, and the telemetry sanitizer drops the whole field if it holds
-a character outside the symbol alphabet.
+The reporter does not poll while the app is idle. It parks for the drain
+interval and sets `REPORTER_PARKED`. The run-loop observer, at the start of a
+busy stretch, stores the stretch's start and then reads that flag; if the
+reporter is parked it clears the flag and calls `Thread::unpark`, an atomic swap
+plus a semaphore signal, with no lock or allocation on the main thread. The
+reporter sets the flag and then re-reads the stretch start before it parks, so
+one side always sees the other and a stretch is never slept through. Once woken,
+the reporter sleeps until the stretch's 50 ms mark (and while a stretch is being
+watched it wakes at least every 50 ms), so a stall is sampled at about 50 ms, not
+at the next drain tick. It parks again when the main thread waits.
+
+`frames` is `;`-joined `image!symbol` items, innermost first, at most 24 frames
+and 2,400 characters. The image is a file name, never a path, with no spaces.
+Symbols are the raw `dladdr` names, so Rust frames are mangled (`rustfilt` or
+`c++filt` reads them). A frame `dladdr` cannot name is `?!?`. A symbol has a
+space only inside Objective-C `[...]`. There are no arguments, strings,
+registers, or memory contents, and the telemetry sanitizer drops the whole field
+unless every item has that shape.
 
 How the capture stays safe (macOS arm64 only; other targets log no stacks):
 
@@ -101,11 +115,19 @@ How the capture stays safe (macOS arm64 only; other targets log no stacks):
   unmapped memory. Frames are bounded, and the code before resume cannot panic.
 - The reporter runs at user-interactive QoS so it is not left descheduled while
   it holds the main thread.
+- Before it samples, the reporter calls `thread_get_state` and `thread_resume`
+  once on its own thread (`stack::warm_up`). A binary built for the arm64
+  default deployment target (macOS 11, which dev and test builds use) binds
+  imports lazily, and the first call through a stub takes dyld's lock; that must
+  not happen for the first time while the main thread is suspended. Warming from
+  the reporter's own thread works for every build configuration, including the
+  bundle's macOS 14 minimum, where the linker decides how imports bind.
 - `held_us` is how long the main thread stayed suspended (normally a few
   microseconds). If one capture holds it longer than 2 ms, the event reports
   `sampling_stopped: true` and sampling stays off until the next launch.
 - A stack is dropped if the stretch ended while it was being read.
-- `MURMUR_DISABLE_MAIN_THREAD_STACKS=1` turns sampling off at launch. The
+- `MURMUR_DISABLE_MAIN_THREAD_STACKS=1` (or `true`) turns sampling off at
+  launch; other values, including `0`, leave it on. The
   `system.main_thread_watch_started` event reports `stack_sampling`.
 
 The sample is a snapshot of one instant. Read two samples of one stretch together,
@@ -124,7 +146,7 @@ block has finished. The marker is a `job` span named `applied.<label>` with zero
 duration, and its `queue_us` is the time from enqueue to run. That is an upper
 bound for the block itself: any other queued work in front of it counts too. Markers
 that waited under 1 ms are not recorded, and one that waited 20 ms or more is
-logged like a slow job.
+logged like a slow job. The marker is queued only when the setter returned `Ok`.
 
 Limits:
 

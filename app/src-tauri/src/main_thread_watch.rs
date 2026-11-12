@@ -48,15 +48,17 @@ const SPAN_RECORD_MIN_US: u64 = 100;
 const RING_CAPACITY: usize = 4096;
 const HISTORY_RETAIN_US: u64 = 20_000_000;
 const REPORT_DELAY: Duration = Duration::from_millis(1_200);
-/// The reporter wakes this often: fast enough to catch a stall while it is
-/// still happening, with one atomic load per wake when the thread is idle.
-const REPORTER_TICK: Duration = Duration::from_millis(25);
 /// Ring drain, history upkeep and paste reports run this often.
 const DRAIN_INTERVAL_US: u64 = 200_000;
 /// A busy stretch this long gets its first stack sample.
 pub(crate) const STACK_FIRST_SAMPLE_US: u64 = 50_000;
 /// A stretch still busy this long gets one more sample.
 pub(crate) const STACK_SECOND_SAMPLE_US: u64 = 250_000;
+/// While a stretch is being watched the reporter wakes at least this often,
+/// so a stretch that ends and is replaced is noticed within one interval.
+const WATCH_POLL_MAX_US: u64 = STACK_FIRST_SAMPLE_US;
+/// The shortest sleep the reporter takes.
+const WATCH_POLL_MIN_US: u64 = 1_000;
 /// Stack events allowed per [`STACK_WINDOW_US`]; the rest are counted.
 const MAX_STACKS_PER_WINDOW: u32 = 8;
 /// One capture may hold the main thread this long (it normally takes a few
@@ -214,6 +216,10 @@ static AUDIO_LEVEL_EMITS: AtomicU64 = AtomicU64::new(0);
 static IPC_INVOKES: AtomicU64 = AtomicU64::new(0);
 static IPC_MAIN_INVOKES: AtomicU64 = AtomicU64::new(0);
 static IPC_MAIN_US: AtomicU64 = AtomicU64::new(0);
+/// The reporter's handle, so the run-loop observer can wake it.
+static REPORTER_THREAD: OnceLock<std::thread::Thread> = OnceLock::new();
+/// True only while the reporter is parked for a long idle sleep.
+static REPORTER_PARKED: AtomicBool = AtomicBool::new(false);
 /// The main thread's stack, captured at install for the stack sampler.
 static STACK_TARGET: OnceLock<stack::Target> = OnceLock::new();
 /// One recent live-preview hide. Written only on the main thread, read by the
@@ -344,14 +350,32 @@ pub(crate) fn section<T>(label: &'static str, f: impl FnOnce() -> T) -> T {
 /// ahead of it, tao's block included, has finished, and the span records the
 /// enqueue-to-applied latency in `queue_us`. That latency is an upper bound
 /// for the block itself, because other queued work can sit in front of it.
-pub(crate) fn queued_section<T>(
+///
+/// The marker is queued only when the setter returned `Ok`: a failed call
+/// queued no block, so there is nothing to wait behind.
+pub(crate) fn queued_section<T, E>(
     label: &'static str,
     applied_label: &'static str,
-    f: impl FnOnce() -> T,
-) -> T {
+    f: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
     let result = section(label, f);
-    applied::queue_marker(applied_label);
+    if result.is_ok() {
+        applied::queue_marker(applied_label);
+    }
     result
+}
+
+/// Main thread, at the start of a busy stretch: wake the reporter if (and
+/// only if) it is parked for a long idle sleep, so it can arm its 50 ms
+/// check. A relaxed-cost load otherwise. Never blocks, locks, or allocates;
+/// `Thread::unpark` is an atomic swap, plus a semaphore signal when the
+/// target is parked.
+fn wake_reporter_if_parked() {
+    if REPORTER_PARKED.load(Ordering::SeqCst) && REPORTER_PARKED.swap(false, Ordering::SeqCst) {
+        if let Some(thread) = REPORTER_THREAD.get() {
+            thread.unpark();
+        }
+    }
 }
 
 /// Count one `audio-level` event emitted to the webviews.
@@ -732,7 +756,7 @@ pub(crate) fn install() {
     let observers_installed = false;
     // The calling thread is the main thread: remember its stack for sampling.
     let stack_sampling = observers_installed
-        && std::env::var_os(DISABLE_STACKS_ENV).is_none()
+        && !stacks_disabled_by_env(std::env::var_os(DISABLE_STACKS_ENV).as_deref())
         && stack::Target::current().is_some_and(|target| STACK_TARGET.set(target).is_ok());
     ENABLED.store(true, Ordering::Release);
     let spawned = std::thread::Builder::new()
@@ -753,8 +777,16 @@ pub(crate) fn install() {
     );
 }
 
-/// Set to any value to turn the stack sampler off.
+/// Set to `1` or `true` to turn the stack sampler off.
 const DISABLE_STACKS_ENV: &str = "MURMUR_DISABLE_MAIN_THREAD_STACKS";
+
+fn stacks_disabled_by_env(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| {
+        let value = value.to_string_lossy();
+        let value = value.trim();
+        value == "1" || value.eq_ignore_ascii_case("true")
+    })
+}
 
 struct Reporter {
     history: VecDeque<Span>,
@@ -784,6 +816,10 @@ fn raise_reporter_priority() {}
 
 fn reporter_loop() {
     raise_reporter_priority();
+    // Bind the Mach calls the sampler makes while the main thread is
+    // suspended, so no lazy-binding stub takes dyld's lock then.
+    stack::warm_up();
+    let _ = REPORTER_THREAD.set(std::thread::current());
     let mut reporter = Reporter {
         history: VecDeque::with_capacity(RING_CAPACITY),
         scratch: Vec::with_capacity(RING_CAPACITY),
@@ -796,7 +832,6 @@ fn reporter_loop() {
         rates: RatePacer::default(),
     };
     loop {
-        std::thread::sleep(REPORTER_TICK);
         let now = now_us();
         reporter.sample_stack(now);
         reporter.report_rates(now);
@@ -804,6 +839,62 @@ fn reporter_loop() {
             reporter.last_drain_us = now;
             reporter.tick();
         }
+        let now = now_us();
+        let since = BUSY_SINCE_US.load(Ordering::SeqCst);
+        let until_drain =
+            DRAIN_INTERVAL_US.saturating_sub(now.saturating_sub(reporter.last_drain_us));
+        let idle = Duration::from_micros(until_drain.max(WATCH_POLL_MIN_US));
+        let wait = reporter
+            .stacks
+            .next_wait(since, now, STACK_TARGET.get().is_some(), idle);
+        if wait < idle {
+            // A stretch is being watched: wake at its next sample point.
+            std::thread::park_timeout(wait);
+            continue;
+        }
+        // Nothing to watch. Park until the next drain, or until the main
+        // thread starts a stretch. The flag is set before the last check, and
+        // the observer stores the stretch start before reading the flag, so
+        // one of them sees the other and a stretch is never slept through.
+        REPORTER_PARKED.store(true, Ordering::SeqCst);
+        if BUSY_SINCE_US.load(Ordering::SeqCst) == since {
+            std::thread::park_timeout(wait);
+        }
+        REPORTER_PARKED.store(false, Ordering::SeqCst);
+    }
+}
+
+/// What to do with one finished capture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CaptureVerdict {
+    /// The capture held the main thread too long: sampling stays off for the
+    /// rest of the process.
+    stop_sampling: bool,
+    /// Log the sample.
+    publish: bool,
+}
+
+/// `held_us` is how long the main thread was suspended, `frames` how many
+/// return addresses were read, `since_before` the busy stretch the capture
+/// was for, and `since_after` the stretch in progress once it finished.
+///
+/// - A hold over [`STACK_MAX_HOLD_US`] means the reporter was descheduled
+///   while it held the main thread: stop sampling. The sample is still
+///   logged, with `sampling_stopped`, so the stop is visible.
+/// - A capture that read nothing is never logged.
+/// - Otherwise the sample is logged only if the same stretch was still
+///   running when the capture ended; a stack taken after the stretch ended
+///   or was replaced is not the stall's.
+fn judge_capture(
+    held_us: u64,
+    frames: usize,
+    since_before: u64,
+    since_after: u64,
+) -> CaptureVerdict {
+    let stop_sampling = held_us > STACK_MAX_HOLD_US;
+    CaptureVerdict {
+        stop_sampling,
+        publish: frames > 0 && (stop_sampling || since_after == since_before),
     }
 }
 
@@ -835,6 +926,39 @@ impl StackPacer {
             0 if busy_us >= STACK_FIRST_SAMPLE_US => Some(1),
             1 if busy_us >= STACK_SECOND_SAMPLE_US => Some(2),
             _ => None,
+        }
+    }
+
+    /// How long the reporter may sleep before it next has to look, given the
+    /// busy stretch that began at `since_us` (0 when the thread is waiting).
+    /// Returns `idle` when there is nothing to watch for, and otherwise the
+    /// time to the stretch's next sample point, never more than
+    /// [`WATCH_POLL_MAX_US`] and never less than [`WATCH_POLL_MIN_US`].
+    fn next_wait(&self, since_us: u64, now: u64, sampling: bool, idle: Duration) -> Duration {
+        if !sampling || self.disabled || since_us == 0 {
+            return idle;
+        }
+        let taken = if since_us == self.stretch_start_us {
+            self.samples_taken
+        } else {
+            0
+        };
+        let target = match taken {
+            0 => STACK_FIRST_SAMPLE_US,
+            1 => STACK_SECOND_SAMPLE_US,
+            _ => return idle,
+        };
+        let busy_us = now.saturating_sub(since_us);
+        let wait_us = target
+            .saturating_sub(busy_us)
+            .clamp(WATCH_POLL_MIN_US, WATCH_POLL_MAX_US);
+        Duration::from_micros(wait_us).min(idle)
+    }
+
+    /// Apply a capture's verdict: a hold that was too long turns sampling off.
+    fn apply(&mut self, verdict: CaptureVerdict) {
+        if verdict.stop_sampling {
+            self.disabled = true;
         }
     }
 
@@ -934,18 +1058,15 @@ impl Reporter {
         let captured = stack::capture(*target, &mut raw);
         let count = captured.frames;
         let captured_at = now_us();
-        // A suspension this long means the reporter was descheduled while
-        // it held the main thread. Stop sampling for the rest of the run.
-        let stopped = captured.held_us > STACK_MAX_HOLD_US;
-        if stopped {
-            self.stacks.disabled = true;
-        }
-        // The stretch ended while the thread was being read: the stack is
-        // not the stall's, so drop it, unless the hold itself was too long.
-        if !stopped && (count == 0 || BUSY_SINCE_US.load(Ordering::Acquire) != since) {
-            return;
-        }
-        if count == 0 {
+        let verdict = judge_capture(
+            captured.held_us,
+            count,
+            since,
+            BUSY_SINCE_US.load(Ordering::Acquire),
+        );
+        let stopped = verdict.stop_sampling;
+        self.stacks.apply(verdict);
+        if !verdict.publish {
             return;
         }
         let symbolised = stack::symbolise(&raw[..count]);
@@ -1256,6 +1377,11 @@ fn summarize_window(
 mod applied {
     use super::*;
 
+    /// Test builds count queued markers instead of queueing them: the test
+    /// harness's main thread never runs the main queue.
+    #[cfg(test)]
+    pub(super) static MARKERS_QUEUED: AtomicU64 = AtomicU64::new(0);
+
     /// Queue a marker block on the main queue, behind the blocks already
     /// there. When it runs it records `label` with the enqueue-to-run latency
     /// in `queue_us` and a zero duration. Main thread only; never blocks.
@@ -1263,8 +1389,12 @@ mod applied {
         if !ENABLED.load(Ordering::Relaxed) || !is_main() {
             return;
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(test)]
+        MARKERS_QUEUED.fetch_add(1, Ordering::Relaxed);
+        #[cfg(all(target_os = "macos", not(test)))]
         macos::queue(label, now_us());
+        #[cfg(all(target_os = "macos", test))]
+        let _ = (label, now_us());
         #[cfg(not(target_os = "macos"))]
         let _ = label;
     }
@@ -1287,6 +1417,7 @@ mod applied {
     }
 
     #[cfg(target_os = "macos")]
+    #[cfg_attr(test, allow(dead_code))]
     mod macos {
         use super::*;
         use std::ffi::c_void;
@@ -1375,17 +1506,73 @@ pub(crate) mod stack {
             )
     }
 
-    /// `frames` is a `;`-joined list of `module!symbol` names, bounded.
-    pub(crate) fn is_safe_frames(value: &str) -> bool {
-        !value.is_empty()
-            && value.len() <= MAX_FRAMES_LEN
-            && value.chars().all(|c| c == ';' || is_frame_char(c))
+    /// An image file name: no spaces, no path separators.
+    fn is_image_char(c: char) -> bool {
+        c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-' | '+' | '?')
     }
 
-    /// Replace anything outside the frame alphabet, and bound the length.
-    fn clean(text: &str, out: &mut String) {
+    /// One `image!symbol` item. The image is non-empty and uses
+    /// [`is_image_char`]; the symbol is non-empty, uses [`is_frame_char`], and
+    /// has a space only inside Objective-C `[...]`.
+    fn is_safe_item(item: &str) -> bool {
+        let Some((image, symbol)) = item.split_once('!') else {
+            return false;
+        };
+        if image.is_empty() || symbol.is_empty() || !image.chars().all(is_image_char) {
+            return false;
+        }
+        let mut depth = 0u32;
+        for c in symbol.chars() {
+            match c {
+                '[' => depth += 1,
+                ']' => depth = depth.saturating_sub(1),
+                ' ' if depth == 0 => return false,
+                _ => {}
+            }
+            if !is_frame_char(c) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// `frames` is a `;`-joined list of `image!symbol` items, bounded.
+    pub(crate) fn is_safe_frames(value: &str) -> bool {
+        !value.is_empty() && value.len() <= MAX_FRAMES_LEN && value.split(';').all(is_safe_item)
+    }
+
+    /// Keep an image file name to its alphabet; anything else becomes `_`.
+    #[cfg(target_os = "macos")]
+    fn clean_image(text: &str, out: &mut String) {
+        let start = out.len();
         for c in text.chars().take(MAX_FRAME_LEN) {
-            out.push(if is_frame_char(c) { c } else { '?' });
+            out.push(if is_image_char(c) { c } else { '_' });
+        }
+        if out.len() == start {
+            out.push('?');
+        }
+    }
+
+    /// Keep a symbol to its alphabet (anything else becomes `?`), with spaces
+    /// only inside `[...]` (elsewhere they become `_`), and bound the length.
+    #[cfg(target_os = "macos")]
+    fn clean_symbol(text: &str, out: &mut String) {
+        let mut depth = 0u32;
+        for c in text.chars().take(MAX_FRAME_LEN) {
+            let kept = match c {
+                '[' => {
+                    depth += 1;
+                    c
+                }
+                ']' => {
+                    depth = depth.saturating_sub(1);
+                    c
+                }
+                ' ' if depth == 0 => '_',
+                c if is_frame_char(c) => c,
+                _ => '?',
+            };
+            out.push(kept);
         }
     }
 
@@ -1415,7 +1602,7 @@ pub(crate) mod stack {
         let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
         let found = unsafe { libc::dladdr(address as *const libc::c_void, &mut info) } != 0;
         if !found {
-            out.push('?');
+            out.push_str("?!?");
             return;
         }
         let image = (!info.dli_fname.is_null())
@@ -1426,14 +1613,18 @@ pub(crate) mod stack {
             })
             .map(|path| path.rsplit('/').next().unwrap_or("").to_string())
             .filter(|name| !name.is_empty());
-        clean(image.as_deref().unwrap_or("?"), out);
+        clean_image(image.as_deref().unwrap_or("?"), out);
         out.push('!');
         if info.dli_sname.is_null() {
             out.push('?');
         } else {
             // SAFETY: `dli_sname` is a NUL-terminated string owned by dyld.
             let symbol = unsafe { CStr::from_ptr(info.dli_sname) }.to_string_lossy();
-            clean(&symbol, out);
+            let start = out.len();
+            clean_symbol(&symbol, out);
+            if out.len() == start {
+                out.push('?');
+            }
         }
     }
 
@@ -1489,6 +1680,40 @@ pub(crate) mod stack {
             None
         }
     }
+
+    /// Bind the Mach calls [`capture`] makes while the main thread is
+    /// suspended, from the reporter's own thread and before any sampling.
+    ///
+    /// A binary built for macOS 11 (the arm64 default deployment target, which
+    /// dev and test builds use) binds imported functions lazily: the first
+    /// call goes through a stub into dyld, which takes dyld's lock. If that
+    /// first call ran while the main thread was suspended in the middle of
+    /// its own dyld work, the two would deadlock. So the reporter makes each
+    /// call once here. `thread_get_state` on the caller's own thread is
+    /// legal (the state it returns is unused). `thread_resume` on a thread
+    /// that is not suspended returns an error and changes nothing. This is
+    /// preferred over a `.cargo/config.toml` deployment target because it
+    /// holds for every build configuration, including the bundle's
+    /// 14.0 minimum, where binding behaviour is the linker's choice.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn warm_up() {
+        extern "C" {
+            fn thread_resume(thread: u32) -> i32;
+            fn thread_get_state(thread: u32, flavor: i32, state: *mut u32, count: *mut u32) -> i32;
+        }
+        // SAFETY: queries about the calling thread only; the port needs no
+        // release (`pthread_mach_thread_np` adds no reference).
+        unsafe {
+            let me = libc::pthread_mach_thread_np(libc::pthread_self());
+            let mut state = [0u32; 68];
+            let mut count = state.len() as u32;
+            let _ = thread_get_state(me, 6, state.as_mut_ptr(), &mut count);
+            let _ = thread_resume(me);
+        }
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    pub(crate) fn warm_up() {}
 
     /// What one capture produced.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1764,7 +1989,8 @@ mod runloop {
             }
             Phase::Labelled(_) if state.busy_start_us == 0 => {
                 state.busy_start_us = now;
-                BUSY_SINCE_US.store(now, Ordering::Release);
+                BUSY_SINCE_US.store(now, Ordering::SeqCst);
+                wake_reporter_if_parked();
             }
             _ => {}
         }
@@ -2198,16 +2424,30 @@ mod tests {
     }
 
     #[test]
-    fn frame_text_allows_symbol_punctuation_and_nothing_that_carries_content() {
+    fn frame_text_is_image_bang_symbol_items_and_nothing_that_carries_content() {
         assert!(stack::is_safe_frames(
             "AppKit!-[NSView layout];ui!core::ops::function::FnOnce::call_once<T>;?!?"
         ));
         assert!(stack::is_safe_frames(
-            "libsystem_kernel.dylib!mach_msg2_trap"
+            "libsystem_kernel.dylib!mach_msg2_trap;AppKit!__99-[NSApplication(NSPersistentUIRestorationSupport) _restoreWindowWithRestoration:completionHandler:]_block_invoke.375"
+        ));
+        assert!(stack::is_safe_frames(
+            "ui_lib-1138d6402c0ded59!_ZN2ui4main17h0123456789abcdefE"
         ));
         for bad in [
             "",
+            ";",
+            "ui!f;",
+            ";ui!f",
+            "ui!f;;ui!g",
+            "no_bang",
+            "!symbol",
+            "image!",
             "ui!f; /Users/george/private.txt",
+            "/Users/george/ui!f",
+            "Some Image!f",
+            "ui!two words",
+            "ui!f [x] y",
             "ui!f\"secret\"",
             "ui!f=secret",
             "ui!f\nnext",
@@ -2216,9 +2456,10 @@ mod tests {
         ] {
             assert!(!stack::is_safe_frames(bad), "{bad:?}");
         }
-        assert!(!stack::is_safe_frames(
-            &"a".repeat(stack::MAX_FRAMES_LEN + 1)
-        ));
+        assert!(!stack::is_safe_frames(&format!(
+            "ui!{}",
+            "a".repeat(stack::MAX_FRAMES_LEN)
+        )));
     }
 
     #[test]
@@ -2333,5 +2574,195 @@ mod tests {
         stop.store(true, Ordering::Relaxed);
         worker.join().unwrap();
         assert!(named, "no sample contained the spinning function");
+    }
+    #[test]
+    fn the_reporter_sleeps_long_when_idle_and_arms_the_50ms_check_when_busy() {
+        let idle = Duration::from_millis(200);
+        let mut pacer = StackPacer::default();
+        // Waiting main thread, sampling off, or sampler disabled: idle.
+        assert_eq!(pacer.next_wait(0, 1_000_000, true, idle), idle);
+        assert_eq!(pacer.next_wait(1_000_000, 1_000_010, false, idle), idle);
+        // A stretch that just began: sleep until its 50 ms mark, not 200 ms.
+        let since = 5_000_000;
+        assert_eq!(
+            pacer.next_wait(since, since + 100, true, idle),
+            Duration::from_micros(STACK_FIRST_SAMPLE_US - 100)
+        );
+        // Already past the mark (the wake was late): the minimum sleep.
+        assert_eq!(
+            pacer.next_wait(since, since + 80_000, true, idle),
+            Duration::from_micros(WATCH_POLL_MIN_US)
+        );
+        // Never sleeps past a drain that is nearer.
+        assert_eq!(
+            pacer.next_wait(since, since + 10, true, Duration::from_millis(5)),
+            Duration::from_millis(5)
+        );
+        // After sample 1 the next point is 250 ms, but the poll stays at 50 ms.
+        assert_eq!(pacer.due(since, since + STACK_FIRST_SAMPLE_US), Some(1));
+        assert!(pacer.admit(1, since + STACK_FIRST_SAMPLE_US));
+        assert_eq!(
+            pacer.next_wait(since, since + STACK_FIRST_SAMPLE_US + 10, true, idle),
+            Duration::from_micros(WATCH_POLL_MAX_US)
+        );
+        assert_eq!(
+            pacer.next_wait(since, since + STACK_SECOND_SAMPLE_US - 5_000, true, idle),
+            Duration::from_micros(5_000)
+        );
+        // After sample 2 there is nothing left to watch for in this stretch.
+        assert_eq!(pacer.due(since, since + STACK_SECOND_SAMPLE_US), Some(2));
+        assert!(pacer.admit(2, since + STACK_SECOND_SAMPLE_US));
+        assert_eq!(pacer.next_wait(since, since + 400_000, true, idle), idle);
+        // A new stretch starts over at the 50 ms mark.
+        let next = since + 900_000;
+        assert_eq!(
+            pacer.next_wait(next, next + 1_000, true, idle),
+            Duration::from_micros(STACK_FIRST_SAMPLE_US - 1_000)
+        );
+        // Once disabled, always idle.
+        pacer.disabled = true;
+        assert_eq!(pacer.next_wait(next, next + 1_000, true, idle), idle);
+        // Every watch wait is well under 100 ms.
+        let fresh = StackPacer::default();
+        for busy in [0, 1, 10_000, 49_999, 50_000, 90_000] {
+            let wait = fresh.next_wait(9_000_000, 9_000_000 + busy, true, idle);
+            assert!(wait <= Duration::from_micros(WATCH_POLL_MAX_US), "{busy}");
+        }
+    }
+
+    #[test]
+    fn the_reporter_is_woken_only_while_parked_and_only_once() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let _ = REPORTER_THREAD.set(std::thread::current());
+            tx.send(()).unwrap();
+            let started = Instant::now();
+            REPORTER_PARKED.store(true, Ordering::SeqCst);
+            std::thread::park_timeout(Duration::from_secs(10));
+            started.elapsed()
+        });
+        rx.recv().unwrap();
+        // Not parked: no wake, the flag stays as it is.
+        REPORTER_PARKED.store(false, Ordering::SeqCst);
+        wake_reporter_if_parked();
+        assert!(!REPORTER_PARKED.load(Ordering::SeqCst));
+        // Parked: the first call wakes it and clears the flag, the second does nothing.
+        REPORTER_PARKED.store(true, Ordering::SeqCst);
+        wake_reporter_if_parked();
+        assert!(!REPORTER_PARKED.load(Ordering::SeqCst));
+        wake_reporter_if_parked();
+        assert!(handle.join().unwrap() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_hold_over_2ms_stops_sampling_and_a_stale_stretch_is_dropped() {
+        let ok = STACK_MAX_HOLD_US;
+        // Normal: same stretch, frames read, short hold.
+        assert_eq!(
+            judge_capture(7, 12, 1_000, 1_000),
+            CaptureVerdict {
+                stop_sampling: false,
+                publish: true
+            }
+        );
+        // Exactly at the limit still counts as bounded.
+        assert!(!judge_capture(ok, 5, 1_000, 1_000).stop_sampling);
+        // A hold over the limit stops sampling, and the sample is still logged
+        // (even if the stretch ended meanwhile) so the stop shows in the log.
+        assert_eq!(
+            judge_capture(ok + 1, 5, 1_000, 1_000),
+            CaptureVerdict {
+                stop_sampling: true,
+                publish: true
+            }
+        );
+        assert_eq!(
+            judge_capture(ok + 1, 5, 1_000, 0),
+            CaptureVerdict {
+                stop_sampling: true,
+                publish: true
+            }
+        );
+        // Over the limit with nothing read: stop, but nothing to log.
+        assert_eq!(
+            judge_capture(50_000, 0, 1_000, 1_000),
+            CaptureVerdict {
+                stop_sampling: true,
+                publish: false
+            }
+        );
+        // The stretch ended (0) or was replaced while reading: dropped.
+        assert!(!judge_capture(7, 12, 1_000, 0).publish);
+        assert!(!judge_capture(7, 12, 1_000, 2_000).publish);
+        // Nothing read: dropped.
+        assert!(!judge_capture(7, 0, 1_000, 1_000).publish);
+    }
+
+    #[test]
+    fn a_hold_over_2ms_sets_disabled_and_a_short_hold_does_not() {
+        let idle = Duration::from_millis(200);
+        let mut pacer = StackPacer::default();
+        pacer.apply(judge_capture(STACK_MAX_HOLD_US, 3, 10, 10));
+        assert!(!pacer.disabled);
+        pacer.apply(judge_capture(STACK_MAX_HOLD_US + 1, 3, 10, 10));
+        assert!(pacer.disabled);
+        // Disabled stays disabled, and the reporter then sleeps idle.
+        pacer.apply(judge_capture(1, 3, 10, 10));
+        assert!(pacer.disabled);
+        assert_eq!(pacer.next_wait(10, 20, true, idle), idle);
+        // A capture that read nothing but held too long also disables.
+        let mut empty = StackPacer::default();
+        empty.apply(judge_capture(STACK_MAX_HOLD_US + 1, 0, 10, 10));
+        assert!(empty.disabled);
+    }
+
+    #[test]
+    fn the_kill_switch_reads_its_value() {
+        use std::ffi::OsStr;
+        assert!(!stacks_disabled_by_env(None));
+        assert!(stacks_disabled_by_env(Some(OsStr::new("1"))));
+        assert!(stacks_disabled_by_env(Some(OsStr::new("true"))));
+        assert!(stacks_disabled_by_env(Some(OsStr::new(" TRUE "))));
+        for off in ["0", "", "false", "no", "2"] {
+            assert!(!stacks_disabled_by_env(Some(OsStr::new(off))), "{off:?}");
+        }
+    }
+
+    #[test]
+    fn an_applied_marker_is_queued_only_after_the_setter_succeeded() {
+        let _guard = enable_for_test();
+        let before = applied::MARKERS_QUEUED.load(Ordering::Relaxed);
+        let ok: Result<u8, &str> = queued_section("test.setter", "applied.test.setter", || Ok(7));
+        assert_eq!(ok, Ok(7));
+        assert_eq!(applied::MARKERS_QUEUED.load(Ordering::Relaxed), before + 1);
+        let failed: Result<u8, &str> =
+            queued_section("test.setter", "applied.test.setter", || Err("closed"));
+        assert_eq!(failed, Err("closed"));
+        assert_eq!(applied::MARKERS_QUEUED.load(Ordering::Relaxed), before + 1);
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn warming_up_leaves_the_calling_thread_running_and_sampleable() {
+        use std::sync::atomic::AtomicBool;
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                stack::warm_up();
+                stack::warm_up();
+                tx.send(stack::Target::current().expect("target")).unwrap();
+                while !stop.load(Ordering::Relaxed) {
+                    std::hint::spin_loop();
+                }
+            })
+        };
+        let target = rx.recv().unwrap();
+        let mut raw = [0u64; stack::MAX_FRAMES];
+        let captured = stack::capture(target, &mut raw);
+        stop.store(true, Ordering::Relaxed);
+        worker.join().unwrap();
+        assert!(captured.frames > 0);
     }
 }

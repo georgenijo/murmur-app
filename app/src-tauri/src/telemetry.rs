@@ -4027,6 +4027,9 @@ mod tests {
                 "ui!f\"quoted secret\"",
                 "ui!f=secret",
                 "ui!f\nSENTINEL",
+                "SENTINEL_NO_BANG",
+                "ui!two SENTINEL words",
+                "Some Image!f",
                 "",
             ] {
                 let mut data = serde_json::json!({
