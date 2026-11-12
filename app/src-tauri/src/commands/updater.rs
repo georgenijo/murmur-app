@@ -109,12 +109,17 @@ fn is_app_translocated(path: &Path) -> bool {
 }
 
 #[tauri::command]
-pub fn get_update_install_environment() -> Result<UpdateInstallEnvironment, String> {
-    let executable = std::env::current_exe()
-        .map_err(|_| "Could not verify the update installation location".to_string())?;
-    let app_translocated = is_app_translocated(&executable);
+pub async fn get_update_install_environment() -> Result<UpdateInstallEnvironment, String> {
+    // `current_exe` resolves the executable path through the filesystem.
+    tauri::async_runtime::spawn_blocking(|| {
+        let executable = std::env::current_exe()
+            .map_err(|_| "Could not verify the update installation location".to_string())?;
+        let app_translocated = is_app_translocated(&executable);
 
-    Ok(UpdateInstallEnvironment { app_translocated })
+        Ok(UpdateInstallEnvironment { app_translocated })
+    })
+    .await
+    .map_err(|_| "Could not verify the update installation location".to_string())?
 }
 
 #[cfg(test)]

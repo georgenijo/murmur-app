@@ -77,6 +77,8 @@ pub struct TranscriptionSettings {
     pub vad_sensitivity: u32,
     pub prompt: Option<String>,
     pub smart_punctuation: bool,
+    /// Streaming setting frozen at recording start (E1 incremental VAD).
+    pub streaming_pipeline_enabled: bool,
 }
 
 #[derive(Clone)]
@@ -243,6 +245,7 @@ pub fn resolve(inputs: ResolverInputs<'_>) -> DictationContextSnapshot {
             vad_sensitivity: global.vad_sensitivity,
             prompt: inputs.prompt,
             smart_punctuation: global.smart_punctuation,
+            streaming_pipeline_enabled: global.streaming_pipeline_enabled,
         },
         transformations: TransformationSettings {
             cleanup_enabled,

@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 150 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 154 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -187,16 +187,24 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `remove_smart_turn_model` | — | `Result<(), String>` | Drops the loaded session, then deletes the hash directory and any partial. |
 | `check_smart_turn` | — | `Result<SmartTurnCheckResult, String>` | Scores whether the in-flight dictation's speaker has finished: peeks the last 8 s at 16 kHz (capture keeps running) and runs the model on a blocking worker. Tagged `outcome`: `scored` (`recordingId`, `probability`, `inferenceMs`), `notRecording`, `tooShort`, or `unavailable` (`reason`: `not_installed`, `busy`, `load_failed`, `inference_failed`). Nothing is persisted. |
 
+## Streaming speech detection (`commands/streaming_vad.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `streaming_vad_model_status` | — | `ModelStatus` | `{state, sizeBytes, error?}` for the pinned Silero VAD v5.1.2 ONNX model: `notDownloaded`, `downloading`, `ready` or `failed` (`error` is a short message). A right-size file counts as `ready` until it is verified at first load. |
+| `download_streaming_vad_model` | — | `Result<(), String>` | User-initiated only (the setting toggle or Download/Retry); starting a recording never calls it. Uses the shared resumable `model_download::transfer`, verifies size and SHA-256, publishes atomically under its hash directory, and deletes a file whose hash does not match. |
+| `remove_streaming_vad_model` | — | `Result<(), String>` | Drops the loaded session (never while holding dictation state), then deletes the hash directory and any partial. |
+
 ## Models (`commands/models.rs`)
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `check_model_exists` | — | `bool` | Whether any transcription model is installed (drives first-launch routing). |
-| `check_specific_model_exists` | `model_name: String` | `bool` | Whether a named model is on disk. Path-traversal protected. |
-| `get_model_runtime_catalog` | — | `Vec<ModelRuntimeSnapshot>` | Every catalog entry with backend, accelerator, capabilities, platform support, install state, and lifecycle state. |
+| `check_specific_model_exists` | `model_name: String` | `Result<bool, String>` | Whether a named model is on disk. Path-traversal protected. Runs on the blocking pool; the speaker-model answer comes from the cached verification verdict. |
+| `get_model_runtime_catalog` | — | `Result<Vec<ModelRuntimeSnapshot>, String>` | Every catalog entry with backend, accelerator, capabilities, platform support, install state, and lifecycle state. Runs on the blocking pool. |
 | `get_model_runtime_status` | `model_name: String` | `Result<ModelRuntimeSnapshot, String>` | Snapshot for one model. Unknown identifiers error. |
 | `get_model_hardware_guidance` | — | `ModelHardwareGuidance` | Read-once Apple chip tier and physical-memory guidance for model pickers, including the recommended model, presentation-only model-memory budget, and warned catalog identifiers. It does not select, install, load, unload, or hide models. |
-| `get_diarization_model_status` | — | `ModelStatus` | Platform support, install activity, installed state, and total bytes for the pinned local speaker models. |
+| `get_diarization_model_status` | — | `Result<ModelStatus, String>` | Platform support, install activity, installed state, and total bytes for the pinned local speaker models. Runs on the blocking pool. The installed verdict hashes the files once, then is reused while every file's size, modification time and inode change time are unchanged; download and removal invalidate it. |
 | `remove_model` | `model_name: String` | `Result<(), String>` | Removes only the exact managed catalog artifact (or documented FluidAudio v3 cache); refuses selected/active models, recording/transcription, concurrent model work, downloads, symbolic links, and external Whisper copies. Publishes NotInstalled immediately. |
 | `download_model` | `model_name: String`, `request_id: Option<String>` | `Result<(), String>` | Owned single-flight install with disk preflight, idle-bounded resumable HTTP transfers, cancellable extraction/Core ML worker, atomic publication, and Silero VAD co-download. Optional caller request ID correlates progress and cancellation. |
 | `cancel_model_download` | `model_name: String`, `request_id: String` | `Result<(), String>` | Cancels only that install owner, including a pending lock wait; waits for active work and confirmed Core ML termination before returning. Safe HTTP partials and complete archives are retained for Retry. |
@@ -232,9 +240,9 @@ frontend.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `list_performance_runs` | `limit: Option<u32>` | `Result<PerformanceRunListV1, String>` | Completed runs, newest first (cap 200). |
+| `list_performance_runs` | `limit: Option<u32>` | `Result<PerformanceRunListV1, String>` | Completed runs, newest first (cap 200). Runs on the blocking pool. |
 | `get_performance_run` | `run_id: String` | `Result<Option<PerformanceRunV1>, String>` | One run with stage timings, warm state, RSS deltas, and transform follow-ups. |
-| `get_performance_resource_window` | — | `Result<Vec<ResourceSampleV1>, String>` | The rolling CPU/memory sample window (cap 600). |
+| `get_performance_resource_window` | — | `Result<Vec<ResourceSampleV1>, String>` | The rolling CPU/memory sample window (cap 600). Runs on the blocking pool. |
 | `get_performance_store_health` | — | `Result<PerformanceStoreHealthV1, String>` | Main/Diagnostics-window-only content-free store availability, skipped-run count, last bounded failure/recovery evidence, and recommended local action. |
 | `recover_performance_store` | `allow_reinitialize: bool` | `Result<PerformanceStoreHealthV1, String>` | Main/Diagnostics-window-only explicit reopen/check. Quarantine/reinitialize additionally requires confirmed caller intent plus fresh corruption or invalid-record evidence; a healthy database is never deleted. |
 | `get_capture_health_history` | — | `CaptureHealthHistoryV1` | The 20 newest finalized dictation startup observations. Each contains only `startupMs`, `usedFallback`, and an optional allowlisted fallback backend enum. |
@@ -266,13 +274,13 @@ without logging their content.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `load_settings_blob` | — | `Result<Option<String>, String>` | Reads `settings.json`, creating the directory if needed. `None` when the file is absent, or when it was over 1 MiB, not UTF-8, not valid JSON, or not a JSON object — those are renamed to `settings.json.corrupt-<unix-seconds>` and never deleted, so the caller falls back to its localStorage cache. `Err` is reserved for filesystem failures. |
+| `load_settings_blob` | — | `Result<Option<String>, String>` | Reads `settings.json` on the blocking pool without the writer lock (a rejected file is quarantined under the lock only if the path still names the rejected file, so a read never quarantines a file a writer just published), creating the directory if needed. `None` when the file is absent, or when it was over 1 MiB, not UTF-8, not valid JSON, or not a JSON object — those are renamed to `settings.json.corrupt-<unix-seconds>` and never deleted, so the caller falls back to its localStorage cache. `Err` is reserved for filesystem failures. |
 | `save_settings_blob` | `blob: String` | `Result<(), String>` | Refuses anything over 1 MiB or not a JSON object, then publishes atomically (temp sibling, then rename). Concurrent writers (main and overlay windows) are serialized; a failed write removes the temp file and preserves the previous settings. |
 | `patch_overlay_setting` | `field: "autoPaste" or "disabled", value: bool` | `Result<String, String>` | Overlay-only atomic merge of one owned field into the latest durable settings. Returns the committed document and notifies main without a full-cache echo. |
-| `load_history_blob` | — | `Result<Option<String>, String>` | Reads `history.json`. `None` means absent or quarantined; the 8 MiB JSON-array bound is checked before returning content. |
+| `load_history_blob` | — | `Result<Option<String>, String>` | Reads `history.json` on the blocking pool without the writer lock; a rejected file is quarantined only if it is still the file that was rejected. `None` means absent or quarantined; the 8 MiB JSON-array bound is checked before returning content. |
 | `save_history_blob` | `blob: String` | `Result<(), String>` | Atomically publishes a history JSON array up to 8 MiB. |
 | `clear_history_blob` | — | `Result<(), String>` | Idempotently removes `history.json` without touching settings or stats. |
-| `load_stats_blob` | — | `Result<Option<String>, String>` | Reads `stats.json`. `None` means absent or quarantined; the 1 MiB JSON-object bound is checked before returning content. |
+| `load_stats_blob` | — | `Result<Option<String>, String>` | Reads `stats.json` on the blocking pool without the writer lock; a rejected file is quarantined only if it is still the file that was rejected. `None` means absent or quarantined; the 1 MiB JSON-object bound is checked before returning content. |
 | `save_stats_blob` | `blob: String` | `Result<(), String>` | Atomically publishes a statistics JSON object up to 1 MiB. |
 | `clear_stats_blob` | — | `Result<(), String>` | Idempotently removes `stats.json` without touching settings or history. |
 | `load_theme_library_blob` | — | `Result<Option<String>, String>` | Main-window-only read of `theme-library.json`. `None` means absent or quarantined; the 1 MiB JSON-object boundary is enforced before content reaches the renderer. |
@@ -284,6 +292,7 @@ without logging their content.
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `get_overlay_geometry` | `content?: OverlayContent` | `OverlayGeometry` | Current native activity/placement/content contract from `geometry_for_layout()`, including mandatory island metrics. Never null; a 185pt pretend notch substitutes on flat/unmeasured displays. |
+| `overlay_pointer_sample` | — | `Option<OverlayPointerSample>` | Hover-poller reading from the `overlay` webview only: `{windowX, windowY, cursorX, cursorY}` in logical points (overlay frame origin and global cursor). `null` while the applied frame is unknown. `async`, so it runs off the main thread and never waits for it. |
 | `show_overlay` | — | `Result<(), String>` | Shows the overlay at its current position and re-enables mouse events (disabled by `focusable:false`); it deliberately does not reset an in-progress calibration preview. |
 | `hide_overlay` | — | `Result<(), String>` | Hides the overlay. |
 | `set_overlay_expanded` | `expanded: bool`, `content?: OverlayContent`, `activity?: OverlayActivity`, `placement?: OverlayPlacement`, `defer_shrink?: bool` | `Result<AppliedSurface, String>` | Single acknowledged native surface writer. Applies layout on the main thread, publishes target `overlay-surface-changed` after successful setters, and returns actual bounds. `defer_shrink` retains larger old bounds during contraction; a later exact request releases the temporary hit area. Activity is idle/recording/processing; placement is notch/floating_pill (legacy `below_menu_bar` deserializes as the pill). |

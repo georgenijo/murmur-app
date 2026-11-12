@@ -9,7 +9,7 @@ For the commands these hooks call see [commands.md](commands.md). For the events
 ## Recording and dictation (main window)
 
 ### `useRecordingState`
-The dictation state machine. Owns `status` (`idle` / `starting` / `recording` / `recovering` / `processing`), audio level, locked mode, and the error/hint banners. Subscribes to `recording-status-changed`, the audio initialization/recovery signals, `transcription-complete`, `recording-cancelled`, `audio-level`, `auto-paste-failed`, and `file-output-failed`; invokes `start_native_recording` / `stop_native_recording` / `cancel_native_recording`.
+The dictation state machine. Owns `status` (`idle` / `starting` / `recording` / `recovering` / `processing`), audio level, locked mode, and the error/hint banners. Subscribes to `recording-status-changed`, the audio initialization/recovery signals, `transcription-complete`, `recording-cancelled`, `audio-level` (ignored while the window is hidden, so a hidden main window does not re-render `App` per sample), `auto-paste-failed`, and `file-output-failed`; invokes `start_native_recording` / `stop_native_recording` / `cancel_native_recording`.
 
 **`transcription-complete` is the single source of truth** for history and stats â€” entries are never added in `handleStop()`, because the overlay can start a recording independently and that would double-count.
 
@@ -160,7 +160,7 @@ The overlay's snapshot of persisted settings (read straight from localStorage â€
 Click disambiguation on the island: single click (250ms debounce) stops recording or exits locked mode; double-click toggles locked mode.
 
 ### `useWaveform`
-Owns the `audio-level` listener and the rAF bar-height animation. Writes bar heights through direct DOM refs, bypassing React reconciliation to hold 60fps. Center bars are taller (envelope shaping) with jitter for organic movement.
+Owns the `overlay-audio-level` listener and the rAF bar-height animation. Writes bar heights through direct DOM refs, bypassing React reconciliation to hold 60fps. Center bars are taller (envelope shaping) with jitter for organic movement.
 
 ---
 

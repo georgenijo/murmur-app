@@ -65,6 +65,7 @@ import { PerformanceLab } from './PerformanceLab';
 import { MicrophoneInputTest } from './MicrophoneInputTest';
 import { MeetingDiarizationSettings } from './MeetingDiarizationSettings';
 import { SmartAutoStopSettings } from './SmartAutoStopSettings';
+import { StreamingVadSettings } from './StreamingVadSettings';
 import { OverlayCalibrationControl } from './OverlayCalibrationControl';
 import { SettingsSection } from './SettingsSection';
 import { SettingsBranch } from './SettingsBranch';
@@ -309,6 +310,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'recording', target: 'sound-volume', title: 'Sound cue volume', detail: 'Adjust local feedback volume', keywords: 'sound preview' },
   { page: 'recording', target: 'meeting-cues', title: 'Meeting cues', detail: 'Play sound cues during meetings', keywords: 'notetaker sound' },
   { page: 'recording', target: 'hotkey-feedback', title: 'Hotkey timing feedback', detail: 'Flash when a double tap misses', keywords: 'shortcut timing' },
+  { page: 'recording', target: 'streaming-pipeline', title: 'Streaming speech detection', detail: 'Experimental: detect speech while recording', keywords: 'experimental streaming vad stop latency' },
   { page: 'recording', target: 'smart-auto-stop', title: 'Smart Auto-Stop', detail: 'Manage the optional local end-of-turn model', keywords: 'experimental smart turn' },
   { page: 'delivery', target: 'paste-delay', title: 'Paste delay', detail: 'Wait before automatic paste', keywords: 'milliseconds delivery' },
   { page: 'text', target: 'cleanup-filler', title: 'Remove filler words', detail: 'Remove um and uh during cleanup', keywords: 'cleanup filler' },
@@ -1192,6 +1194,11 @@ export const SettingsPanel = memo(function SettingsPanel({
               silenceAutoStopOn={settings.autoStopSilenceMs > 0}
               isRecording={isRecording}
               onEnabledChange={(smartAutoStopEnabled) => onUpdateSettings({ smartAutoStopEnabled })}
+            />
+            <StreamingVadSettings
+              enabled={settings.streamingPipelineEnabled}
+              isRecording={isRecording}
+              onEnabledChange={(streamingPipelineEnabled) => onUpdateSettings({ streamingPipelineEnabled })}
             />
             </SettingsDisclosure>
             </SettingsGroup>

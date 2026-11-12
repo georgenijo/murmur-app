@@ -20,6 +20,7 @@ pub mod permissions;
 pub mod recording;
 pub mod settings_store;
 pub mod smart_turn;
+pub mod streaming_vad;
 pub mod theme;
 pub mod tray;
 pub mod updater;
