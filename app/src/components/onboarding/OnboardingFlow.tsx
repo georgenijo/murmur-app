@@ -22,7 +22,6 @@ import { ModelDownloadPanel } from '../ModelDownloader';
 import { WindowHeader } from '../ui/WindowHeader';
 import {
   DICTATION_KEY_OPTIONS,
-  dictationKeyLabel,
   isFunctionDictationKey,
   GLOBE_DICTATION_KEY,
   type DictationKey,
@@ -585,7 +584,6 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
                 <SummaryRow ok={calendarStatus === 'granted'} label="Calendar" okText="Granted" missingText="Optional — name meetings manually" />
                 <SummaryRow ok={modelInstalled} label="Model" okText="Installed" missingText="Not verified" />
               </div>
-              <p className="onboarding-label">Try it out</p><p className="onboarding-copy">{selectedRecordingMode === 'double_tap' ? 'Double-tap ' : 'Hold '}<kbd className="dialog-kbd">{dictationKeyLabel(selectedTriggerKey)}</kbd>{selectedRecordingMode === 'double_tap' ? ' to start recording and tap once to stop' : selectedRecordingMode === 'both' ? ' and speak, then release (or double-tap to toggle)' : ' and speak, then release'}. Your words are transcribed and copied to the clipboard.</p>
               {completionError && <ErrorMessage message="Could not verify or configure the selected transcription model. Your setup choices are kept. Retry, or go Back to review the model." />}
               <WizardNavigationRow onBack={goBack} backDisabled={completing} onNext={() => void finishSetup()} nextEnabled={!completing} defaultAction nextLabel={completing ? 'Configuring model…' : completionError ? 'Retry' : 'Start using Murmur'} />
             </>}
