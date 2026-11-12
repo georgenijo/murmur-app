@@ -851,8 +851,12 @@ scores audio as it arrives and Stop scores only the unfinished tail.
   v5.1.2 ONNX model on the shared ONNX Runtime (`smart_turn::init_runtime`), and
   keeps the LSTM state. Nothing runs on the real-time audio callback.
 - Every method on the slot is keyed by recording id: a different, stopped or
-  superseded recording never reads or changes the state, `begin` replaces it, and
-  `AppState::clear_active_context` clears it.
+  superseded recording never reads or changes the state, and
+  `AppState::clear_active_context` clears it. `begin` refuses an id that already
+  owns (or already owned) the slot, so one recording can never have two workers.
+- The worker scores in chunks of about 0.5 s and releases the slot lock between
+  chunks, so Stop takes the stream within one chunk instead of waiting for a
+  backlog.
 - At Stop, `run_transcription_pipeline` takes this recording's stream, verifies the
   final PCM extends what was scored (length and a strided fingerprint of the
   prefix), scores the tail (zero-padding the last window like ggml), and segments
@@ -860,27 +864,46 @@ scores audio as it arrives and Stop scores only the unfinished tail.
   `whisper_vad_segments_from_probs` for Murmur's parameters. The kept-speech PCM is
   built by the same `vad::speech_from_segments` helper as the batch path.
 - **Any doubt uses the batch VAD**: model not installed or failing to load, a
-  scoring error, a reset or shrunken capture buffer, a length or prefix mismatch,
-  no stream for the recording, and also a "no speech" verdict (a silent verdict
-  ends the dictation, so the batch VAD confirms it). The streaming result never
-  drops speech the batch path would have kept in the measured runs below, and when
-  it disagrees it errs toward keeping audio.
+  scoring error, a busy session at Stop (`contended`: Stop never waits for the
+  shared session), a reset or shrunken capture buffer, a length or prefix
+  mismatch, more than about 2 s of audio still unscored at Stop (`backlog`), no
+  stream for the recording, and also a "no speech" verdict (a silent verdict ends
+  the dictation, so the batch VAD confirms it). By design this is a fallback, not
+  a guarantee: the streaming result is not constructed to keep every sample the
+  batch path keeps. In the measured runs below it lost none, and where it
+  disagreed it kept extra audio.
 - Content-free telemetry: `pipeline.vad_stream_outcome` with `outcome`
-  (`used`, `no_speech_recheck`, or a fallback reason), `tail_windows`,
+  (`used`, `no_speech_recheck`, or a fallback reason: `not_started`, `model_load`,
+  `inference`, `contended`, `buffer_reset`, `length_mismatch`, `prefix_mismatch`,
+  `backlog`), `tail_windows`,
   `total_windows`, `finish_ms`. The existing `vad_ms` stage timing still measures
   the whole VAD stage.
 
 **Model.** `silero_vad_v5.1.2.onnx` (MIT, 2,327,524 bytes) is pinned by commit URL,
-size and SHA-256, downloaded to `models/silero-vad-onnx/<sha256>/` the first time
-the setting is turned on (or on a recording while it is on and the model is
-missing; that recording uses the batch VAD), and verified before the session
-loads. The ONNX session is created lazily by the first streaming recording and
-released when the setting is turned off.
+size and SHA-256 and lives in `models/silero-vad-onnx/<sha256>/`. **It is only ever
+downloaded by a user action:** switching the setting on, or pressing
+Download/Retry on the model row under the toggle. Starting a recording never makes
+a network request; if the model is absent that recording uses the batch VAD, and
+nothing is retried. The download goes through the shared resumable
+`model_download::transfer` (idle timeout, free-space preflight). The toggle's model
+row shows `notDownloaded`, `downloading`, `ready` or `failed` (with the error) and
+offers Remove. A file of the right size is hashed before its first use; a file
+whose hash does not match is deleted, reported as `failed`, and not retried
+automatically. It is not listed in Settings → Speech-to-Text → Model storage, which
+is specific to transcription models; the toggle's own row owns install and remove.
+The ONNX session is created lazily by the first streaming recording and released
+(off the dictation-state lock) when the setting is turned off.
 
 **Not bit-identical to the batch VAD.** The batch path runs a ggml port with F16
 weights, so per-window probabilities differ slightly (largest observed difference
 about 0.025, typically below 0.006) and a boundary can move by one or two windows
-on a minority of clips. Segmentation itself is exact: on the batch model's own
+on a minority of clips. In 237 measured runs 232 kept byte-identical audio and 5
+differed by 30–70 ms (always keeping extra audio); on `rate120.wav` at
+sensitivity 70 the batch path found 16 segments and the incremental path 15, with
+identical kept audio. Text equivalence under Core ML was not established (the
+text check ran on Whisper tiny.en, whose long-clip output varies between runs).
+Memory: loading the session and scoring 120 s raised RSS by up to about 45.6 MB in
+the debug test binary. Segmentation itself is exact: on the batch model's own
 probabilities the port reproduces whisper.cpp's segments sample for sample. The
 `differential_incremental_vs_batch_vad` test (`cargo test --lib
 differential_incremental_vs_batch_vad -- --ignored --nocapture`, with

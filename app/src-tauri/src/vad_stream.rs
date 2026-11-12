@@ -13,7 +13,8 @@
 //!   probabilities it returns the same segments.
 //! - The probabilities come from the official Silero v5.1.2 ONNX model through
 //!   ONNX Runtime, not from whisper.cpp's F16 ggml port. Per-window values can
-//!   differ slightly, so a boundary can move by one 32 ms window. The
+//!   differ slightly, so a boundary can move by a window or two (measured up
+//!   to 70 ms). The
 //!   differential tests measure this. The batch VAD stays the default and the
 //!   fallback; any doubt at Stop uses it.
 //!
@@ -27,6 +28,10 @@
 //! Threading: inference runs on the `murmur-vad-stream` thread (and on the
 //! Stop path's blocking worker for the tail). Nothing here runs on the
 //! real-time audio callback.
+//!
+//! Model lifecycle: the 2.3 MB ONNX model is downloaded only when the user
+//! switches the setting on or presses Download/Retry, never when a recording
+//! starts; see `commands/streaming_vad.rs`.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -50,8 +55,16 @@ pub const MODEL_URL: &str = "https://raw.githubusercontent.com/snakers4/silero-v
 pub const MODEL_SIZE_BYTES: u64 = 2_327_524;
 pub const MODEL_SHA256: &str = "2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f";
 
+/// Tests point the model store at a temporary directory.
+#[cfg(test)]
+pub(crate) static ROOT_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
 /// Root of the hash-versioned streaming VAD model store.
 pub fn models_root() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(root) = ROOT_OVERRIDE.lock_or_recover().clone() {
+        return Some(root);
+    }
     dirs::data_dir().map(|dir| {
         dir.join("local-dictation")
             .join("models")
@@ -233,13 +246,38 @@ pub fn segments_from_probs(probs: &[f32], params: SegmentParams) -> Vec<(f32, f3
 // Scoring.
 // ---------------------------------------------------------------------------
 
+/// Why one window could not be scored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScoreError {
+    /// The shared session was busy (a load, an unload, or another recording's
+    /// scorer) and the caller must not wait. Only the Stop path refuses to wait.
+    Contended,
+    Failed(String),
+}
+
+impl From<String> for ScoreError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+
+impl From<&str> for ScoreError {
+    fn from(message: &str) -> Self {
+        Self::Failed(message.to_string())
+    }
+}
+
 /// Scores one 512-sample window given the LSTM state, which it updates.
 pub trait WindowScorer {
     fn score(
         &mut self,
         window: &[f32; WINDOW_SAMPLES],
         state: &mut [f32; STATE_LEN],
-    ) -> Result<f32, String>;
+    ) -> Result<f32, ScoreError>;
+
+    /// Called when the stream is finished at Stop: from then on the scorer must
+    /// return `Contended` instead of waiting for shared resources.
+    fn set_blocking(&mut self, _blocking: bool) {}
 }
 
 /// The 576-sample model input: ggml's left reflection of the window, then the
@@ -254,32 +292,30 @@ fn reflected_input(window: &[f32; WINDOW_SAMPLES]) -> [f32; CONTEXT_SAMPLES + WI
 }
 
 /// The process-wide ONNX session. Loaded lazily the first time a recording
-/// asks for streaming VAD, and dropped by [`unload`].
+/// with the setting on starts, and dropped by [`unload`] or when the model
+/// fails verification.
 static SESSION: Mutex<Option<ort::session::Session>> = Mutex::new(None);
 
-/// Verify the pinned digest and open a single-threaded session. Idempotent.
-pub fn load_session() -> Result<(), String> {
-    if !model_installed() {
-        return Err("model not installed".to_string());
-    }
-    load_session_from(&installed_model_path().ok_or("no model directory")?)
+enum Verify {
+    Ok,
+    /// The file is readable but is not the pinned model.
+    Mismatch,
+    Io(String),
 }
 
-/// [`load_session`] for an explicit model file (differential tests).
-pub fn load_session_from(path: &std::path::Path) -> Result<(), String> {
-    let mut slot = SESSION.lock_or_recover();
-    if slot.is_some() {
-        return Ok(());
+fn verify_file(path: &std::path::Path) -> Verify {
+    match crate::model_digest::model_file_digest(path) {
+        Ok((size, sha)) if size == MODEL_SIZE_BYTES && sha == MODEL_SHA256 => Verify::Ok,
+        Ok(_) => Verify::Mismatch,
+        Err(error) => Verify::Io(error.to_string()),
     }
-    let (size, sha) =
-        crate::model_digest::model_file_digest(path).map_err(|error| error.to_string())?;
-    if size != MODEL_SIZE_BYTES || sha != MODEL_SHA256 {
-        return Err("model failed verification".to_string());
-    }
+}
+
+fn build_session(path: &std::path::Path) -> Result<ort::session::Session, String> {
     crate::smart_turn::init_runtime()?;
     let builder_error =
         |error: ort::Error<ort::session::builder::SessionBuilder>| error.to_string();
-    let session = ort::session::Session::builder()
+    ort::session::Session::builder()
         .map_err(|error| error.to_string())?
         .with_optimization_level(ort::session::builder::GraphOptimizationLevel::All)
         .map_err(builder_error)?
@@ -292,32 +328,84 @@ pub fn load_session_from(path: &std::path::Path) -> Result<(), String> {
         .with_intra_op_spinning(false)
         .map_err(builder_error)?
         .commit_from_file(path)
-        .map_err(|error| error.to_string())?;
-    *slot = Some(session);
+        .map_err(|error| error.to_string())
+}
+
+/// Hash, build, then publish: the session lock is held only to publish, so an
+/// unload or a scoring call never waits behind hashing or model loading.
+fn load_verified(path: &std::path::Path, delete_on_mismatch: bool) -> Result<(), String> {
+    if SESSION.lock_or_recover().is_some() {
+        return Ok(());
+    }
+    match verify_file(path) {
+        Verify::Ok => {}
+        Verify::Mismatch => {
+            if delete_on_mismatch {
+                // Never retry a bad file on every recording: remove it so the
+                // next switch-on downloads a fresh copy, and say so in the
+                // toggle's status.
+                let _ = std::fs::remove_file(path);
+                set_last_error("The streaming speech model failed verification and was removed. Download it again.");
+            }
+            return Err("model failed verification".to_string());
+        }
+        Verify::Io(error) => return Err(error),
+    }
+    let session = build_session(path)?;
+    let mut slot = SESSION.lock_or_recover();
+    slot.get_or_insert(session);
     Ok(())
 }
 
-/// Drop the loaded session (setting turned off).
+/// Load the installed model. On a digest mismatch the file is deleted.
+pub fn load_session() -> Result<(), String> {
+    if !model_installed() {
+        return Err("model not installed".to_string());
+    }
+    load_verified(&installed_model_path().ok_or("no model directory")?, true)
+}
+
+/// [`load_session`] for an explicit model file (differential tests); never
+/// deletes.
+#[cfg(test)]
+pub fn load_session_from(path: &std::path::Path) -> Result<(), String> {
+    load_verified(path, false)
+}
+
+/// Drop the loaded session (setting turned off, model removed).
 pub fn unload() {
     *SESSION.lock_or_recover() = None;
 }
 
 /// Scores through the shared ONNX session.
-pub struct OnnxScorer;
+pub struct OnnxScorer {
+    blocking: bool,
+}
+
+impl Default for OnnxScorer {
+    fn default() -> Self {
+        Self { blocking: true }
+    }
+}
 
 impl WindowScorer for OnnxScorer {
+    fn set_blocking(&mut self, blocking: bool) {
+        self.blocking = blocking;
+    }
+
     fn score(
         &mut self,
         window: &[f32; WINDOW_SAMPLES],
         state: &mut [f32; STATE_LEN],
-    ) -> Result<f32, String> {
-        // The slot's lock already serializes the scoring threads, so the session
-        // is only ever contended by a first-use load or an unload. Never wait
-        // for either: the Stop path must not stall behind a model load, and the
-        // error here means "use the batch VAD".
-        let mut guard = SESSION
-            .try_lock_or_recover()
-            .ok_or("session is loading or unloading")?;
+    ) -> Result<f32, ScoreError> {
+        // The recording-time worker is a dedicated thread and may wait for a
+        // window's worth of someone else's inference. The Stop path never
+        // waits: contention there means "use the batch VAD".
+        let mut guard = if self.blocking {
+            SESSION.lock_or_recover()
+        } else {
+            SESSION.try_lock_or_recover().ok_or(ScoreError::Contended)?
+        };
         let session = guard.as_mut().ok_or("session not loaded")?;
         let input = ort::value::Tensor::from_array((
             [1_usize, CONTEXT_SAMPLES + WINDOW_SAMPLES],
@@ -347,7 +435,7 @@ impl WindowScorer for OnnxScorer {
             .try_extract_tensor::<f32>()
             .map_err(|error| error.to_string())?;
         if next_state.len() != STATE_LEN {
-            return Err("unexpected LSTM state size".to_string());
+            return Err("unexpected LSTM state size".into());
         }
         state.copy_from_slice(next_state);
         Ok(probability)
@@ -359,22 +447,27 @@ impl WindowScorer for OnnxScorer {
 // ---------------------------------------------------------------------------
 
 /// Why the incremental result was not used. Every reason falls back to the
-/// batch VAD, so none of them can drop speech.
+/// batch VAD.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FallbackReason {
-    /// No session was started for this recording (setting off, VAD disabled,
+    /// No stream was started for this recording (setting off, VAD disabled,
     /// model not installed, or a different recording owns the slot).
     NotStarted,
-    /// The ONNX session could not be loaded.
+    /// The ONNX session could not be loaded or verified.
     ModelLoad,
     /// Scoring a window failed.
     Inference,
+    /// The session was busy and Stop does not wait for it.
+    Contended,
     /// The capture buffer was reset or shrank while recording.
     BufferReset,
     /// The final PCM is shorter than what was already scored.
     LengthMismatch,
     /// The already-scored prefix is not the prefix of the final PCM.
     PrefixMismatch,
+    /// Too much audio was left unscored for Stop to score it cheaply (the
+    /// recording-time worker fell behind or stopped early).
+    Backlog,
 }
 
 impl FallbackReason {
@@ -383,12 +476,27 @@ impl FallbackReason {
             Self::NotStarted => "not_started",
             Self::ModelLoad => "model_load",
             Self::Inference => "inference",
+            Self::Contended => "contended",
             Self::BufferReset => "buffer_reset",
             Self::LengthMismatch => "length_mismatch",
             Self::PrefixMismatch => "prefix_mismatch",
+            Self::Backlog => "backlog",
         }
     }
 }
+
+impl From<&ScoreError> for FallbackReason {
+    fn from(error: &ScoreError) -> Self {
+        match error {
+            ScoreError::Contended => Self::Contended,
+            ScoreError::Failed(_) => Self::Inference,
+        }
+    }
+}
+
+/// More unscored audio than this at Stop means streaming did not keep up; the
+/// batch VAD is no slower than scoring it here single-threaded.
+pub const MAX_STOP_BACKLOG_SAMPLES: usize = 2 * SAMPLE_RATE;
 
 /// Fold every `FINGERPRINT_STRIDE`th sample (by absolute index) into `hash`.
 fn fold_fingerprint(mut hash: u64, base: usize, samples: &[f32]) -> u64 {
@@ -444,7 +552,7 @@ impl<S: WindowScorer> IncrementalVad<S> {
         &self.probs
     }
 
-    fn score_window(&mut self, window: &[f32; WINDOW_SAMPLES]) -> Result<(), String> {
+    fn score_window(&mut self, window: &[f32; WINDOW_SAMPLES]) -> Result<(), ScoreError> {
         let probability = self.scorer.score(window, &mut self.state)?;
         self.probs.push(probability);
         Ok(())
@@ -452,7 +560,7 @@ impl<S: WindowScorer> IncrementalVad<S> {
 
     /// Score every whole window the new samples complete. Chunk size does not
     /// change the result.
-    pub fn push(&mut self, samples: &[f32]) -> Result<(), String> {
+    pub fn push(&mut self, samples: &[f32]) -> Result<(), ScoreError> {
         self.fingerprint = fold_fingerprint(self.fingerprint, self.consumed, samples);
         self.consumed += samples.len();
         let mut rest = samples;
@@ -477,9 +585,8 @@ impl<S: WindowScorer> IncrementalVad<S> {
         Ok(())
     }
 
-    /// Score the final partial window (zero-padded, as ggml does) and return
-    /// every probability.
-    fn flush(&mut self) -> Result<(), String> {
+    /// Score the final partial window (zero-padded, as ggml does).
+    fn flush(&mut self) -> Result<(), ScoreError> {
         if self.pending.is_empty() {
             return Ok(());
         }
@@ -490,7 +597,8 @@ impl<S: WindowScorer> IncrementalVad<S> {
     }
 
     /// Finish against the authoritative final PCM: verify it extends what was
-    /// already scored, score the remaining tail, and segment.
+    /// already scored, score the remaining tail without waiting for shared
+    /// resources, and segment.
     pub fn finish(
         mut self,
         samples: &[f32],
@@ -499,13 +607,17 @@ impl<S: WindowScorer> IncrementalVad<S> {
         if samples.len() < self.consumed {
             return Err(FallbackReason::LengthMismatch);
         }
+        if samples.len() - self.consumed > MAX_STOP_BACKLOG_SAMPLES {
+            return Err(FallbackReason::Backlog);
+        }
         if fold_fingerprint(FINGERPRINT_SEED, 0, &samples[..self.consumed]) != self.fingerprint {
             return Err(FallbackReason::PrefixMismatch);
         }
+        self.scorer.set_blocking(false);
         let windows_before = self.probs.len();
         self.push(&samples[self.consumed..])
             .and_then(|()| self.flush())
-            .map_err(|_| FallbackReason::Inference)?;
+            .map_err(|error| FallbackReason::from(&error))?;
         if self.probs.len() != samples.len().div_ceil(WINDOW_SAMPLES) {
             return Err(FallbackReason::LengthMismatch);
         }
@@ -531,28 +643,65 @@ impl<S: WindowScorer> IncrementalVad<S> {
 // The per-recording slot.
 // ---------------------------------------------------------------------------
 
-struct ActiveStream {
+/// Samples scored per slot-lock hold (about 16 windows, a few milliseconds), so
+/// Stop's `take` waits for one chunk rather than a whole poll's backlog.
+const PUSH_CHUNK_SAMPLES: usize = SAMPLE_RATE / 2;
+
+struct ActiveStream<S: WindowScorer> {
     recording_id: u64,
-    vad: IncrementalVad<OnnxScorer>,
+    vad: IncrementalVad<S>,
     failed: Option<FallbackReason>,
+}
+
+struct SlotInner<S: WindowScorer> {
+    active: Option<ActiveStream<S>>,
+    /// Recording ids only grow, so a duplicate or stale `begin` is refused.
+    highest_begun: u64,
 }
 
 /// Holds the one incremental VAD that belongs to the current recording.
 /// Every method is keyed by recording id; another recording's id never reads
-/// or changes the state.
-#[derive(Default)]
-pub struct StreamSlot {
-    inner: Mutex<Option<ActiveStream>>,
+/// or changes the state. `S` is the scorer; production uses [`OnnxScorer`].
+pub struct StreamSlot<S: WindowScorer = OnnxScorer> {
+    inner: Mutex<SlotInner<S>>,
+    /// Recording id whose `take` is waiting for the lock; its worker yields.
+    taking_id: std::sync::atomic::AtomicU64,
 }
 
-impl StreamSlot {
-    /// Start a fresh stream for `recording_id`, replacing whatever was there.
-    pub fn begin(&self, recording_id: u64) {
-        *self.inner.lock_or_recover() = Some(ActiveStream {
+impl<S: WindowScorer> Default for StreamSlot<S> {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(SlotInner {
+                active: None,
+                highest_begun: 0,
+            }),
+            taking_id: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
+
+impl StreamSlot<OnnxScorer> {
+    /// Start a fresh stream for `recording_id`. Returns false, changing
+    /// nothing, when this id (or a newer one) has already begun.
+    pub fn begin(&self, recording_id: u64) -> bool {
+        self.begin_with(recording_id, OnnxScorer::default())
+    }
+}
+
+impl<S: WindowScorer> StreamSlot<S> {
+    /// [`StreamSlot::begin`] with an explicit scorer.
+    pub fn begin_with(&self, recording_id: u64, scorer: S) -> bool {
+        let mut inner = self.inner.lock_or_recover();
+        if recording_id <= inner.highest_begun {
+            return false;
+        }
+        inner.highest_begun = recording_id;
+        inner.active = Some(ActiveStream {
             recording_id,
-            vad: IncrementalVad::new(OnnxScorer),
+            vad: IncrementalVad::new(scorer),
             failed: None,
         });
+        true
     }
 
     /// Samples scored so far, or `None` when `recording_id` does not own the
@@ -560,28 +709,39 @@ impl StreamSlot {
     pub fn consumed(&self, recording_id: u64) -> Option<usize> {
         self.inner
             .lock_or_recover()
+            .active
             .as_ref()
             .filter(|stream| stream.recording_id == recording_id && stream.failed.is_none())
             .map(|stream| stream.vad.consumed())
     }
 
-    /// Score `samples`, which must start at `expected_offset`. Returns false
-    /// when the stream no longer belongs to `recording_id` or failed.
+    /// Score `samples`, which must start at `expected_offset`, in bounded
+    /// chunks, releasing the slot lock between them. Returns false when the
+    /// stream no longer belongs to `recording_id`, failed, or Stop is taking it.
     pub fn push(&self, recording_id: u64, expected_offset: usize, samples: &[f32]) -> bool {
-        let mut inner = self.inner.lock_or_recover();
-        let Some(stream) = inner
-            .as_mut()
-            .filter(|stream| stream.recording_id == recording_id && stream.failed.is_none())
-        else {
-            return false;
-        };
-        if stream.vad.consumed() != expected_offset {
-            stream.failed = Some(FallbackReason::BufferReset);
-            return false;
-        }
-        if stream.vad.push(samples).is_err() {
-            stream.failed = Some(FallbackReason::Inference);
-            return false;
+        use std::sync::atomic::Ordering;
+        let mut offset = expected_offset;
+        for chunk in samples.chunks(PUSH_CHUNK_SAMPLES) {
+            if self.taking_id.load(Ordering::Acquire) == recording_id {
+                return false;
+            }
+            let mut inner = self.inner.lock_or_recover();
+            let Some(stream) = inner
+                .active
+                .as_mut()
+                .filter(|stream| stream.recording_id == recording_id && stream.failed.is_none())
+            else {
+                return false;
+            };
+            if stream.vad.consumed() != offset {
+                stream.failed = Some(FallbackReason::BufferReset);
+                return false;
+            }
+            if let Err(error) = stream.vad.push(chunk) {
+                stream.failed = Some(FallbackReason::from(&error));
+                return false;
+            }
+            offset += chunk.len();
         }
         true
     }
@@ -590,6 +750,7 @@ impl StreamSlot {
         if let Some(stream) = self
             .inner
             .lock_or_recover()
+            .active
             .as_mut()
             .filter(|stream| stream.recording_id == recording_id)
         {
@@ -598,40 +759,48 @@ impl StreamSlot {
     }
 
     /// Remove and return the stream for exactly `recording_id`.
-    pub fn take(&self, recording_id: u64) -> Option<StreamHandoff> {
+    pub fn take(&self, recording_id: u64) -> Option<StreamHandoff<S>> {
+        use std::sync::atomic::Ordering;
+        // Ask this recording's worker to let go between chunks.
+        self.taking_id.store(recording_id, Ordering::Release);
         let mut inner = self.inner.lock_or_recover();
-        if inner
+        let handoff = if inner
+            .active
             .as_ref()
             .is_some_and(|stream| stream.recording_id == recording_id)
         {
-            inner.take().map(|stream| StreamHandoff {
+            inner.active.take().map(|stream| StreamHandoff {
                 vad: stream.vad,
                 failed: stream.failed,
             })
         } else {
             None
-        }
+        };
+        drop(inner);
+        self.taking_id.store(0, Ordering::Release);
+        handoff
     }
 
     /// Drop the stream owned by `recording_id` (a cancelled or ended recording).
     pub fn clear(&self, recording_id: u64) {
         let mut inner = self.inner.lock_or_recover();
         if inner
+            .active
             .as_ref()
             .is_some_and(|stream| stream.recording_id == recording_id)
         {
-            *inner = None;
+            inner.active = None;
         }
     }
 }
 
 /// A stream taken out of the slot at Stop, ready to finish on any thread.
-pub struct StreamHandoff {
-    vad: IncrementalVad<OnnxScorer>,
+pub struct StreamHandoff<S: WindowScorer = OnnxScorer> {
+    vad: IncrementalVad<S>,
     failed: Option<FallbackReason>,
 }
 
-impl StreamHandoff {
+impl<S: WindowScorer> StreamHandoff<S> {
     pub fn finish(
         self,
         samples: &[f32],
@@ -647,26 +816,28 @@ impl StreamHandoff {
 /// Start incremental scoring for `recording_id`: reset the slot synchronously,
 /// then poll the capture buffer on a dedicated thread until the recording is no
 /// longer current. `is_current` is the caller's recording-generation check.
-/// Returns false (and starts nothing) when the model is not installed; the
-/// model is then fetched in the background for the next recording.
-pub fn start(
-    app: tauri::AppHandle,
+///
+/// Returns false and starts nothing when the model is not installed, or when
+/// this recording already started a worker. It NEVER downloads: fetching the
+/// model is only ever the user's action (see [`download_model`]), so starting a
+/// recording makes no network request.
+pub fn start<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     recording_id: u64,
     is_current: impl Fn(&crate::state::AppState, u64) -> bool + Send + 'static,
 ) -> bool {
     use tauri::Manager;
     if !model_installed() {
-        tauri::async_runtime::spawn(async {
-            if let Err(error) = ensure_model().await {
-                tracing::warn!(target: "pipeline", error = %error, "streaming VAD model download failed");
-            }
-        });
         return false;
     }
-    app.state::<crate::State>()
+    if !app
+        .state::<crate::State>()
         .app_state
         .vad_stream
-        .begin(recording_id);
+        .begin(recording_id)
+    {
+        return false;
+    }
     let cleanup_app = app.clone();
     let spawned = std::thread::Builder::new()
         .name("murmur-vad-stream".to_string())
@@ -691,7 +862,10 @@ pub fn start(
                             break;
                         }
                     }
-                    crate::audio_lifecycle::PeekSince::NotCurrent => break,
+                    // A slow or missed supervisor reply is retried; the
+                    // currency check above ends the loop once the recording
+                    // is really over. Stop falls back if too much is left.
+                    crate::audio_lifecycle::PeekSince::NotCurrent => {}
                     crate::audio_lifecycle::PeekSince::Reset => {
                         slot.mark_failed(recording_id, FallbackReason::BufferReset);
                         break;
@@ -729,29 +903,37 @@ fn emit_outcome(
     );
 }
 
-/// The Stop-time VAD for a recording that asked for streaming: finish the
-/// incremental result when it is trustworthy, otherwise run the batch VAD.
-/// Never drops speech: any failure, mismatch, or a "no speech" verdict (which
-/// the batch VAD must confirm) uses the batch result. Blocking; run it on a
+/// The Stop-time VAD decision. `batch` is the unchanged batch VAD.
+///
+/// - Setting off (`enabled == false`): run `batch` and emit nothing.
+/// - Streaming on: finish the incremental result when it can be trusted;
+///   otherwise run `batch` (no stream, failed stream, mismatch, backlog,
+///   contention) and report why. A "no speech" verdict is also confirmed by
+///   `batch`, because a silent verdict ends the dictation.
+///
+/// Returns the VAD result and the outcome label. Blocking; run it on a
 /// blocking worker.
-pub fn filter_speech_or_batch(
-    handoff: Option<StreamHandoff>,
+pub fn stop_vad<S: WindowScorer>(
+    enabled: bool,
+    handoff: Option<StreamHandoff<S>>,
     recording_id: u64,
-    model_path: &str,
     samples: &[f32],
-    threshold: f32,
-) -> Result<crate::vad::VadResult, String> {
+    params: SegmentParams,
+    batch: impl FnOnce() -> Result<crate::vad::VadResult, String>,
+) -> (Result<crate::vad::VadResult, String>, &'static str) {
+    if !enabled {
+        return (batch(), "disabled");
+    }
     let started = std::time::Instant::now();
     let Some(handoff) = handoff else {
-        emit_outcome(recording_id, FallbackReason::NotStarted.as_str(), 0, 0, 0);
-        return crate::vad::filter_speech(model_path, samples, threshold);
+        let outcome = FallbackReason::NotStarted.as_str();
+        emit_outcome(recording_id, outcome, 0, 0, 0);
+        return (batch(), outcome);
     };
-    match handoff.finish(samples, SegmentParams::murmur(threshold)) {
+    match handoff.finish(samples, params) {
         Ok(finished) => {
             let finish_ms = started.elapsed().as_millis() as u64;
             if matches!(finished.result, crate::vad::VadResult::NoSpeech) {
-                // A silent verdict ends the dictation, so it is confirmed by
-                // the authoritative VAD rather than trusted from ONNX alone.
                 emit_outcome(
                     recording_id,
                     "no_speech_recheck",
@@ -759,7 +941,7 @@ pub fn filter_speech_or_batch(
                     finished.total_windows,
                     finish_ms,
                 );
-                return crate::vad::filter_speech(model_path, samples, threshold);
+                return (batch(), "no_speech_recheck");
             }
             emit_outcome(
                 recording_id,
@@ -768,103 +950,179 @@ pub fn filter_speech_or_batch(
                 finished.total_windows,
                 finish_ms,
             );
-            Ok(finished.result)
+            (Ok(finished.result), "used")
         }
         Err(reason) => {
             emit_outcome(recording_id, reason.as_str(), 0, 0, 0);
-            crate::vad::filter_speech(model_path, samples, threshold)
+            (batch(), reason.as_str())
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// Model download (2.3 MB, pinned, verified).
+// Model lifecycle (2.3 MB, pinned, verified). The download is ONLY ever started
+// by the user: switching the setting on, or pressing Download/Retry.
 // ---------------------------------------------------------------------------
 
 static DOWNLOAD_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+static DOWNLOADING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+/// Network fetches started in this process (tests assert recording start makes
+/// none).
+#[cfg(test)]
+pub(crate) static DOWNLOAD_ATTEMPTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
-/// Download and publish the pinned model unless it is already installed. Any
-/// size or digest mismatch deletes the partial file and fails closed.
-pub async fn ensure_model() -> Result<(), String> {
-    use futures_util::StreamExt;
-    use sha2::{Digest, Sha256};
-    use tokio::io::AsyncWriteExt;
+fn set_last_error(message: &str) {
+    *LAST_ERROR.lock_or_recover() = Some(message.to_string());
+}
 
-    let _single_flight = DOWNLOAD_LOCK.lock().await;
-    if model_installed() {
-        return Ok(());
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelState {
+    NotDownloaded,
+    Downloading,
+    Ready,
+    /// The last download or verification failed; retry downloads again.
+    Failed,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelStatus {
+    pub state: ModelState,
+    pub size_bytes: u64,
+    pub error: Option<String>,
+}
+
+pub fn model_status() -> ModelStatus {
+    use std::sync::atomic::Ordering;
+    let error = LAST_ERROR.lock_or_recover().clone();
+    let state = if DOWNLOADING.load(Ordering::Acquire) {
+        ModelState::Downloading
+    } else if model_installed() {
+        ModelState::Ready
+    } else if error.is_some() {
+        ModelState::Failed
+    } else {
+        ModelState::NotDownloaded
+    };
+    ModelStatus {
+        state,
+        size_bytes: MODEL_SIZE_BYTES,
+        error: (state == ModelState::Failed).then_some(error).flatten(),
     }
-    let root = models_root().ok_or("no model directory")?;
+}
+
+struct DownloadingFlag;
+impl DownloadingFlag {
+    fn set() -> Self {
+        DOWNLOADING.store(true, std::sync::atomic::Ordering::Release);
+        Self
+    }
+}
+impl Drop for DownloadingFlag {
+    fn drop(&mut self) {
+        DOWNLOADING.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Download, verify and publish the pinned model (user-initiated). Uses the
+/// shared resumable `model_download::transfer` (idle timeout, free-space
+/// preflight). A right-size file is re-hashed first, and a wrong one is
+/// replaced. Records the failure for the toggle's status.
+pub async fn download_model() -> Result<(), String> {
+    let _single_flight = DOWNLOAD_LOCK.lock().await;
+    let _flag = DownloadingFlag::set();
+    let result = download_model_locked().await;
+    match &result {
+        Ok(()) => *LAST_ERROR.lock_or_recover() = None,
+        Err(error) => set_last_error(error),
+    }
+    result
+}
+
+async fn download_model_locked() -> Result<(), String> {
+    let root = models_root().ok_or("Could not determine the model directory")?;
+    if model_installed() {
+        let path = installed_model_path().ok_or("Could not determine the model path")?;
+        let verified = tokio::task::spawn_blocking({
+            let path = path.clone();
+            move || verify_file(&path)
+        })
+        .await
+        .map_err(|_| "Verification task failed".to_string())?;
+        match verified {
+            Verify::Ok => return Ok(()),
+            Verify::Mismatch | Verify::Io(_) => {
+                let _ = tokio::fs::remove_file(&path).await;
+            }
+        }
+    }
+    #[cfg(test)]
+    DOWNLOAD_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     tokio::fs::create_dir_all(&root)
         .await
-        .map_err(|error| format!("create model directory: {error}"))?;
+        .map_err(|error| format!("Could not create the model directory: {error}"))?;
     let partial = root.join(format!("{MODEL_FILENAME}.partial"));
-    let _ = tokio::fs::remove_file(&partial).await;
-
-    let result: Result<(u64, String), String> = async {
-        let client = reqwest::Client::builder()
-            .connect_timeout(Duration::from_secs(30))
-            .timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|error| format!("http client: {error}"))?;
-        let response = client
-            .get(MODEL_URL)
-            .send()
-            .await
-            .map_err(|error| format!("request: {error}"))?;
-        if !response.status().is_success() {
-            return Err(format!("status {}", response.status()));
-        }
-        let mut received = 0_u64;
-        let mut hasher = Sha256::new();
-        let mut file = tokio::fs::File::create(&partial)
-            .await
-            .map_err(|error| format!("create partial: {error}"))?;
-        let mut stream = response.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|error| format!("download: {error}"))?;
-            received += chunk.len() as u64;
-            if received > MODEL_SIZE_BYTES {
-                return Err("download exceeded the expected size".to_string());
-            }
-            hasher.update(&chunk);
-            file.write_all(&chunk)
-                .await
-                .map_err(|error| format!("write partial: {error}"))?;
-        }
-        file.flush()
-            .await
-            .map_err(|error| format!("flush partial: {error}"))?;
-        file.sync_all()
-            .await
-            .map_err(|error| format!("fsync partial: {error}"))?;
-        Ok((received, format!("{:x}", hasher.finalize())))
-    }
-    .await;
-
-    let (size, sha) = match result {
-        Ok(value) => value,
-        Err(error) => {
+    crate::model_download::transfer(
+        MODEL_URL,
+        &partial,
+        &crate::model_download::Cancellation::default(),
+        crate::model_download::IDLE_TIMEOUT,
+        MODEL_SIZE_BYTES,
+        |_, _| {},
+    )
+    .await?;
+    // Keep an interrupted partial for resume, but never a verified-bad one.
+    let verified = tokio::task::spawn_blocking({
+        let partial = partial.clone();
+        move || verify_file(&partial)
+    })
+    .await
+    .map_err(|_| "Verification task failed".to_string())?;
+    let resume = crate::model_download::resume_path(&partial);
+    match verified {
+        Verify::Ok => {}
+        Verify::Mismatch | Verify::Io(_) => {
             let _ = tokio::fs::remove_file(&partial).await;
-            return Err(error);
+            let _ = tokio::fs::remove_file(&resume).await;
+            return Err(
+                "The downloaded model failed verification. Retry the download.".to_string(),
+            );
         }
-    };
-    if size != MODEL_SIZE_BYTES || sha != MODEL_SHA256 {
-        let _ = tokio::fs::remove_file(&partial).await;
-        return Err("model verification failed".to_string());
     }
     let final_dir = root.join(MODEL_SHA256);
     tokio::fs::create_dir_all(&final_dir)
         .await
-        .map_err(|error| format!("create version directory: {error}"))?;
+        .map_err(|error| format!("Could not create the model version directory: {error}"))?;
     tokio::fs::rename(&partial, final_dir.join(MODEL_FILENAME))
         .await
-        .map_err(|error| {
-            let _ = std::fs::remove_file(&partial);
-            format!("publish model: {error}")
-        })?;
-    tracing::info!(target: "system", size_bytes = size, "streaming_vad_model_installed");
+        .map_err(|error| format!("Could not publish the model: {error}"))?;
+    let _ = tokio::fs::remove_file(&resume).await;
+    tracing::info!(target: "system", size_bytes = MODEL_SIZE_BYTES, "streaming_vad_model_installed");
+    Ok(())
+}
+
+/// Release the session and delete the model and any partial download.
+pub async fn remove_model() -> Result<(), String> {
+    let _single_flight = DOWNLOAD_LOCK.lock().await;
+    tokio::task::spawn_blocking(unload)
+        .await
+        .map_err(|_| "Failed to unload the streaming speech model".to_string())?;
+    let root = models_root().ok_or("Could not determine the model directory")?;
+    let final_dir = root.join(MODEL_SHA256);
+    if final_dir.exists() {
+        tokio::fs::remove_dir_all(&final_dir)
+            .await
+            .map_err(|error| format!("Failed to remove the streaming speech model: {error}"))?;
+    }
+    let partial = root.join(format!("{MODEL_FILENAME}.partial"));
+    let _ = tokio::fs::remove_file(crate::model_download::resume_path(&partial)).await;
+    let _ = tokio::fs::remove_file(&partial).await;
+    *LAST_ERROR.lock_or_recover() = None;
+    tracing::info!(target: "system", "streaming_vad_model_removed");
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 151 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 154 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -186,6 +186,14 @@ delivery. Live VAD uses only a bounded rolling in-memory window.
 | `download_smart_turn_model` | — | `Result<(), String>` | User-initiated. Streams the pinned ONNX file to a `.partial`, hashes while streaming, fsyncs, then atomically publishes under its SHA-256 directory. Exact size and hash are enforced. |
 | `remove_smart_turn_model` | — | `Result<(), String>` | Drops the loaded session, then deletes the hash directory and any partial. |
 | `check_smart_turn` | — | `Result<SmartTurnCheckResult, String>` | Scores whether the in-flight dictation's speaker has finished: peeks the last 8 s at 16 kHz (capture keeps running) and runs the model on a blocking worker. Tagged `outcome`: `scored` (`recordingId`, `probability`, `inferenceMs`), `notRecording`, `tooShort`, or `unavailable` (`reason`: `not_installed`, `busy`, `load_failed`, `inference_failed`). Nothing is persisted. |
+
+## Streaming speech detection (`commands/streaming_vad.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `streaming_vad_model_status` | — | `ModelStatus` | `{state, sizeBytes, error?}` for the pinned Silero VAD v5.1.2 ONNX model: `notDownloaded`, `downloading`, `ready` or `failed` (`error` is a short message). A right-size file counts as `ready` until it is verified at first load. |
+| `download_streaming_vad_model` | — | `Result<(), String>` | User-initiated only (the setting toggle or Download/Retry); starting a recording never calls it. Uses the shared resumable `model_download::transfer`, verifies size and SHA-256, publishes atomically under its hash directory, and deletes a file whose hash does not match. |
+| `remove_streaming_vad_model` | — | `Result<(), String>` | Drops the loaded session (never while holding dictation state), then deletes the hash directory and any partial. |
 
 ## Models (`commands/models.rs`)
 

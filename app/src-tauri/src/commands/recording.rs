@@ -2755,22 +2755,21 @@ async fn run_transcription_pipeline(
                 let samples_owned = samples.to_vec();
                 // Streaming setting (frozen at recording start): take this
                 // recording's incremental VAD; the batch VAD is the fallback.
-                let stream_handoff = transcription
-                    .streaming_pipeline_enabled
-                    .then(|| app_state.vad_stream.take(recording_id));
+                let streaming = transcription.streaming_pipeline_enabled;
+                let stream_handoff = streaming
+                    .then(|| app_state.vad_stream.take(recording_id))
+                    .flatten();
                 let vad_queued_at = std::time::Instant::now();
                 let vad_result = match tokio::task::spawn_blocking(move || {
                     let queue_us = micros(vad_queued_at);
-                    let result = match stream_handoff {
-                        Some(handoff) => crate::vad_stream::filter_speech_or_batch(
-                            handoff,
-                            recording_id,
-                            &vad_path_str,
-                            &samples_owned,
-                            vad_threshold,
-                        ),
-                        None => vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold),
-                    };
+                    let (result, _outcome) = crate::vad_stream::stop_vad(
+                        streaming,
+                        stream_handoff,
+                        recording_id,
+                        &samples_owned,
+                        crate::vad_stream::SegmentParams::murmur(vad_threshold),
+                        || vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold),
+                    );
                     (result, queue_us)
                 })
                 .await
@@ -4083,22 +4082,21 @@ pub async fn configure_dictation(
         dictation.homophone_context_enabled = v;
     }
 
-    // Streaming setting (E1 incremental VAD). Turning it on fetches the small
-    // pinned VAD model in the background; turning it off releases the session.
-    // A recording already in flight keeps the value frozen in its context.
+    // Streaming setting (E1 incremental VAD). Applies to the next recording.
+    // Configure runs at every launch and settings change, so it never fetches
+    // the model: the toggle's own Download/Retry actions do, on user request.
+    // The session is released on a blocking worker, not under this lock.
     if let Some(v) = options
         .get("streamingPipelineEnabled")
         .and_then(|v| v.as_bool())
     {
         let was_enabled = std::mem::replace(&mut dictation.streaming_pipeline_enabled, v);
-        if v && !was_enabled && !crate::vad_stream::model_installed() {
-            tauri::async_runtime::spawn(async {
-                if let Err(error) = crate::vad_stream::ensure_model().await {
-                    tracing::warn!(target: "system", error = %error, "streaming VAD model download failed");
-                }
-            });
-        } else if !v && was_enabled {
-            crate::vad_stream::unload();
+        if was_enabled && !v {
+            // Fire and forget: `unload` takes the session lock, which must
+            // never be waited on while the dictation lock is held.
+            drop(tauri::async_runtime::spawn_blocking(
+                crate::vad_stream::unload,
+            ));
         }
     }
 

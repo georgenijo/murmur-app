@@ -146,7 +146,8 @@ text, paths, and raw errors in debug and release builds.
 `pipeline.vad_stream_outcome` (streaming speech detection, off by default)
 records how the Stop-time VAD was obtained for one recording: `recording_id`,
 `outcome` (`used`, `no_speech_recheck`, or a fallback reason: `not_started`,
-`model_load`, `inference`, `buffer_reset`, `length_mismatch`, `prefix_mismatch`),
+`model_load`, `inference`, `contended`, `buffer_reset`, `length_mismatch`,
+`prefix_mismatch`, `backlog`),
 and numeric `tail_windows`, `total_windows` and `finish_ms`. Exact-schema
 sanitized in every build; no audio, text or paths.
 

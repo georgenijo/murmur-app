@@ -523,6 +523,8 @@ fn sanitize_vad_stream_outcome_event(data: &mut serde_json::Map<String, serde_js
                     | "buffer_reset"
                     | "length_mismatch"
                     | "prefix_mismatch"
+                    | "contended"
+                    | "backlog"
             )
         }),
         _ => false,
