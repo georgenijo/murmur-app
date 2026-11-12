@@ -434,13 +434,17 @@ impl PopoverSpec {
         let (x, y, width, height) = frame;
         // Never keep an authoritative old frame after a half-applied pair.
         self.remember_frame(None);
-        crate::main_thread_watch::section("window.set_size", || {
-            window.set_size(tauri::LogicalSize::new(width, height))
-        })
+        crate::main_thread_watch::queued_section(
+            "window.set_size",
+            "applied.window.set_size",
+            || window.set_size(tauri::LogicalSize::new(width, height)),
+        )
         .map_err(|_| format!("{} window could not be sized", self.label))?;
-        crate::main_thread_watch::section("window.set_position", || {
-            window.set_position(tauri::LogicalPosition::new(x, y))
-        })
+        crate::main_thread_watch::queued_section(
+            "window.set_position",
+            "applied.window.set_position",
+            || window.set_position(tauri::LogicalPosition::new(x, y)),
+        )
         .map_err(|_| format!("{} window could not be positioned", self.label))?;
         self.remember_frame(Some(frame));
         Ok(true)
@@ -487,9 +491,11 @@ impl PopoverSpec {
                 window.set_focusable(false)
             })
             .map_err(|_| format!("{} focus mode could not be set", self.label))?;
-            crate::main_thread_watch::section("window.set_ignore_cursor_events", || {
-                window.set_ignore_cursor_events(self.ignore_cursor_events)
-            })
+            crate::main_thread_watch::queued_section(
+                "window.set_ignore_cursor_events",
+                "applied.window.set_ignore_cursor_events",
+                || window.set_ignore_cursor_events(self.ignore_cursor_events),
+            )
             .map_err(|_| format!("{} pointer events could not be set", self.label))?;
             crate::main_thread_watch::section("window.show", || window.show())
                 .map_err(|_| format!("{} window could not be shown", self.label))?;
@@ -497,9 +503,11 @@ impl PopoverSpec {
         } else if plan.reveal && !self.ignore_cursor_events {
             // A concealed window is always click-through; restore this spec's
             // pointer behaviour with the reveal.
-            crate::main_thread_watch::section("window.set_ignore_cursor_events", || {
-                window.set_ignore_cursor_events(false)
-            })
+            crate::main_thread_watch::queued_section(
+                "window.set_ignore_cursor_events",
+                "applied.window.set_ignore_cursor_events",
+                || window.set_ignore_cursor_events(false),
+            )
             .map_err(|_| format!("{} pointer events could not be set", self.label))?;
         }
         if plan.reveal {
@@ -523,9 +531,12 @@ impl PopoverSpec {
         };
         crate::main_thread_watch::section("window.conceal", || {
             if !self.ignore_cursor_events {
-                window
-                    .set_ignore_cursor_events(true)
-                    .map_err(|_| format!("{} pointer events could not be set", self.label))?;
+                crate::main_thread_watch::queued_section(
+                    "window.set_ignore_cursor_events",
+                    "applied.window.set_ignore_cursor_events",
+                    || window.set_ignore_cursor_events(true),
+                )
+                .map_err(|_| format!("{} pointer events could not be set", self.label))?;
             }
             queue_window_alpha(&window, 0.0);
             Ok(())
@@ -539,7 +550,11 @@ impl PopoverSpec {
     pub(crate) fn apply_initial_size(&self, app: &tauri::AppHandle, width: f64, height: f64) {
         use tauri::Manager;
         if let Some(window) = app.get_webview_window(self.label) {
-            let _ = window.set_size(tauri::LogicalSize::new(width, height));
+            let _ = crate::main_thread_watch::queued_section(
+                "window.set_size",
+                "applied.window.set_size",
+                || window.set_size(tauri::LogicalSize::new(width, height)),
+            );
         }
     }
 }

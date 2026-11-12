@@ -3113,8 +3113,10 @@ fn run_backend(
                             // Neither window listens to the other's event.
                             let level = compute_rms(&pcm.samples);
                             let _ = handle.emit_to("main", AUDIO_LEVEL_EVENT, level);
+                            crate::main_thread_watch::count_audio_level_emit();
                             if let Some(held) = overlay_level_gate.observe(level, Instant::now()) {
                                 let _ = handle.emit_to("overlay", OVERLAY_AUDIO_LEVEL_EVENT, held);
+                                crate::main_thread_watch::count_overlay_audio_level_emit();
                             }
                         }
                     }

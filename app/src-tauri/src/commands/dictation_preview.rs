@@ -100,14 +100,16 @@ pub(crate) fn follow_overlay_if_visible(app: &tauri::AppHandle) {
     if !POPOVER.is_presented() {
         return;
     }
-    match POPOVER.reposition(app, frame(app, notch_height(app))) {
-        Ok(true) => refit_material(app),
-        Ok(false) => {}
-        Err(error) => {
-            tracing::warn!(target: "system", "dictation preview could not follow overlay: {}", error);
-            refit_material(app);
+    crate::main_thread_watch::section("preview.follow_overlay", || {
+        match POPOVER.reposition(app, frame(app, notch_height(app))) {
+            Ok(true) => refit_material(app),
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(target: "system", "dictation preview could not follow overlay: {}", error);
+                refit_material(app);
+            }
         }
-    }
+    });
 }
 
 #[derive(Clone, Copy)]

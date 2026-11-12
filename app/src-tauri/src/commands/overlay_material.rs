@@ -448,6 +448,17 @@ mod native {
         shape: Option<MaterialShape>,
         motion: Motion,
     ) {
+        crate::main_thread_watch::section("overlay_material.apply", || {
+            apply_unlabelled(app, label, shape, motion)
+        });
+    }
+
+    fn apply_unlabelled(
+        app: &tauri::AppHandle,
+        label: &'static str,
+        shape: Option<MaterialShape>,
+        motion: Motion,
+    ) {
         let Some(mtm) = MainThreadMarker::new() else {
             debug_assert!(false, "NSView mutation must run on the main thread");
             return;
@@ -460,16 +471,20 @@ mod native {
             return;
         };
         INSTALLED.with_borrow_mut(|installed| {
-            let entry = installed.entry(label).or_insert_with(|| new_installed(mtm));
+            let entry = installed.entry(label).or_insert_with(|| {
+                crate::main_thread_watch::section("overlay_material.install", || new_installed(mtm))
+            });
             if !attached(entry, &content) {
-                entry.lift.removeFromSuperview();
-                content.addSubview_positioned_relativeTo(
-                    &entry.lift,
-                    NSWindowOrderingMode::Below,
-                    None,
-                );
-                entry.view.setAlphaValue(0.0);
-                entry.shape = None;
+                crate::main_thread_watch::section("overlay_material.attach", || {
+                    entry.lift.removeFromSuperview();
+                    content.addSubview_positioned_relativeTo(
+                        &entry.lift,
+                        NSWindowOrderingMode::Below,
+                        None,
+                    );
+                    entry.view.setAlphaValue(0.0);
+                    entry.shape = None;
+                });
             }
             let previous = entry.shape.replace(shape);
             let (lift, view) = (entry.lift.clone(), entry.view.clone());
@@ -710,7 +725,11 @@ fn on_main(app: &tauri::AppHandle, f: impl FnOnce(&tauri::AppHandle) + Send + 's
 /// Re-fit `label`'s material to its window after a native resize.
 #[cfg(target_os = "macos")]
 pub(crate) fn refit(app: &tauri::AppHandle, label: &'static str) {
-    on_main(app, move |app| native::refit_now(app, label));
+    on_main(app, move |app| {
+        crate::main_thread_watch::section("overlay_material.refit", || {
+            native::refit_now(app, label)
+        })
+    });
 }
 
 /// Remove the material from both windows (notch placement).
