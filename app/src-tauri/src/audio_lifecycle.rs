@@ -116,6 +116,17 @@ impl DictationStopTrigger {
         }
     }
 
+    /// Whether a native release stamp may anchor the tail of a stop that the
+    /// caller itself requested with this trigger. The `hold-down-stop` handlers
+    /// request the stop with the default `Other`, so that and `HoldRelease`
+    /// qualify. An explicit toggle, overlay or auto stop never does, even when a
+    /// stale stamp for the same recording is lying around: [`Self::resolve`]
+    /// turns any stamped stop into a hold release for the tail length, but the
+    /// stamp must not decide when the audio ends for a stop it did not drive.
+    pub(crate) fn may_anchor_to_release(self) -> bool {
+        matches!(self, Self::HoldRelease | Self::Other)
+    }
+
     fn release_tail(self, owner: AudioOwner, standby_enabled: bool) -> Duration {
         if owner.dictation_id().is_none() || (self == Self::Toggle && !standby_enabled) {
             Duration::ZERO
@@ -135,30 +146,41 @@ impl DictationStopTrigger {
     }
 }
 
-/// When the supervisor tells the helper to stop after an accepted dictation
-/// stop.
+/// The native release instant a stop's tail may be anchored to, if any.
 ///
-/// A hold release keeps exactly `tail` of audio after the key came up, so its
-/// deadline is anchored to the native release instant: the time the stop spent
-/// travelling rdev, the webview, IPC, the ownership lock and the target
-/// snapshot already counts toward the tail instead of being added to it. When
-/// that travel took longer than the tail the deadline has passed and the stop
-/// is immediate; audio after release is then longer than the tail, never
-/// shorter. Every other trigger measures the tail from the accepted stop, as
-/// before. A release stamp from the future is not trusted to lengthen the tail.
+/// Anchoring lets a hold release keep exactly `tail` of audio after the key
+/// came up: the time the stop spent travelling rdev, the webview, IPC, the
+/// ownership lock and the target snapshot counts toward the tail instead of
+/// being added to it. The stamp is only trusted while it is *fresh*: the stop
+/// must have been accepted no more than `tail` after the release. A stamp is
+/// matched by recording id alone and can be seconds old (a release whose stop
+/// never arrived, then a second release whose own stamp was dropped), and an
+/// old stamp would put the deadline in the past and cut the audio after the
+/// real release to nothing. A stamp from the future is not trusted either.
+/// Anything else falls back to the accepted stop, so an anchored stop is never
+/// earlier than the real release plus `tail` and never later than the base
+/// behaviour.
+fn release_anchor(
+    trigger: DictationStopTrigger,
+    released_at: Option<Instant>,
+    now: Instant,
+    tail: Duration,
+) -> Option<Instant> {
+    let released = released_at.filter(|_| trigger == DictationStopTrigger::HoldRelease)?;
+    let travel = now.checked_duration_since(released)?;
+    (travel <= tail).then_some(released)
+}
+
+/// When the supervisor tells the helper to stop after an accepted dictation
+/// stop: `tail` after the fresh native release if there is one
+/// ([`release_anchor`]), otherwise `tail` after the accepted stop, as before.
 fn tail_deadline(
     trigger: DictationStopTrigger,
     released_at: Option<Instant>,
     now: Instant,
     tail: Duration,
 ) -> Instant {
-    let from_accept = now + tail;
-    match released_at {
-        Some(released) if trigger == DictationStopTrigger::HoldRelease => released
-            .checked_add(tail)
-            .map_or(from_accept, |anchored| anchored.min(from_accept)),
-        _ => from_accept,
-    }
+    release_anchor(trigger, released_at, now, tail).map_or(now + tail, |released| released + tail)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -773,10 +795,7 @@ fn run_supervisor(
                         continue;
                     }
                     SupervisorMessage::Stop {
-                        released_at: None,
-                        owner,
-                        response,
-                        ..
+                        owner, response, ..
                     } if pending_start
                         .as_ref()
                         .is_some_and(|r| owner.is_none_or(|o| o == r.owner)) =>
@@ -1158,6 +1177,11 @@ fn handle_message(
                     let tail =
                         trigger.release_tail(current.owner, current.standby_policy.seconds > 0);
                     let now = Instant::now();
+                    // Warm standby snapshots the live buffer at the deadline and
+                    // is not a helper fence, so it keeps the accepted-stop slack
+                    // for in-flight PCM. Only a cold stop is anchored.
+                    let released_at = released_at.filter(|_| current.standby_policy.seconds == 0);
+                    let anchored = release_anchor(trigger, released_at, now, tail).is_some();
                     let deadline = tail_deadline(trigger, released_at, now, tail);
                     tracing::info!(target: "audio",
                         event_code = "audio.stop_tail_applied",
@@ -1166,8 +1190,7 @@ fn handle_message(
                         stop_trigger = trigger.as_str(),
                         standby_enabled = current.standby_policy.seconds > 0,
                         release_tail_ms = tail.as_millis() as u64,
-                        anchored_to_release = released_at.is_some()
-                            && trigger == DictationStopTrigger::HoldRelease,
+                        anchored_to_release = anchored,
                         tail_remaining_ms = deadline.saturating_duration_since(now).as_millis() as u64,
                         "stop tail resolved from accepted trigger"
                     );
@@ -3895,9 +3918,10 @@ mod tests {
             if travel_ms <= 50 {
                 assert_eq!(after_release, tail, "tail drifted at {travel_ms} ms");
             } else {
-                // A slow stop cannot be un-recorded: it keeps the audio it
-                // already has and stops at once.
-                assert_eq!(stop_issued, accepted);
+                // A stop slower than the tail is not anchored (the stamp is no
+                // longer fresh): it gets the base behaviour, a full tail from
+                // the accepted stop, so audio after the release only grows.
+                assert_eq!(stop_issued, accepted + tail, "{travel_ms} ms");
             }
         }
     }
@@ -3930,6 +3954,157 @@ mod tests {
             tail_deadline(DictationStopTrigger::Toggle, None, accepted, Duration::ZERO),
             accepted
         );
+    }
+
+    #[test]
+    fn a_stale_release_never_shortens_the_tail_below_the_base_behaviour() {
+        // Release R1's stop never arrived, recording N kept running, and the
+        // user released again (R2) up to 10 s later. R2's stamp was dropped, so
+        // the stop finds R1. Anchoring to it would put the deadline in the
+        // past and end the audio at the real release R2.
+        let tail = audio::DICTATION_RELEASE_TAIL;
+        let accepted = Instant::now();
+        for age in [
+            Duration::from_millis(51),
+            Duration::from_millis(500),
+            Duration::from_secs(3),
+            Duration::from_secs(10),
+        ] {
+            let stale = accepted - age;
+            assert_eq!(
+                tail_deadline(
+                    DictationStopTrigger::HoldRelease,
+                    Some(stale),
+                    accepted,
+                    tail
+                ),
+                accepted + tail,
+                "a {age:?} old release must give the accepted-stop deadline"
+            );
+            assert!(release_anchor(
+                DictationStopTrigger::HoldRelease,
+                Some(stale),
+                accepted,
+                tail
+            )
+            .is_none());
+        }
+    }
+
+    #[test]
+    fn a_release_is_fresh_for_exactly_one_tail() {
+        let tail = audio::DICTATION_RELEASE_TAIL;
+        let accepted = Instant::now();
+        let at_limit = accepted - tail;
+        assert_eq!(
+            release_anchor(
+                DictationStopTrigger::HoldRelease,
+                Some(at_limit),
+                accepted,
+                tail
+            ),
+            Some(at_limit)
+        );
+        assert_eq!(
+            tail_deadline(
+                DictationStopTrigger::HoldRelease,
+                Some(at_limit),
+                accepted,
+                tail
+            ),
+            accepted
+        );
+        let just_stale = at_limit - Duration::from_nanos(1);
+        assert_eq!(
+            release_anchor(
+                DictationStopTrigger::HoldRelease,
+                Some(just_stale),
+                accepted,
+                tail
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn only_a_caller_that_can_be_a_hold_release_may_anchor_to_a_stamp() {
+        assert!(DictationStopTrigger::HoldRelease.may_anchor_to_release());
+        // The hold-down-stop handlers request the stop with the default.
+        assert!(DictationStopTrigger::default().may_anchor_to_release());
+        for explicit in [
+            DictationStopTrigger::Toggle,
+            DictationStopTrigger::Overlay,
+            DictationStopTrigger::AutoStop,
+        ] {
+            assert!(
+                !explicit.may_anchor_to_release(),
+                "{explicit:?} must not be anchored by a stamp it did not drive"
+            );
+        }
+    }
+
+    #[test]
+    fn warm_standby_stop_keeps_the_accepted_stop_deadline() {
+        let tail = audio::DICTATION_RELEASE_TAIL;
+        let commands = Arc::new(Mutex::new(None));
+        let factory = TailPolicyFactory(commands.clone());
+        let events = AudioWorkerEventSender::new(|_| Ok(()));
+        let public = PublicState::default();
+        let sink = RecordingSink::default();
+        let owner = AudioOwner::Dictation(705);
+        let mut attempt = None;
+        let (response, _started) = mpsc::channel();
+        handle_start(
+            StartRequest {
+                gesture: gesture::StartGesture::default(),
+                caller_alive: Arc::new(AtomicBool::new(true)),
+                owner,
+                app_handle: None,
+                device_id: None,
+                origin: "hold".to_string(),
+                wait_until_ready: false,
+                response,
+                probe_permit: None,
+            },
+            &mut attempt,
+            &events,
+            &factory,
+            &sink,
+            &public,
+        );
+        handle_worker_event(
+            AudioWorkerEvent::FirstBuffer {
+                owner,
+                sample_rate: WHISPER_SAMPLE_RATE,
+                sent_at: Instant::now(),
+            },
+            &mut attempt,
+            &sink,
+            &public,
+        );
+        attempt.as_mut().unwrap().standby_policy.seconds = 300;
+        let release = Instant::now() - Duration::from_millis(20);
+        let before = Instant::now();
+        let (response, _result) = mpsc::channel();
+        handle_message(
+            SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::HoldRelease,
+                released_at: Some(release),
+                owner: Some(owner),
+                response,
+            },
+            &mut attempt,
+            &events,
+            &factory,
+            &sink,
+            &public,
+        );
+        // The standby snapshot is not a helper fence: it keeps the full tail
+        // from the accepted stop, which absorbs PCM still in flight.
+        let deadline = attempt.as_ref().unwrap().tail_deadline.unwrap();
+        assert!(deadline >= before + tail, "{:?}", deadline - before);
+        assert!(deadline > release + tail);
+        finish_attempt(&mut attempt, &sink, &public);
     }
 
     #[test]

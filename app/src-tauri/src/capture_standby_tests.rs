@@ -283,3 +283,30 @@ fn warm_pcm_conversion_rechecks_topology_after_resampling_for_every_delivery() {
     }).unwrap();
     assert_eq!(cold.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
 }
+
+#[test]
+fn a_stamped_stop_cancels_a_pending_start_instead_of_letting_it_open_the_microphone() {
+    let gate = Gate::closed();
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let supervisor = spawn_supervisor(Arc::new(StandbyFactory { teardown: Some(gate.clone()), buffer: Arc::new(Mutex::new(None)), spawns: spawns.clone() }), Arc::new(RecordingSink::default()), SupervisorConfig::default());
+    supervisor.sender.send(SupervisorMessage::ConfigureStandby(StandbyPolicy { seconds: 300, pre_roll_ms: 450 })).unwrap();
+    start(&supervisor, AudioOwner::Dictation(1)).recv().unwrap().unwrap();
+    wait_until("ready", || supervisor.public.phase() == PublicPhase::Recording);
+    let (tx, rx) = mpsc::channel();
+    supervisor.sender.send(SupervisorMessage::Stop { released_at: None, trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(1)), response: tx }).unwrap();
+    rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
+    assert_eq!(supervisor.public.phase(), PublicPhase::Standby);
+    // A different device cannot reuse the warm worker: the supervisor tears it
+    // down (blocked on the gate) and parks the new start as pending.
+    let started = start_with_device(&supervisor, AudioOwner::Dictation(2), Some("another-device".into()));
+    wait_until("standby torn down for the pending start", || supervisor.public.phase() == PublicPhase::Recovering);
+    // The release of that new press arrives, stamped, while the start waits.
+    let (tx, rx) = mpsc::channel();
+    supervisor.sender.send(SupervisorMessage::Stop { released_at: Some(Instant::now()), trigger: DictationStopTrigger::HoldRelease, owner: Some(AudioOwner::Dictation(2)), response: tx }).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), Ok(Vec::new()));
+    assert_eq!(started.recv_timeout(Duration::from_secs(1)).unwrap(), Err(AudioStartError::Cancelled));
+    gate.open();
+    wait_until("old worker joined", || supervisor.public.phase() == PublicPhase::Idle);
+    assert_eq!(spawns.load(Ordering::SeqCst), 1, "the cancelled start must never open the microphone");
+    shutdown(&supervisor);
+}

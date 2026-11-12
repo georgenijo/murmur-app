@@ -2615,6 +2615,9 @@ fn run_backend(
                     }
                 }
                 Err(_) => {
+                    // The only exit signal for a crashed, closed or corrupt
+                    // helper pipe: `WorkerWake` holds a clone of `reader_tx`, so
+                    // the channel never reports `Disconnected` during an attempt.
                     let _ = reader_tx.send(HelperRead::Invalid);
                     return;
                 }
@@ -3943,23 +3946,49 @@ mod tests {
 
     #[test]
     fn a_helper_that_closes_or_corrupts_its_pipe_still_ends_the_wait() {
-        // Helper crash: its reader thread exits and drops the sender.
-        let (reader_tx, reader_rx) = mpsc::channel::<HelperRead>();
-        let waiter = blocked_wait(reader_rx);
-        thread::sleep(Duration::from_millis(15));
-        drop(reader_tx);
-        let (read, elapsed) = waiter.join().unwrap();
-        assert!(matches!(read, Err(RecvTimeoutError::Disconnected)));
-        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+        // Production shape: `WorkerWake` keeps a clone of the reader channel's
+        // sender for the whole attempt, so the channel never reports
+        // `Disconnected` while the attempt lives. The reader thread's
+        // `HelperRead::Invalid` is therefore the ONLY signal that the helper
+        // crashed, closed its pipe (EOF) or sent a corrupt frame; the wait must
+        // end on it. (If the reader thread died without sending it, only the
+        // idle housekeeping timeout would run, never a disconnect.)
+        let reader_exits_with = |read_result: Result<(), ()>| {
+            let wake = WorkerWake::default();
+            let (reader_tx, reader_rx) = mpsc::channel::<HelperRead>();
+            wake.install(reader_tx.clone());
+            let waiter = blocked_wait(reader_rx);
+            thread::sleep(Duration::from_millis(15));
+            // The same body as the production reader thread's error arm.
+            let reader = thread::spawn(move || {
+                if read_result.is_err() {
+                    let _ = reader_tx.send(HelperRead::Invalid);
+                }
+            });
+            reader.join().unwrap();
+            (waiter.join().unwrap(), wake)
+        };
 
-        // Corrupt frame: the reader reports it and the wait ends.
-        let (reader_tx, reader_rx) = mpsc::channel::<HelperRead>();
-        let waiter = blocked_wait(reader_rx);
-        thread::sleep(Duration::from_millis(15));
-        reader_tx.send(HelperRead::Invalid).unwrap();
-        let (read, elapsed) = waiter.join().unwrap();
+        // Crash, EOF or corrupt frame: the read fails, the reader reports it.
+        let ((read, elapsed), _wake) = reader_exits_with(Err(()));
         assert!(matches!(read, Ok(HelperRead::Invalid)));
         assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+
+        // Without that report the installed wake handle keeps the channel
+        // open, so the wait cannot end by disconnection.
+        let wake = WorkerWake::default();
+        let (reader_tx, reader_rx) = mpsc::channel::<HelperRead>();
+        wake.install(reader_tx.clone());
+        drop(reader_tx);
+        assert!(matches!(
+            reader_rx.recv_timeout(Duration::from_millis(50)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+        drop(wake);
+        assert!(matches!(
+            reader_rx.recv_timeout(Duration::from_millis(50)),
+            Err(RecvTimeoutError::Disconnected)
+        ));
     }
 
     #[test]

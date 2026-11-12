@@ -351,14 +351,20 @@ Transcription processing is local. Network access occurs for model setup and may
   typed `DictationStopTrigger` selects a 50 ms tail for hold-to-talk releases
   and 0 ms for explicit hotkey toggle stops with standby disabled (including
   single-tap stop in double-tap mode). A same-generation native release stamp
-  takes precedence, and for a hold release the tail is anchored to that
-  stamp's key-release instant: the native stop is due exactly 50 ms after the
-  key came up, not 50 ms after the stop reached the supervisor. The time the
-  release spent travelling through the webview, IPC, and the delivery-target
-  snapshot therefore counts toward the tail instead of adding to it. Audio
-  after the release is exactly 50 ms; a stop that arrives later than that is
-  issued at once and never shortened or lengthened. Other triggers and
-  unmatched releases still measure from the accepted stop.
+  takes precedence for the tail length. For a cold hold release the tail is
+  also anchored to that stamp's key-release instant: the native stop is due
+  exactly 50 ms after the key came up, not 50 ms after the stop reached the
+  supervisor, so the release's travel through the webview, IPC, and the
+  delivery-target snapshot counts toward the tail instead of adding to it.
+  The anchor is used only when it is fresh (the stop was accepted no more than
+  50 ms after the release) and only for a caller that requested the stop as a
+  hold release (`hold_release` or the default `other` the hold-down-stop
+  handlers use; never an explicit toggle, overlay, or auto stop). The stamp is
+  matched by recording id and can be seconds old after a release whose stop
+  never arrived, so anything older, from the future, or on a warm-standby stop
+  (whose live-buffer snapshot is not a helper fence and keeps the accepted-stop
+  slack) measures from the accepted stop, exactly as before: a stop is never
+  shorter than that. Audio after a fresh release is exactly 50 ms.
   Overlay, button, silence/limit auto-stop, chord stops, and legacy callers
   retain 50 ms: those triggers do not prove the last word has ended. The
   recording's start mode does not determine the stop policy, so releasing a
