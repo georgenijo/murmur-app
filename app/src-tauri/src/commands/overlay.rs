@@ -784,6 +784,14 @@ pub(crate) fn preview_fallback_inset(notch_h: Option<f64>) -> f64 {
 }
 
 #[cfg(target_os = "macos")]
+/// Put back the best-known frame after a failed setter, so the hover poller
+/// keeps a frame to sample against instead of going silent.
+fn restore_overlay_frame(app: &tauri::AppHandle, frame: Option<OverlayFrame>) {
+    if let Some(frame) = frame {
+        remember_overlay_frame(app, frame);
+    }
+}
+
 fn remember_overlay_frame(app: &tauri::AppHandle, frame: OverlayFrame) {
     *app.state::<State>().overlay_frame.lock_or_recover() = Some(frame);
 }
@@ -926,6 +934,19 @@ pub(crate) fn detect_notch_info() -> Option<NotchInfo> {
 
 /// Capture fresh notch and monitor measurements. Must run on the main thread.
 pub(crate) fn capture_display_snapshot(app_handle: &tauri::AppHandle) -> DisplaySnapshot {
+    capture_display_snapshot_with(
+        app_handle,
+        crate::main_thread_watch::section("overlay.dock_prefs", hidden_bottom_dock_tile),
+    )
+}
+
+/// Like [`capture_display_snapshot`], with the Dock preferences already read.
+/// They are a `cfprefsd` round trip and need no main thread, so the placement
+/// worker reads them first and the main-thread half only measures screens.
+pub(crate) fn capture_display_snapshot_with(
+    app_handle: &tauri::AppHandle,
+    hidden_dock_tile: Option<HiddenDock>,
+) -> DisplaySnapshot {
     let monitor = crate::main_thread_watch::section("overlay.primary_monitor", || {
         app_handle.primary_monitor().ok().flatten()
     });
@@ -949,10 +970,7 @@ pub(crate) fn capture_display_snapshot(app_handle: &tauri::AppHandle) -> Display
             )
         }),
         scale_factor: monitor.as_ref().map(|monitor| monitor.scale_factor()),
-        hidden_dock_tile: crate::main_thread_watch::section(
-            "overlay.dock_prefs",
-            hidden_bottom_dock_tile,
-        ),
+        hidden_dock_tile,
     }
 }
 
@@ -1018,10 +1036,14 @@ pub(crate) fn request_placement_refresh(trigger: PlacementTrigger) {
 #[cfg(target_os = "macos")]
 fn refresh_placement(app_handle: &tauri::AppHandle, trigger: PlacementTrigger) {
     let handle = app_handle.clone();
+    // Runs on the placement worker, not the main thread: the Dock preference
+    // read (`CFPreferencesAppSynchronize` plus copies) is I/O, and an app
+    // activation triggers it four times (the refresh and three settle checks).
+    let hidden_dock_tile = hidden_bottom_dock_tile();
     if let Err(error) = app_handle.run_on_main_thread(crate::main_thread_watch::job(
         "overlay.refresh_placement",
         move || {
-            apply_placement(&handle, trigger);
+            apply_placement(&handle, trigger, hidden_dock_tile);
         },
     )) {
         tracing::warn!(target: "system", "overlay placement main-thread dispatch failed: {}", error);
@@ -1031,10 +1053,14 @@ fn refresh_placement(app_handle: &tauri::AppHandle, trigger: PlacementTrigger) {
 /// Main-thread half of `refresh_placement`: one snapshot, one resolved mode.
 /// Repositions, resizes and notifies the frontend only when it changed.
 #[cfg(target_os = "macos")]
-fn apply_placement(handle: &tauri::AppHandle, trigger: PlacementTrigger) {
+fn apply_placement(
+    handle: &tauri::AppHandle,
+    trigger: PlacementTrigger,
+    hidden_dock_tile: Option<HiddenDock>,
+) {
     let state = handle.state::<State>();
     let previous = state.display_snapshot.lock_or_recover().clone();
-    let snapshot = capture_display_snapshot(handle);
+    let snapshot = capture_display_snapshot_with(handle, hidden_dock_tile);
     let notch = snapshot.notch_info;
     let changed = previous.as_ref() != Some(&snapshot);
     let dock_only = previous.as_ref().is_some_and(|previous| {
@@ -1069,6 +1095,9 @@ fn apply_placement(handle: &tauri::AppHandle, trigger: PlacementTrigger) {
     if !changed {
         return;
     }
+    // A concealed popover stays ordered in, so a display change can move it
+    // without this code knowing: make its next show re-apply its frame.
+    crate::commands::dictation_preview::invalidate_placement();
     let layout = *state.overlay_layout.lock_or_recover();
     // The Dock only moves the bottom pill. A Dock-only change must not
     // collapse an open notch island whose geometry is unchanged.
@@ -1412,6 +1441,110 @@ pub fn get_overlay_geometry(
     )
 }
 
+/// One hover-poller reading, in logical points on the shared top-left desktop
+/// space: the overlay window's origin and the cursor. The poller compares them
+/// with the island's DOM rectangle (CSS pixels, which are points).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OverlayPointerSample {
+    pub window_x: f64,
+    pub window_y: f64,
+    pub cursor_x: f64,
+    pub cursor_y: f64,
+}
+
+/// Combine the overlay's applied frame with a cursor reading. `None` while the
+/// frame is unknown (mid-resize) or the cursor could not be read, so the
+/// poller skips that tick rather than act on a half-known state.
+fn pointer_sample(
+    frame: Option<OverlayFrame>,
+    cursor: Option<(f64, f64)>,
+) -> Option<OverlayPointerSample> {
+    let (frame, (cursor_x, cursor_y)) = frame.zip(cursor)?;
+    (cursor_x.is_finite() && cursor_y.is_finite()).then_some(OverlayPointerSample {
+        window_x: frame.x,
+        window_y: frame.y,
+        cursor_x,
+        cursor_y,
+    })
+}
+
+/// Current global cursor position in points, origin at the top-left of the
+/// main display with y growing down: the space tao reports window frames in.
+/// `CGEventCreate` is documented thread-safe and needs no permission, so this
+/// never has to hop to the main thread.
+#[cfg(target_os = "macos")]
+fn global_cursor_position() -> Option<(f64, f64)> {
+    #[repr(C)]
+    struct CGPoint {
+        x: f64,
+        y: f64,
+    }
+    extern "C" {
+        fn CGEventCreate(source: *const std::ffi::c_void) -> *mut std::ffi::c_void;
+        fn CGEventGetLocation(event: *const std::ffi::c_void) -> CGPoint;
+        fn CFRelease(object: *const std::ffi::c_void);
+    }
+    // SAFETY: a null source asks for an event stamped with the current cursor
+    // location; the copy-rule result is released exactly once.
+    unsafe {
+        let event = CGEventCreate(std::ptr::null());
+        if event.is_null() {
+            return None;
+        }
+        let point = CGEventGetLocation(event);
+        CFRelease(event);
+        Some((point.x, point.y))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn global_cursor_position() -> Option<(f64, f64)> {
+    None
+}
+
+/// Read the overlay's frame and the cursor for the hover poller without
+/// touching the main thread. This replaces the poller's two blocking
+/// main-thread round trips per tick (`outer_position` and `cursor_position`).
+/// An `async` command so Tauri runs it on its worker pool.
+#[tauri::command]
+pub async fn overlay_pointer_sample(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, State>,
+) -> Result<Option<OverlayPointerSample>, String> {
+    if window.label() != "overlay" {
+        return Err("overlay pointer sampling is restricted to the overlay window".to_string());
+    }
+    let frame = *state.overlay_frame.lock_or_recover();
+    let sample = pointer_sample(frame, global_cursor_position());
+    note_pointer_sample(sample.is_some(), frame.is_some());
+    Ok(sample)
+}
+
+/// Consecutive empty hover samples before one warning is logged: 20 ticks is
+/// three seconds at the poller's 150 ms cadence.
+const EMPTY_POINTER_SAMPLES_BEFORE_WARNING: u32 = 20;
+static EMPTY_POINTER_SAMPLES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// A frame that stays unknown (or a cursor that stays unreadable) silently
+/// disables hover expansion, so say so once per stretch.
+fn note_pointer_sample(had_sample: bool, frame_known: bool) {
+    use std::sync::atomic::Ordering;
+    if had_sample {
+        EMPTY_POINTER_SAMPLES.store(0, Ordering::Relaxed);
+        return;
+    }
+    let empty = EMPTY_POINTER_SAMPLES.fetch_add(1, Ordering::Relaxed) + 1;
+    if empty == EMPTY_POINTER_SAMPLES_BEFORE_WARNING {
+        tracing::warn!(
+            target: "system",
+            event_code = "overlay.pointer_sample_empty",
+            frame_known,
+            "overlay hover samples have been empty for several seconds"
+        );
+    }
+}
+
 /// Show the always-on-top macOS notch overlay window.
 #[tauri::command]
 pub fn show_overlay(app: tauri::AppHandle) -> Result<(), String> {
@@ -1591,7 +1724,7 @@ pub async fn set_overlay_expanded(
                         // Never retain an authoritative old frame after a partially
                         // successful size/position pair.
                         *state.overlay_frame.lock_or_recover() = None;
-                        crate::main_thread_watch::queued_section(
+                        if let Err(error) = crate::main_thread_watch::queued_section(
                             "overlay.set_size",
                             "applied.overlay.set_size",
                             || {
@@ -1600,14 +1733,30 @@ pub async fn set_overlay_expanded(
                                     applied.window_h,
                                 ))
                             },
-                        )
-                        .map_err(|error| error.to_string())?;
-                        crate::main_thread_watch::queued_section(
+                        ) {
+                            // Nothing moved: the window still has its old frame.
+                            // Leaving the cache empty would make the hover poller
+                            // return no sample for as long as the overlay lives.
+                            restore_overlay_frame(&dispatch_app, saved_frame);
+                            return Err(error.to_string());
+                        }
+                        if let Err(error) = crate::main_thread_watch::queued_section(
                             "overlay.set_position",
                             "applied.overlay.set_position",
                             || overlay.set_position(tauri::LogicalPosition::new(x, y)),
-                        )
-                        .map_err(|error| error.to_string())?;
+                        ) {
+                            // The size took and the position did not: the window
+                            // has the new size at its old origin.
+                            restore_overlay_frame(
+                                &dispatch_app,
+                                saved_frame.map(|old| OverlayFrame {
+                                    width: applied.window_w,
+                                    height: applied.window_h,
+                                    ..old
+                                }),
+                            );
+                            return Err(error.to_string());
+                        }
                     }
                     if let Some(position) = calibration {
                         // Publish effective bounds only after both setters succeed,
@@ -2007,6 +2156,29 @@ mod tests {
             let (x, _) = centered_logical_position((0, 0), (3024, 1964), 2.0, width);
             assert_eq!(x + width / 2.0, 756.0);
         }
+    }
+
+    #[test]
+    fn pointer_samples_need_both_a_known_frame_and_a_readable_cursor() {
+        let frame = OverlayFrame {
+            x: 867.0,
+            y: 0.0,
+            width: 185.0,
+            height: 32.0,
+        };
+        assert_eq!(
+            pointer_sample(Some(frame), Some((900.5, 12.0))),
+            Some(OverlayPointerSample {
+                window_x: 867.0,
+                window_y: 0.0,
+                cursor_x: 900.5,
+                cursor_y: 12.0,
+            })
+        );
+        // Mid-resize the frame is unknown: skip the tick.
+        assert_eq!(pointer_sample(None, Some((900.5, 12.0))), None);
+        assert_eq!(pointer_sample(Some(frame), None), None);
+        assert_eq!(pointer_sample(Some(frame), Some((f64::NAN, 1.0))), None);
     }
 
     #[test]

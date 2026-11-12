@@ -389,6 +389,7 @@ pub fn run() {
             commands::overlay::set_overlay_vertical_offset,
             commands::overlay::show_main_window,
             commands::overlay::get_overlay_geometry,
+            commands::overlay::overlay_pointer_sample,
             commands::dictation_preview::show_dictation_preview,
             telemetry::get_event_history,
             telemetry::clear_event_history,

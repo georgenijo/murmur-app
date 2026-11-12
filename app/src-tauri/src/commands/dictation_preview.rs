@@ -25,12 +25,10 @@ use tauri::Manager;
 const WIDTH: f64 = 460.0;
 const HEIGHT: f64 = 104.0;
 
-const POPOVER: PopoverSpec = PopoverSpec {
-    label: "dictation-preview",
-    // Purely informational while the user is dictating into another app:
-    // never swallow a click meant for whatever is underneath.
-    ignore_cursor_events: true,
-};
+// Purely informational while the user is dictating into another app: never
+// swallow a click meant for whatever is underneath. A `static`, not a `const`:
+// it owns the presentation state that lets hide conceal instead of order out.
+static POPOVER: PopoverSpec = PopoverSpec::new("dictation-preview", true);
 
 /// Logical frame for the preview window: horizontally centered on the
 /// menu-bar display, tucked directly under the notch (or menu bar on displays
@@ -87,21 +85,30 @@ fn refit_material(app: &tauri::AppHandle) {
     let _ = app;
 }
 
+/// The display configuration changed: the popover may no longer be where its
+/// last applied frame says, so the next show or follow applies its frame again.
+pub(crate) fn invalidate_placement() {
+    POPOVER.invalidate_frame();
+}
+
 /// Keep an already-visible preview attached to the overlay as its native frame
 /// changes. This never shows a hidden window, so recording generation remains
-/// owned by `show_dictation_preview`/the Rust ticker.
+/// owned by `show_dictation_preview`/the Rust ticker. The overlay reports every
+/// frame change, most of them no-ops for the preview: an unchanged frame sends
+/// nothing to WindowServer and skips the material re-fit.
 pub(crate) fn follow_overlay_if_visible(app: &tauri::AppHandle) {
-    let Some(window) = app.get_webview_window(POPOVER.label) else {
-        return;
-    };
-    if !window.is_visible().unwrap_or(false) {
+    if !POPOVER.is_presented() {
         return;
     }
     crate::main_thread_watch::section("preview.follow_overlay", || {
-        if let Err(error) = POPOVER.reposition(app, frame(app, notch_height(app))) {
-            tracing::warn!(target: "system", "dictation preview could not follow overlay: {}", error);
+        match POPOVER.reposition(app, frame(app, notch_height(app))) {
+            Ok(true) => refit_material(app),
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(target: "system", "dictation preview could not follow overlay: {}", error);
+                refit_material(app);
+            }
         }
-        refit_material(app);
     });
 }
 

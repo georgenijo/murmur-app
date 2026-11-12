@@ -11,16 +11,14 @@ import {
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
+  // The two readings behind the `overlay_pointer_sample` command: the overlay
+  // window's origin and the cursor, in logical points.
   cursorPosition: vi.fn(),
   outerPosition: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
-vi.mock('@tauri-apps/api/window', () => ({
-  getCurrentWindow: () => ({ outerPosition: mocks.outerPosition }),
-  cursorPosition: mocks.cursorPosition,
-}));
 vi.mock('../log', () => ({
   flog: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -102,6 +100,16 @@ describe('useOverlayExpansion', () => {
         return new Promise((resolve, reject) => {
           surfaceCalls.push({ args: args as SurfaceCall['args'], resolve, reject });
         });
+      }
+      if (cmd === 'overlay_pointer_sample') {
+        return Promise.all([mocks.outerPosition(), mocks.cursorPosition()]).then(
+          ([windowAt, cursor]: { x: number; y: number }[]) => ({
+            windowX: windowAt.x,
+            windowY: windowAt.y,
+            cursorX: cursor.x,
+            cursorY: cursor.y,
+          }),
+        );
       }
       return Promise.resolve();
     });
@@ -540,6 +548,49 @@ describe('useOverlayExpansion', () => {
     await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS); });
     await flush();
     expect(mocks.cursorPosition).toHaveBeenCalled();
+  });
+
+  it('polls with one off-main call per tick, not two main-thread round trips', async () => {
+    await mount({ withIsland: true });
+    mocks.invoke.mockClear();
+    // Step tick by tick: a tick whose call has not resolved yet blocks the next.
+    for (let tick = 0; tick < 10; tick += 1) {
+      await act(async () => { vi.advanceTimersByTime(150); });
+      await flush();
+    }
+    const polls = mocks.invoke.mock.calls.filter((c) => c[0] === 'overlay_pointer_sample');
+    // 1.5 s at the 150 ms cadence: ten ticks, one call each.
+    expect(polls).toHaveLength(10);
+    expect(mocks.invoke.mock.calls.every((c) => c[0] === 'overlay_pointer_sample')).toBe(true);
+  });
+
+  it('skips a tick while Rust has no applied frame to report', async () => {
+    mocks.invoke.mockImplementation((cmd: string) => Promise.resolve(
+      cmd === 'overlay_pointer_sample' ? null : undefined,
+    ));
+    await mount({ withIsland: true });
+    await act(async () => { vi.advanceTimersByTime(HOVER_OPEN_DWELL_MS * 4); });
+    await flush();
+    expect(current.phase).toBe('collapsed');
+    expect(surfaceCallCount()).toBe(0);
+  });
+
+  it('compares the sample with the island in points, whatever the display scale', async () => {
+    const previous = window.devicePixelRatio;
+    Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: 2 });
+    try {
+      // Cursor inside the (zero-sized) island at the window origin: hover arms
+      // even though a 2x display would have doubled the old physical rect.
+      mocks.cursorPosition.mockResolvedValue({ x: 0, y: 0 });
+      await mount({ withIsland: true });
+      for (let tick = 0; tick < 4; tick += 1) {
+        await act(async () => { vi.advanceTimersByTime(150); });
+        await flush();
+      }
+      expect(surfaceCalls.some((c) => c.args.expanded)).toBe(true);
+    } finally {
+      Object.defineProperty(window, 'devicePixelRatio', { configurable: true, value: previous });
+    }
   });
 
   it('opens the dropdown on hover while disabled so the Enable control stays reachable', async () => {

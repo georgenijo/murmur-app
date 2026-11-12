@@ -278,7 +278,7 @@ belong to the visible island, not its transparent full-window wrapper.
 - **Acknowledged ordering:** because a transparent overlay with cursor events enabled captures the mouse across its whole frame, the window is **dynamically resized** rather than pre-allocated tall — otherwise the idle overlay would create a click dead-zone below the notch. Expand enqueues the grow, **awaits the ack from `set_overlay_expanded`** (which returns the applied frame), and only then reveals the card, so CSS can never animate the dropdown into a window that has not yet grown. If the resize is rejected, the controller reverts to `collapsed` without revealing. Collapse hides the card immediately, then shrinks the window one guarded interval later so the dropdown is never clipped mid-transition.
 - **Serialized surface writer:** all `set_overlay_expanded` calls flow through one async queue with a generation counter. A newer request supersedes any queued or in-flight older one, and stale acks are dropped, so rapid enter/leave/enter can never apply an out-of-date resize. The native acknowledgment wait is bounded at two seconds, so a hung IPC request cannot wedge every later resize. Leaving during `opening` immediately supersedes the pending grow with a collapse, so a late grow ack cannot reveal the dropdown. Sustained re-entry while `closing` cancels the pending shrink once the open dwell commits and reopens cleanly. A rejected or timed-out collapse is retried twice inside the same generation-aware queue before the controller gives up, reducing the chance that a transient native resize failure leaves a tall transparent hit area.
 - **Motion tokens** — see [Motion tokens](#motion-tokens).
-- **Single gated poller:** the overlay is non-activating and sits above the menu bar, so macOS can miss DOM hover events. One interval branches on phase — strict entry bounds arm the dwell while `collapsed`/`closing`; padded exit bounds collapse the card while `open`. Gating: ticks do **no IPC** (no `outerPosition`/`cursorPosition`) while the overlay is **hidden**; while **disabled**, DOM and poller entry are blocked, but the exit watchdog stays alive during an active interaction so clicking the dropdown's own Disable control cannot strand the card open on a missed mouseleave. Visibility is tracked via `overlay-visible-changed`, defaulting to visible on mount; hiding also cancels timers, resets the phase, and serializes a collapse. In-flight cursor results are generation-guarded so they cannot reopen after a visibility or display reset. A display change (`overlay-geometry-changed`) is authoritative: it cancels timers, forces `collapsed`, and enqueues one corrective collapse resize through the writer (which supersedes any straggler grow and repairs the window).
+- **Single gated poller:** the overlay is non-activating and sits above the menu bar, so macOS can miss DOM hover events. One interval branches on phase — strict entry bounds arm the dwell while `collapsed`/`closing`; padded exit bounds collapse the card while `open`. Each tick is one `overlay_pointer_sample` call, answered off the main thread from the applied overlay frame and a thread-safe cursor read (the old `outerPosition` + `cursorPosition` pair were two blocking main-thread round trips per 150 ms). It reports points, so the island rect is compared without any display-scale factor, and it returns nothing while the frame is unknown mid-resize. Gating: ticks do **no IPC** while the overlay is **hidden**; while **disabled**, DOM and poller entry are blocked, but the exit watchdog stays alive during an active interaction so clicking the dropdown's own Disable control cannot strand the card open on a missed mouseleave. Visibility is tracked via `overlay-visible-changed`, defaulting to visible on mount; hiding also cancels timers, resets the phase, and serializes a collapse. In-flight cursor results are generation-guarded so they cannot reopen after a visibility or display reset. A display change (`overlay-geometry-changed`) is authoritative: it cancels timers, forces `collapsed`, and enqueues one corrective collapse resize through the writer (which supersedes any straggler grow and repairs the window).
   - **Note:** `overlay-visible-changed` is emitted by the `show_overlay`/`hide_overlay` commands, which are **not currently invoked in production** — the overlay is shown once at setup (`overlay_win.show()` in `lib.rs`) and stays visible. The visibility ref therefore defaults to `true` so first-hover works from mount, and the `disabled`-phase gate is the active battery saver today; the visibility gate is plumbing that activates if/when show/hide get wired to dynamic callers.
 - The anchored overlay is not a native drag region. Relocation is explicit through
   Settings calibration, so an unpersisted free drag cannot be undone by the next
@@ -378,7 +378,12 @@ the recording indicator or use the recording shortcut.
 
 ## Waveform
 
-`useWaveform` listens to the throttled `audio-level` event and writes each bar's
+`useWaveform` listens to the `overlay-audio-level` event (Rust sends the overlay
+at most ~30 samples a second, holding the loudest level since the last one so a
+short peak is not lost). It is a separate event from the main window's raw
+`audio-level`: a frontend `listen()` receives every emission of its event name,
+whichever window it targets, so sharing one name would give each window both
+streams. The hook writes each bar's
 `transform: scaleY()` from `requestAnimationFrame`. It never animates height,
 so updates stay on the compositor without layout. There is no React state
 update per frame. Bars rest at `scaleY(0.14)` when not recording. Deterministic
@@ -394,7 +399,10 @@ that is kept. A dark card wraps up to three lines and
 keeps the newest words in view. It has no recording dot of its own: the island
 already shows one. The card shrink-wraps short text and stays centred on the
 island. It sits in a click-through window, below the notch island or above the
-floating pill. Existing APIs provide only whole
+floating pill. The window stays ordered in between dictations, fully
+transparent (`NSWindow` alpha 0) and click-through, like the overlay itself, so
+a show only reveals it and a hide never orders it out. The first show of a
+session orders it in. Frame setters are skipped when the frame is unchanged. Existing APIs provide only whole
 provisional strings, so production renders tentative text only: it does not
 infer committed words or invent cadence. See
 [Live preview](transcription.md#live-preview) for the unchanged backend cadence.
@@ -458,7 +466,7 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 See [docs/reference/commands.md](../reference/commands.md) (Overlay section) and [docs/reference/events.md](../reference/events.md) (Overlay Events section) for the authoritative, up-to-date list. Summary of what the overlay itself calls/listens to:
 
 - Calls: `get_status`, `get_overlay_geometry`, `set_overlay_expanded`, `set_overlay_material`, `show_main_window`, `start_native_recording`, `stop_native_recording`, `retry_last_delivery`, `set_app_disabled`, `configure_dictation`.
-- Listens: `overlay-geometry-changed`, `overlay-surface-changed`, `overlay-visible-changed`, `recording-status-changed`, `recording-cancelled`, `dictation-generation-started`, `dictation-delivery-outcome`, `hotkey-tap-rejected`, `app-disabled-changed`, `audio-level`, `settings-changed`.
+- Listens: `overlay-geometry-changed`, `overlay-surface-changed`, `overlay-visible-changed`, `recording-status-changed`, `recording-cancelled`, `dictation-generation-started`, `dictation-delivery-outcome`, `hotkey-tap-rejected`, `app-disabled-changed`, `overlay-audio-level`, `settings-changed`.
 
 `set_overlay_expanded` **returns the applied frame** as `AppliedSurface { windowW, windowH }`; the expansion controller awaits this value as the resize ack before revealing the dropdown. `show_overlay`/`hide_overlay` emit `overlay-visible-changed(true|false)`, which gates the controller's cursor poller so it does no IPC while the overlay is hidden.
 

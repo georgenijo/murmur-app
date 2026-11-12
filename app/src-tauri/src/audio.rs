@@ -41,6 +41,38 @@ pub fn compute_peak(samples: &[f32]) -> f32 {
 }
 
 const AUDIO_LEVEL_THROTTLE_MS: u64 = 16;
+/// Raw RMS stream for the main window (Stop on Silence, the recording bar,
+/// the corpus recorder). Emitted with `emit_to("main", ..)`.
+const AUDIO_LEVEL_EVENT: &str = "audio-level";
+/// Peak-held waveform feed for the overlay window only. It has its own name
+/// because a frontend `listen()` registers for any target, and Tauri
+/// delivers an `emit_to` for one label to every webview that has such a
+/// listener: sharing `audio-level` would hand each window both streams.
+const OVERLAY_AUDIO_LEVEL_EVENT: &str = "overlay-audio-level";
+/// The overlay waveform redraws bars from a rAF loop and eases them with a CSS
+/// transition, so it gains nothing from more than ~30 samples a second.
+const AUDIO_LEVEL_OVERLAY_MS: u64 = 33;
+
+/// Rate-limits the overlay waveform feed to ~30 Hz without losing a short
+/// peak: the loudest level since the last emission is the one that goes out.
+#[derive(Default)]
+struct OverlayLevelGate {
+    held: f32,
+    last_emit: Option<Instant>,
+}
+
+impl OverlayLevelGate {
+    fn observe(&mut self, level: f32, now: Instant) -> Option<f32> {
+        self.held = self.held.max(level);
+        if self.last_emit.is_some_and(|at| {
+            now.duration_since(at) < Duration::from_millis(AUDIO_LEVEL_OVERLAY_MS)
+        }) {
+            return None;
+        }
+        self.last_emit = Some(now);
+        Some(std::mem::take(&mut self.held))
+    }
+}
 // Keep key-release-to-helper-stop latency below one display frame. The worker
 // otherwise waits on helper output and only observes host commands on timeout.
 const CAPTURE_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(2);
@@ -2558,6 +2590,7 @@ fn run_backend(
     let mut first_callback_wait_started: Option<Instant> = None;
     let mut stream_open_started: Option<Instant> = None;
     let mut last_level_emit = Instant::now() - Duration::from_secs(1);
+    let mut overlay_level_gate = OverlayLevelGate::default();
     let mut preview_levels = PreviewLevelAccumulator::default();
     let mut preview_classification = PreviewLevelTracker::default();
     let mut preview_vad_window = PreviewVadWindow::default();
@@ -3072,8 +3105,19 @@ fn run_backend(
                                 },
                             );
                         } else {
-                            let _ = handle.emit("audio-level", compute_rms(&pcm.samples));
+                            // Two streams under two names. The main window
+                            // runs Stop on Silence and the recording bar on the
+                            // raw `audio-level` at the cadence its timing was
+                            // written against; the overlay draws the waveform
+                            // from the peak-held `overlay-audio-level` at ~30 Hz.
+                            // Neither window listens to the other's event.
+                            let level = compute_rms(&pcm.samples);
+                            let _ = handle.emit_to("main", AUDIO_LEVEL_EVENT, level);
                             crate::main_thread_watch::count_audio_level_emit();
+                            if let Some(held) = overlay_level_gate.observe(level, Instant::now()) {
+                                let _ = handle.emit_to("overlay", OVERLAY_AUDIO_LEVEL_EVENT, held);
+                                crate::main_thread_watch::count_overlay_audio_level_emit();
+                            }
                         }
                     }
                     last_level_emit = Instant::now();
@@ -3739,6 +3783,45 @@ mod release_tail_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlay_levels_are_limited_to_about_thirty_hertz_and_keep_the_peak() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut gate = OverlayLevelGate::default();
+        // The first sample goes out at once.
+        assert_eq!(gate.observe(0.02, at(0)), Some(0.02));
+        // Samples inside the window are held, and the loudest one wins.
+        assert_eq!(gate.observe(0.30, at(16)), None);
+        assert_eq!(gate.observe(0.05, at(32)), None);
+        assert_eq!(gate.observe(0.04, at(36)), Some(0.30));
+        // The held peak is spent: the next window starts from its own samples.
+        assert_eq!(gate.observe(0.01, at(52)), None);
+        assert_eq!(gate.observe(0.01, at(70)), Some(0.01));
+    }
+
+    #[test]
+    fn a_sixty_hertz_stream_reaches_the_overlay_at_most_thirty_times_a_second() {
+        let start = Instant::now();
+        let mut gate = OverlayLevelGate::default();
+        let emitted = (0..60)
+            .filter(|i| {
+                gate.observe(0.1, start + Duration::from_micros(i * 16_667))
+                    .is_some()
+            })
+            .count();
+        assert!((25..=31).contains(&emitted), "emitted {emitted}");
+    }
+
+    #[test]
+    fn the_overlay_feed_has_its_own_event_name() {
+        // A frontend `listen()` receives every `emit_to` for that event name,
+        // whichever window it targets, so the overlay's peak-held feed must not
+        // share a name with the raw stream Stop on Silence reads.
+        assert_eq!(AUDIO_LEVEL_EVENT, "audio-level");
+        assert_eq!(OVERLAY_AUDIO_LEVEL_EVENT, "overlay-audio-level");
+        assert_ne!(AUDIO_LEVEL_EVENT, OVERLAY_AUDIO_LEVEL_EVENT);
+    }
 
     /// A stand-in helper process: replies with `reply` on stdout and records
     /// every byte the host writes to it, so a test can prove what was sent.

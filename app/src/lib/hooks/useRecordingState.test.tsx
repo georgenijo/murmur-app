@@ -615,4 +615,46 @@ describe('useRecordingState transition ordering', () => {
     });
     expect(current.error).toBe('Saving the transcript failed.');
   });
+
+  describe('audio level while the window is hidden', () => {
+    let visibility: PropertyDescriptor | undefined;
+    const setVisibility = (state: 'visible' | 'hidden') => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+    };
+    beforeEach(() => { visibility = Object.getOwnPropertyDescriptor(document, 'visibilityState'); });
+    afterEach(() => {
+      if (visibility) Object.defineProperty(document, 'visibilityState', visibility);
+      else delete (document as unknown as Record<string, unknown>).visibilityState;
+    });
+
+    it('updates the level while visible', async () => {
+      setVisibility('visible');
+      await act(async () => mocks.listeners.get('audio-level')?.({ payload: 0.04 }));
+      expect(current.audioLevel).toBe(0.04);
+    });
+
+    it('does not re-render App-level state for audio-level events while hidden', async () => {
+      setVisibility('visible');
+      await act(async () => mocks.listeners.get('audio-level')?.({ payload: 0.04 }));
+      let renders = 0;
+      const countingContainer = document.createElement('div');
+      const countingRoot = createRoot(countingContainer);
+      function Counter() {
+        useRecordingState({ addEntry: mocks.addEntry, microphone: 'system_default' });
+        renders += 1;
+        return null;
+      }
+      await act(async () => countingRoot.render(<Counter />));
+      const baseline = renders;
+      setVisibility('hidden');
+      await act(async () => {
+        for (let i = 0; i < 20; i += 1) mocks.listeners.get('audio-level')?.({ payload: 0.01 * i });
+      });
+      expect(renders).toBe(baseline);
+      setVisibility('visible');
+      await act(async () => mocks.listeners.get('audio-level')?.({ payload: 0.09 }));
+      expect(renders).toBe(baseline + 1);
+      await act(async () => countingRoot.unmount());
+    });
+  });
 });

@@ -51,7 +51,7 @@ reporter about five wakeups a second.
 | `pipeline.main_thread_paste_wait` | every dictation paste, about 1.2 s after it | `recording_id`, `inject_queue_us`, `inject_job_us`, `queued_us`, `started_us`, `slow`, `runloop_busy_us`, `runloop_idle_us`, `labelled_us`, `unlabelled_busy_us`, `job_us`, `command_us`, `callback_us`, `section_us`, `event_loop_drain_us`, `longest_label`, `longest_kind`, `longest_us` |
 | `system.main_thread_paste_span` | every span that overlapped a paste wait ≥ 20 ms (at most 48) | the span fields plus `recording_id` and `overlap_us` |
 | `system.main_thread_stack` | a busy stretch reaches 50 ms (sample 1) and 250 ms (sample 2); at most 8 per minute | `sample`, `busy_us`, `start_us`, `start_unix_ms`, `frame_count`, `frames`, `held_us`, `sampling_stopped`, `suppressed` |
-| `system.main_thread_rates` | each second that carried `audio-level` emits, plus an idle second with ≥ 10 invokes (at most once per 10 s) | `window_us`, `start_unix_ms`, `audio_level_emits`, `ipc_invokes`, `ipc_main_invokes`, `ipc_main_us` |
+| `system.main_thread_rates` | each second that carried `audio-level` emits, plus an idle second with ≥ 10 invokes (at most once per 10 s) | `window_us`, `start_unix_ms`, `audio_level_emits`, `overlay_audio_level_emits`, `ipc_invokes`, `ipc_main_invokes`, `ipc_main_us` |
 | `pipeline.dictation_stage_gaps` | once per dictation, when its stop path ends | `recording_id`, `total_us`, `unattributed_us`, and one `*_us` field per stage (below) |
 
 `kind` is one of `job`, `command`, `callback`, `section`, `runloop_busy`, or
@@ -155,6 +155,18 @@ bound for the block itself: any other queued work in front of it counts too. Mar
 that waited under 1 ms are not recorded, and one that waited 20 ms or more is
 logged like a slow job. The marker is queued only when the setter returned `Ok`.
 
+The live-words popover's visible change is not one of tao's blocks. A hide makes
+the window transparent and a show makes it opaque by queueing an `NSWindow` alpha
+change straight on the main queue, behind tao's queued size, position and
+pointer-event blocks. That block is the `job` span `native_window.set_alpha`: its
+`queue_us` is the time from the request to the window actually changing, and its
+duration is the alpha change itself. So `preview.hide` and `preview.show` time the
+request, and `native_window.set_alpha` is the moment the popover disappears or
+appears. The popover's own setters use the same `queued_section` markers
+(`applied.window.set_size`, `applied.window.set_position`,
+`applied.window.set_ignore_cursor_events`) as every other window. The first show
+also runs the `native_window.set_collection_behavior` job.
+
 Limits:
 
 - A wrapper only times a call made on the main thread. A setter called from
@@ -167,8 +179,10 @@ Limits:
   app commands only.
 
 Other labels added for these freezes: `preview.follow_overlay`,
-`overlay.primary_monitor`, `overlay.detect_notch`, `overlay.dock_prefs`,
-`overlay_material.apply`, `overlay_material.install` (first install of the
+`overlay.primary_monitor`, `overlay.detect_notch`, `overlay.dock_prefs` (read
+on the placement worker, off the main thread, when a refresh runs;
+only a main-thread caller of `capture_display_snapshot` records it),
+`native_window.set_alpha`, `overlay_material.apply`, `overlay_material.install` (first install of the
 material views), `overlay_material.attach`, and `overlay_material.refit`.
 
 ## Rates
@@ -176,8 +190,9 @@ material views), `overlay_material.attach`, and `overlay_material.refit`.
 The audio capture thread and the invoke handler add to lock-free counters. The
 reporter swaps them to zero once per second.
 
-- `audio_level_emits`: `emit("audio-level")` calls in the window. Each call is
-  delivered to every webview.
+- `audio_level_emits`: `emit_to("main", "audio-level")` calls in the window.
+- `overlay_audio_level_emits`: `emit_to("overlay", "overlay-audio-level")`
+  calls in the window, the peak-held waveform feed (at most ~30 a second).
 - `ipc_invokes`: app commands that reached the invoke handler, on any thread.
 - `ipc_main_invokes` and `ipc_main_us`: the subset handled on the main thread
   and the time they took.

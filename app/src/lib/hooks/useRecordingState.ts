@@ -345,6 +345,11 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<number>('audio-level', (event) => {
+      // The level only moves the main window's recording bar. While that
+      // window is hidden (the normal state while dictating into another app)
+      // each sample would re-render all of App ~47 times a second for nothing.
+      // Stop on Silence has its own listener and is unaffected.
+      if (document.visibilityState === 'hidden') return;
       setAudioLevel(event.payload);
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }

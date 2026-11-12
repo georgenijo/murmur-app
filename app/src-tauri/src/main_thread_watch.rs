@@ -213,6 +213,7 @@ static PENDING_PASTES: Mutex<Vec<Arc<PasteState>>> = Mutex::new(Vec::new());
 static BUSY_SINCE_US: AtomicU64 = AtomicU64::new(0);
 /// Lock-free per-second counters. Any thread adds; only the reporter swaps.
 static AUDIO_LEVEL_EMITS: AtomicU64 = AtomicU64::new(0);
+static OVERLAY_AUDIO_LEVEL_EMITS: AtomicU64 = AtomicU64::new(0);
 static IPC_INVOKES: AtomicU64 = AtomicU64::new(0);
 static IPC_MAIN_INVOKES: AtomicU64 = AtomicU64::new(0);
 static IPC_MAIN_US: AtomicU64 = AtomicU64::new(0);
@@ -384,9 +385,15 @@ fn wake_reporter_if_parked() {
     }
 }
 
-/// Count one `audio-level` event emitted to the webviews.
+/// Count one `audio-level` event emitted to the main window.
 pub(crate) fn count_audio_level_emit() {
     AUDIO_LEVEL_EMITS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Count one `overlay-audio-level` event emitted to the overlay window. Kept
+/// apart from `audio-level` so the two feeds' rates can be read separately.
+pub(crate) fn count_overlay_audio_level_emit() {
+    OVERLAY_AUDIO_LEVEL_EMITS.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Time a main-thread callback the app registered.
@@ -515,6 +522,7 @@ const COMMAND_LABELS: &[&str] = &[
     "open_calendar_preferences",
     "open_system_audio_preferences",
     "open_system_preferences",
+    "overlay_pointer_sample",
     "patch_overlay_setting",
     "preview_vocabulary_aliases",
     "process_audio",
@@ -1037,6 +1045,7 @@ struct RatePacer {
 struct RateBucket {
     window_us: u64,
     audio_level_emits: u64,
+    overlay_audio_level_emits: u64,
     ipc_invokes: u64,
     ipc_main_invokes: u64,
     ipc_main_us: u64,
@@ -1078,6 +1087,7 @@ fn take_rate_counters() -> RateBucket {
     RateBucket {
         window_us: 0,
         audio_level_emits: AUDIO_LEVEL_EMITS.swap(0, Ordering::Relaxed),
+        overlay_audio_level_emits: OVERLAY_AUDIO_LEVEL_EMITS.swap(0, Ordering::Relaxed),
         ipc_invokes: IPC_INVOKES.swap(0, Ordering::Relaxed),
         ipc_main_invokes: IPC_MAIN_INVOKES.swap(0, Ordering::Relaxed),
         ipc_main_us: IPC_MAIN_US.swap(0, Ordering::Relaxed),
@@ -1146,6 +1156,7 @@ impl Reporter {
             window_us = bucket.window_us,
             start_unix_ms = unix_ms_at(now.saturating_sub(bucket.window_us)),
             audio_level_emits = bucket.audio_level_emits,
+            overlay_audio_level_emits = bucket.overlay_audio_level_emits,
             ipc_invokes = bucket.ipc_invokes,
             ipc_main_invokes = bucket.ipc_main_invokes,
             ipc_main_us = bucket.ipc_main_us,
@@ -2424,9 +2435,11 @@ mod tests {
         take_rate_counters();
         count_audio_level_emit();
         count_audio_level_emit();
+        count_overlay_audio_level_emit();
         IPC_INVOKES.fetch_add(5, Ordering::Relaxed);
         let bucket = take_rate_counters();
         assert_eq!(bucket.audio_level_emits, 2);
+        assert_eq!(bucket.overlay_audio_level_emits, 1);
         assert_eq!(bucket.ipc_invokes, 5);
         assert_eq!(take_rate_counters(), RateBucket::default());
     }
