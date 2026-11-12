@@ -392,7 +392,7 @@ Murmur’s optional OpenCode color theme follows Hex’s theme integration at
 
 Murmur’s optional warm capture standby and bounded pre-roll design are adapted from Hex’s dictation capture at `a07f994` (`audio.rs`, `audio_lifecycle.rs`).
 
-Murmur's Smart Auto-Stop log-mel feature extractor and Smart Turn ONNX session setup (`app/src-tauri/src/smart_turn.rs`) and the pause segmenter (`app/src-tauri/src/preview_pause.rs`) are adapted from Hex at commit `a07f994`.
+Murmur's Smart Auto-Stop log-mel feature extractor and Smart Turn ONNX session setup (`app/src-tauri/src/smart_turn.rs`) are adapted from Hex at commit `a07f994`.
 
 Parts of Murmur's dictation test harnesses are adapted from Hex at commit
 `a07f994` (the release-boundary tail harness and its speech-end detector in

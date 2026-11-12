@@ -91,7 +91,7 @@ export function StreamingVadSettings({ enabled, isRecording, onEnabledChange }: 
       <SettingToggle
         targetId="streaming-pipeline"
         title="Streaming speech detection (experimental)"
-        description="Find speech while you record so stopping is faster on long dictations. Needs a small model; until it is installed, recordings use the standard detection. Applies to the next recording."
+        description="Find speech while you record, and with the Parakeet (Core ML) model transcribe finished sentences as you speak, so stopping is faster on long dictations. Needs a small model; until it is installed, recordings use the standard detection. Applies to the next recording."
         checked={enabled}
         defaultChecked={DEFAULT_SETTINGS.streamingPipelineEnabled}
         onChange={toggle}

@@ -3,6 +3,7 @@ use super::*;
 const A: Bounds = (8_000, 72_000); // 4 s of speech
 const B: Bounds = (88_000, 152_000); // 4 s
 const C: Bounds = (168_000, 184_000); // 1 s
+const D: Bounds = (200_000, 216_000); // 1 s
 
 fn raw() -> Vec<f32> {
     (0..16_000 * 14).map(|i| (i as f32 * 0.37).sin()).collect()
@@ -131,7 +132,54 @@ fn a_cut_needs_new_speech_a_real_pause_and_a_final_segment() {
 }
 
 #[test]
-fn a_decode_whose_overlap_reads_differently_ends_reuse() {
+fn a_decode_whose_overlap_reads_differently_is_never_committed() {
+    let raw = raw();
+    let mut reuse = StreamReuse::default();
+    reuse.begin(1);
+    let plan = commit_plan(&mut reuse, &snapshot(&[A], A.1 + EDGE_MARGIN));
+    let piece = plan.piece(&raw[plan.raw_start..]).unwrap();
+    reuse.commit(1, plan, piece, "First complete sentence.");
+    // The overlap re-decodes differently (punctuation, then a word): the piece
+    // waits for a later cut; two in a row are tolerated, a third ends reuse.
+    let layouts: [&[Bounds]; 3] = [&[A, B], &[A, B, C], &[A, B, C, D]];
+    let bad = [
+        "First complete sentence, Second complete sentence.",
+        "Verst complete sentence. Second complete sentence.",
+        "first complete sentence. Second complete sentence.",
+    ];
+    for (round, (segments, text)) in layouts.into_iter().zip(bad).enumerate() {
+        let last = segments.last().unwrap().1;
+        let plan = match reuse.plan(1, &snapshot(segments, last + EDGE_MARGIN)) {
+            Plan::Commit(plan) => plan,
+            _ => panic!("round {round}: expected a piece"),
+        };
+        let piece = plan.piece(&raw[plan.raw_start..]).unwrap();
+        let outcome = reuse.commit(1, plan, piece, text);
+        assert_eq!(
+            outcome,
+            if round < 2 {
+                Committed::Deferred
+            } else {
+                Committed::Off
+            }
+        );
+        // Whatever happened, only the first piece is committed.
+        if round < 2 {
+            assert_eq!(reuse.last_text, "First complete sentence.");
+            assert_eq!(reuse.committed_bounds, vec![A]);
+        }
+    }
+    let filtered = concat(&raw, &[A, B, C]);
+    assert_eq!(
+        reuse
+            .take_final(1, Some(&[A, B, C]), &filtered)
+            .unwrap_err(),
+        Reason::OverlapMismatch
+    );
+}
+
+#[test]
+fn a_later_matching_overlap_commits_after_a_mismatch() {
     let raw = raw();
     let mut reuse = StreamReuse::default();
     reuse.begin(1);
@@ -141,21 +189,22 @@ fn a_decode_whose_overlap_reads_differently_ends_reuse() {
     let plan = commit_plan(&mut reuse, &snapshot(&[A, B], B.1 + EDGE_MARGIN));
     let piece = plan.piece(&raw[plan.raw_start..]).unwrap();
     assert_eq!(
+        reuse.commit(1, plan, piece, "First complete sentence, Second one here."),
+        Committed::Deferred
+    );
+    let plan = commit_plan(&mut reuse, &snapshot(&[A, B, C], C.1 + EDGE_MARGIN));
+    assert_eq!(plan.segments, vec![B, C], "the deferred audio is kept");
+    let piece = plan.piece(&raw[plan.raw_start..]).unwrap();
+    assert_eq!(
         reuse.commit(
             1,
             plan,
             piece,
-            "First complete sentence, Second complete sentence."
+            "First complete sentence. Second one here. Third bit."
         ),
-        Committed::Off
+        Committed::Stored
     );
-    let filtered = concat(&raw, &[A, B, C]);
-    assert_eq!(
-        reuse
-            .take_final(1, Some(&[A, B, C]), &filtered)
-            .unwrap_err(),
-        Reason::OverlapMismatch
-    );
+    assert_eq!(reuse.mismatches, 0);
 }
 
 #[test]

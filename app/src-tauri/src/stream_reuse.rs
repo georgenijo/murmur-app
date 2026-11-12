@@ -54,6 +54,10 @@ const MIN_PAUSE: usize = 4_800;
 const EDGE_MARGIN: usize = 9_600;
 /// A piece whose new text has fewer words than this is not committed yet.
 const MIN_SUFFIX_WORDS: usize = 3;
+/// A re-decoded overlap that reads differently is not committed; the piece waits
+/// for a later cut (the overlap re-decodes with different following audio). This
+/// many in a row ends reuse for the recording.
+const MAX_OVERLAP_MISMATCHES: u8 = 3;
 
 /// Why reuse is off for a recording, or why Stop fell back to the whole clip.
 /// Content-free; becomes the `outcome` of `pipeline.stream_reuse_outcome`.
@@ -165,6 +169,8 @@ pub(crate) struct StreamReuse {
     /// Text of the last committed piece, the exact overlap of the next decode.
     last_text: String,
     pieces: u32,
+    /// Consecutive pieces whose re-decoded overlap did not match.
+    mismatches: u8,
     /// Segment index below which no cut is tried (after a too-short piece).
     floor: usize,
 }
@@ -206,7 +212,8 @@ pub(crate) enum Plan {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Committed {
     Stored,
-    /// Too few new words: wait for a later cut instead of committing.
+    /// Too few new words, or an overlap that read differently: wait for a
+    /// later cut instead of committing.
     Deferred,
     /// The session ended (see [`Reason`]) or was not this recording's.
     Off,
@@ -363,8 +370,15 @@ impl StreamReuse {
             split_overlap(decoded, &self.last_text)
         };
         let Some(suffix) = suffix else {
-            self.fail(id, Reason::OverlapMismatch);
-            return Committed::Off;
+            // Nothing is committed from this decode: the committed text and
+            // audio stay exactly as proven. Try again at a later cut.
+            self.mismatches += 1;
+            if self.mismatches >= MAX_OVERLAP_MISMATCHES {
+                self.fail(id, Reason::OverlapMismatch);
+                return Committed::Off;
+            }
+            self.floor = plan.last + 1;
+            return Committed::Deferred;
         };
         if word_count(suffix) < MIN_SUFFIX_WORDS {
             self.floor = plan.last + 1;
@@ -379,6 +393,7 @@ impl StreamReuse {
         self.last_piece = new_audio;
         self.committed_bounds.extend_from_slice(&plan.segments);
         self.floor = plan.last + 1;
+        self.mismatches = 0;
         self.pieces += 1;
         Committed::Stored
     }
@@ -475,3 +490,7 @@ pub(crate) fn emit_outcome(recording_id: u64, outcome: &Outcome) {
 #[cfg(test)]
 #[path = "stream_reuse_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "stream_reuse_probe.rs"]
+mod probe;
