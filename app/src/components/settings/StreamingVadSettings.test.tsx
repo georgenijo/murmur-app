@@ -106,3 +106,41 @@ it('removes an installed model only after confirmation and not while recording',
   expect(mocks.remove).toHaveBeenCalledTimes(1);
   expect(buttonByText('Download model')).toBeDefined();
 });
+
+it('switching on before the status has loaded downloads once it resolves not-installed', async () => {
+  let resolveStatus!: (value: unknown) => void;
+  mocks.status.mockImplementationOnce(() => new Promise((resolve) => { resolveStatus = resolve; }));
+  mocks.status.mockResolvedValue({ state: 'notDownloaded', sizeBytes: 2327524 });
+  mocks.download.mockResolvedValue(undefined);
+  const onEnabledChange = vi.fn();
+  const page = (enabled: boolean) => <StreamingVadSettings enabled={enabled} isRecording={false} onEnabledChange={onEnabledChange} />;
+  await act(async () => root.render(page(false)));
+  await act(async () => toggle().click());
+  expect(onEnabledChange).toHaveBeenCalledExactlyOnceWith(true);
+  await act(async () => root.render(page(true)));
+  expect(mocks.download).not.toHaveBeenCalled();
+  await act(async () => resolveStatus({ state: 'notDownloaded', sizeBytes: 2327524 }));
+  expect(mocks.download).toHaveBeenCalledTimes(1);
+});
+
+it('switching on before the status loads does not download an installed model', async () => {
+  let resolveStatus!: (value: unknown) => void;
+  mocks.status.mockImplementationOnce(() => new Promise((resolve) => { resolveStatus = resolve; }));
+  await act(async () => root.render(<StreamingVadSettings enabled={false} isRecording={false} onEnabledChange={() => {}} />));
+  await act(async () => toggle().click());
+  await act(async () => root.render(<StreamingVadSettings enabled isRecording={false} onEnabledChange={() => {}} />));
+  await act(async () => resolveStatus({ state: 'ready', sizeBytes: 2327524 }));
+  expect(mocks.download).not.toHaveBeenCalled();
+});
+
+it('switching on then straight off before the status loads downloads nothing', async () => {
+  let resolveStatus!: (value: unknown) => void;
+  mocks.status.mockImplementationOnce(() => new Promise((resolve) => { resolveStatus = resolve; }));
+  const page = (enabled: boolean) => <StreamingVadSettings enabled={enabled} isRecording={false} onEnabledChange={() => {}} />;
+  await act(async () => root.render(page(false)));
+  await act(async () => toggle().click());
+  await act(async () => root.render(page(true)));
+  await act(async () => root.render(page(false)));
+  await act(async () => resolveStatus({ state: 'notDownloaded', sizeBytes: 2327524 }));
+  expect(mocks.download).not.toHaveBeenCalled();
+});

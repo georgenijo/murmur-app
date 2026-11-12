@@ -553,6 +553,23 @@ fn model_status_reports_not_downloaded_downloading_ready_and_failed() {
     assert_eq!((ready.state, ready.error), (ModelState::Ready, None));
 }
 
+#[test]
+fn a_load_that_raced_an_unload_does_not_publish_its_session() {
+    let _store = TempStore::new();
+    let slot: Mutex<Option<u32>> = Mutex::new(None);
+    // The worker read the generation, then Remove (or switching off) unloaded.
+    let started = unload_generation();
+    unload();
+    assert!(publish_session(&slot, started, 1).is_err());
+    assert!(
+        slot.lock_or_recover().is_none(),
+        "no session for a removed file"
+    );
+    // A load that began after the unload publishes normally.
+    assert!(publish_session(&slot, unload_generation(), 2).is_ok());
+    assert_eq!(*slot.lock_or_recover(), Some(2));
+}
+
 fn model_less_app() -> (tauri::App<tauri::test::MockRuntime>, impl Send) {
     crate::commands::recording::tests::partial_lease_fixture()
 }
