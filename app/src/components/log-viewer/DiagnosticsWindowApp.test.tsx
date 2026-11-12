@@ -3,8 +3,13 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const listeners = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>());
+
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
+    listeners.set(name, handler);
+    return () => { listeners.delete(name); };
+  }),
 }));
 
 const workspaceMock = vi.hoisted(() => vi.fn());
@@ -14,16 +19,22 @@ vi.mock('./DiagnosticsWorkspace', () => ({
     workspaceMock(props);
     return <div>Diagnostics workspace</div>;
   },
-  isDiagnosticsTab: () => true,
+  isDiagnosticsTab: (value: string) => ['events', 'runs', 'performance'].includes(value),
 }));
 
 import { DiagnosticsWindowApp } from './DiagnosticsWindowApp';
+
+function lastProps(): { active: boolean; requestedTab: string } {
+  return workspaceMock.mock.calls.at(-1)?.[0] as { active: boolean; requestedTab: string };
+}
 
 describe('DiagnosticsWindowApp native chrome', () => {
   let container: HTMLDivElement;
   let root: Root;
 
   beforeEach(async () => {
+    workspaceMock.mockClear();
+    listeners.clear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -53,5 +64,27 @@ describe('DiagnosticsWindowApp native chrome', () => {
     expect(workspaceMock).toHaveBeenCalledWith(expect.objectContaining({
       storeHealthEnabled: true,
     }));
+  });
+
+  it('keeps the workspace inactive while the window is hidden at launch', () => {
+    expect(workspaceMock).toHaveBeenCalled();
+    for (const [props] of workspaceMock.mock.calls) {
+      expect((props as { active: boolean }).active).toBe(false);
+    }
+  });
+
+  it('activates the workspace and selects the tab when the window is shown', async () => {
+    await act(async () => {
+      listeners.get('diagnostics-tab-requested')?.({ payload: 'runs' });
+    });
+    expect(lastProps()).toMatchObject({ active: true, requestedTab: 'runs' });
+  });
+
+  it('activates the workspace when the window gains focus', async () => {
+    expect(lastProps().active).toBe(false);
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(lastProps().active).toBe(true);
   });
 });

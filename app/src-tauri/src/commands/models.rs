@@ -255,11 +255,20 @@ pub fn check_model_exists(state: tauri::State<'_, State>) -> bool {
     state.app_state.model_runtime.any_model_installed()
 }
 
+/// The catalog probes the filesystem for every model definition, so it runs on
+/// the blocking pool. Several windows request it at launch.
 #[tauri::command]
-pub fn get_model_runtime_catalog(
-    state: tauri::State<'_, State>,
-) -> Vec<model_runtime::ModelRuntimeSnapshot> {
-    state.app_state.model_runtime.catalog()
+pub async fn get_model_runtime_catalog(
+    app: tauri::AppHandle,
+) -> Result<Vec<model_runtime::ModelRuntimeSnapshot>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri::Manager::state::<State>(&app)
+            .app_state
+            .model_runtime
+            .catalog()
+    })
+    .await
+    .map_err(|_| "The model catalog could not be read.".to_string())
 }
 
 #[tauri::command]
@@ -278,7 +287,7 @@ pub fn get_model_hardware_guidance() -> crate::model_hardware_guidance::ModelHar
 #[tauri::command]
 pub fn check_specific_model_exists(state: tauri::State<'_, State>, model_name: String) -> bool {
     if model_name == crate::diarization_model::MODEL_ID {
-        return crate::diarization_model::installed();
+        return crate::diarization_model::installed_cached();
     }
     if !is_safe_model_identifier(&model_name) {
         return false;

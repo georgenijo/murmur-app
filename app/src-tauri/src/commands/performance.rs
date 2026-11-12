@@ -48,12 +48,26 @@ pub fn show_diagnostics_window(app: tauri::AppHandle, tab: String) -> Result<(),
         })
 }
 
+/// Run a diagnostics-store read on the blocking pool. These reads open and scan
+/// SQLite, which took ~60 ms on the main thread when the commands were
+/// synchronous. Nothing here touches AppKit.
+async fn on_blocking_pool<T: Send + 'static>(
+    app: tauri::AppHandle,
+    work: impl FnOnce(&State) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || work(&app.state::<State>()))
+        .await
+        .map_err(|_| "The diagnostics store read was interrupted.".to_string())?
+}
+
 #[tauri::command]
-pub fn list_performance_runs(
+pub async fn list_performance_runs(
     limit: Option<u32>,
-    state: tauri::State<'_, State>,
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
 ) -> Result<PerformanceRunListV1, String> {
-    state.performance.list(limit.unwrap_or(50))
+    tracing::info!(target: "system", caller = window.label(), "TEMPC3 list_performance_runs");
+    on_blocking_pool(app, move |state| state.performance.list(limit.unwrap_or(50))).await
 }
 
 #[tauri::command]
@@ -65,10 +79,10 @@ pub fn get_performance_run(
 }
 
 #[tauri::command]
-pub fn get_performance_resource_window(
-    state: tauri::State<'_, State>,
+pub async fn get_performance_resource_window(
+    app: tauri::AppHandle,
 ) -> Result<Vec<ResourceSampleV1>, String> {
-    state.performance.resource_window()
+    on_blocking_pool(app, |state| state.performance.resource_window()).await
 }
 
 #[tauri::command]

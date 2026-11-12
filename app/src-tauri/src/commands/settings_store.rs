@@ -223,9 +223,36 @@ pub(crate) fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// Read under the writer lock. A corrupt file is quarantined by renaming its
+/// path, so a read that raced a concurrent publish must not rename the fresh
+/// file. Loads run on the blocking pool, where they are no longer serialized
+/// with the main-thread writers.
+fn read_blob_serialized(dir: &Path, spec: BlobSpec) -> Result<Option<String>, String> {
+    let _guard = WRITE_LOCK.lock_or_recover();
+    read_blob(dir, spec)
+}
+
+/// Run a durable-blob load off the main thread. Settings, history and stats are
+/// read by several windows at launch, and a large history file must not stall
+/// the first frame.
+async fn load_blob_off_main(
+    app: tauri::AppHandle,
+    spec: BlobSpec,
+) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || read_blob_serialized(&data_dir(&app)?, spec))
+        .await
+        .map_err(|_| format!("{} could not be read.", spec.label))?
+}
+
+/// Synchronous settings read for startup code that already runs before the
+/// first frame is requested (see `launch::prepare`).
+pub(crate) fn read_settings_blob(app: &tauri::AppHandle) -> Result<Option<String>, String> {
+    read_blob_serialized(&data_dir(app)?, SETTINGS)
+}
+
 #[tauri::command]
-pub fn load_settings_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    read_blob(&data_dir(&app)?, SETTINGS)
+pub async fn load_settings_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    load_blob_off_main(app, SETTINGS).await
 }
 
 #[tauri::command]
@@ -313,8 +340,8 @@ pub fn patch_overlay_setting(
 }
 
 #[tauri::command]
-pub fn load_history_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    read_blob(&data_dir(&app)?, HISTORY)
+pub async fn load_history_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    load_blob_off_main(app, HISTORY).await
 }
 
 #[tauri::command]
@@ -328,8 +355,8 @@ pub fn clear_history_blob(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn load_stats_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    read_blob(&data_dir(&app)?, STATS)
+pub async fn load_stats_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    load_blob_off_main(app, STATS).await
 }
 
 #[tauri::command]
