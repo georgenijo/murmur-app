@@ -423,6 +423,7 @@ const COMMAND_LABELS: &[&str] = &[
     "open_calendar_preferences",
     "open_system_audio_preferences",
     "open_system_preferences",
+    "overlay_pointer_sample",
     "patch_overlay_setting",
     "preview_vocabulary_aliases",
     "process_audio",

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { cursorPosition, getCurrentWindow } from '@tauri-apps/api/window';
 import { flog } from '../log';
 import type { OverlayActivity, OverlayContent, OverlayPlacement } from '../overlayGeometry';
 import {
@@ -31,6 +30,14 @@ export type OverlayPhase = 'collapsed' | 'opening' | 'open' | 'closing';
 // Poller constants (cursor bounds detection). Not motion tokens: these tune the
 // native cursor-tracking safety net, not any visible transition.
 const HOVER_POLL_MS = 150;
+/** One poller reading from Rust: the overlay window's origin and the cursor, in
+ *  logical points on one top-left desktop space (the island rect's CSS pixels). */
+interface OverlayPointerSample {
+  windowX: number;
+  windowY: number;
+  cursorX: number;
+  cursorY: number;
+}
 const HOVER_BOUNDS_PADDING = 8;
 const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
 const COLLAPSE_RETRY_DELAYS_MS = [100, 300] as const;
@@ -428,8 +435,11 @@ export function useOverlayExpansion({
   // the overlay is hidden. The poller runs regardless of global-disable so the
   // hover quick-settings card — which holds the "Enable Murmur" control — stays
   // reachable; disabling Murmur must never remove its own re-enable affordance.
+  // Each tick is one `overlay_pointer_sample` call, answered off the main thread
+  // from the applied overlay frame and a thread-safe cursor read. It replaces
+  // `outerPosition()` + `cursorPosition()`, two blocking main-thread round trips
+  // per tick that ran for as long as the overlay was visible.
   useEffect(() => {
-    const currentWindow = getCurrentWindow();
     const intervalId = setInterval(async () => {
       if (!mountedRef.current) return;
       if (!visibleRef.current) return; // hidden: no IPC
@@ -442,34 +452,34 @@ export function useOverlayExpansion({
       if (pollInFlightRef.current) return;
       pollInFlightRef.current = true;
       try {
-        const [windowPosition, cursor] = await Promise.all([
-          currentWindow.outerPosition(),
-          cursorPosition(),
-        ]);
+        const sample = await invoke<OverlayPointerSample | null>('overlay_pointer_sample');
         if (!mountedRef.current
           || !visibleRef.current
           || interactionGenerationRef.current !== pollGeneration
           || phaseRef.current !== ph) return;
-        const scale = window.devicePixelRatio || 1;
+        // No applied frame yet (mid-resize): nothing trustworthy to compare.
+        if (!sample) return;
+        const windowPosition = { x: sample.windowX, y: sample.windowY };
+        const cursor = { x: sample.cursorX, y: sample.cursorY };
         const rect = island.getBoundingClientRect();
 
         if (ph === 'open') {
           // Padded exit bounds: collapse once the cursor leaves the visible card.
-          const padding = HOVER_BOUNDS_PADDING * scale;
-          const left = windowPosition.x + rect.left * scale - padding;
-          const right = windowPosition.x + rect.right * scale + padding;
-          const top = windowPosition.y + rect.top * scale - padding;
-          const bottom = windowPosition.y + rect.bottom * scale + padding;
+          const padding = HOVER_BOUNDS_PADDING;
+          const left = windowPosition.x + rect.left - padding;
+          const right = windowPosition.x + rect.right + padding;
+          const top = windowPosition.y + rect.top - padding;
+          const bottom = windowPosition.y + rect.bottom + padding;
           if (!forcedOpenRef.current
             && (cursor.x < left || cursor.x > right || cursor.y < top || cursor.y > bottom)) {
             beginClose(0);
           }
         } else {
           // Strict entry bounds (collapsed / closing): arm the dwell on hover.
-          const left = windowPosition.x + rect.left * scale;
-          const right = windowPosition.x + rect.right * scale;
-          const top = windowPosition.y + rect.top * scale;
-          const bottom = windowPosition.y + rect.bottom * scale;
+          const left = windowPosition.x + rect.left;
+          const right = windowPosition.x + rect.right;
+          const top = windowPosition.y + rect.top;
+          const bottom = windowPosition.y + rect.bottom;
           if (cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom) {
             onHoverStart();
           } else {

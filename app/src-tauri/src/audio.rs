@@ -41,6 +41,31 @@ pub fn compute_peak(samples: &[f32]) -> f32 {
 }
 
 const AUDIO_LEVEL_THROTTLE_MS: u64 = 16;
+/// The overlay waveform redraws bars from a rAF loop and eases them with a CSS
+/// transition, so it gains nothing from more than ~30 samples a second.
+const AUDIO_LEVEL_OVERLAY_MS: u64 = 33;
+
+/// Rate-limits the overlay waveform feed to ~30 Hz without losing a short
+/// peak: the loudest level since the last emission is the one that goes out.
+#[derive(Default)]
+struct OverlayLevelGate {
+    held: f32,
+    last_emit: Option<Instant>,
+}
+
+impl OverlayLevelGate {
+    fn observe(&mut self, level: f32, now: Instant) -> Option<f32> {
+        self.held = self.held.max(level);
+        if self
+            .last_emit
+            .is_some_and(|at| now.duration_since(at) < Duration::from_millis(AUDIO_LEVEL_OVERLAY_MS))
+        {
+            return None;
+        }
+        self.last_emit = Some(now);
+        Some(std::mem::take(&mut self.held))
+    }
+}
 // Keep key-release-to-helper-stop latency below one display frame. The worker
 // otherwise waits on helper output and only observes host commands on timeout.
 const CAPTURE_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(2);
@@ -2558,6 +2583,7 @@ fn run_backend(
     let mut first_callback_wait_started: Option<Instant> = None;
     let mut stream_open_started: Option<Instant> = None;
     let mut last_level_emit = Instant::now() - Duration::from_secs(1);
+    let mut overlay_level_gate = OverlayLevelGate::default();
     let mut preview_levels = PreviewLevelAccumulator::default();
     let mut preview_classification = PreviewLevelTracker::default();
     let mut preview_vad_window = PreviewVadWindow::default();
@@ -3072,7 +3098,17 @@ fn run_backend(
                                 },
                             );
                         } else {
-                            let _ = handle.emit("audio-level", compute_rms(&pcm.samples));
+                            // Only two windows read this stream. The main window
+                            // runs Stop on Silence and the recording bar, at the
+                            // full cadence its timing was written against; the
+                            // overlay draws the waveform at ~30 Hz. Hidden preview
+                            // and diagnostics webviews no longer take an eval per
+                            // sample.
+                            let level = compute_rms(&pcm.samples);
+                            let _ = handle.emit_to("main", "audio-level", level);
+                            if let Some(held) = overlay_level_gate.observe(level, Instant::now()) {
+                                let _ = handle.emit_to("overlay", "audio-level", held);
+                            }
                         }
                     }
                     last_level_emit = Instant::now();
@@ -3738,6 +3774,35 @@ mod release_tail_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlay_levels_are_limited_to_about_thirty_hertz_and_keep_the_peak() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut gate = OverlayLevelGate::default();
+        // The first sample goes out at once.
+        assert_eq!(gate.observe(0.02, at(0)), Some(0.02));
+        // Samples inside the window are held, and the loudest one wins.
+        assert_eq!(gate.observe(0.30, at(16)), None);
+        assert_eq!(gate.observe(0.05, at(32)), None);
+        assert_eq!(gate.observe(0.04, at(36)), Some(0.30));
+        // The held peak is spent: the next window starts from its own samples.
+        assert_eq!(gate.observe(0.01, at(52)), None);
+        assert_eq!(gate.observe(0.01, at(70)), Some(0.01));
+    }
+
+    #[test]
+    fn a_sixty_hertz_stream_reaches_the_overlay_at_most_thirty_times_a_second() {
+        let start = Instant::now();
+        let mut gate = OverlayLevelGate::default();
+        let emitted = (0..60)
+            .filter(|i| {
+                gate.observe(0.1, start + Duration::from_micros(i * 16_667))
+                    .is_some()
+            })
+            .count();
+        assert!((25..=31).contains(&emitted), "emitted {emitted}");
+    }
 
     /// A stand-in helper process: replies with `reply` on stdout and records
     /// every byte the host writes to it, so a test can prove what was sent.

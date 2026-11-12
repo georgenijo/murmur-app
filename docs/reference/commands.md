@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 150 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 151 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -284,6 +284,7 @@ without logging their content.
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
 | `get_overlay_geometry` | `content?: OverlayContent` | `OverlayGeometry` | Current native activity/placement/content contract from `geometry_for_layout()`, including mandatory island metrics. Never null; a 185pt pretend notch substitutes on flat/unmeasured displays. |
+| `overlay_pointer_sample` | — | `Option<OverlayPointerSample>` | Hover-poller reading from the `overlay` webview only: `{windowX, windowY, cursorX, cursorY}` in logical points (overlay frame origin and global cursor). `null` while the applied frame is unknown. `async`, so it runs off the main thread and never waits for it. |
 | `show_overlay` | — | `Result<(), String>` | Shows the overlay at its current position and re-enables mouse events (disabled by `focusable:false`); it deliberately does not reset an in-progress calibration preview. |
 | `hide_overlay` | — | `Result<(), String>` | Hides the overlay. |
 | `set_overlay_expanded` | `expanded: bool`, `content?: OverlayContent`, `activity?: OverlayActivity`, `placement?: OverlayPlacement`, `defer_shrink?: bool` | `Result<AppliedSurface, String>` | Single acknowledged native surface writer. Applies layout on the main thread, publishes target `overlay-surface-changed` after successful setters, and returns actual bounds. `defer_shrink` retains larger old bounds during contraction; a later exact request releases the temporary hit area. Activity is idle/recording/processing; placement is notch/floating_pill (legacy `below_menu_bar` deserializes as the pill). |

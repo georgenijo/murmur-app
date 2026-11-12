@@ -629,7 +629,9 @@ then calls `show_dictation_preview` with the recording ID. Rust rejects another
 window or a stale recording before it shows the native window. This ordering
 prevents AppKit from committing an empty transparent frame and removing the
 window before the text renders. Silent recordings show nothing. The ticker
-hides the window when the recording stops being current. The frontend also
+hides the window when the recording stops being current. "Hide" makes the
+window transparent and click-through rather than ordering it out; it stays
+ordered in after its first show. The frontend also
 clears the text as soon as capture leaves `recording`, because an in-flight
 decode can delay the native hide.
 
