@@ -402,7 +402,7 @@ fn run_stop<S: WindowScorer>(
     samples: &[f32],
 ) -> (Result<VadResult, String>, &'static str, usize) {
     let calls = std::cell::Cell::new(0);
-    let (result, outcome) = stop_vad(enabled, handoff, 3, samples, params(), || {
+    let (result, outcome, _bounds) = stop_vad(enabled, handoff, 3, samples, params(), || {
         calls.set(calls.get() + 1);
         Ok(VadResult::Speech(vec![0.5; 3]))
     });

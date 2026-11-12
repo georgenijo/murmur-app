@@ -125,6 +125,18 @@ fn filter_speech_with_context<const COLLECT_BOUNDS: bool>(
     ))
 }
 
+/// One whisper.cpp-style segment (start/end in centiseconds) as sample indices
+/// into a clip of `total_samples`. The single place this conversion lives, so
+/// the final VAD and the segments `stream_reuse` plans from during recording
+/// agree sample for sample.
+pub(crate) fn segment_sample_bounds(start: f32, end: f32, total_samples: usize) -> (usize, usize) {
+    let sample_rate = 16_000.0_f32;
+    // Timestamps are in centiseconds (cs); convert to sample indices.
+    let start_idx = ((start / 100.0) * sample_rate) as usize;
+    let end_idx = ((end / 100.0) * sample_rate).ceil() as usize;
+    (start_idx.min(total_samples), end_idx.min(total_samples))
+}
+
 /// Turn whisper.cpp-style segments (start/end in centiseconds) into the kept
 /// speech PCM. Shared by the batch VAD above and the incremental VAD in
 /// `vad_stream`, so both produce a `VadResult` the same way.
@@ -132,18 +144,12 @@ pub(crate) fn speech_from_segments<const COLLECT_BOUNDS: bool>(
     segments: impl IntoIterator<Item = (f32, f32)>,
     samples: &[f32],
 ) -> (VadResult, Vec<(usize, usize)>) {
-    let sample_rate = 16_000.0_f32;
     let total_samples = samples.len();
     let mut speech_samples = Vec::new();
     let mut bounds = Vec::new();
 
     for (start, end) in segments {
-        // Timestamps are in centiseconds (cs); convert to sample indices
-        let start_idx = ((start / 100.0) * sample_rate) as usize;
-        let end_idx = ((end / 100.0) * sample_rate).ceil() as usize;
-
-        let start_idx = start_idx.min(total_samples);
-        let end_idx = end_idx.min(total_samples);
+        let (start_idx, end_idx) = segment_sample_bounds(start, end, total_samples);
 
         if start_idx < end_idx {
             if COLLECT_BOUNDS {

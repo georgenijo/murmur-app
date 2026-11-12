@@ -22,16 +22,18 @@ fn decode_hash(
         &clip.filtered,
         &clip.original,
         clip.filtered.len() != clip.original.len(),
-        #[cfg(feature = "preview-decode-reuse")]
-        None,
+        Ok(None),
     )
     .unwrap_or_else(|_| panic!("final_decode_succeeded=false"));
-    assert!(attempt.empty_error.is_none(), "final_decode_nonempty=false");
     assert!(
-        !attempt.text.trim().is_empty(),
+        attempt.attempt.empty_error.is_none(),
         "final_decode_nonempty=false"
     );
-    Sha256::digest(attempt.text.as_bytes()).into()
+    assert!(
+        !attempt.attempt.text.trim().is_empty(),
+        "final_decode_nonempty=false"
+    );
+    Sha256::digest(attempt.attempt.text.as_bytes()).into()
 }
 
 #[test]

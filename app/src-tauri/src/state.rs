@@ -369,8 +369,9 @@ pub struct AppState {
     /// Exact recording generation currently owning the single live partial decode.
     pub dictation_partial_in_flight_id: AtomicU64,
     pub preview_holds_backend: AtomicBool,
-    #[cfg(feature = "preview-decode-reuse")]
-    pub preview_reuse: Mutex<crate::preview_reuse::PreviewReuse>,
+    /// Decode-while-speaking session for the current recording (streaming
+    /// setting, workstream E2). Inactive unless the recording asked for it.
+    pub stream_reuse: Mutex<crate::stream_reuse::StreamReuse>,
     /// Incremental Silero VAD for the current recording (streaming setting).
     pub vad_stream: crate::vad_stream::StreamSlot,
     /// Last generation with a nonempty display-only decode; contains no text.
@@ -481,8 +482,7 @@ impl AppState {
         {
             *active = None;
             self.vad_stream.clear(recording_id);
-            #[cfg(feature = "preview-decode-reuse")]
-            self.preview_reuse.lock_or_recover().clear(recording_id);
+            self.stream_reuse.lock_or_recover().clear(recording_id);
             true
         } else {
             false
@@ -520,8 +520,7 @@ impl Default for AppState {
             recording_id: AtomicU64::new(0),
             dictation_partial_in_flight_id: AtomicU64::new(0),
             preview_holds_backend: AtomicBool::new(false),
-            #[cfg(feature = "preview-decode-reuse")]
-            preview_reuse: Mutex::new(crate::preview_reuse::PreviewReuse::default()),
+            stream_reuse: Mutex::new(crate::stream_reuse::StreamReuse::default()),
             vad_stream: crate::vad_stream::StreamSlot::default(),
             dictation_nonempty_preview_id: AtomicU64::new(0),
             dictation_telemetry: crate::dictation_telemetry::DictationTelemetry::default(),

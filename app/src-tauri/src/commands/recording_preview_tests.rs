@@ -85,7 +85,6 @@ fn nonblocking_preview_ownership_recovers_status_poison_and_keeps_recording_fenc
 }
 
 #[test]
-#[cfg(not(feature = "preview-decode-reuse"))]
 fn disabled_reuse_passes_identical_pcm_settings_and_output_to_whole_clip_decoder() {
     struct ExactDecoder {
         calls: usize,
@@ -169,117 +168,18 @@ fn disabled_reuse_passes_identical_pcm_settings_and_output_to_whole_clip_decoder
             false,
         )
         .unwrap();
-        let new =
-            decode_final_transcript(&mut candidate, &settings, &filtered, &original, true).unwrap();
-        assert_eq!(new.text.as_bytes(), old.text.as_bytes());
-        assert_eq!(new.empty_error, old.empty_error);
-        assert_eq!(candidate.calls, baseline.calls);
-    }
-}
-
-/// Local-only probe: inputs and output JSON live outside the repository. The
-/// clock covers final ASR after replay, not unavailable native hotkey/capture.
-#[test]
-#[ignore = "requires local Core ML models and synthetic WAV manifest"]
-#[cfg(all(
-    feature = "preview-decode-reuse",
-    target_os = "macos",
-    target_arch = "aarch64"
-))]
-fn synthetic_preview_reuse_probe() {
-    use transcriber::TranscriptionBackend;
-    let manifest_path =
-        std::env::var("MURMUR_REUSE_SYNTHETIC_MANIFEST").expect("synthetic manifest path");
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(manifest_path).unwrap()).unwrap();
-    let output = std::env::var("MURMUR_REUSE_SYNTHETIC_OUTPUT").expect("private output path");
-    let mut backend = transcriber::CoreMlBackend::new();
-    backend.load_model(transcriber::COREML_MODEL_NAME).unwrap();
-    let settings = dictation_context::TranscriptionSettings {
-        model_name: transcriber::COREML_MODEL_NAME.into(),
-        language: "auto".into(),
-        vad_sensitivity: 0,
-        prompt: None,
-        smart_punctuation: true,
-        streaming_pipeline_enabled: false,
-    };
-    let mut rows = Vec::new();
-    for fixture in manifest.as_array().unwrap() {
-        let samples = transcriber::parse_wav_to_samples(
-            &std::fs::read(fixture["wav"].as_str().unwrap()).unwrap(),
+        let new = decode_final_transcript(
+            &mut candidate,
+            &settings,
+            &filtered,
+            &original,
+            true,
+            Ok(None),
         )
         .unwrap();
-        // Warm the exact model and input before measuring either arm.
-        backend.transcribe(&samples, "auto", None, true).unwrap();
-        for iteration in 0..3 {
-            let mut reuse = crate::preview_reuse::PreviewReuse::default();
-            reuse.begin(1);
-            for end in (11_200..samples.len()).step_by(11_200) {
-                if let Some(range) = reuse.plan(1, &samples[..end]) {
-                    match backend.transcribe_preview(
-                        &samples[range.clone()],
-                        "auto",
-                        None,
-                        true,
-                        transcriber::PreviewPass::SyntheticDiagnostic,
-                    ) {
-                        Ok(text) => reuse.commit(1, range, &samples[..end], &text),
-                        Err(_) => reuse.fail(1),
-                    }
-                }
-                // Same trailing-window UI work as the native ticker.
-                backend
-                    .transcribe_preview(
-                        dictation_partial_window(&samples[..end]),
-                        "auto",
-                        None,
-                        true,
-                        transcriber::PreviewPass::SyntheticDiagnostic,
-                    )
-                    .unwrap();
-            }
-            let plan = reuse.take_final(1, &samples);
-            let tail_samples = plan
-                .as_ref()
-                .map(|p| samples.len() - p.start)
-                .unwrap_or(samples.len());
-            let mut off = None;
-            let mut on = None;
-            // Alternate arm order to reduce warm/order bias.
-            for enabled in if iteration % 2 == 0 {
-                [false, true]
-            } else {
-                [true, false]
-            } {
-                let start = std::time::Instant::now();
-                let result = decode_final_transcript(
-                    &mut backend,
-                    &settings,
-                    &samples,
-                    &samples,
-                    false,
-                    if enabled { plan.as_ref() } else { None },
-                )
-                .unwrap();
-                let value = serde_json::json!({"ms": start.elapsed().as_secs_f64() * 1000.0, "text": result.text});
-                if enabled {
-                    on = Some(value);
-                } else {
-                    off = Some(value);
-                }
-            }
-            // Independent replay outside the measured interval checks overlap
-            // agreement; it does not instrument the measured call's branch.
-            let replayed_overlap_accepted = plan.as_ref().is_some_and(|plan| {
-                backend
-                    .transcribe(&samples[plan.start..], "auto", None, true)
-                    .ok()
-                    .and_then(|tail| plan.stitch(&tail))
-                    .is_some()
-            });
-            rows.push(serde_json::json!({"replayed_overlap_accepted": replayed_overlap_accepted, "id": fixture["id"], "reference": fixture["reference"], "duration_s": samples.len() as f64 / 16000.0,
-                "iteration": iteration, "planned_tail_samples": tail_samples, "off": off, "on": on}));
-        }
+        assert!(new.reuse.is_none());
+        assert_eq!(new.attempt.text.as_bytes(), old.text.as_bytes());
+        assert_eq!(new.attempt.empty_error, old.empty_error);
+        assert_eq!(candidate.calls, baseline.calls);
     }
-    std::fs::write(output, serde_json::to_vec_pretty(&rows).unwrap()).unwrap();
 }

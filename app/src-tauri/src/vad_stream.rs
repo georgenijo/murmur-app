@@ -532,12 +532,22 @@ fn fold_fingerprint(mut hash: u64, base: usize, samples: &[f32]) -> u64 {
 
 const FINGERPRINT_SEED: u64 = 0xcbf2_9ce4_8422_2325;
 
+/// The segments implied by the audio scored so far (see
+/// [`IncrementalVad::snapshot`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamSnapshot {
+    /// Padded `(start, end)` sample bounds, in order.
+    pub segments: Vec<(usize, usize)>,
+    /// Samples covered by whole scored windows. Never above what was pushed.
+    pub scored_samples: usize,
+}
+
 /// The result of finishing a stream at Stop.
 pub struct Finished {
     pub result: crate::vad::VadResult,
-    /// Padded segment bounds in samples (as `vad::filter_speech_with_segments`);
-    /// collected only for the differential tests.
-    #[cfg(test)]
+    /// Padded segment bounds in samples (as `vad::filter_speech_with_segments`).
+    /// Decode reuse (`stream_reuse`) compares them with the segments it planned
+    /// from during recording.
     pub bounds: Vec<(usize, usize)>,
     /// Windows scored at Stop (the unfinished tail, including the padded last).
     pub tail_windows: usize,
@@ -608,6 +618,22 @@ impl<S: WindowScorer> IncrementalVad<S> {
         Ok(())
     }
 
+    /// The segments the probabilities scored so far imply, as padded sample
+    /// bounds, plus the length those probabilities cover. The last segment may
+    /// still be growing: `stream_reuse` decides which are final.
+    pub fn snapshot(&self, params: SegmentParams) -> StreamSnapshot {
+        let scored_samples = self.probs.len() * WINDOW_SAMPLES;
+        let segments = segments_from_probs(&self.probs, params)
+            .into_iter()
+            .map(|(start, end)| crate::vad::segment_sample_bounds(start, end, scored_samples))
+            .filter(|(start, end)| start < end)
+            .collect();
+        StreamSnapshot {
+            segments,
+            scored_samples,
+        }
+    }
+
     /// Score the final partial window (zero-padded, as ggml does).
     fn flush(&mut self) -> Result<(), ScoreError> {
         if self.pending.is_empty() {
@@ -648,13 +674,10 @@ impl<S: WindowScorer> IncrementalVad<S> {
         let (result, bounds) = if segments.is_empty() {
             (crate::vad::VadResult::NoSpeech, Vec::new())
         } else {
-            crate::vad::speech_from_segments::<{ cfg!(test) }>(segments, samples)
+            crate::vad::speech_from_segments::<true>(segments, samples)
         };
-        #[cfg(not(test))]
-        let _ = bounds;
         Ok(Finished {
             result,
-            #[cfg(test)]
             bounds,
             tail_windows: self.probs.len() - windows_before,
             total_windows: self.probs.len(),
@@ -767,6 +790,17 @@ impl<S: WindowScorer> StreamSlot<S> {
             offset += chunk.len();
         }
         true
+    }
+
+    /// The segments scored so far, or `None` when `recording_id` does not own
+    /// the slot or its stream has failed.
+    pub fn snapshot(&self, recording_id: u64, params: SegmentParams) -> Option<StreamSnapshot> {
+        self.inner
+            .lock_or_recover()
+            .active
+            .as_ref()
+            .filter(|stream| stream.recording_id == recording_id && stream.failed.is_none())
+            .map(|stream| stream.vad.snapshot(params))
     }
 
     pub fn mark_failed(&self, recording_id: u64, reason: FallbackReason) {
@@ -926,6 +960,14 @@ fn emit_outcome(
     );
 }
 
+/// What [`stop_vad`] decided: the VAD result, the outcome label, and the padded
+/// segment bounds when the incremental result produced the kept audio.
+pub type StopVad = (
+    Result<crate::vad::VadResult, String>,
+    &'static str,
+    Option<Vec<(usize, usize)>>,
+);
+
 /// The Stop-time VAD decision. `batch` is the unchanged batch VAD.
 ///
 /// - Setting off (`enabled == false`): run `batch` and emit nothing.
@@ -934,8 +976,11 @@ fn emit_outcome(
 ///   contention) and report why. A "no speech" verdict is also confirmed by
 ///   `batch`, because a silent verdict ends the dictation.
 ///
-/// Returns the VAD result and the outcome label. Blocking; run it on a
-/// blocking worker.
+/// Returns the VAD result, the outcome label, and the padded segment bounds
+/// when the incremental result produced the kept audio. `None` means the batch
+/// VAD did, so anything `stream_reuse` planned from the incremental segments
+/// cannot be proven to match it (decode reuse then falls back to the
+/// whole-clip decode). Blocking; run it on a blocking worker.
 pub fn stop_vad<S: WindowScorer>(
     enabled: bool,
     handoff: Option<StreamHandoff<S>>,
@@ -943,15 +988,15 @@ pub fn stop_vad<S: WindowScorer>(
     samples: &[f32],
     params: SegmentParams,
     batch: impl FnOnce() -> Result<crate::vad::VadResult, String>,
-) -> (Result<crate::vad::VadResult, String>, &'static str) {
+) -> StopVad {
     if !enabled {
-        return (batch(), "disabled");
+        return (batch(), "disabled", None);
     }
     let started = std::time::Instant::now();
     let Some(handoff) = handoff else {
         let outcome = FallbackReason::NotStarted.as_str();
         emit_outcome(recording_id, outcome, 0, 0, 0);
-        return (batch(), outcome);
+        return (batch(), outcome, None);
     };
     match handoff.finish(samples, params) {
         Ok(finished) => {
@@ -964,7 +1009,7 @@ pub fn stop_vad<S: WindowScorer>(
                     finished.total_windows,
                     finish_ms,
                 );
-                return (batch(), "no_speech_recheck");
+                return (batch(), "no_speech_recheck", None);
             }
             emit_outcome(
                 recording_id,
@@ -973,11 +1018,11 @@ pub fn stop_vad<S: WindowScorer>(
                 finished.total_windows,
                 finish_ms,
             );
-            (Ok(finished.result), "used")
+            (Ok(finished.result), "used", Some(finished.bounds))
         }
         Err(reason) => {
             emit_outcome(recording_id, reason.as_str(), 0, 0, 0);
-            (batch(), reason.as_str())
+            (batch(), reason.as_str(), None)
         }
     }
 }
