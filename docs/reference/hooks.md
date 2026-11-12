@@ -160,7 +160,7 @@ The overlay's snapshot of persisted settings (read straight from localStorage â€
 Click disambiguation on the island: single click (250ms debounce) stops recording or exits locked mode; double-click toggles locked mode.
 
 ### `useWaveform`
-Owns the `audio-level` listener and the rAF bar-height animation. Writes bar heights through direct DOM refs, bypassing React reconciliation to hold 60fps. Center bars are taller (envelope shaping) with jitter for organic movement.
+Owns the `overlay-audio-level` listener and the rAF bar-height animation. Writes bar heights through direct DOM refs, bypassing React reconciliation to hold 60fps. Center bars are taller (envelope shaping) with jitter for organic movement.
 
 ---
 

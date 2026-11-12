@@ -85,6 +85,12 @@ fn refit_material(app: &tauri::AppHandle) {
     let _ = app;
 }
 
+/// The display configuration changed: the popover may no longer be where its
+/// last applied frame says, so the next show or follow applies its frame again.
+pub(crate) fn invalidate_placement() {
+    POPOVER.invalidate_frame();
+}
+
 /// Keep an already-visible preview attached to the overlay as its native frame
 /// changes. This never shows a hidden window, so recording generation remains
 /// owned by `show_dictation_preview`/the Rust ticker. The overlay reports every

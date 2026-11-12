@@ -187,6 +187,41 @@ pub(crate) fn set_window_level_and_activation(
 ) {
 }
 
+/// Give a window that stays ordered in while concealed the same space and
+/// Mission Control behaviour as the overlay: on every space and Stage Manager
+/// set, stationary, out of the window cycle, and allowed into full-screen
+/// spaces. Without this a concealed (transparent) window would be an ordinary
+/// window as far as Mission Control and Cmd-` are concerned. Runs on the main
+/// thread.
+#[cfg(target_os = "macos")]
+pub(crate) fn apply_always_ordered_in_behavior(window: &tauri::WebviewWindow) {
+    use tauri::Manager;
+    let window = window.clone();
+    let handle = window.app_handle().clone();
+    if let Err(e) = handle.run_on_main_thread(crate::main_thread_watch::job(
+        "native_window.set_collection_behavior",
+        move || {
+            use objc2_app_kit::NSWindowCollectionBehavior as Behavior;
+            debug_assert!(objc2_foundation::MainThreadMarker::new().is_some());
+            if let Ok(ptr) = window.ns_window() {
+                let native: &objc2_app_kit::NSWindow = unsafe { &*ptr.cast() };
+                let mut behavior = native.collectionBehavior();
+                behavior |= Behavior::CanJoinAllSpaces;
+                behavior |= Behavior::CanJoinAllApplications;
+                behavior |= Behavior::Stationary;
+                behavior |= Behavior::IgnoresCycle;
+                behavior |= Behavior::FullScreenAuxiliary;
+                native.setCollectionBehavior(behavior);
+            }
+        },
+    )) {
+        tracing::warn!(target: "system", "apply_always_ordered_in_behavior: run_on_main_thread failed: {}", e);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn apply_always_ordered_in_behavior(_window: &tauri::WebviewWindow) {}
+
 /// NSMainMenuWindowLevel = 24, so +1 = 25 puts a window just above the menu
 /// bar. This is what boring.notch, mew-notch, and Murmur's own overlay use.
 pub(crate) const ABOVE_MENU_BAR_LEVEL: isize = 25;
@@ -205,6 +240,19 @@ pub(crate) fn popover_frame_unchanged(applied: Option<PopoverFrame>, target: Pop
             && (f.2 - target.2).abs() < EPSILON
             && (f.3 - target.3).abs() < EPSILON
     })
+}
+
+/// True when the window's real frame agrees with what the setters last
+/// accepted, to within a point. macOS can move a window that stays ordered in
+/// while it is concealed (a display unplugged, a lid sleep and wake), and the
+/// cache only knows frames this code set, so `show` checks the real frame
+/// before trusting it.
+pub(crate) fn actual_frame_matches(applied: PopoverFrame, actual: PopoverFrame) -> bool {
+    const TOLERANCE: f64 = 1.0;
+    (applied.0 - actual.0).abs() <= TOLERANCE
+        && (applied.1 - actual.1).abs() <= TOLERANCE
+        && (applied.2 - actual.2).abs() <= TOLERANCE
+        && (applied.3 - actual.3).abs() <= TOLERANCE
 }
 
 /// What one `show` has to do to the native window, decided from what is
@@ -342,6 +390,36 @@ impl PopoverSpec {
         *self.applied.lock().unwrap_or_else(|e| e.into_inner()) = frame;
     }
 
+    /// Forget the cached frame so the next show or reposition applies its frame
+    /// again. Called when the display configuration changes: the window may be
+    /// somewhere other than where this code last put it.
+    pub(crate) fn invalidate_frame(&self) {
+        self.remember_frame(None);
+    }
+
+    /// The window's real frame in logical points, or `None` if it cannot be read.
+    fn actual_frame(window: &tauri::WebviewWindow) -> Option<PopoverFrame> {
+        let scale = window.scale_factor().ok()?;
+        let position = window.outer_position().ok()?;
+        let size = window.outer_size().ok()?;
+        Some((
+            f64::from(position.x) / scale,
+            f64::from(position.y) / scale,
+            f64::from(size.width) / scale,
+            f64::from(size.height) / scale,
+        ))
+    }
+
+    /// Drop the cached frame if the window is no longer where it says.
+    fn drop_cache_if_window_moved(&self, window: &tauri::WebviewWindow) {
+        let Some(applied) = self.applied_frame() else {
+            return;
+        };
+        if Self::actual_frame(window).is_some_and(|actual| !actual_frame_matches(applied, actual)) {
+            self.remember_frame(None);
+        }
+    }
+
     /// Resize and reposition `window` to `frame` without touching level,
     /// activation, focus, or visibility. Returns whether the setters ran:
     /// an unchanged frame is skipped.
@@ -391,11 +469,17 @@ impl PopoverSpec {
         // sends it back through the full sequence.
         let ordered_in =
             self.ordered_in.load(Ordering::SeqCst) && window.is_visible().unwrap_or(false);
+        // A concealed window is still ordered in, so macOS may have moved it
+        // since the last show. Trust the cache only if the real frame agrees.
+        self.drop_cache_if_window_moved(&window);
         let plan = plan_show(ordered_in, self.is_presented(), self.applied_frame(), frame);
         if plan.set_frame {
             self.resize_and_position(&window, frame)?;
         }
         if plan.order_in {
+            // The window will now stay ordered in, so it needs the overlay's
+            // space and Mission Control behaviour.
+            apply_always_ordered_in_behavior(&window);
             crate::main_thread_watch::section("window.set_level_and_activation", || {
                 set_window_level_and_activation(&window, ABOVE_MENU_BAR_LEVEL, true)
             });
@@ -511,6 +595,32 @@ mod tests {
                 reveal: false
             }
         );
+    }
+
+    #[test]
+    fn a_display_change_invalidates_the_cached_frame() {
+        let spec = PopoverSpec::new("test", true);
+        spec.remember_frame(Some(FRAME));
+        assert!(!plan_show(true, false, spec.applied_frame(), FRAME).set_frame);
+        spec.invalidate_frame();
+        assert_eq!(spec.applied_frame(), None);
+        assert!(plan_show(true, false, spec.applied_frame(), FRAME).set_frame);
+    }
+
+    #[test]
+    fn a_window_macos_moved_is_not_trusted_to_be_where_it_was_put() {
+        // Same size, different display: the cache says FRAME but the window sits
+        // 1440 points to the left.
+        let moved = (FRAME.0 - 1440.0, FRAME.1, FRAME.2, FRAME.3);
+        assert!(!actual_frame_matches(FRAME, moved));
+        // Sub-point rounding from the physical/logical round trip is fine.
+        let rounded = (FRAME.0 + 0.5, FRAME.1 - 0.5, FRAME.2, FRAME.3 + 0.5);
+        assert!(actual_frame_matches(FRAME, rounded));
+        // A resize alone counts too.
+        assert!(!actual_frame_matches(
+            FRAME,
+            (FRAME.0, FRAME.1, FRAME.2 + 40.0, FRAME.3)
+        ));
     }
 
     #[test]

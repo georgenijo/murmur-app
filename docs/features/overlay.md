@@ -378,9 +378,12 @@ the recording indicator or use the recording shortcut.
 
 ## Waveform
 
-`useWaveform` listens to the `audio-level` event (Rust sends the overlay at most
-~30 samples a second, holding the loudest level since the last one so a short
-peak is not lost) and writes each bar's
+`useWaveform` listens to the `overlay-audio-level` event (Rust sends the overlay
+at most ~30 samples a second, holding the loudest level since the last one so a
+short peak is not lost). It is a separate event from the main window's raw
+`audio-level`: a frontend `listen()` receives every emission of its event name,
+whichever window it targets, so sharing one name would give each window both
+streams. The hook writes each bar's
 `transform: scaleY()` from `requestAnimationFrame`. It never animates height,
 so updates stay on the compositor without layout. There is no React state
 update per frame. Bars rest at `scaleY(0.14)` when not recording. Deterministic
@@ -463,7 +466,7 @@ The observer is intentionally leaked (`std::mem::forget`) for app-lifetime obser
 See [docs/reference/commands.md](../reference/commands.md) (Overlay section) and [docs/reference/events.md](../reference/events.md) (Overlay Events section) for the authoritative, up-to-date list. Summary of what the overlay itself calls/listens to:
 
 - Calls: `get_status`, `get_overlay_geometry`, `set_overlay_expanded`, `set_overlay_material`, `show_main_window`, `start_native_recording`, `stop_native_recording`, `retry_last_delivery`, `set_app_disabled`, `configure_dictation`.
-- Listens: `overlay-geometry-changed`, `overlay-surface-changed`, `overlay-visible-changed`, `recording-status-changed`, `recording-cancelled`, `dictation-generation-started`, `dictation-delivery-outcome`, `hotkey-tap-rejected`, `app-disabled-changed`, `audio-level`, `settings-changed`.
+- Listens: `overlay-geometry-changed`, `overlay-surface-changed`, `overlay-visible-changed`, `recording-status-changed`, `recording-cancelled`, `dictation-generation-started`, `dictation-delivery-outcome`, `hotkey-tap-rejected`, `app-disabled-changed`, `overlay-audio-level`, `settings-changed`.
 
 `set_overlay_expanded` **returns the applied frame** as `AppliedSurface { windowW, windowH }`; the expansion controller awaits this value as the resize ack before revealing the dropdown. `show_overlay`/`hide_overlay` emit `overlay-visible-changed(true|false)`, which gates the controller's cursor poller so it does no IPC while the overlay is hidden.
 

@@ -782,6 +782,14 @@ pub(crate) fn preview_fallback_inset(notch_h: Option<f64>) -> f64 {
 }
 
 #[cfg(target_os = "macos")]
+/// Put back the best-known frame after a failed setter, so the hover poller
+/// keeps a frame to sample against instead of going silent.
+fn restore_overlay_frame(app: &tauri::AppHandle, frame: Option<OverlayFrame>) {
+    if let Some(frame) = frame {
+        remember_overlay_frame(app, frame);
+    }
+}
+
 fn remember_overlay_frame(app: &tauri::AppHandle, frame: OverlayFrame) {
     *app.state::<State>().overlay_frame.lock_or_recover() = Some(frame);
 }
@@ -1080,6 +1088,9 @@ fn apply_placement(
     if !changed {
         return;
     }
+    // A concealed popover stays ordered in, so a display change can move it
+    // without this code knowing: make its next show re-apply its frame.
+    crate::commands::dictation_preview::invalidate_placement();
     let layout = *state.overlay_layout.lock_or_recover();
     // The Dock only moves the bottom pill. A Dock-only change must not
     // collapse an open notch island whose geometry is unchanged.
@@ -1488,7 +1499,33 @@ pub async fn overlay_pointer_sample(
         return Err("overlay pointer sampling is restricted to the overlay window".to_string());
     }
     let frame = *state.overlay_frame.lock_or_recover();
-    Ok(pointer_sample(frame, global_cursor_position()))
+    let sample = pointer_sample(frame, global_cursor_position());
+    note_pointer_sample(sample.is_some(), frame.is_some());
+    Ok(sample)
+}
+
+/// Consecutive empty hover samples before one warning is logged: 20 ticks is
+/// three seconds at the poller's 150 ms cadence.
+const EMPTY_POINTER_SAMPLES_BEFORE_WARNING: u32 = 20;
+static EMPTY_POINTER_SAMPLES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// A frame that stays unknown (or a cursor that stays unreadable) silently
+/// disables hover expansion, so say so once per stretch.
+fn note_pointer_sample(had_sample: bool, frame_known: bool) {
+    use std::sync::atomic::Ordering;
+    if had_sample {
+        EMPTY_POINTER_SAMPLES.store(0, Ordering::Relaxed);
+        return;
+    }
+    let empty = EMPTY_POINTER_SAMPLES.fetch_add(1, Ordering::Relaxed) + 1;
+    if empty == EMPTY_POINTER_SAMPLES_BEFORE_WARNING {
+        tracing::warn!(
+            target: "system",
+            event_code = "overlay.pointer_sample_empty",
+            frame_known,
+            "overlay hover samples have been empty for several seconds"
+        );
+    }
 }
 
 /// Show the always-on-top macOS notch overlay window.
@@ -1666,17 +1703,37 @@ pub async fn set_overlay_expanded(
                         // Never retain an authoritative old frame after a partially
                         // successful size/position pair.
                         *state.overlay_frame.lock_or_recover() = None;
-                        crate::main_thread_watch::section("overlay.set_size", || {
-                            overlay.set_size(tauri::LogicalSize::new(
-                                applied.window_w,
-                                applied.window_h,
-                            ))
-                        })
-                        .map_err(|error| error.to_string())?;
-                        crate::main_thread_watch::section("overlay.set_position", || {
-                            overlay.set_position(tauri::LogicalPosition::new(x, y))
-                        })
-                        .map_err(|error| error.to_string())?;
+                        if let Err(error) =
+                            crate::main_thread_watch::section("overlay.set_size", || {
+                                overlay.set_size(tauri::LogicalSize::new(
+                                    applied.window_w,
+                                    applied.window_h,
+                                ))
+                            })
+                        {
+                            // Nothing moved: the window still has its old frame.
+                            // Leaving the cache empty would make the hover poller
+                            // return no sample for as long as the overlay lives.
+                            restore_overlay_frame(&dispatch_app, saved_frame);
+                            return Err(error.to_string());
+                        }
+                        if let Err(error) =
+                            crate::main_thread_watch::section("overlay.set_position", || {
+                                overlay.set_position(tauri::LogicalPosition::new(x, y))
+                            })
+                        {
+                            // The size took and the position did not: the window
+                            // has the new size at its old origin.
+                            restore_overlay_frame(
+                                &dispatch_app,
+                                saved_frame.map(|old| OverlayFrame {
+                                    width: applied.window_w,
+                                    height: applied.window_h,
+                                    ..old
+                                }),
+                            );
+                            return Err(error.to_string());
+                        }
                     }
                     if let Some(position) = calibration {
                         // Publish effective bounds only after both setters succeed,

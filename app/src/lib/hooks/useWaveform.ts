@@ -15,7 +15,7 @@ export interface OverlayWaveform {
 }
 
 /**
- * Owns the `audio-level` listener and the per-frame bar animation. Bars keep a
+ * Owns the `overlay-audio-level` listener and the per-frame bar animation. Bars keep a
  * fixed layout box and animate only `transform: scaleY`, written directly to
  * the DOM from rAF: no React render, layout, or paint invalidation per frame.
  * The loop runs only while recording.
@@ -27,7 +27,7 @@ export function useWaveform(status: DictationStatus): OverlayWaveform {
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | null = null;
-    listen<number>('audio-level', (event) => {
+    listen<number>('overlay-audio-level', (event) => {
       audioLevelRef.current = event.payload;
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
