@@ -31,7 +31,7 @@ fn standby_reuses_exact_worker_and_rejects_stale_logical_owner() {
     assert_eq!(start(&supervisor, AudioOwner::Dictation(1)).recv().unwrap(), Ok(()));
     wait_until("cold ready", || supervisor.public.phase() == PublicPhase::Recording);
     let (tx, rx) = mpsc::channel();
-    supervisor.sender.send(SupervisorMessage::Stop { trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(1)), response: tx }).unwrap();
+    supervisor.sender.send(SupervisorMessage::Stop { released_at: None, trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(1)), response: tx }).unwrap();
     assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap(), vec![0.25; 160]);
     assert_eq!(supervisor.public.phase(), PublicPhase::Standby);
     let shared = buffer.lock().unwrap().clone().unwrap();
@@ -42,7 +42,7 @@ fn standby_reuses_exact_worker_and_rejects_stale_logical_owner() {
     assert_eq!(shared.lock().unwrap().as_slice(), &[0.5; 7_200]);
     assert_eq!(cancel_any_phase(&supervisor, AudioOwner::Dictation(1)).recv().unwrap(), Ok(false));
     let (tx, rx) = mpsc::channel();
-    supervisor.sender.send(SupervisorMessage::Stop { trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(1)), response: tx }).unwrap();
+    supervisor.sender.send(SupervisorMessage::Stop { released_at: None, trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(1)), response: tx }).unwrap();
     assert!(rx.recv().unwrap().is_err());
     assert!(supervisor.public.is_recording_for(AudioOwner::Dictation(2)));
     assert_eq!(cancel_any_phase(&supervisor, AudioOwner::Dictation(2)).recv().unwrap(), Ok(true));
@@ -60,7 +60,7 @@ fn standby_expiry_device_change_sleep_and_disable_confirm_worker_exit() {
         gate.open();
         wait_until("ready", || supervisor.public.phase() == PublicPhase::Recording);
         let (tx, rx) = mpsc::channel();
-        supervisor.sender.send(SupervisorMessage::Stop { trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(1)), response: tx }).unwrap();
+        supervisor.sender.send(SupervisorMessage::Stop { released_at: None, trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(1)), response: tx }).unwrap();
         assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap(), vec![0.25]);
         match teardown {
             "expiry" => check_deadlines(&supervisor, Duration::from_secs(301)),
@@ -117,7 +117,7 @@ fn cancellation_during_standby_handoff_never_launches_pending_owner() {
     start(&supervisor, AudioOwner::Dictation(1)).recv().unwrap().unwrap();
     wait_until("ready", || supervisor.public.phase() == PublicPhase::Recording);
     let (tx, rx) = mpsc::channel();
-    supervisor.sender.send(SupervisorMessage::Stop { trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(1)), response: tx }).unwrap();
+    supervisor.sender.send(SupervisorMessage::Stop { released_at: None, trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(1)), response: tx }).unwrap();
     rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
     let pending = start(&supervisor, AudioOwner::Preview(2));
     wait_until("old worker terminating", || supervisor.public.phase() == PublicPhase::Recovering);
@@ -160,7 +160,7 @@ fn native_default_input_topology_notification_prevents_old_stream_reuse() {
     start(&supervisor, AudioOwner::Dictation(1)).recv().unwrap().unwrap();
     wait_until("ready", || supervisor.public.phase() == PublicPhase::Recording);
     let (tx, rx) = mpsc::channel();
-    supervisor.sender.send(SupervisorMessage::Stop { trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(1)), response: tx }).unwrap();
+    supervisor.sender.send(SupervisorMessage::Stop { released_at: None, trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(1)), response: tx }).unwrap();
     rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
     buffer.lock().unwrap().as_ref().unwrap().lock().unwrap().append_pcm(&[0.5; 160], 16_000);
     // Use the exact entry point called by native HAL/default-input listeners,
@@ -185,7 +185,7 @@ fn timed_out_handoff_never_spawns_after_blocked_teardown_completes() {
     start(&supervisor, AudioOwner::Dictation(1)).recv().unwrap().unwrap();
     wait_until("ready", || supervisor.public.phase() == PublicPhase::Recording);
     let (tx, rx) = mpsc::channel();
-    supervisor.sender.send(SupervisorMessage::Stop { trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(1)), response: tx }).unwrap();
+    supervisor.sender.send(SupervisorMessage::Stop { released_at: None, trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(1)), response: tx }).unwrap();
     rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
     let lease = Arc::new(AtomicBool::new(true));
     let (response, result) = mpsc::channel();
@@ -217,7 +217,7 @@ fn standby_termination_failure_cannot_deliver_idle_audio_as_interrupted_dictatio
     start(&supervisor, owner).recv().unwrap().unwrap();
     wait_until("ready", || supervisor.public.phase() == PublicPhase::Recording);
     let (tx, rx) = mpsc::channel();
-    supervisor.sender.send(SupervisorMessage::Stop { trigger: DictationStopTrigger::Other, owner: Some(owner), response: tx }).unwrap();
+    supervisor.sender.send(SupervisorMessage::Stop { released_at: None, trigger: DictationStopTrigger::Other, owner: Some(owner), response: tx }).unwrap();
     rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
     buffer.lock().unwrap().as_ref().unwrap().lock().unwrap().append_pcm(&[0.5; 160], 16_000);
     supervisor.sender.send(SupervisorMessage::Worker(AudioWorkerEvent::TerminationUnconfirmed {
@@ -240,12 +240,12 @@ fn topology_change_after_warm_stop_begins_rejects_invalidated_pcm() {
     start(&supervisor, AudioOwner::Dictation(1)).recv().unwrap().unwrap();
     wait_until("ready", || supervisor.public.phase() == PublicPhase::Recording);
     let (tx, rx) = mpsc::channel();
-    supervisor.sender.send(SupervisorMessage::Stop { trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(1)), response: tx }).unwrap();
+    supervisor.sender.send(SupervisorMessage::Stop { released_at: None, trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(1)), response: tx }).unwrap();
     rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
     buffer.lock().unwrap().as_ref().unwrap().lock().unwrap().append_pcm(&[0.5; 160], 16_000);
     start(&supervisor, AudioOwner::Dictation(2)).recv().unwrap().unwrap();
     let (tx, rx) = mpsc::channel();
-    supervisor.sender.send(SupervisorMessage::Stop { trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(2)), response: tx }).unwrap();
+    supervisor.sender.send(SupervisorMessage::Stop { released_at: None, trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(2)), response: tx }).unwrap();
     wait_until("warm stop entered Stopping", || supervisor.public.phase() == PublicPhase::Stopping);
     // Stop is already ahead of the topology event. Its tail must not return
     // invalidated pre-roll successfully, even though begin_recovery is a no-op.
@@ -282,4 +282,31 @@ fn warm_pcm_conversion_rechecks_topology_after_resampling_for_every_delivery() {
         samples
     }).unwrap();
     assert_eq!(cold.iter().map(|v| v.to_bits()).collect::<Vec<_>>(), expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_stamped_stop_cancels_a_pending_start_instead_of_letting_it_open_the_microphone() {
+    let gate = Gate::closed();
+    let spawns = Arc::new(AtomicUsize::new(0));
+    let supervisor = spawn_supervisor(Arc::new(StandbyFactory { teardown: Some(gate.clone()), buffer: Arc::new(Mutex::new(None)), spawns: spawns.clone() }), Arc::new(RecordingSink::default()), SupervisorConfig::default());
+    supervisor.sender.send(SupervisorMessage::ConfigureStandby(StandbyPolicy { seconds: 300, pre_roll_ms: 450 })).unwrap();
+    start(&supervisor, AudioOwner::Dictation(1)).recv().unwrap().unwrap();
+    wait_until("ready", || supervisor.public.phase() == PublicPhase::Recording);
+    let (tx, rx) = mpsc::channel();
+    supervisor.sender.send(SupervisorMessage::Stop { released_at: None, trigger: DictationStopTrigger::Other, owner: Some(AudioOwner::Dictation(1)), response: tx }).unwrap();
+    rx.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
+    assert_eq!(supervisor.public.phase(), PublicPhase::Standby);
+    // A different device cannot reuse the warm worker: the supervisor tears it
+    // down (blocked on the gate) and parks the new start as pending.
+    let started = start_with_device(&supervisor, AudioOwner::Dictation(2), Some("another-device".into()));
+    wait_until("standby torn down for the pending start", || supervisor.public.phase() == PublicPhase::Recovering);
+    // The release of that new press arrives, stamped, while the start waits.
+    let (tx, rx) = mpsc::channel();
+    supervisor.sender.send(SupervisorMessage::Stop { released_at: Some(Instant::now()), trigger: DictationStopTrigger::HoldRelease, owner: Some(AudioOwner::Dictation(2)), response: tx }).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(1)).unwrap(), Ok(Vec::new()));
+    assert_eq!(started.recv_timeout(Duration::from_secs(1)).unwrap(), Err(AudioStartError::Cancelled));
+    gate.open();
+    wait_until("old worker joined", || supervisor.public.phase() == PublicPhase::Idle);
+    assert_eq!(spawns.load(Ordering::SeqCst), 1, "the cancelled start must never open the microphone");
+    shutdown(&supervisor);
 }

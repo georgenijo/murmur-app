@@ -41,6 +41,11 @@ impl HotkeyRelease {
         }
     }
 
+    /// The native key-release instant, for anchoring the release tail.
+    pub fn released_at(&self) -> Instant {
+        self.released_at
+    }
+
     /// Release → `stop_native_recording_for` entry.
     pub fn release_to_stop(&self) -> StageTimingV1 {
         StageTimingV1::measured(
