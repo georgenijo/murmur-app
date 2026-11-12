@@ -27,7 +27,7 @@ active, until its exact native download owner confirms cancellation or completio
    native dialog is pending. Unknown status retains a manual Continue fallback;
    denied status offers System Settings and the existing reset path.
 3. **Accessibility** — explains the global recording key + auto-paste need,
-   triggers `request_accessibility_permission`, which shows the macOS dialog *or* opens the pane, never both.
+   triggers `request_accessibility_permission`, which shows the macOS dialog *or* opens the pane, never both. A reset restarts Murmur only while idle; the wizard remembers the open step (`murmur.onboarding.resume`, valid for 3 minutes, read once) and resumes there instead of Welcome.
    Skippable; never opens System Settings automatically on arrival.
 4. **System Audio (optional)** — creates a short-lived native tap only after an
    explicit Continue click (with copy explaining that macOS will ask for permission),

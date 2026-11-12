@@ -22,6 +22,13 @@ import { preferredInstalledModel, useInstalledModels } from '../../lib/hooks/use
 import { ModelDownloadPanel } from '../ModelDownloader';
 import { WindowHeader } from '../ui/WindowHeader';
 import {
+  accessibilityOutcomeMessage,
+  clearOnboardingResume,
+  permissionErrorMessage,
+  readOnboardingResume,
+  rememberOnboardingResume,
+} from '../../lib/permissionOutcome';
+import {
   DICTATION_KEY_OPTIONS,
   isFunctionDictationKey,
   GLOBE_DICTATION_KEY,
@@ -94,7 +101,16 @@ interface Props {
  * - accessibility listed-but-stale → reset entry + re-grant manually
  */
 export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComplete }: Props) {
-  const [step, setStep] = useState<Step>('welcome');
+  // A permission reset or grant can restart Murmur mid-wizard; resume at the step
+  // that was open. Read-only here (initializers run twice in StrictMode); cleared
+  // on mount below.
+  const [step, setStep] = useState<Step>(() => {
+    const resumed = readOnboardingResume(STEP_ORDER);
+    return resumed && resumed !== 'welcome' && resumed !== 'done' ? resumed : 'welcome';
+  });
+  useEffect(() => {
+    clearOnboardingResume();
+  }, []);
   const [actionTarget, setActionTarget] = useState<HTMLElement | null>(null);
   const stepContentRef = useRef<HTMLDivElement>(null);
   const previousStepRef = useRef<Step | null>(null);
@@ -283,6 +299,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     setCompleting(true);
     setCompletionError(false);
     try {
+      clearOnboardingResume();
       await onComplete(installedModel, selectedRecordingMode, selectedTriggerKey);
     } catch {
       setCompletionError(true);
@@ -314,6 +331,9 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
   useEffect(() => {
     if (freshGrant !== step) return;
+    // Access granted while running makes Murmur relaunch once when idle; resume
+    // at the step the wizard is about to show.
+    if (step === 'accessibility') rememberOnboardingResume(STEP_ORDER[STEP_ORDER.indexOf(step) + 1]);
     advanceTimer.current = setTimeout(() => {
       if (activeStep.current === step) navigate(STEP_ORDER[STEP_ORDER.indexOf(step) + 1]);
     }, 900);
@@ -377,15 +397,15 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     try {
       micSettingsOpened.current = true;
       permissionGrants.current.microphone ??= false;
+      rememberOnboardingResume('microphone');
       // Clears the stale entry and relaunches Murmur (a running process cannot see
       // the reset). One action: no second reset, no settings pane.
       await resetMicrophonePermission();
       setMicRestarting(true);
     } catch (error) {
+      clearOnboardingResume();
       setMicError(
-        typeof error === 'string'
-          ? error
-          : "Couldn't reset the Microphone entry. Check the logs for details.",
+        permissionErrorMessage(error, "Couldn't reset the Microphone entry. Check the logs for details."),
       );
     } finally {
       refreshPermissions();
@@ -399,12 +419,14 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     setAxBusy(true);
     setAxError(null);
     setAxRequested(true);
+    // A stale entry makes this request relaunch Murmur; come back to this step.
+    rememberOnboardingResume('accessibility');
     try {
       // Clears any stale entry, registers Murmur in the Accessibility list, and
       // shows either the system dialog or the pane, never both.
       setAxOutcome(await requestAccessibilityPermission());
     } catch (error) {
-      setAxError(typeof error === 'string' ? error : 'Could not open System Settings.');
+      setAxError(permissionErrorMessage(error, 'Could not open System Settings.'));
     } finally {
       axPending.current = false;
       setAxBusy(false);
@@ -413,14 +435,13 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
 
   const handleResetAx = async () => {
     setAxError(null);
+    rememberOnboardingResume('accessibility');
     try {
       setAxOutcome(await resetAccessibilityPermission());
       setAxRequested(true);
     } catch (error) {
       setAxError(
-        typeof error === 'string'
-          ? error
-          : "Couldn't reset the Accessibility entry. Check the logs for details.",
+        permissionErrorMessage(error, "Couldn't reset the Accessibility entry. Check the logs for details."),
       );
     } finally {
       refreshPermissions();
@@ -541,7 +562,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             {step === 'accessibility' && <>
               <StepHeading icon={Accessibility} title="Accessibility access" subtitle="Use the global recording key and auto-paste while Murmur is in the background." />
               <PermissionCard icon={Accessibility} label="Accessibility" state={axGranted ? 'granted' : 'notSet'} waiting={axBusy || axGranted === null} fresh={freshGrant === step} />
-              {!axGranted && <><p className="onboarding-copy">{axOutcome === 'restarting' ? 'Murmur is restarting to finish the reset. Turn it on when macOS asks.' : axOutcome === 'prompted' ? `Choose Open System Settings in the macOS dialog, then turn on ${permissionOwner}. This screen updates automatically.` : `Turn on ${permissionOwner} in System Settings, then come back. This screen updates automatically.`}</p>{axRequested && (isDev ? <DevPermissionHelp /> : <button className="onboarding-link" onClick={handleResetAx}>Murmur is listed but still not detected? Reset permission…</button>)}</>}
+              {!axGranted && <><p className="onboarding-copy">{accessibilityOutcomeMessage(axOutcome, permissionOwner) ?? `Turn on ${permissionOwner} in System Settings, then come back. This screen updates automatically.`}</p>{axRequested && (isDev ? <DevPermissionHelp /> : <button className="onboarding-link" onClick={handleResetAx}>Murmur is listed but still not detected? Reset permission…</button>)}</>}
               {axError && <ErrorMessage message={axError} />}
               <WizardNavigationRow onBack={goBack} onNext={axGranted ? goNext : handleGrantAx} onSkip={goNext} nextEnabled={!axBusy} defaultAction={axGranted === true} nextLabel={axGranted ? 'Continue' : 'Open System Settings…'} skippable={!axGranted} skipLabel="Skip for now" />
             </>}

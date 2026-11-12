@@ -148,7 +148,7 @@ auto-paste) silently fails.
 tccutil reset Accessibility com.localdictation
 ```
 
-The `build` shell function does this automatically. **Note:** the
+The `build` shell function does this automatically. Murmur remembers the build that last had Accessibility granted; after a new build the old entry can still read as granted-then-missing, so the first Accessibility request in the new build resets the entry and relaunches once (installed `.app` only, never under `tauri dev`). If the shell function's reset already cleared the entry, that one restart is expected and harmless. **Note:** the
 Accessibility-denied banner cannot be reproduced under `tauri dev` — you need a
 built `.app` to exercise that path.
 

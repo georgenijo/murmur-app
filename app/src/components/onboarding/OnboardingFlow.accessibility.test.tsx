@@ -16,6 +16,7 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
   let failedCommand: string | undefined;
   let accessibilityGate: Promise<void> | null;
   let accessibilityOutcome: string | undefined;
+  let resetRefusal: string | undefined;
 
   const button = (label: string) => {
     const result = Array.from(container.querySelectorAll('button')).find(
@@ -62,10 +63,13 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     failedCommand = undefined;
     accessibilityGate = null;
     accessibilityOutcome = undefined;
+    resetRefusal = undefined;
+    window.localStorage.clear();
     vi.spyOn(document, 'hasFocus').mockReturnValue(true);
     native.listen.mockResolvedValue(() => {});
     native.invoke.mockImplementation(async (command: string) => {
       if (command === failedCommand) throw new Error('Native permission request failed');
+      if (resetRefusal && /^reset_(accessibility|microphone)_permission$/.test(command)) throw resetRefusal;
       switch (command) {
         case 'check_microphone_permission_status': return micStatus;
         case 'check_accessibility_permission': {
@@ -521,5 +525,60 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     await click('Skip for now');
     await click('Reset Calendar permission…');
     expect(native.invoke).toHaveBeenCalledWith('reset_calendar_permission');
+  });
+
+  it('shows a deferred restart without claiming Murmur is restarting', async () => {
+    axGranted = false;
+    await toStep('accessibility');
+    accessibilityOutcome = 'restart_deferred';
+    await click('Open System Settings…');
+    expect(container.textContent).toContain('Murmur is busy, so it did not restart');
+    expect(container.textContent).not.toContain('is restarting to finish the reset');
+  });
+
+  it('shows the refusal, not a restart, when a reset is blocked by active work', async () => {
+    axGranted = false;
+    micStatus = 'denied';
+    resetRefusal = 'Finish your recording, meeting or transcription first.';
+    await toStep('microphone');
+    await click('Reset permission…');
+    expect(container.textContent).toContain(resetRefusal);
+    expect(container.textContent).not.toContain('Murmur is restarting to finish the reset');
+    expect(window.localStorage.getItem('murmur.onboarding.resume')).toBeNull();
+    await click('Skip for now');
+    await click('Open System Settings…');
+    await click('Murmur is listed but still not detected? Reset permission…');
+    expect(container.textContent).toContain(resetRefusal);
+    expect(container.textContent).not.toContain('Murmur is restarting to finish the reset');
+  });
+
+  it('resumes the step that was open after a permission restart, once', async () => {
+    axGranted = false;
+    await toStep('accessibility');
+    accessibilityOutcome = 'restarting';
+    await click('Open System Settings…');
+    expect(window.localStorage.getItem('murmur.onboarding.resume')).toContain('accessibility');
+    // The restarted process mounts a fresh wizard.
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render();
+    expect(container.querySelector('h1')?.textContent).toBe('Accessibility access');
+    // The resume is consumed: a later launch starts at Welcome.
+    expect(window.localStorage.getItem('murmur.onboarding.resume')).toBeNull();
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render();
+    expect(container.querySelector('h1')?.textContent).toBe('Welcome to Murmur');
+  });
+
+  it('ignores an old or unknown resume step', async () => {
+    window.localStorage.setItem('murmur.onboarding.resume', JSON.stringify({ step: 'accessibility', at: Date.now() - 10 * 60 * 1000 }));
+    await render();
+    expect(container.querySelector('h1')?.textContent).toBe('Welcome to Murmur');
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    window.localStorage.setItem('murmur.onboarding.resume', JSON.stringify({ step: 'nonsense', at: Date.now() }));
+    await render();
+    expect(container.querySelector('h1')?.textContent).toBe('Welcome to Murmur');
   });
 });

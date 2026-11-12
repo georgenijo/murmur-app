@@ -9,6 +9,7 @@ import {
   resetMicrophonePermission,
   type MicPermissionStatus,
 } from '../lib/dictation';
+import { accessibilityOutcomeMessage, permissionErrorMessage } from '../lib/permissionOutcome';
 import { openSystemAudioPreferences, type SystemAudioAccess, type SystemAudioPermissionState } from '../lib/meetings';
 
 interface PermissionStatus {
@@ -37,6 +38,8 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
   const [checking, setChecking] = useState(true);
   const [resetError, setResetError] = useState<string | null>(null);
   const [micResetError, setMicResetError] = useState<string | null>(null);
+  // What the last Accessibility or Microphone action did, shown in the banner.
+  const [actionNote, setActionNote] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
 
   const systemAudioRevision = useRef(0);
@@ -101,7 +104,12 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
   }, []);
 
   const handleOpenAccessibility = async () => {
-    await requestAccessibilityPermission();
+    setActionNote(null);
+    try {
+      setActionNote(accessibilityOutcomeMessage(await requestAccessibilityPermission()));
+    } catch (error) {
+      setActionNote(permissionErrorMessage(error, "Couldn't open the Accessibility request."));
+    }
   };
 
   const handleOpenMicrophone = async () => {
@@ -111,13 +119,11 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
   const handleResetAccessibility = async () => {
     setResetError(null);
     try {
-      await resetAccessibilityPermission();
+      setActionNote(accessibilityOutcomeMessage(await resetAccessibilityPermission()));
     } catch (error) {
       console.error('Failed to reset accessibility permission:', error);
       setResetError(
-        typeof error === 'string'
-          ? error
-          : "Couldn't reset the Accessibility entry. Check the logs for details.",
+        permissionErrorMessage(error, "Couldn't reset the Accessibility entry. Check the logs for details."),
       );
     } finally {
       checkPermissions();
@@ -128,12 +134,11 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
     setMicResetError(null);
     try {
       await resetMicrophonePermission();
+      setActionNote('Murmur is restarting to finish the reset. macOS asks for the microphone the next time you record.');
     } catch (error) {
       console.error('Failed to reset microphone permission:', error);
       setMicResetError(
-        typeof error === 'string'
-          ? error
-          : "Couldn't reset the Microphone entry. Check the logs for details.",
+        permissionErrorMessage(error, "Couldn't reset the Microphone entry. Check the logs for details."),
       );
     } finally {
       checkPermissions();
@@ -160,6 +165,8 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
       ? 'Microphone access was revoked.'
       : 'Accessibility access is needed for auto-paste.';
 
+  const shownMessage = actionNote ?? message;
+
   return (
     <div
       role="region"
@@ -167,7 +174,7 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
       className="dialog-banner relative mx-3.5 mb-1.5 flex shrink-0 items-center gap-2 border-warning/25 bg-[color-mix(in_srgb,var(--murmur-warning)_10%,transparent)] px-3 py-2 text-xs text-warning"
     >
       <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning" />
-      <span className="min-w-0 flex-1 truncate">{message}</span>
+      <span className="min-w-0 flex-1 truncate" title={shownMessage}>{shownMessage}</span>
       <button
         type="button"
         onClick={() => void (systemAudioDenied
@@ -205,8 +212,9 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
                 Reset microphone permission…
               </button>
               <p className="text-[10px] leading-relaxed text-on-surface-variant">
-                Clears Murmur's stale Microphone entry and restarts Murmur. macOS
-                asks again the next time you record.
+                Clears Murmur's stale Microphone entry and restarts Murmur, so it
+                is unavailable while you record or are in a meeting. macOS asks
+                again the next time you record.
               </p>
               {micResetError && (
                 <p
@@ -228,8 +236,9 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
                 Reset Accessibility permission…
               </button>
               <p className="text-[10px] leading-relaxed text-on-surface-variant">
-                Clears Murmur's stale Accessibility entry and asks macOS again.
-                Murmur may restart once to finish; then turn it on when macOS asks.
+                Clears Murmur's stale Accessibility entry and restarts Murmur, so
+                it is unavailable while you record or are in a meeting. When it is
+                back, macOS asks again; turn it on then.
               </p>
               {resetError && (
                 <p

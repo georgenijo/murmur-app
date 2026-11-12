@@ -225,6 +225,8 @@ describe('OnboardingFlow', () => {
 
   beforeEach(() => {
     vi.stubEnv('DEV', false);
+    // A permission restart remembers the open step; keep tests independent.
+    window.localStorage.clear();
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);

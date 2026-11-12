@@ -235,14 +235,24 @@ export async function transcribeFile(filePath: string): Promise<DictationRespons
  * - `granted`: already trusted, nothing shown.
  * - `prompted`: the macOS dialog is showing; its own button opens System Settings.
  * - `opened_settings`: no dialog appeared, so the Settings pane was opened.
- * - `restarting`: a reset needs a new process for macOS to list Murmur again;
- *   Murmur restarts and asks once it is back.
+ * - `restarting`: a stale entry (or a reset) needs a new process for macOS to
+ *   list Murmur again; Murmur restarts when idle and asks once it is back.
+ * - `restart_deferred`: same stale entry, but Murmur is recording, in a meeting,
+ *   or transcribing, so it only opened the pane and did not restart.
+ * - `in_progress`: an earlier request is still running; nothing new was shown.
  */
-export type AccessibilityRequestOutcome = 'granted' | 'prompted' | 'opened_settings' | 'restarting';
+export type AccessibilityRequestOutcome =
+  | 'granted'
+  | 'prompted'
+  | 'opened_settings'
+  | 'restarting'
+  | 'restart_deferred'
+  | 'in_progress';
 
 /**
  * Reset this app's stale macOS Accessibility TCC entry and bring up a fresh one
- * (see Rust `reset_accessibility_permission`). Rejects if the reset fails.
+ * (see Rust `reset_accessibility_permission`). Rejects if the reset fails or
+ * Murmur is busy (recording, meeting, transcription) or not an installed app.
  */
 export async function resetAccessibilityPermission(): Promise<AccessibilityRequestOutcome> {
   return await invoke('reset_accessibility_permission');
@@ -298,7 +308,8 @@ export async function checkMicrophonePermissionStatus(): Promise<MicPermissionSt
  * Reset this app's stale macOS Microphone TCC entry and relaunch Murmur so the
  * reset takes effect (a running process keeps reporting the old state). The
  * next dictation then asks macOS once; the settings pane is not opened. Resolves
- * `restarting`; rejects if the reset fails (see Rust `reset_microphone_permission`).
+ * `restarting`; rejects if the reset fails or Murmur is busy (recording, meeting,
+ * transcription) or not an installed app (see Rust `reset_microphone_permission`).
  */
 export async function resetMicrophonePermission(): Promise<'restarting'> {
   return await invoke('reset_microphone_permission');

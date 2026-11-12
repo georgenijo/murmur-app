@@ -4542,30 +4542,62 @@ mod tests {
     }
 
     #[test]
-    fn awaiting_the_prompt_requests_access_from_this_process_exactly_when_waiting() {
+    fn the_capture_attempt_requests_access_from_this_process_only_when_it_awaits_the_prompt() {
+        use crate::audio_lifecycle::AudioOwner;
         use crate::commands::permissions::owned_prompt_requests_for_test as owned;
-        let before = owned();
-        own_prompt_when_awaiting(StartPermission::Proceed);
-        own_prompt_when_awaiting(StartPermission::Refuse);
-        assert_eq!(
-            owned(),
-            before,
-            "only an attempt that awaits the prompt owns it"
-        );
-        // A speculative key-down capture never prompts: it refuses without a grant.
+        // Through the real call site: an ordinary dictation attempt, then a
+        // speculative key-down attempt, under each authorization status. The
+        // helper binary is absent in the test executable's directory, so an
+        // attempt that gets past the permission check ends as host-unavailable
+        // without opening a device.
+        for (owner, status, expected_requests) in [
+            (AudioOwner::Dictation(51), "notDetermined", 1),
+            (AudioOwner::Dictation(52), "granted", 0),
+            (AudioOwner::Dictation(53), "denied", 0),
+            (AudioOwner::Dictation(54), "unknown", 0),
+            (AudioOwner::Speculative(55), "notDetermined", 0),
+        ] {
+            crate::commands::permissions::override_microphone_permission_status_for_test(Some(
+                status,
+            ));
+            let before = owned();
+            let (_commands, receiver) = mpsc::channel();
+            let events = AudioWorkerEventSender::new(|_event| Ok(()));
+            let shared = Arc::new(Mutex::new(CaptureSamples::default()));
+            let _ = run_backend(
+                owner,
+                CaptureBackend::Auhal,
+                None,
+                AttemptContext {
+                    is_primary: true,
+                    memo_promoted: false,
+                    resolution_pass: 1,
+                    backend_attempt: 1,
+                },
+                &receiver,
+                &shared,
+                &Arc::new(AtomicBool::new(false)),
+                &None,
+                &events,
+                None,
+                None,
+            );
+            crate::commands::permissions::override_microphone_permission_status_for_test(None);
+            assert_eq!(
+                owned() - before,
+                expected_requests,
+                "{owner:?} with status {status}"
+            );
+        }
+        // The decision itself: only an ordinary start with no decision awaits it.
         assert_eq!(
             start_permission(true, "notDetermined"),
             StartPermission::Refuse
         );
-        // An ordinary start with no decision awaits the prompt and owns it.
-        let permission = start_permission(false, "notDetermined");
-        assert_eq!(permission, StartPermission::AwaitPrompt);
-        own_prompt_when_awaiting(permission);
-        assert_eq!(owned(), before + 1);
-        // A grant that already exists, or a genuine denial, never raises a prompt.
-        own_prompt_when_awaiting(start_permission(false, "granted"));
-        own_prompt_when_awaiting(start_permission(false, "denied"));
-        assert_eq!(owned(), before + 1);
+        assert_eq!(
+            start_permission(false, "notDetermined"),
+            StartPermission::AwaitPrompt
+        );
     }
 
     #[test]

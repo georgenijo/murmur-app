@@ -56,6 +56,7 @@ import {
   isNotchPillInstalled,
   requestAccessibilityPermission,
 } from '../../lib/dictation';
+import { accessibilityOutcomeMessage, permissionErrorMessage } from '../../lib/permissionOutcome';
 import { beginCurrentUiTransition, useUiLatencyDestination } from '../../lib/uiLatency';
 import { Select } from '../ui/Select';
 import { INTERNAL_BENCHMARK_BUILD } from '../../lib/buildFlavor';
@@ -566,7 +567,16 @@ export const SettingsPanel = memo(function SettingsPanel({
     if (confirmResetTimeoutRef.current) clearTimeout(confirmResetTimeoutRef.current);
   }, []);
 
-  const requestAccessibility = () => { void requestAccessibilityPermission(); };
+  const [accessibilityNote, setAccessibilityNote] = useState<string | null>(null);
+  const requestAccessibility = () => {
+    setAccessibilityNote(null);
+    requestAccessibilityPermission()
+      .then((outcome) => setAccessibilityNote(accessibilityOutcomeMessage(outcome)))
+      .catch((error) => setAccessibilityNote(permissionErrorMessage(error, "Couldn't open the Accessibility request.")));
+  };
+  const accessibilityNoteRow = accessibilityNote && (
+    <p role="status" className="text-[length:var(--ui-font-caption)] text-on-surface-variant">{accessibilityNote}</p>
+  );
   const chooseOutputFolder = async () => {
     try {
       const selected = await open({ directory: true, multiple: false });
@@ -1074,6 +1084,7 @@ export const SettingsPanel = memo(function SettingsPanel({
                   <span>Accessibility permission is required for keyboard detection.</span>
                   <Button type="button" variant="ghost" size="xs" onClick={requestAccessibility} className="ml-auto">Grant</Button>
                 </div>
+                {accessibilityNoteRow}
               </div>
             )}
             <SettingsRow title={<>{keyLabel}</>} targetId="trigger-key" disabled={isRecording} onReset={settings.doubleTapKey !== DEFAULT_SETTINGS.doubleTapKey ? () => onUpdateSettings({ doubleTapKey: DEFAULT_SETTINGS.doubleTapKey }) : undefined} control={<Select
@@ -1314,10 +1325,13 @@ export const SettingsPanel = memo(function SettingsPanel({
             <SettingsBranch open={settings.autoPaste}>
               {saveToFile && <p role="status" data-tone="accent" className="settings-callout text-[length:var(--ui-font-caption)] text-on-surface">Auto-paste is paused; the stored preference remains on.</p>}
               {!saveToFile && accessibilityGranted === false && (
-                <div className="flex items-center gap-2 text-[length:var(--ui-font-caption)] text-primary">
-                  <span>Accessibility permission is required to paste into the active app.</span>
-                  <Button type="button" variant="ghost" size="xs" onClick={requestAccessibility} className="ml-auto">Grant</Button>
-                </div>
+                <>
+                  <div className="flex items-center gap-2 text-[length:var(--ui-font-caption)] text-primary">
+                    <span>Accessibility permission is required to paste into the active app.</span>
+                    <Button type="button" variant="ghost" size="xs" onClick={requestAccessibility} className="ml-auto">Grant</Button>
+                  </div>
+                  {accessibilityNoteRow}
+                </>
               )}
               <div
                 aria-hidden={settings.autoPaste && !autoPasteOn}
@@ -1354,10 +1368,13 @@ export const SettingsPanel = memo(function SettingsPanel({
               </p>
 {pasteLastShortcutError && <p role="alert" className="text-[length:var(--ui-font-caption)] text-error">{pasteLastShortcutError}</p>}
 {accessibilityGranted === false && settings.pasteLastShortcut !== null && (
-                <div className="flex items-center gap-2 text-[length:var(--ui-font-caption)] text-primary">
-                  <span>Accessibility permission is required for the global Paste Last shortcut</span>
-                  <Button type="button" variant="ghost" size="xs" onClick={requestAccessibility}>Grant</Button>
-                </div>
+                <>
+                  <div className="flex items-center gap-2 text-[length:var(--ui-font-caption)] text-primary">
+                    <span>Accessibility permission is required for the global Paste Last shortcut</span>
+                    <Button type="button" variant="ghost" size="xs" onClick={requestAccessibility}>Grant</Button>
+                  </div>
+                  {accessibilityNoteRow}
+                </>
               )}</SettingsRow>
             </SettingsGroup>
             <SettingsGroup title="Files">
