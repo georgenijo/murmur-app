@@ -611,8 +611,13 @@ fn sanitize_main_thread_watch_event(data: &mut serde_json::Map<String, serde_jso
             },
             (
                 "system.main_thread_rates",
-                "window_us" | "start_unix_ms" | "audio_level_emits" | "ipc_invokes"
-                | "ipc_main_invokes" | "ipc_main_us",
+                "window_us"
+                | "start_unix_ms"
+                | "audio_level_emits"
+                | "overlay_audio_level_emits"
+                | "ipc_invokes"
+                | "ipc_main_invokes"
+                | "ipc_main_us",
             ) => number,
             ("pipeline.main_thread_paste_wait", key) => match key {
                 "recording_id" => value.as_u64().is_some_and(|id| id > 0),
@@ -4063,6 +4068,7 @@ mod tests {
                 "window_us": 1_000_123,
                 "start_unix_ms": 1_700_000_000_000u64,
                 "audio_level_emits": 33,
+                "overlay_audio_level_emits": 17,
                 "ipc_invokes": 60,
                 "ipc_main_invokes": 7,
                 "ipc_main_us": 1_800,
@@ -4070,8 +4076,9 @@ mod tests {
                 "audio_level_emits_text": "33",
             });
             sanitize_event_data("system", &mut rates, debug_build);
-            assert_eq!(rates.as_object().unwrap().len(), 7);
+            assert_eq!(rates.as_object().unwrap().len(), 8);
             assert_eq!(rates["audio_level_emits"], 33);
+            assert_eq!(rates["overlay_audio_level_emits"], 17);
             assert!(!serde_json::to_string(&rates).unwrap().contains("SENTINEL"));
             let mut stringly = serde_json::json!({
                 "event_code": "system.main_thread_rates",
