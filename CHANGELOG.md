@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.66.0] - 2026-11-12
+
+<!-- Release notes generated using configuration in .github/release.yml at 0ffda8cb1c1b8af33195289ae821c8327d4d585b -->
+
+## What's Changed
+### Other Changes
+* perf(launch): move launch-time I/O off the main thread (workstream C) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1115
+* perf(diagnostics): name main-thread freezes (workstream A) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1116
+* perf(overlay): remove popover and overlay main-thread stalls (workstream B) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1117
+* perf(dictation): shorten stop-to-pasted safely (workstream D) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1118
+* perf(vad): incremental Silero VAD during capture, default off (workstream E1) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1119
+* perf(asr): decode while speaking via preview reuse, default off (workstream E2) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1120
+* fix(onboarding): concentric segmented-control corners; remove Try it out from final step by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1122
+* perf: Murmur speed run integration (workstreams A–E) by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1121
+* fix(permissions): recover from stale microphone and Accessibility grants without a manual quit by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1123
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.65.0...v0.66.0
+
 ## [0.65.0] - 2026-11-11
 
 ### Removed
