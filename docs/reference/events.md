@@ -158,9 +158,9 @@ clip was decoded: `inactive`, `no_commit`, `decode_error`, `overlap_mismatch`,
 `window_cap`, `buffer_reset`, `superseded`, `long_recording`,
 `vad_not_incremental`, `bounds_mismatch`, `audio_mismatch`, `tail_too_long`,
 `busy`, `stitch_mismatch`, `tail_decode_error`), and numeric `piece_count`,
-`decoded_ms` (audio decoded at Stop) and `overlap_words`. Exact-schema
+`decoded_ms` (audio decoded at Stop; on a fallback the whole clip plus any discarded tail decode) and `overlap_words`. Exact-schema
 sanitized in every build; no audio, text or paths. The preview tick outcome
-`stop_pending` marks a tick skipped because the stop gesture had begun.
+`stop_pending` marks a tick skipped because the stop gesture had begun (for every dictation, whatever the setting).
 
 The weekly reliability contract is opt-in per request through numeric
 `slo_contract: 1` on `pipeline.dictation_requested`; older requests never enter

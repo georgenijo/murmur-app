@@ -922,7 +922,8 @@ decodes only what came after the last one. Stop-time decode then stays near one
 short Core ML call (about 60–90 ms) however long the dictation was. Whisper,
 CPU Parakeet, recordings without the VAD stream, and everything with the setting
 off decode the whole clip at Stop exactly as before (`stream_reuse.rs`,
-`decode_final_transcript`). It replaces the #830 / #845 experiment
+`decode_final_transcript`). Decode reuse is the only part behind the switch: the
+[stop-gesture preview cap](#stop-gesture-preview-cap) below applies to everyone. It replaces the #830 / #845 experiment
 (`preview-decode-reuse`, `preview_reuse.rs`, `preview_pause.rs`), which cut pieces
 with an energy pause detector from un-trimmed PCM; the incremental VAD gives the
 same pauses on exactly the audio the whole-clip decode sees.
@@ -958,7 +959,9 @@ same pauses on exactly the audio the whole-clip decode sees.
   the recording is still the live, uncancelled one; and no preview still holds its
   lease. Then the tail is decoded, must start with the committed overlap text, and
   is joined after the earlier pieces. When the pieces already cover all kept
-  audio, no decode runs at Stop.
+  audio, no decode runs at Stop. Waiting for a preview that still holds its lease is a
+  spin on `yield_now` of at most 10 ms, only with the setting on; if it is still
+  held the outcome is `busy` and the whole clip is decoded.
 - **Transforms run once.** Stitching happens on raw ASR text, before the ordered
   transform pipeline; the pipeline runs once over the final text. Pieces and
   previews are never transformed, pasted or delivered separately.
@@ -966,11 +969,6 @@ same pauses on exactly the audio the whole-clip decode sees.
   an older id; every method ignores a different one). A piece that finishes after
   the recording stopped or was superseded is dropped without touching state.
   Recording configuration is read once from the start-of-recording snapshot.
-- **No final decode behind a late preview.** From the native hold release on
-  (`hotkey_release::stop_gesture_pending`, for up to 500 ms) the ticker starts no
-  new decode, and a tick re-checks this between its piece decode and its display
-  decode. A Core ML call already running cannot be cancelled and can still delay
-  the final by up to one decode.
 
 **What it costs and saves.** One extra Core ML decode of at most 20 s per cut
 (roughly every 3 s or more of speech, only at pauses) during recording; one piece
@@ -983,8 +981,9 @@ whose setting was on, with `outcome` (`reused`, or the reason the whole clip was
 decoded: `inactive`, `no_commit`, `decode_error`, `overlap_mismatch`, `window_cap`,
 `buffer_reset`, `superseded`, `long_recording`, `vad_not_incremental`,
 `bounds_mismatch`, `audio_mismatch`, `tail_too_long`, `busy`, `stitch_mismatch`,
-`tail_decode_error`), `piece_count`, `decoded_ms` (audio decoded at Stop) and
-`overlap_words`. `pipeline.dictation_partial_tick` gains `stop_pending`.
+`tail_decode_error`), `piece_count`, `decoded_ms` (audio decoded at Stop: the tail
+when reused, nothing when the pieces covered everything, and on a fallback the
+whole clip plus any tail decode that was discarded first) and `overlap_words`.
 
 **Evidence and limits.** The Core ML Parakeet cache on the development Mac lacks
 `Encoder.mlmodelc`, so decode reuse could not be run under Core ML there. The
@@ -993,11 +992,25 @@ ignored `stream_reuse_accuracy_probe` test (module docs in
 tail decode and stitch on any `TranscriptionBackend` and compares the stitched
 text with the whole-clip decode of the same kept audio; with Whisper tiny.en,
 reused results were identical to the whole-clip text except one function word in
-one 43 s clip (see the pull request). It reports accuracy and per-step timing only,
+one 43 s clip (a possible context-window effect at a seam; not proven to be
+decoder variance, see the pull request). It reports accuracy and per-step timing only,
 and is not the performance harness. Real-voice accuracy under Core ML is
 unmeasured. Rejected alternatives: FluidAudio's streaming API (fixed configuration,
 swallowed errors, a second model set) and a `transcribe.cpp` helper (a second
 runtime and model).
+
+### Stop-gesture preview cap
+
+For **every** dictation, with or without `streamingPipelineEnabled`: from the
+native hold release on (`hotkey_release::stop_gesture_pending`, valid for 500 ms
+or until the stop claims the release stamp), the live-preview ticker starts no
+new decode, and a Core ML tick re-checks this between its piece decode (when decode
+reuse is on) and its display decode. Status only flips to `Processing` at the
+accepted stop, after the webview round trip, so the release stamp is the earliest
+signal that a stop is coming. A Core ML call that is already running cannot be
+cancelled and can still delay the final by up to one decode. The cap only affects
+previews: the final transcript is the same with it. Tick outcome `stop_pending`
+(`pipeline.dictation_partial_tick`) counts skipped ticks.
 
 ## Gesture-to-microphone-ready diagnostics
 

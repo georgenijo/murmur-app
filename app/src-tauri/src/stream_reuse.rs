@@ -468,8 +468,9 @@ impl StreamReuse {
 pub(crate) struct Outcome {
     pub code: &'static str,
     pub pieces: u32,
-    /// Audio decoded at Stop, in milliseconds (the whole clip's length on a
-    /// fallback, zero when the committed pieces covered everything).
+    /// Audio decoded at Stop, in milliseconds: the tail when reused, zero when
+    /// the committed pieces covered everything, and on a fallback the whole
+    /// clip plus any tail decode that was discarded first.
     pub decoded_ms: u64,
     pub overlap_words: u64,
 }

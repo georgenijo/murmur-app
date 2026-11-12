@@ -171,6 +171,10 @@ fn emit_preview_vad_disagreement(app_state: &AppState, recording_id: u64, sample
 #[path = "recording_preview_tests.rs"]
 mod preview_tests;
 
+#[cfg(test)]
+#[path = "recording_stream_reuse_tests.rs"]
+mod stream_reuse_app_tests;
+
 fn try_begin_dictation_partial(app_state: &AppState, recording_id: u64) -> bool {
     dictation_partial_is_current(app_state, recording_id)
         && app_state
@@ -335,6 +339,27 @@ fn prepare_stream_commit(
     recording_id: u64,
     vad_threshold: f32,
 ) -> Option<StreamCommit> {
+    prepare_stream_commit_from(
+        app_state,
+        recording_id,
+        |params| app_state.vad_stream.snapshot(recording_id, params),
+        |raw_start| audio_lifecycle::peek_dictation_samples_since(recording_id, raw_start),
+        vad_threshold,
+    )
+}
+
+/// [`prepare_stream_commit`] with its two reads (the VAD stream and the capture
+/// buffer) passed in. A peek that is merely not current, because the recording
+/// stopped or the supervisor was slow to answer, only skips this tick: it says
+/// nothing about the audio, so it must not end reuse. Only a buffer that is
+/// shorter than the committed offset (`Reset`) proves the audio is gone.
+fn prepare_stream_commit_from(
+    app_state: &AppState,
+    recording_id: u64,
+    snapshot: impl FnOnce(crate::vad_stream::SegmentParams) -> Option<crate::vad_stream::StreamSnapshot>,
+    peek: impl FnOnce(usize) -> audio_lifecycle::PeekSince,
+    vad_threshold: f32,
+) -> Option<StreamCommit> {
     use crate::stream_reuse::{Plan, Reason};
     if !app_state
         .stream_reuse
@@ -349,10 +374,7 @@ fn prepare_stream_commit(
             .lock_or_recover()
             .fail(recording_id, reason);
     };
-    let Some(snapshot) = app_state.vad_stream.snapshot(
-        recording_id,
-        crate::vad_stream::SegmentParams::murmur(vad_threshold),
-    ) else {
+    let Some(snapshot) = snapshot(crate::vad_stream::SegmentParams::murmur(vad_threshold)) else {
         fail(Reason::VadNotIncremental);
         return None;
     };
@@ -363,9 +385,10 @@ fn prepare_stream_commit(
     let Plan::Commit(plan) = plan else {
         return None;
     };
-    let raw = match audio_lifecycle::peek_dictation_samples_since(recording_id, plan.raw_start) {
+    let raw = match peek(plan.raw_start) {
         audio_lifecycle::PeekSince::Samples(raw) => raw,
-        _ => {
+        audio_lifecycle::PeekSince::NotCurrent => return None,
+        audio_lifecycle::PeekSince::Reset => {
             fail(Reason::BufferReset);
             return None;
         }
@@ -2726,13 +2749,16 @@ fn decode_final_transcript(
     let fallback = |backend: &mut dyn transcriber::TranscriptionBackend,
                     reason: Reason,
                     pieces: u32,
-                    overlap_words: u64| {
+                    overlap_words: u64,
+                    tail_samples: usize| {
         whole_clip(backend).map(|attempt| FinalDecode {
             attempt,
             reuse: Some(Outcome {
                 code: reason.as_str(),
                 pieces,
-                decoded_ms: samples_to_ms(filtered.len()),
+                // Time spent at stop: a tail decode that was then discarded,
+                // plus the whole-clip decode that replaced it.
+                decoded_ms: samples_to_ms(tail_samples + filtered.len()),
                 overlap_words,
             }),
         })
@@ -2744,7 +2770,7 @@ fn decode_final_transcript(
                 reuse: None,
             })
         }
-        Err(reason) => return fallback(backend, reason, 0, 0),
+        Err(reason) => return fallback(backend, reason, 0, 0, 0),
         Ok(Some(plan)) => plan,
     };
     let reused = |text: String, decoded_samples: usize| FinalDecode {
@@ -2778,7 +2804,13 @@ fn decode_final_transcript(
     };
     match stitched {
         Ok(decode) => Ok(decode),
-        Err(reason) => fallback(backend, reason, plan.pieces, plan.overlap_words as u64),
+        Err(reason) => fallback(
+            backend,
+            reason,
+            plan.pieces,
+            plan.overlap_words as u64,
+            tail.len(),
+        ),
     }
 }
 
@@ -2811,6 +2843,9 @@ fn take_stream_reuse_plan(
     // A preview that still holds its lease finishes in microseconds once it
     // has dropped the backend (we hold the backend, so it can no longer commit
     // anything); wait for that briefly rather than lose reuse to the race.
+    // This is a spin on `yield_now`, bounded at 10 ms, only when the setting
+    // is on and the lease is still held; it adds up to 10 ms to Stop in that
+    // case and nothing otherwise (then the outcome is `busy`, whole-clip).
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(10);
     while app_state
         .dictation_partial_in_flight_id

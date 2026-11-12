@@ -379,3 +379,61 @@ fn memory_does_not_grow_with_the_recording() {
     assert_eq!(reuse.last_piece.len(), 64_000);
     assert!(reuse.last_piece.len() <= MAX_WINDOW);
 }
+
+/// Prefix finality, generated: for any probability stream and any cut, every
+/// segment the planner would commit at that cut has exactly the bounds the
+/// final VAD gives over the whole stream. (The real VAD's probabilities are
+/// causal, so this is the property the planner relies on.)
+#[test]
+fn committed_bounds_at_any_cut_equal_the_final_bounds() {
+    use crate::vad_stream::{segments_from_probs, SegmentParams, WINDOW_SAMPLES};
+    let params = SegmentParams::murmur(crate::vad::threshold_for_sensitivity(50));
+    let bounds_of = |probs: &[f32]| -> (Vec<Bounds>, usize) {
+        let scored = probs.len() * WINDOW_SAMPLES;
+        let bounds = segments_from_probs(probs, params)
+            .into_iter()
+            .map(|(s, e)| crate::vad::segment_sample_bounds(s, e, scored))
+            .filter(|(s, e)| s < e)
+            .collect();
+        (bounds, scored)
+    };
+    let mut commits_seen = 0;
+    for seed in 1..=120_u64 {
+        let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        // Blocks of speech, silence, and in-between probabilities.
+        let mut probs = Vec::new();
+        while probs.len() < 900 {
+            let level = match next() % 5 {
+                0 | 1 => 0.9,
+                2 | 3 => 0.03,
+                _ => 0.35 + (next() % 30) as f32 / 100.0,
+            };
+            let len = 1 + (next() % 70) as usize;
+            for _ in 0..len {
+                let jitter = ((next() % 10) as f32 - 5.0) / 200.0;
+                probs.push((level + jitter).clamp(0.0, 1.0));
+            }
+        }
+        let (final_bounds, _) = bounds_of(&probs);
+        for cut in 1..=probs.len() {
+            let (segments, scored) = bounds_of(&probs[..cut]);
+            let mut reuse = StreamReuse::default();
+            reuse.begin(1);
+            if let Plan::Commit(plan) = reuse.plan(1, &snapshot(&segments, scored)) {
+                commits_seen += 1;
+                assert!(
+                    final_bounds.len() >= plan.segments.len()
+                        && final_bounds[..plan.segments.len()] == plan.segments[..],
+                    "seed {seed}, cut {cut}: committed bounds differ from the final ones"
+                );
+            }
+        }
+    }
+    assert!(commits_seen > 0, "the generator never produced a commit");
+}
