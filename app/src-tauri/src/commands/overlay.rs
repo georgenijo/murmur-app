@@ -630,9 +630,11 @@ pub(crate) fn follow_dock(app: &tauri::AppHandle) {
                 return;
             }
             *state.overlay_frame.lock_or_recover() = None;
-            if let Err(error) = crate::main_thread_watch::section("overlay.set_position", || {
-                overlay.set_position(tauri::LogicalPosition::new(frame.x, y))
-            }) {
+            if let Err(error) = crate::main_thread_watch::queued_section(
+                "overlay.set_position",
+                "applied.overlay.set_position",
+                || overlay.set_position(tauri::LogicalPosition::new(frame.x, y)),
+            ) {
                 // The window did not move: keep its frame so the next Dock change
                 // can still follow.
                 remember_overlay_frame(&handle, frame);
@@ -924,9 +926,11 @@ pub(crate) fn detect_notch_info() -> Option<NotchInfo> {
 
 /// Capture fresh notch and monitor measurements. Must run on the main thread.
 pub(crate) fn capture_display_snapshot(app_handle: &tauri::AppHandle) -> DisplaySnapshot {
-    let monitor = app_handle.primary_monitor().ok().flatten();
+    let monitor = crate::main_thread_watch::section("overlay.primary_monitor", || {
+        app_handle.primary_monitor().ok().flatten()
+    });
     DisplaySnapshot {
-        notch_info: detect_notch_info(),
+        notch_info: crate::main_thread_watch::section("overlay.detect_notch", detect_notch_info),
         monitor_position: monitor.as_ref().map(|monitor| {
             let position = monitor.position();
             (position.x, position.y)
@@ -945,7 +949,10 @@ pub(crate) fn capture_display_snapshot(app_handle: &tauri::AppHandle) -> Display
             )
         }),
         scale_factor: monitor.as_ref().map(|monitor| monitor.scale_factor()),
-        hidden_dock_tile: hidden_bottom_dock_tile(),
+        hidden_dock_tile: crate::main_thread_watch::section(
+            "overlay.dock_prefs",
+            hidden_bottom_dock_tile,
+        ),
     }
 }
 
@@ -1294,7 +1301,11 @@ pub(crate) fn position_overlay_default(
         } else {
             (centered_x, centered_y + applied_position.applied_offset)
         };
-        let _ = overlay.set_ignore_cursor_events(overlay_click_through(layout));
+        let _ = crate::main_thread_watch::queued_section(
+            "overlay.set_ignore_cursor_events",
+            "applied.overlay.set_ignore_cursor_events",
+            || overlay.set_ignore_cursor_events(overlay_click_through(layout)),
+        );
 
         // A partial native update invalidates the old frame. Publish the new
         // frame only after both setters succeed; otherwise the next resize
@@ -1304,18 +1315,22 @@ pub(crate) fn position_overlay_default(
             .state::<State>()
             .overlay_frame
             .lock_or_recover() = None;
-        let sized = if let Err(e) = crate::main_thread_watch::section("overlay.set_size", || {
-            overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h))
-        }) {
+        let sized = if let Err(e) = crate::main_thread_watch::queued_section(
+            "overlay.set_size",
+            "applied.overlay.set_size",
+            || overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h)),
+        ) {
             tracing::warn!(target: "system", "position_overlay_default: set_size({}, {}) failed: {}", overlay_w, overlay_h, e);
             false
         } else {
             true
         };
         tracing::info!(target: "system", "position_overlay_default: x={}, y={}, sf={}", x, y, sf);
-        if let Err(e) = crate::main_thread_watch::section("overlay.set_position", || {
-            overlay.set_position(tauri::LogicalPosition::new(x, y))
-        }) {
+        if let Err(e) = crate::main_thread_watch::queued_section(
+            "overlay.set_position",
+            "applied.overlay.set_position",
+            || overlay.set_position(tauri::LogicalPosition::new(x, y)),
+        ) {
             tracing::warn!(target: "system", "position_overlay_default: set_position({}, {}) failed: {}", x, y, e);
         } else {
             if sized {
@@ -1374,9 +1389,11 @@ pub(crate) fn position_overlay_default(
             .state::<State>()
             .overlay_frame
             .lock_or_recover() = None;
-        if let Err(e) = crate::main_thread_watch::section("overlay.set_size", || {
-            overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h))
-        }) {
+        if let Err(e) = crate::main_thread_watch::queued_section(
+            "overlay.set_size",
+            "applied.overlay.set_size",
+            || overlay.set_size(tauri::LogicalSize::new(overlay_w, overlay_h)),
+        ) {
             tracing::warn!(target: "system", "position_overlay_default: fallback set_size({}, {}) failed: {}", overlay_w, overlay_h, e);
         }
     }
@@ -1411,7 +1428,11 @@ pub fn show_overlay(app: tauri::AppHandle) -> Result<(), String> {
                 crate::main_thread_watch::section("overlay.show", || overlay.show())
                     .map_err(|e| e.to_string())?;
                 let layout = *app.state::<State>().overlay_layout.lock_or_recover();
-                let _ = overlay.set_ignore_cursor_events(overlay_click_through(layout));
+                let _ = crate::main_thread_watch::queued_section(
+                    "overlay.set_ignore_cursor_events",
+                    "applied.overlay.set_ignore_cursor_events",
+                    || overlay.set_ignore_cursor_events(overlay_click_through(layout)),
+                );
                 // Tell the overlay it is visible so it can gate cursor polling.
                 let _ = app.emit("overlay-visible-changed", true);
                 Ok(())
@@ -1570,16 +1591,22 @@ pub async fn set_overlay_expanded(
                         // Never retain an authoritative old frame after a partially
                         // successful size/position pair.
                         *state.overlay_frame.lock_or_recover() = None;
-                        crate::main_thread_watch::section("overlay.set_size", || {
-                            overlay.set_size(tauri::LogicalSize::new(
-                                applied.window_w,
-                                applied.window_h,
-                            ))
-                        })
+                        crate::main_thread_watch::queued_section(
+                            "overlay.set_size",
+                            "applied.overlay.set_size",
+                            || {
+                                overlay.set_size(tauri::LogicalSize::new(
+                                    applied.window_w,
+                                    applied.window_h,
+                                ))
+                            },
+                        )
                         .map_err(|error| error.to_string())?;
-                        crate::main_thread_watch::section("overlay.set_position", || {
-                            overlay.set_position(tauri::LogicalPosition::new(x, y))
-                        })
+                        crate::main_thread_watch::queued_section(
+                            "overlay.set_position",
+                            "applied.overlay.set_position",
+                            || overlay.set_position(tauri::LogicalPosition::new(x, y)),
+                        )
                         .map_err(|error| error.to_string())?;
                     }
                     if let Some(position) = calibration {
@@ -1590,7 +1617,11 @@ pub async fn set_overlay_expanded(
                         remember_overlay_frame(&dispatch_app, frame);
                     }
                     *state.overlay_layout.lock_or_recover() = layout;
-                    let _ = overlay.set_ignore_cursor_events(overlay_click_through(layout));
+                    let _ = crate::main_thread_watch::queued_section(
+                        "overlay.set_ignore_cursor_events",
+                        "applied.overlay.set_ignore_cursor_events",
+                        || overlay.set_ignore_cursor_events(overlay_click_through(layout)),
+                    );
                     // The material re-fits in this same main-thread turn, so the
                     // grown or shrunk window never shows it off-centre for a frame.
                     if layout.placement == OverlayPlacement::FloatingPill {
@@ -1700,9 +1731,11 @@ pub async fn set_overlay_vertical_offset(
                     } else {
                         (centered_x, top_y + applied.applied_offset)
                     };
-                    crate::main_thread_watch::section("overlay.set_position", || {
-                        overlay_to_move.set_position(tauri::LogicalPosition::new(x, y))
-                    })
+                    crate::main_thread_watch::queued_section(
+                        "overlay.set_position",
+                        "applied.overlay.set_position",
+                        || overlay_to_move.set_position(tauri::LogicalPosition::new(x, y)),
+                    )
                     .map_err(|error| error.to_string())?;
                     remember_overlay_position(
                         &dispatch_app,

@@ -216,13 +216,17 @@ impl PopoverSpec {
         frame: (f64, f64, f64, f64),
     ) -> Result<(), String> {
         let (x, y, width, height) = frame;
-        crate::main_thread_watch::section("window.set_size", || {
-            window.set_size(tauri::LogicalSize::new(width, height))
-        })
+        crate::main_thread_watch::queued_section(
+            "window.set_size",
+            "applied.window.set_size",
+            || window.set_size(tauri::LogicalSize::new(width, height)),
+        )
         .map_err(|_| format!("{} window could not be sized", self.label))?;
-        crate::main_thread_watch::section("window.set_position", || {
-            window.set_position(tauri::LogicalPosition::new(x, y))
-        })
+        crate::main_thread_watch::queued_section(
+            "window.set_position",
+            "applied.window.set_position",
+            || window.set_position(tauri::LogicalPosition::new(x, y)),
+        )
         .map_err(|_| format!("{} window could not be positioned", self.label))
     }
 
@@ -253,9 +257,11 @@ impl PopoverSpec {
         });
         crate::main_thread_watch::section("window.set_focusable", || window.set_focusable(false))
             .map_err(|_| format!("{} focus mode could not be set", self.label))?;
-        crate::main_thread_watch::section("window.set_ignore_cursor_events", || {
-            window.set_ignore_cursor_events(self.ignore_cursor_events)
-        })
+        crate::main_thread_watch::queued_section(
+            "window.set_ignore_cursor_events",
+            "applied.window.set_ignore_cursor_events",
+            || window.set_ignore_cursor_events(self.ignore_cursor_events),
+        )
         .map_err(|_| format!("{} pointer events could not be set", self.label))?;
         crate::main_thread_watch::section("window.show", || window.show())
             .map_err(|_| format!("{} window could not be shown", self.label))

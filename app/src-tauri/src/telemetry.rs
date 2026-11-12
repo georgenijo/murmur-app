@@ -279,6 +279,9 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "system.main_thread_watch_started" => Some("system.main_thread_watch_started"),
         "system.main_thread_span" => Some("system.main_thread_span"),
         "system.main_thread_paste_span" => Some("system.main_thread_paste_span"),
+        "system.main_thread_stack" => Some("system.main_thread_stack"),
+        "system.main_thread_rates" => Some("system.main_thread_rates"),
+        "pipeline.dictation_stage_gaps" => Some("pipeline.dictation_stage_gaps"),
         "homophone_context.backoff_entered" => Some("homophone_context.backoff_entered"),
         "homophone_context.backoff_exited" => Some("homophone_context.backoff_exited"),
         "homophone_context.prewarm_requested" => Some("homophone_context.prewarm_requested"),
@@ -504,8 +507,45 @@ fn is_main_thread_watch_event(data: &serde_json::Map<String, serde_json::Value>)
                 | "system.main_thread_watch_started"
                 | "system.main_thread_span"
                 | "system.main_thread_paste_span"
+                | "system.main_thread_stack"
+                | "system.main_thread_rates"
         )
     )
+}
+
+fn is_dictation_stage_gaps_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("pipeline.dictation_stage_gaps")
+}
+
+/// Stage-gap timings are numbers of microseconds and one recording id. Keep
+/// that exact schema in every build.
+fn sanitize_dictation_stage_gaps_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    data.retain(|key, value| match key.as_str() {
+        "event_code" => true,
+        "recording_id" => value.as_u64().is_some_and(|id| id > 0),
+        "total_us"
+        | "unattributed_us"
+        | "capture_finalization_us"
+        | "handoff_us"
+        | "pipeline_prologue_us"
+        | "vad_us"
+        | "vad_blocking_queue_us"
+        | "pre_backend_us"
+        | "backend_acquire_us"
+        | "backend_model_queue_us"
+        | "backend_model_load_us"
+        | "backend_decode_us"
+        | "backend_release_us"
+        | "transform_setup_us"
+        | "transform_us"
+        | "post_transform_us"
+        | "delivery_us"
+        | "pipeline_return_us"
+        | "idle_status_emit_us"
+        | "tail_us" => value.as_u64().is_some(),
+        _ => false,
+    });
 }
 
 /// Main-thread diagnostics carry only static labels, ids, monotonic
@@ -553,6 +593,22 @@ fn sanitize_main_thread_watch_event(data: &mut serde_json::Map<String, serde_jso
                 "overlap_us" => code == "system.main_thread_paste_span" && number,
                 "suppressed" | "dropped" => code == "system.main_thread_span" && number,
                 "on_main" => boolean,
+                _ => false,
+            },
+            ("system.main_thread_stack", key) => match key {
+                "sample" => matches!(value.as_u64(), Some(1 | 2)),
+                "busy_us" | "start_us" | "start_unix_ms" | "suppressed" => number,
+                "frame_count" => value.as_u64().is_some_and(|count| {
+                    (1..=crate::main_thread_watch::stack::MAX_FRAMES as u64).contains(&count)
+                }),
+                "frames" => value
+                    .as_str()
+                    .is_some_and(crate::main_thread_watch::stack::is_safe_frames),
+                _ => false,
+            },
+            ("system.main_thread_rates", key) => match key {
+                "window_us" | "start_unix_ms" | "audio_level_emits" | "ipc_invokes"
+                | "ipc_main_invokes" | "ipc_main_us" => number,
                 _ => false,
             },
             ("pipeline.main_thread_paste_wait", key) => match key {
@@ -1960,6 +2016,10 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     }
     if is_main_thread_watch_event(obj) {
         sanitize_main_thread_watch_event(obj);
+        return;
+    }
+    if is_dictation_stage_gaps_event(obj) {
+        sanitize_dictation_stage_gaps_event(obj);
         return;
     }
     if is_dictation_terminal_event(obj) {

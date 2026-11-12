@@ -16,6 +16,18 @@
 //! A background reporter thread does every allocation and every log write: it
 //! logs spans over [`LOG_SPAN_MIN_US`], and joins each dictation paste's
 //! main-thread wait to the spans that overlapped it.
+//!
+//! Three further diagnostics share the reporter:
+//!
+//! - **Stack samples.** When one run-loop busy stretch passes
+//!   [`STACK_FIRST_SAMPLE_US`], the reporter reads the main thread's stack
+//!   (see [`stack`]) and logs symbol names only.
+//! - **Rates.** Lock-free counters for `audio-level` emits and IPC invokes,
+//!   logged once per second of activity.
+//! - **Applied markers.** tao applies window geometry as queued main-queue
+//!   blocks, so a [`section`] around the setter times only the enqueue.
+//!   [`queued_section`] also queues a marker behind the setter's block and
+//!   records how long the block took to come up.
 
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::VecDeque;
@@ -36,7 +48,25 @@ const SPAN_RECORD_MIN_US: u64 = 100;
 const RING_CAPACITY: usize = 4096;
 const HISTORY_RETAIN_US: u64 = 20_000_000;
 const REPORT_DELAY: Duration = Duration::from_millis(1_200);
-const REPORTER_TICK: Duration = Duration::from_millis(200);
+/// The reporter wakes this often: fast enough to catch a stall while it is
+/// still happening, with one atomic load per wake when the thread is idle.
+const REPORTER_TICK: Duration = Duration::from_millis(25);
+/// Ring drain, history upkeep and paste reports run this often.
+const DRAIN_INTERVAL_US: u64 = 200_000;
+/// A busy stretch this long gets its first stack sample.
+pub(crate) const STACK_FIRST_SAMPLE_US: u64 = 50_000;
+/// A stretch still busy this long gets one more sample.
+pub(crate) const STACK_SECOND_SAMPLE_US: u64 = 250_000;
+/// Stack events allowed per [`STACK_WINDOW_US`]; the rest are counted.
+const MAX_STACKS_PER_WINDOW: u32 = 8;
+const STACK_WINDOW_US: u64 = 60_000_000;
+/// Marker blocks that came up faster than this are not recorded.
+const APPLIED_RECORD_MIN_US: u64 = 1_000;
+/// A rate bucket is logged when it holds audio-level emits, or at most this
+/// often when only IPC invokes ran at [`RATE_IDLE_MIN_INVOKES`] or more.
+const RATE_IDLE_LOG_US: u64 = 10_000_000;
+const RATE_IDLE_MIN_INVOKES: u64 = 10;
+const RATE_BUCKET_US: u64 = 1_000_000;
 const MAX_PASTE_SPANS: usize = 48;
 /// Standalone span events allowed per [`STANDALONE_WINDOW_US`].
 const MAX_STANDALONE_PER_WINDOW: u32 = 30;
@@ -176,6 +206,13 @@ static PENDING_PASTES: Mutex<Vec<Arc<PasteState>>> = Mutex::new(Vec::new());
 /// Start of the run-loop busy span in progress (µs since epoch), or 0 while
 /// the main thread is waiting. Read by the reporter for an unclosed span.
 static BUSY_SINCE_US: AtomicU64 = AtomicU64::new(0);
+/// Lock-free per-second counters. Any thread adds; only the reporter swaps.
+static AUDIO_LEVEL_EMITS: AtomicU64 = AtomicU64::new(0);
+static IPC_INVOKES: AtomicU64 = AtomicU64::new(0);
+static IPC_MAIN_INVOKES: AtomicU64 = AtomicU64::new(0);
+static IPC_MAIN_US: AtomicU64 = AtomicU64::new(0);
+/// The main thread's stack, captured at install for the stack sampler.
+static STACK_TARGET: OnceLock<stack::Target> = OnceLock::new();
 /// One recent live-preview hide. Written only on the main thread, read by the
 /// reporter; `id` is cleared while `at` changes so a reader never pairs an id
 /// with another hide's time.
@@ -295,6 +332,28 @@ pub(crate) fn span<T>(kind: Kind, label: &'static str, f: impl FnOnce() -> T) ->
 /// Time a nested native call (window show/hide/resize and similar).
 pub(crate) fn section<T>(label: &'static str, f: impl FnOnce() -> T) -> T {
     span(Kind::Section, label, f)
+}
+
+/// Time a nested native call whose work tao applies later, as a queued
+/// main-queue block (`set_size`, `set_position`, `set_ignore_cursor_events`).
+/// `label` times the call, which is only the enqueue. `applied_label` names a
+/// marker block queued right behind it: when that block runs, the work queued
+/// ahead of it, tao's block included, has finished, and the span records the
+/// enqueue-to-applied latency in `queue_us`. That latency is an upper bound
+/// for the block itself, because other queued work can sit in front of it.
+pub(crate) fn queued_section<T>(
+    label: &'static str,
+    applied_label: &'static str,
+    f: impl FnOnce() -> T,
+) -> T {
+    let result = section(label, f);
+    applied::queue_marker(applied_label);
+    result
+}
+
+/// Count one `audio-level` event emitted to the webviews.
+pub(crate) fn count_audio_level_emit() {
+    AUDIO_LEVEL_EMITS.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Time a main-thread callback the app registered.
@@ -493,6 +552,13 @@ const COMMAND_LABELS: &[&str] = &[
 ];
 
 /// The static label for a registered command name; no allocation or copy.
+///
+/// Tauri routes `plugin:<name>|<command>` straight to the plugin
+/// (`extend_api`), never through the app's invoke handler. The webview's
+/// `plugin:window|outer_position` and `plugin:window|cursor_position` calls
+/// are therefore invisible here: they run as async commands and ask the main
+/// thread for the answer through tao's event-loop drain. The stack sampler
+/// names that work instead.
 fn command_label(name: &str) -> &'static str {
     COMMAND_LABELS
         .binary_search(&name)
@@ -510,13 +576,19 @@ where
     H: Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static,
 {
     move |invoke| {
-        if !ENABLED.load(Ordering::Relaxed) || !is_main() {
+        if !ENABLED.load(Ordering::Relaxed) {
             return handler(invoke);
         }
+        IPC_INVOKES.fetch_add(1, Ordering::Relaxed);
+        if !is_main() {
+            return handler(invoke);
+        }
+        IPC_MAIN_INVOKES.fetch_add(1, Ordering::Relaxed);
         let label = command_label(invoke.message.command());
         let start = now_us();
         let handled = handler(invoke);
         let end = now_us();
+        IPC_MAIN_US.fetch_add(end.saturating_sub(start), Ordering::Relaxed);
         record_simple(Kind::Command, label, start, end, 0);
         handled
     }
@@ -655,6 +727,10 @@ pub(crate) fn install() {
     let observers_installed = runloop::install();
     #[cfg(not(target_os = "macos"))]
     let observers_installed = false;
+    // The calling thread is the main thread: remember its stack for sampling.
+    let stack_sampling = observers_installed
+        && std::env::var_os(DISABLE_STACKS_ENV).is_none()
+        && stack::Target::current().is_some_and(|target| STACK_TARGET.set(target).is_ok());
     ENABLED.store(true, Ordering::Release);
     let spawned = std::thread::Builder::new()
         .name("main-thread-watch".into())
@@ -668,9 +744,14 @@ pub(crate) fn install() {
         reporter_started = spawned,
         log_span_min_us = LOG_SPAN_MIN_US,
         slow_paste_us = SLOW_PASTE_US,
+        stack_sampling,
+        stack_first_sample_us = STACK_FIRST_SAMPLE_US,
         "main-thread watch started"
     );
 }
+
+/// Set to any value to turn the stack sampler off.
+const DISABLE_STACKS_ENV: &str = "MURMUR_DISABLE_MAIN_THREAD_STACKS";
 
 struct Reporter {
     history: VecDeque<Span>,
@@ -679,6 +760,9 @@ struct Reporter {
     standalone_in_window: u32,
     suppressed: u64,
     dropped: u64,
+    last_drain_us: u64,
+    stacks: StackPacer,
+    rates: RatePacer,
 }
 
 fn reporter_loop() {
@@ -689,14 +773,180 @@ fn reporter_loop() {
         standalone_in_window: 0,
         suppressed: 0,
         dropped: 0,
+        last_drain_us: 0,
+        stacks: StackPacer::default(),
+        rates: RatePacer::default(),
     };
     loop {
         std::thread::sleep(REPORTER_TICK);
-        reporter.tick();
+        let now = now_us();
+        reporter.sample_stack(now);
+        reporter.report_rates(now);
+        if now.saturating_sub(reporter.last_drain_us) >= DRAIN_INTERVAL_US {
+            reporter.last_drain_us = now;
+            reporter.tick();
+        }
+    }
+}
+
+/// Decides when a busy stretch is sampled, and keeps stack events rare.
+#[derive(Default)]
+struct StackPacer {
+    /// The busy stretch (its start) the samples below belong to.
+    stretch_start_us: u64,
+    samples_taken: u8,
+    window_start_us: u64,
+    in_window: u32,
+    suppressed: u64,
+}
+
+impl StackPacer {
+    /// Which sample (1 or 2) a stretch that began at `since_us` is due, at `now`.
+    fn due(&mut self, since_us: u64, now: u64) -> Option<u8> {
+        if since_us == 0 {
+            return None;
+        }
+        if since_us != self.stretch_start_us {
+            self.stretch_start_us = since_us;
+            self.samples_taken = 0;
+        }
+        let busy_us = now.saturating_sub(since_us);
+        match self.samples_taken {
+            0 if busy_us >= STACK_FIRST_SAMPLE_US => Some(1),
+            1 if busy_us >= STACK_SECOND_SAMPLE_US => Some(2),
+            _ => None,
+        }
+    }
+
+    /// Count a taken (or refused) sample; `false` once the window is full.
+    fn admit(&mut self, sample: u8, now: u64) -> bool {
+        self.samples_taken = sample;
+        if now.saturating_sub(self.window_start_us) >= STACK_WINDOW_US {
+            self.window_start_us = now;
+            self.in_window = 0;
+        }
+        if self.in_window >= MAX_STACKS_PER_WINDOW {
+            self.suppressed += 1;
+            return false;
+        }
+        self.in_window += 1;
+        true
+    }
+}
+
+/// Paces the per-second rate events.
+#[derive(Default)]
+struct RatePacer {
+    bucket_start_us: u64,
+    last_idle_log_us: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RateBucket {
+    window_us: u64,
+    audio_level_emits: u64,
+    ipc_invokes: u64,
+    ipc_main_invokes: u64,
+    ipc_main_us: u64,
+}
+
+impl RatePacer {
+    /// Close the bucket once it is a second old; `Some` when it is worth a log.
+    fn close(&mut self, now: u64, take: impl FnOnce() -> RateBucket) -> Option<RateBucket> {
+        if self.bucket_start_us == 0 {
+            self.bucket_start_us = now;
+            // Discard what built up before the first bucket.
+            take();
+            return None;
+        }
+        let window_us = now.saturating_sub(self.bucket_start_us);
+        if window_us < RATE_BUCKET_US {
+            return None;
+        }
+        self.bucket_start_us = now;
+        let mut bucket = take();
+        bucket.window_us = window_us;
+        let recording = bucket.audio_level_emits > 0;
+        let busy_idle = bucket.ipc_invokes >= RATE_IDLE_MIN_INVOKES
+            && now.saturating_sub(self.last_idle_log_us) >= RATE_IDLE_LOG_US;
+        if recording {
+            return Some(bucket);
+        }
+        if busy_idle {
+            self.last_idle_log_us = now;
+            return Some(bucket);
+        }
+        None
+    }
+}
+
+fn take_rate_counters() -> RateBucket {
+    RateBucket {
+        window_us: 0,
+        audio_level_emits: AUDIO_LEVEL_EMITS.swap(0, Ordering::Relaxed),
+        ipc_invokes: IPC_INVOKES.swap(0, Ordering::Relaxed),
+        ipc_main_invokes: IPC_MAIN_INVOKES.swap(0, Ordering::Relaxed),
+        ipc_main_us: IPC_MAIN_US.swap(0, Ordering::Relaxed),
     }
 }
 
 impl Reporter {
+    /// A1: while one busy stretch is in progress, read the main thread's
+    /// stack and log symbol names. Never touches the main thread's state
+    /// beyond [`stack::capture`], which suspends it for microseconds.
+    fn sample_stack(&mut self, now: u64) {
+        let Some(target) = STACK_TARGET.get() else {
+            return;
+        };
+        let since = BUSY_SINCE_US.load(Ordering::Acquire);
+        let Some(sample) = self.stacks.due(since, now) else {
+            return;
+        };
+        if !self.stacks.admit(sample, now) {
+            return;
+        }
+        let mut raw = [0u64; stack::MAX_FRAMES];
+        let count = stack::capture(*target, &mut raw);
+        let captured_at = now_us();
+        // The stretch ended while the thread was being read: the stack is
+        // not the stall's, so drop it.
+        if count == 0 || BUSY_SINCE_US.load(Ordering::Acquire) != since {
+            return;
+        }
+        let symbolised = stack::symbolise(&raw[..count]);
+        let suppressed = std::mem::take(&mut self.stacks.suppressed);
+        tracing::info!(
+            target: "system",
+            event_code = "system.main_thread_stack",
+            sample = sample as u64,
+            busy_us = captured_at.saturating_sub(since),
+            start_us = since,
+            start_unix_ms = unix_ms_at(since),
+            frame_count = count as u64,
+            frames = symbolised.as_str(),
+            suppressed,
+            "main-thread stack sample"
+        );
+    }
+
+    /// A3: per-second `audio-level` and IPC counters.
+    fn report_rates(&mut self, now: u64) {
+        let Some(bucket) = self.rates.close(now, take_rate_counters) else {
+            return;
+        };
+        tracing::info!(
+            target: "system",
+            event_code = "system.main_thread_rates",
+            window_us = bucket.window_us,
+            start_unix_ms = unix_ms_at(now.saturating_sub(bucket.window_us)),
+            audio_level_emits = bucket.audio_level_emits,
+            ipc_invokes = bucket.ipc_invokes,
+            ipc_main_invokes = bucket.ipc_main_invokes,
+            ipc_main_us = bucket.ipc_main_us,
+            "main-thread rates"
+        );
+    }
+
     fn tick(&mut self) {
         let Some(ring) = RING.get() else {
             return;
@@ -960,6 +1210,368 @@ fn summarize_window(
     busy.extend_from_slice(&labelled);
     summary.busy_us = union_len(&mut busy);
     summary
+}
+
+// ---------------------------------------------------------------------------
+// Applied markers
+// ---------------------------------------------------------------------------
+
+mod applied {
+    use super::*;
+
+    /// Queue a marker block on the main queue, behind the blocks already
+    /// there. When it runs it records `label` with the enqueue-to-run latency
+    /// in `queue_us` and a zero duration. Main thread only; never blocks.
+    pub(super) fn queue_marker(label: &'static str) {
+        if !ENABLED.load(Ordering::Relaxed) || !is_main() {
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        macos::queue(label, now_us());
+        #[cfg(not(target_os = "macos"))]
+        let _ = label;
+    }
+
+    /// Record a marker that ran at `ran_us` after being queued at `queued_us`.
+    pub(super) fn record_marker(label: &'static str, queued_us: u64, ran_us: u64) {
+        let latency = ran_us.saturating_sub(queued_us);
+        if latency < APPLIED_RECORD_MIN_US {
+            return;
+        }
+        record(Span {
+            kind: Kind::Job,
+            label,
+            start_us: ran_us,
+            duration_us: 0,
+            queue_us: latency,
+            on_main: true,
+            ..Span::EMPTY
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    mod macos {
+        use super::*;
+        use std::ffi::c_void;
+
+        extern "C" {
+            // `dispatch_get_main_queue()` is this symbol's address.
+            static _dispatch_main_q: c_void;
+            fn dispatch_async_f(
+                queue: *const c_void,
+                context: *mut c_void,
+                work: extern "C" fn(*mut c_void),
+            );
+        }
+
+        struct Marker {
+            label: &'static str,
+            queued_us: u64,
+        }
+
+        extern "C" fn run(context: *mut c_void) {
+            // SAFETY: `context` is the `Box<Marker>` leaked in `queue`, and
+            // GCD runs each block exactly once.
+            let marker = unsafe { Box::from_raw(context.cast::<Marker>()) };
+            record_marker(marker.label, marker.queued_us, now_us());
+        }
+
+        pub(super) fn queue(label: &'static str, queued_us: u64) {
+            let context = Box::into_raw(Box::new(Marker { label, queued_us }));
+            // SAFETY: the main queue outlives the process; `run` takes
+            // ownership of `context`.
+            unsafe {
+                dispatch_async_f(
+                    std::ptr::addr_of!(_dispatch_main_q),
+                    context.cast::<c_void>(),
+                    run,
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stack sampling
+// ---------------------------------------------------------------------------
+
+/// Reads another thread's stack as raw return addresses, then names them.
+///
+/// The reporter thread is the only caller. It never walks while the target is
+/// running, and while the target is suspended it does nothing that can wait
+/// on a lock the target holds: no allocation, no logging, no symbol lookup,
+/// no `dladdr` (which takes dyld's lock). Symbol lookup happens after
+/// `thread_resume`.
+pub(crate) mod stack {
+    /// Frames kept per sample.
+    pub(crate) const MAX_FRAMES: usize = 24;
+    /// Longest text kept per frame.
+    const MAX_FRAME_LEN: usize = 120;
+    /// Longest `frames` string.
+    pub(crate) const MAX_FRAMES_LEN: usize = 2_400;
+
+    /// One frame's text, or the whole `frames` string, may hold only these:
+    /// ASCII letters and digits and the punctuation of C, C++, Rust and
+    /// Objective-C symbols. Paths, quotes, and `=` are excluded.
+    fn is_frame_char(c: char) -> bool {
+        c.is_ascii_alphanumeric()
+            || matches!(
+                c,
+                '_' | '.'
+                    | '$'
+                    | ':'
+                    | '['
+                    | ']'
+                    | '-'
+                    | '+'
+                    | '<'
+                    | '>'
+                    | ','
+                    | '('
+                    | ')'
+                    | '*'
+                    | '&'
+                    | '!'
+                    | '@'
+                    | ' '
+            )
+    }
+
+    /// `frames` is a `;`-joined list of `module!symbol` names, bounded.
+    pub(crate) fn is_safe_frames(value: &str) -> bool {
+        !value.is_empty()
+            && value.len() <= MAX_FRAMES_LEN
+            && value.chars().all(|c| c == ';' || is_frame_char(c))
+    }
+
+    /// Replace anything outside the frame alphabet, and bound the length.
+    fn clean(text: &str, out: &mut String) {
+        for c in text.chars().take(MAX_FRAME_LEN) {
+            out.push(if is_frame_char(c) { c } else { '?' });
+        }
+    }
+
+    /// Name each address as `module!symbol`: the image's file name (never its
+    /// path) and the nearest symbol. Runs while the target is not suspended.
+    pub(crate) fn symbolise(addresses: &[u64]) -> String {
+        let mut out = String::new();
+        for &address in addresses {
+            if out.len() >= MAX_FRAMES_LEN - MAX_FRAME_LEN * 2 - 2 {
+                break;
+            }
+            if !out.is_empty() {
+                out.push(';');
+            }
+            name_one(address, &mut out);
+        }
+        if out.is_empty() {
+            out.push('?');
+        }
+        out
+    }
+
+    #[cfg(target_os = "macos")]
+    fn name_one(address: u64, out: &mut String) {
+        use std::ffi::CStr;
+        // SAFETY: `Dl_info` is plain data; `dladdr` fills it or fails.
+        let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+        let found = unsafe { libc::dladdr(address as *const libc::c_void, &mut info) } != 0;
+        if !found {
+            out.push('?');
+            return;
+        }
+        let image = (!info.dli_fname.is_null())
+            .then(|| {
+                unsafe { CStr::from_ptr(info.dli_fname) }
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .map(|path| path.rsplit('/').next().unwrap_or("").to_string())
+            .filter(|name| !name.is_empty());
+        clean(image.as_deref().unwrap_or("?"), out);
+        out.push('!');
+        if info.dli_sname.is_null() {
+            out.push('?');
+        } else {
+            // SAFETY: `dli_sname` is a NUL-terminated string owned by dyld.
+            let symbol = unsafe { CStr::from_ptr(info.dli_sname) }.to_string_lossy();
+            clean(&symbol, out);
+        }
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn name_one(_address: u64, out: &mut String) {
+        out.push('?');
+    }
+
+    /// The thread to sample and the bounds of its stack. Frame-pointer
+    /// chains are followed only inside these bounds, so a corrupt frame
+    /// pointer can never make the reporter read unmapped memory.
+    #[derive(Clone, Copy, Debug)]
+    pub(crate) struct Target {
+        #[cfg_attr(
+            not(all(target_os = "macos", target_arch = "aarch64")),
+            allow(dead_code)
+        )]
+        port: u32,
+        #[cfg_attr(
+            not(all(target_os = "macos", target_arch = "aarch64")),
+            allow(dead_code)
+        )]
+        stack_low: u64,
+        #[cfg_attr(
+            not(all(target_os = "macos", target_arch = "aarch64")),
+            allow(dead_code)
+        )]
+        stack_high: u64,
+    }
+
+    impl Target {
+        /// The calling thread. `None` where sampling is unsupported.
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        pub(crate) fn current() -> Option<Self> {
+            // SAFETY: queries about the calling thread only.
+            let (port, high, size) = unsafe {
+                let me = libc::pthread_self();
+                (
+                    libc::pthread_mach_thread_np(me),
+                    libc::pthread_get_stackaddr_np(me) as u64,
+                    libc::pthread_get_stacksize_np(me) as u64,
+                )
+            };
+            (port != 0 && high != 0 && size != 0).then(|| Self {
+                port,
+                stack_low: high.saturating_sub(size),
+                stack_high: high,
+            })
+        }
+
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        pub(crate) fn current() -> Option<Self> {
+            None
+        }
+    }
+
+    /// Raw return addresses of `target`, innermost first, written to `out`.
+    /// Returns how many were written; 0 when the thread could not be read.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(crate) fn capture(target: Target, out: &mut [u64; MAX_FRAMES]) -> usize {
+        #[repr(C)]
+        struct ArmThreadState64 {
+            x: [u64; 29],
+            fp: u64,
+            lr: u64,
+            sp: u64,
+            pc: u64,
+            cpsr: u32,
+            flags: u32,
+        }
+        const ARM_THREAD_STATE64: i32 = 6;
+        const STATE_COUNT: u32 = (std::mem::size_of::<ArmThreadState64>() / 4) as u32;
+        // Addresses carry no pointer-authentication bits in a plain arm64
+        // process; the mask keeps a stray high bit from reaching `dladdr`.
+        const ADDRESS_MASK: u64 = 0x0000_ffff_ffff_ffff;
+
+        extern "C" {
+            fn thread_suspend(thread: u32) -> i32;
+            fn thread_resume(thread: u32) -> i32;
+            fn thread_get_state(thread: u32, flavor: i32, state: *mut u32, count: *mut u32) -> i32;
+        }
+
+        // Everything the suspended section needs exists before it starts.
+        let mut state = ArmThreadState64 {
+            x: [0; 29],
+            fp: 0,
+            lr: 0,
+            sp: 0,
+            pc: 0,
+            cpsr: 0,
+            flags: 0,
+        };
+        let mut count = STATE_COUNT;
+        let mut written = 0usize;
+
+        // SAFETY: Mach thread calls on a port the process owns. Between
+        // suspend and resume this code only reads registers and loads from
+        // the target's own stack, inside the bounds checked below. It calls
+        // nothing that allocates, locks, logs, or can panic.
+        unsafe {
+            if thread_suspend(target.port) != 0 {
+                return 0;
+            }
+            let got = thread_get_state(
+                target.port,
+                ARM_THREAD_STATE64,
+                (&mut state as *mut ArmThreadState64).cast::<u32>(),
+                &mut count,
+            );
+            if got == 0 {
+                let pc = state.pc & ADDRESS_MASK;
+                let lr = state.lr & ADDRESS_MASK;
+                if let Some(slot) = out.get_mut(written) {
+                    *slot = pc;
+                    written += 1;
+                }
+                // The innermost function may not have built its frame yet, so
+                // its caller is in `lr`; the chain below skips a repeat.
+                if lr != 0 {
+                    if let Some(slot) = out.get_mut(written) {
+                        *slot = lr;
+                        written += 1;
+                    }
+                }
+                let sp_inside = state.sp >= target.stack_low && state.sp < target.stack_high;
+                let mut fp = state.fp;
+                while sp_inside && written < MAX_FRAMES {
+                    // Aligned, above the stack pointer, and wholly inside the stack.
+                    if fp & 0xf != 0
+                        || fp < state.sp
+                        || fp < target.stack_low
+                        || fp.saturating_add(16) > target.stack_high
+                    {
+                        break;
+                    }
+                    let record = fp as *const u64;
+                    let next = std::ptr::read_volatile(record);
+                    let ret = std::ptr::read_volatile(record.add(1)) & ADDRESS_MASK;
+                    if ret == 0 {
+                        break;
+                    }
+                    let repeats = written
+                        .checked_sub(1)
+                        .and_then(|last| out.get(last))
+                        .is_some_and(|prev| *prev == ret);
+                    if !repeats {
+                        match out.get_mut(written) {
+                            Some(slot) => {
+                                *slot = ret;
+                                written += 1;
+                            }
+                            None => break,
+                        }
+                    }
+                    if next <= fp {
+                        break;
+                    }
+                    fp = next;
+                }
+            }
+            // A failed resume would leave the main thread stopped: retry.
+            let mut attempts = 0;
+            while thread_resume(target.port) != 0 && attempts < 8 {
+                attempts += 1;
+            }
+        }
+        if written > 0 && out.first().copied().unwrap_or(0) == 0 {
+            return 0;
+        }
+        written
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    pub(crate) fn capture(_target: Target, _out: &mut [u64; MAX_FRAMES]) -> usize {
+        0
+    }
 }
 
 // ---------------------------------------------------------------------------
