@@ -127,6 +127,19 @@ impl DictationStopTrigger {
         matches!(self, Self::HoldRelease | Self::Other)
     }
 
+    /// The native release instant that may anchor the tail of a stop requested
+    /// with `self`, or `None` when the caller drove the stop itself (toggle,
+    /// overlay, auto-stop) and any stamp lying around is not its release. Call
+    /// it with the trigger as requested, before [`Self::resolve`].
+    pub(crate) fn tail_anchor(
+        self,
+        release: Option<crate::hotkey_release::HotkeyRelease>,
+    ) -> Option<Instant> {
+        release
+            .filter(|_| self.may_anchor_to_release())
+            .map(|release| release.released_at())
+    }
+
     fn release_tail(self, owner: AudioOwner, standby_enabled: bool) -> Duration {
         if owner.dictation_id().is_none() || (self == Self::Toggle && !standby_enabled) {
             Duration::ZERO
@@ -4039,6 +4052,52 @@ mod tests {
             assert!(
                 !explicit.may_anchor_to_release(),
                 "{explicit:?} must not be anchored by a stamp it did not drive"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stamp_the_caller_did_not_drive_gives_the_accepted_stop_deadline() {
+        // The command path: the anchor is taken from the trigger as requested,
+        // then `resolve` turns any stamped stop into a hold release.
+        let tail = audio::DICTATION_RELEASE_TAIL;
+        let accepted = Instant::now();
+        let deadline_for = |requested: DictationStopTrigger, age: Duration| {
+            let release = crate::hotkey_release::HotkeyRelease::for_test(accepted - age, accepted);
+            let resolved = requested.resolve(Some(release));
+            assert_eq!(resolved, DictationStopTrigger::HoldRelease);
+            tail_deadline(
+                resolved,
+                requested.tail_anchor(Some(release)),
+                accepted,
+                tail,
+            )
+        };
+        for requested in [
+            DictationStopTrigger::Toggle,
+            DictationStopTrigger::Overlay,
+            DictationStopTrigger::AutoStop,
+        ] {
+            // Even a perfectly fresh stamp does not anchor a stop it did not drive.
+            for age in [Duration::from_millis(10), Duration::from_secs(3)] {
+                assert_eq!(
+                    deadline_for(requested, age),
+                    accepted + tail,
+                    "{requested:?} {age:?}"
+                );
+            }
+        }
+        for requested in [
+            DictationStopTrigger::HoldRelease,
+            DictationStopTrigger::Other,
+        ] {
+            let fresh = Duration::from_millis(10);
+            assert_eq!(deadline_for(requested, fresh), accepted - fresh + tail);
+            // The stale-stamp scenario: R1's stop never arrived and R2's stamp was
+            // dropped, so a 3 s old stamp meets the stop for R2.
+            assert_eq!(
+                deadline_for(requested, Duration::from_secs(3)),
+                accepted + tail
             );
         }
     }
