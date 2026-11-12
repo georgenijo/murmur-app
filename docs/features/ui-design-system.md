@@ -371,7 +371,12 @@ Settings uses one muted 11/16px section-heading style and grouped cards on
 General, Shortcuts, and Appearance; other pages retain their content with the
 same shared row/card/control-column geometry. The page title is 18/24px. The window title is centered
 independently of navigation width. Done consumes the shared secondary button.
-Settings' segmented control is local CSS: a 34px sunken pill track, 2px padding,
-28px selected surface with an 8px radius and `--ui-shadow-1`, matching Insights.
+The shared segmented control (`.settings-segmented`, also used by the setup
+wizard's Recording trigger) is a 32px sunken pill track with a 1px border and
+1px padding around 28px segments. The selected surface (`--ui-shadow-1`) is
+concentric with the track: its radius is the track's radius
+(`--ui-segmented-radius`) minus the 2px inset between them, so the end segments
+follow the track's rounded ends. Callers must not set their own segment radius.
+`visual-tests/segmented-geometry.ts` asserts this.
 The redesign's browser fixture evidence covers 1100×780 and 840×620 in both
 appearances. Native verification remains a separate integration requirement.

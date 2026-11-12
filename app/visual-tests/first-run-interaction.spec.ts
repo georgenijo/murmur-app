@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { expectConcentricSegments } from './segmented-geometry';
 
 async function expectTitleBarHitTarget(page: Page) {
   const hits = await page.evaluate(() => {
@@ -49,6 +50,8 @@ for (const size of [{ width: 1100, height: 780 }, { width: 840, height: 620 }]) 
             expect(focus).toEqual({ visible: true, width: '2px', inside: true, withinViewport: true, cardWidth: 620 });
           }
         }
+        if (title === 'Recording shortcut') await expectConcentricSegments(page.getByRole('group', { name: 'Recording trigger' }));
+        if (title === "You're all set") await expect(page.getByText('Try it out', { exact: true })).toHaveCount(0);
         if (title !== "You're all set") await page.getByRole('navigation', { name: 'Setup step actions' }).getByRole('button', { name: 'Continue', exact: true }).click();
       }
       await page.goto(`/visual-fixtures.html?state=first-run-model&appearance=${appearance}`);
