@@ -205,8 +205,8 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
                 Reset microphone permission…
               </button>
               <p className="text-[10px] leading-relaxed text-on-surface-variant">
-                Clears Murmur's stale Microphone entry, then opens System Settings.
-                macOS will re-prompt the next time you record.
+                Clears Murmur's stale Microphone entry and restarts Murmur. macOS
+                asks again the next time you record.
               </p>
               {micResetError && (
                 <p
@@ -228,8 +228,8 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
                 Reset Accessibility permission…
               </button>
               <p className="text-[10px] leading-relaxed text-on-surface-variant">
-                Clears Murmur's stale Accessibility entry, then opens System Settings.
-                You'll still need to turn Murmur back on manually.
+                Clears Murmur's stale Accessibility entry and asks macOS again.
+                Murmur may restart once to finish; then turn it on when macOS asks.
               </p>
               {resetError && (
                 <p

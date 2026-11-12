@@ -15,6 +15,7 @@ import {
   requestMicrophoneAccess,
   resetAccessibilityPermission,
   resetMicrophonePermission,
+  type AccessibilityRequestOutcome,
   type MicPermissionStatus,
 } from '../../lib/dictation';
 import { preferredInstalledModel, useInstalledModels } from '../../lib/hooks/useInstalledModels';
@@ -145,9 +146,11 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const [axBusy, setAxBusy] = useState(false);
   const axPending = useRef(false);
   const [micError, setMicError] = useState<string | null>(null);
+  const [micRestarting, setMicRestarting] = useState(false);
   const [axGranted, setAxGranted] = useState<boolean | null>(null);
   const [axRequested, setAxRequested] = useState(false);
   const [axError, setAxError] = useState<string | null>(null);
+  const [axOutcome, setAxOutcome] = useState<AccessibilityRequestOutcome | null>(null);
   const [systemAudioStatus, setSystemAudioStatus] = useState<SystemAudioPermissionState>('unknown');
   const [systemAudioBusy, setSystemAudioBusy] = useState(false);
   const systemAudioPending = useRef(false);
@@ -374,10 +377,10 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     try {
       micSettingsOpened.current = true;
       permissionGrants.current.microphone ??= false;
+      // Clears the stale entry and relaunches Murmur (a running process cannot see
+      // the reset). One action: no second reset, no settings pane.
       await resetMicrophonePermission();
-      // After a reset the status returns to notDetermined, so the in-app
-      // prompt button works again.
-      endMicWait();
+      setMicRestarting(true);
     } catch (error) {
       setMicError(
         typeof error === 'string'
@@ -397,9 +400,9 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
     setAxError(null);
     setAxRequested(true);
     try {
-      // Registers Murmur in the Accessibility list, shows the system dialog,
-      // and opens the Accessibility pane.
-      await requestAccessibilityPermission();
+      // Clears any stale entry, registers Murmur in the Accessibility list, and
+      // shows either the system dialog or the pane, never both.
+      setAxOutcome(await requestAccessibilityPermission());
     } catch (error) {
       setAxError(typeof error === 'string' ? error : 'Could not open System Settings.');
     } finally {
@@ -411,8 +414,8 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const handleResetAx = async () => {
     setAxError(null);
     try {
-      await resetAccessibilityPermission();
-      setAxRequested(false);
+      setAxOutcome(await resetAccessibilityPermission());
+      setAxRequested(true);
     } catch (error) {
       setAxError(
         typeof error === 'string'
@@ -530,6 +533,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               <StepHeading icon={Mic} title="Microphone access" subtitle="Murmur records your speech for local transcription. Audio is discarded after transcription." />
               <PermissionCard icon={Mic} label="Microphone" state={micGranted ? 'granted' : micDenied ? 'denied' : 'notSet'} waiting={micBusy || micWaiting} fresh={freshGrant === step} />
               {micWaiting && <p className="onboarding-copy">Waiting for your answer in the macOS dialog…</p>}
+              {micRestarting && <p className="onboarding-copy">Murmur is restarting to finish the reset. Allow microphone access when macOS asks.</p>}
               {micDenied && <><p className="onboarding-copy">Enable {permissionOwner} under Privacy &amp; Security → Microphone, then come back. This screen updates automatically.</p>{isDev ? <DevPermissionHelp /> : <button className="onboarding-link" onClick={handleResetMic}>Reset permission…</button>}</>}
               {micError && <ErrorMessage message={micError} />}
               <WizardNavigationRow onBack={goBack} onNext={micGranted ? goNext : micDenied ? handleOpenMicSettings : handleAllowMic} onSkip={goNext} nextEnabled={!micBusy && !micWaiting} defaultAction={micGranted} nextLabel={micDenied ? 'Open System Settings…' : 'Continue'} skippable={!micGranted && !micWaiting && !micBusy} skipLabel="Skip for now" />
@@ -537,7 +541,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
             {step === 'accessibility' && <>
               <StepHeading icon={Accessibility} title="Accessibility access" subtitle="Use the global recording key and auto-paste while Murmur is in the background." />
               <PermissionCard icon={Accessibility} label="Accessibility" state={axGranted ? 'granted' : 'notSet'} waiting={axBusy || axGranted === null} fresh={freshGrant === step} />
-              {!axGranted && <><p className="onboarding-copy">Turn on {permissionOwner} in System Settings, then come back. This screen updates automatically.</p>{axRequested && (isDev ? <DevPermissionHelp /> : <button className="onboarding-link" onClick={handleResetAx}>Murmur is listed but still not detected? Reset permission…</button>)}</>}
+              {!axGranted && <><p className="onboarding-copy">{axOutcome === 'restarting' ? 'Murmur is restarting to finish the reset. Turn it on when macOS asks.' : axOutcome === 'prompted' ? `Choose Open System Settings in the macOS dialog, then turn on ${permissionOwner}. This screen updates automatically.` : `Turn on ${permissionOwner} in System Settings, then come back. This screen updates automatically.`}</p>{axRequested && (isDev ? <DevPermissionHelp /> : <button className="onboarding-link" onClick={handleResetAx}>Murmur is listed but still not detected? Reset permission…</button>)}</>}
               {axError && <ErrorMessage message={axError} />}
               <WizardNavigationRow onBack={goBack} onNext={axGranted ? goNext : handleGrantAx} onSkip={goNext} nextEnabled={!axBusy} defaultAction={axGranted === true} nextLabel={axGranted ? 'Continue' : 'Open System Settings…'} skippable={!axGranted} skipLabel="Skip for now" />
             </>}

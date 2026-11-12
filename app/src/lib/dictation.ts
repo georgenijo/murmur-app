@@ -231,11 +231,20 @@ export async function transcribeFile(filePath: string): Promise<DictationRespons
 }
 
 /**
- * Reset this app's stale macOS Accessibility TCC entry, then reopen the
- * Accessibility settings pane. Rejects if the reset fails (see Rust
- * `reset_accessibility_permission`).
+ * What an Accessibility request did. Exactly one surface opens:
+ * - `granted`: already trusted, nothing shown.
+ * - `prompted`: the macOS dialog is showing; its own button opens System Settings.
+ * - `opened_settings`: no dialog appeared, so the Settings pane was opened.
+ * - `restarting`: a reset needs a new process for macOS to list Murmur again;
+ *   Murmur restarts and asks once it is back.
  */
-export async function resetAccessibilityPermission(): Promise<void> {
+export type AccessibilityRequestOutcome = 'granted' | 'prompted' | 'opened_settings' | 'restarting';
+
+/**
+ * Reset this app's stale macOS Accessibility TCC entry and bring up a fresh one
+ * (see Rust `reset_accessibility_permission`). Rejects if the reset fails.
+ */
+export async function resetAccessibilityPermission(): Promise<AccessibilityRequestOutcome> {
   return await invoke('reset_accessibility_permission');
 }
 
@@ -245,10 +254,11 @@ export async function checkAccessibilityPermission(): Promise<boolean> {
 }
 
 /**
- * Trigger the accessibility permission flow: registers the app in the
- * Accessibility list, shows the system dialog, and opens the settings pane.
+ * Trigger the accessibility permission flow in one step: clears a stale entry,
+ * registers the app in the Accessibility list, and shows either the system dialog
+ * or the settings pane, never both.
  */
-export async function requestAccessibilityPermission(): Promise<void> {
+export async function requestAccessibilityPermission(): Promise<AccessibilityRequestOutcome> {
   return await invoke('request_accessibility_permission');
 }
 
@@ -285,9 +295,11 @@ export async function checkMicrophonePermissionStatus(): Promise<MicPermissionSt
 }
 
 /**
- * Reset this app's stale macOS Microphone TCC entry, then reopen the Microphone
- * settings pane. Rejects if the reset fails (see Rust `reset_microphone_permission`).
+ * Reset this app's stale macOS Microphone TCC entry and relaunch Murmur so the
+ * reset takes effect (a running process keeps reporting the old state). The
+ * next dictation then asks macOS once; the settings pane is not opened. Resolves
+ * `restarting`; rejects if the reset fails (see Rust `reset_microphone_permission`).
  */
-export async function resetMicrophonePermission(): Promise<void> {
+export async function resetMicrophonePermission(): Promise<'restarting'> {
   return await invoke('reset_microphone_permission');
 }

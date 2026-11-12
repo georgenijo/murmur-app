@@ -2240,6 +2240,16 @@ fn start_permission(requires_existing_grant: bool, status: &str) -> StartPermiss
     }
 }
 
+/// An attempt that waits on the system prompt requests access from this process
+/// first. The grant must be recorded here: a prompt raised only by the capture
+/// helper leaves this process's status stale at notDetermined, which the runtime
+/// check then reads as a lost grant and cancels a working recording.
+fn own_prompt_when_awaiting(permission: StartPermission) {
+    if permission == StartPermission::AwaitPrompt {
+        crate::commands::permissions::own_expected_microphone_prompt();
+    }
+}
+
 /// Whether a running attempt must end because the grant is no longer in
 /// force. Key-down capture treats a TCC reset as lost at once instead of
 /// waiting on a prompt; a transient "unknown" never ends an adopted dictation.
@@ -2328,6 +2338,7 @@ fn run_backend(
             active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
         };
     }
+    own_prompt_when_awaiting(permission);
     if permission == StartPermission::AwaitPrompt {
         begin_permission_prompt_pause(
             &mut permission_prompt_started,
@@ -4528,6 +4539,33 @@ mod tests {
             );
             assert!(shared.lock().unwrap().is_empty());
         }
+    }
+
+    #[test]
+    fn awaiting_the_prompt_requests_access_from_this_process_exactly_when_waiting() {
+        use crate::commands::permissions::owned_prompt_requests_for_test as owned;
+        let before = owned();
+        own_prompt_when_awaiting(StartPermission::Proceed);
+        own_prompt_when_awaiting(StartPermission::Refuse);
+        assert_eq!(
+            owned(),
+            before,
+            "only an attempt that awaits the prompt owns it"
+        );
+        // A speculative key-down capture never prompts: it refuses without a grant.
+        assert_eq!(
+            start_permission(true, "notDetermined"),
+            StartPermission::Refuse
+        );
+        // An ordinary start with no decision awaits the prompt and owns it.
+        let permission = start_permission(false, "notDetermined");
+        assert_eq!(permission, StartPermission::AwaitPrompt);
+        own_prompt_when_awaiting(permission);
+        assert_eq!(owned(), before + 1);
+        // A grant that already exists, or a genuine denial, never raises a prompt.
+        own_prompt_when_awaiting(start_permission(false, "granted"));
+        own_prompt_when_awaiting(start_permission(false, "denied"));
+        assert_eq!(owned(), before + 1);
     }
 
     #[test]

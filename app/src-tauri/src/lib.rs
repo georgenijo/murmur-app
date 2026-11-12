@@ -450,6 +450,8 @@ pub fn run() {
             commands::dictation_preview::apply_initial_size(app.handle());
 
             let app_data_root = app.path().app_data_dir()?;
+            #[cfg(target_os = "macos")]
+            commands::permissions::resume_accessibility_request_after_relaunch(&app_data_root);
             if legacy_query_cleanup::cleanup(&app_data_root).is_err() {
                 tracing::warn!(target: "system", "legacy conversation cleanup failed");
             }
