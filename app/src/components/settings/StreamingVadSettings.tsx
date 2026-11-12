@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_SETTINGS } from '../../lib/settings';
 import {
   downloadStreamingVadModel,
@@ -69,11 +69,30 @@ export function StreamingVadSettings({ enabled, isRecording, onEnabledChange }: 
   const ready = status?.state === 'ready';
   const failed = status?.state === 'failed';
 
+  // Switching on before the first status arrives is still the user's request:
+  // remember it and act once the status resolves.
+  const wantsModel = useRef(false);
+  useEffect(() => {
+    if (!enabled) wantsModel.current = false;
+  }, [enabled]);
+  useEffect(() => {
+    if (!wantsModel.current || !status) return;
+    wantsModel.current = false;
+    if (enabled && status.state !== 'ready' && status.state !== 'downloading' && operation === 'idle') {
+      void run('downloading', downloadStreamingVadModel);
+    }
+    // `run` only touches state setters and module imports.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
+
   const toggle = () => {
     const next = !enabled;
     onEnabledChange(next);
     // Turning it on is the user's request for the model.
-    if (next && status && status.state !== 'ready' && !busy) {
+    if (!next) return;
+    if (!status) {
+      wantsModel.current = true;
+    } else if (status.state !== 'ready' && !busy) {
       void run('downloading', downloadStreamingVadModel);
     }
   };

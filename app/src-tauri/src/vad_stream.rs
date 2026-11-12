@@ -334,6 +334,7 @@ fn build_session(path: &std::path::Path) -> Result<ort::session::Session, String
 /// Hash, build, then publish: the session lock is held only to publish, so an
 /// unload or a scoring call never waits behind hashing or model loading.
 fn load_verified(path: &std::path::Path, delete_on_mismatch: bool) -> Result<(), String> {
+    let started = unload_generation();
     if SESSION.lock_or_recover().is_some() {
         return Ok(());
     }
@@ -352,8 +353,28 @@ fn load_verified(path: &std::path::Path, delete_on_mismatch: bool) -> Result<(),
         Verify::Io(error) => return Err(error),
     }
     let session = build_session(path)?;
-    let mut slot = SESSION.lock_or_recover();
-    slot.get_or_insert(session);
+    publish_session(&SESSION, started, session)
+}
+
+/// Bumped by every [`unload`]. A load that began before an unload (the model was
+/// removed or the setting turned off while it hashed or built) must not publish
+/// its session afterwards: that would leave a session loaded for a file that is
+/// gone.
+static UNLOAD_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn unload_generation() -> u64 {
+    UNLOAD_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Publish `value` unless an unload happened since `started`. The check and the
+/// store happen under the slot lock, and [`unload`] bumps the generation under
+/// the same lock, so the two cannot interleave.
+fn publish_session<T>(slot: &Mutex<Option<T>>, started: u64, value: T) -> Result<(), String> {
+    let mut slot = slot.lock_or_recover();
+    if unload_generation() != started {
+        return Err("model was unloaded while loading".to_string());
+    }
+    slot.get_or_insert(value);
     Ok(())
 }
 
@@ -374,7 +395,9 @@ pub fn load_session_from(path: &std::path::Path) -> Result<(), String> {
 
 /// Drop the loaded session (setting turned off, model removed).
 pub fn unload() {
-    *SESSION.lock_or_recover() = None;
+    let mut slot = SESSION.lock_or_recover();
+    UNLOAD_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    *slot = None;
 }
 
 /// Scores through the shared ONNX session.
