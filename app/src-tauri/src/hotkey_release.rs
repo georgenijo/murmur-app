@@ -83,7 +83,10 @@ pub fn record(recording_id: u64, released_at: Instant) {
 
 /// How long a native release counts as "a stop is on its way". A release that
 /// the stop never claimed (a rejected stop) must not silence the live preview
-/// for the rest of the recording.
+/// for the rest of the recording. The check only reads the stamp, so it never
+/// takes it from the stop. Much longer than the tail-anchor freshness window
+/// the stop path applies (`audio_lifecycle::release_anchor`, at most one tail
+/// after the release): the preview must stop earlier than the stop is accepted.
 const STOP_GESTURE_WINDOW: Duration = Duration::from_millis(500);
 
 /// Whether a hold release for `recording_id` has been seen and its stop has not
@@ -247,6 +250,29 @@ mod tests {
         let mut slot = slot;
         assert!(take_matching(&mut slot, 7, soon).is_some());
         assert!(!gesture_pending_in(&slot, 7, soon));
+    }
+
+    #[test]
+    fn asking_whether_a_stop_is_pending_never_consumes_the_stamp_the_stop_needs() {
+        let released_at = Instant::now();
+        let slot = stamp(7, released_at);
+        // Any number of preview ticks may ask, at any time within the window.
+        for ms in [0, 1, 49, 50, 499] {
+            assert!(gesture_pending_in(
+                &slot,
+                7,
+                released_at + Duration::from_millis(ms)
+            ));
+        }
+        // The stop still gets the same release instant, which is what anchors
+        // its tail (D's freshness check, `tail` after the release, is far
+        // shorter than this window, so a stamp the stop would trust is always
+        // one the preview already treats as pending).
+        let mut slot = slot;
+        let stop_entered_at = released_at + Duration::from_millis(30);
+        let release = take_matching(&mut slot, 7, stop_entered_at).expect("stamp intact");
+        assert_eq!(release.released_at(), released_at);
+        assert!(slot.is_none());
     }
 
     #[test]
