@@ -10,10 +10,10 @@ const root = ReactDOM.createRoot(document.getElementById('root') as HTMLElement)
 // Seed localStorage from the durable settings.json before the first render.
 hydrateSettingsFromDisk().finally(() => {
   root.render(
-    <>
+    <React.StrictMode>
       <NativeWindowLifecycle showAfterPaint={false}>
         <DiagnosticsWindowApp />
       </NativeWindowLifecycle>
-    </>,
+    </React.StrictMode>,
   );
 });

@@ -40,6 +40,11 @@ export function mergeResourceSamples(
     .slice(-MAX_SAMPLES);
 }
 
+interface InFlightRead {
+  generation: number;
+  promise: Promise<void>;
+}
+
 export function usePerformanceDiagnostics(enabled: boolean) {
   const [runs, setRuns] = useState<PerformanceRunV1[]>([]);
   const [samples, setSamples] = useState<ResourceSampleV1[]>([]);
@@ -51,38 +56,59 @@ export function usePerformanceDiagnostics(enabled: boolean) {
   const [cleared, setCleared] = useState(false);
   const [clearing, setClearing] = useState(false);
   const dataGenerationRef = useRef(0);
+  // One read per source at a time. A second request for the same data
+  // generation (React remounting an effect in development, or a retry while a
+  // load is pending) shares the pending read instead of querying SQLite again.
+  const runsInFlightRef = useRef<InFlightRead | null>(null);
+  const resourcesInFlightRef = useRef<InFlightRead | null>(null);
 
-  const refreshRuns = useCallback(async () => {
+  const refreshRuns = useCallback(() => {
+    const pending = runsInFlightRef.current;
+    if (pending && pending.generation === dataGenerationRef.current) return pending.promise;
     const generation = dataGenerationRef.current;
-    setRunsLoading(true);
-    setRunsError(null);
-    try {
-      const response = await listPerformanceRuns(MAX_RUNS);
-      if (generation === dataGenerationRef.current) {
-        setRuns(current => mergeRuns(response.runs, current));
-        if (response.runs.length > 0) setCleared(false);
+    const entry = { generation } as InFlightRead;
+    runsInFlightRef.current = entry;
+    entry.promise = (async () => {
+      setRunsLoading(true);
+      setRunsError(null);
+      try {
+        const response = await listPerformanceRuns(MAX_RUNS);
+        if (generation === dataGenerationRef.current) {
+          setRuns(current => mergeRuns(response.runs, current));
+          if (response.runs.length > 0) setCleared(false);
+        }
+      } catch (reason) {
+        setRunsError(errorMessage(reason));
+      } finally {
+        setRunsLoading(false);
+        if (runsInFlightRef.current === entry) runsInFlightRef.current = null;
       }
-    } catch (reason) {
-      setRunsError(errorMessage(reason));
-    } finally {
-      setRunsLoading(false);
-    }
+    })();
+    return entry.promise;
   }, []);
 
-  const refreshResources = useCallback(async () => {
+  const refreshResources = useCallback(() => {
+    const pending = resourcesInFlightRef.current;
+    if (pending && pending.generation === dataGenerationRef.current) return pending.promise;
     const generation = dataGenerationRef.current;
-    setResourcesLoading(true);
-    setResourcesError(null);
-    try {
-      const response = await getPerformanceResourceWindow();
-      if (generation === dataGenerationRef.current) {
-        setSamples(current => mergeResourceSamples(response, current));
+    const entry = { generation } as InFlightRead;
+    resourcesInFlightRef.current = entry;
+    entry.promise = (async () => {
+      setResourcesLoading(true);
+      setResourcesError(null);
+      try {
+        const response = await getPerformanceResourceWindow();
+        if (generation === dataGenerationRef.current) {
+          setSamples(current => mergeResourceSamples(response, current));
+        }
+      } catch (reason) {
+        setResourcesError(errorMessage(reason));
+      } finally {
+        setResourcesLoading(false);
+        if (resourcesInFlightRef.current === entry) resourcesInFlightRef.current = null;
       }
-    } catch (reason) {
-      setResourcesError(errorMessage(reason));
-    } finally {
-      setResourcesLoading(false);
-    }
+    })();
+    return entry.promise;
   }, []);
 
   const refresh = useCallback(async () => {

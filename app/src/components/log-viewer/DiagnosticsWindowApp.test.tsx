@@ -25,7 +25,7 @@ vi.mock('./DiagnosticsWorkspace', () => ({
 import { DiagnosticsWindowApp } from './DiagnosticsWindowApp';
 
 function lastProps(): { active: boolean; requestedTab: string } {
-  return workspaceMock.mock.calls.at(-1)?.[0] as { active: boolean; requestedTab: string };
+  return workspaceMock.mock.calls[workspaceMock.mock.calls.length - 1]?.[0] as { active: boolean; requestedTab: string };
 }
 
 describe('DiagnosticsWindowApp native chrome', () => {
@@ -86,5 +86,21 @@ describe('DiagnosticsWindowApp native chrome', () => {
       window.dispatchEvent(new Event('focus'));
     });
     expect(lastProps().active).toBe(true);
+  });
+
+  it('stays active once shown, so reopening does not reload the workspace', async () => {
+    await act(async () => {
+      listeners.get('diagnostics-tab-requested')?.({ payload: 'runs' });
+    });
+    await act(async () => {
+      listeners.get('diagnostics-tab-requested')?.({ payload: 'performance' });
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    for (const [props] of workspaceMock.mock.calls.slice(workspaceMock.mock.calls.findIndex(([p]) => (p as { active: boolean }).active))) {
+      expect((props as { active: boolean }).active).toBe(true);
+    }
+    expect(lastProps()).toMatchObject({ active: true, requestedTab: 'performance' });
   });
 });

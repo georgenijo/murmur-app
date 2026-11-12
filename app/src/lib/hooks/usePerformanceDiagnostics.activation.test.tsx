@@ -1,4 +1,4 @@
-import { act } from 'react';
+import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -58,5 +58,35 @@ describe('usePerformanceDiagnostics activation', () => {
     expect(performance.getPerformanceResourceWindow).toHaveBeenCalledTimes(1);
     expect(latest?.runsLoading).toBe(false);
     expect(latest?.resourcesLoading).toBe(false);
+  });
+
+  it('shares a pending read when an effect remounts (React development remount)', async () => {
+    let release: (() => void) | null = null;
+    performance.listPerformanceRuns.mockImplementationOnce(() => new Promise(resolve => {
+      release = () => resolve({ schemaVersion: 1, runs: [] });
+    }));
+    await act(async () => root.render(<React.StrictMode><Probe enabled /></React.StrictMode>));
+    expect(performance.listPerformanceRuns).toHaveBeenCalledTimes(1);
+    expect(performance.getPerformanceResourceWindow).toHaveBeenCalledTimes(1);
+    await act(async () => release?.());
+    expect(latest?.runsLoading).toBe(false);
+  });
+
+  it('allows a new read after the previous one finished', async () => {
+    await act(async () => root.render(<Probe enabled />));
+    await act(async () => { await latest?.refreshRuns(); });
+    expect(performance.listPerformanceRuns).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not reuse a pre-clear read for a post-clear refresh', async () => {
+    let release: (() => void) | null = null;
+    performance.listPerformanceRuns.mockImplementationOnce(() => new Promise(resolve => {
+      release = () => resolve({ schemaVersion: 1, runs: [] });
+    }));
+    await act(async () => root.render(<Probe enabled />));
+    await act(async () => { await latest?.clear(); });
+    await act(async () => { await latest?.refreshRuns(); });
+    expect(performance.listPerformanceRuns).toHaveBeenCalledTimes(2);
+    await act(async () => release?.());
   });
 });

@@ -64,10 +64,11 @@ async fn on_blocking_pool<T: Send + 'static>(
 pub async fn list_performance_runs(
     limit: Option<u32>,
     app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
 ) -> Result<PerformanceRunListV1, String> {
-    tracing::info!(target: "system", caller = window.label(), "TEMPC3 list_performance_runs");
-    on_blocking_pool(app, move |state| state.performance.list(limit.unwrap_or(50))).await
+    on_blocking_pool(app, move |state| {
+        state.performance.list(limit.unwrap_or(50))
+    })
+    .await
 }
 
 #[tauri::command]

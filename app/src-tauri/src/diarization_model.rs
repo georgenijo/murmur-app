@@ -227,9 +227,7 @@ fn invalidate_verdict(cache: &VerdictCache) {
 /// removal, or any change to a model file; repeat calls only stat 21 files.
 pub fn installed_cached() -> bool {
     supported()
-        && directory().is_some_and(|root| {
-            cached_verdict(&VERDICT, &root, || validate_at(&root))
-        })
+        && directory().is_some_and(|root| cached_verdict(&VERDICT, &root, || validate_at(&root)))
 }
 
 #[derive(Serialize)]
@@ -449,6 +447,32 @@ mod tests {
             .expect("set mtime");
         assert!(!counted(&cache, dir.path(), false, &mut runs));
         assert_eq!(runs, 2);
+    }
+
+    /// A writer can restore the old size and modification time, but not the
+    /// inode change time. A same-size, same-mtime rewrite must still rehash.
+    #[cfg(unix)]
+    #[test]
+    fn in_place_rewrite_with_restored_size_and_mtime_forces_a_rehash() {
+        let dir = fake_tree();
+        let cache: VerdictCache = Mutex::new(None);
+        let mut runs = 0;
+        assert!(counted(&cache, dir.path(), true, &mut runs));
+        let first = dir.path().join(&manifest()[0].path);
+        let before = fs::metadata(&first)
+            .expect("stat")
+            .modified()
+            .expect("mtime");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(&first)
+            .expect("open");
+        std::io::Write::write_all(&mut &file, b"MODEL").expect("same-length rewrite");
+        file.set_modified(before).expect("restore mtime");
+        drop(file);
+        assert!(!counted(&cache, dir.path(), false, &mut runs));
+        assert_eq!(runs, 2, "a corrupted file must not keep a verified verdict");
     }
 
     #[test]

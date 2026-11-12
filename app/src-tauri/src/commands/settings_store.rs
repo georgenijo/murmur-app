@@ -610,6 +610,31 @@ mod tests {
     }
 
     #[test]
+    fn serialized_reads_never_quarantine_a_file_being_published() {
+        let dir = temp_dir("serialized_read");
+        write_blob(&dir, SETTINGS, r#"{"generation":0}"#).unwrap();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for generation in 1..200 {
+                    write_blob(&dir, SETTINGS, &format!(r#"{{"generation":{generation}}}"#))
+                        .unwrap();
+                }
+            });
+            scope.spawn(|| {
+                for _ in 0..200 {
+                    let blob = read_blob_serialized(&dir, SETTINGS).unwrap();
+                    assert!(blob.is_some_and(|text| text.starts_with(r#"{"generation":"#)));
+                }
+            });
+        });
+        assert!(
+            entries(&dir).iter().all(|name| !name.contains(".corrupt-")),
+            "a read raced a publish and quarantined the fresh file"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn temp_path_stays_in_the_data_directory() {
         let path = blob_path(Path::new("/tmp/murmur"), HISTORY);
         let temp = temp_path_for(&path);

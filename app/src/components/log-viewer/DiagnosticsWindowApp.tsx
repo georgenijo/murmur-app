@@ -17,7 +17,7 @@ const DIAGNOSTICS_TAB_REQUESTED_EVENT = 'diagnostics-tab-requested';
  * costs nothing and events keep accumulating. */
 export function DiagnosticsWindowApp() {
   const [requestedTab, setRequestedTab] = useState<DiagnosticsTab>('events');
-  const [shown, setShown] = useState(true);
+  const [shown, setShown] = useState(false);
 
   useEffect(() => {
     let disposed = false;
