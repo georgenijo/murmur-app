@@ -95,7 +95,7 @@ impl WindowScorer for Fake {
         &mut self,
         window: &[f32; WINDOW_SAMPLES],
         state: &mut [f32; STATE_LEN],
-    ) -> Result<f32, String> {
+    ) -> Result<f32, ScoreError> {
         let energy = window.iter().map(|x| x * x).sum::<f32>() / WINDOW_SAMPLES as f32;
         state[0] = state[0] * 0.5 + energy;
         Ok((state[0] * 40.0).min(1.0))
@@ -108,8 +108,42 @@ impl WindowScorer for Failing {
         &mut self,
         _: &[f32; WINDOW_SAMPLES],
         _: &mut [f32; STATE_LEN],
-    ) -> Result<f32, String> {
+    ) -> Result<f32, ScoreError> {
         Err("boom".into())
+    }
+}
+
+/// Behaves like the shared session being busy once the stream is finishing.
+#[derive(Default)]
+struct BusyAtStop {
+    blocking: Option<bool>,
+}
+impl WindowScorer for BusyAtStop {
+    fn set_blocking(&mut self, blocking: bool) {
+        self.blocking = Some(blocking);
+    }
+    fn score(
+        &mut self,
+        window: &[f32; WINDOW_SAMPLES],
+        state: &mut [f32; STATE_LEN],
+    ) -> Result<f32, ScoreError> {
+        if self.blocking == Some(false) {
+            return Err(ScoreError::Contended);
+        }
+        Fake.score(window, state)
+    }
+}
+
+/// Scores slowly, so a push is still running when Stop takes the stream.
+struct Slow;
+impl WindowScorer for Slow {
+    fn score(
+        &mut self,
+        window: &[f32; WINDOW_SAMPLES],
+        state: &mut [f32; STATE_LEN],
+    ) -> Result<f32, ScoreError> {
+        std::thread::sleep(Duration::from_millis(2));
+        Fake.score(window, state)
     }
 }
 
@@ -235,12 +269,11 @@ fn model_input_is_the_window_with_ggmls_left_reflection() {
 
 #[test]
 fn slot_state_belongs_to_exactly_one_recording() {
-    let slot = StreamSlot::default();
+    let slot = StreamSlot::<Fake>::default();
     assert!(slot.consumed(1).is_none());
-    slot.begin(7);
+    assert!(slot.begin_with(7, Fake));
     assert_eq!(slot.consumed(7), Some(0));
     assert!(slot.consumed(8).is_none(), "another id never sees it");
-    // Under one window: accepted without needing a model session.
     assert!(slot.push(7, 0, &[0.0; 100]));
     assert_eq!(slot.consumed(7), Some(100));
     assert!(!slot.push(8, 100, &[0.0; 10]), "a stale id cannot push");
@@ -261,16 +294,314 @@ fn slot_state_belongs_to_exactly_one_recording() {
 
 #[test]
 fn a_new_recording_resets_the_slot() {
-    let slot = StreamSlot::default();
-    slot.begin(1);
+    let slot = StreamSlot::<Fake>::default();
+    assert!(slot.begin_with(1, Fake));
     assert!(slot.push(1, 0, &[0.0; 100]));
-    slot.begin(2);
+    assert!(slot.begin_with(2, Fake));
     assert!(slot.consumed(1).is_none());
     assert_eq!(slot.consumed(2), Some(0));
     slot.clear(1);
     assert_eq!(slot.consumed(2), Some(0), "clearing a stale id is a no-op");
     slot.clear(2);
     assert!(slot.consumed(2).is_none());
+}
+
+#[test]
+fn a_recording_can_begin_only_once_so_two_workers_cannot_share_it() {
+    let slot = StreamSlot::<Fake>::default();
+    assert!(slot.begin_with(5, Fake));
+    assert!(slot.push(5, 0, &[0.0; 100]));
+    assert!(
+        !slot.begin_with(5, Fake),
+        "a second start for the same id is refused"
+    );
+    assert_eq!(
+        slot.consumed(5),
+        Some(100),
+        "and it does not reset the stream"
+    );
+    assert!(
+        !slot.begin_with(4, Fake),
+        "an older id cannot replace a newer one"
+    );
+    // Even after the stream was taken at Stop, a late duplicate start cannot
+    // revive the id.
+    assert!(slot.take(5).is_some());
+    assert!(!slot.begin_with(5, Fake));
+    assert!(slot.consumed(5).is_none());
+    assert!(slot.begin_with(6, Fake));
+}
+
+#[test]
+fn stop_takes_the_stream_between_chunks_instead_of_waiting_for_the_backlog() {
+    let slot = std::sync::Arc::new(StreamSlot::<Slow>::default());
+    assert!(slot.begin_with(9, Slow));
+    // 16 chunks of about 16 windows at 2 ms each: about half a second of work.
+    let backlog = vec![0.1_f32; PUSH_CHUNK_SAMPLES * 16];
+    let worker = {
+        let slot = slot.clone();
+        std::thread::spawn(move || slot.push(9, 0, &backlog))
+    };
+    std::thread::sleep(Duration::from_millis(60));
+    let started = std::time::Instant::now();
+    let handoff = slot.take(9).expect("stop takes the stream");
+    let waited = started.elapsed();
+    assert!(!worker.join().unwrap(), "the worker lets go once stop asks");
+    let scored = handoff.vad.consumed();
+    assert!(
+        scored > 0 && scored < PUSH_CHUNK_SAMPLES * 16,
+        "scored {scored}"
+    );
+    assert_eq!(
+        scored % PUSH_CHUNK_SAMPLES,
+        0,
+        "only whole chunks were scored"
+    );
+    assert!(waited < Duration::from_millis(200), "waited {waited:?}");
+}
+
+#[test]
+fn stop_scores_only_a_small_tail_and_falls_back_on_a_large_backlog() {
+    let samples = clip(5 * SAMPLE_RATE);
+    // A worker that kept up: the tail is under the limit.
+    let mut kept_up = IncrementalVad::new(Fake);
+    kept_up
+        .push(&samples[..samples.len() - SAMPLE_RATE])
+        .unwrap();
+    assert!(kept_up.finish(&samples, params()).is_ok());
+    // A worker that stopped early (a slow supervisor reply): over 2 s remain.
+    let mut early = IncrementalVad::new(Fake);
+    early.push(&samples[..SAMPLE_RATE]).unwrap();
+    assert_eq!(
+        early.finish(&samples, params()).err(),
+        Some(FallbackReason::Backlog)
+    );
+    assert_eq!(
+        IncrementalVad::new(Fake).finish(&samples, params()).err(),
+        Some(FallbackReason::Backlog),
+        "a worker that never scored anything"
+    );
+}
+
+#[test]
+fn stop_never_waits_for_a_busy_session_and_reports_contended() {
+    let samples = clip(20_000);
+    let mut vad = IncrementalVad::new(BusyAtStop::default());
+    vad.push(&samples[..10_000]).unwrap(); // recording-time scoring waits and works
+    assert_eq!(
+        vad.finish(&samples, params()).err(),
+        Some(FallbackReason::Contended)
+    );
+}
+
+/// Run `stop_vad` with a batch closure that counts its calls and returns a
+/// recognisable marker.
+fn run_stop<S: WindowScorer>(
+    enabled: bool,
+    handoff: Option<StreamHandoff<S>>,
+    samples: &[f32],
+) -> (Result<VadResult, String>, &'static str, usize) {
+    let calls = std::cell::Cell::new(0);
+    let (result, outcome, _bounds) = stop_vad(enabled, handoff, 3, samples, params(), || {
+        calls.set(calls.get() + 1);
+        Ok(VadResult::Speech(vec![0.5; 3]))
+    });
+    (result, outcome, calls.get())
+}
+
+fn is_batch_marker(result: &Result<VadResult, String>) -> bool {
+    matches!(result, Ok(VadResult::Speech(kept)) if kept == &vec![0.5; 3])
+}
+
+#[test]
+fn setting_off_runs_the_batch_vad_without_touching_the_slot() {
+    let slot = StreamSlot::<Fake>::default();
+    assert!(slot.begin_with(3, Fake));
+    let (result, outcome, calls) = run_stop::<Fake>(false, None, &clip(8_000));
+    assert!(is_batch_marker(&result));
+    assert_eq!((outcome, calls), ("disabled", 1));
+    assert_eq!(slot.consumed(3), Some(0), "the stream was not taken");
+}
+
+#[test]
+fn no_stream_for_the_recording_falls_back_to_batch() {
+    let (result, outcome, calls) = run_stop::<Fake>(true, None, &clip(8_000));
+    assert!(is_batch_marker(&result));
+    assert_eq!((outcome, calls), ("not_started", 1));
+    // A different recording's stream is not this recording's either.
+    let slot = StreamSlot::<Fake>::default();
+    assert!(slot.begin_with(2, Fake));
+    let (result, outcome, calls) = run_stop(true, slot.take(3), &clip(8_000));
+    assert!(is_batch_marker(&result));
+    assert_eq!((outcome, calls), ("not_started", 1));
+    assert_eq!(slot.consumed(2), Some(0));
+}
+
+#[test]
+fn a_stream_whose_model_failed_to_load_falls_back_to_batch() {
+    let slot = StreamSlot::<Fake>::default();
+    assert!(slot.begin_with(3, Fake));
+    slot.mark_failed(3, FallbackReason::ModelLoad);
+    let (result, outcome, calls) = run_stop(true, slot.take(3), &clip(8_000));
+    assert!(is_batch_marker(&result));
+    assert_eq!((outcome, calls), ("model_load", 1));
+}
+
+#[test]
+fn a_busy_session_at_stop_falls_back_to_batch() {
+    let samples = clip(20_000);
+    let slot = StreamSlot::<BusyAtStop>::default();
+    assert!(slot.begin_with(3, BusyAtStop::default()));
+    assert!(slot.push(3, 0, &samples[..10_000]));
+    let (result, outcome, calls) = run_stop(true, slot.take(3), &samples);
+    assert!(is_batch_marker(&result));
+    assert_eq!((outcome, calls), ("contended", 1));
+}
+
+#[test]
+fn a_no_speech_verdict_is_confirmed_by_the_batch_vad() {
+    let silence = vec![0.0_f32; 24_000];
+    let slot = StreamSlot::<Fake>::default();
+    assert!(slot.begin_with(3, Fake));
+    assert!(slot.push(3, 0, &silence[..16_000]));
+    let (result, outcome, calls) = run_stop(true, slot.take(3), &silence);
+    assert!(is_batch_marker(&result), "the batch answer wins");
+    assert_eq!((outcome, calls), ("no_speech_recheck", 1));
+}
+
+#[test]
+fn a_trusted_stream_is_used_and_the_batch_vad_never_runs() {
+    let samples = clip(40_000);
+    let slot = StreamSlot::<Fake>::default();
+    assert!(slot.begin_with(3, Fake));
+    assert!(slot.push(3, 0, &samples[..32_000]));
+    let (result, outcome, calls) = run_stop(true, slot.take(3), &samples);
+    assert!(matches!(result, Ok(VadResult::Speech(_))));
+    assert!(!is_batch_marker(&result));
+    assert_eq!((outcome, calls), ("used", 0));
+}
+
+/// Serializes the tests that point the model store at a temporary directory.
+static STORE_LOCK: Mutex<()> = Mutex::new(());
+
+struct TempStore {
+    _guard: std::sync::MutexGuard<'static, ()>,
+    dir: tempfile::TempDir,
+}
+
+impl TempStore {
+    fn new() -> Self {
+        let guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        *ROOT_OVERRIDE.lock_or_recover() = Some(dir.path().to_path_buf());
+        *LAST_ERROR.lock_or_recover() = None;
+        unload();
+        Self { _guard: guard, dir }
+    }
+
+    /// A file of the pinned size whose content is not the model.
+    fn install_corrupt_model(&self) -> PathBuf {
+        let path = installed_model_path().unwrap();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, vec![7_u8; MODEL_SIZE_BYTES as usize]).unwrap();
+        path
+    }
+}
+
+impl Drop for TempStore {
+    fn drop(&mut self) {
+        *ROOT_OVERRIDE.lock_or_recover() = None;
+        *LAST_ERROR.lock_or_recover() = None;
+        let _ = &self.dir;
+    }
+}
+
+#[test]
+fn a_right_size_wrong_hash_model_is_deleted_at_load_and_reported() {
+    let store = TempStore::new();
+    let path = store.install_corrupt_model();
+    assert!(model_installed(), "size alone looks installed");
+    assert!(load_session().is_err());
+    assert!(
+        !path.exists(),
+        "the bad file is deleted so it can be fetched again"
+    );
+    assert!(!model_installed());
+    let status = model_status();
+    assert_eq!(status.state, ModelState::Failed);
+    assert!(status.error.is_some());
+}
+
+#[test]
+fn model_status_reports_not_downloaded_downloading_ready_and_failed() {
+    let _store = TempStore::new();
+    assert_eq!(model_status().state, ModelState::NotDownloaded);
+    set_last_error("boom");
+    let failed = model_status();
+    assert_eq!(
+        (failed.state, failed.error.as_deref()),
+        (ModelState::Failed, Some("boom"))
+    );
+    {
+        let _flag = DownloadingFlag::set();
+        assert_eq!(model_status().state, ModelState::Downloading);
+    }
+    let path = installed_model_path().unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, vec![0_u8; MODEL_SIZE_BYTES as usize]).unwrap();
+    let ready = model_status();
+    assert_eq!((ready.state, ready.error), (ModelState::Ready, None));
+}
+
+fn model_less_app() -> (tauri::App<tauri::test::MockRuntime>, impl Send) {
+    crate::commands::recording::tests::partial_lease_fixture()
+}
+
+#[test]
+fn starting_a_recording_never_makes_a_network_request_or_a_stream_without_the_model() {
+    let store = TempStore::new();
+    let (app, _lease) = model_less_app();
+    let before = DOWNLOAD_ATTEMPTS.load(std::sync::atomic::Ordering::SeqCst);
+    for id in 41..44 {
+        assert!(!start(app.handle().clone(), id, |_, _| false));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        DOWNLOAD_ATTEMPTS.load(std::sync::atomic::Ordering::SeqCst),
+        before,
+        "recording start must not fetch the model"
+    );
+    assert_eq!(
+        model_status().state,
+        ModelState::NotDownloaded,
+        "and it records no failure either"
+    );
+    assert!(!installed_model_path().unwrap().exists());
+    let _ = &store;
+}
+
+#[test]
+fn a_corrupt_installed_model_is_removed_by_the_first_recording_and_not_retried() {
+    let store = TempStore::new();
+    let (app, _lease) = model_less_app();
+    let path = store.install_corrupt_model();
+    let before = DOWNLOAD_ATTEMPTS.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        start(app.handle().clone(), 41, |_, _| false),
+        "a stream starts for an installed file"
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while path.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!path.exists(), "the worker deleted the corrupt file");
+    // The next recording does not retry the bad file and does not download.
+    assert!(!start(app.handle().clone(), 42, |_, _| false));
+    assert_eq!(
+        DOWNLOAD_ATTEMPTS.load(std::sync::atomic::Ordering::SeqCst),
+        before
+    );
+    assert_eq!(model_status().state, ModelState::Failed);
 }
 
 #[test]
@@ -428,7 +759,7 @@ fn differential_incremental_vs_batch_vad() {
             );
 
             // Incremental: polled in 200 ms chunks, tail finished at "Stop".
-            let mut vad = IncrementalVad::new(OnnxScorer);
+            let mut vad = IncrementalVad::new(OnnxScorer::default());
             let polled = samples.len() - samples.len() % 3_200 - 3_200;
             for piece in samples[..polled].chunks(3_200) {
                 vad.push(piece).expect("incremental push");
@@ -439,7 +770,7 @@ fn differential_incremental_vs_batch_vad() {
                 .expect("finish");
 
             // Re-run to read probabilities for the comparison.
-            let mut probe = IncrementalVad::new(OnnxScorer);
+            let mut probe = IncrementalVad::new(OnnxScorer::default());
             probe.push(&samples).unwrap();
             probe.flush().unwrap();
             let diffs: Vec<f32> = batch_probs
@@ -578,7 +909,7 @@ fn session_memory_report() {
     load_session_from(&onnx_model_path()).expect("ONNX session");
     let loaded = crate::resource_monitor::get_process_rss_bytes().unwrap_or(0);
     let samples = clip(16_000 * 120);
-    let mut vad = IncrementalVad::new(OnnxScorer);
+    let mut vad = IncrementalVad::new(OnnxScorer::default());
     vad.push(&samples).unwrap();
     let scored = crate::resource_monitor::get_process_rss_bytes().unwrap_or(0);
     println!(
@@ -589,48 +920,4 @@ fn session_memory_report() {
             "probability_vector_bytes": vad.probs.len() * 4,
         })
     );
-}
-
-fn same_result(a: &VadResult, b: &VadResult) -> bool {
-    match (a, b) {
-        (VadResult::Speech(a), VadResult::Speech(b)) => a == b,
-        (VadResult::NoSpeech, VadResult::NoSpeech) => true,
-        _ => false,
-    }
-}
-
-/// With the setting off (no stream) or with a stream that cannot be trusted,
-/// Stop gives exactly the batch VAD's result. Skipped without the ggml model.
-#[test]
-fn every_fallback_returns_the_batch_vad_result_unchanged() {
-    let Some(model) = crate::vad::vad_model_path().filter(|path| path.exists()) else {
-        return;
-    };
-    let model = model.to_string_lossy().into_owned();
-    let fixture =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../bench/audio/short.wav");
-    let mut samples = load_clip(&fixture).expect("repository fixture");
-    samples.resize(samples.len() + 12_000, 0.0);
-    let batch = crate::vad::filter_speech(&model, &samples, 0.5).unwrap();
-
-    // Setting off or no stream was started for this recording.
-    let none = filter_speech_or_batch(None, 1, &model, &samples, 0.5).unwrap();
-    assert!(same_result(&batch, &none));
-
-    // A stream that failed (gap in the capture offsets) and one whose prefix is
-    // not the final PCM both fall back.
-    let slot = StreamSlot::default();
-    slot.begin(2);
-    assert!(slot.push(2, 0, &[0.0; 100]));
-    assert!(!slot.push(2, 7, &[0.0; 100]));
-    let failed = filter_speech_or_batch(slot.take(2), 2, &model, &samples, 0.5).unwrap();
-    assert!(same_result(&batch, &failed));
-
-    slot.begin(3);
-    let mut other = samples.clone();
-    assert!(slot.push(3, 0, &other[..320]));
-    other[64] += 0.25; // a sampled index of the prefix
-    let mismatched = filter_speech_or_batch(slot.take(3), 3, &model, &other, 0.5).unwrap();
-    let batch_other = crate::vad::filter_speech(&model, &other, 0.5).unwrap();
-    assert!(same_result(&batch_other, &mismatched));
 }

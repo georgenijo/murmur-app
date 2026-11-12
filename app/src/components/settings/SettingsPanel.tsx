@@ -65,6 +65,7 @@ import { PerformanceLab } from './PerformanceLab';
 import { MicrophoneInputTest } from './MicrophoneInputTest';
 import { MeetingDiarizationSettings } from './MeetingDiarizationSettings';
 import { SmartAutoStopSettings } from './SmartAutoStopSettings';
+import { StreamingVadSettings } from './StreamingVadSettings';
 import { OverlayCalibrationControl } from './OverlayCalibrationControl';
 import { SettingsSection } from './SettingsSection';
 import { SettingsBranch } from './SettingsBranch';
@@ -1194,11 +1195,10 @@ export const SettingsPanel = memo(function SettingsPanel({
               isRecording={isRecording}
               onEnabledChange={(smartAutoStopEnabled) => onUpdateSettings({ smartAutoStopEnabled })}
             />
-            <SettingToggle
-              targetId="streaming-pipeline" title="Streaming speech detection (experimental)"
-              description="Find speech while you record so stopping is faster on long dictations. Downloads a 2.3 MB model on first use; applies to the next recording."
-              checked={settings.streamingPipelineEnabled} defaultChecked={DEFAULT_SETTINGS.streamingPipelineEnabled}
-              onChange={() => onUpdateSettings({ streamingPipelineEnabled: !settings.streamingPipelineEnabled })}
+            <StreamingVadSettings
+              enabled={settings.streamingPipelineEnabled}
+              isRecording={isRecording}
+              onEnabledChange={(streamingPipelineEnabled) => onUpdateSettings({ streamingPipelineEnabled })}
             />
             </SettingsDisclosure>
             </SettingsGroup>

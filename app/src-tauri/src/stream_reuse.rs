@@ -170,6 +170,7 @@ pub(crate) struct StreamReuse {
 }
 
 /// A piece to decode: overlap audio followed by the new segments' audio.
+#[derive(Clone)]
 pub(crate) struct CommitPlan {
     id: u64,
     first: usize,
@@ -204,7 +205,7 @@ pub(crate) enum Plan {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Committed {
-    Committed,
+    Stored,
     /// Too few new words: wait for a later cut instead of committing.
     Deferred,
     /// The session ended (see [`Reason`]) or was not this recording's.
@@ -379,7 +380,7 @@ impl StreamReuse {
         self.committed_bounds.extend_from_slice(&plan.segments);
         self.floor = plan.last + 1;
         self.pieces += 1;
-        Committed::Committed
+        Committed::Stored
     }
 
     /// Consume this recording's session once, at Stop. `final_bounds` are the

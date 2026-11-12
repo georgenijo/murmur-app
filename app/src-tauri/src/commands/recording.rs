@@ -2816,10 +2816,11 @@ fn take_stream_reuse_plan(
     {
         std::thread::yield_now();
     }
-    let session = app_state
-        .stream_reuse
-        .lock_or_recover()
-        .take_final(recording_id, final_bounds, filtered);
+    let session =
+        app_state
+            .stream_reuse
+            .lock_or_recover()
+            .take_final(recording_id, final_bounds, filtered);
     if app_state.recording_id.load(Ordering::SeqCst) != recording_id
         || app_state.is_cancelled(recording_id)
     {
@@ -2977,23 +2978,22 @@ async fn run_transcription_pipeline(
                 let samples_owned = samples.to_vec();
                 // Streaming setting (frozen at recording start): take this
                 // recording's incremental VAD; the batch VAD is the fallback.
-                let stream_handoff = transcription
-                    .streaming_pipeline_enabled
-                    .then(|| app_state.vad_stream.take(recording_id));
+                let streaming = transcription.streaming_pipeline_enabled;
+                let stream_handoff = streaming
+                    .then(|| app_state.vad_stream.take(recording_id))
+                    .flatten();
                 let vad_queued_at = std::time::Instant::now();
                 let vad_result = match tokio::task::spawn_blocking(move || {
                     let queue_us = micros(vad_queued_at);
-                    let result = match stream_handoff {
-                        Some(handoff) => crate::vad_stream::filter_speech_or_batch_with_bounds(
-                            handoff,
-                            recording_id,
-                            &vad_path_str,
-                            &samples_owned,
-                            vad_threshold,
-                        ),
-                        None => vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold)
-                            .map(|result| (result, None)),
-                    };
+                    let (result, _outcome, bounds) = crate::vad_stream::stop_vad(
+                        streaming,
+                        stream_handoff,
+                        recording_id,
+                        &samples_owned,
+                        crate::vad_stream::SegmentParams::murmur(vad_threshold),
+                        || vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold),
+                    );
+                    let result = result.map(|result| (result, bounds));
                     (result, queue_us)
                 })
                 .await
@@ -4306,22 +4306,21 @@ pub async fn configure_dictation(
         dictation.homophone_context_enabled = v;
     }
 
-    // Streaming setting (E1 incremental VAD). Turning it on fetches the small
-    // pinned VAD model in the background; turning it off releases the session.
-    // A recording already in flight keeps the value frozen in its context.
+    // Streaming setting (E1 incremental VAD). Applies to the next recording.
+    // Configure runs at every launch and settings change, so it never fetches
+    // the model: the toggle's own Download/Retry actions do, on user request.
+    // The session is released on a blocking worker, not under this lock.
     if let Some(v) = options
         .get("streamingPipelineEnabled")
         .and_then(|v| v.as_bool())
     {
         let was_enabled = std::mem::replace(&mut dictation.streaming_pipeline_enabled, v);
-        if v && !was_enabled && !crate::vad_stream::model_installed() {
-            tauri::async_runtime::spawn(async {
-                if let Err(error) = crate::vad_stream::ensure_model().await {
-                    tracing::warn!(target: "system", error = %error, "streaming VAD model download failed");
-                }
-            });
-        } else if !v && was_enabled {
-            crate::vad_stream::unload();
+        if was_enabled && !v {
+            // Fire and forget: `unload` takes the session lock, which must
+            // never be waited on while the dictation lock is held.
+            drop(tauri::async_runtime::spawn_blocking(
+                crate::vad_stream::unload,
+            ));
         }
     }
 
@@ -8050,63 +8049,174 @@ pub(crate) mod tests {
         assert_eq!(parse_writing_style(None), None);
     }
 
+    /// A reuse session with two committed pieces over synthetic PCM, and the
+    /// final VAD's kept audio for it. Segments are (A, B, C) in a 14 s clip.
+    fn two_piece_reuse(complete: bool) -> (crate::stream_reuse::FinalPlan, Vec<f32>) {
+        use crate::stream_reuse::{Committed, Plan, StreamReuse};
+        use crate::vad_stream::StreamSnapshot;
+        const A: (usize, usize) = (8_000, 72_000);
+        const B: (usize, usize) = (88_000, 152_000);
+        const C: (usize, usize) = (168_000, 184_000);
+        let raw: Vec<f32> = (0..16_000 * 14).map(|i| (i as f32 * 0.37).sin()).collect();
+        let mut reuse = StreamReuse::default();
+        reuse.begin(1);
+        let mut texts = [
+            "First stable segment.",
+            "First stable segment. Next stable segment.",
+        ]
+        .into_iter();
+        for segments in [vec![A], vec![A, B]] {
+            let scored = segments.last().unwrap().1 + 9_600;
+            let Plan::Commit(plan) = reuse.plan(
+                1,
+                &StreamSnapshot {
+                    segments,
+                    scored_samples: scored,
+                },
+            ) else {
+                panic!("expected a piece");
+            };
+            let piece = plan.piece(&raw[plan.raw_start..]).unwrap();
+            assert_eq!(
+                reuse.commit(1, plan, piece, texts.next().unwrap()),
+                Committed::Stored
+            );
+        }
+        let bounds: Vec<_> = if complete { vec![A, B] } else { vec![A, B, C] };
+        let filtered: Vec<f32> = bounds
+            .iter()
+            .flat_map(|&(start, end)| raw[start..end].iter().copied())
+            .collect();
+        (
+            reuse.take_final(1, Some(&bounds), &filtered).unwrap(),
+            filtered,
+        )
+    }
+
     #[test]
-    #[cfg(feature = "preview-decode-reuse")]
     fn final_reuse_is_authoritative_or_falls_back_to_the_identical_whole_clip() {
-        let samples = crate::preview_pause::tests::utterance(
-            &[(4_000, 2_000), (4_000, 2_000), (2_000, 0)],
-            -70.0,
-        );
         let settings = dictation_context::TranscriptionSettings {
             model_name: transcriber::COREML_MODEL_NAME.into(),
             language: "auto".into(),
-            vad_sensitivity: 0,
+            vad_sensitivity: 50,
             prompt: None,
             smart_punctuation: true,
-            streaming_pipeline_enabled: false,
+            streaming_pipeline_enabled: true,
         };
         for tail in [
             "Next stable segment. Tail retained exactly.",
             "Next stable segment, Tail retained exactly.",
+            "Next stable segment.",
             "",
             "__test_decode_failure__",
         ] {
-            let mut reuse = crate::preview_reuse::PreviewReuse::default();
-            reuse.begin(1);
-            let range = reuse.plan(1, &samples[..6 * 16_000]).unwrap();
-            reuse.commit(1, range, &samples, "First stable segment.");
-            let range = reuse.plan(1, &samples[..12 * 16_000]).unwrap();
-            reuse.commit(
-                1,
-                range,
-                &samples,
-                "First stable segment. Next stable segment.",
-            );
-            let plan = reuse.take_final(1, &samples).unwrap();
+            let (plan, filtered) = two_piece_reuse(false);
+            let tail_len = filtered.len() - plan.start;
             let mut backend = RetryTestBackend::new(&[tail, "Whole clip authoritative result."]);
             let result = decode_final_transcript(
                 &mut backend,
                 &settings,
-                &samples,
-                &samples,
-                false,
-                Some(&plan),
+                &filtered,
+                &filtered,
+                true,
+                Ok(Some(plan)),
             )
             .unwrap();
+            let outcome = result.reuse.expect("a decision was taken");
             if tail == "Next stable segment. Tail retained exactly." {
                 assert_eq!(
-                    result.text,
+                    result.attempt.text,
                     "First stable segment. Next stable segment. Tail retained exactly."
                 );
-                assert_eq!(backend.sample_counts, [samples.len() - 68_800]);
+                assert_eq!(backend.sample_counts, [tail_len]);
+                assert_eq!(outcome.code, "reused");
+                assert_eq!(outcome.decoded_ms, (tail_len / 16) as u64);
             } else {
-                assert_eq!(result.text, "Whole clip authoritative result.");
+                assert_eq!(result.attempt.text, "Whole clip authoritative result.");
+                assert_eq!(backend.sample_counts, [tail_len, filtered.len()]);
                 assert_eq!(
-                    backend.sample_counts,
-                    [samples.len() - 68_800, samples.len()]
+                    outcome.code,
+                    if tail == "__test_decode_failure__" {
+                        "tail_decode_error"
+                    } else {
+                        "stitch_mismatch"
+                    }
                 );
             }
         }
+    }
+
+    #[test]
+    fn committed_pieces_covering_all_kept_audio_decode_nothing_at_stop() {
+        let settings = dictation_context::TranscriptionSettings {
+            model_name: transcriber::COREML_MODEL_NAME.into(),
+            language: "auto".into(),
+            vad_sensitivity: 50,
+            prompt: None,
+            smart_punctuation: true,
+            streaming_pipeline_enabled: true,
+        };
+        let (plan, filtered) = two_piece_reuse(true);
+        let mut backend = RetryTestBackend::new(&[]);
+        let result = decode_final_transcript(
+            &mut backend,
+            &settings,
+            &filtered,
+            &filtered,
+            true,
+            Ok(Some(plan)),
+        )
+        .unwrap();
+        assert_eq!(
+            result.attempt.text,
+            "First stable segment. Next stable segment."
+        );
+        assert!(backend.sample_counts.is_empty());
+        assert_eq!(result.reuse.unwrap().decoded_ms, 0);
+    }
+
+    #[test]
+    fn a_refused_reuse_plan_runs_the_unchanged_whole_clip_decode_once() {
+        let settings = dictation_context::TranscriptionSettings {
+            model_name: transcriber::COREML_MODEL_NAME.into(),
+            language: "auto".into(),
+            vad_sensitivity: 50,
+            prompt: None,
+            smart_punctuation: true,
+            streaming_pipeline_enabled: true,
+        };
+        let filtered = vec![0.1; 32_000];
+        for reason in [
+            crate::stream_reuse::Reason::BoundsMismatch,
+            crate::stream_reuse::Reason::Superseded,
+            crate::stream_reuse::Reason::VadNotIncremental,
+        ] {
+            let mut backend = RetryTestBackend::new(&["Whole clip authoritative result."]);
+            let result = decode_final_transcript(
+                &mut backend,
+                &settings,
+                &filtered,
+                &filtered,
+                true,
+                Err(reason),
+            )
+            .unwrap();
+            assert_eq!(result.attempt.text, "Whole clip authoritative result.");
+            assert_eq!(backend.sample_counts, [32_000]);
+            assert_eq!(result.reuse.unwrap().code, reason.as_str());
+        }
+        // Setting off: no decision is reported at all.
+        let mut backend = RetryTestBackend::new(&["Whole clip authoritative result."]);
+        let result = decode_final_transcript(
+            &mut backend,
+            &settings,
+            &filtered,
+            &filtered,
+            true,
+            Ok(None),
+        )
+        .unwrap();
+        assert!(result.reuse.is_none());
     }
 
     #[test]
