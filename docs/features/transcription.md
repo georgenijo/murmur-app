@@ -662,7 +662,7 @@ old generation. No partial is copied, pasted, persisted, exported or logged.
 
 1. Capture app identity, matched profile, effective settings, vocabulary version, repository-backed commands, and deny-by-default context permissions at recording start. Built-in/scanned developer terms are included only when the matching profile explicitly selects Code / technical or Local IDE project context.
 2. Confirm the snapshot's model preparation completed (or load synchronously as a fallback)
-3. Run one full-buffer VAD and backend transcription pass with the same snapshot
+3. Run one full-buffer VAD and backend transcription pass with the same snapshot (with `streamingPipelineEnabled`, the VAD is finished from audio scored during recording; see [Streaming speech detection](#experimental-streaming-speech-detection-e1))
 4. Run the backend-neutral transcript transformation pipeline from the snapshot's stage settings and resources
 5. Persist optional file output and inject text (clipboard + optional paste) from the snapshot on the main thread
 6. Reset status to Idle and clear only the matching recording generation's snapshot
@@ -824,6 +824,71 @@ The ignored `first_word_standby_sweep` test renders synthetic `say -o` WAVs to
 disk, models a 204 ms cold start, and compares first-word recovery at speech
 onsets 0, 25, 50, and 100 ms after press. It does not measure live microphone
 startup or play through a virtual audio device.
+
+### Experimental streaming speech detection (E1)
+
+`streamingPipelineEnabled` (Settings → Recording → Advanced, "Streaming speech
+detection (experimental)") is **off by default**. It is the one switch for the
+streaming speed-up work: today it enables an incremental Silero VAD, and the
+decode-while-speaking work (E2) will sit under the same setting. It is a
+settings-file/UI key like the other `Settings` booleans (`app/src/lib/settings.ts`),
+sent to Rust through `configure_dictation` as `streamingPipelineEnabled` and frozen
+per recording into `TranscriptionSettings.streaming_pipeline_enabled` at
+recording start. Changing it mid-recording applies to the next recording.
+
+**Why.** The batch VAD (`vad::filter_speech`, whisper.cpp's ggml Silero) scores the
+whole clip after Stop, so its cost grows with the recording (about 217 ms of a
+511 ms stop on a 114 s dictation). With the setting on, a dedicated thread
+scores audio as it arrives and Stop scores only the unfinished tail.
+
+**How** (`vad_stream.rs`):
+
+- `start` (called where the live-preview ticker starts) resets the per-recording
+  `StreamSlot` in `AppState.vad_stream` and spawns the `murmur-vad-stream` thread.
+  Every poll (200 ms) asks the audio supervisor for only the samples since the last
+  one (`audio_lifecycle::peek_dictation_samples_since`, equal to that slice of the
+  whole-clip resample), scores whole 512-sample windows through the pinned Silero
+  v5.1.2 ONNX model on the shared ONNX Runtime (`smart_turn::init_runtime`), and
+  keeps the LSTM state. Nothing runs on the real-time audio callback.
+- Every method on the slot is keyed by recording id: a different, stopped or
+  superseded recording never reads or changes the state, `begin` replaces it, and
+  `AppState::clear_active_context` clears it.
+- At Stop, `run_transcription_pipeline` takes this recording's stream, verifies the
+  final PCM extends what was scored (length and a strided fingerprint of the
+  prefix), scores the tail (zero-padding the last window like ggml), and segments
+  with `segments_from_probs`, a line-for-line port of whisper.cpp's
+  `whisper_vad_segments_from_probs` for Murmur's parameters. The kept-speech PCM is
+  built by the same `vad::speech_from_segments` helper as the batch path.
+- **Any doubt uses the batch VAD**: model not installed or failing to load, a
+  scoring error, a reset or shrunken capture buffer, a length or prefix mismatch,
+  no stream for the recording, and also a "no speech" verdict (a silent verdict
+  ends the dictation, so the batch VAD confirms it). The streaming result never
+  drops speech the batch path would have kept in the measured runs below, and when
+  it disagrees it errs toward keeping audio.
+- Content-free telemetry: `pipeline.vad_stream_outcome` with `outcome`
+  (`used`, `no_speech_recheck`, or a fallback reason), `tail_windows`,
+  `total_windows`, `finish_ms`. The existing `vad_ms` stage timing still measures
+  the whole VAD stage.
+
+**Model.** `silero_vad_v5.1.2.onnx` (MIT, 2,327,524 bytes) is pinned by commit URL,
+size and SHA-256, downloaded to `models/silero-vad-onnx/<sha256>/` the first time
+the setting is turned on (or on a recording while it is on and the model is
+missing; that recording uses the batch VAD), and verified before the session
+loads. The ONNX session is created lazily by the first streaming recording and
+released when the setting is turned off.
+
+**Not bit-identical to the batch VAD.** The batch path runs a ggml port with F16
+weights, so per-window probabilities differ slightly (largest observed difference
+about 0.025, typically below 0.006) and a boundary can move by one or two windows
+on a minority of clips. Segmentation itself is exact: on the batch model's own
+probabilities the port reproduces whisper.cpp's segments sample for sample. The
+`differential_incremental_vs_batch_vad` test (`cargo test --lib
+differential_incremental_vs_batch_vad -- --ignored --nocapture`, with
+`MURMUR_E1_ONNX`, `MURMUR_E1_EXTRA_WAV_DIR` and `MURMUR_E1_DECODE=1`) reports, per
+clip and sensitivity, the segment bounds, the maximum boundary shift, whether any
+batch-kept speech was lost, and (for clips whose kept audio differs) whether the
+decoded text changed. It uses only the repository's `bench/audio` and local
+synthetic audio.
 
 ### Experimental final decode reuse (#830)
 

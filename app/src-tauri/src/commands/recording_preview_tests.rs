@@ -145,6 +145,7 @@ fn disabled_reuse_passes_identical_pcm_settings_and_output_to_whole_clip_decoder
         vad_sensitivity: 2,
         prompt: Some("Synthetic vocabulary".into()),
         smart_punctuation: false,
+        streaming_pipeline_enabled: false,
     };
     for fail_first in [false, true] {
         let mut baseline = ExactDecoder {
@@ -200,6 +201,7 @@ fn synthetic_preview_reuse_probe() {
         vad_sensitivity: 0,
         prompt: None,
         smart_punctuation: true,
+        streaming_pipeline_enabled: false,
     };
     let mut rows = Vec::new();
     for fixture in manifest.as_array().unwrap() {

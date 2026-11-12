@@ -269,6 +269,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "pipeline.dictation_failed" => Some("pipeline.dictation_failed"),
         "pipeline.dictation_partial_tick" => Some("pipeline.dictation_partial_tick"),
         "pipeline.preview_vad_disagreement" => Some("pipeline.preview_vad_disagreement"),
+        "pipeline.vad_stream_outcome" => Some("pipeline.vad_stream_outcome"),
         "pipeline.dictation_preview_presentation" => {
             Some("pipeline.dictation_preview_presentation")
         }
@@ -493,6 +494,35 @@ fn sanitize_dictation_partial_tick_event(data: &mut serde_json::Map<String, serd
                     | "backend_unavailable"
                     | "decode_error"
                     | "worker_failed"
+            )
+        }),
+        _ => false,
+    });
+}
+
+fn is_vad_stream_outcome_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("pipeline.vad_stream_outcome")
+}
+
+/// Workstream E1: numbers and an enum only; never audio or text.
+fn sanitize_vad_stream_outcome_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    data.retain(|key, value| match key.as_str() {
+        "event_code" => value.as_str() == Some("pipeline.vad_stream_outcome"),
+        "recording_id" => value.as_u64().is_some_and(|value| value > 0),
+        "tail_windows" | "total_windows" => value.as_u64().is_some_and(|value| value <= 10_000_000),
+        "finish_ms" => value.as_u64().is_some_and(|value| value <= 3_600_000),
+        "outcome" => value.as_str().is_some_and(|value| {
+            matches!(
+                value,
+                "used"
+                    | "no_speech_recheck"
+                    | "not_started"
+                    | "model_load"
+                    | "inference"
+                    | "buffer_reset"
+                    | "length_mismatch"
+                    | "prefix_mismatch"
             )
         }),
         _ => false,
@@ -1683,10 +1713,11 @@ fn sanitized_summary(
         == Some("pipeline.delivery_target_verified")
     {
         "Dictation delivery target verification".to_string()
-    } else if data
-        .as_object()
-        .is_some_and(|map| is_main_thread_watch_event(map) || is_dictation_stage_gaps_event(map))
-    {
+    } else if data.as_object().is_some_and(|map| {
+        is_main_thread_watch_event(map)
+            || is_dictation_stage_gaps_event(map)
+            || is_vad_stream_outcome_event(map)
+    }) {
         // Constant in every build; the useful facts are the typed fields.
         data["event_code"]
             .as_str()
@@ -2019,6 +2050,10 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     }
     if is_dictation_partial_tick_event(obj) {
         sanitize_dictation_partial_tick_event(obj);
+        return;
+    }
+    if is_vad_stream_outcome_event(obj) {
+        sanitize_vad_stream_outcome_event(obj);
         return;
     }
     if is_dictation_preview_presentation_event(obj) {
@@ -3849,6 +3884,38 @@ mod tests {
                     serde_json::json!({"event_code": code, owner: 41, "sample_count": 62_050})
                 );
             }
+        }
+    }
+
+    #[test]
+    fn vad_stream_outcome_schema_is_exact_and_content_free_in_every_build() {
+        for debug_build in [true, false] {
+            for outcome in ["used", "no_speech_recheck", "prefix_mismatch", "model_load"] {
+                let mut data = serde_json::json!({
+                    "event_code": "pipeline.vad_stream_outcome",
+                    "recording_id": 9,
+                    "outcome": outcome,
+                    "tail_windows": 8,
+                    "total_windows": 3_750,
+                    "finish_ms": 2,
+                    "text": "SENTINEL_TRANSCRIPT",
+                    "path": "/Users/private/project"
+                });
+                sanitize_event_data("pipeline", &mut data, debug_build);
+                assert_eq!(data["outcome"], outcome);
+                assert_eq!(data["tail_windows"], 8);
+                assert_eq!(data["total_windows"], 3_750);
+                assert_eq!(data["finish_ms"], 2);
+                assert_eq!(data.as_object().unwrap().len(), 6);
+                assert!(!serde_json::to_string(&data).unwrap().contains("SENTINEL"));
+            }
+            let mut free_outcome = serde_json::json!({
+                "event_code": "pipeline.vad_stream_outcome",
+                "recording_id": 9,
+                "outcome": "SENTINEL",
+            });
+            sanitize_event_data("pipeline", &mut free_outcome, debug_build);
+            assert!(free_outcome.get("outcome").is_none());
         }
     }
 

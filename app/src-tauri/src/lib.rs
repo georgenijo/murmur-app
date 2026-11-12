@@ -84,6 +84,7 @@ pub mod telemetry;
 pub mod transcriber;
 mod transcript_transform;
 mod vad;
+mod vad_stream;
 mod vocab;
 mod vocabulary_alias;
 mod window_state;

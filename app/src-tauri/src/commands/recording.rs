@@ -281,6 +281,23 @@ fn spawn_dictation_partial_ticker(
     }));
 }
 
+/// Start the incremental VAD (streaming setting, workstream E1) for a recording
+/// that has just become `Recording`. Reads only the context frozen at recording
+/// start; the batch VAD at Stop stays the fallback for every failure.
+fn spawn_vad_stream(app: tauri::AppHandle, recording_id: u64) {
+    let Some(context) = app.state::<State>().app_state.active_context(recording_id) else {
+        return;
+    };
+    let transcription = &context.transcription;
+    if !transcription.streaming_pipeline_enabled
+        || !vad::is_enabled(transcription.vad_sensitivity)
+        || !vad::vad_model_path().is_some_and(|path| path.exists())
+    {
+        return;
+    }
+    crate::vad_stream::start(app, recording_id, dictation_partial_is_current);
+}
+
 async fn decode_one_dictation_partial(
     app: &tauri::AppHandle,
     recording_id: u64,
@@ -2736,13 +2753,25 @@ async fn run_transcription_pipeline(
             Some(vad_path) if vad_path.exists() => {
                 let vad_path_str = vad_path.to_string_lossy().to_string();
                 let samples_owned = samples.to_vec();
+                // Streaming setting (frozen at recording start): take this
+                // recording's incremental VAD; the batch VAD is the fallback.
+                let stream_handoff = transcription
+                    .streaming_pipeline_enabled
+                    .then(|| app_state.vad_stream.take(recording_id));
                 let vad_queued_at = std::time::Instant::now();
                 let vad_result = match tokio::task::spawn_blocking(move || {
                     let queue_us = micros(vad_queued_at);
-                    (
-                        vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold),
-                        queue_us,
-                    )
+                    let result = match stream_handoff {
+                        Some(handoff) => crate::vad_stream::filter_speech_or_batch(
+                            handoff,
+                            recording_id,
+                            &vad_path_str,
+                            &samples_owned,
+                            vad_threshold,
+                        ),
+                        None => vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold),
+                    };
+                    (result, queue_us)
                 })
                 .await
                 {
@@ -4054,6 +4083,25 @@ pub async fn configure_dictation(
         dictation.homophone_context_enabled = v;
     }
 
+    // Streaming setting (E1 incremental VAD). Turning it on fetches the small
+    // pinned VAD model in the background; turning it off releases the session.
+    // A recording already in flight keeps the value frozen in its context.
+    if let Some(v) = options
+        .get("streamingPipelineEnabled")
+        .and_then(|v| v.as_bool())
+    {
+        let was_enabled = std::mem::replace(&mut dictation.streaming_pipeline_enabled, v);
+        if v && !was_enabled && !crate::vad_stream::model_installed() {
+            tauri::async_runtime::spawn(async {
+                if let Err(error) = crate::vad_stream::ensure_model().await {
+                    tracing::warn!(target: "system", error = %error, "streaming VAD model download failed");
+                }
+            });
+        } else if !v && was_enabled {
+            crate::vad_stream::unload();
+        }
+    }
+
     // Rebuild the correction matcher from the (now-updated) unified vocab +
     // correction settings. Built here on settings-change, never per-utterance.
     rebuild_correction_matcher(&state.app_state, &dictation);
@@ -4634,6 +4682,7 @@ pub(crate) fn handle_audio_lifecycle(
     );
     if became_ready {
         let register_app = partial_app.clone();
+        spawn_vad_stream(partial_app.clone(), recording_id);
         spawn_dictation_partial_ticker(partial_app, recording_id, move || {
             let state = register_app.state::<State>();
             let dictation = state.app_state.dictation.lock_or_recover();
@@ -5086,6 +5135,7 @@ fn publish_recording_ready_if_audio_ready(
         context_to_status_emit_ms = context_ready_at.elapsed().as_millis() as u64,
         "recording status emitted after context ready"
     );
+    spawn_vad_stream(app_handle.clone(), recording_id);
     spawn_dictation_partial_ticker(app_handle.clone(), recording_id, || {
         register_partial_ticker_locked(&state.app_state, &dictation, recording_id)
     });
@@ -7790,6 +7840,7 @@ pub(crate) mod tests {
             vad_sensitivity: 0,
             prompt: None,
             smart_punctuation: true,
+            streaming_pipeline_enabled: false,
         };
         for tail in [
             "Next stable segment. Tail retained exactly.",

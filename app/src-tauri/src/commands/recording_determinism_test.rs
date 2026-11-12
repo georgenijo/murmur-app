@@ -68,6 +68,7 @@ fn synthetic_final_decode_is_deterministic() {
         vad_sensitivity: 50,
         prompt: None,
         smart_punctuation: true,
+        streaming_pipeline_enabled: false,
     };
     let mut clips = Vec::new();
     let mut short_clips = 0;
