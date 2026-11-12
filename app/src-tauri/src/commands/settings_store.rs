@@ -136,37 +136,87 @@ fn quarantine(path: &Path, spec: BlobSpec, reason: &str) {
     }
 }
 
-/// `Ok(None)` means no usable durable copy exists, so the frontend may migrate
-/// its localStorage cache. `Err` is reserved for filesystem failures.
-fn read_blob(dir: &Path, spec: BlobSpec) -> Result<Option<String>, String> {
+/// What a file looked like when it was read: enough to tell whether the path
+/// still names the same file before a quarantine renames it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct FileIdentity {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    inode: Option<u64>,
+}
+
+fn file_identity(metadata: &std::fs::Metadata) -> FileIdentity {
+    #[cfg(unix)]
+    let inode = {
+        use std::os::unix::fs::MetadataExt;
+        Some(metadata.ino())
+    };
+    #[cfg(not(unix))]
+    let inode = None;
+    FileIdentity {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        inode,
+    }
+}
+
+enum Inspected {
+    Missing,
+    Valid(String),
+    /// The file is unusable. `identity` is the file that was rejected.
+    Rejected {
+        reason: String,
+        identity: FileIdentity,
+    },
+}
+
+/// Read and validate without renaming anything.
+fn inspect_blob(dir: &Path, spec: BlobSpec) -> Result<Inspected, String> {
     let path = blob_path(dir, spec);
     let metadata = match std::fs::metadata(&path) {
         Ok(metadata) => metadata,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Inspected::Missing),
         Err(e) => return Err(format!("Failed to read {}: {e}", spec.label)),
     };
+    let identity = file_identity(&metadata);
     if metadata.len() > spec.max_bytes as u64 {
-        quarantine(&path, spec, "over the size ceiling");
-        return Ok(None);
+        return Ok(Inspected::Rejected {
+            reason: "over the size ceiling".into(),
+            identity,
+        });
     }
 
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Inspected::Missing),
         Err(e) => return Err(format!("Failed to read {}: {e}", spec.label)),
     };
     let contents = match String::from_utf8(bytes) {
         Ok(contents) => contents,
         Err(_) => {
-            quarantine(&path, spec, "not valid UTF-8");
-            return Ok(None);
+            return Ok(Inspected::Rejected {
+                reason: "not valid UTF-8".into(),
+                identity,
+            })
         }
     };
-    if let Err(reason) = validate_blob(spec, &contents) {
-        quarantine(&path, spec, &reason);
-        return Ok(None);
+    match validate_blob(spec, &contents) {
+        Ok(()) => Ok(Inspected::Valid(contents)),
+        Err(reason) => Ok(Inspected::Rejected { reason, identity }),
     }
-    Ok(Some(contents))
+}
+
+/// `Ok(None)` means no usable durable copy exists, so the frontend may migrate
+/// its localStorage cache. `Err` is reserved for filesystem failures.
+fn read_blob(dir: &Path, spec: BlobSpec) -> Result<Option<String>, String> {
+    match inspect_blob(dir, spec)? {
+        Inspected::Missing => Ok(None),
+        Inspected::Valid(contents) => Ok(Some(contents)),
+        Inspected::Rejected { reason, .. } => {
+            quarantine(&blob_path(dir, spec), spec, &reason);
+            Ok(None)
+        }
+    }
 }
 
 fn write_blob(dir: &Path, spec: BlobSpec, blob: &str) -> Result<(), String> {
@@ -223,9 +273,61 @@ pub(crate) fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// Runs between a rejected read and the quarantine decision, so a test can
+/// publish a fresh file in exactly that window.
+#[cfg(test)]
+static BEFORE_QUARANTINE: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None);
+
+/// Read and validate without holding the writer lock, so a main-thread save
+/// never waits behind a large background read. Only a rejected file takes the
+/// lock, and only to quarantine it: a corrupt file is quarantined by renaming
+/// its path, so a read that raced a concurrent publish must not rename the
+/// fresh file. Under the lock the path is checked against the identity of the
+/// rejected file, and a path that changed is read again under the lock.
+fn read_blob_serialized(dir: &Path, spec: BlobSpec) -> Result<Option<String>, String> {
+    let (reason, rejected) = match inspect_blob(dir, spec)? {
+        Inspected::Missing => return Ok(None),
+        Inspected::Valid(contents) => return Ok(Some(contents)),
+        Inspected::Rejected { reason, identity } => (reason, identity),
+    };
+    #[cfg(test)]
+    if let Some(hook) = BEFORE_QUARANTINE.lock_or_recover().as_ref() {
+        hook();
+    }
+    let _guard = WRITE_LOCK.lock_or_recover();
+    let path = blob_path(dir, spec);
+    match std::fs::metadata(&path) {
+        Ok(current) if file_identity(&current) == rejected => {
+            quarantine(&path, spec, &reason);
+            Ok(None)
+        }
+        // Replaced or removed since it was rejected: the writers are excluded
+        // now, so one locked read gives the authoritative answer.
+        _ => read_blob(dir, spec),
+    }
+}
+
+/// Run a durable-blob load off the main thread. Settings, history and stats are
+/// read by several windows at launch, and a large history file must not stall
+/// the first frame.
+async fn load_blob_off_main(
+    app: tauri::AppHandle,
+    spec: BlobSpec,
+) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || read_blob_serialized(&data_dir(&app)?, spec))
+        .await
+        .map_err(|_| format!("{} could not be read.", spec.label))?
+}
+
+/// Synchronous settings read for startup code that already runs before the
+/// first frame is requested (see `launch::prepare`).
+pub(crate) fn read_settings_blob(app: &tauri::AppHandle) -> Result<Option<String>, String> {
+    read_blob_serialized(&data_dir(app)?, SETTINGS)
+}
+
 #[tauri::command]
-pub fn load_settings_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    read_blob(&data_dir(&app)?, SETTINGS)
+pub async fn load_settings_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    load_blob_off_main(app, SETTINGS).await
 }
 
 #[tauri::command]
@@ -313,8 +415,8 @@ pub fn patch_overlay_setting(
 }
 
 #[tauri::command]
-pub fn load_history_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    read_blob(&data_dir(&app)?, HISTORY)
+pub async fn load_history_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    load_blob_off_main(app, HISTORY).await
 }
 
 #[tauri::command]
@@ -328,8 +430,8 @@ pub fn clear_history_blob(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn load_stats_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    read_blob(&data_dir(&app)?, STATS)
+pub async fn load_stats_blob(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    load_blob_off_main(app, STATS).await
 }
 
 #[tauri::command]
@@ -579,6 +681,76 @@ mod tests {
         assert!(write_blob(&dir, SETTINGS, "{}").is_err());
         assert!(!blob_path(&dir, SETTINGS).exists());
         assert_eq!(entries(&dir).len(), 1, "unexpected leftovers");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_read_of_a_corrupt_file_never_quarantines_a_fresh_file_published_meanwhile() {
+        let dir = temp_dir("corrupt_then_published");
+        std::fs::write(blob_path(&dir, SETTINGS), "{ not json").unwrap();
+        let publish_dir = dir.clone();
+        // The reader has rejected the corrupt file and is about to quarantine
+        // it; a writer publishes a fresh settings file in exactly that window.
+        *BEFORE_QUARANTINE.lock_or_recover() = Some(Box::new(move || {
+            let dir = publish_dir.clone();
+            std::thread::spawn(move || {
+                write_blob(&dir, SETTINGS, r#"{"generation":42}"#).unwrap();
+            })
+            .join()
+            .unwrap();
+        }));
+        let result = read_blob_serialized(&dir, SETTINGS);
+        *BEFORE_QUARANTINE.lock_or_recover() = None;
+        assert_eq!(
+            result.unwrap().as_deref(),
+            Some(r#"{"generation":42}"#),
+            "the fresh publish must be what the reader returns"
+        );
+        assert_eq!(
+            read_blob(&dir, SETTINGS).unwrap().as_deref(),
+            Some(r#"{"generation":42}"#),
+            "the published generation must survive"
+        );
+        assert!(
+            entries(&dir).iter().all(|name| !name.contains(".corrupt-")),
+            "the fresh file was quarantined: {:?}",
+            entries(&dir)
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_corrupt_file_that_is_still_corrupt_is_quarantined_once() {
+        let dir = temp_dir("corrupt_still_corrupt");
+        std::fs::write(blob_path(&dir, SETTINGS), "{ not json").unwrap();
+        assert_eq!(read_blob_serialized(&dir, SETTINGS).unwrap(), None);
+        assert!(!blob_path(&dir, SETTINGS).exists());
+        assert_eq!(
+            entries(&dir)
+                .iter()
+                .filter(|name| name.contains(".corrupt-"))
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_save_does_not_wait_for_an_unlocked_read() {
+        let dir = temp_dir("save_not_blocked");
+        write_blob(&dir, SETTINGS, r#"{"generation":1}"#).unwrap();
+        let guard = WRITE_LOCK.lock_or_recover();
+        // A valid read takes no lock, so it completes while a writer holds it.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let reader_dir = dir.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(read_blob_serialized(&reader_dir, SETTINGS));
+        });
+        let blob = receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("a valid read must not wait for the writer lock");
+        assert_eq!(blob.unwrap().as_deref(), Some(r#"{"generation":1}"#));
+        drop(guard);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

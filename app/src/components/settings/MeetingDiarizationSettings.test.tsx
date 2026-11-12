@@ -72,6 +72,24 @@ describe('MeetingDiarizationSettings', () => {
     expect(container.textContent).toContain('No cross-meeting voice profiles');
   });
 
+  it('shows a checking state and disables Download until the status read resolves', async () => {
+    let resolveStatus: ((status: unknown) => void) | null = null;
+    meetingMocks.getStatus.mockImplementation(() => new Promise((resolve) => {
+      resolveStatus = resolve;
+    }));
+    await act(async () => root.render(
+      <MeetingDiarizationSettings enabled onEnabledChange={() => {}} />,
+    ));
+    expect(container.textContent).toContain('Checking this Mac…');
+    const pending = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Download model') as HTMLButtonElement;
+    expect(pending.disabled).toBe(true);
+    await act(async () => resolveStatus?.({ supported: true, installed: false, installing: false, bytes: 21_599_417 }));
+    expect(container.textContent).not.toContain('Checking this Mac…');
+    expect(container.textContent).toContain('Optional');
+    const ready = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Download model') as HTMLButtonElement;
+    expect(ready.disabled).toBe(false);
+  });
+
   it('folds the model, disclosure and status errors with its parent', async () => {
     meetingMocks.getStatus.mockRejectedValue(new Error('Model status unavailable'));
     const onEnabledChange = vi.fn();
