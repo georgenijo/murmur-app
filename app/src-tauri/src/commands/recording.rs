@@ -5712,6 +5712,9 @@ async fn stop_native_recording_for(
     let stop_stamp = crate::shadow_measurement::take_for(rid, stop_entered_at);
     // A matching rdev release takes precedence even if another stop arrived
     // through the webview at the same time. Unknown sources retain speech.
+    // Taken from the trigger as requested: `resolve` turns any stamped stop into
+    // a hold release, so a stale stamp must be ruled out before it.
+    let tail_anchor = stop_trigger.tail_anchor(hotkey_release);
     let stop_trigger = stop_trigger.resolve(hotkey_release);
     let stop_stamp = attributable_stop_stamp(stop_trigger, stop_stamp);
     if status == DictationStatus::Starting {
@@ -5791,7 +5794,7 @@ async fn stop_native_recording_for(
     let samples = if let Some(capture) = interrupted_capture {
         capture.samples
     } else {
-        audio_lifecycle::stop_dictation_recording(rid, stop_trigger).map_err(|e| {
+        audio_lifecycle::stop_dictation_recording(rid, stop_trigger, tail_anchor).map_err(|e| {
             emit_dictation_terminal(
                 &state,
                 rid,

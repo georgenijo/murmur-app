@@ -319,8 +319,9 @@ start-to-first-retained-PCM, total readiness, confirmed stop-to-helper-exit,
 fallback attempt/result, and stable failure evidence. Readiness and stop/error
 checkpoints persist off the capture path. Completion records whether the actual
 retained sample array was empty; a missing measurement never becomes zero.
-The `audio.stop_tail_applied` log records the accepted stop trigger and applied
-`release_tail_ms` (0 for explicit toggle stops with standby disabled; 50 for
+The `audio.stop_tail_applied` log records the accepted stop trigger, the applied
+`release_tail_ms`, whether the tail was anchored to the key-release instant, and
+the `tail_remaining_ms` at acceptance (0 for explicit toggle stops with standby disabled; 50 for
 all standby stops, held-key releases and conservative overlay/auto-stop/unknown
 sources). The supervisor owns that tail;
 helper stop-to-exit timing starts when the worker receives Stop and excludes it.

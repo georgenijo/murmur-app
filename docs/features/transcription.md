@@ -351,7 +351,20 @@ Transcription processing is local. Network access occurs for model setup and may
   typed `DictationStopTrigger` selects a 50 ms tail for hold-to-talk releases
   and 0 ms for explicit hotkey toggle stops with standby disabled (including
   single-tap stop in double-tap mode). A same-generation native release stamp
-  takes precedence.
+  takes precedence for the tail length. For a cold hold release the tail is
+  also anchored to that stamp's key-release instant: the native stop is due
+  exactly 50 ms after the key came up, not 50 ms after the stop reached the
+  supervisor, so the release's travel through the webview, IPC, and the
+  delivery-target snapshot counts toward the tail instead of adding to it.
+  The anchor is used only when it is fresh (the stop was accepted no more than
+  50 ms after the release) and only for a caller that requested the stop as a
+  hold release (`hold_release` or the default `other` the hold-down-stop
+  handlers use; never an explicit toggle, overlay, or auto stop). The stamp is
+  matched by recording id and can be seconds old after a release whose stop
+  never arrived, so anything older, from the future, or on a warm-standby stop
+  (whose live-buffer snapshot is not a helper fence and keeps the accepted-stop
+  slack) measures from the accepted stop, exactly as before: a stop is never
+  shorter than that. Audio after a fresh release is exactly 50 ms.
   Overlay, button, silence/limit auto-stop, chord stops, and legacy callers
   retain 50 ms: those triggers do not prove the last word has ended. The
   recording's start mode does not determine the stop policy, so releasing a
@@ -363,7 +376,14 @@ Transcription processing is local. Network access occurs for model setup and may
   does not prove all previously captured audio has arrived. Zero-tail
   acceleration is restricted to cold teardown, where Stop/Stopped provides
   the delivery boundary. The content-free `audio.stop_tail_applied` event records `stop_trigger`,
-  `recording_id`, `standby_enabled`, and `release_tail_ms`.
+  `recording_id`, `standby_enabled`, `release_tail_ms`, `anchored_to_release`,
+  and the `tail_remaining_ms` still to wait at acceptance.
+- The capture worker blocks on helper output rather than polling. The
+  supervisor wakes it through a `WorkerWake` handle the moment `Stop` is
+  queued, so the helper stop is not delayed by a poll interval; the helper
+  host loop likewise blocks on its control channel. Wakes carry no audio.
+  Without one the worker still times out on a short housekeeping interval, so
+  shutdown, cancellation, and helper-crash paths cannot hang.
 - On the cold teardown path (no standby handoff), after the tail the host
   sends `Stop`. The helper checks the native stream stop, flushes
   every sample left in its ring as ordinary PCM, and only then replies
