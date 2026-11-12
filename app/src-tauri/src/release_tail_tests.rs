@@ -95,6 +95,71 @@ fn stop_drain_keeps_in_flight_and_flushed_audio_through_stopped() {
 }
 
 #[test]
+fn wakes_during_the_stop_drain_never_drop_or_reorder_trailing_audio() {
+    let (sender, receiver) = mpsc::channel();
+    // The stop wakes the worker, and the wake can land between any two frames
+    // of the tail. The last word's samples must come through intact, in
+    // order, up to the exact retained count.
+    sender.send(HelperRead::Wake).unwrap();
+    sender.send(pcm(5, vec![0.1; CALLBACK_FRAMES])).unwrap();
+    sender.send(HelperRead::Wake).unwrap();
+    sender.send(HelperRead::Wake).unwrap();
+    sender.send(pcm(6, vec![0.2; CALLBACK_FRAMES])).unwrap();
+    sender.send(HelperRead::Wake).unwrap();
+    sender.send(pcm(7, vec![0.3; 100])).unwrap();
+    sender.send(HelperRead::Wake).unwrap();
+    sender
+        .send(control(ProductionHelperMessage::Stopped {
+            retained_samples: 1_124,
+        }))
+        .unwrap();
+    let mut sequence = 5;
+    let mut clip = Vec::new();
+    let outcome = read_stopping_frames(
+        &receiver,
+        Instant::now() + Duration::from_secs(1),
+        &mut sequence,
+        Some(RATE),
+        &mut |samples: &[f32]| clip.extend_from_slice(samples),
+    );
+    assert_eq!(
+        outcome,
+        StopReadOutcome::Stopped {
+            retained_samples: 1_124
+        }
+    );
+    assert_eq!(sequence, 8);
+    assert_eq!(clip.len(), 1_124);
+    assert_eq!(&clip[..CALLBACK_FRAMES], &[0.1; CALLBACK_FRAMES][..]);
+    assert_eq!(clip.last(), Some(&0.3));
+}
+
+#[test]
+fn a_wake_does_not_end_the_release_tail_early() {
+    let (sender, receiver) = mpsc::channel();
+    for sequence in 0..4 {
+        sender
+            .send(pcm(sequence, vec![0.5; CALLBACK_FRAMES]))
+            .unwrap();
+        sender.send(HelperRead::Wake).unwrap();
+    }
+    let mut sequence = 0;
+    let mut clip = Vec::new();
+    let started = Instant::now();
+    let outcome = read_stopping_frames(
+        &receiver,
+        started + Duration::from_millis(80),
+        &mut sequence,
+        Some(RATE),
+        &mut |samples: &[f32]| clip.extend_from_slice(samples),
+    );
+    assert_eq!(outcome, StopReadOutcome::Deadline);
+    assert!(started.elapsed() >= Duration::from_millis(80));
+    assert_eq!(clip.len(), 4 * CALLBACK_FRAMES);
+    drop(sender);
+}
+
+#[test]
 fn release_tail_accepts_live_audio_until_its_deadline() {
     let (sender, receiver) = mpsc::channel();
     // Queue the frames up front so a slow CI scheduler can't push one past

@@ -1478,9 +1478,15 @@ fn stamp_hold_release(handle: &tauri::AppHandle, event_type: &EventType) {
         return;
     }
     if let Some(state) = handle.try_state::<crate::State>() {
-        crate::hotkey_release::record(
-            state.app_state.recording_id.load(Ordering::SeqCst),
-            released_at,
+        let recording_id = state.app_state.recording_id.load(Ordering::SeqCst);
+        crate::hotkey_release::record(recording_id, released_at);
+        // Content-free: a generation counter only. Lets a stop that never
+        // arrived be told apart from a release that was never observed.
+        tracing::info!(
+            target: "keyboard",
+            event_code = "keyboard.hold_release_stamped",
+            recording_id,
+            "native hold release stamped"
         );
     }
 }
