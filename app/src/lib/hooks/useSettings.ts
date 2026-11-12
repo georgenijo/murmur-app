@@ -322,7 +322,7 @@ export function useSettings() {
 
     if (probePolicyChanged) scheduleProbePolicyWrite();
 
-    if ('captureStandbyEnabled' in updates || 'captureStandbySeconds' in updates || 'capturePreRollMs' in updates || 'model' in updates || 'language' in updates || 'autoPaste' in updates || 'smartDestinationEnabled' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'vocabularyEntries' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'mirrorToNotchPill' in updates || 'outputDir' in updates || 'appProfiles' in updates || 'voiceCommandsEnabled' in updates || 'cleanupEnabled' in updates || 'smartFormattingEnabled' in updates || 'cleanupRemoveFiller' in updates || 'cleanupCapitalize' in updates || 'codeVocabEnabled' in updates || 'codeVocabFolder' in updates || 'correctionEnabled' in updates || 'correctionFuzzy' in updates || 'homophoneContextEnabled' in updates) {
+    if ('captureStandbyEnabled' in updates || 'captureStandbySeconds' in updates || 'capturePreRollMs' in updates || 'model' in updates || 'language' in updates || 'autoPaste' in updates || 'smartDestinationEnabled' in updates || 'autoPasteDelayMs' in updates || 'vadSensitivity' in updates || 'idleTimeoutMinutes' in updates || 'customVocabulary' in updates || 'vocabularyEntries' in updates || 'smartPunctuation' in updates || 'saveTranscript' in updates || 'saveAudio' in updates || 'mirrorToNotchPill' in updates || 'outputDir' in updates || 'appProfiles' in updates || 'voiceCommandsEnabled' in updates || 'cleanupEnabled' in updates || 'smartFormattingEnabled' in updates || 'cleanupRemoveFiller' in updates || 'cleanupCapitalize' in updates || 'codeVocabEnabled' in updates || 'codeVocabFolder' in updates || 'correctionEnabled' in updates || 'correctionFuzzy' in updates || 'homophoneContextEnabled' in updates || 'streamingPipelineEnabled' in updates) {
       const version = ++configureVersionRef.current;
       void configure(buildConfigureOptions(newSettings), {
         onSuccess: () => { confirmConfigured(newSettings); },
@@ -360,6 +360,7 @@ export function useSettings() {
               correctionEnabled: confirmed.correctionEnabled,
               correctionFuzzy: confirmed.correctionFuzzy,
               homophoneContextEnabled: confirmed.homophoneContextEnabled,
+              streamingPipelineEnabled: confirmed.streamingPipelineEnabled,
             };
             settingsRef.current = reverted;
             setSettings(reverted);

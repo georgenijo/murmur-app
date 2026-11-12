@@ -309,6 +309,10 @@ capabilities are runtime data and are not written to localStorage.
 
 Smart Auto-Stop's optional `smart-turn-v3.2-cpu.onnx` (~8.7 MB, BSD-2-Clause, Pipecat) is not a transcription model and is not in the runtime catalog. It is downloaded only when the user presses Download in Settings → Recording, published under `models/smart-turn/<sha256>/`, and runs on the ONNX Runtime sherpa-onnx already links. See [silence-auto-stop.md](silence-auto-stop.md#smart-auto-stop-experimental).
 
+## Streaming VAD model
+
+Streaming speech detection's optional Silero VAD v5.1.2 (`silero_vad.onnx`, 2.3 MB, MIT) is not a transcription model and is not in the runtime catalog or Model storage. It is downloaded only by a user action (switching Settings → Recording → Advanced → Streaming speech detection on, or Download/Retry on its row), through the shared `model_download` transfer, and published under `models/silero-vad-onnx/<sha256>/`. A recording never downloads it, and a file whose SHA-256 does not match is deleted. See [transcription.md](transcription.md#experimental-streaming-speech-detection-e1).
+
 ## Removing installed models
 
 Settings → Speech-to-Text → Model storage lists the catalog's installation

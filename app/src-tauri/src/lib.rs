@@ -66,10 +66,6 @@ mod model_hardware_guidance;
 mod model_runtime;
 mod performance_metrics;
 mod platform;
-#[cfg(feature = "preview-decode-reuse")]
-mod preview_pause;
-#[cfg(feature = "preview-decode-reuse")]
-mod preview_reuse;
 mod resource_monitor;
 mod shadow_measurement;
 mod smart_auto_probe;
@@ -80,10 +76,12 @@ mod spoken_numbers;
 mod spoken_structure;
 mod sqlite_support;
 mod state;
+mod stream_reuse;
 pub mod telemetry;
 pub mod transcriber;
 mod transcript_transform;
 mod vad;
+mod vad_stream;
 mod vocab;
 mod vocabulary_alias;
 mod window_state;
@@ -400,6 +398,9 @@ pub fn run() {
             commands::smart_turn::download_smart_turn_model,
             commands::smart_turn::remove_smart_turn_model,
             commands::smart_turn::check_smart_turn,
+            commands::streaming_vad::streaming_vad_model_status,
+            commands::streaming_vad::download_streaming_vad_model,
+            commands::streaming_vad::remove_streaming_vad_model,
             frontmost::list_running_applications,
             commands::benchmark::get_benchmark_models,
             commands::benchmark::get_benchmark_activity,
@@ -419,6 +420,7 @@ pub fn run() {
             commands::overlay::set_overlay_vertical_offset,
             commands::overlay::show_main_window,
             commands::overlay::get_overlay_geometry,
+            commands::overlay::overlay_pointer_sample,
             commands::dictation_preview::show_dictation_preview,
             telemetry::get_event_history,
             telemetry::clear_event_history,
@@ -580,8 +582,12 @@ pub fn run() {
             if let Some(overlay_win) = app.get_webview_window("overlay") {
                 tracing::info!(target: "system", "setup: overlay window found, enabling cursor events");
                 commands::overlay::position_overlay_default(&overlay_win, notch, "startup");
-                let _ = overlay_win.show();
-                if let Err(e) = overlay_win.set_ignore_cursor_events(false) {
+                let _ = main_thread_watch::section("overlay.show", || overlay_win.show());
+                if let Err(e) = main_thread_watch::queued_section(
+                    "overlay.set_ignore_cursor_events",
+                    "applied.overlay.set_ignore_cursor_events",
+                    || overlay_win.set_ignore_cursor_events(false),
+                ) {
                     tracing::warn!(target: "system", "Failed to set overlay cursor events: {}", e);
                 }
             } else {

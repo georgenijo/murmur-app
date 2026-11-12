@@ -260,11 +260,20 @@ pub fn check_model_exists(state: tauri::State<'_, State>) -> bool {
     state.app_state.model_runtime.any_model_installed()
 }
 
+/// The catalog probes the filesystem for every model definition, so it runs on
+/// the blocking pool. Several windows request it at launch.
 #[tauri::command]
-pub fn get_model_runtime_catalog(
-    state: tauri::State<'_, State>,
-) -> Vec<model_runtime::ModelRuntimeSnapshot> {
-    state.app_state.model_runtime.catalog()
+pub async fn get_model_runtime_catalog(
+    app: tauri::AppHandle,
+) -> Result<Vec<model_runtime::ModelRuntimeSnapshot>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri::Manager::state::<State>(&app)
+            .app_state
+            .model_runtime
+            .catalog()
+    })
+    .await
+    .map_err(|_| "The model catalog could not be read.".to_string())
 }
 
 #[tauri::command]
@@ -280,19 +289,28 @@ pub fn get_model_hardware_guidance() -> crate::model_hardware_guidance::ModelHar
     crate::model_hardware_guidance::get()
 }
 
+/// The speaker-model verdict hashes ~21.6 MB the first time and every model
+/// probe touches the filesystem, so the check runs on the blocking pool.
 #[tauri::command]
-pub fn check_specific_model_exists(state: tauri::State<'_, State>, model_name: String) -> bool {
-    if model_name == crate::diarization_model::MODEL_ID {
-        return crate::diarization_model::installed();
-    }
-    if !is_safe_model_identifier(&model_name) {
-        return false;
-    }
-    state
-        .app_state
-        .model_runtime
-        .snapshot(&model_name)
-        .is_ok_and(|snapshot| snapshot.install_state == InstallState::Installed)
+pub async fn check_specific_model_exists(
+    app: tauri::AppHandle,
+    model_name: String,
+) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        if model_name == crate::diarization_model::MODEL_ID {
+            return crate::diarization_model::installed_cached();
+        }
+        if !is_safe_model_identifier(&model_name) {
+            return false;
+        }
+        tauri::Manager::state::<State>(&app)
+            .app_state
+            .model_runtime
+            .snapshot(&model_name)
+            .is_ok_and(|snapshot| snapshot.install_state == InstallState::Installed)
+    })
+    .await
+    .map_err(|_| "The model check could not be completed.".to_string())
 }
 
 fn is_safe_model_identifier(model_name: &str) -> bool {

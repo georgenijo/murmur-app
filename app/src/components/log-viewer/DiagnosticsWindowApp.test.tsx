@@ -3,8 +3,23 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const listeners = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>());
+
 vi.mock('@tauri-apps/api/event', () => ({
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
+    listeners.set(name, handler);
+    return () => { listeners.delete(name); };
+  }),
+}));
+
+const windowState = vi.hoisted(() => ({ tauri: false, visible: false }));
+
+vi.mock('@tauri-apps/api/core', () => ({
+  isTauri: () => windowState.tauri,
+}));
+
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: () => ({ isVisible: async () => windowState.visible }),
 }));
 
 const workspaceMock = vi.hoisted(() => vi.fn());
@@ -14,16 +29,24 @@ vi.mock('./DiagnosticsWorkspace', () => ({
     workspaceMock(props);
     return <div>Diagnostics workspace</div>;
   },
-  isDiagnosticsTab: () => true,
+  isDiagnosticsTab: (value: string) => ['events', 'runs', 'performance'].includes(value),
 }));
 
 import { DiagnosticsWindowApp } from './DiagnosticsWindowApp';
+
+function lastProps(): { active: boolean; requestedTab: string } {
+  return workspaceMock.mock.calls[workspaceMock.mock.calls.length - 1]?.[0] as { active: boolean; requestedTab: string };
+}
 
 describe('DiagnosticsWindowApp native chrome', () => {
   let container: HTMLDivElement;
   let root: Root;
 
   beforeEach(async () => {
+    workspaceMock.mockClear();
+    listeners.clear();
+    windowState.tauri = false;
+    windowState.visible = false;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -53,5 +76,73 @@ describe('DiagnosticsWindowApp native chrome', () => {
     expect(workspaceMock).toHaveBeenCalledWith(expect.objectContaining({
       storeHealthEnabled: true,
     }));
+  });
+
+  it('keeps the workspace inactive while the window is hidden at launch', () => {
+    expect(workspaceMock).toHaveBeenCalled();
+    for (const [props] of workspaceMock.mock.calls) {
+      expect((props as { active: boolean }).active).toBe(false);
+    }
+  });
+
+  it('activates the workspace and selects the tab when the window is shown', async () => {
+    await act(async () => {
+      listeners.get('diagnostics-tab-requested')?.({ payload: 'runs' });
+    });
+    expect(lastProps()).toMatchObject({ active: true, requestedTab: 'runs' });
+  });
+
+  it('activates the workspace when the window gains focus', async () => {
+    expect(lastProps().active).toBe(false);
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(lastProps().active).toBe(true);
+  });
+
+  it('stays active once shown, so reopening does not reload the workspace', async () => {
+    await act(async () => {
+      listeners.get('diagnostics-tab-requested')?.({ payload: 'runs' });
+    });
+    await act(async () => {
+      listeners.get('diagnostics-tab-requested')?.({ payload: 'performance' });
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    for (const [props] of workspaceMock.mock.calls.slice(workspaceMock.mock.calls.findIndex(([p]) => (p as { active: boolean }).active))) {
+      expect((props as { active: boolean }).active).toBe(true);
+    }
+    expect(lastProps()).toMatchObject({ active: true, requestedTab: 'performance' });
+  });
+
+  it('activates on mount when the window was already visible before the listeners attached', async () => {
+    await act(async () => root.unmount());
+    workspaceMock.mockClear();
+    windowState.tauri = true;
+    windowState.visible = true;
+    root = createRoot(container);
+    await act(async () => root.render(<DiagnosticsWindowApp />));
+    expect(lastProps().active).toBe(true);
+  });
+
+  it('stays inactive on mount when the native window is still hidden', async () => {
+    await act(async () => root.unmount());
+    workspaceMock.mockClear();
+    windowState.tauri = true;
+    windowState.visible = false;
+    root = createRoot(container);
+    await act(async () => root.render(<DiagnosticsWindowApp />));
+    expect(lastProps().active).toBe(false);
+  });
+
+  it('activates on mount when the document already has focus', async () => {
+    await act(async () => root.unmount());
+    workspaceMock.mockClear();
+    const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    root = createRoot(container);
+    await act(async () => root.render(<DiagnosticsWindowApp />));
+    expect(lastProps().active).toBe(true);
+    focus.mockRestore();
   });
 });

@@ -24,7 +24,7 @@ Stopping manually always still works. Auto-stop is an extra way for a recording 
 
 ## How it decides
 
-The detector consumes the same `audio-level` RMS samples the overlay waveform already listens to (emitted from the capture stream at ~60 fps). No extra audio path, no extra permission, nothing new on disk.
+The detector consumes the raw `audio-level` RMS samples (emitted from the capture stream at ~60 fps to the main window, where this hook runs). The overlay waveform has its own peak-held `overlay-audio-level` event, so this hook never sees held samples. No extra audio path, no extra permission, nothing new on disk.
 
 All of the logic is a pure fold in `app/src/lib/silenceAutoStop.ts`:
 

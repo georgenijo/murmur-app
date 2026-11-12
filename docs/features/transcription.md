@@ -351,7 +351,20 @@ Transcription processing is local. Network access occurs for model setup and may
   typed `DictationStopTrigger` selects a 50 ms tail for hold-to-talk releases
   and 0 ms for explicit hotkey toggle stops with standby disabled (including
   single-tap stop in double-tap mode). A same-generation native release stamp
-  takes precedence.
+  takes precedence for the tail length. For a cold hold release the tail is
+  also anchored to that stamp's key-release instant: the native stop is due
+  exactly 50 ms after the key came up, not 50 ms after the stop reached the
+  supervisor, so the release's travel through the webview, IPC, and the
+  delivery-target snapshot counts toward the tail instead of adding to it.
+  The anchor is used only when it is fresh (the stop was accepted no more than
+  50 ms after the release) and only for a caller that requested the stop as a
+  hold release (`hold_release` or the default `other` the hold-down-stop
+  handlers use; never an explicit toggle, overlay, or auto stop). The stamp is
+  matched by recording id and can be seconds old after a release whose stop
+  never arrived, so anything older, from the future, or on a warm-standby stop
+  (whose live-buffer snapshot is not a helper fence and keeps the accepted-stop
+  slack) measures from the accepted stop, exactly as before: a stop is never
+  shorter than that. Audio after a fresh release is exactly 50 ms.
   Overlay, button, silence/limit auto-stop, chord stops, and legacy callers
   retain 50 ms: those triggers do not prove the last word has ended. The
   recording's start mode does not determine the stop policy, so releasing a
@@ -363,7 +376,14 @@ Transcription processing is local. Network access occurs for model setup and may
   does not prove all previously captured audio has arrived. Zero-tail
   acceleration is restricted to cold teardown, where Stop/Stopped provides
   the delivery boundary. The content-free `audio.stop_tail_applied` event records `stop_trigger`,
-  `recording_id`, `standby_enabled`, and `release_tail_ms`.
+  `recording_id`, `standby_enabled`, `release_tail_ms`, `anchored_to_release`,
+  and the `tail_remaining_ms` still to wait at acceptance.
+- The capture worker blocks on helper output rather than polling. The
+  supervisor wakes it through a `WorkerWake` handle the moment `Stop` is
+  queued, so the helper stop is not delayed by a poll interval; the helper
+  host loop likewise blocks on its control channel. Wakes carry no audio.
+  Without one the worker still times out on a short housekeeping interval, so
+  shutdown, cancellation, and helper-crash paths cannot hang.
 - On the cold teardown path (no standby handoff), after the tail the host
   sends `Stop`. The helper checks the native stream stop, flushes
   every sample left in its ring as ordinary PCM, and only then replies
@@ -629,7 +649,9 @@ then calls `show_dictation_preview` with the recording ID. Rust rejects another
 window or a stale recording before it shows the native window. This ordering
 prevents AppKit from committing an empty transparent frame and removing the
 window before the text renders. Silent recordings show nothing. The ticker
-hides the window when the recording stops being current. The frontend also
+hides the window when the recording stops being current. "Hide" makes the
+window transparent and click-through rather than ordering it out; it stays
+ordered in after its first show. The frontend also
 clears the text as soon as capture leaves `recording`, because an in-flight
 decode can delay the native hide.
 
@@ -660,7 +682,7 @@ old generation. No partial is copied, pasted, persisted, exported or logged.
 
 1. Capture app identity, matched profile, effective settings, vocabulary version, repository-backed commands, and deny-by-default context permissions at recording start. Built-in/scanned developer terms are included only when the matching profile explicitly selects Code / technical or Local IDE project context.
 2. Confirm the snapshot's model preparation completed (or load synchronously as a fallback)
-3. Run one full-buffer VAD and backend transcription pass with the same snapshot
+3. Run one full-buffer VAD and backend transcription pass with the same snapshot (with `streamingPipelineEnabled`, the VAD is finished from audio scored during recording; see [Streaming speech detection](#experimental-streaming-speech-detection-e1))
 4. Run the backend-neutral transcript transformation pipeline from the snapshot's stage settings and resources
 5. Persist optional file output and inject text (clipboard + optional paste) from the snapshot on the main thread
 6. Reset status to Idle and clear only the matching recording generation's snapshot
@@ -823,50 +845,192 @@ disk, models a 204 ms cold start, and compares first-word recovery at speech
 onsets 0, 25, 50, and 100 ms after press. It does not measure live microphone
 startup or play through a virtual audio device.
 
-### Experimental final decode reuse (#830)
+### Experimental streaming speech detection (E1)
 
-Ordinary builds still run the whole-clip final decoder. The Cargo feature
-`preview-decode-reuse` is **off by default** and enables a Core ML-only
-experiment; it changes no persisted setting and does not affect imported files,
-Whisper or CPU Parakeet. Enable only in a test build:
-`npx tauri build --debug --features preview-decode-reuse`.
+`streamingPipelineEnabled` (Settings → Recording → Advanced, "Streaming speech
+detection (experimental)") is **off by default**. It is the one switch for the
+streaming speed-up work: it enables an incremental Silero VAD and, for Core ML
+recordings, decode while speaking ([below](#experimental-decode-while-speaking-e2)). It is a
+settings-file/UI key like the other `Settings` booleans (`app/src/lib/settings.ts`),
+sent to Rust through `configure_dictation` as `streamingPipelineEnabled` and frozen
+per recording into `TranscriptionSettings.streaming_pipeline_enabled` at
+recording start. Changing it mid-recording applies to the next recording.
 
-The pinned `fluidaudio-rs` revision exposes Parakeet's stateful
-`init_streaming_asr` / `streaming_asr_start` / `streaming_asr_feed` /
-`streaming_asr_finish` API. It is unsuitable for authoritative reuse today:
-FluidAudio 0.14.1 catches chunk-processing errors and resets its decoder, while
-the Rust bridge returns neither those errors nor per-chunk confidence. Murmur
-cannot prove complete coverage or trigger the required fallback through that
-API. See upstream `SlidingWindowAsrManager.processWindow` and
-`attemptErrorRecovery`, and the bridge's `streamingAsrFinish`.
+**Why.** The batch VAD (`vad::filter_speech`, whisper.cpp's ggml Silero) scores the
+whole clip after Stop, so its cost grows with the recording (about 217 ms of a
+511 ms stop on a 114 s dictation). With the setting on, a dedicated thread
+scores audio as it arrives and Stop scores only the unfinished tail.
 
-Instead, the experimental ticker snapshots retained 16 kHz PCM from offset zero
-and uses Hex's adaptive 20 ms pause detector (MIT notice in
-`THIRD_PARTY_NOTICES.md`). It decodes pause-delimited pieces only after one
-additional second of audio. Each piece includes the previous piece as overlap;
-case, punctuation, and the word boundary must agree exactly before the earlier
-text is retained. The display-only trailing-window decode continues separately;
-this deliberately adds work during recording rather than inferring token times
-from the preview string. At release the final pipeline re-decodes the last
-committed piece plus remaining audio and validates the same exact overlap.
-Only that result enters normal transforms and exactly-once delivery.
+**How** (`vad_stream.rs`):
 
-Missing pauses, overlaps shorter than three words, changed PCM, failed decodes,
-changed overlap text, more than 20 seconds in an inference piece, or recordings
-over ten minutes prevent reuse and fall back to the existing whole-clip decoder
-(including its VAD-empty retry). Final VAD still runs first. Reuse state belongs
-to one recording generation, is consumed at most once, and is cleared with that
-recording's context. Late workers cannot commit into a newer session. Audio and
-text remain in process memory; reuse adds no transcript logs or persistence.
+- `start` (called where the live-preview ticker starts) resets the per-recording
+  `StreamSlot` in `AppState.vad_stream` and spawns the `murmur-vad-stream` thread.
+  Every poll (200 ms) asks the audio supervisor for only the samples since the last
+  one (`audio_lifecycle::peek_dictation_samples_since`, equal to that slice of the
+  whole-clip resample), scores whole 512-sample windows through the pinned Silero
+  v5.1.2 ONNX model on the shared ONNX Runtime (`smart_turn::init_runtime`), and
+  keeps the LSTM state. Nothing runs on the real-time audio callback.
+- Every method on the slot is keyed by recording id: a different, stopped or
+  superseded recording never reads or changes the state, and
+  `AppState::clear_active_context` clears it. `begin` refuses an id that already
+  owns (or already owned) the slot, so one recording can never have two workers.
+- The worker scores in chunks of about 0.5 s and releases the slot lock between
+  chunks, so Stop takes the stream within one chunk instead of waiting for a
+  backlog.
+- At Stop, `run_transcription_pipeline` takes this recording's stream, verifies the
+  final PCM extends what was scored (length and a strided fingerprint of the
+  prefix), scores the tail (zero-padding the last window like ggml), and segments
+  with `segments_from_probs`, a line-for-line port of whisper.cpp's
+  `whisper_vad_segments_from_probs` for Murmur's parameters. The kept-speech PCM is
+  built by the same `vad::speech_from_segments` helper as the batch path.
+- **Any doubt uses the batch VAD**: model not installed or failing to load, a
+  scoring error, a busy session at Stop (`contended`: Stop never waits for the
+  shared session), a reset or shrunken capture buffer, a length or prefix
+  mismatch, more than about 2 s of audio still unscored at Stop (`backlog`), no
+  stream for the recording, and also a "no speech" verdict (a silent verdict ends
+  the dictation, so the batch VAD confirms it). By design this is a fallback, not
+  a guarantee: the streaming result is not constructed to keep every sample the
+  batch path keeps. In the measured runs below it lost none, and where it
+  disagreed it kept extra audio.
+- Content-free telemetry: `pipeline.vad_stream_outcome` with `outcome`
+  (`used`, `no_speech_recheck`, or a fallback reason: `not_started`, `model_load`,
+  `inference`, `contended`, `buffer_reset`, `length_mismatch`, `prefix_mismatch`,
+  `backlog`), `tail_windows`,
+  `total_windows`, `finish_ms`. The existing `vad_ms` stage timing still measures
+  the whole VAD stage.
 
-A local ignored test, `synthetic_preview_reuse_probe`, replays file-rendered
-`say` WAVs through the actual Core ML backend and final selector. It accepts a
-JSON manifest of `{id, wav, reference}` rows via
-`MURMUR_REUSE_SYNTHETIC_MANIFEST`, writes private raw results only to
-`MURMUR_REUSE_SYNTHETIC_OUTPUT`, and measures three alternating-order final-ASR
-trials per clip. Score the private text with `scripts/murmur_accuracy.py`.
-These are final-decode timings after replay, not native release-to-paste timing;
-full native capture and the personal accuracy corpus remain separate evidence.
+**Model.** `silero_vad_v5.1.2.onnx` (MIT, 2,327,524 bytes) is pinned by commit URL,
+size and SHA-256 and lives in `models/silero-vad-onnx/<sha256>/`. **It is only ever
+downloaded by a user action:** switching the setting on, or pressing
+Download/Retry on the model row under the toggle. Starting a recording never makes
+a network request; if the model is absent that recording uses the batch VAD, and
+nothing is retried. The download goes through the shared resumable
+`model_download::transfer` (idle timeout, free-space preflight). The toggle's model
+row shows `notDownloaded`, `downloading`, `ready` or `failed` (with the error) and
+offers Remove. A file of the right size is hashed before its first use; a file
+whose hash does not match is deleted, reported as `failed`, and not retried
+automatically. It is not listed in Settings → Speech-to-Text → Model storage, which
+is specific to transcription models; the toggle's own row owns install and remove.
+The ONNX session is created lazily by the first streaming recording and released
+(off the dictation-state lock) when the setting is turned off.
+
+**Not bit-identical to the batch VAD.** The batch path runs a ggml port with F16
+weights, so per-window probabilities differ slightly (largest observed difference
+about 0.025, typically below 0.006) and a boundary can move by one or two windows
+on a minority of clips. In 237 measured runs 232 kept byte-identical audio and 5
+differed by 30–70 ms (always keeping extra audio); on `rate120.wav` at
+sensitivity 70 the batch path found 16 segments and the incremental path 15, with
+identical kept audio. Text equivalence under Core ML was not established (the
+text check ran on Whisper tiny.en, whose long-clip output varies between runs).
+Memory: loading the session and scoring 120 s raised RSS by up to about 45.6 MB in
+the debug test binary. Segmentation itself is exact: on the batch model's own
+probabilities the port reproduces whisper.cpp's segments sample for sample. The
+`differential_incremental_vs_batch_vad` test (`cargo test --lib
+differential_incremental_vs_batch_vad -- --ignored --nocapture`, with
+`MURMUR_E1_ONNX`, `MURMUR_E1_EXTRA_WAV_DIR` and `MURMUR_E1_DECODE=1`) reports, per
+clip and sensitivity, the segment bounds, the maximum boundary shift, whether any
+batch-kept speech was lost, and (for clips whose kept audio differs) whether the
+decoded text changed. It uses only the repository's `bench/audio` and local
+synthetic audio.
+
+### Experimental decode while speaking (E2)
+
+Under the same `streamingPipelineEnabled` switch (off by default; there is no
+Cargo feature any more), a **Core ML** recording whose incremental VAD is running
+decodes finished stretches of speech while the user is still talking and, at Stop,
+decodes only what came after the last one. Stop-time decode then stays near one
+short Core ML call (about 60–90 ms) however long the dictation was. Whisper,
+CPU Parakeet, recordings without the VAD stream, and everything with the setting
+off decode the whole clip at Stop exactly as before (`stream_reuse.rs`,
+`decode_final_transcript`). Decode reuse is the only part behind the switch: the
+[stop-gesture preview cap](#stop-gesture-preview-cap) below applies to everyone. It replaces the #830 / #845 experiment
+(`preview-decode-reuse`, `preview_reuse.rs`, `preview_pause.rs`), which cut pieces
+with an energy pause detector from un-trimmed PCM; the incremental VAD gives the
+same pauses on exactly the audio the whole-clip decode sees.
+
+**How.**
+
+- **Pieces are VAD-trimmed.** The existing 700 ms live-preview ticker is the
+  driver (it stays, with its display-only trailing-window decode, so the popover
+  shows what it always did). Each tick asks the VAD stream for its current
+  segments (`StreamSlot::snapshot`). A *cut* falls after a segment that is final
+  (a later segment exists, or at least 600 ms of silence followed it) and is
+  followed by a real pause (at least 300 ms between padded segments), once at
+  least 3 s of new speech is waiting. The piece decoded is the previous piece's
+  audio (the *overlap*) followed by the new segments' padded audio, concatenated
+  exactly as the whole-clip decode's input is. Only that piece's samples are read
+  from the capture buffer (`peek_dictation_samples_since`); nothing grows with the
+  recording except one retained piece (at most 20 s) and the text.
+- **The overlap must read the same.** The re-decoded overlap must equal the text
+  committed for it, character for character (case, punctuation, word boundary).
+  A decode where it does not is discarded and the piece waits for a later cut;
+  three in a row end reuse for the recording. This is the stitch-point guard: the
+  text before the seam was produced with context the final decode would not have,
+  and agreeing on the seam shows both read it the same way.
+- **At Stop** `run_transcription_pipeline` still runs the (streaming) VAD first,
+  then, with the backend held, consumes the recording's session once
+  (`StreamReuse::take_final`). A stitched result is used only if all of these hold,
+  otherwise the unchanged whole-clip decode runs: the committed segments equal the
+  first segments of the final VAD result; the final kept audio is exactly the
+  concatenation of the final segments (coverage); the last piece's samples are
+  bit-identical to the same stretch of the kept audio (full FNV-1a hash); the tail
+  (last piece plus everything after) is at most 20 s and the recording at most ten
+  minutes; the final VAD came from the incremental stream (not the batch fallback);
+  the recording is still the live, uncancelled one; and no preview still holds its
+  lease. Then the tail is decoded, must start with the committed overlap text, and
+  is joined after the earlier pieces. When the pieces already cover all kept
+  audio, no decode runs at Stop. Waiting for a preview that still holds its lease is a
+  spin on `yield_now` of at most 10 ms, only with the setting on; if it is still
+  held the outcome is `busy` and the whole clip is decoded.
+- **Transforms run once.** Stitching happens on raw ASR text, before the ordered
+  transform pipeline; the pipeline runs once over the final text. Pieces and
+  previews are never transformed, pasted or delivered separately.
+- **Ownership.** All state is keyed by recording id (`StreamReuse::begin` ignores
+  an older id; every method ignores a different one). A piece that finishes after
+  the recording stopped or was superseded is dropped without touching state.
+  Recording configuration is read once from the start-of-recording snapshot.
+
+**What it costs and saves.** One extra Core ML decode of at most 20 s per cut
+(roughly every 3 s or more of speech, only at pauses) during recording; one piece
+of PCM (at most 1.3 MB) in memory; no second model. A failed stitch costs one extra
+tail decode over today. A dictation with no qualifying pause (continuous speech,
+or under about 6 s) gets no saving from decode reuse, only from the incremental VAD.
+
+**Telemetry** (content-free): `pipeline.stream_reuse_outcome` once per dictation
+whose setting was on, with `outcome` (`reused`, or the reason the whole clip was
+decoded: `inactive`, `no_commit`, `decode_error`, `overlap_mismatch`, `window_cap`,
+`buffer_reset`, `superseded`, `long_recording`, `vad_not_incremental`,
+`bounds_mismatch`, `audio_mismatch`, `tail_too_long`, `busy`, `stitch_mismatch`,
+`tail_decode_error`), `piece_count`, `decoded_ms` (audio decoded at Stop: the tail
+when reused, nothing when the pieces covered everything, and on a fallback the
+whole clip plus any tail decode that was discarded first) and `overlap_words`.
+
+**Evidence and limits.** The Core ML Parakeet cache on the development Mac lacks
+`Encoder.mlmodelc`, so decode reuse could not be run under Core ML there. The
+ignored `stream_reuse_accuracy_probe` test (module docs in
+`stream_reuse_probe.rs`) replays WAVs through the real incremental VAD, planner,
+tail decode and stitch on any `TranscriptionBackend` and compares the stitched
+text with the whole-clip decode of the same kept audio; with Whisper tiny.en,
+reused results were identical to the whole-clip text except one function word in
+one 43 s clip (a possible context-window effect at a seam; not proven to be
+decoder variance, see the pull request). It reports accuracy and per-step timing only,
+and is not the performance harness. Real-voice accuracy under Core ML is
+unmeasured. Rejected alternatives: FluidAudio's streaming API (fixed configuration,
+swallowed errors, a second model set) and a `transcribe.cpp` helper (a second
+runtime and model).
+
+### Stop-gesture preview cap
+
+For **every** dictation, with or without `streamingPipelineEnabled`: from the
+native hold release on (`hotkey_release::stop_gesture_pending`, valid for 500 ms
+or until the stop claims the release stamp), the live-preview ticker starts no
+new decode, and a Core ML tick re-checks this between its piece decode (when decode
+reuse is on) and its display decode. Status only flips to `Processing` at the
+accepted stop, after the webview round trip, so the release stamp is the earliest
+signal that a stop is coming. A Core ML call that is already running cannot be
+cancelled and can still delay the final by up to one decode. The cap only affects
+previews: the final transcript is the same with it. Tick outcome `stop_pending`
+(`pipeline.dictation_partial_tick`) counts skipped ticks.
 
 ## Gesture-to-microphone-ready diagnostics
 

@@ -123,6 +123,7 @@ export interface ConfigureOptions {
   correctionEnabled?: boolean;
   correctionFuzzy?: boolean;
   homophoneContextEnabled?: boolean;
+  streamingPipelineEnabled?: boolean;
 }
 
 // Settings sends full snapshots; other callers may send partial updates. Keep
@@ -190,6 +191,7 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     correctionEnabled: s.correctionEnabled,
     correctionFuzzy: s.correctionFuzzy,
     homophoneContextEnabled: s.homophoneContextEnabled,
+    streamingPipelineEnabled: s.streamingPipelineEnabled,
   };
 }
 

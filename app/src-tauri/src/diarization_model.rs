@@ -142,8 +142,97 @@ pub(crate) fn validate_at(root: &Path) -> bool {
     })
 }
 
+/// Full validation: hashes every manifest file. Use this before the model is
+/// consumed (meeting start, the diarization worker) and when publishing.
 pub fn installed() -> bool {
     supported() && directory().is_some_and(|root| validate_at(&root))
+}
+
+/// Per-file identity used to decide whether a cached verdict still describes
+/// the files on disk: size and modification time, plus the inode change time
+/// where the platform has one (a writer cannot reset it).
+#[derive(Clone, PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    changed: Option<(i64, i64)>,
+}
+
+#[derive(Clone)]
+struct CachedVerdict {
+    root: PathBuf,
+    stamps: Vec<FileStamp>,
+    valid: bool,
+}
+
+type VerdictCache = Mutex<Option<CachedVerdict>>;
+
+static VERDICT: VerdictCache = Mutex::new(None);
+
+fn file_stamp(meta: &fs::Metadata) -> FileStamp {
+    #[cfg(unix)]
+    let changed = {
+        use std::os::unix::fs::MetadataExt;
+        Some((meta.ctime(), meta.ctime_nsec()))
+    };
+    #[cfg(not(unix))]
+    let changed = None;
+    FileStamp {
+        len: meta.len(),
+        modified: meta.modified().ok(),
+        changed,
+    }
+}
+
+/// Stat every manifest file without opening or hashing it. `None` means a
+/// file is missing or not a regular file, so the install is invalid.
+fn stamp_all(root: &Path) -> Option<Vec<FileStamp>> {
+    manifest()
+        .iter()
+        .map(|entry| {
+            if !regular_file(root, &entry.path) {
+                return None;
+            }
+            fs::symlink_metadata(root.join(&entry.path))
+                .ok()
+                .map(|meta| file_stamp(&meta))
+        })
+        .collect()
+}
+
+/// Return the cached verdict while every file's stamp is unchanged; otherwise
+/// run `validate` (the hashing pass) and cache its result.
+fn cached_verdict(cache: &VerdictCache, root: &Path, validate: impl FnOnce() -> bool) -> bool {
+    let Some(stamps) = stamp_all(root) else {
+        return false;
+    };
+    if let Some(hit) = cache.lock_or_recover().as_ref() {
+        if hit.root == root && hit.stamps == stamps {
+            return hit.valid;
+        }
+    }
+    let valid = validate();
+    // A file changed while it was hashed: do not cache a verdict for stamps
+    // that no longer describe what was read.
+    if stamp_all(root).as_ref() == Some(&stamps) {
+        *cache.lock_or_recover() = Some(CachedVerdict {
+            root: root.to_path_buf(),
+            stamps,
+            valid,
+        });
+    }
+    valid
+}
+
+fn invalidate_verdict(cache: &VerdictCache) {
+    *cache.lock_or_recover() = None;
+}
+
+/// Status-path check. Hashes ~21.6 MB only the first time, or after a download,
+/// removal, or any change to a model file; repeat calls only stat 21 files.
+pub fn installed_cached() -> bool {
+    supported()
+        && directory().is_some_and(|root| cached_verdict(&VERDICT, &root, || validate_at(&root)))
 }
 
 #[derive(Serialize)]
@@ -155,14 +244,19 @@ pub struct ModelStatus {
     bytes: u64,
 }
 
+/// Settings polls this once a second while an install runs, so it must never
+/// hash on the main thread: it runs on the blocking pool and reuses the cached
+/// verdict.
 #[tauri::command]
-pub fn get_diarization_model_status() -> ModelStatus {
-    ModelStatus {
+pub async fn get_diarization_model_status() -> Result<ModelStatus, String> {
+    tauri::async_runtime::spawn_blocking(|| ModelStatus {
         supported: supported(),
-        installed: installed(),
+        installed: installed_cached(),
         installing: INSTALLING.load(Ordering::SeqCst),
         bytes: MODEL_BYTES,
-    }
+    })
+    .await
+    .map_err(|_| "The speaker model status could not be read.".to_string())
 }
 
 struct Staging(PathBuf);
@@ -242,7 +336,10 @@ pub async fn download(app: &tauri::AppHandle) -> Result<(), String> {
         fs::remove_dir_all(&root)
             .map_err(|_| "The incomplete speaker models could not be replaced.")?;
     }
-    fs::rename(&staging.0, &root).map_err(|_| "The speaker models could not be installed.")?;
+    invalidate_verdict(&VERDICT);
+    let published = fs::rename(&staging.0, &root);
+    invalidate_verdict(&VERDICT);
+    published.map_err(|_| "The speaker models could not be installed.")?;
     let _ = app.emit("download-progress", serde_json::json!({"modelName":MODEL_ID,"attemptId":attempt_id,"received":MODEL_BYTES,"total":MODEL_BYTES,"phase":"validating","repeatedRepair":false}));
     Ok(())
 }
@@ -253,6 +350,14 @@ pub async fn remove_diarization_model() -> Result<(), String> {
     crate::meeting_diarization::cancel_all()?;
     let _use = MODEL_USE.lock_or_recover();
     let _cache = CacheLease::acquire(true)?;
+    // Invalidate on both sides of the deletion, including a partial failure.
+    invalidate_verdict(&VERDICT);
+    let result = remove_installed_models();
+    invalidate_verdict(&VERDICT);
+    result
+}
+
+fn remove_installed_models() -> Result<(), String> {
     if let Some(root) = directory() {
         if let Some(parent) = root.parent() {
             sweep_staging(parent);
@@ -277,5 +382,136 @@ mod tests {
             .iter()
             .all(|f| f.sha256.len() == 64 && !f.path.contains("..")));
         assert!(!validate_at(Path::new("/nonexistent-murmur-diarization")));
+    }
+
+    /// A tree with every manifest path present as a regular file. Contents are
+    /// placeholders: the cache tests inject the hashing step.
+    fn fake_tree() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("temp dir");
+        for entry in manifest() {
+            let path = dir.path().join(&entry.path);
+            fs::create_dir_all(path.parent().expect("parent")).expect("create parents");
+            fs::write(path, b"model").expect("write file");
+        }
+        dir
+    }
+
+    fn counted(cache: &VerdictCache, root: &Path, verdict: bool, runs: &mut u32) -> bool {
+        cached_verdict(cache, root, || {
+            *runs += 1;
+            verdict
+        })
+    }
+
+    #[test]
+    fn verdict_is_hashed_once_then_served_from_stat_only_checks() {
+        let dir = fake_tree();
+        let cache: VerdictCache = Mutex::new(None);
+        let mut runs = 0;
+        assert!(counted(&cache, dir.path(), true, &mut runs));
+        for _ in 0..5 {
+            assert!(counted(&cache, dir.path(), true, &mut runs));
+        }
+        assert_eq!(runs, 1, "repeat status polls must not hash");
+    }
+
+    #[test]
+    fn rejected_verdict_is_cached_too() {
+        let dir = fake_tree();
+        let cache: VerdictCache = Mutex::new(None);
+        let mut runs = 0;
+        assert!(!counted(&cache, dir.path(), false, &mut runs));
+        assert!(!counted(&cache, dir.path(), false, &mut runs));
+        assert_eq!(runs, 1);
+    }
+
+    #[test]
+    fn size_change_forces_a_rehash() {
+        let dir = fake_tree();
+        let cache: VerdictCache = Mutex::new(None);
+        let mut runs = 0;
+        assert!(counted(&cache, dir.path(), true, &mut runs));
+        let first = dir.path().join(&manifest()[0].path);
+        fs::write(&first, b"model, but longer").expect("grow file");
+        assert!(!counted(&cache, dir.path(), false, &mut runs));
+        assert_eq!(runs, 2);
+    }
+
+    #[test]
+    fn mtime_change_with_same_size_forces_a_rehash() {
+        let dir = fake_tree();
+        let cache: VerdictCache = Mutex::new(None);
+        let mut runs = 0;
+        assert!(counted(&cache, dir.path(), true, &mut runs));
+        let first = dir.path().join(&manifest()[0].path);
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(&first)
+            .expect("open file");
+        file.set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(60))
+            .expect("set mtime");
+        assert!(!counted(&cache, dir.path(), false, &mut runs));
+        assert_eq!(runs, 2);
+    }
+
+    /// A writer can restore the old size and modification time, but not the
+    /// inode change time. A same-size, same-mtime rewrite must still rehash.
+    #[cfg(unix)]
+    #[test]
+    fn in_place_rewrite_with_restored_size_and_mtime_forces_a_rehash() {
+        let dir = fake_tree();
+        let cache: VerdictCache = Mutex::new(None);
+        let mut runs = 0;
+        assert!(counted(&cache, dir.path(), true, &mut runs));
+        let first = dir.path().join(&manifest()[0].path);
+        let before = fs::metadata(&first)
+            .expect("stat")
+            .modified()
+            .expect("mtime");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(&first)
+            .expect("open");
+        std::io::Write::write_all(&mut &file, b"MODEL").expect("same-length rewrite");
+        file.set_modified(before).expect("restore mtime");
+        drop(file);
+        assert!(!counted(&cache, dir.path(), false, &mut runs));
+        assert_eq!(runs, 2, "a corrupted file must not keep a verified verdict");
+    }
+
+    #[test]
+    fn missing_file_is_invalid_without_hashing() {
+        let dir = fake_tree();
+        let cache: VerdictCache = Mutex::new(None);
+        fs::remove_file(dir.path().join(&manifest()[0].path)).expect("remove file");
+        let mut runs = 0;
+        assert!(!counted(&cache, dir.path(), true, &mut runs));
+        assert_eq!(runs, 0);
+    }
+
+    #[test]
+    fn download_and_remove_invalidate_the_cached_verdict() {
+        let dir = fake_tree();
+        let cache: VerdictCache = Mutex::new(None);
+        let mut runs = 0;
+        assert!(counted(&cache, dir.path(), true, &mut runs));
+        // `download` and `remove_diarization_model` both call this on the
+        // global cache around publishing and deleting the model directory.
+        invalidate_verdict(&cache);
+        assert!(cache.lock_or_recover().is_none());
+        assert!(counted(&cache, dir.path(), true, &mut runs));
+        assert_eq!(runs, 2);
+    }
+
+    #[test]
+    fn cache_is_scoped_to_its_root() {
+        let first = fake_tree();
+        let second = fake_tree();
+        let cache: VerdictCache = Mutex::new(None);
+        let mut runs = 0;
+        assert!(counted(&cache, first.path(), true, &mut runs));
+        assert!(counted(&cache, second.path(), true, &mut runs));
+        assert_eq!(runs, 2);
     }
 }

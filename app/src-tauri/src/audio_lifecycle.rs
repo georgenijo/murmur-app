@@ -116,6 +116,30 @@ impl DictationStopTrigger {
         }
     }
 
+    /// Whether a native release stamp may anchor the tail of a stop that the
+    /// caller itself requested with this trigger. The `hold-down-stop` handlers
+    /// request the stop with the default `Other`, so that and `HoldRelease`
+    /// qualify. An explicit toggle, overlay or auto stop never does, even when a
+    /// stale stamp for the same recording is lying around: [`Self::resolve`]
+    /// turns any stamped stop into a hold release for the tail length, but the
+    /// stamp must not decide when the audio ends for a stop it did not drive.
+    pub(crate) fn may_anchor_to_release(self) -> bool {
+        matches!(self, Self::HoldRelease | Self::Other)
+    }
+
+    /// The native release instant that may anchor the tail of a stop requested
+    /// with `self`, or `None` when the caller drove the stop itself (toggle,
+    /// overlay, auto-stop) and any stamp lying around is not its release. Call
+    /// it with the trigger as requested, before [`Self::resolve`].
+    pub(crate) fn tail_anchor(
+        self,
+        release: Option<crate::hotkey_release::HotkeyRelease>,
+    ) -> Option<Instant> {
+        release
+            .filter(|_| self.may_anchor_to_release())
+            .map(|release| release.released_at())
+    }
+
     fn release_tail(self, owner: AudioOwner, standby_enabled: bool) -> Duration {
         if owner.dictation_id().is_none() || (self == Self::Toggle && !standby_enabled) {
             Duration::ZERO
@@ -133,6 +157,43 @@ impl DictationStopTrigger {
             Self::Other => "other",
         }
     }
+}
+
+/// The native release instant a stop's tail may be anchored to, if any.
+///
+/// Anchoring lets a hold release keep exactly `tail` of audio after the key
+/// came up: the time the stop spent travelling rdev, the webview, IPC, the
+/// ownership lock and the target snapshot counts toward the tail instead of
+/// being added to it. The stamp is only trusted while it is *fresh*: the stop
+/// must have been accepted no more than `tail` after the release. A stamp is
+/// matched by recording id alone and can be seconds old (a release whose stop
+/// never arrived, then a second release whose own stamp was dropped), and an
+/// old stamp would put the deadline in the past and cut the audio after the
+/// real release to nothing. A stamp from the future is not trusted either.
+/// Anything else falls back to the accepted stop, so an anchored stop is never
+/// earlier than the real release plus `tail` and never later than the base
+/// behaviour.
+fn release_anchor(
+    trigger: DictationStopTrigger,
+    released_at: Option<Instant>,
+    now: Instant,
+    tail: Duration,
+) -> Option<Instant> {
+    let released = released_at.filter(|_| trigger == DictationStopTrigger::HoldRelease)?;
+    let travel = now.checked_duration_since(released)?;
+    (travel <= tail).then_some(released)
+}
+
+/// When the supervisor tells the helper to stop after an accepted dictation
+/// stop: `tail` after the fresh native release if there is one
+/// ([`release_anchor`]), otherwise `tail` after the accepted stop, as before.
+fn tail_deadline(
+    trigger: DictationStopTrigger,
+    released_at: Option<Instant>,
+    now: Instant,
+    tail: Duration,
+) -> Instant {
+    release_anchor(trigger, released_at, now, tail).map_or(now + tail, |released| released + tail)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -465,6 +526,9 @@ enum SupervisorMessage {
     Start(StartRequest),
     Stop {
         trigger: DictationStopTrigger,
+        /// The native key-release instant that produced a `HoldRelease`
+        /// trigger. Anchors the release tail; ignored for every other trigger.
+        released_at: Option<Instant>,
         owner: Option<AudioOwner>,
         response: Sender<Result<Vec<f32>, String>>,
     },
@@ -478,6 +542,11 @@ enum SupervisorMessage {
         owner: AudioOwner,
         max_output_samples: Option<usize>,
         response: Sender<Option<Vec<f32>>>,
+    },
+    PeekSince {
+        owner: AudioOwner,
+        from_output: usize,
+        response: Sender<PeekSince>,
     },
     ConfigureStandby(StandbyPolicy),
     RetireStandby(Sender<()>),
@@ -553,6 +622,7 @@ struct Attempt {
     recovery_reason: Option<AudioCancelReason>,
     init_phase: AudioInitPhase,
     command_sender: Sender<AudioCommand>,
+    worker_wake: audio::WorkerWake,
     thread_handle: Option<JoinHandle<()>>,
     shared: Arc<Mutex<audio::CaptureSamples>>,
     active: Arc<std::sync::atomic::AtomicBool>,
@@ -563,6 +633,15 @@ struct Attempt {
 }
 
 impl Attempt {
+    /// Queue Stop for the worker and end its blocking wait, so the helper stop
+    /// starts when the supervisor decides it should, not at the worker's next
+    /// timeout. Wake after send: the worker reads its queue before blocking.
+    fn send_worker_stop(&self) -> Result<(), mpsc::SendError<AudioCommand>> {
+        let sent = self.command_sender.send(AudioCommand::Stop);
+        self.worker_wake.wake();
+        sent
+    }
+
     fn warm_epoch(&self) -> Option<u64> {
         (self.owner != self.worker_owner).then_some(self.input_topology_generation)
     }
@@ -1089,6 +1168,7 @@ fn handle_message(
         }
         SupervisorMessage::Stop {
             trigger,
+            released_at,
             owner,
             response,
         } => {
@@ -1114,6 +1194,13 @@ fn handle_message(
                     current.active.store(false, Ordering::SeqCst);
                     let tail =
                         trigger.release_tail(current.owner, current.standby_policy.seconds > 0);
+                    let now = Instant::now();
+                    // Warm standby snapshots the live buffer at the deadline and
+                    // is not a helper fence, so it keeps the accepted-stop slack
+                    // for in-flight PCM. Only a cold stop is anchored.
+                    let released_at = released_at.filter(|_| current.standby_policy.seconds == 0);
+                    let anchored = release_anchor(trigger, released_at, now, tail).is_some();
+                    let deadline = tail_deadline(trigger, released_at, now, tail);
                     tracing::info!(target: "audio",
                         event_code = "audio.stop_tail_applied",
                         recording_id = current.owner.telemetry_id(),
@@ -1121,14 +1208,16 @@ fn handle_message(
                         stop_trigger = trigger.as_str(),
                         standby_enabled = current.standby_policy.seconds > 0,
                         release_tail_ms = tail.as_millis() as u64,
+                        anchored_to_release = anchored,
+                        tail_remaining_ms = deadline.saturating_duration_since(now).as_millis() as u64,
                         "stop tail resolved from accepted trigger"
                     );
                     // The supervisor owns the tail for both cold and standby
                     // stops. The worker only drains after Stop; never add it twice.
                     if current.owner.dictation_id().is_some() {
-                        current.tail_deadline = Some(Instant::now() + tail);
+                        current.tail_deadline = Some(deadline);
                     } else {
-                        let _ = current.command_sender.send(AudioCommand::Stop);
+                        let _ = current.send_worker_stop();
                     }
                     current.phase = AttemptPhase::Stopping;
                     current.stopping_started_at = Some(Instant::now());
@@ -1178,7 +1267,7 @@ fn handle_message(
             if starting_only && attempt.as_ref().is_some_and(|a| a.tail_deadline.is_some()) {
                 let current = attempt.as_mut().unwrap();
                 current.tail_deadline = None;
-                let _ = current.command_sender.send(AudioCommand::Stop);
+                let _ = current.send_worker_stop();
             }
             if should_abandon {
                 begin_recovery(attempt, reason, sink, public, None);
@@ -1203,6 +1292,27 @@ fn handle_message(
                 current.warm_topology_is_current().then_some(snapshot)
             });
             let _ = response.send(samples);
+        }
+        SupervisorMessage::PeekSince {
+            owner,
+            from_output,
+            response,
+        } => {
+            let result = attempt
+                .as_ref()
+                .and_then(|current| {
+                    if current.owner != owner || current.phase != AttemptPhase::Recording {
+                        return None;
+                    }
+                    let shared = current
+                        .shared
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let result = snapshot_since(&shared, current.sample_rate, from_output);
+                    current.warm_topology_is_current().then_some(result)
+                })
+                .unwrap_or(PeekSince::NotCurrent);
+            let _ = response.send(result);
         }
         SupervisorMessage::ConfigureStandby(_)
         | SupervisorMessage::RetireStandby(_)
@@ -1267,10 +1377,12 @@ fn handle_start(
     // Fail closed until readiness is accepted for this exact owner.
     let active = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (command_sender, command_receiver) = mpsc::channel();
+    let worker_wake = audio::WorkerWake::default();
     let spec = AudioWorkerSpec {
         gesture: request.gesture.timing,
         owner: request.owner,
         command_receiver,
+        wake: worker_wake.clone(),
         shared: Arc::clone(&shared),
         active: Arc::clone(&active),
         app_handle: request.app_handle.clone(),
@@ -1362,6 +1474,7 @@ fn handle_start(
         recovery_reason: None,
         init_phase: AudioInitPhase::DeviceEnumeration,
         command_sender,
+        worker_wake,
         thread_handle: Some(thread_handle),
         shared,
         active,
@@ -2266,6 +2379,68 @@ fn snapshot_for_asr(
     samples
 }
 
+/// What a `peek_dictation_samples_since` call found.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum PeekSince {
+    /// 16 kHz samples from the requested offset up to the last sample whose
+    /// value cannot change when more audio arrives (possibly empty).
+    Samples(Vec<f32>),
+    /// The recording is not (or no longer) the live capture, or the supervisor
+    /// did not answer in time.
+    NotCurrent,
+    /// The retained buffer is shorter than the requested offset: it was reset.
+    Reset,
+}
+
+/// The new 16 kHz samples from output offset `from_output`, computed with the
+/// same formula as `audio::resample` so they equal that slice of the whole-clip
+/// resample. Only copies the new samples, never the whole buffer. Output
+/// samples whose interpolation needs a source sample that has not arrived yet
+/// are left for the next call (and for the final stop, which owns the tail).
+pub(crate) fn snapshot_since(shared: &[f32], sample_rate: u32, from_output: usize) -> PeekSince {
+    let target = WHISPER_SAMPLE_RATE;
+    if sample_rate == 0 {
+        return PeekSince::NotCurrent;
+    }
+    if sample_rate == target {
+        return match shared.get(from_output..) {
+            Some(tail) => PeekSince::Samples(tail.to_vec()),
+            None => PeekSince::Reset,
+        };
+    }
+    if sample_rate > target && sample_rate.is_multiple_of(target) {
+        let step = (sample_rate / target) as usize;
+        let available = shared.len() / step;
+        if from_output > available {
+            return PeekSince::Reset;
+        }
+        return PeekSince::Samples(
+            (from_output..available)
+                .map(|index| shared[index * step])
+                .collect(),
+        );
+    }
+    let ratio = f64::from(sample_rate) / f64::from(target);
+    let total = (shared.len() as f64 / ratio) as usize;
+    if from_output > total {
+        return PeekSince::Reset;
+    }
+    let mut out = Vec::new();
+    for index in from_output..total {
+        let source = index as f64 * ratio;
+        let source_index = source as usize;
+        if source_index + 1 >= shared.len() {
+            break;
+        }
+        let fraction = source - source_index as f64;
+        out.push(
+            shared[source_index] * (1.0 - fraction as f32)
+                + shared[source_index + 1] * fraction as f32,
+        );
+    }
+    PeekSince::Samples(out)
+}
+
 fn recording_duration_since_ready(ready_at: Option<Instant>, now: Instant) -> Duration {
     ready_at
         .map(|ready| now.saturating_duration_since(ready))
@@ -2313,7 +2488,7 @@ fn begin_recovery(
     if reason != AudioCancelReason::User {
         sink.invalidate_input_health(current.device_id.as_deref());
     }
-    let _ = current.command_sender.send(AudioCommand::Stop);
+    let _ = current.send_worker_stop();
     current.phase = AttemptPhase::Recovering;
     current.recovery_reason = Some(reason);
     current.stopping_started_at = Some(Instant::now());
@@ -2454,7 +2629,7 @@ fn handle_deadlines_at(
             || current.input_topology_generation
                 != INPUT_TOPOLOGY_GENERATION.load(Ordering::Acquire)
         {
-            if current.command_sender.send(AudioCommand::Stop).is_ok() {
+            if current.send_worker_stop().is_ok() {
                 current.recording_stop_owner = Some(current.owner);
                 sink.notify(
                     current.app_handle.as_ref(),
@@ -2754,11 +2929,18 @@ pub(crate) fn start_corpus_recording(
     .map_err(|error| error.to_string())
 }
 
+/// `released_at` is the native key-release instant behind a `HoldRelease`
+/// stop; the release tail is measured from it, not from this call.
 pub(crate) fn stop_dictation_recording(
     recording_id: u64,
     trigger: DictationStopTrigger,
+    released_at: Option<Instant>,
 ) -> Result<Vec<f32>, String> {
-    stop_with_trigger(Some(AudioOwner::Dictation(recording_id)), trigger)
+    stop_with_trigger(
+        Some(AudioOwner::Dictation(recording_id)),
+        trigger,
+        released_at,
+    )
 }
 
 /// Read only the retained sample count at a native stop-key press. Never queue,
@@ -2801,6 +2983,27 @@ pub(crate) fn peek_dictation_samples(
         .ok()?
 }
 
+/// Clone only the 16 kHz samples recorded since `from_output` (an output-sample
+/// offset) without stopping capture. Used by the incremental VAD so each poll
+/// copies the new audio, not the whole recording.
+pub(crate) fn peek_dictation_samples_since(recording_id: u64, from_output: usize) -> PeekSince {
+    let (response_sender, response_receiver) = mpsc::channel();
+    if supervisor()
+        .sender
+        .send(SupervisorMessage::PeekSince {
+            owner: AudioOwner::Dictation(recording_id),
+            from_output,
+            response: response_sender,
+        })
+        .is_err()
+    {
+        return PeekSince::NotCurrent;
+    }
+    response_receiver
+        .recv_timeout(SUPERVISOR_RESPONSE_TIMEOUT)
+        .unwrap_or(PeekSince::NotCurrent)
+}
+
 pub(crate) fn stop_preview_recording(preview_id: u64) -> Result<Vec<f32>, String> {
     stop(Some(AudioOwner::Preview(preview_id)))
 }
@@ -2815,18 +3018,20 @@ pub(crate) fn stop_corpus_recording(capture_id: u64) -> Result<Vec<f32>, String>
 }
 
 fn stop(owner: Option<AudioOwner>) -> Result<Vec<f32>, String> {
-    stop_with_trigger(owner, DictationStopTrigger::Other)
+    stop_with_trigger(owner, DictationStopTrigger::Other, None)
 }
 
 fn stop_with_trigger(
     owner: Option<AudioOwner>,
     trigger: DictationStopTrigger,
+    released_at: Option<Instant>,
 ) -> Result<Vec<f32>, String> {
     let (response_sender, response_receiver) = mpsc::channel();
     supervisor()
         .sender
         .send(SupervisorMessage::Stop {
             trigger,
+            released_at,
             owner,
             response: response_sender,
         })
@@ -3415,6 +3620,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                released_at: None,
                 trigger: DictationStopTrigger::Other,
                 owner: Some(AudioOwner::Preview(526)),
                 response,
@@ -3427,6 +3633,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                released_at: None,
                 trigger: DictationStopTrigger::Other,
                 owner: Some(AudioOwner::Preview(525)),
                 response,
@@ -3477,6 +3684,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                released_at: None,
                 trigger: DictationStopTrigger::Other,
                 owner: Some(AudioOwner::Preview(525)),
                 response,
@@ -3724,6 +3932,7 @@ mod tests {
                 let before = Instant::now();
                 handle_message(
                     SupervisorMessage::Stop {
+                        released_at: None,
                         owner: Some(owner),
                         trigger,
                         response,
@@ -3784,6 +3993,497 @@ mod tests {
                 finish_attempt(&mut attempt, &sink, &public);
             }
         }
+    }
+
+    #[test]
+    fn hold_release_tail_is_anchored_to_the_native_release_instant() {
+        let tail = audio::DICTATION_RELEASE_TAIL;
+        let release = Instant::now();
+        // Whatever the stop spent travelling rdev -> webview -> IPC -> lock ->
+        // target snapshot (1.5 ms median natively), the native stop is due
+        // exactly one tail after the key came up.
+        for travel_ms in [0_u64, 1, 2, 12, 30, 49, 50] {
+            let accepted = release + Duration::from_millis(travel_ms);
+            assert_eq!(
+                tail_deadline(
+                    DictationStopTrigger::HoldRelease,
+                    Some(release),
+                    accepted,
+                    tail
+                ),
+                release + tail,
+                "stop accepted {travel_ms} ms after release"
+            );
+        }
+    }
+
+    #[test]
+    fn audio_after_release_is_the_tail_exactly_and_never_less() {
+        let tail = audio::DICTATION_RELEASE_TAIL;
+        let release = Instant::now();
+        // The helper is told to stop at the later of "now" and the deadline.
+        // Sweep the whole range, including stops slower than the tail.
+        for travel_ms in 0..=300_u64 {
+            let accepted = release + Duration::from_millis(travel_ms);
+            let deadline = tail_deadline(
+                DictationStopTrigger::HoldRelease,
+                Some(release),
+                accepted,
+                tail,
+            );
+            let stop_issued = deadline.max(accepted);
+            let after_release = stop_issued - release;
+            assert!(
+                after_release >= tail,
+                "tail shortened to {after_release:?} at {travel_ms} ms"
+            );
+            if travel_ms <= 50 {
+                assert_eq!(after_release, tail, "tail drifted at {travel_ms} ms");
+            } else {
+                // A stop slower than the tail is not anchored (the stamp is no
+                // longer fresh): it gets the base behaviour, a full tail from
+                // the accepted stop, so audio after the release only grows.
+                assert_eq!(stop_issued, accepted + tail, "{travel_ms} ms");
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_hold_release_is_anchored_to_a_release_stamp() {
+        let tail = audio::DICTATION_RELEASE_TAIL;
+        let accepted = Instant::now();
+        let release = accepted - Duration::from_millis(20);
+        for trigger in [
+            DictationStopTrigger::Toggle,
+            DictationStopTrigger::Overlay,
+            DictationStopTrigger::AutoStop,
+            DictationStopTrigger::Other,
+        ] {
+            assert_eq!(
+                tail_deadline(trigger, Some(release), accepted, tail),
+                accepted + tail,
+                "{trigger:?} must keep measuring from the accepted stop"
+            );
+        }
+        // A hold release with no native stamp (stamp expired or unmatched)
+        // also falls back to the accepted stop.
+        assert_eq!(
+            tail_deadline(DictationStopTrigger::HoldRelease, None, accepted, tail),
+            accepted + tail
+        );
+        // A zero tail (explicit toggle stop) stays zero.
+        assert_eq!(
+            tail_deadline(DictationStopTrigger::Toggle, None, accepted, Duration::ZERO),
+            accepted
+        );
+    }
+
+    #[test]
+    fn a_stale_release_never_shortens_the_tail_below_the_base_behaviour() {
+        // Release R1's stop never arrived, recording N kept running, and the
+        // user released again (R2) up to 10 s later. R2's stamp was dropped, so
+        // the stop finds R1. Anchoring to it would put the deadline in the
+        // past and end the audio at the real release R2.
+        let tail = audio::DICTATION_RELEASE_TAIL;
+        let accepted = Instant::now();
+        for age in [
+            Duration::from_millis(51),
+            Duration::from_millis(500),
+            Duration::from_secs(3),
+            Duration::from_secs(10),
+        ] {
+            let stale = accepted - age;
+            assert_eq!(
+                tail_deadline(
+                    DictationStopTrigger::HoldRelease,
+                    Some(stale),
+                    accepted,
+                    tail
+                ),
+                accepted + tail,
+                "a {age:?} old release must give the accepted-stop deadline"
+            );
+            assert!(release_anchor(
+                DictationStopTrigger::HoldRelease,
+                Some(stale),
+                accepted,
+                tail
+            )
+            .is_none());
+        }
+    }
+
+    #[test]
+    fn a_release_is_fresh_for_exactly_one_tail() {
+        let tail = audio::DICTATION_RELEASE_TAIL;
+        let accepted = Instant::now();
+        let at_limit = accepted - tail;
+        assert_eq!(
+            release_anchor(
+                DictationStopTrigger::HoldRelease,
+                Some(at_limit),
+                accepted,
+                tail
+            ),
+            Some(at_limit)
+        );
+        assert_eq!(
+            tail_deadline(
+                DictationStopTrigger::HoldRelease,
+                Some(at_limit),
+                accepted,
+                tail
+            ),
+            accepted
+        );
+        let just_stale = at_limit - Duration::from_nanos(1);
+        assert_eq!(
+            release_anchor(
+                DictationStopTrigger::HoldRelease,
+                Some(just_stale),
+                accepted,
+                tail
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn only_a_caller_that_can_be_a_hold_release_may_anchor_to_a_stamp() {
+        assert!(DictationStopTrigger::HoldRelease.may_anchor_to_release());
+        // The hold-down-stop handlers request the stop with the default.
+        assert!(DictationStopTrigger::default().may_anchor_to_release());
+        for explicit in [
+            DictationStopTrigger::Toggle,
+            DictationStopTrigger::Overlay,
+            DictationStopTrigger::AutoStop,
+        ] {
+            assert!(
+                !explicit.may_anchor_to_release(),
+                "{explicit:?} must not be anchored by a stamp it did not drive"
+            );
+        }
+    }
+
+    #[test]
+    fn a_stamp_the_caller_did_not_drive_gives_the_accepted_stop_deadline() {
+        // The command path: the anchor is taken from the trigger as requested,
+        // then `resolve` turns any stamped stop into a hold release.
+        let tail = audio::DICTATION_RELEASE_TAIL;
+        let accepted = Instant::now();
+        let deadline_for = |requested: DictationStopTrigger, age: Duration| {
+            let release = crate::hotkey_release::HotkeyRelease::for_test(accepted - age, accepted);
+            let resolved = requested.resolve(Some(release));
+            assert_eq!(resolved, DictationStopTrigger::HoldRelease);
+            tail_deadline(
+                resolved,
+                requested.tail_anchor(Some(release)),
+                accepted,
+                tail,
+            )
+        };
+        for requested in [
+            DictationStopTrigger::Toggle,
+            DictationStopTrigger::Overlay,
+            DictationStopTrigger::AutoStop,
+        ] {
+            // Even a perfectly fresh stamp does not anchor a stop it did not drive.
+            for age in [Duration::from_millis(10), Duration::from_secs(3)] {
+                assert_eq!(
+                    deadline_for(requested, age),
+                    accepted + tail,
+                    "{requested:?} {age:?}"
+                );
+            }
+        }
+        for requested in [
+            DictationStopTrigger::HoldRelease,
+            DictationStopTrigger::Other,
+        ] {
+            let fresh = Duration::from_millis(10);
+            assert_eq!(deadline_for(requested, fresh), accepted - fresh + tail);
+            // The stale-stamp scenario: R1's stop never arrived and R2's stamp was
+            // dropped, so a 3 s old stamp meets the stop for R2.
+            assert_eq!(
+                deadline_for(requested, Duration::from_secs(3)),
+                accepted + tail
+            );
+        }
+    }
+
+    #[test]
+    fn warm_standby_stop_keeps_the_accepted_stop_deadline() {
+        let tail = audio::DICTATION_RELEASE_TAIL;
+        let commands = Arc::new(Mutex::new(None));
+        let factory = TailPolicyFactory(commands.clone());
+        let events = AudioWorkerEventSender::new(|_| Ok(()));
+        let public = PublicState::default();
+        let sink = RecordingSink::default();
+        let owner = AudioOwner::Dictation(705);
+        let mut attempt = None;
+        let (response, _started) = mpsc::channel();
+        handle_start(
+            StartRequest {
+                gesture: gesture::StartGesture::default(),
+                caller_alive: Arc::new(AtomicBool::new(true)),
+                owner,
+                app_handle: None,
+                device_id: None,
+                origin: "hold".to_string(),
+                wait_until_ready: false,
+                response,
+                probe_permit: None,
+            },
+            &mut attempt,
+            &events,
+            &factory,
+            &sink,
+            &public,
+        );
+        handle_worker_event(
+            AudioWorkerEvent::FirstBuffer {
+                owner,
+                sample_rate: WHISPER_SAMPLE_RATE,
+                sent_at: Instant::now(),
+            },
+            &mut attempt,
+            &sink,
+            &public,
+        );
+        attempt.as_mut().unwrap().standby_policy.seconds = 300;
+        let release = Instant::now() - Duration::from_millis(20);
+        let before = Instant::now();
+        let (response, _result) = mpsc::channel();
+        handle_message(
+            SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::HoldRelease,
+                released_at: Some(release),
+                owner: Some(owner),
+                response,
+            },
+            &mut attempt,
+            &events,
+            &factory,
+            &sink,
+            &public,
+        );
+        // The standby snapshot is not a helper fence: it keeps the full tail
+        // from the accepted stop, which absorbs PCM still in flight.
+        let deadline = attempt.as_ref().unwrap().tail_deadline.unwrap();
+        assert!(deadline >= before + tail, "{:?}", deadline - before);
+        assert!(deadline > release + tail);
+        finish_attempt(&mut attempt, &sink, &public);
+    }
+
+    #[test]
+    fn a_release_stamp_from_the_future_cannot_lengthen_the_tail() {
+        let tail = audio::DICTATION_RELEASE_TAIL;
+        let accepted = Instant::now();
+        let bogus = accepted + Duration::from_secs(5);
+        assert_eq!(
+            tail_deadline(
+                DictationStopTrigger::HoldRelease,
+                Some(bogus),
+                accepted,
+                tail
+            ),
+            accepted + tail
+        );
+    }
+
+    #[test]
+    fn supervisor_stops_the_helper_one_tail_after_the_release_not_after_the_stop_message() {
+        let tail = audio::DICTATION_RELEASE_TAIL;
+        let commands = Arc::new(Mutex::new(None));
+        let factory = TailPolicyFactory(commands.clone());
+        let events = AudioWorkerEventSender::new(|_| Ok(()));
+        let public = PublicState::default();
+        let sink = RecordingSink::default();
+        let owner = AudioOwner::Dictation(703);
+        let mut attempt = None;
+        let (response, _started) = mpsc::channel();
+        handle_start(
+            StartRequest {
+                gesture: gesture::StartGesture::default(),
+                caller_alive: Arc::new(AtomicBool::new(true)),
+                owner,
+                app_handle: None,
+                device_id: None,
+                origin: "hold".to_string(),
+                wait_until_ready: false,
+                response,
+                probe_permit: None,
+            },
+            &mut attempt,
+            &events,
+            &factory,
+            &sink,
+            &public,
+        );
+        handle_worker_event(
+            AudioWorkerEvent::FirstBuffer {
+                owner,
+                sample_rate: WHISPER_SAMPLE_RATE,
+                sent_at: Instant::now(),
+            },
+            &mut attempt,
+            &sink,
+            &public,
+        );
+        attempt.as_mut().unwrap().standby_policy.seconds = 0;
+        // The stop message reaches the supervisor 20 ms after the key came up.
+        let release = Instant::now() - Duration::from_millis(20);
+        let (response, result) = mpsc::channel();
+        handle_message(
+            SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::HoldRelease,
+                released_at: Some(release),
+                owner: Some(owner),
+                response,
+            },
+            &mut attempt,
+            &events,
+            &factory,
+            &sink,
+            &public,
+        );
+        let deadline = attempt.as_ref().unwrap().tail_deadline.unwrap();
+        assert_eq!(deadline, release + tail);
+        let commands = commands.lock().unwrap().take().unwrap();
+        // One nanosecond early the helper must still be recording...
+        handle_deadlines_at(
+            &mut attempt,
+            &sink,
+            &public,
+            SupervisorConfig::default(),
+            deadline - Duration::from_nanos(1),
+        );
+        assert!(matches!(
+            commands.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        // ...and at the deadline the native stop is issued, exactly once.
+        handle_deadlines_at(
+            &mut attempt,
+            &sink,
+            &public,
+            SupervisorConfig::default(),
+            deadline,
+        );
+        assert!(matches!(commands.try_recv(), Ok(AudioCommand::Stop)));
+        assert!(matches!(
+            commands.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        // Stopped is only reported by the worker after the native stream stop:
+        // nothing was delivered by the deadline alone.
+        assert!(matches!(result.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        finish_attempt(&mut attempt, &sink, &public);
+    }
+
+    struct WakeProbeFactory {
+        woke_after: Sender<Duration>,
+    }
+
+    impl WorkerFactory for WakeProbeFactory {
+        fn spawn(
+            &self,
+            spec: AudioWorkerSpec,
+            _events: AudioWorkerEventSender,
+        ) -> Result<JoinHandle<()>, String> {
+            spec.shared
+                .lock()
+                .unwrap()
+                .append_pcm(&[0.25; 160], WHISPER_SAMPLE_RATE);
+            let woke_after = self.woke_after.clone();
+            // Stand in for the capture worker's blocking wait on helper
+            // output, with a timeout far longer than the test.
+            let (reader_tx, reader_rx) = mpsc::channel::<audio::HelperRead>();
+            spec.wake.install(reader_tx);
+            Ok(std::thread::spawn(move || {
+                let waiting_since = Instant::now();
+                let read = reader_rx.recv_timeout(Duration::from_secs(30));
+                if matches!(read, Ok(audio::HelperRead::Wake))
+                    && matches!(spec.command_receiver.try_recv(), Ok(AudioCommand::Stop))
+                {
+                    let _ = woke_after.send(waiting_since.elapsed());
+                }
+            }))
+        }
+    }
+
+    #[test]
+    fn stop_wakes_a_worker_blocked_on_helper_output_without_waiting_for_a_poll() {
+        let (woke_after, woke) = mpsc::channel();
+        let factory = WakeProbeFactory { woke_after };
+        let events = AudioWorkerEventSender::new(|_| Ok(()));
+        let public = PublicState::default();
+        let sink = RecordingSink::default();
+        let owner = AudioOwner::Dictation(704);
+        let mut attempt = None;
+        let (response, _started) = mpsc::channel();
+        handle_start(
+            StartRequest {
+                gesture: gesture::StartGesture::default(),
+                caller_alive: Arc::new(AtomicBool::new(true)),
+                owner,
+                app_handle: None,
+                device_id: None,
+                origin: "toggle".to_string(),
+                wait_until_ready: false,
+                response,
+                probe_permit: None,
+            },
+            &mut attempt,
+            &events,
+            &factory,
+            &sink,
+            &public,
+        );
+        handle_worker_event(
+            AudioWorkerEvent::FirstBuffer {
+                owner,
+                sample_rate: WHISPER_SAMPLE_RATE,
+                sent_at: Instant::now(),
+            },
+            &mut attempt,
+            &sink,
+            &public,
+        );
+        attempt.as_mut().unwrap().standby_policy.seconds = 0;
+        std::thread::sleep(Duration::from_millis(30));
+        // Toggle has no tail, so the supervisor issues the stop at once.
+        let (response, _result) = mpsc::channel();
+        handle_message(
+            SupervisorMessage::Stop {
+                trigger: DictationStopTrigger::Toggle,
+                released_at: None,
+                owner: Some(owner),
+                response,
+            },
+            &mut attempt,
+            &events,
+            &factory,
+            &sink,
+            &public,
+        );
+        let deadline = attempt.as_ref().unwrap().tail_deadline.unwrap();
+        handle_deadlines_at(
+            &mut attempt,
+            &sink,
+            &public,
+            SupervisorConfig::default(),
+            deadline,
+        );
+        let elapsed = woke
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the blocked worker never saw the stop");
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "worker was woken by its timeout, not by the stop: {elapsed:?}"
+        );
+        finish_attempt(&mut attempt, &sink, &public);
     }
 
     #[test]
@@ -3853,6 +4553,7 @@ mod tests {
         let (response, result) = mpsc::channel();
         handle_message(
             SupervisorMessage::Stop {
+                released_at: None,
                 owner: Some(owner),
                 trigger: DictationStopTrigger::Toggle,
                 response,
@@ -4054,6 +4755,7 @@ mod tests {
             supervisor
                 .sender
                 .send(SupervisorMessage::Stop {
+                    released_at: None,
                     owner: Some(owner),
                     trigger: DictationStopTrigger::Toggle,
                     response,
@@ -4160,6 +4862,7 @@ mod tests {
             supervisor
                 .sender
                 .send(SupervisorMessage::Stop {
+                    released_at: None,
                     owner: Some(owner),
                     trigger: DictationStopTrigger::Toggle,
                     response,
@@ -4367,6 +5070,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                released_at: None,
                 owner: Some(owner),
                 trigger: DictationStopTrigger::Toggle,
                 response,
@@ -4982,6 +5686,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                released_at: None,
                 trigger: DictationStopTrigger::Other,
                 owner: Some(owner),
                 response: response_sender,
@@ -5147,6 +5852,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                released_at: None,
                 trigger: DictationStopTrigger::Other,
                 owner: Some(owner),
                 response: response_sender,
@@ -5206,6 +5912,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                released_at: None,
                 trigger: DictationStopTrigger::Other,
                 owner: Some(owner),
                 response: stop_sender,
@@ -5223,6 +5930,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                released_at: None,
                 trigger: DictationStopTrigger::Other,
                 owner: Some(owner),
                 response: second_stop_sender,
@@ -5273,6 +5981,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                released_at: None,
                 trigger: DictationStopTrigger::Other,
                 owner: Some(owner),
                 response: stop_sender,
@@ -5770,6 +6479,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                released_at: None,
                 trigger: DictationStopTrigger::Other,
                 owner: Some(owner),
                 response: response_sender,
@@ -5817,6 +6527,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                released_at: None,
                 trigger: DictationStopTrigger::Other,
                 owner: Some(owner),
                 response: response_sender,
@@ -5855,6 +6566,7 @@ mod tests {
         supervisor
             .sender
             .send(SupervisorMessage::Stop {
+                released_at: None,
                 trigger: DictationStopTrigger::Other,
                 owner: Some(retry_owner),
                 response: retry_stop_sender,

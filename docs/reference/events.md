@@ -10,7 +10,8 @@ For commands see [commands.md](commands.md). For the hooks that consume these ev
 
 | Event | Payload | Source | When it fires | Listeners |
 |-------|---------|--------|---------------|-----------|
-| `audio-level` | `f32` (RMS 0.0–1.0) | `audio.rs` | Continuously during capture, throttled to ~60fps (16ms minimum gap). | Overlay (`useWaveform`), main window (`useRecordingState`). |
+| `audio-level` | `f32` (RMS 0.0–1.0) | `audio.rs` | Continuously during capture, `emit_to("main")` at up to ~60/s (16ms minimum gap). The raw stream Stop on Silence and the recording bar were written against. | Main window (`useRecordingState`, `useSilenceAutoStop`, the corpus recorder). |
+| `overlay-audio-level` | `f32` (RMS 0.0–1.0, peak-held) | `audio.rs` | Continuously during capture, `emit_to("overlay")` at up to ~30/s, carrying the loudest level since the last emit. Its own name because a frontend `listen()` receives every emission of its event name regardless of the `emit_to` label: sharing `audio-level` would deliver both streams to each window. | Overlay (`useWaveform`). |
 | `audio-input-inventory-changed` | `AudioInputInventorySnapshot {schemaVersion: 2, revision, status, devices, defaultInputId, lidState, errorCode}` | `audio_inventory.rs` | Targeted to the main and overlay windows after a passive-worker invalidation, startup refresh, or five-minute fallback refresh materially changes topology, default input, availability, or error state. Device metadata records native transport, connectivity, and input capability; it never derives a class from a label. Unchanged refreshes emit nothing; a refresh requested during capture is coalesced until joined-worker `Idle`. Labels and stable IDs remain local. | `useAudioInputInventory`; Settings, overlay, settings migration, and the corpus recorder consume its validated snapshot. |
 | `microphone-preview-level` | `{previewId, rms, peak, classification}` | `audio.rs` | Targeted to the main window at display rate while the exact Preview owner is active. Samples are aggregated between emissions; classification is `no_signal`, `too_quiet`, `signal_detected`, or `clipping`. Preview never emits `audio-level`. | Settings (`MicrophoneInputTest`, requestAnimationFrame direct DOM updates). |
 | `microphone-preview-vad` | `{previewId, sensitivity, decision}` | `microphone_preview.rs` | When the actual Silero VAD decision changes for the exact Preview generation. A bounded trailing window is analyzed off the capture thread at most every 400 ms. Decision is `speech_detected`, `no_speech`, or `unavailable`; results from older slider revisions are discarded. | Settings (`MicrophoneInputTest`). |
@@ -141,6 +142,25 @@ window lifecycle. It carries a positive `recording_id` and an `outcome` of
 targeted partial event. The preview webview requests `shown` only after React
 commits non-empty text for the current recording. Both schemas strip transcript
 text, paths, and raw errors in debug and release builds.
+
+`pipeline.vad_stream_outcome` (streaming speech detection, off by default)
+records how the Stop-time VAD was obtained for one recording: `recording_id`,
+`outcome` (`used`, `no_speech_recheck`, or a fallback reason: `not_started`,
+`model_load`, `inference`, `contended`, `buffer_reset`, `length_mismatch`,
+`prefix_mismatch`, `backlog`),
+and numeric `tail_windows`, `total_windows` and `finish_ms`. Exact-schema
+sanitized in every build; no audio, text or paths.
+
+`pipeline.stream_reuse_outcome` (decode while speaking, same setting) records,
+once per dictation whose setting was on, whether Stop stitched pieces decoded
+during recording: `recording_id`, `outcome` (`reused`, or the reason the whole
+clip was decoded: `inactive`, `no_commit`, `decode_error`, `overlap_mismatch`,
+`window_cap`, `buffer_reset`, `superseded`, `long_recording`,
+`vad_not_incremental`, `bounds_mismatch`, `audio_mismatch`, `tail_too_long`,
+`busy`, `stitch_mismatch`, `tail_decode_error`), and numeric `piece_count`,
+`decoded_ms` (audio decoded at Stop; on a fallback the whole clip plus any discarded tail decode) and `overlap_words`. Exact-schema
+sanitized in every build; no audio, text or paths. The preview tick outcome
+`stop_pending` marks a tick skipped because the stop gesture had begun (for every dictation, whatever the setting).
 
 The weekly reliability contract is opt-in per request through numeric
 `slo_contract: 1` on `pipeline.dictation_requested`; older requests never enter

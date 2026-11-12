@@ -188,13 +188,13 @@ never enter this event.
 
 | API | Purpose |
 | --- | --- |
-| `list_performance_runs` | Read newest supported V1 runs, bounded to 200 |
+| `list_performance_runs` | Read newest supported V1 runs, bounded to 200 (blocking pool, never the main thread) |
 | `get_performance_run` | Read one V1 run by opaque ID |
 | `get_performance_resource_window` | Read the persistent ten-minute sample window |
 | `get_performance_store_health` | Read available/unavailable state and bounded recovery evidence |
 | `recover_performance_store` | Explicitly retry initialization without restarting Murmur; destructive reinitialization requires confirmed caller intent |
 | `clear_performance_diagnostics` | Clear only the diagnostics database |
-| `show_diagnostics_window` | Show the persistent pop-out on an exact allowlisted tab |
+| `show_diagnostics_window` | Show the persistent pop-out on an exact allowlisted tab. The pop-out is created hidden at launch and loads nothing until it is first shown (the tab request or a focus activates it); after that it stays live |
 | `performance-run-completed` | Live typed completion event |
 | `performance-resource-sample` | Live typed one-second sample event |
 
@@ -319,8 +319,9 @@ start-to-first-retained-PCM, total readiness, confirmed stop-to-helper-exit,
 fallback attempt/result, and stable failure evidence. Readiness and stop/error
 checkpoints persist off the capture path. Completion records whether the actual
 retained sample array was empty; a missing measurement never becomes zero.
-The `audio.stop_tail_applied` log records the accepted stop trigger and applied
-`release_tail_ms` (0 for explicit toggle stops with standby disabled; 50 for
+The `audio.stop_tail_applied` log records the accepted stop trigger, the applied
+`release_tail_ms`, whether the tail was anchored to the key-release instant, and
+the `tail_remaining_ms` at acceptance (0 for explicit toggle stops with standby disabled; 50 for
 all standby stops, held-key releases and conservative overlay/auto-stop/unknown
 sources). The supervisor owns that tail;
 helper stop-to-exit timing starts when the worker receives Stop and excludes it.

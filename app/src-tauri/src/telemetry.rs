@@ -269,6 +269,8 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "pipeline.dictation_failed" => Some("pipeline.dictation_failed"),
         "pipeline.dictation_partial_tick" => Some("pipeline.dictation_partial_tick"),
         "pipeline.preview_vad_disagreement" => Some("pipeline.preview_vad_disagreement"),
+        "pipeline.vad_stream_outcome" => Some("pipeline.vad_stream_outcome"),
+        "pipeline.stream_reuse_outcome" => Some("pipeline.stream_reuse_outcome"),
         "pipeline.dictation_preview_presentation" => {
             Some("pipeline.dictation_preview_presentation")
         }
@@ -279,6 +281,9 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "system.main_thread_watch_started" => Some("system.main_thread_watch_started"),
         "system.main_thread_span" => Some("system.main_thread_span"),
         "system.main_thread_paste_span" => Some("system.main_thread_paste_span"),
+        "system.main_thread_stack" => Some("system.main_thread_stack"),
+        "system.main_thread_rates" => Some("system.main_thread_rates"),
+        "pipeline.dictation_stage_gaps" => Some("pipeline.dictation_stage_gaps"),
         "homophone_context.backoff_entered" => Some("homophone_context.backoff_entered"),
         "homophone_context.backoff_exited" => Some("homophone_context.backoff_exited"),
         "homophone_context.prewarm_requested" => Some("homophone_context.prewarm_requested"),
@@ -479,6 +484,7 @@ fn sanitize_dictation_partial_tick_event(data: &mut serde_json::Map<String, serd
                 value,
                 "unsupported_model"
                     | "in_flight"
+                    | "stop_pending"
                     | "no_context"
                     | "too_short"
                     | "emitted"
@@ -496,6 +502,75 @@ fn sanitize_dictation_partial_tick_event(data: &mut serde_json::Map<String, serd
     });
 }
 
+fn is_vad_stream_outcome_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("pipeline.vad_stream_outcome")
+}
+
+/// Workstream E1: numbers and an enum only; never audio or text.
+fn sanitize_vad_stream_outcome_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    data.retain(|key, value| match key.as_str() {
+        "event_code" => value.as_str() == Some("pipeline.vad_stream_outcome"),
+        "recording_id" => value.as_u64().is_some_and(|value| value > 0),
+        "tail_windows" | "total_windows" => value.as_u64().is_some_and(|value| value <= 10_000_000),
+        "finish_ms" => value.as_u64().is_some_and(|value| value <= 3_600_000),
+        "outcome" => value.as_str().is_some_and(|value| {
+            matches!(
+                value,
+                "used"
+                    | "no_speech_recheck"
+                    | "not_started"
+                    | "model_load"
+                    | "inference"
+                    | "buffer_reset"
+                    | "length_mismatch"
+                    | "prefix_mismatch"
+                    | "contended"
+                    | "backlog"
+            )
+        }),
+        _ => false,
+    });
+}
+
+fn is_stream_reuse_outcome_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("pipeline.stream_reuse_outcome")
+}
+
+/// Workstream E2: an enum and numbers only; never audio or text.
+fn sanitize_stream_reuse_outcome_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    data.retain(|key, value| match key.as_str() {
+        "event_code" => value.as_str() == Some("pipeline.stream_reuse_outcome"),
+        "recording_id" => value.as_u64().is_some_and(|value| value > 0),
+        "piece_count" => value.as_u64().is_some_and(|value| value <= 10_000),
+        "decoded_ms" => value.as_u64().is_some_and(|value| value <= 3_600_000),
+        "overlap_words" => value.as_u64().is_some_and(|value| value <= 100_000),
+        "outcome" => value.as_str().is_some_and(|value| {
+            matches!(
+                value,
+                "reused"
+                    | "inactive"
+                    | "no_commit"
+                    | "decode_error"
+                    | "overlap_mismatch"
+                    | "window_cap"
+                    | "buffer_reset"
+                    | "superseded"
+                    | "long_recording"
+                    | "vad_not_incremental"
+                    | "bounds_mismatch"
+                    | "audio_mismatch"
+                    | "tail_too_long"
+                    | "busy"
+                    | "stitch_mismatch"
+                    | "tail_decode_error"
+            )
+        }),
+        _ => false,
+    });
+}
+
 fn is_main_thread_watch_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
     matches!(
         data.get("event_code").and_then(serde_json::Value::as_str),
@@ -504,8 +579,45 @@ fn is_main_thread_watch_event(data: &serde_json::Map<String, serde_json::Value>)
                 | "system.main_thread_watch_started"
                 | "system.main_thread_span"
                 | "system.main_thread_paste_span"
+                | "system.main_thread_stack"
+                | "system.main_thread_rates"
         )
     )
+}
+
+fn is_dictation_stage_gaps_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("pipeline.dictation_stage_gaps")
+}
+
+/// Stage-gap timings are numbers of microseconds and one recording id. Keep
+/// that exact schema in every build.
+fn sanitize_dictation_stage_gaps_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    data.retain(|key, value| match key.as_str() {
+        "event_code" => true,
+        "recording_id" => value.as_u64().is_some_and(|id| id > 0),
+        "total_us"
+        | "unattributed_us"
+        | "capture_finalization_us"
+        | "handoff_us"
+        | "pipeline_prologue_us"
+        | "vad_us"
+        | "vad_blocking_queue_us"
+        | "pre_backend_us"
+        | "backend_acquire_us"
+        | "backend_model_queue_us"
+        | "backend_model_load_us"
+        | "backend_decode_us"
+        | "backend_release_us"
+        | "transform_setup_us"
+        | "transform_us"
+        | "post_transform_us"
+        | "delivery_us"
+        | "pipeline_return_us"
+        | "idle_status_emit_us"
+        | "tail_us" => value.as_u64().is_some(),
+        _ => false,
+    });
 }
 
 /// Main-thread diagnostics carry only static labels, ids, monotonic
@@ -525,8 +637,10 @@ fn sanitize_main_thread_watch_event(data: &mut serde_json::Map<String, serde_jso
         match (code, key.as_str()) {
             (_, "event_code") => true,
             ("system.main_thread_watch_started", key) => match key {
-                "epoch_unix_ms" | "log_span_min_us" | "slow_paste_us" => number,
-                "observers_installed" | "reporter_started" => boolean,
+                "epoch_unix_ms" | "log_span_min_us" | "slow_paste_us" | "stack_first_sample_us" => {
+                    number
+                }
+                "observers_installed" | "reporter_started" | "stack_sampling" => boolean,
                 _ => false,
             },
             ("system.main_thread_span" | "system.main_thread_paste_span", key) => match key {
@@ -555,6 +669,28 @@ fn sanitize_main_thread_watch_event(data: &mut serde_json::Map<String, serde_jso
                 "on_main" => boolean,
                 _ => false,
             },
+            ("system.main_thread_stack", key) => match key {
+                "sample" => matches!(value.as_u64(), Some(1 | 2)),
+                "busy_us" | "start_us" | "start_unix_ms" | "suppressed" | "held_us" => number,
+                "sampling_stopped" => boolean,
+                "frame_count" => value.as_u64().is_some_and(|count| {
+                    (1..=crate::main_thread_watch::stack::MAX_FRAMES as u64).contains(&count)
+                }),
+                "frames" => value
+                    .as_str()
+                    .is_some_and(crate::main_thread_watch::stack::is_safe_frames),
+                _ => false,
+            },
+            (
+                "system.main_thread_rates",
+                "window_us"
+                | "start_unix_ms"
+                | "audio_level_emits"
+                | "overlay_audio_level_emits"
+                | "ipc_invokes"
+                | "ipc_main_invokes"
+                | "ipc_main_us",
+            ) => number,
             ("pipeline.main_thread_paste_wait", key) => match key {
                 "recording_id" => value.as_u64().is_some_and(|id| id > 0),
                 "outcome" => matches!(value.as_str(), Some("started" | "not_started")),
@@ -1619,7 +1755,12 @@ fn sanitized_summary(
         == Some("pipeline.delivery_target_verified")
     {
         "Dictation delivery target verification".to_string()
-    } else if data.as_object().is_some_and(is_main_thread_watch_event) {
+    } else if data.as_object().is_some_and(|map| {
+        is_main_thread_watch_event(map)
+            || is_dictation_stage_gaps_event(map)
+            || is_vad_stream_outcome_event(map)
+            || is_stream_reuse_outcome_event(map)
+    }) {
         // Constant in every build; the useful facts are the typed fields.
         data["event_code"]
             .as_str()
@@ -1954,12 +2095,24 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
         sanitize_dictation_partial_tick_event(obj);
         return;
     }
+    if is_vad_stream_outcome_event(obj) {
+        sanitize_vad_stream_outcome_event(obj);
+        return;
+    }
+    if is_stream_reuse_outcome_event(obj) {
+        sanitize_stream_reuse_outcome_event(obj);
+        return;
+    }
     if is_dictation_preview_presentation_event(obj) {
         sanitize_dictation_preview_presentation_event(obj);
         return;
     }
     if is_main_thread_watch_event(obj) {
         sanitize_main_thread_watch_event(obj);
+        return;
+    }
+    if is_dictation_stage_gaps_event(obj) {
+        sanitize_dictation_stage_gaps_event(obj);
         return;
     }
     if is_dictation_terminal_event(obj) {
@@ -3782,12 +3935,77 @@ mod tests {
     }
 
     #[test]
+    fn vad_stream_outcome_schema_is_exact_and_content_free_in_every_build() {
+        for debug_build in [true, false] {
+            for outcome in ["used", "no_speech_recheck", "prefix_mismatch", "model_load"] {
+                let mut data = serde_json::json!({
+                    "event_code": "pipeline.vad_stream_outcome",
+                    "recording_id": 9,
+                    "outcome": outcome,
+                    "tail_windows": 8,
+                    "total_windows": 3_750,
+                    "finish_ms": 2,
+                    "text": "SENTINEL_TRANSCRIPT",
+                    "path": "/Users/private/project"
+                });
+                sanitize_event_data("pipeline", &mut data, debug_build);
+                assert_eq!(data["outcome"], outcome);
+                assert_eq!(data["tail_windows"], 8);
+                assert_eq!(data["total_windows"], 3_750);
+                assert_eq!(data["finish_ms"], 2);
+                assert_eq!(data.as_object().unwrap().len(), 6);
+                assert!(!serde_json::to_string(&data).unwrap().contains("SENTINEL"));
+            }
+            let mut free_outcome = serde_json::json!({
+                "event_code": "pipeline.vad_stream_outcome",
+                "recording_id": 9,
+                "outcome": "SENTINEL",
+            });
+            sanitize_event_data("pipeline", &mut free_outcome, debug_build);
+            assert!(free_outcome.get("outcome").is_none());
+        }
+    }
+
+    #[test]
+    fn stream_reuse_outcome_schema_is_exact_and_content_free_in_every_build() {
+        for debug_build in [true, false] {
+            for outcome in ["reused", "stitch_mismatch", "inactive", "bounds_mismatch"] {
+                let mut data = serde_json::json!({
+                    "event_code": "pipeline.stream_reuse_outcome",
+                    "recording_id": 9,
+                    "outcome": outcome,
+                    "piece_count": 3,
+                    "decoded_ms": 4_200,
+                    "overlap_words": 12,
+                    "text": "SENTINEL_TRANSCRIPT",
+                    "path": "/Users/private/project"
+                });
+                sanitize_event_data("pipeline", &mut data, debug_build);
+                assert_eq!(data["outcome"], outcome);
+                assert_eq!(data["piece_count"], 3);
+                assert_eq!(data["decoded_ms"], 4_200);
+                assert_eq!(data["overlap_words"], 12);
+                assert_eq!(data.as_object().unwrap().len(), 6);
+                assert!(!serde_json::to_string(&data).unwrap().contains("SENTINEL"));
+            }
+            let mut free_outcome = serde_json::json!({
+                "event_code": "pipeline.stream_reuse_outcome",
+                "recording_id": 9,
+                "outcome": "SENTINEL",
+            });
+            sanitize_event_data("pipeline", &mut free_outcome, debug_build);
+            assert!(free_outcome.get("outcome").is_none());
+        }
+    }
+
+    #[test]
     fn dictation_partial_tick_schema_is_exact_and_content_free_in_every_build() {
         for debug_build in [true, false] {
             for outcome in [
                 "emitted",
                 "emit_failed",
                 "stopped",
+                "stop_pending",
                 "model_unavailable",
                 "backend_unavailable",
                 "decode_error",
@@ -3918,6 +4136,205 @@ mod tests {
                 sanitized_summary("pipeline", Some("free text".into()), &wait, debug_build),
                 "pipeline.main_thread_paste_wait"
             );
+        }
+    }
+
+    #[test]
+    fn main_thread_stack_event_keeps_symbol_names_and_numbers_only_in_every_build() {
+        for debug_build in [true, false] {
+            let frames = "libsystem_kernel.dylib!mach_msg2_trap;AppKit!-[NSView layout];ui!_ZN2ui4main17h0123456789abcdefE;?!?";
+            let mut stack = serde_json::json!({
+                "event_code": "system.main_thread_stack",
+                "sample": 1,
+                "busy_us": 61_000,
+                "start_us": 5_000_000,
+                "start_unix_ms": 1_700_000_000_000u64,
+                "frame_count": 4,
+                "frames": frames,
+                "held_us": 9,
+                "sampling_stopped": false,
+                "suppressed": 2,
+                "transcript": "SENTINEL_TRANSCRIPT",
+                "thread_name": "SENTINEL_THREAD",
+            });
+            sanitize_event_data("system", &mut stack, debug_build);
+            assert_eq!(stack["frames"], frames);
+            assert_eq!(stack["held_us"], 9);
+            assert_eq!(stack["sampling_stopped"], false);
+            assert_eq!(stack.as_object().unwrap().len(), 10);
+            assert!(!serde_json::to_string(&stack).unwrap().contains("SENTINEL"));
+            assert_eq!(
+                sanitized_summary(
+                    "system",
+                    Some("free text SENTINEL".into()),
+                    &stack,
+                    debug_build
+                ),
+                "system.main_thread_stack"
+            );
+
+            // Anything that could carry content or a path drops the field.
+            for bad in [
+                "ui!f; /Users/george/Documents/private.txt",
+                "ui!f\"quoted secret\"",
+                "ui!f=secret",
+                "ui!f\nSENTINEL",
+                "SENTINEL_NO_BANG",
+                "ui!two SENTINEL words",
+                "Some Image!f",
+                "",
+            ] {
+                let mut data = serde_json::json!({
+                    "event_code": "system.main_thread_stack",
+                    "sample": 2,
+                    "frame_count": 1,
+                    "frames": bad,
+                });
+                sanitize_event_data("system", &mut data, debug_build);
+                assert!(data.get("frames").is_none(), "{bad:?} survived");
+                assert_eq!(data["sample"], 2);
+            }
+            let mut too_long = serde_json::json!({
+                "event_code": "system.main_thread_stack",
+                "frames": "a".repeat(crate::main_thread_watch::stack::MAX_FRAMES_LEN + 1),
+                "frame_count": crate::main_thread_watch::stack::MAX_FRAMES + 1,
+                "sample": 3,
+                "sampling_stopped": "yes",
+                "held_us": "9",
+            });
+            sanitize_event_data("system", &mut too_long, debug_build);
+            assert_eq!(too_long.as_object().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn main_thread_rates_and_watch_started_schemas_are_numbers_and_booleans_only() {
+        for debug_build in [true, false] {
+            let mut rates = serde_json::json!({
+                "event_code": "system.main_thread_rates",
+                "window_us": 1_000_123,
+                "start_unix_ms": 1_700_000_000_000u64,
+                "audio_level_emits": 33,
+                "overlay_audio_level_emits": 17,
+                "ipc_invokes": 60,
+                "ipc_main_invokes": 7,
+                "ipc_main_us": 1_800,
+                "command": "SENTINEL_COMMAND",
+                "audio_level_emits_text": "33",
+            });
+            sanitize_event_data("system", &mut rates, debug_build);
+            assert_eq!(rates.as_object().unwrap().len(), 8);
+            assert_eq!(rates["audio_level_emits"], 33);
+            assert_eq!(rates["overlay_audio_level_emits"], 17);
+            assert!(!serde_json::to_string(&rates).unwrap().contains("SENTINEL"));
+            let mut stringly = serde_json::json!({
+                "event_code": "system.main_thread_rates",
+                "ipc_invokes": "SENTINEL",
+                "audio_level_emits": -1,
+            });
+            sanitize_event_data("system", &mut stringly, debug_build);
+            assert_eq!(stringly.as_object().unwrap().len(), 1);
+            assert_eq!(
+                sanitized_summary("system", Some("rates SENTINEL".into()), &rates, debug_build),
+                "system.main_thread_rates"
+            );
+
+            let mut started = serde_json::json!({
+                "event_code": "system.main_thread_watch_started",
+                "epoch_unix_ms": 1,
+                "observers_installed": true,
+                "reporter_started": true,
+                "log_span_min_us": 10_000,
+                "slow_paste_us": 20_000,
+                "stack_sampling": true,
+                "stack_first_sample_us": 50_000,
+                "path": "/Users/SENTINEL",
+            });
+            sanitize_event_data("system", &mut started, debug_build);
+            assert_eq!(started.as_object().unwrap().len(), 8);
+            assert_eq!(started["stack_sampling"], true);
+            assert_eq!(started["stack_first_sample_us"], 50_000);
+        }
+    }
+
+    #[test]
+    fn labelled_apply_spans_keep_their_static_labels_in_every_build() {
+        for debug_build in [true, false] {
+            for label in [
+                "applied.window.set_size",
+                "overlay.detect_notch",
+                "overlay.dock_prefs",
+                "preview.follow_overlay",
+            ] {
+                let mut span = serde_json::json!({
+                    "event_code": "system.main_thread_span",
+                    "kind": "job",
+                    "label": label,
+                    "start_us": 1,
+                    "start_unix_ms": 2,
+                    "duration_us": 0,
+                    "queue_us": 41_000,
+                    "on_main": true,
+                    "longest_phase": "",
+                    "longest_phase_us": 0,
+                    "segments": 0,
+                });
+                sanitize_event_data("system", &mut span, debug_build);
+                assert_eq!(span["label"], label);
+                assert_eq!(span["queue_us"], 41_000);
+            }
+        }
+    }
+
+    #[test]
+    fn dictation_stage_gaps_schema_is_numbers_and_one_recording_id_in_every_build() {
+        for debug_build in [true, false] {
+            let mut gaps = serde_json::json!({
+                "event_code": "pipeline.dictation_stage_gaps",
+                "recording_id": 12,
+                "total_us": 160_000,
+                "unattributed_us": 700,
+                "capture_finalization_us": 22_000,
+                "handoff_us": 40,
+                "pipeline_prologue_us": 90,
+                "vad_us": 9_000,
+                "vad_blocking_queue_us": 80,
+                "pre_backend_us": 30,
+                "backend_acquire_us": 400,
+                "backend_model_queue_us": 0,
+                "backend_model_load_us": 0,
+                "backend_decode_us": 75_000,
+                "backend_release_us": 20,
+                "transform_setup_us": 15,
+                "transform_us": 1_000,
+                "post_transform_us": 300,
+                "delivery_us": 5_000,
+                "pipeline_return_us": 12,
+                "idle_status_emit_us": 100,
+                "tail_us": 50,
+                "text": "SENTINEL_TRANSCRIPT",
+                "model": "SENTINEL_MODEL",
+                "outcome": "success",
+            });
+            sanitize_event_data("pipeline", &mut gaps, debug_build);
+            assert_eq!(gaps.as_object().unwrap().len(), 22);
+            assert_eq!(gaps["unattributed_us"], 700);
+            assert!(!serde_json::to_string(&gaps).unwrap().contains("SENTINEL"));
+            assert_eq!(
+                sanitized_summary("pipeline", Some("gaps SENTINEL".into()), &gaps, debug_build),
+                "pipeline.dictation_stage_gaps"
+            );
+
+            let mut invalid = serde_json::json!({
+                "event_code": "pipeline.dictation_stage_gaps",
+                "recording_id": 0,
+                "total_us": "SENTINEL",
+                "tail_us": -4,
+                "vad_us": 1,
+            });
+            sanitize_event_data("pipeline", &mut invalid, debug_build);
+            assert_eq!(invalid.as_object().unwrap().len(), 2);
+            assert_eq!(invalid["vad_us"], 1);
         }
     }
 

@@ -392,7 +392,7 @@ Murmur’s optional OpenCode color theme follows Hex’s theme integration at
 
 Murmur’s optional warm capture standby and bounded pre-roll design are adapted from Hex’s dictation capture at `a07f994` (`audio.rs`, `audio_lifecycle.rs`).
 
-Murmur's Smart Auto-Stop log-mel feature extractor and Smart Turn ONNX session setup (`app/src-tauri/src/smart_turn.rs`) and the pause segmenter (`app/src-tauri/src/preview_pause.rs`) are adapted from Hex at commit `a07f994`.
+Murmur's Smart Auto-Stop log-mel feature extractor and Smart Turn ONNX session setup (`app/src-tauri/src/smart_turn.rs`) are adapted from Hex at commit `a07f994`.
 
 Parts of Murmur's dictation test harnesses are adapted from Hex at commit
 `a07f994` (the release-boundary tail harness and its speech-end detector in
@@ -403,6 +403,32 @@ Parts of Murmur's dictation test harnesses are adapted from Hex at commit
 MIT License
 
 Copyright (c) 2026 Christopher Langton
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## Silero VAD v5.1.2
+
+Streaming speech detection (off by default) optionally downloads the Silero VAD v5.1.2 ONNX model (`silero_vad.onnx`) from the pinned commit of the upstream repository when the user turns it on. The model is not stored in this repository.
+
+- Source: https://github.com/snakers4/silero-vad
+
+MIT License. Copyright (c) 2020-present Silero Team
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

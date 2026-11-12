@@ -200,6 +200,11 @@ pub struct DictationState {
     #[serde(default)]
     pub vocabulary_entries: Vec<VocabularyEntry>,
     pub smart_punctuation: bool,
+    /// Experimental: score speech with an incremental VAD while recording so
+    /// Stop has no whole-clip VAD pass (workstream E1). Off by default; the
+    /// batch VAD remains the fallback. Resolved once at recording start.
+    #[serde(default)]
+    pub streaming_pipeline_enabled: bool,
     pub save_transcript: bool,
     pub save_audio: bool,
     /// Opt-in: mirror each final transcript to a local file NotchPill can tail.
@@ -270,6 +275,7 @@ impl Default for DictationState {
             custom_vocabulary: String::new(),
             vocabulary_entries: Vec::new(),
             smart_punctuation: true,
+            streaming_pipeline_enabled: false,
             save_transcript: false,
             save_audio: false,
             mirror_to_notchpill: false,
@@ -363,8 +369,11 @@ pub struct AppState {
     /// Exact recording generation currently owning the single live partial decode.
     pub dictation_partial_in_flight_id: AtomicU64,
     pub preview_holds_backend: AtomicBool,
-    #[cfg(feature = "preview-decode-reuse")]
-    pub preview_reuse: Mutex<crate::preview_reuse::PreviewReuse>,
+    /// Decode-while-speaking session for the current recording (streaming
+    /// setting, workstream E2). Inactive unless the recording asked for it.
+    pub stream_reuse: Mutex<crate::stream_reuse::StreamReuse>,
+    /// Incremental Silero VAD for the current recording (streaming setting).
+    pub vad_stream: crate::vad_stream::StreamSlot,
     /// Last generation with a nonempty display-only decode; contains no text.
     pub dictation_nonempty_preview_id: AtomicU64,
     /// Exactly-once producer guard for accepted live-dictation terminal events.
@@ -472,8 +481,8 @@ impl AppState {
             .is_some_and(|context| context.recording_id == recording_id)
         {
             *active = None;
-            #[cfg(feature = "preview-decode-reuse")]
-            self.preview_reuse.lock_or_recover().clear(recording_id);
+            self.vad_stream.clear(recording_id);
+            self.stream_reuse.lock_or_recover().clear(recording_id);
             true
         } else {
             false
@@ -511,8 +520,8 @@ impl Default for AppState {
             recording_id: AtomicU64::new(0),
             dictation_partial_in_flight_id: AtomicU64::new(0),
             preview_holds_backend: AtomicBool::new(false),
-            #[cfg(feature = "preview-decode-reuse")]
-            preview_reuse: Mutex::new(crate::preview_reuse::PreviewReuse::default()),
+            stream_reuse: Mutex::new(crate::stream_reuse::StreamReuse::default()),
+            vad_stream: crate::vad_stream::StreamSlot::default(),
             dictation_nonempty_preview_id: AtomicU64::new(0),
             dictation_telemetry: crate::dictation_telemetry::DictationTelemetry::default(),
             transcript_session_id: AtomicU64::new(0),
