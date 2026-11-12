@@ -59,6 +59,9 @@ pub(crate) const STACK_FIRST_SAMPLE_US: u64 = 50_000;
 pub(crate) const STACK_SECOND_SAMPLE_US: u64 = 250_000;
 /// Stack events allowed per [`STACK_WINDOW_US`]; the rest are counted.
 const MAX_STACKS_PER_WINDOW: u32 = 8;
+/// One capture may hold the main thread this long (it normally takes a few
+/// microseconds). Past it, sampling turns itself off for the process.
+pub(crate) const STACK_MAX_HOLD_US: u64 = 2_000;
 const STACK_WINDOW_US: u64 = 60_000_000;
 /// Marker blocks that came up faster than this are not recorded.
 const APPLIED_RECORD_MIN_US: u64 = 1_000;
@@ -765,7 +768,22 @@ struct Reporter {
     rates: RatePacer,
 }
 
+/// The reporter suspends the main thread for each stack sample, so it must
+/// never be the one that waits to be scheduled: run it at the main thread's
+/// own priority.
+#[cfg(target_os = "macos")]
+fn raise_reporter_priority() {
+    // SAFETY: sets the calling thread's own QoS class.
+    unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn raise_reporter_priority() {}
+
 fn reporter_loop() {
+    raise_reporter_priority();
     let mut reporter = Reporter {
         history: VecDeque::with_capacity(RING_CAPACITY),
         scratch: Vec::with_capacity(RING_CAPACITY),
@@ -798,6 +816,8 @@ struct StackPacer {
     window_start_us: u64,
     in_window: u32,
     suppressed: u64,
+    /// Set once a capture held the main thread too long.
+    disabled: bool,
 }
 
 impl StackPacer {
@@ -838,7 +858,7 @@ impl StackPacer {
 #[derive(Default)]
 struct RatePacer {
     bucket_start_us: u64,
-    last_idle_log_us: u64,
+    last_idle_log_us: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -868,12 +888,14 @@ impl RatePacer {
         bucket.window_us = window_us;
         let recording = bucket.audio_level_emits > 0;
         let busy_idle = bucket.ipc_invokes >= RATE_IDLE_MIN_INVOKES
-            && now.saturating_sub(self.last_idle_log_us) >= RATE_IDLE_LOG_US;
+            && self
+                .last_idle_log_us
+                .is_none_or(|last| now.saturating_sub(last) >= RATE_IDLE_LOG_US);
         if recording {
             return Some(bucket);
         }
         if busy_idle {
-            self.last_idle_log_us = now;
+            self.last_idle_log_us = Some(now);
             return Some(bucket);
         }
         None
@@ -898,6 +920,9 @@ impl Reporter {
         let Some(target) = STACK_TARGET.get() else {
             return;
         };
+        if self.stacks.disabled {
+            return;
+        }
         let since = BUSY_SINCE_US.load(Ordering::Acquire);
         let Some(sample) = self.stacks.due(since, now) else {
             return;
@@ -906,11 +931,21 @@ impl Reporter {
             return;
         }
         let mut raw = [0u64; stack::MAX_FRAMES];
-        let count = stack::capture(*target, &mut raw);
+        let captured = stack::capture(*target, &mut raw);
+        let count = captured.frames;
         let captured_at = now_us();
+        // A suspension this long means the reporter was descheduled while
+        // it held the main thread. Stop sampling for the rest of the run.
+        let stopped = captured.held_us > STACK_MAX_HOLD_US;
+        if stopped {
+            self.stacks.disabled = true;
+        }
         // The stretch ended while the thread was being read: the stack is
-        // not the stall's, so drop it.
-        if count == 0 || BUSY_SINCE_US.load(Ordering::Acquire) != since {
+        // not the stall's, so drop it, unless the hold itself was too long.
+        if !stopped && (count == 0 || BUSY_SINCE_US.load(Ordering::Acquire) != since) {
+            return;
+        }
+        if count == 0 {
             return;
         }
         let symbolised = stack::symbolise(&raw[..count]);
@@ -924,6 +959,8 @@ impl Reporter {
             start_unix_ms = unix_ms_at(since),
             frame_count = count as u64,
             frames = symbolised.as_str(),
+            held_us = captured.held_us,
+            sampling_stopped = stopped,
             suppressed,
             "main-thread stack sample"
         );
@@ -1333,6 +1370,7 @@ pub(crate) mod stack {
                     | '&'
                     | '!'
                     | '@'
+                    | '?'
                     | ' '
             )
     }
@@ -1452,10 +1490,19 @@ pub(crate) mod stack {
         }
     }
 
+    /// What one capture produced.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub(crate) struct Capture {
+        /// Return addresses written, innermost first; 0 when the thread could
+        /// not be read.
+        pub(crate) frames: usize,
+        /// Wall time the target stayed suspended, in microseconds.
+        pub(crate) held_us: u64,
+    }
+
     /// Raw return addresses of `target`, innermost first, written to `out`.
-    /// Returns how many were written; 0 when the thread could not be read.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    pub(crate) fn capture(target: Target, out: &mut [u64; MAX_FRAMES]) -> usize {
+    pub(crate) fn capture(target: Target, out: &mut [u64; MAX_FRAMES]) -> Capture {
         #[repr(C)]
         struct ArmThreadState64 {
             x: [u64; 29],
@@ -1490,6 +1537,7 @@ pub(crate) mod stack {
         };
         let mut count = STATE_COUNT;
         let mut written = 0usize;
+        let suspended_at = std::time::Instant::now();
 
         // SAFETY: Mach thread calls on a port the process owns. Between
         // suspend and resume this code only reads registers and loads from
@@ -1497,7 +1545,7 @@ pub(crate) mod stack {
         // nothing that allocates, locks, logs, or can panic.
         unsafe {
             if thread_suspend(target.port) != 0 {
-                return 0;
+                return Capture::default();
             }
             let got = thread_get_state(
                 target.port,
@@ -1562,15 +1610,19 @@ pub(crate) mod stack {
                 attempts += 1;
             }
         }
+        let held_us = u64::try_from(suspended_at.elapsed().as_micros()).unwrap_or(u64::MAX);
         if written > 0 && out.first().copied().unwrap_or(0) == 0 {
-            return 0;
+            return Capture { frames: 0, held_us };
         }
-        written
+        Capture {
+            frames: written,
+            held_us,
+        }
     }
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-    pub(crate) fn capture(_target: Target, _out: &mut [u64; MAX_FRAMES]) -> usize {
-        0
+    pub(crate) fn capture(_target: Target, _out: &mut [u64; MAX_FRAMES]) -> Capture {
+        Capture::default()
     }
 }
 
@@ -2025,5 +2077,261 @@ mod tests {
             0,
             10_000
         )));
+    }
+    #[test]
+    fn a_busy_stretch_is_sampled_once_at_50ms_and_once_more_at_250ms() {
+        let mut pacer = StackPacer::default();
+        let since = 1_000_000;
+        assert_eq!(pacer.due(0, since + 900_000), None);
+        assert_eq!(pacer.due(since, since + STACK_FIRST_SAMPLE_US - 1), None);
+        assert_eq!(pacer.due(since, since + STACK_FIRST_SAMPLE_US), Some(1));
+        assert!(pacer.admit(1, since + STACK_FIRST_SAMPLE_US));
+        // The same stretch is not sampled again before the second mark.
+        assert_eq!(pacer.due(since, since + 200_000), None);
+        assert_eq!(pacer.due(since, since + STACK_SECOND_SAMPLE_US), Some(2));
+        assert!(pacer.admit(2, since + STACK_SECOND_SAMPLE_US));
+        assert_eq!(pacer.due(since, since + 5_000_000), None);
+        // A new stretch starts over.
+        let next = since + 6_000_000;
+        assert_eq!(pacer.due(next, next + STACK_FIRST_SAMPLE_US), Some(1));
+    }
+
+    #[test]
+    fn stack_events_are_rate_limited_per_minute_and_the_rest_are_counted() {
+        let mut pacer = StackPacer::default();
+        let start = 10_000_000;
+        for i in 0..MAX_STACKS_PER_WINDOW {
+            assert!(pacer.admit(1, start + u64::from(i)));
+        }
+        assert!(!pacer.admit(1, start + 1_000));
+        assert!(!pacer.admit(2, start + 2_000));
+        assert_eq!(pacer.suppressed, 2);
+        // A refused sample is still consumed: the stretch is not retried.
+        assert_eq!(pacer.samples_taken, 2);
+        assert!(pacer.admit(1, start + STACK_WINDOW_US));
+        assert_eq!(pacer.in_window, 1);
+    }
+
+    #[test]
+    fn rates_skip_the_startup_remainder_then_log_each_second_of_recording() {
+        let mut pacer = RatePacer::default();
+        let busy = |emits| RateBucket {
+            audio_level_emits: emits,
+            ..RateBucket::default()
+        };
+        // The first call only starts the clock and discards what it finds.
+        assert_eq!(pacer.close(5_000_000, || busy(99)), None);
+        assert_eq!(pacer.close(5_500_000, || busy(3)), None);
+        let logged = pacer
+            .close(6_000_000, || busy(12))
+            .expect("a second of audio");
+        assert_eq!(logged.audio_level_emits, 12);
+        assert_eq!(logged.window_us, 1_000_000);
+        // Idle seconds with a few invokes stay quiet.
+        let quiet = |invokes| RateBucket {
+            ipc_invokes: invokes,
+            ..RateBucket::default()
+        };
+        assert_eq!(
+            pacer.close(7_000_000, || quiet(RATE_IDLE_MIN_INVOKES - 1)),
+            None
+        );
+        // A burst of invokes while idle logs, at most once per idle interval.
+        assert!(pacer.close(8_000_000, || quiet(40)).is_some());
+        assert_eq!(pacer.close(9_000_000, || quiet(40)), None);
+        assert!(pacer
+            .close(8_000_000 + RATE_IDLE_LOG_US, || quiet(40))
+            .is_some());
+    }
+
+    #[test]
+    fn counters_are_swapped_to_zero_by_the_reporter() {
+        let _guard = enable_for_test();
+        take_rate_counters();
+        count_audio_level_emit();
+        count_audio_level_emit();
+        IPC_INVOKES.fetch_add(5, Ordering::Relaxed);
+        let bucket = take_rate_counters();
+        assert_eq!(bucket.audio_level_emits, 2);
+        assert_eq!(bucket.ipc_invokes, 5);
+        assert_eq!(take_rate_counters(), RateBucket::default());
+    }
+
+    #[test]
+    fn an_applied_marker_is_recorded_only_when_it_waited() {
+        let _guard = enable_for_test();
+        applied::record_marker("applied.test.fast", 100, 100 + APPLIED_RECORD_MIN_US - 1);
+        applied::record_marker("applied.test.slow", 100, 100 + 40_000);
+        let spans = drain_ring();
+        assert!(spans.iter().all(|s| s.label != "applied.test.fast"));
+        let slow = spans
+            .iter()
+            .find(|s| s.label == "applied.test.slow")
+            .expect("slow marker");
+        assert_eq!(slow.queue_us, 40_000);
+        assert_eq!(slow.duration_us, 0);
+        assert!(is_safe_label(slow.label));
+        // A marker that waited 20 ms is logged on its own, like a slow job.
+        assert!(should_log_standalone(slow) == (slow.queue_us >= LOG_QUEUE_MIN_US));
+    }
+
+    #[test]
+    fn every_applied_label_is_a_safe_static_identifier() {
+        for label in [
+            "applied.window.set_size",
+            "applied.window.set_position",
+            "applied.window.set_ignore_cursor_events",
+            "applied.overlay.set_size",
+            "applied.overlay.set_position",
+            "applied.overlay.set_ignore_cursor_events",
+            "overlay.detect_notch",
+            "overlay.dock_prefs",
+            "overlay.primary_monitor",
+            "preview.follow_overlay",
+            "overlay_material.apply",
+            "overlay_material.install",
+            "overlay_material.attach",
+            "overlay_material.refit",
+        ] {
+            assert!(is_safe_label(label), "{label}");
+        }
+    }
+
+    #[test]
+    fn frame_text_allows_symbol_punctuation_and_nothing_that_carries_content() {
+        assert!(stack::is_safe_frames(
+            "AppKit!-[NSView layout];ui!core::ops::function::FnOnce::call_once<T>;?!?"
+        ));
+        assert!(stack::is_safe_frames(
+            "libsystem_kernel.dylib!mach_msg2_trap"
+        ));
+        for bad in [
+            "",
+            "ui!f; /Users/george/private.txt",
+            "ui!f\"secret\"",
+            "ui!f=secret",
+            "ui!f\nnext",
+            "ui!f\u{00e9}",
+            "ui!f%20",
+        ] {
+            assert!(!stack::is_safe_frames(bad), "{bad:?}");
+        }
+        assert!(!stack::is_safe_frames(
+            &"a".repeat(stack::MAX_FRAMES_LEN + 1)
+        ));
+    }
+
+    #[test]
+    fn symbolised_frames_are_bounded_names_without_paths() {
+        let addresses = [
+            symbolised_frames_are_bounded_names_without_paths as *const () as usize as u64,
+            1,
+            u64::MAX,
+        ];
+        let text = stack::symbolise(&addresses);
+        assert!(stack::is_safe_frames(&text), "{text}");
+        assert!(!text.contains('/'), "{text}");
+        assert_eq!(text.split(';').count(), addresses.len());
+        assert_eq!(stack::symbolise(&[]), "?");
+        let many = vec![
+            symbolised_frames_are_bounded_names_without_paths as *const () as usize
+                as u64;
+            200
+        ];
+        assert!(stack::symbolise(&many).len() <= stack::MAX_FRAMES_LEN);
+    }
+
+    /// Sample a thread that is spinning in this process and check the result is
+    /// bounded, named, and quick. The sampled thread keeps running afterwards.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn a_running_thread_can_be_sampled_without_holding_it() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc;
+
+        #[inline(never)]
+        fn spin_here_for_the_sampler(stop: &AtomicBool, ticks: &AtomicU64) {
+            while !stop.load(Ordering::Relaxed) {
+                ticks.fetch_add(1, Ordering::Relaxed);
+                std::hint::spin_loop();
+            }
+        }
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let ticks = Arc::new(AtomicU64::new(0));
+        let (tx, rx) = mpsc::channel();
+        let worker = {
+            let (stop, ticks) = (stop.clone(), ticks.clone());
+            std::thread::spawn(move || {
+                tx.send(stack::Target::current().expect("target")).unwrap();
+                spin_here_for_the_sampler(&stop, &ticks);
+            })
+        };
+        let target = rx.recv().unwrap();
+        while ticks.load(Ordering::Relaxed) == 0 {
+            std::thread::yield_now();
+        }
+        let mut best_held_us = u64::MAX;
+        let mut frames_seen = 0;
+        for _ in 0..50 {
+            let mut raw = [0u64; stack::MAX_FRAMES];
+            let captured = stack::capture(target, &mut raw);
+            best_held_us = best_held_us.min(captured.held_us);
+            frames_seen = frames_seen.max(captured.frames);
+            if captured.frames > 0 {
+                let text = stack::symbolise(&raw[..captured.frames]);
+                assert!(stack::is_safe_frames(&text), "{text}");
+                assert!(captured.frames <= stack::MAX_FRAMES);
+            }
+        }
+        assert!(frames_seen >= 2, "frames {frames_seen}");
+        // The usual hold is microseconds; the limit leaves room for a loaded CI host.
+        assert!(best_held_us < 5_000, "held {best_held_us} us");
+        // The sampled thread was resumed: it is still counting.
+        let before = ticks.load(Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(ticks.load(Ordering::Relaxed) > before);
+        stop.store(true, Ordering::Relaxed);
+        worker.join().unwrap();
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn a_sample_names_the_function_the_thread_is_running() {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::mpsc;
+
+        #[inline(never)]
+        fn spin_in_a_named_function(stop: &AtomicBool) {
+            while !stop.load(Ordering::Relaxed) {
+                std::hint::black_box(0u64);
+            }
+        }
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let worker = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                tx.send(stack::Target::current().expect("target")).unwrap();
+                spin_in_a_named_function(&stop);
+            })
+        };
+        let target = rx.recv().unwrap();
+        let mut named = false;
+        for _ in 0..200 {
+            let mut raw = [0u64; stack::MAX_FRAMES];
+            let captured = stack::capture(target, &mut raw);
+            if captured.frames > 0
+                && stack::symbolise(&raw[..captured.frames]).contains("spin_in_a_named_function")
+            {
+                named = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        stop.store(true, Ordering::Relaxed);
+        worker.join().unwrap();
+        assert!(named, "no sample contained the spinning function");
     }
 }

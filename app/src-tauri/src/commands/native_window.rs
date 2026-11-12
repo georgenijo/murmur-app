@@ -285,7 +285,11 @@ impl PopoverSpec {
     pub(crate) fn apply_initial_size(&self, app: &tauri::AppHandle, width: f64, height: f64) {
         use tauri::Manager;
         if let Some(window) = app.get_webview_window(self.label) {
-            let _ = window.set_size(tauri::LogicalSize::new(width, height));
+            let _ = crate::main_thread_watch::queued_section(
+                "window.set_size",
+                "applied.window.set_size",
+                || window.set_size(tauri::LogicalSize::new(width, height)),
+            );
         }
     }
 }
