@@ -4856,6 +4856,7 @@ mod tests {
                     backend_attempt: 1,
                 },
                 &receiver,
+                &WorkerWake::default(),
                 &shared,
                 &Arc::new(AtomicBool::new(false)),
                 &None,
