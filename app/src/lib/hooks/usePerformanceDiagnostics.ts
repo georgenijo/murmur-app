@@ -56,64 +56,79 @@ export function usePerformanceDiagnostics(enabled: boolean) {
   const [cleared, setCleared] = useState(false);
   const [clearing, setClearing] = useState(false);
   const dataGenerationRef = useRef(0);
-  // One read per source at a time. A second request for the same data
-  // generation (React remounting an effect in development, or a retry while a
-  // load is pending) shares the pending read instead of querying SQLite again.
+  // The mount effect shares a pending read, so React remounting an effect in
+  // development does not query SQLite twice. Explicit calls (Refresh, Retry,
+  // recovery) always start a fresh read: a pending read may be the failing one
+  // the user is retrying. A superseded read never writes state, so its stale
+  // error or result cannot overwrite the newer read's.
   const runsInFlightRef = useRef<InFlightRead | null>(null);
   const resourcesInFlightRef = useRef<InFlightRead | null>(null);
 
-  const refreshRuns = useCallback(() => {
+  const readRuns = useCallback((share: boolean) => {
     const pending = runsInFlightRef.current;
-    if (pending && pending.generation === dataGenerationRef.current) return pending.promise;
+    if (share && pending && pending.generation === dataGenerationRef.current) return pending.promise;
     const generation = dataGenerationRef.current;
     const entry = { generation } as InFlightRead;
     runsInFlightRef.current = entry;
+    const current = () => runsInFlightRef.current === entry;
     entry.promise = (async () => {
       setRunsLoading(true);
       setRunsError(null);
       try {
         const response = await listPerformanceRuns(MAX_RUNS);
-        if (generation === dataGenerationRef.current) {
-          setRuns(current => mergeRuns(response.runs, current));
+        if (current() && generation === dataGenerationRef.current) {
+          setRuns(previous => mergeRuns(response.runs, previous));
           if (response.runs.length > 0) setCleared(false);
         }
       } catch (reason) {
-        setRunsError(errorMessage(reason));
+        if (current()) setRunsError(errorMessage(reason));
       } finally {
-        setRunsLoading(false);
-        if (runsInFlightRef.current === entry) runsInFlightRef.current = null;
+        if (current()) {
+          setRunsLoading(false);
+          runsInFlightRef.current = null;
+        }
       }
     })();
     return entry.promise;
   }, []);
 
-  const refreshResources = useCallback(() => {
+  const readResources = useCallback((share: boolean) => {
     const pending = resourcesInFlightRef.current;
-    if (pending && pending.generation === dataGenerationRef.current) return pending.promise;
+    if (share && pending && pending.generation === dataGenerationRef.current) return pending.promise;
     const generation = dataGenerationRef.current;
     const entry = { generation } as InFlightRead;
     resourcesInFlightRef.current = entry;
+    const current = () => resourcesInFlightRef.current === entry;
     entry.promise = (async () => {
       setResourcesLoading(true);
       setResourcesError(null);
       try {
         const response = await getPerformanceResourceWindow();
-        if (generation === dataGenerationRef.current) {
-          setSamples(current => mergeResourceSamples(response, current));
+        if (current() && generation === dataGenerationRef.current) {
+          setSamples(previous => mergeResourceSamples(response, previous));
         }
       } catch (reason) {
-        setResourcesError(errorMessage(reason));
+        if (current()) setResourcesError(errorMessage(reason));
       } finally {
-        setResourcesLoading(false);
-        if (resourcesInFlightRef.current === entry) resourcesInFlightRef.current = null;
+        if (current()) {
+          setResourcesLoading(false);
+          resourcesInFlightRef.current = null;
+        }
       }
     })();
     return entry.promise;
   }, []);
 
+  const refreshRuns = useCallback(() => readRuns(false), [readRuns]);
+  const refreshResources = useCallback(() => readResources(false), [readResources]);
+
   const refresh = useCallback(async () => {
     await Promise.all([refreshRuns(), refreshResources()]);
   }, [refreshResources, refreshRuns]);
+
+  const loadOnMount = useCallback(async () => {
+    await Promise.all([readRuns(true), readResources(true)]);
+  }, [readResources, readRuns]);
 
   const clear = useCallback(async () => {
     dataGenerationRef.current += 1;
@@ -162,12 +177,12 @@ export function usePerformanceDiagnostics(enabled: boolean) {
       setCleared(true);
     }));
 
-    void refresh();
+    void loadOnMount();
     return () => {
       disposed = true;
       for (const unlisten of unlisteners) void unlisten.then(stop => stop());
     };
-  }, [enabled, refresh]);
+  }, [enabled, loadOnMount]);
 
   return {
     runs,

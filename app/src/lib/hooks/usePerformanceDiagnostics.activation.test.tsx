@@ -89,4 +89,33 @@ describe('usePerformanceDiagnostics activation', () => {
     expect(performance.listPerformanceRuns).toHaveBeenCalledTimes(2);
     await act(async () => release?.());
   });
+
+  it('an explicit retry starts a fresh read instead of reusing a failing pending one', async () => {
+    let failFirst: ((reason: Error) => void) | null = null;
+    performance.listPerformanceRuns.mockImplementationOnce(() => new Promise((_resolve, reject) => {
+      failFirst = reject;
+    }));
+    await act(async () => root.render(<Probe enabled />));
+    expect(performance.listPerformanceRuns).toHaveBeenCalledTimes(1);
+    await act(async () => { await latest?.refreshRuns(); });
+    expect(performance.listPerformanceRuns).toHaveBeenCalledTimes(2);
+    expect(latest?.runsError).toBeNull();
+    expect(latest?.runsLoading).toBe(false);
+    // The superseded read fails late; it must not overwrite the newer result.
+    await act(async () => failFirst?.(new Error('stale failure')));
+    expect(latest?.runsError).toBeNull();
+    expect(latest?.runsLoading).toBe(false);
+  });
+
+  it('an explicit resource refresh re-queries while a read is pending', async () => {
+    let release: (() => void) | null = null;
+    performance.getPerformanceResourceWindow.mockImplementationOnce(() => new Promise(resolve => {
+      release = () => resolve([]);
+    }));
+    await act(async () => root.render(<Probe enabled />));
+    await act(async () => { await latest?.refreshResources(); });
+    expect(performance.getPerformanceResourceWindow).toHaveBeenCalledTimes(2);
+    await act(async () => release?.());
+    expect(latest?.resourcesLoading).toBe(false);
+  });
 });

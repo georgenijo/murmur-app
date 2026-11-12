@@ -12,6 +12,16 @@ vi.mock('@tauri-apps/api/event', () => ({
   }),
 }));
 
+const windowState = vi.hoisted(() => ({ tauri: false, visible: false }));
+
+vi.mock('@tauri-apps/api/core', () => ({
+  isTauri: () => windowState.tauri,
+}));
+
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: () => ({ isVisible: async () => windowState.visible }),
+}));
+
 const workspaceMock = vi.hoisted(() => vi.fn());
 
 vi.mock('./DiagnosticsWorkspace', () => ({
@@ -35,6 +45,8 @@ describe('DiagnosticsWindowApp native chrome', () => {
   beforeEach(async () => {
     workspaceMock.mockClear();
     listeners.clear();
+    windowState.tauri = false;
+    windowState.visible = false;
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -102,5 +114,35 @@ describe('DiagnosticsWindowApp native chrome', () => {
       expect((props as { active: boolean }).active).toBe(true);
     }
     expect(lastProps()).toMatchObject({ active: true, requestedTab: 'performance' });
+  });
+
+  it('activates on mount when the window was already visible before the listeners attached', async () => {
+    await act(async () => root.unmount());
+    workspaceMock.mockClear();
+    windowState.tauri = true;
+    windowState.visible = true;
+    root = createRoot(container);
+    await act(async () => root.render(<DiagnosticsWindowApp />));
+    expect(lastProps().active).toBe(true);
+  });
+
+  it('stays inactive on mount when the native window is still hidden', async () => {
+    await act(async () => root.unmount());
+    workspaceMock.mockClear();
+    windowState.tauri = true;
+    windowState.visible = false;
+    root = createRoot(container);
+    await act(async () => root.render(<DiagnosticsWindowApp />));
+    expect(lastProps().active).toBe(false);
+  });
+
+  it('activates on mount when the document already has focus', async () => {
+    await act(async () => root.unmount());
+    workspaceMock.mockClear();
+    const focus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    root = createRoot(container);
+    await act(async () => root.render(<DiagnosticsWindowApp />));
+    expect(lastProps().active).toBe(true);
+    focus.mockRestore();
   });
 });
