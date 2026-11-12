@@ -370,6 +370,12 @@ pub(crate) fn queued_section<T, E>(
 /// check. A relaxed-cost load otherwise. Never blocks, locks, or allocates;
 /// `Thread::unpark` is an atomic swap, plus a semaphore signal when the
 /// target is parked.
+///
+/// The "no lock on the main thread" property relies on std's Darwin parker
+/// being dispatch-semaphore based (current std): `unpark` is then an atomic
+/// swap and, only when the target is parked, a `dispatch_semaphore_signal`.
+/// Older std built the parker on a mutex and condvar, which would take a lock
+/// here. Recheck this when the toolchain changes.
 fn wake_reporter_if_parked() {
     if REPORTER_PARKED.load(Ordering::SeqCst) && REPORTER_PARKED.swap(false, Ordering::SeqCst) {
         if let Some(thread) = REPORTER_THREAD.get() {
@@ -844,24 +850,45 @@ fn reporter_loop() {
         let until_drain =
             DRAIN_INTERVAL_US.saturating_sub(now.saturating_sub(reporter.last_drain_us));
         let idle = Duration::from_micros(until_drain.max(WATCH_POLL_MIN_US));
-        let wait = reporter
+        match reporter
             .stacks
-            .next_wait(since, now, STACK_TARGET.get().is_some(), idle);
-        if wait < idle {
-            // A stretch is being watched: wake at its next sample point.
-            std::thread::park_timeout(wait);
-            continue;
+            .park_plan(since, now, STACK_TARGET.get().is_some(), idle)
+        {
+            ParkPlan::Watch(wait) => {
+                // A stretch is being watched: wake at its next sample point.
+                std::thread::park_timeout(wait);
+            }
+            ParkPlan::Sleep(wait) => {
+                // Sampling is off, so a busy stretch needs no reaction. Sleep
+                // to the next drain without asking the main thread to wake us.
+                std::thread::park_timeout(wait);
+            }
+            ParkPlan::Idle(wait) => {
+                // Nothing to watch yet. Park until the next drain, or until
+                // the main thread starts a stretch. The flag is set before the
+                // last check, and the observer stores the stretch start before
+                // reading the flag, so one of them sees the other and a
+                // stretch is never slept through.
+                REPORTER_PARKED.store(true, Ordering::SeqCst);
+                if BUSY_SINCE_US.load(Ordering::SeqCst) == since {
+                    std::thread::park_timeout(wait);
+                }
+                REPORTER_PARKED.store(false, Ordering::SeqCst);
+            }
         }
-        // Nothing to watch. Park until the next drain, or until the main
-        // thread starts a stretch. The flag is set before the last check, and
-        // the observer stores the stretch start before reading the flag, so
-        // one of them sees the other and a stretch is never slept through.
-        REPORTER_PARKED.store(true, Ordering::SeqCst);
-        if BUSY_SINCE_US.load(Ordering::SeqCst) == since {
-            std::thread::park_timeout(wait);
-        }
-        REPORTER_PARKED.store(false, Ordering::SeqCst);
     }
+}
+
+/// How the reporter waits between looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParkPlan {
+    /// Wake at a busy stretch's next sample point.
+    Watch(Duration),
+    /// Sampling is on and nothing is being watched: park until the drain, and
+    /// let the main thread wake us when a stretch begins.
+    Idle(Duration),
+    /// Sampling is off: sleep until the drain, and ask for no wakeups.
+    Sleep(Duration),
 }
 
 /// What to do with one finished capture.
@@ -926,6 +953,27 @@ impl StackPacer {
             0 if busy_us >= STACK_FIRST_SAMPLE_US => Some(1),
             1 if busy_us >= STACK_SECOND_SAMPLE_US => Some(2),
             _ => None,
+        }
+    }
+
+    /// Whether a busy stretch can still lead to a sample.
+    fn sampling_active(&self, sampling: bool) -> bool {
+        sampling && !self.disabled
+    }
+
+    /// How the reporter should wait next. `Sleep` is a plain timed sleep for
+    /// when sampling is off: it never sets the parked flag, so the main
+    /// thread's run-loop observer is never asked to signal the reporter for
+    /// nothing. `Idle` and `Watch` are for an active sampler.
+    fn park_plan(&self, since_us: u64, now: u64, sampling: bool, idle: Duration) -> ParkPlan {
+        if !self.sampling_active(sampling) {
+            return ParkPlan::Sleep(idle);
+        }
+        let wait = self.next_wait(since_us, now, sampling, idle);
+        if wait < idle {
+            ParkPlan::Watch(wait)
+        } else {
+            ParkPlan::Idle(wait)
         }
     }
 
@@ -2632,26 +2680,76 @@ mod tests {
 
     #[test]
     fn the_reporter_is_woken_only_while_parked_and_only_once() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let handle = std::thread::spawn(move || {
+        use std::sync::mpsc;
+        let (to_main, from_worker) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
             let _ = REPORTER_THREAD.set(std::thread::current());
-            tx.send(()).unwrap();
+            // Phase 1: the flag is clear. A wake call must not unpark us.
+            REPORTER_PARKED.store(false, Ordering::SeqCst);
+            to_main.send(()).unwrap();
             let started = Instant::now();
+            std::thread::park_timeout(Duration::from_millis(900));
+            let unflagged = started.elapsed();
+            // Phase 2: the flag is set. A wake call unparks us, once.
             REPORTER_PARKED.store(true, Ordering::SeqCst);
+            to_main.send(()).unwrap();
+            let started = Instant::now();
             std::thread::park_timeout(Duration::from_secs(10));
-            started.elapsed()
+            (unflagged, started.elapsed())
         });
-        rx.recv().unwrap();
-        // Not parked: no wake, the flag stays as it is.
-        REPORTER_PARKED.store(false, Ordering::SeqCst);
+        from_worker.recv().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
         wake_reporter_if_parked();
         assert!(!REPORTER_PARKED.load(Ordering::SeqCst));
-        // Parked: the first call wakes it and clears the flag, the second does nothing.
-        REPORTER_PARKED.store(true, Ordering::SeqCst);
+        from_worker.recv().unwrap();
+        std::thread::sleep(Duration::from_millis(100));
         wake_reporter_if_parked();
         assert!(!REPORTER_PARKED.load(Ordering::SeqCst));
+        // A second call finds the flag clear and does nothing.
         wake_reporter_if_parked();
-        assert!(handle.join().unwrap() < Duration::from_secs(5));
+        let (unflagged, flagged) = worker.join().unwrap();
+        assert!(
+            unflagged >= Duration::from_millis(800),
+            "woken with the flag clear after {unflagged:?}"
+        );
+        assert!(flagged < Duration::from_secs(5), "{flagged:?}");
+    }
+
+    #[test]
+    fn sampling_off_sleeps_to_the_drain_and_never_asks_to_be_woken() {
+        let idle = Duration::from_millis(200);
+        let since = 4_000_000;
+        // Sampling not installed (no target, or the kill switch): plain sleep,
+        // busy or not.
+        let pacer = StackPacer::default();
+        assert_eq!(
+            pacer.park_plan(0, 5_000_000, false, idle),
+            ParkPlan::Sleep(idle)
+        );
+        assert_eq!(
+            pacer.park_plan(since, since + 10, false, idle),
+            ParkPlan::Sleep(idle)
+        );
+        // Disabled by a long hold: plain sleep too.
+        let mut disabled = StackPacer::default();
+        disabled.apply(judge_capture(STACK_MAX_HOLD_US + 1, 3, 10, 10));
+        assert_eq!(
+            disabled.park_plan(since, since + 10, true, idle),
+            ParkPlan::Sleep(idle)
+        );
+        assert_eq!(
+            disabled.park_plan(0, 5_000_000, true, idle),
+            ParkPlan::Sleep(idle)
+        );
+        // Sampling on: idle parks ask to be woken, a busy stretch is watched.
+        assert_eq!(
+            pacer.park_plan(0, 5_000_000, true, idle),
+            ParkPlan::Idle(idle)
+        );
+        assert_eq!(
+            pacer.park_plan(since, since + 100, true, idle),
+            ParkPlan::Watch(Duration::from_micros(STACK_FIRST_SAMPLE_US - 100))
+        );
     }
 
     #[test]

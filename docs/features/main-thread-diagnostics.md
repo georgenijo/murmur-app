@@ -94,6 +94,13 @@ the reporter sleeps until the stretch's 50 ms mark (and while a stretch is being
 watched it wakes at least every 50 ms), so a stall is sampled at about 50 ms, not
 at the next drain tick. It parks again when the main thread waits.
 
+When sampling is off (the kill switch, a platform without it, or a capture that
+held the main thread over 2 ms), the reporter never sets `REPORTER_PARKED`. It
+sleeps to the next drain with a plain timed park, so the main thread never
+signals it and heavy interaction costs it nothing. The "no lock on the main
+thread" property of the wake relies on std's Darwin parker being dispatch-semaphore
+based (current std); older std used a mutex and condvar.
+
 `frames` is `;`-joined `image!symbol` items, innermost first, at most 24 frames
 and 2,400 characters. The image is a file name, never a path, with no spaces.
 Symbols are the raw `dladdr` names, so Rust frames are mangled (`rustfilt` or
