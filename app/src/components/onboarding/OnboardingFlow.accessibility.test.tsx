@@ -17,6 +17,7 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
   let accessibilityGate: Promise<void> | null;
   let accessibilityOutcome: string | undefined;
   let resetRefusal: string | undefined;
+  let micResetOutcome: string;
 
   const button = (label: string) => {
     const result = Array.from(container.querySelectorAll('button')).find(
@@ -64,6 +65,7 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     accessibilityGate = null;
     accessibilityOutcome = undefined;
     resetRefusal = undefined;
+    micResetOutcome = 'restarting';
     window.localStorage.clear();
     vi.spyOn(document, 'hasFocus').mockReturnValue(true);
     native.listen.mockResolvedValue(() => {});
@@ -91,7 +93,7 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
         case 'request_microphone_access':
         case 'request_microphone_permission':
         case 'open_calendar_preferences':
-        case 'reset_microphone_permission': return 'restarting';
+        case 'reset_microphone_permission': return micResetOutcome;
         case 'reset_calendar_permission': return undefined;
         default: throw new Error(`Unexpected IPC command: ${command}`);
       }
@@ -580,5 +582,14 @@ describe('OnboardingFlow accessibility and permission recovery', () => {
     window.localStorage.setItem('murmur.onboarding.resume', JSON.stringify({ step: 'nonsense', at: Date.now() }));
     await render();
     expect(container.querySelector('h1')?.textContent).toBe('Welcome to Murmur');
+  });
+
+  it('says a microphone reset restart waits for current work when it is pending', async () => {
+    micStatus = 'denied';
+    micResetOutcome = 'restart_pending';
+    await toStep('microphone');
+    await click('Reset permission…');
+    expect(container.textContent).toContain('restarts as soon as your recording, meeting or download finishes');
+    expect(container.textContent).not.toContain('Murmur is restarting to finish the reset');
   });
 });

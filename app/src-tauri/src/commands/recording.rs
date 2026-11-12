@@ -4957,6 +4957,25 @@ pub(crate) fn dictation_start_blocker(
     state: &State,
     status: DictationStatus,
 ) -> Option<DictationStartBlocker> {
+    // A permission relaunch that has committed to exiting refuses new work. The
+    // callers hold the dictation lock, and the relaunch re-reads the activity
+    // gate after it commits, so a start is either seen by that re-read or
+    // refused here.
+    if crate::commands::permissions::relaunch_committed() {
+        return Some(DictationStartBlocker {
+            kind: "busy_restarting",
+            state: "idle",
+        });
+    }
+    dictation_activity_blocker(state, status)
+}
+
+/// What currently occupies dictation, ignoring a committed relaunch. The
+/// relaunch itself asks this, so its own commitment cannot read as activity.
+fn dictation_activity_blocker(
+    state: &State,
+    status: DictationStatus,
+) -> Option<DictationStartBlocker> {
     let blocked = |kind, state| Some(DictationStartBlocker { kind, state });
     if state.app_state.meeting_blocks_asr() {
         return blocked("busy_meeting", "idle");
@@ -4993,8 +5012,23 @@ pub(crate) fn dictation_prepare_admitted(state: &State) -> bool {
 /// The first content-free reason a prepared or key-down capture may not open
 /// now, or `None` when it may.
 pub(crate) fn dictation_prepare_refusal(state: &State) -> Option<&'static str> {
+    dictation_refusal(state, true)
+}
+
+/// Whether anything dictation-related is in progress, for a permission
+/// relaunch. A relaunch that has itself committed does not count.
+pub(crate) fn dictation_relaunch_busy(state: &State) -> Option<&'static str> {
+    dictation_refusal(state, false)
+}
+
+fn dictation_refusal(state: &State, honor_committed_relaunch: bool) -> Option<&'static str> {
     let dictation = state.app_state.dictation.lock_or_recover();
-    if dictation_start_blocker(state, dictation.status).is_some() {
+    let blocker = if honor_committed_relaunch {
+        dictation_start_blocker(state, dictation.status)
+    } else {
+        dictation_activity_blocker(state, dictation.status)
+    };
+    if blocker.is_some() {
         Some("dictation_busy")
     } else if state.app_state.microphone_preview.is_active() {
         Some("preview_active")

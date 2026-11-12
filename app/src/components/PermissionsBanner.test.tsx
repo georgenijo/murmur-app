@@ -6,6 +6,8 @@ import { PermissionsBanner } from './PermissionsBanner';
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   checkMicrophonePermissionStatus: vi.fn(),
+  checkAccessibilityRestartNeeded: vi.fn(),
+  restartMurmurForPermission: vi.fn(),
   requestAccessibilityPermission: vi.fn(),
   resetAccessibilityPermission: vi.fn(),
   resetMicrophonePermission: vi.fn(),
@@ -17,6 +19,8 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 vi.mock('../lib/dictation', () => ({
   checkMicrophonePermissionStatus: () => mocks.checkMicrophonePermissionStatus(),
+  checkAccessibilityRestartNeeded: () => mocks.checkAccessibilityRestartNeeded(),
+  restartMurmurForPermission: () => mocks.restartMurmurForPermission(),
   requestAccessibilityPermission: () => mocks.requestAccessibilityPermission(),
   resetAccessibilityPermission: () => mocks.resetAccessibilityPermission(),
   resetMicrophonePermission: () => mocks.resetMicrophonePermission(),
@@ -39,6 +43,10 @@ describe('PermissionsBanner', () => {
     mocks.invoke.mockImplementation(async (command: string) =>
       command === 'check_accessibility_permission' ? false : undefined);
     mocks.checkMicrophonePermissionStatus.mockResolvedValue('denied');
+    mocks.checkAccessibilityRestartNeeded.mockResolvedValue(false);
+    mocks.restartMurmurForPermission.mockReset();
+    mocks.restartMurmurForPermission.mockResolvedValue('restarting');
+    mocks.requestAccessibilityPermission.mockReset();
     mocks.requestAccessibilityPermission.mockResolvedValue('opened_settings');
     mocks.resetAccessibilityPermission.mockResolvedValue('restarting');
     mocks.resetMicrophonePermission.mockResolvedValue('restarting');
@@ -137,5 +145,78 @@ describe('PermissionsBanner', () => {
     await clickText('Reset microphone permission…');
     expect(container.textContent).toContain(refusal);
     expect(bannerText()).not.toContain('restarting');
+  });
+
+  const grantedExceptRestart = () => {
+    mocks.invoke.mockImplementation(async (command: string) =>
+      command === 'check_accessibility_permission' ? true : 'granted');
+    mocks.checkMicrophonePermissionStatus.mockResolvedValue('granted');
+  };
+  const refocus = async () => {
+    await act(async () => window.dispatchEvent(new Event('focus')));
+    await settle();
+  };
+
+  it('shows no restart notice after a plain Accessibility grant', async () => {
+    grantedExceptRestart();
+    await renderBanner();
+    expect(container.querySelector('[aria-label="Permission warning"]')).toBeNull();
+    expect(mocks.restartMurmurForPermission).not.toHaveBeenCalled();
+  });
+
+  it('shows a restart notice only when this copy cannot use a granted Accessibility, and restarts only on click', async () => {
+    grantedExceptRestart();
+    mocks.checkAccessibilityRestartNeeded.mockResolvedValue(true);
+    await renderBanner();
+    expect(bannerText()).toContain("Accessibility is on, but this running copy of Murmur can't use it yet");
+    // Nothing happens by itself, however long the notice stays up.
+    await settle();
+    expect(mocks.restartMurmurForPermission).not.toHaveBeenCalled();
+    await clickText('Restart Murmur');
+    expect(mocks.restartMurmurForPermission).toHaveBeenCalledTimes(1);
+    expect(bannerText()).toContain('Murmur is restarting');
+  });
+
+  it('shows the busy refusal when Restart Murmur is blocked, and keeps the notice', async () => {
+    grantedExceptRestart();
+    mocks.checkAccessibilityRestartNeeded.mockResolvedValue(true);
+    mocks.restartMurmurForPermission.mockRejectedValueOnce(
+      'Finish your recording, meeting, transcription, download or update first.',
+    );
+    await renderBanner();
+    await clickText('Restart Murmur');
+    expect(bannerText()).toContain('Finish your recording');
+    expect(bannerText()).not.toContain('is restarting');
+    mocks.restartMurmurForPermission.mockResolvedValueOnce('restarting');
+    await clickText('Restart Murmur');
+    expect(mocks.restartMurmurForPermission).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears the restart notice when a later Accessibility query succeeds, and when dismissed', async () => {
+    grantedExceptRestart();
+    mocks.checkAccessibilityRestartNeeded.mockResolvedValue(true);
+    await renderBanner();
+    expect(bannerText()).toContain('Restart Murmur');
+    mocks.checkAccessibilityRestartNeeded.mockResolvedValue(false);
+    await refocus();
+    expect(container.querySelector('[aria-label="Permission warning"]')).toBeNull();
+
+    mocks.checkAccessibilityRestartNeeded.mockResolvedValue(true);
+    await refocus();
+    expect(bannerText()).toContain('Restart Murmur');
+    await act(async () => (container.querySelector('button[aria-label="Dismiss"]') as HTMLButtonElement).click());
+    expect(container.querySelector('[aria-label="Permission warning"]')).toBeNull();
+  });
+
+  it('drops an action note when the permission state changes instead of hiding the new warning', async () => {
+    mocks.checkMicrophonePermissionStatus.mockResolvedValue('granted');
+    await renderBanner();
+    await clickText('Open System Settings…');
+    expect(bannerText()).toContain('Turn on Murmur in System Settings');
+    // Microphone access is revoked meanwhile: its warning must not stay hidden.
+    mocks.checkMicrophonePermissionStatus.mockResolvedValue('denied');
+    await refocus();
+    expect(bannerText()).toContain('Microphone and Accessibility access are needed');
+    expect(bannerText()).not.toContain('Turn on Murmur in System Settings');
   });
 });

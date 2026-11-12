@@ -1338,6 +1338,7 @@ fn focused_role_native(
         let focused_status =
             unsafe { AXUIElementCopyAttributeValue(app, focused_attribute, &mut focused) };
         record_focus_ax_status(focused_status);
+        crate::commands::permissions::note_ax_query_status(focused_status);
         unsafe { CFRelease(focused_attribute) };
         unsafe { CFRelease(app) };
         if focused_status != AX_SUCCESS || focused.is_null() {
@@ -1370,6 +1371,7 @@ fn focused_role_native(
         let role_status =
             unsafe { AXUIElementCopyAttributeValue(focused, role_attribute, &mut role) };
         record_focus_ax_status(role_status);
+        crate::commands::permissions::note_ax_query_status(role_status);
         unsafe { CFRelease(role_attribute) };
         // Browser password inputs report AXTextField with an AXSecureTextField
         // subrole. Surface that as the secure role so the Smart destination

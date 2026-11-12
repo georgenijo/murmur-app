@@ -501,6 +501,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
           else if (res.type === 'busy_benchmarking') presentError('Wait for the benchmark to finish.', { producerEpoch });
           else if (res.type === 'busy_transcribing_file') presentError('Wait for the file transcription to finish.', { producerEpoch });
           else if (res.type === 'busy_meeting') presentError('Stop the meeting capture before starting dictation.', { producerEpoch });
+          else if (res.type === 'busy_restarting') presentError('Murmur is restarting to finish a permission reset. Try again in a moment.', { producerEpoch });
           // Without these three the press is a silent no-op: Rust refuses the
           // start but nothing tells the user why.
           else if (res.type === 'busy_transforming') presentError('Wait for the transform to finish.', { producerEpoch });

@@ -24,6 +24,7 @@ import { WindowHeader } from '../ui/WindowHeader';
 import {
   accessibilityOutcomeMessage,
   clearOnboardingResume,
+  microphoneResetMessage,
   permissionErrorMessage,
   readOnboardingResume,
   rememberOnboardingResume,
@@ -162,7 +163,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
   const [axBusy, setAxBusy] = useState(false);
   const axPending = useRef(false);
   const [micError, setMicError] = useState<string | null>(null);
-  const [micRestarting, setMicRestarting] = useState(false);
+  const [micResetOutcome, setMicResetOutcome] = useState<'restarting' | 'restart_pending' | null>(null);
   const [axGranted, setAxGranted] = useState<boolean | null>(null);
   const [axRequested, setAxRequested] = useState(false);
   const [axError, setAxError] = useState<string | null>(null);
@@ -400,8 +401,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
       rememberOnboardingResume('microphone');
       // Clears the stale entry and relaunches Murmur (a running process cannot see
       // the reset). One action: no second reset, no settings pane.
-      await resetMicrophonePermission();
-      setMicRestarting(true);
+      setMicResetOutcome(await resetMicrophonePermission());
     } catch (error) {
       clearOnboardingResume();
       setMicError(
@@ -554,7 +554,7 @@ export function OnboardingFlow({ initialModel, recordingMode, triggerKey, onComp
               <StepHeading icon={Mic} title="Microphone access" subtitle="Murmur records your speech for local transcription. Audio is discarded after transcription." />
               <PermissionCard icon={Mic} label="Microphone" state={micGranted ? 'granted' : micDenied ? 'denied' : 'notSet'} waiting={micBusy || micWaiting} fresh={freshGrant === step} />
               {micWaiting && <p className="onboarding-copy">Waiting for your answer in the macOS dialog…</p>}
-              {micRestarting && <p className="onboarding-copy">Murmur is restarting to finish the reset. Allow microphone access when macOS asks.</p>}
+              {micResetOutcome && <p className="onboarding-copy">{microphoneResetMessage(micResetOutcome)}</p>}
               {micDenied && <><p className="onboarding-copy">Enable {permissionOwner} under Privacy &amp; Security → Microphone, then come back. This screen updates automatically.</p>{isDev ? <DevPermissionHelp /> : <button className="onboarding-link" onClick={handleResetMic}>Reset permission…</button>}</>}
               {micError && <ErrorMessage message={micError} />}
               <WizardNavigationRow onBack={goBack} onNext={micGranted ? goNext : micDenied ? handleOpenMicSettings : handleAllowMic} onSkip={goNext} nextEnabled={!micBusy && !micWaiting} defaultAction={micGranted} nextLabel={micDenied ? 'Open System Settings…' : 'Continue'} skippable={!micGranted && !micWaiting && !micBusy} skipLabel="Skip for now" />

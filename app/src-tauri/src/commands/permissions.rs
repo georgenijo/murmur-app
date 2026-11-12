@@ -45,15 +45,13 @@ pub fn open_system_audio_preferences() -> Result<(), String> {
 /// *different* build is the signature of a stale entry: the switch is still ON in
 /// System Settings for an older build, but no longer matches this binary.
 /// `request_accessibility_permission` uses that to recover in one step.
-///
-/// A process that saw access missing and then granted keeps failing Accessibility
-/// queries until it restarts, so that transition schedules one relaunch while
-/// Murmur is idle.
 #[tauri::command]
 pub fn check_accessibility_permission(app: tauri::AppHandle) -> bool {
     let trusted = injector::is_accessibility_enabled();
     #[cfg(target_os = "macos")]
-    note_accessibility_observation(&app, trusted);
+    if trusted {
+        remember_accessibility_grant(&app);
+    }
     #[cfg(not(target_os = "macos"))]
     let _ = &app;
     trusted
@@ -74,13 +72,89 @@ static ACCESSIBILITY_PROMPT_ISSUED: std::sync::atomic::AtomicBool =
 static ACCESSIBILITY_REQUEST_IN_FLIGHT: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// This process observed Accessibility missing at least once.
-static ACCESSIBILITY_SEEN_MISSING: std::sync::atomic::AtomicBool =
+/// A relaunch waiter exists. Only one may run, so two waiter shells can never
+/// both start an instance.
+static RELAUNCH_SCHEDULED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// The one automatic relaunch after a grant arrived mid-run has been scheduled.
-static GRANT_RELAUNCH_SCHEDULED: std::sync::atomic::AtomicBool =
+/// The relaunch has committed to ending this process. Dictation and meeting
+/// starts refuse while it is set; it is raised only for the final activity
+/// re-check and stays up through exit.
+static RELAUNCH_COMMITTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+/// The updater is installing an update (reported by the frontend, which owns
+/// `update.install()`). A relaunch would interrupt it.
+static UPDATE_INSTALL_IN_PROGRESS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// An Accessibility query from this process failed with "API disabled" while the
+/// process was trusted, with no successful query since.
+static AX_API_DISABLED_OBSERVED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a permission relaunch is about to end this process.
+pub(crate) fn relaunch_committed() -> bool {
+    RELAUNCH_COMMITTED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// `kAXErrorAPIDisabled`: the Accessibility API is off for this process.
+const AX_ERROR_API_DISABLED: i32 = -25211;
+
+/// Fold one Accessibility query result into the "API disabled although trusted"
+/// evidence. Only -25211 counts, and only while trusted: -25204 is the ordinary
+/// target-app timeout and says nothing about this process's permission. A
+/// successful query clears the evidence.
+fn fold_ax_status(
+    status: i32,
+    trusted: impl FnOnce() -> bool,
+    observed: &std::sync::atomic::AtomicBool,
+) {
+    use std::sync::atomic::Ordering;
+    if status == 0 {
+        observed.store(false, Ordering::SeqCst);
+    } else if status == AX_ERROR_API_DISABLED && trusted() && !observed.swap(true, Ordering::SeqCst)
+    {
+        tracing::warn!(
+            target: "system",
+            event_code = "system.accessibility_api_disabled_observed",
+            "Accessibility reads trusted, but a query returned API-disabled"
+        );
+    }
+}
+
+/// Called after real Accessibility queries (focus detection and the focus
+/// proof). One atomic update on success; the trust check runs only on the
+/// failure path, so the paste path gains no query and no wait.
+pub(crate) fn note_ax_query_status(status: i32) {
+    fold_ax_status(
+        status,
+        injector::is_accessibility_enabled,
+        &AX_API_DISABLED_OBSERVED,
+    );
+}
+
+/// Accessibility is on, yet this running copy cannot use it: restart Murmur.
+fn accessibility_restart_needed(trusted: bool, api_disabled_observed: bool) -> bool {
+    trusted && api_disabled_observed
+}
+
+/// Whether the banner should offer "Restart Murmur" for Accessibility: trusted,
+/// but a real query from this process returned API-disabled and none has
+/// succeeded since. Never true after a plain grant.
+#[tauri::command]
+pub fn check_accessibility_restart_needed() -> bool {
+    accessibility_restart_needed(
+        injector::is_accessibility_enabled(),
+        AX_API_DISABLED_OBSERVED.load(std::sync::atomic::Ordering::SeqCst),
+    )
+}
+
+/// The frontend reports that `update.install()` started or ended.
+#[tauri::command]
+pub fn set_update_install_in_progress(active: bool) {
+    UPDATE_INSTALL_IN_PROGRESS.store(active, std::sync::atomic::Ordering::SeqCst);
+}
 
 /// Marker written before a reset-driven relaunch so the new process issues the
 /// first prompt itself, instead of leaving the user on a pane with no Murmur row.
@@ -89,7 +163,7 @@ const ACCESSIBILITY_RELAUNCH_MARKER: &str = "accessibility-reset-pending";
 /// Marker holding the fingerprint of the build that last saw Accessibility granted.
 const ACCESSIBILITY_GRANTED_MARKER: &str = "accessibility-granted-once";
 
-const RESTART_BUSY_MESSAGE: &str = "Finish your recording, meeting or transcription first. Murmur restarts to finish a permission reset.";
+const RESTART_BUSY_MESSAGE: &str = "Finish your recording, meeting, transcription, download or update first. Murmur restarts to finish this.";
 const RESTART_UNAVAILABLE_MESSAGE: &str =
     "Resetting a permission restarts Murmur, which only works from the installed app.";
 
@@ -125,17 +199,6 @@ fn reset_refusal(gate: RelaunchGate) -> Option<&'static str> {
 /// removed, which an ordinary prompt or pane handles without a restart.
 fn grant_is_stale(recorded: Option<&str>, current: Option<&str>) -> bool {
     matches!((recorded, current), (Some(recorded), Some(current)) if recorded != current)
-}
-
-/// Whether to relaunch once because access went from missing to granted inside
-/// this process: its Accessibility queries keep failing until it restarts.
-fn should_relaunch_after_grant(
-    seen_missing: bool,
-    trusted_now: bool,
-    already_scheduled: bool,
-    can_relaunch: bool,
-) -> bool {
-    seen_missing && trusted_now && !already_scheduled && can_relaunch
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,42 +322,37 @@ fn remember_accessibility_grant(app: &tauri::AppHandle) {
     let _ = std::fs::write(marker, fingerprint);
 }
 
-/// Record an Accessibility reading from the status poll. A reading of "granted"
-/// after "missing" in the same process schedules the one automatic relaunch.
-#[cfg(target_os = "macos")]
-fn note_accessibility_observation(app: &tauri::AppHandle, trusted: bool) {
-    use std::sync::atomic::Ordering;
-    if !trusted {
-        ACCESSIBILITY_SEEN_MISSING.store(true, Ordering::SeqCst);
-        return;
-    }
-    remember_accessibility_grant(app);
-    if should_relaunch_after_grant(
-        ACCESSIBILITY_SEEN_MISSING.load(Ordering::SeqCst),
-        true,
-        GRANT_RELAUNCH_SCHEDULED.load(Ordering::SeqCst),
-        running_app_bundle().is_some(),
-    ) && !GRANT_RELAUNCH_SCHEDULED.swap(true, Ordering::SeqCst)
-    {
-        tracing::info!(
-            target: "system",
-            event_code = "system.accessibility_grant_relaunch_scheduled",
-            "Accessibility was granted while running; relaunching when idle"
-        );
-        relaunch_when_idle(app.clone(), None);
-    }
+/// What is in progress that a relaunch would destroy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct BusyInputs {
+    /// A dictation, preview, file transcription, meeting, or benchmark.
+    dictation_or_meeting: Option<&'static str>,
+    model_install: bool,
+    update_install: bool,
+}
+
+fn relaunch_busy_reason(inputs: BusyInputs) -> Option<&'static str> {
+    inputs
+        .dictation_or_meeting
+        .or(inputs.model_install.then_some("model_install"))
+        .or(inputs.update_install.then_some("update_install"))
 }
 
 /// The live gate for a relaunch: packaged app, and no recording, transcription,
-/// meeting, preview, or benchmark in progress.
+/// meeting, preview, benchmark, model download, or update install in progress.
+/// A relaunch that has already committed does not count as activity.
 #[cfg(target_os = "macos")]
 fn relaunch_gate(app: &tauri::AppHandle) -> RelaunchGate {
     use tauri::Manager;
     RelaunchGate {
         can_relaunch: running_app_bundle().is_some(),
-        busy: app
-            .try_state::<crate::State>()
-            .and_then(|state| crate::commands::recording::dictation_prepare_refusal(&state)),
+        busy: relaunch_busy_reason(BusyInputs {
+            dictation_or_meeting: app
+                .try_state::<crate::State>()
+                .and_then(|state| crate::commands::recording::dictation_relaunch_busy(&state)),
+            model_install: crate::commands::models::install_in_progress(),
+            update_install: UPDATE_INSTALL_IN_PROGRESS.load(std::sync::atomic::Ordering::SeqCst),
+        }),
     }
 }
 
@@ -395,27 +453,179 @@ fn prompt_and_surface_accessibility() -> Result<&'static str, String> {
     }
 }
 
+/// Side effects of a reset, so the order of operations is testable without
+/// touching `tccutil`, the filesystem, or the process.
+#[cfg(any(target_os = "macos", test))]
+trait ResetEffects {
+    /// `tccutil reset <service>` for this bundle only.
+    fn run_tccutil_reset(&mut self) -> Result<(), String>;
+    /// Wait for idle, then relaunch (never more than one waiter).
+    fn schedule_relaunch(&mut self);
+    fn current_gate(&mut self) -> RelaunchGate;
+}
+
+#[cfg(any(target_os = "macos", test))]
+trait AccessibilityEffects: ResetEffects {
+    /// Delete the "access was granted under another build" marker.
+    fn forget_stale_grant(&mut self);
+    /// Tell the relaunched process to issue the first prompt itself.
+    fn schedule_post_reset_prompt(&mut self);
+    fn open_pane(&mut self) -> Result<(), String>;
+    fn prompt_and_surface(&mut self) -> Result<&'static str, String>;
+}
+
+/// After `tccutil` succeeded: the relaunch is unconditional from here, so the
+/// outcome says whether it happens now (`restarting`) or once the current work
+/// finishes (`restart_pending`).
+#[cfg(any(target_os = "macos", test))]
+fn finish_reset(fx: &mut impl ResetEffects) -> &'static str {
+    let busy = fx.current_gate().busy.is_some();
+    fx.schedule_relaunch();
+    if busy {
+        "restart_pending"
+    } else {
+        "restarting"
+    }
+}
+
 /// Reset the stale Accessibility entry and relaunch so the new process lists a
 /// fresh one. The relaunched process issues the prompt itself. Fails only when
 /// `tccutil` does; nothing has changed then.
-#[cfg(target_os = "macos")]
-fn reset_accessibility_and_relaunch(app: &tauri::AppHandle) -> Result<&'static str, String> {
-    run_tccutil_reset("Accessibility")?;
+#[cfg(any(target_os = "macos", test))]
+fn reset_stale_accessibility_and_relaunch(
+    fx: &mut impl AccessibilityEffects,
+) -> Result<&'static str, String> {
+    fx.run_tccutil_reset()?;
     // The stale entry is gone; stop treating the next request as stale.
-    if let Some(marker) = accessibility_marker(app, ACCESSIBILITY_GRANTED_MARKER) {
-        let _ = std::fs::remove_file(marker);
-    }
-    // Best effort: without it the new process just waits for the user's click.
-    if let Some(marker) = accessibility_marker(app, ACCESSIBILITY_RELAUNCH_MARKER) {
-        if let Some(dir) = marker.parent() {
-            let _ = std::fs::create_dir_all(dir);
+    fx.forget_stale_grant();
+    fx.schedule_post_reset_prompt();
+    Ok(finish_reset(fx))
+}
+
+/// One accessibility request: exactly one outcome, exactly one surface.
+#[cfg(any(target_os = "macos", test))]
+fn run_accessibility_request(
+    facts: AccessibilityRequestFacts,
+    fx: &mut impl AccessibilityEffects,
+) -> Result<String, String> {
+    match plan_accessibility_request(facts) {
+        AccessibilityRequestPlan::AlreadyGranted => Ok("granted".to_string()),
+        AccessibilityRequestPlan::ResetAndRelaunch => {
+            match reset_stale_accessibility_and_relaunch(fx) {
+                Ok(outcome) => Ok(outcome.to_string()),
+                Err(error) => {
+                    // Never leave the main button replanning a reset that cannot
+                    // work: forget the stale grant and take the ordinary
+                    // prompt-or-pane path.
+                    tracing::warn!(
+                        target: "system",
+                        "stale Accessibility reset failed, using the ordinary request: {error}"
+                    );
+                    fx.forget_stale_grant();
+                    match fallback_accessibility_plan(facts.prompt_issued) {
+                        AccessibilityRequestPlan::OpenPane => {
+                            fx.open_pane()?;
+                            Ok("opened_settings".to_string())
+                        }
+                        _ => fx.prompt_and_surface().map(str::to_string),
+                    }
+                }
+            }
         }
-        if let Err(error) = std::fs::write(&marker, b"1") {
-            tracing::warn!(target: "system", "could not schedule the post-reset prompt: {error}");
+        AccessibilityRequestPlan::OpenPaneRestartDeferred => {
+            fx.open_pane()?;
+            Ok("restart_deferred".to_string())
+        }
+        AccessibilityRequestPlan::PromptSurface => fx.prompt_and_surface().map(str::to_string),
+        AccessibilityRequestPlan::OpenPane => {
+            fx.open_pane()?;
+            Ok("opened_settings".to_string())
         }
     }
-    relaunch_when_idle(app.clone(), Some(std::time::Duration::from_secs(3)));
-    Ok("restarting")
+}
+
+/// The explicit "Reset Accessibility permission" action. The busy check runs
+/// before `tccutil`, so a refused reset changes nothing.
+#[cfg(any(target_os = "macos", test))]
+fn run_accessibility_reset(
+    trusted: bool,
+    fx: &mut impl AccessibilityEffects,
+) -> Result<String, String> {
+    if trusted {
+        return Ok("granted".to_string());
+    }
+    let gate = fx.current_gate();
+    if let Some(refusal) = reset_refusal(gate) {
+        return Err(refusal.to_string());
+    }
+    reset_stale_accessibility_and_relaunch(fx).map(str::to_string)
+}
+
+/// The explicit "Reset microphone permission" action; same ordering.
+#[cfg(any(target_os = "macos", test))]
+fn run_microphone_reset(fx: &mut impl ResetEffects) -> Result<String, String> {
+    let gate = fx.current_gate();
+    if let Some(refusal) = reset_refusal(gate) {
+        return Err(refusal.to_string());
+    }
+    fx.run_tccutil_reset()?;
+    Ok(finish_reset(fx).to_string())
+}
+
+/// The "Restart Murmur" action of the Accessibility restart notice.
+#[cfg(any(target_os = "macos", test))]
+fn run_restart_request(fx: &mut impl ResetEffects) -> Result<String, String> {
+    let gate = fx.current_gate();
+    if let Some(refusal) = reset_refusal(gate) {
+        return Err(refusal.to_string());
+    }
+    fx.schedule_relaunch();
+    Ok("restarting".to_string())
+}
+
+#[cfg(target_os = "macos")]
+struct RealEffects<'a> {
+    app: &'a tauri::AppHandle,
+    service: &'static str,
+}
+
+#[cfg(target_os = "macos")]
+impl ResetEffects for RealEffects<'_> {
+    fn run_tccutil_reset(&mut self) -> Result<(), String> {
+        run_tccutil_reset(self.service).map(|_| ())
+    }
+    fn schedule_relaunch(&mut self) {
+        relaunch_when_idle(self.app.clone());
+    }
+    fn current_gate(&mut self) -> RelaunchGate {
+        relaunch_gate(self.app)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl AccessibilityEffects for RealEffects<'_> {
+    fn forget_stale_grant(&mut self) {
+        if let Some(marker) = accessibility_marker(self.app, ACCESSIBILITY_GRANTED_MARKER) {
+            let _ = std::fs::remove_file(marker);
+        }
+    }
+    fn schedule_post_reset_prompt(&mut self) {
+        // Best effort: without it the new process just waits for the user's click.
+        if let Some(marker) = accessibility_marker(self.app, ACCESSIBILITY_RELAUNCH_MARKER) {
+            if let Some(dir) = marker.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            if let Err(error) = std::fs::write(&marker, b"1") {
+                tracing::warn!(target: "system", "could not schedule the post-reset prompt: {error}");
+            }
+        }
+    }
+    fn open_pane(&mut self) -> Result<(), String> {
+        open_system_preference_pane("Privacy_Accessibility")
+    }
+    fn prompt_and_surface(&mut self) -> Result<&'static str, String> {
+        prompt_and_surface_accessibility()
+    }
 }
 
 /// Ask for accessibility access with one clear action.
@@ -423,9 +633,10 @@ fn reset_accessibility_and_relaunch(app: &tauri::AppHandle) -> Result<&'static s
 /// Returns "granted" | "prompted" (the macOS dialog is showing; its own button
 /// opens System Settings) | "opened_settings" | "restarting" (a stale entry from
 /// an earlier build's grant was reset; Murmur relaunches and asks again) |
-/// "restart_deferred" (stale, but Murmur is busy: the pane opened and the reset
-/// waits) | "in_progress" (another request is still running). Never raises the
-/// dialog and the Settings pane together.
+/// "restart_pending" (reset done, relaunch waits for current work to finish) |
+/// "restart_deferred" (stale, but Murmur is busy: only the pane opened, nothing
+/// was reset) | "in_progress" (another request is still running). Never raises
+/// the dialog and the Settings pane together.
 #[tauri::command]
 pub async fn request_accessibility_permission(app: tauri::AppHandle) -> Result<String, String> {
     #[cfg(target_os = "macos")]
@@ -434,52 +645,22 @@ pub async fn request_accessibility_permission(app: tauri::AppHandle) -> Result<S
             let Some(_guard) = AccessibilityRequestGuard::acquire() else {
                 return Ok("in_progress".to_string());
             };
-            let prompt_issued =
-                ACCESSIBILITY_PROMPT_ISSUED.load(std::sync::atomic::Ordering::SeqCst);
             let recorded = accessibility_marker(&app, ACCESSIBILITY_GRANTED_MARKER)
                 .and_then(|marker| std::fs::read_to_string(marker).ok());
             let facts = AccessibilityRequestFacts {
                 trusted: injector::is_accessibility_enabled(),
-                prompt_issued,
+                prompt_issued: ACCESSIBILITY_PROMPT_ISSUED
+                    .load(std::sync::atomic::Ordering::SeqCst),
                 stale_grant: grant_is_stale(recorded.as_deref(), build_fingerprint().as_deref()),
                 gate: relaunch_gate(&app),
             };
-            let surface = |plan| match plan {
-                AccessibilityRequestPlan::OpenPane => {
-                    open_system_preference_pane("Privacy_Accessibility")?;
-                    Ok("opened_settings".to_string())
-                }
-                _ => prompt_and_surface_accessibility().map(str::to_string),
-            };
-            match plan_accessibility_request(facts) {
-                AccessibilityRequestPlan::AlreadyGranted => Ok("granted".to_string()),
-                AccessibilityRequestPlan::ResetAndRelaunch => {
-                    match reset_accessibility_and_relaunch(&app) {
-                        Ok(outcome) => Ok(outcome.to_string()),
-                        Err(error) => {
-                            // Never leave the main button replanning a reset that
-                            // cannot work: forget the stale grant and take the
-                            // ordinary prompt-or-pane path.
-                            tracing::warn!(
-                                target: "system",
-                                "stale Accessibility reset failed, using the ordinary request: {error}"
-                            );
-                            if let Some(marker) =
-                                accessibility_marker(&app, ACCESSIBILITY_GRANTED_MARKER)
-                            {
-                                let _ = std::fs::remove_file(marker);
-                            }
-                            surface(fallback_accessibility_plan(prompt_issued))
-                        }
-                    }
-                }
-                AccessibilityRequestPlan::OpenPaneRestartDeferred => {
-                    open_system_preference_pane("Privacy_Accessibility")?;
-                    Ok("restart_deferred".to_string())
-                }
-                plan @ (AccessibilityRequestPlan::PromptSurface
-                | AccessibilityRequestPlan::OpenPane) => surface(plan),
-            }
+            run_accessibility_request(
+                facts,
+                &mut RealEffects {
+                    app: &app,
+                    service: "Accessibility",
+                },
+            )
         })
         .await
         .map_err(|e| format!("Accessibility request failed: {}", e))?
@@ -549,6 +730,11 @@ pub(crate) fn current_bundle_identifier() -> Option<String> {
 /// The wait matters: `open` on a bundle whose old instance is still shutting down
 /// (meeting teardown alone can take seconds) only re-activates the dying process
 /// and nothing relaunches.
+///
+/// The wait is bounded at 20 s (200 x 0.1 s). If the old process is somehow still
+/// alive then, the opener runs anyway. That is acceptable: a relaunch is only
+/// started while idle, so the old process is just slow to exit, not holding work,
+/// and giving up would leave the user with no Murmur at all.
 #[cfg(target_os = "macos")]
 fn spawn_relaunch_waiter(
     bundle: &std::path::Path,
@@ -591,44 +777,92 @@ fn relaunch_now(app: &tauri::AppHandle) {
     app.restart();
 }
 
+/// How a relaunch waiter ended.
+#[cfg(any(target_os = "macos", test))]
+#[derive(Debug, PartialEq, Eq)]
+enum RelaunchEnd {
+    Relaunched,
+    Abandoned,
+}
+
+/// Wait until Murmur is idle, then relaunch, without ever ending live work.
+///
+/// When the gate opens the relaunch first commits (new dictation and meeting
+/// starts refuse), then reads the gate once more: a start that slipped in
+/// before the commit shows up there, and the commit is withdrawn. Only a gate
+/// that is still open after committing relaunches. Gives up only when the app
+/// cannot relaunch at all (not an installed `.app`), or after `max_polls`
+/// (tests; production waits as long as needed because the reset has happened).
+#[cfg(any(target_os = "macos", test))]
+fn drive_relaunch(
+    mut gate: impl FnMut() -> RelaunchGate,
+    mut set_committed: impl FnMut(bool),
+    mut relaunch: impl FnMut(),
+    mut pause: impl FnMut(),
+    max_polls: Option<u32>,
+) -> RelaunchEnd {
+    let mut polls = 0u32;
+    loop {
+        let current = gate();
+        if !current.can_relaunch {
+            return RelaunchEnd::Abandoned;
+        }
+        if current.busy.is_none() {
+            set_committed(true);
+            if gate().open() {
+                relaunch();
+                return RelaunchEnd::Relaunched;
+            }
+            set_committed(false);
+        }
+        polls += 1;
+        if max_polls.is_some_and(|limit| polls >= limit) {
+            return RelaunchEnd::Abandoned;
+        }
+        pause();
+    }
+}
+
+/// Claim the single relaunch slot. False when a relaunch is already scheduled.
+#[cfg(any(target_os = "macos", test))]
+fn claim_relaunch_slot(flag: &std::sync::atomic::AtomicBool) -> bool {
+    !flag.swap(true, std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Relaunch Murmur once it is idle. A running process keeps the authorization
 /// state it last saw: after `tccutil reset` it still reports a denial, and
 /// `requestAccess` answers from that cached state without asking again. Only a
 /// new process sees the reset, which is why the user previously had to quit and
 /// reset a second time by hand.
 ///
-/// Never relaunches over a recording, transcription, or meeting. With
-/// `max_wait`, gives up (leaving the reset applied) if Murmur stays busy that
-/// long; without it, waits as long as needed. Runs off the calling thread so the
-/// command can answer first.
+/// Only one waiter ever exists. Runs off the calling thread so the command can
+/// answer first. Returns false when a relaunch was already scheduled.
 #[cfg(target_os = "macos")]
-fn relaunch_when_idle(app: tauri::AppHandle, max_wait: Option<std::time::Duration>) {
-    use std::time::{Duration, Instant};
+fn relaunch_when_idle(app: tauri::AppHandle) -> bool {
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    if !claim_relaunch_slot(&RELAUNCH_SCHEDULED) {
+        return false;
+    }
     std::thread::spawn(move || {
-        let started = Instant::now();
         std::thread::sleep(Duration::from_millis(1500));
-        loop {
-            if relaunch_gate(&app).open() {
-                // Idle twice in a row, so a start in the gap is caught.
-                std::thread::sleep(Duration::from_millis(400));
-                if relaunch_gate(&app).open() {
-                    relaunch_now(&app);
-                    return;
-                }
-            }
-            if !relaunch_gate(&app).can_relaunch
-                || max_wait.is_some_and(|limit| started.elapsed() >= limit)
-            {
-                tracing::info!(
-                    target: "system",
-                    event_code = "system.permission_relaunch_skipped",
-                    "relaunch skipped because Murmur stayed busy or cannot relaunch"
-                );
-                return;
-            }
-            std::thread::sleep(Duration::from_secs(2));
+        let end = drive_relaunch(
+            || relaunch_gate(&app),
+            |committed| RELAUNCH_COMMITTED.store(committed, Ordering::SeqCst),
+            || relaunch_now(&app),
+            || std::thread::sleep(Duration::from_secs(2)),
+            None,
+        );
+        if end == RelaunchEnd::Abandoned {
+            tracing::info!(
+                target: "system",
+                event_code = "system.permission_relaunch_skipped",
+                "relaunch skipped because Murmur cannot relaunch from here"
+            );
+            RELAUNCH_SCHEDULED.store(false, Ordering::SeqCst);
         }
     });
+    true
 }
 
 /// The `.app` this process runs from, when it runs from one.
@@ -657,13 +891,13 @@ pub async fn reset_accessibility_permission(app: tauri::AppHandle) -> Result<Str
             let Some(_guard) = AccessibilityRequestGuard::acquire() else {
                 return Ok("in_progress".to_string());
             };
-            if injector::is_accessibility_enabled() {
-                return Ok("granted".to_string());
-            }
-            if let Some(refusal) = reset_refusal(relaunch_gate(&app)) {
-                return Err(refusal.to_string());
-            }
-            reset_accessibility_and_relaunch(&app).map(str::to_string)
+            run_accessibility_reset(
+                injector::is_accessibility_enabled(),
+                &mut RealEffects {
+                    app: &app,
+                    service: "Accessibility",
+                },
+            )
         })
         .await
         .map_err(|e| format!("Accessibility reset failed: {}", e))?
@@ -790,18 +1024,17 @@ pub fn request_microphone_access() -> Result<(), String> {
 /// and the running process cannot see the reset (see `relaunch_when_idle`).
 /// Refused while Murmur is busy or running outside an installed app.
 /// The relaunched process reads `notDetermined`, so the next dictation asks
-/// macOS once, from the process that records the answer. Returns "restarting".
+/// macOS once, from the process that records the answer. Returns "restarting",
+/// or "restart_pending" when current work delays the relaunch.
 #[tauri::command]
 pub async fn reset_microphone_permission(app: tauri::AppHandle) -> Result<String, String> {
     #[cfg(target_os = "macos")]
     {
         tauri::async_runtime::spawn_blocking(move || {
-            if let Some(refusal) = reset_refusal(relaunch_gate(&app)) {
-                return Err(refusal.to_string());
-            }
-            run_tccutil_reset("Microphone")?;
-            relaunch_when_idle(app, Some(std::time::Duration::from_secs(3)));
-            Ok("restarting".to_string())
+            run_microphone_reset(&mut RealEffects {
+                app: &app,
+                service: "Microphone",
+            })
         })
         .await
         .map_err(|e| format!("Microphone reset failed: {}", e))?
@@ -810,6 +1043,31 @@ pub async fn reset_microphone_permission(app: tauri::AppHandle) -> Result<String
     {
         let _ = app;
         Err("Microphone reset is only supported on macOS".to_string())
+    }
+}
+
+/// Restart Murmur so a process that Accessibility could not reach picks up the
+/// permission. The only action of the "Restart Murmur" notice; nothing restarts
+/// on its own. Refused while Murmur is busy (recording, meeting, transcription,
+/// download, update) or outside an installed app; otherwise relaunches once idle.
+/// Returns "restarting".
+#[tauri::command]
+pub async fn restart_murmur_for_permission(app: tauri::AppHandle) -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        tauri::async_runtime::spawn_blocking(move || {
+            run_restart_request(&mut RealEffects {
+                app: &app,
+                service: "Accessibility",
+            })
+        })
+        .await
+        .map_err(|e| format!("Restart failed: {}", e))?
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = app;
+        Err("Restarting for a permission is only supported on macOS".to_string())
     }
 }
 
@@ -958,11 +1216,13 @@ pub async fn get_audio_input_inventory(
 #[cfg(test)]
 mod tests {
     use super::{
-        audio_inventory_request_allowed, fallback_accessibility_plan, grant_is_stale,
-        mic_status_to_banner_state, plan_accessibility_request, reset_refusal,
-        run_audio_inventory_read, should_open_settings_pane, should_relaunch_after_grant,
-        take_relaunch_marker, AccessibilityRequestFacts, AccessibilityRequestGuard,
-        AccessibilityRequestPlan, RelaunchGate,
+        accessibility_restart_needed, audio_inventory_request_allowed, claim_relaunch_slot,
+        drive_relaunch, fold_ax_status, grant_is_stale, mic_status_to_banner_state,
+        plan_accessibility_request, relaunch_busy_reason, reset_refusal, run_accessibility_request,
+        run_accessibility_reset, run_audio_inventory_read, run_microphone_reset,
+        run_restart_request, should_open_settings_pane, take_relaunch_marker, AccessibilityEffects,
+        AccessibilityRequestFacts, AccessibilityRequestGuard, AccessibilityRequestPlan, BusyInputs,
+        RelaunchEnd, RelaunchGate, ResetEffects,
     };
 
     const IDLE: RelaunchGate = RelaunchGate {
@@ -1058,22 +1318,309 @@ mod tests {
         );
     }
 
+    /// Records the order of side effects so the command wiring is tested, not
+    /// only the planning helpers.
+    struct FakeEffects {
+        log: Vec<&'static str>,
+        gates: std::collections::VecDeque<RelaunchGate>,
+        tccutil_fails: bool,
+    }
+
+    impl FakeEffects {
+        fn new(gate: RelaunchGate) -> Self {
+            Self {
+                log: Vec::new(),
+                gates: std::collections::VecDeque::from([gate]),
+                tccutil_fails: false,
+            }
+        }
+    }
+
+    impl ResetEffects for FakeEffects {
+        fn run_tccutil_reset(&mut self) -> Result<(), String> {
+            self.log.push("tccutil");
+            if self.tccutil_fails {
+                Err("tccutil failed".into())
+            } else {
+                Ok(())
+            }
+        }
+        fn schedule_relaunch(&mut self) {
+            self.log.push("schedule_relaunch");
+        }
+        fn current_gate(&mut self) -> RelaunchGate {
+            self.log.push("gate");
+            if self.gates.len() > 1 {
+                self.gates.pop_front().unwrap()
+            } else {
+                *self.gates.front().unwrap()
+            }
+        }
+    }
+
+    impl AccessibilityEffects for FakeEffects {
+        fn forget_stale_grant(&mut self) {
+            self.log.push("forget_stale_grant");
+        }
+        fn schedule_post_reset_prompt(&mut self) {
+            self.log.push("post_reset_prompt");
+        }
+        fn open_pane(&mut self) -> Result<(), String> {
+            self.log.push("open_pane");
+            Ok(())
+        }
+        fn prompt_and_surface(&mut self) -> Result<&'static str, String> {
+            self.log.push("prompt");
+            Ok("prompted")
+        }
+    }
+
     #[test]
-    fn a_failed_reset_falls_back_to_the_ordinary_request() {
-        // The command forgets the stale grant when the reset fails, then takes
-        // this path, so the main button is never stuck replanning a reset.
+    fn a_failed_stale_reset_forgets_the_grant_then_takes_the_ordinary_request() {
+        // The marker deletion is a side effect of the command, so it is asserted
+        // on the command's own effect log: drop the deletion and this fails.
+        let mut fx = FakeEffects::new(IDLE);
+        fx.tccutil_fails = true;
+        let outcome = run_accessibility_request(facts(false, false, true, IDLE), &mut fx);
+        assert_eq!(outcome.as_deref(), Ok("prompted"));
+        assert_eq!(fx.log, ["tccutil", "forget_stale_grant", "prompt"]);
+
+        let mut fx = FakeEffects::new(IDLE);
+        fx.tccutil_fails = true;
+        let outcome = run_accessibility_request(facts(false, true, true, IDLE), &mut fx);
+        assert_eq!(outcome.as_deref(), Ok("opened_settings"));
+        assert_eq!(fx.log, ["tccutil", "forget_stale_grant", "open_pane"]);
+        assert!(!fx.log.contains(&"schedule_relaunch"));
+    }
+
+    #[test]
+    fn a_successful_stale_reset_relaunches_and_says_when() {
+        let mut fx = FakeEffects::new(IDLE);
+        let outcome = run_accessibility_request(facts(false, false, true, IDLE), &mut fx);
+        assert_eq!(outcome.as_deref(), Ok("restarting"));
         assert_eq!(
-            fallback_accessibility_plan(false),
-            AccessibilityRequestPlan::PromptSurface
+            fx.log,
+            [
+                "tccutil",
+                "forget_stale_grant",
+                "post_reset_prompt",
+                "gate",
+                "schedule_relaunch"
+            ]
+        );
+
+        // Work started between the first check and the reset finishing: the reset
+        // is done, the relaunch is unconditional but waits, and the UI is told.
+        let mut fx = FakeEffects::new(IDLE);
+        fx.gates = std::collections::VecDeque::from([BUSY]);
+        let outcome = run_accessibility_request(facts(false, false, true, IDLE), &mut fx);
+        assert_eq!(outcome.as_deref(), Ok("restart_pending"));
+        assert_eq!(fx.log.last(), Some(&"schedule_relaunch"));
+    }
+
+    #[test]
+    fn a_stale_grant_while_busy_never_reaches_tccutil() {
+        let mut fx = FakeEffects::new(BUSY);
+        let outcome = run_accessibility_request(facts(false, false, true, BUSY), &mut fx);
+        assert_eq!(outcome.as_deref(), Ok("restart_deferred"));
+        assert_eq!(fx.log, ["open_pane"]);
+    }
+
+    #[test]
+    fn a_dev_session_request_never_resets_or_relaunches() {
+        let mut fx = FakeEffects::new(DEV);
+        let outcome = run_accessibility_request(facts(false, false, true, DEV), &mut fx);
+        assert_eq!(outcome.as_deref(), Ok("prompted"));
+        assert_eq!(fx.log, ["prompt"]);
+    }
+
+    #[test]
+    fn explicit_resets_check_busy_before_tccutil() {
+        for gate in [BUSY, DEV] {
+            let mut fx = FakeEffects::new(gate);
+            assert!(run_accessibility_reset(false, &mut fx).is_err());
+            assert_eq!(
+                fx.log,
+                ["gate"],
+                "no tccutil, no relaunch, no marker change"
+            );
+            let mut fx = FakeEffects::new(gate);
+            assert!(run_microphone_reset(&mut fx).is_err());
+            assert_eq!(fx.log, ["gate"]);
+        }
+        // Already granted: nothing is touched.
+        let mut fx = FakeEffects::new(IDLE);
+        assert_eq!(
+            run_accessibility_reset(true, &mut fx).as_deref(),
+            Ok("granted")
+        );
+        assert!(fx.log.is_empty());
+        // Idle: reset, then one scheduled relaunch.
+        let mut fx = FakeEffects::new(IDLE);
+        assert_eq!(run_microphone_reset(&mut fx).as_deref(), Ok("restarting"));
+        assert_eq!(fx.log, ["gate", "tccutil", "gate", "schedule_relaunch"]);
+        // tccutil failing relaunches nothing.
+        let mut fx = FakeEffects::new(IDLE);
+        fx.tccutil_fails = true;
+        assert!(run_microphone_reset(&mut fx).is_err());
+        assert!(!fx.log.contains(&"schedule_relaunch"));
+    }
+
+    #[test]
+    fn a_reset_that_becomes_busy_after_tccutil_reports_a_pending_restart() {
+        let mut fx = FakeEffects::new(IDLE);
+        fx.gates = std::collections::VecDeque::from([IDLE, BUSY]);
+        assert_eq!(
+            run_microphone_reset(&mut fx).as_deref(),
+            Ok("restart_pending")
+        );
+        assert_eq!(fx.log.last(), Some(&"schedule_relaunch"));
+    }
+
+    #[test]
+    fn the_restart_notice_button_goes_through_the_busy_gate() {
+        let mut fx = FakeEffects::new(BUSY);
+        assert!(run_restart_request(&mut fx).is_err());
+        assert_eq!(fx.log, ["gate"]);
+        let mut fx = FakeEffects::new(DEV);
+        assert!(run_restart_request(&mut fx).is_err());
+        let mut fx = FakeEffects::new(IDLE);
+        assert_eq!(run_restart_request(&mut fx).as_deref(), Ok("restarting"));
+        assert_eq!(fx.log, ["gate", "schedule_relaunch"]);
+    }
+
+    #[test]
+    fn the_relaunch_waits_for_idle_and_commits_before_exiting() {
+        use std::cell::{Cell, RefCell};
+        let polls = Cell::new(0u32);
+        let committed = RefCell::new(Vec::new());
+        let relaunched = Cell::new(0u32);
+        let end = drive_relaunch(
+            || {
+                polls.set(polls.get() + 1);
+                // Busy for the first three reads, then idle.
+                if polls.get() <= 3 {
+                    BUSY
+                } else {
+                    IDLE
+                }
+            },
+            |c| committed.borrow_mut().push(c),
+            || relaunched.set(relaunched.get() + 1),
+            || {},
+            None,
+        );
+        assert_eq!(end, RelaunchEnd::Relaunched);
+        assert_eq!(relaunched.get(), 1);
+        assert_eq!(*committed.borrow(), [true], "never committed while busy");
+    }
+
+    #[test]
+    fn the_relaunch_rechecks_busy_after_committing() {
+        use std::cell::{Cell, RefCell};
+        // Idle at the first read, but a dictation slips in before the recheck:
+        // the commitment is withdrawn and nothing relaunches until idle again.
+        let reads = Cell::new(0u32);
+        let committed = RefCell::new(Vec::new());
+        let relaunched = Cell::new(0u32);
+        let end = drive_relaunch(
+            || {
+                reads.set(reads.get() + 1);
+                if reads.get() == 2 {
+                    BUSY
+                } else {
+                    IDLE
+                }
+            },
+            |c| committed.borrow_mut().push(c),
+            || relaunched.set(relaunched.get() + 1),
+            || {},
+            None,
+        );
+        assert_eq!(end, RelaunchEnd::Relaunched);
+        assert_eq!(relaunched.get(), 1);
+        assert_eq!(*committed.borrow(), [true, false, true]);
+    }
+
+    #[test]
+    fn the_relaunch_stops_when_the_app_cannot_relaunch_and_never_runs_while_busy() {
+        let relaunched = std::cell::Cell::new(false);
+        let end = drive_relaunch(|| DEV, |_| {}, || relaunched.set(true), || {}, None);
+        assert_eq!(end, RelaunchEnd::Abandoned);
+        assert!(!relaunched.get());
+        let committed = std::cell::Cell::new(false);
+        let end = drive_relaunch(
+            || BUSY,
+            |c| committed.set(committed.get() || c),
+            || relaunched.set(true),
+            || {},
+            Some(50),
+        );
+        assert_eq!(end, RelaunchEnd::Abandoned);
+        assert!(!relaunched.get() && !committed.get());
+    }
+
+    #[test]
+    fn only_one_relaunch_can_be_scheduled() {
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        assert!(claim_relaunch_slot(&flag));
+        assert!(
+            !claim_relaunch_slot(&flag),
+            "a second waiter must not start"
+        );
+    }
+
+    #[test]
+    fn work_the_busy_gate_must_see() {
+        assert_eq!(relaunch_busy_reason(BusyInputs::default()), None);
+        assert!(relaunch_busy_reason(BusyInputs {
+            dictation_or_meeting: Some("dictation_busy"),
+            ..Default::default()
+        })
+        .is_some());
+        assert_eq!(
+            relaunch_busy_reason(BusyInputs {
+                model_install: true,
+                ..Default::default()
+            }),
+            Some("model_install")
         );
         assert_eq!(
-            fallback_accessibility_plan(true),
-            AccessibilityRequestPlan::OpenPane
+            relaunch_busy_reason(BusyInputs {
+                update_install: true,
+                ..Default::default()
+            }),
+            Some("update_install")
         );
-        assert_eq!(
-            plan_accessibility_request(facts(false, false, false, IDLE)),
-            AccessibilityRequestPlan::PromptSurface
-        );
+    }
+
+    fn fold(status: i32, trusted: bool, observed: &std::sync::atomic::AtomicBool) {
+        fold_ax_status(status, || trusted, observed);
+    }
+
+    #[test]
+    fn the_restart_notice_needs_a_real_api_disabled_failure_while_trusted() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let observed = AtomicBool::new(false);
+        // A plain grant: no failed query, so no notice.
+        assert!(!accessibility_restart_needed(true, observed.load(SeqCst)));
+        // The focus proof timing out is ordinary and proves nothing.
+        fold(-25204, true, &observed);
+        assert!(!observed.load(SeqCst));
+        // API-disabled while NOT trusted is just "not granted".
+        fold(-25211, false, &observed);
+        assert!(!observed.load(SeqCst));
+        // API-disabled while trusted: the evidence.
+        fold(-25211, true, &observed);
+        assert!(observed.load(SeqCst));
+        assert!(accessibility_restart_needed(true, observed.load(SeqCst)));
+        // Never when access is not on at all.
+        assert!(!accessibility_restart_needed(false, observed.load(SeqCst)));
+        // Other statuses leave it alone; a successful query clears it.
+        fold(-25212, true, &observed);
+        assert!(observed.load(SeqCst));
+        fold(0, true, &observed);
+        assert!(!observed.load(SeqCst));
     }
 
     #[test]
@@ -1101,19 +1648,6 @@ mod tests {
         assert!(!grant_is_stale(None, Some("0.65.0:10:1")));
         assert!(!grant_is_stale(Some("0.65.0:10:1"), None));
         assert!(!grant_is_stale(None, None));
-    }
-
-    #[test]
-    fn a_grant_that_arrives_while_running_relaunches_once() {
-        assert!(should_relaunch_after_grant(true, true, false, true));
-        // Granted from the first reading: nothing was ever stale in this process.
-        assert!(!should_relaunch_after_grant(false, true, false, true));
-        // Not granted yet.
-        assert!(!should_relaunch_after_grant(true, false, false, true));
-        // Already scheduled: never loops.
-        assert!(!should_relaunch_after_grant(true, true, true, true));
-        // Dev session.
-        assert!(!should_relaunch_after_grant(true, true, false, false));
     }
 
     fn scratch_dir(name: &str) -> std::path::PathBuf {

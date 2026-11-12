@@ -2,19 +2,28 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import {
+  checkAccessibilityRestartNeeded,
   checkMicrophonePermissionStatus,
   openMicrophoneSettings,
   requestAccessibilityPermission,
   resetAccessibilityPermission,
   resetMicrophonePermission,
+  restartMurmurForPermission,
   type MicPermissionStatus,
 } from '../lib/dictation';
-import { accessibilityOutcomeMessage, permissionErrorMessage } from '../lib/permissionOutcome';
+import {
+  ACCESSIBILITY_RESTART_NOTICE,
+  accessibilityOutcomeMessage,
+  microphoneResetMessage,
+  permissionErrorMessage,
+} from '../lib/permissionOutcome';
 import { openSystemAudioPreferences, type SystemAudioAccess, type SystemAudioPermissionState } from '../lib/meetings';
 
 interface PermissionStatus {
   microphone: MicPermissionStatus;
   accessibility: 'unknown' | 'granted' | 'denied';
+  /** Accessibility is on, but this running copy cannot use it until it restarts. */
+  accessibilityRestartNeeded: boolean;
   systemAudio: SystemAudioPermissionState;
 }
 
@@ -32,6 +41,7 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
   const [permissions, setPermissions] = useState<PermissionStatus>({
     microphone: 'unknown',
     accessibility: 'unknown',
+    accessibilityRestartNeeded: false,
     systemAudio: 'unknown',
   });
   const [dismissed, setDismissed] = useState(false);
@@ -43,14 +53,17 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
   const [moreOpen, setMoreOpen] = useState(false);
 
   const systemAudioRevision = useRef(0);
+  // Permission state the last action note was about; the note is dropped when it changes.
+  const stateSignature = useRef<string | null>(null);
 
   const checkPermissions = useCallback(async () => {
     const revision = systemAudioRevision.current;
     setChecking(true);
     try {
       // Check accessibility permission via Tauri command
-      const [hasAccessibility, systemAudio] = await Promise.all([
+      const [hasAccessibility, restartNeeded, systemAudio] = await Promise.all([
         invoke<boolean>('check_accessibility_permission'),
+        checkAccessibilityRestartNeeded().catch(() => false),
         invoke<SystemAudioPermissionState>('get_system_audio_permission_status').catch(() => 'unknown' as const),
       ]);
 
@@ -68,9 +81,13 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
         micStatus = 'unknown';
       }
 
+      const signature = `${micStatus === 'denied'}|${hasAccessibility}|${restartNeeded}`;
+      if (stateSignature.current !== null && stateSignature.current !== signature) setActionNote(null);
+      stateSignature.current = signature;
       setPermissions((current) => ({
         microphone: micStatus,
         accessibility: hasAccessibility ? 'granted' : 'denied',
+        accessibilityRestartNeeded: hasAccessibility && restartNeeded,
         systemAudio: revision === systemAudioRevision.current ? systemAudio : current.systemAudio,
       }));
     } catch (error) {
@@ -93,6 +110,7 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
     let unlisten: (() => void) | null = null;
     listen<SystemAudioAccess>('system-audio-permission-changed', (event) => {
       ++systemAudioRevision.current;
+      setActionNote(null);
       setPermissions((current) => ({ ...current, systemAudio: event.payload.permission }));
       if (event.payload.permission === 'denied') setDismissed(false);
     }).then((fn) => {
@@ -109,6 +127,16 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
       setActionNote(accessibilityOutcomeMessage(await requestAccessibilityPermission()));
     } catch (error) {
       setActionNote(permissionErrorMessage(error, "Couldn't open the Accessibility request."));
+    }
+  };
+
+  const handleRestartMurmur = async () => {
+    setActionNote(null);
+    try {
+      await restartMurmurForPermission();
+      setActionNote('Murmur is restarting to finish turning on Accessibility.');
+    } catch (error) {
+      setActionNote(permissionErrorMessage(error, "Couldn't restart Murmur."));
     }
   };
 
@@ -133,8 +161,7 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
   const handleResetMicrophone = async () => {
     setMicResetError(null);
     try {
-      await resetMicrophonePermission();
-      setActionNote('Murmur is restarting to finish the reset. macOS asks for the microphone the next time you record.');
+      setActionNote(microphoneResetMessage(await resetMicrophonePermission()));
     } catch (error) {
       console.error('Failed to reset microphone permission:', error);
       setMicResetError(
@@ -152,12 +179,17 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
   const micOk = !micDenied;
   const allGranted = micOk && permissions.accessibility === 'granted' && !systemAudioDenied;
 
-  if (dismissed || allGranted || checking || (microphoneInHome && micDenied && permissions.accessibility === 'granted' && !systemAudioDenied)) {
+  // Accessibility is on but this copy cannot use it yet: a notice, never an automatic restart.
+  const restartNotice = permissions.accessibilityRestartNeeded && micOk && !systemAudioDenied;
+
+  if (dismissed || (allGranted && !restartNotice) || checking || (microphoneInHome && micDenied && permissions.accessibility === 'granted' && !systemAudioDenied)) {
     return null;
   }
 
   const needsAccessibility = permissions.accessibility !== 'granted';
-  const message = systemAudioDenied
+  const message = restartNotice
+    ? ACCESSIBILITY_RESTART_NOTICE
+    : systemAudioDenied
     ? 'System Audio access was denied; Meeting capture cannot start.'
     : micDenied && needsAccessibility
     ? 'Microphone and Accessibility access are needed.'
@@ -177,14 +209,16 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
       <span className="min-w-0 flex-1 truncate" title={shownMessage}>{shownMessage}</span>
       <button
         type="button"
-        onClick={() => void (systemAudioDenied
-          ? openSystemAudioPreferences()
-          : micDenied
-            ? handleOpenMicrophone()
-            : handleOpenAccessibility())}
+        onClick={() => void (restartNotice
+          ? handleRestartMurmur()
+          : systemAudioDenied
+            ? openSystemAudioPreferences()
+            : micDenied
+              ? handleOpenMicrophone()
+              : handleOpenAccessibility())}
         className="shrink-0 rounded-[var(--ui-radius-pill)] px-2.5 py-1 font-semibold transition-colors hover:bg-warning/10"
       >
-        Open System Settings…
+        {restartNotice ? 'Restart Murmur' : 'Open System Settings…'}
       </button>
       <details
         open={moreOpen}

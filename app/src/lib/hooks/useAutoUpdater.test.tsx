@@ -180,6 +180,32 @@ describe('useAutoUpdater presentation state', () => {
     expect(install).toHaveBeenCalledOnce();
   });
 
+  it('tells the backend while update.install() runs, and clears it even when install fails', async () => {
+    const seen: Array<{ active: boolean; during: boolean }> = [];
+    let installing = false;
+    mocks.invoke.mockImplementation(async (command: string, args?: { active?: boolean }) => {
+      if (command === 'set_update_install_in_progress') {
+        installing = Boolean(args?.active);
+        seen.push({ active: Boolean(args?.active), during: installing });
+      }
+      return { path: null, result: null };
+    });
+    const install = vi.fn().mockImplementation(async () => {
+      expect(installing).toBe(true);
+      throw new Error('install failed');
+    });
+    mocks.check.mockResolvedValueOnce({
+      available: true, version: '0.23.0', body: '', rawJson: {},
+      download: vi.fn().mockResolvedValue(undefined), install,
+    });
+    await act(async () => current.checkForUpdate());
+    await act(async () => current.startDownload());
+    await act(async () => current.restartUpdate());
+    expect(install).toHaveBeenCalledOnce();
+    expect(seen.map((entry) => entry.active)).toEqual([true, false]);
+    expect(installing).toBe(false);
+  });
+
   async function relaunchWithPendingUpdate(version: string) {
     await act(async () => root.unmount());
     localStorage.setItem('pending-update-release-notes', JSON.stringify({

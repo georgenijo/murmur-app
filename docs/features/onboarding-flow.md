@@ -134,7 +134,12 @@ dev server. Built apps retain the bundle-targeted Reset actions described above.
 
 - Flag present → straight to the main UI (the existing `PermissionsBanner`
   still catches later permission drift, and the standalone `ModelDownloader`
-  gate still catches a deleted model file).
+  gate still catches a deleted model file). When Accessibility is on but a
+  real Accessibility query from the running process returned API-disabled
+  (`check_accessibility_restart_needed`), the banner also shows a dismissible
+  notice with one **Restart Murmur** button. It restarts only on click, only
+  when idle; nothing restarts automatically, and a successful later query clears
+  the notice.
 - Flag absent → probe mic + accessibility + the runtime model catalog. **All three already in
   place → set the flag silently** so existing installs never see the wizard on
   upgrade. Anything missing → show `OnboardingFlow`.

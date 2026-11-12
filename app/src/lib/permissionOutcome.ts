@@ -16,12 +16,25 @@ export function accessibilityOutcomeMessage(
       return `Turn on ${owner} in System Settings, then come back. This screen updates automatically.`;
     case 'restarting':
       return 'Murmur is restarting to finish the reset. Turn it on when macOS asks.';
+    case 'restart_pending':
+      return 'The old entry was cleared. Murmur restarts as soon as your recording, meeting or download finishes; turn it on when macOS asks.';
     case 'restart_deferred':
       return `Murmur is busy, so it did not restart. Turn on ${owner} in System Settings. If it stays off, finish your recording or meeting and press the button again to refresh the old entry.`;
     default:
       return null;
   }
 }
+
+/** What to tell the user after a Microphone reset. */
+export function microphoneResetMessage(outcome: 'restarting' | 'restart_pending'): string {
+  return outcome === 'restart_pending'
+    ? 'The old entry was cleared. Murmur restarts as soon as your recording, meeting or download finishes. Allow microphone access when macOS asks.'
+    : 'Murmur is restarting to finish the reset. macOS asks for the microphone the next time you record.';
+}
+
+/** Shown when Accessibility is on but this running copy still cannot use it. */
+export const ACCESSIBILITY_RESTART_NOTICE =
+  "Accessibility is on, but this running copy of Murmur can't use it yet. Restart Murmur to finish.";
 
 /** Failure text for a rejected permission command (Rust sends plain strings). */
 export function permissionErrorMessage(error: unknown, fallback: string): string {

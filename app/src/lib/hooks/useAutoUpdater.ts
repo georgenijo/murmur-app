@@ -94,6 +94,15 @@ export interface UseAutoUpdaterReturn {
   dismissCompletedUpdate: () => void;
 }
 
+/** Best effort: the backend refuses permission restarts while this is true. */
+function reportUpdateInstall(active: boolean): void {
+  try {
+    void Promise.resolve(invoke('set_update_install_in_progress', { active })).catch(() => {});
+  } catch {
+    // Unit tests and previews without the native bridge.
+  }
+}
+
 export function useAutoUpdater(
   options: UseAutoUpdaterOptions = {},
 ): UseAutoUpdaterReturn {
@@ -497,7 +506,13 @@ export function useAutoUpdater(
 
     try {
       if (!hasInstalledUpdateRef.current) {
-        await update.install();
+        // Tell the backend so a permission restart cannot cut the install short.
+        reportUpdateInstall(true);
+        try {
+          await update.install();
+        } finally {
+          reportUpdateInstall(false);
+        }
         hasInstalledUpdateRef.current = true;
         hasDownloadedUpdateRef.current = false;
       }

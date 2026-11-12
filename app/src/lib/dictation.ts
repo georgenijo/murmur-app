@@ -239,6 +239,8 @@ export async function transcribeFile(filePath: string): Promise<DictationRespons
  *   list Murmur again; Murmur restarts when idle and asks once it is back.
  * - `restart_deferred`: same stale entry, but Murmur is recording, in a meeting,
  *   or transcribing, so it only opened the pane and did not restart.
+ * - `restart_pending`: the reset is done and Murmur restarts as soon as the
+ *   current recording, meeting, transcription, download or update finishes.
  * - `in_progress`: an earlier request is still running; nothing new was shown.
  */
 export type AccessibilityRequestOutcome =
@@ -247,6 +249,7 @@ export type AccessibilityRequestOutcome =
   | 'opened_settings'
   | 'restarting'
   | 'restart_deferred'
+  | 'restart_pending'
   | 'in_progress';
 
 /**
@@ -256,6 +259,25 @@ export type AccessibilityRequestOutcome =
  */
 export async function resetAccessibilityPermission(): Promise<AccessibilityRequestOutcome> {
   return await invoke('reset_accessibility_permission');
+}
+
+/**
+ * Whether Accessibility is on but this running copy of Murmur cannot use it yet:
+ * a real Accessibility query from this process failed with "API disabled" while
+ * trusted, and none has succeeded since. The cure is a restart (see
+ * `restartMurmurForPermission`); nothing restarts on its own.
+ */
+export async function checkAccessibilityRestartNeeded(): Promise<boolean> {
+  return await invoke('check_accessibility_restart_needed');
+}
+
+/**
+ * Restart Murmur so it picks up an Accessibility grant. Resolves `restarting`;
+ * rejects with the reason while Murmur is recording, in a meeting, transcribing,
+ * downloading or updating, or when it is not running from an installed app.
+ */
+export async function restartMurmurForPermission(): Promise<'restarting'> {
+  return await invoke('restart_murmur_for_permission');
 }
 
 /** Check whether accessibility permission is currently granted (macOS). */
@@ -311,6 +333,6 @@ export async function checkMicrophonePermissionStatus(): Promise<MicPermissionSt
  * `restarting`; rejects if the reset fails or Murmur is busy (recording, meeting,
  * transcription) or not an installed app (see Rust `reset_microphone_permission`).
  */
-export async function resetMicrophonePermission(): Promise<'restarting'> {
+export async function resetMicrophonePermission(): Promise<'restarting' | 'restart_pending'> {
   return await invoke('reset_microphone_permission');
 }

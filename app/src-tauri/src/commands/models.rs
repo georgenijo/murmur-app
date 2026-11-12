@@ -47,6 +47,11 @@ struct InstallOwners {
 static INSTALL_OWNERS: LazyLock<std::sync::Mutex<InstallOwners>> =
     LazyLock::new(|| std::sync::Mutex::new(InstallOwners::default()));
 
+/// Whether any model download or install is running. A relaunch would kill it.
+pub(crate) fn install_in_progress() -> bool {
+    !INSTALL_OWNERS.lock_or_recover().active.is_empty() || crate::diarization_model::installing()
+}
+
 struct InstallGuard {
     model: String,
     request: String,
