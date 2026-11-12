@@ -6370,6 +6370,26 @@ pub async fn transcribe_file(
 pub(crate) mod tests {
     use super::*;
     use std::collections::VecDeque;
+
+    #[test]
+    fn a_committed_permission_relaunch_refuses_a_dictation_start() {
+        let state = crate::State::for_test();
+        assert_eq!(dictation_start_blocker(&state, DictationStatus::Idle), None);
+        assert_eq!(dictation_prepare_refusal(&state), None);
+        let _committed = crate::commands::permissions::CommittedRelaunchForTest::raise();
+        assert_eq!(
+            dictation_start_blocker(&state, DictationStatus::Idle),
+            Some(DictationStartBlocker {
+                kind: "busy_restarting",
+                state: "idle"
+            })
+        );
+        // Key-down admission refuses too, but the relaunch's own commitment is
+        // not "activity" to the relaunch gate.
+        assert!(dictation_prepare_refusal(&state).is_some());
+        assert_eq!(dictation_relaunch_busy(&state), None);
+    }
+
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use tauri::Listener;

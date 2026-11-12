@@ -60,6 +60,11 @@ pub fn smart_turn_model_status() -> SmartTurnModelStatus {
     }
 }
 
+/// Whether the smart-turn model is downloading right now.
+pub(crate) fn downloading() -> bool {
+    DOWNLOADING.load(Ordering::Acquire)
+}
+
 struct DownloadingFlag;
 impl DownloadingFlag {
     fn set() -> Self {

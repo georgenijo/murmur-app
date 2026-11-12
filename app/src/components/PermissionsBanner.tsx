@@ -9,6 +9,7 @@ import {
   resetAccessibilityPermission,
   resetMicrophonePermission,
   restartMurmurForPermission,
+  type AccessibilityRequestOutcome,
   type MicPermissionStatus,
 } from '../lib/dictation';
 import {
@@ -50,6 +51,9 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
   const [micResetError, setMicResetError] = useState<string | null>(null);
   // What the last Accessibility or Microphone action did, shown in the banner.
   const [actionNote, setActionNote] = useState<string | null>(null);
+  // A restart is on its way. Never cleared or dismissed (the process is about to
+  // end), so Murmur cannot restart without a visible reason.
+  const [restartPending, setRestartPending] = useState<string | null>(null);
   const [moreOpen, setMoreOpen] = useState(false);
 
   const systemAudioRevision = useRef(0);
@@ -121,10 +125,16 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
     return () => { disposed = true; unlisten?.(); };
   }, []);
 
+  const noteAccessibilityOutcome = (outcome: AccessibilityRequestOutcome) => {
+    const message = accessibilityOutcomeMessage(outcome);
+    setActionNote(message);
+    if (message && (outcome === 'restarting' || outcome === 'restart_pending')) setRestartPending(message);
+  };
+
   const handleOpenAccessibility = async () => {
     setActionNote(null);
     try {
-      setActionNote(accessibilityOutcomeMessage(await requestAccessibilityPermission()));
+      noteAccessibilityOutcome(await requestAccessibilityPermission());
     } catch (error) {
       setActionNote(permissionErrorMessage(error, "Couldn't open the Accessibility request."));
     }
@@ -134,11 +144,33 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
     setActionNote(null);
     try {
       await restartMurmurForPermission();
-      setActionNote('Murmur is restarting to finish turning on Accessibility.');
+      const message = 'Murmur is restarting to finish turning on Accessibility.';
+      setActionNote(message);
+      setRestartPending(message);
     } catch (error) {
       setActionNote(permissionErrorMessage(error, "Couldn't restart Murmur."));
     }
   };
+
+  useEffect(() => {
+    let disposed = false;
+    const unlisteners: Array<() => void> = [];
+    const subscribe = (name: string, handler: () => void) => {
+      listen(name, handler).then((fn) => {
+        if (disposed) fn(); else unlisteners.push(fn);
+      }).catch(() => {
+        // Unit tests and non-Tauri previews do not expose the native event bridge.
+      });
+    };
+    // A real Accessibility query was refused while trusted: show the notice now,
+    // not at the next window focus.
+    subscribe('accessibility-restart-needed', () => { void checkPermissions(); });
+    // Whoever asked for it, a restart is scheduled: say so.
+    subscribe('permission-relaunch-scheduled', () => {
+      setRestartPending((current) => current ?? 'Murmur is restarting to finish a permission change.');
+    });
+    return () => { disposed = true; unlisteners.forEach((fn) => fn()); };
+  }, [checkPermissions]);
 
   const handleOpenMicrophone = async () => {
     await openMicrophoneSettings();
@@ -147,7 +179,7 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
   const handleResetAccessibility = async () => {
     setResetError(null);
     try {
-      setActionNote(accessibilityOutcomeMessage(await resetAccessibilityPermission()));
+      noteAccessibilityOutcome(await resetAccessibilityPermission());
     } catch (error) {
       console.error('Failed to reset accessibility permission:', error);
       setResetError(
@@ -161,7 +193,9 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
   const handleResetMicrophone = async () => {
     setMicResetError(null);
     try {
-      setActionNote(microphoneResetMessage(await resetMicrophonePermission()));
+      const message = microphoneResetMessage(await resetMicrophonePermission());
+      setActionNote(message);
+      setRestartPending(message);
     } catch (error) {
       console.error('Failed to reset microphone permission:', error);
       setMicResetError(
@@ -181,6 +215,19 @@ export function PermissionsBanner({ microphoneInHome = false }: { microphoneInHo
 
   // Accessibility is on but this copy cannot use it yet: a notice, never an automatic restart.
   const restartNotice = permissions.accessibilityRestartNeeded && micOk && !systemAudioDenied;
+
+  if (restartPending) {
+    return (
+      <div
+        role="status"
+        aria-label="Restart pending"
+        className="dialog-banner relative mx-3.5 mb-1.5 flex shrink-0 items-center gap-2 border-warning/25 bg-[color-mix(in_srgb,var(--murmur-warning)_10%,transparent)] px-3 py-2 text-[length:var(--ui-font-caption)] text-warning"
+      >
+        <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full bg-warning" />
+        <span className="min-w-0 flex-1 truncate" title={restartPending}>{restartPending}</span>
+      </div>
+    );
+  }
 
   if (dismissed || (allGranted && !restartNotice) || checking || (microphoneInHome && micDenied && permissions.accessibility === 'granted' && !systemAudioDenied)) {
     return null;

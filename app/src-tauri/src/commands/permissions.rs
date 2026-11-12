@@ -98,6 +98,25 @@ pub(crate) fn relaunch_committed() -> bool {
     RELAUNCH_COMMITTED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// Raises the relaunch commitment for one test and lowers it afterwards.
+#[cfg(test)]
+pub(crate) struct CommittedRelaunchForTest;
+
+#[cfg(test)]
+impl CommittedRelaunchForTest {
+    pub(crate) fn raise() -> Self {
+        RELAUNCH_COMMITTED.store(true, std::sync::atomic::Ordering::SeqCst);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for CommittedRelaunchForTest {
+    fn drop(&mut self) {
+        RELAUNCH_COMMITTED.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// `kAXErrorAPIDisabled`: the Accessibility API is off for this process.
 const AX_ERROR_API_DISABLED: i32 = -25211;
 
@@ -105,14 +124,17 @@ const AX_ERROR_API_DISABLED: i32 = -25211;
 /// evidence. Only -25211 counts, and only while trusted: -25204 is the ordinary
 /// target-app timeout and says nothing about this process's permission. A
 /// successful query clears the evidence.
+///
+/// Returns true only when this result turned the evidence on.
 fn fold_ax_status(
     status: i32,
     trusted: impl FnOnce() -> bool,
     observed: &std::sync::atomic::AtomicBool,
-) {
+) -> bool {
     use std::sync::atomic::Ordering;
     if status == 0 {
         observed.store(false, Ordering::SeqCst);
+        false
     } else if status == AX_ERROR_API_DISABLED && trusted() && !observed.swap(true, Ordering::SeqCst)
     {
         tracing::warn!(
@@ -120,18 +142,35 @@ fn fold_ax_status(
             event_code = "system.accessibility_api_disabled_observed",
             "Accessibility reads trusted, but a query returned API-disabled"
         );
+        true
+    } else {
+        false
     }
+}
+
+/// The app handle, kept only to tell the UI when the evidence turns on.
+static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+pub(crate) fn register_app_handle(app: tauri::AppHandle) {
+    let _ = APP_HANDLE.set(app);
 }
 
 /// Called after real Accessibility queries (focus detection and the focus
 /// proof). One atomic update on success; the trust check runs only on the
 /// failure path, so the paste path gains no query and no wait.
 pub(crate) fn note_ax_query_status(status: i32) {
-    fold_ax_status(
+    let turned_on = fold_ax_status(
         status,
         injector::is_accessibility_enabled,
         &AX_API_DISABLED_OBSERVED,
     );
+    if turned_on {
+        // Once per transition, so the banner shows the notice without waiting for
+        // the next window focus.
+        if let Some(app) = APP_HANDLE.get() {
+            let _ = tauri::Emitter::emit(app, "accessibility-restart-needed", ());
+        }
+    }
 }
 
 /// Accessibility is on, yet this running copy cannot use it: restart Murmur.
@@ -150,7 +189,8 @@ pub fn check_accessibility_restart_needed() -> bool {
     )
 }
 
-/// The frontend reports that `update.install()` started or ended.
+/// The frontend reports that `update.download()` or `update.install()` started
+/// or ended.
 #[tauri::command]
 pub fn set_update_install_in_progress(active: bool) {
     UPDATE_INSTALL_IN_PROGRESS.store(active, std::sync::atomic::Ordering::SeqCst);
@@ -350,7 +390,8 @@ fn relaunch_gate(app: &tauri::AppHandle) -> RelaunchGate {
             dictation_or_meeting: app
                 .try_state::<crate::State>()
                 .and_then(|state| crate::commands::recording::dictation_relaunch_busy(&state)),
-            model_install: crate::commands::models::install_in_progress(),
+            model_install: crate::commands::models::install_in_progress()
+                || crate::commands::smart_turn::downloading(),
             update_install: UPDATE_INSTALL_IN_PROGRESS.load(std::sync::atomic::Ordering::SeqCst),
         }),
     }
@@ -823,6 +864,45 @@ fn drive_relaunch(
     }
 }
 
+/// Clears the relaunch commitment and releases the slot when dropped, unless
+/// disarmed. Dropping during a panic is what protects the app: otherwise a
+/// waiter that died after committing would refuse every dictation and meeting
+/// as "restarting" until the user quit.
+#[cfg(any(target_os = "macos", test))]
+struct ReleaseUnlessRelaunched<'a> {
+    committed: &'a std::sync::atomic::AtomicBool,
+    slot: &'a std::sync::atomic::AtomicBool,
+    armed: bool,
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl<'a> ReleaseUnlessRelaunched<'a> {
+    fn new(
+        committed: &'a std::sync::atomic::AtomicBool,
+        slot: &'a std::sync::atomic::AtomicBool,
+    ) -> Self {
+        Self {
+            committed,
+            slot,
+            armed: true,
+        }
+    }
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+impl Drop for ReleaseUnlessRelaunched<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.committed
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            self.slot.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
 /// Claim the single relaunch slot. False when a relaunch is already scheduled.
 #[cfg(any(target_os = "macos", test))]
 fn claim_relaunch_slot(flag: &std::sync::atomic::AtomicBool) -> bool {
@@ -844,7 +924,12 @@ fn relaunch_when_idle(app: tauri::AppHandle) -> bool {
     if !claim_relaunch_slot(&RELAUNCH_SCHEDULED) {
         return false;
     }
+    // Every surface can show that a restart is coming, whoever asked for it.
+    let _ = tauri::Emitter::emit(&app, "permission-relaunch-scheduled", ());
     std::thread::spawn(move || {
+        // Releases the slot and the commitment on any early end, including a
+        // panic, so a failed waiter can never leave starts refused.
+        let mut release = ReleaseUnlessRelaunched::new(&RELAUNCH_COMMITTED, &RELAUNCH_SCHEDULED);
         std::thread::sleep(Duration::from_millis(1500));
         let end = drive_relaunch(
             || relaunch_gate(&app),
@@ -853,13 +938,14 @@ fn relaunch_when_idle(app: tauri::AppHandle) -> bool {
             || std::thread::sleep(Duration::from_secs(2)),
             None,
         );
-        if end == RelaunchEnd::Abandoned {
-            tracing::info!(
+        match end {
+            // The process is exiting: leave the commitment up until it does.
+            RelaunchEnd::Relaunched => release.disarm(),
+            RelaunchEnd::Abandoned => tracing::info!(
                 target: "system",
                 event_code = "system.permission_relaunch_skipped",
                 "relaunch skipped because Murmur cannot relaunch from here"
-            );
-            RELAUNCH_SCHEDULED.store(false, Ordering::SeqCst);
+            ),
         }
     });
     true
@@ -1222,7 +1308,7 @@ mod tests {
         run_accessibility_reset, run_audio_inventory_read, run_microphone_reset,
         run_restart_request, should_open_settings_pane, take_relaunch_marker, AccessibilityEffects,
         AccessibilityRequestFacts, AccessibilityRequestGuard, AccessibilityRequestPlan, BusyInputs,
-        RelaunchEnd, RelaunchGate, ResetEffects,
+        RelaunchEnd, RelaunchGate, ReleaseUnlessRelaunched, ResetEffects,
     };
 
     const IDLE: RelaunchGate = RelaunchGate {
@@ -1561,6 +1647,56 @@ mod tests {
     }
 
     #[test]
+    fn a_waiter_that_panics_after_committing_releases_the_commitment_and_the_slot() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let committed = AtomicBool::new(false);
+        let slot = AtomicBool::new(false);
+        assert!(claim_relaunch_slot(&slot));
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _release = ReleaseUnlessRelaunched::new(&committed, &slot);
+            committed.store(true, SeqCst);
+            panic!("waiter failed after committing");
+        }));
+        assert!(crashed.is_err());
+        assert!(!committed.load(SeqCst), "starts must not stay refused");
+        assert!(
+            claim_relaunch_slot(&slot),
+            "a new relaunch can be scheduled"
+        );
+
+        // A relaunch that is exiting keeps both up.
+        let committed = AtomicBool::new(true);
+        let slot = AtomicBool::new(true);
+        {
+            let mut release = ReleaseUnlessRelaunched::new(&committed, &slot);
+            release.disarm();
+        }
+        assert!(committed.load(SeqCst) && slot.load(SeqCst));
+    }
+
+    #[test]
+    fn only_the_result_that_turns_the_evidence_on_reports_a_transition() {
+        use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+        let observed = AtomicBool::new(false);
+        assert!(!fold_ax_status(-25204, || true, &observed));
+        assert!(!fold_ax_status(-25211, || false, &observed));
+        assert!(
+            fold_ax_status(-25211, || true, &observed),
+            "first failure announces"
+        );
+        assert!(
+            !fold_ax_status(-25211, || true, &observed),
+            "later failures do not"
+        );
+        assert!(!fold_ax_status(0, || true, &observed));
+        assert!(!observed.load(SeqCst));
+        assert!(
+            fold_ax_status(-25211, || true, &observed),
+            "a new failure announces again"
+        );
+    }
+
+    #[test]
     fn only_one_relaunch_can_be_scheduled() {
         let flag = std::sync::atomic::AtomicBool::new(false);
         assert!(claim_relaunch_slot(&flag));
@@ -1595,7 +1731,7 @@ mod tests {
     }
 
     fn fold(status: i32, trusted: bool, observed: &std::sync::atomic::AtomicBool) {
-        fold_ax_status(status, || trusted, observed);
+        let _ = fold_ax_status(status, || trusted, observed);
     }
 
     #[test]

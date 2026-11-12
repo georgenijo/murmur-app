@@ -71,9 +71,37 @@ fn clamp_max_sessions(max_sessions: u32) -> u32 {
     max_sessions.clamp(MIN_KEPT_SESSIONS, MAX_KEPT_SESSIONS)
 }
 
+const MEETING_RESTARTING: &str =
+    "Murmur is restarting to finish a permission reset. Try again in a moment.";
+
+/// Mark a meeting (or the System Audio permission request) as owning capture.
+///
+/// The flag is raised first and the relaunch commitment read after it. The
+/// relaunch commits first and reads the activity flag after. Whichever happens
+/// second sees the other, so a meeting is either seen by the relaunch (which
+/// then does not exit) or refused here. On refusal nothing stays claimed.
+fn claim_meeting_ownership(app_state: &AppState, inference: bool) -> Result<(), &'static str> {
+    app_state.meeting_active.store(true, Ordering::SeqCst);
+    if inference {
+        app_state
+            .meeting_inference_active
+            .store(true, Ordering::SeqCst);
+    }
+    if crate::commands::permissions::relaunch_committed() {
+        app_state.meeting_active.store(false, Ordering::SeqCst);
+        if inference {
+            app_state
+                .meeting_inference_active
+                .store(false, Ordering::SeqCst);
+        }
+        return Err(MEETING_RESTARTING);
+    }
+    Ok(())
+}
+
 fn meeting_conflict(state: &State) -> Option<&'static str> {
     if crate::commands::permissions::relaunch_committed() {
-        return Some("Murmur is restarting to finish a permission reset. Try again in a moment.");
+        return Some(MEETING_RESTARTING);
     }
     if state.microphone_startup_benchmark.is_active() {
         return Some("Wait for the microphone startup check to finish before starting a meeting.");
@@ -240,10 +268,16 @@ fn prepare_meeting_session(
         }
     }
     crate::audio::prepare::capture_claimed(crate::audio::prepare::CaptureClaim::Meeting);
-    app_state.meeting_active.store(true, Ordering::SeqCst);
-    app_state
-        .meeting_inference_active
-        .store(true, Ordering::SeqCst);
+    if let Err(error) = claim_meeting_ownership(app_state, true) {
+        // A permission relaunch committed to exiting between the admission check
+        // and here. Leave no half-started session behind.
+        let _ = repository.finish_session(
+            &session_id,
+            crate::meeting_store::MeetingSessionStatus::Failed,
+            Some("supervisor_unavailable"),
+        );
+        return Err(error.to_string());
+    }
     let config = MeetingCaptureConfig {
         generation,
         session_id: session_id.clone(),
@@ -262,6 +296,39 @@ fn prepare_meeting_session(
 #[cfg(test)]
 mod admission_tests {
     use super::*;
+
+    #[test]
+    fn a_committed_relaunch_refuses_a_meeting_at_admission_and_at_ownership() {
+        let state = State::for_test();
+        assert_eq!(meeting_conflict(&state), None);
+        let _committed = crate::commands::permissions::CommittedRelaunchForTest::raise();
+        assert_eq!(meeting_conflict(&state), Some(MEETING_RESTARTING));
+
+        // Past admission, claiming ownership while committed backs out cleanly.
+        for inference in [true, false] {
+            let app_state = AppState::default();
+            assert_eq!(
+                claim_meeting_ownership(&app_state, inference),
+                Err(MEETING_RESTARTING)
+            );
+            assert!(!app_state.meeting_active.load(Ordering::SeqCst));
+            assert!(!app_state.meeting_inference_active.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn claiming_meeting_ownership_sets_the_flags_when_no_relaunch_is_committed() {
+        let app_state = AppState::default();
+        assert_eq!(claim_meeting_ownership(&app_state, true), Ok(()));
+        assert!(app_state.meeting_active.load(Ordering::SeqCst));
+        assert!(app_state.meeting_inference_active.load(Ordering::SeqCst));
+        let permission_only = AppState::default();
+        assert_eq!(claim_meeting_ownership(&permission_only, false), Ok(()));
+        assert!(permission_only.meeting_active.load(Ordering::SeqCst));
+        assert!(!permission_only
+            .meeting_inference_active
+            .load(Ordering::SeqCst));
+    }
 
     #[test]
     fn refused_auto_input_leaves_meeting_store_and_ownership_untouched() {
@@ -336,7 +403,7 @@ pub async fn request_system_audio_permission(
         if let Some(error) = meeting_conflict(&state) {
             return Err(error.to_string());
         }
-        state.app_state.meeting_active.store(true, Ordering::SeqCst);
+        claim_meeting_ownership(&state.app_state, false)?;
     }
     let coordinator = state.meetings.clone();
     let joined = tauri::async_runtime::spawn_blocking(move || coordinator.request_permission())

@@ -139,7 +139,11 @@ dev server. Built apps retain the bundle-targeted Reset actions described above.
   (`check_accessibility_restart_needed`), the banner also shows a dismissible
   notice with one **Restart Murmur** button. It restarts only on click, only
   when idle; nothing restarts automatically, and a successful later query clears
-  the notice.
+  the notice. The backend emits `accessibility-restart-needed` when the evidence
+  turns on, so the notice does not wait for the next window focus. While any
+  permission restart is scheduled (`permission-relaunch-scheduled`), the banner
+  keeps a non-dismissable "restarting" line so Murmur never restarts without a
+  visible reason.
 - Flag absent → probe mic + accessibility + the runtime model catalog. **All three already in
   place → set the flag silently** so existing installs never see the wizard on
   upgrade. Anything missing → show `OnboardingFlow`.

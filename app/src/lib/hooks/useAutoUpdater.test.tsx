@@ -180,30 +180,36 @@ describe('useAutoUpdater presentation state', () => {
     expect(install).toHaveBeenCalledOnce();
   });
 
-  it('tells the backend while update.install() runs, and clears it even when install fails', async () => {
-    const seen: Array<{ active: boolean; during: boolean }> = [];
-    let installing = false;
+  it('tells the backend while the update downloads and installs, and clears it even when they fail', async () => {
+    let flag = false;
+    const calls: boolean[] = [];
     mocks.invoke.mockImplementation(async (command: string, args?: { active?: boolean }) => {
       if (command === 'set_update_install_in_progress') {
-        installing = Boolean(args?.active);
-        seen.push({ active: Boolean(args?.active), during: installing });
+        flag = Boolean(args?.active);
+        calls.push(flag);
       }
       return { path: null, result: null };
     });
+    const seenDuringDownload: boolean[] = [];
+    const seenDuringInstall: boolean[] = [];
+    const download = vi.fn().mockImplementation(async () => { seenDuringDownload.push(flag); });
     const install = vi.fn().mockImplementation(async () => {
-      expect(installing).toBe(true);
+      seenDuringInstall.push(flag);
       throw new Error('install failed');
     });
     mocks.check.mockResolvedValueOnce({
-      available: true, version: '0.23.0', body: '', rawJson: {},
-      download: vi.fn().mockResolvedValue(undefined), install,
+      available: true, version: '0.23.0', body: '', rawJson: {}, download, install,
     });
     await act(async () => current.checkForUpdate());
+    // Before anything runs the flag is off.
+    expect(flag).toBe(false);
     await act(async () => current.startDownload());
+    expect(seenDuringDownload).toEqual([true]);
+    expect(flag).toBe(false);
     await act(async () => current.restartUpdate());
-    expect(install).toHaveBeenCalledOnce();
-    expect(seen.map((entry) => entry.active)).toEqual([true, false]);
-    expect(installing).toBe(false);
+    expect(seenDuringInstall).toEqual([true]);
+    expect(flag).toBe(false);
+    expect(calls).toEqual([true, false, true, false]);
   });
 
   async function relaunchWithPendingUpdate(version: string) {
