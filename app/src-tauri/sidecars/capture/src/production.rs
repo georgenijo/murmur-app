@@ -229,6 +229,26 @@ fn flush_stopped_ring(
     }
 }
 
+/// How long the dictation capture loop may go without servicing the ring and
+/// its health checks. A control message ends the wait at once.
+const DICTATION_LOOP_INTERVAL: Duration = Duration::from_millis(4);
+
+/// Block until the host sends a control message, the host side closes, or
+/// `interval` elapses. Replaces a fixed sleep between ring drains, so a Stop or
+/// Cancel is acted on when it arrives instead of at the next poll. `None` means
+/// the interval elapsed with nothing to handle. A closed control channel (the
+/// host exited or crashed) is reported immediately, as the polling loop did.
+fn wait_for_control(
+    control_rx: &mpsc::Receiver<ProductionHostMessage>,
+    interval: Duration,
+) -> Option<Result<ProductionHostMessage, mpsc::TryRecvError>> {
+    match control_rx.recv_timeout(interval) {
+        Ok(message) => Some(Ok(message)),
+        Err(mpsc::RecvTimeoutError::Timeout) => None,
+        Err(mpsc::RecvTimeoutError::Disconnected) => Some(Err(mpsc::TryRecvError::Disconnected)),
+    }
+}
+
 /// A Stopped receipt seals PCM only after a successful native stop and flush.
 /// A native stop failure reports the existing content-free Failure frame;
 /// the host must retain ownership and confirm process exit before delivery.
@@ -2524,6 +2544,68 @@ mod tests {
     }
 
     #[test]
+    fn control_wait_wakes_on_a_message_instead_of_the_next_poll() {
+        use super::*;
+        let (tx, rx) = mpsc::channel();
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(15));
+            tx.send(ProductionHostMessage::Stop).unwrap();
+            // Keep the channel open: the wake must come from the message.
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        let started = Instant::now();
+        // An interval far longer than the message delay: only a real wake can
+        // return inside the bound.
+        let woke = wait_for_control(&rx, Duration::from_secs(4));
+        assert!(matches!(woke, Some(Ok(ProductionHostMessage::Stop))));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "stop was not observed when it arrived: {:?}",
+            started.elapsed()
+        );
+        sender.join().unwrap();
+        drop(rx);
+    }
+
+    #[test]
+    fn control_wait_wakes_on_cancel_and_reports_the_message_unchanged() {
+        use super::*;
+        let (tx, rx) = mpsc::channel();
+        tx.send(ProductionHostMessage::Cancel).unwrap();
+        let started = Instant::now();
+        let woke = wait_for_control(&rx, Duration::from_secs(4));
+        assert!(matches!(woke, Some(Ok(ProductionHostMessage::Cancel))));
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn control_wait_reports_a_closed_host_immediately() {
+        use super::*;
+        // The control reader thread drops its sender when stdin closes: the
+        // host exited or crashed. The capture loop must exit, not wait out the
+        // interval or hang.
+        let (tx, rx) = mpsc::channel::<ProductionHostMessage>();
+        let closer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(15));
+            drop(tx);
+        });
+        let started = Instant::now();
+        let woke = wait_for_control(&rx, Duration::from_secs(4));
+        assert!(matches!(woke, Some(Err(mpsc::TryRecvError::Disconnected))));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        closer.join().unwrap();
+    }
+
+    #[test]
+    fn control_wait_returns_after_the_interval_when_nothing_arrives() {
+        use super::*;
+        let (_tx, rx) = mpsc::channel::<ProductionHostMessage>();
+        let started = Instant::now();
+        assert!(wait_for_control(&rx, Duration::from_millis(20)).is_none());
+        assert!(started.elapsed() >= Duration::from_millis(20));
+    }
+
+    #[test]
     fn preauthorized_grant_is_rechecked_only_where_setup_touches_input() {
         use CaptureSetupStep::*;
         let entered = |step| MicrophoneSetupObservation::Step(step, SetupTransition::Entered);
@@ -3766,6 +3848,8 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
             let mut last_callback_progress = Instant::now();
             let mut starvation_injected = false;
             let mut last_automatic_permission_check = Instant::now();
+            let mut pending_control: Option<Result<ProductionHostMessage, mpsc::TryRecvError>> =
+                None;
             loop {
                 if (automatic_deadline.is_some() || preauthorized)
                     && last_automatic_permission_check.elapsed() >= Duration::from_millis(250)
@@ -3870,7 +3954,12 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                         return Ok(());
                     }
                 }
-                match control_rx.try_recv() {
+                // A message that arrived during the last wait is handled after
+                // this iteration's ring drain, exactly where the poll saw it.
+                let control = pending_control
+                    .take()
+                    .unwrap_or_else(|| control_rx.try_recv());
+                match control {
                     Ok(control @ (ProductionHostMessage::Stop | ProductionHostMessage::Cancel)) => {
                         finish_dictation_stop(
                             &mut stdout,
@@ -3918,7 +4007,7 @@ pub fn run(arguments: &[String]) -> Result<(), ()> {
                     .map_err(|_| ())?;
                     return Ok(());
                 }
-                std::thread::sleep(Duration::from_millis(4));
+                pending_control = wait_for_control(&control_rx, DICTATION_LOOP_INTERVAL);
             }
         }
         _ => Err(()),

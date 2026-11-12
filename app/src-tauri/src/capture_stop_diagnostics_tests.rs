@@ -150,7 +150,7 @@ impl Fixture {
         let (response, result) = mpsc::channel();
         self.supervisor
             .sender
-            .send(SupervisorMessage::Stop {
+            .send(SupervisorMessage::Stop { released_at: None,
                 owner: Some(AudioOwner::Dictation(id)),
                 trigger: DictationStopTrigger::Toggle,
                 response,

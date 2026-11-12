@@ -5743,7 +5743,12 @@ async fn stop_native_recording_for(
     let samples = if let Some(capture) = interrupted_capture {
         capture.samples
     } else {
-        audio_lifecycle::stop_dictation_recording(rid, stop_trigger).map_err(|e| {
+        audio_lifecycle::stop_dictation_recording(
+            rid,
+            stop_trigger,
+            hotkey_release.map(|release| release.released_at()),
+        )
+        .map_err(|e| {
             emit_dictation_terminal(
                 &state,
                 rid,

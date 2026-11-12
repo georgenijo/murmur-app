@@ -140,7 +140,7 @@ fn confirmed_start(supervisor: &AudioSupervisor, owner: AudioOwner, capture: Opt
 
 fn stop_samples(supervisor: &AudioSupervisor, owner: AudioOwner) -> Vec<f32> {
     let (response, samples) = mpsc::channel();
-    supervisor.sender.send(SupervisorMessage::Stop { trigger: DictationStopTrigger::HoldRelease, owner: Some(owner), response }).unwrap();
+    supervisor.sender.send(SupervisorMessage::Stop { released_at: None, trigger: DictationStopTrigger::HoldRelease, owner: Some(owner), response }).unwrap();
     samples.recv_timeout(Duration::from_secs(2)).unwrap().unwrap()
 }
 
@@ -306,7 +306,7 @@ fn ownerless_stop_peek_and_stale_discard_cannot_read_or_leak_key_down_audio() {
     assert!(open(&t.supervisor, 19, None));
     wait_flowing(&t.supervisor, 19);
     let (response, samples) = mpsc::channel();
-    t.supervisor.sender.send(SupervisorMessage::Stop { trigger: DictationStopTrigger::Other, owner: None, response }).unwrap();
+    t.supervisor.sender.send(SupervisorMessage::Stop { released_at: None, trigger: DictationStopTrigger::Other, owner: None, response }).unwrap();
     assert_eq!(samples.recv().unwrap(), Ok(Vec::new()));
     let (response, peeked) = mpsc::channel();
     t.supervisor.sender.send(SupervisorMessage::Peek { owner: AudioOwner::Dictation(19), max_output_samples: None, response }).unwrap();

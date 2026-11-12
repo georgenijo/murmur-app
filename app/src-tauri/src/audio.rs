@@ -73,9 +73,22 @@ impl OverlayLevelGate {
         Some(std::mem::take(&mut self.held))
     }
 }
-// Keep key-release-to-helper-stop latency below one display frame. The worker
-// otherwise waits on helper output and only observes host commands on timeout.
-const CAPTURE_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(2);
+/// Longest the capture worker blocks on helper output before it re-runs its
+/// time-based checks (permission polling, attempt budgets, hang probe). A Stop
+/// does not wait for this: the supervisor wakes the worker through
+/// [`WorkerWake`], so key-release-to-helper-stop no longer includes a poll.
+const CAPTURE_WORKER_IDLE_WAKE: Duration = Duration::from_millis(20);
+/// Bounded smart-auto probes are revoked from a thread that holds no wake
+/// handle, so their workers keep the short poll.
+const CAPTURE_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(2);
+
+fn worker_wait_interval(probe_attempt: bool) -> Duration {
+    if probe_attempt {
+        CAPTURE_PROBE_POLL_INTERVAL
+    } else {
+        CAPTURE_WORKER_IDLE_WAKE
+    }
+}
 const HELPER_STOP_DEADLINE: Duration = Duration::from_secs(2);
 const INVENTORY_QUARANTINE_RETRY_LIMIT: usize = 2;
 #[cfg(target_os = "macos")]
@@ -582,6 +595,7 @@ pub(crate) struct AudioWorkerSpec {
     pub probe_permit: Option<Arc<crate::smart_auto_probe::ProbePermit>>,
     pub owner: crate::audio_lifecycle::AudioOwner,
     pub command_receiver: Receiver<AudioCommand>,
+    pub wake: WorkerWake,
     pub shared: Arc<Mutex<CaptureSamples>>,
     pub active: Arc<AtomicBool>,
     pub app_handle: Option<tauri::AppHandle>,
@@ -1400,6 +1414,29 @@ pub fn list_input_devices() -> Result<Vec<AudioDeviceDescriptor>, String> {
 pub(crate) enum HelperRead {
     Frame(ProductionFrame<ProductionHelperMessage>),
     Invalid,
+    /// Not helper output: the supervisor queued a command and wants the
+    /// worker to look at it now. See [`WorkerWake`].
+    Wake,
+}
+
+/// Lets the supervisor interrupt a capture worker that is blocked waiting for
+/// helper output. The worker installs the sender of its reader channel for each
+/// attempt; [`WorkerWake::wake`] then ends the blocking wait immediately. A wake
+/// sent before the first install is not lost: the worker reads its command
+/// queue before it first blocks. A wake after the attempt ended goes nowhere.
+#[derive(Clone, Default)]
+pub(crate) struct WorkerWake(Arc<Mutex<Option<mpsc::Sender<HelperRead>>>>);
+
+impl WorkerWake {
+    pub(crate) fn install(&self, sender: mpsc::Sender<HelperRead>) {
+        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(sender);
+    }
+
+    pub(crate) fn wake(&self) {
+        if let Some(sender) = self.0.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+            let _ = sender.send(HelperRead::Wake);
+        }
+    }
 }
 
 /// What ended a read of helper frames after a stop request.
@@ -1456,7 +1493,7 @@ fn read_stopping_frames(
             })))
             | Ok(HelperRead::Invalid)
             | Err(RecvTimeoutError::Disconnected) => return StopReadOutcome::Ended,
-            Ok(HelperRead::Frame(ProductionFrame::Control(_))) => {}
+            Ok(HelperRead::Frame(ProductionFrame::Control(_))) | Ok(HelperRead::Wake) => {}
             Err(RecvTimeoutError::Timeout) => return StopReadOutcome::Deadline,
         }
     }
@@ -2310,6 +2347,7 @@ fn run_backend(
     device_id: Option<&str>,
     ctx: AttemptContext,
     command_receiver: &Receiver<AudioCommand>,
+    wake: &WorkerWake,
     shared: &Arc<Mutex<CaptureSamples>>,
     active: &Arc<AtomicBool>,
     app_handle: &Option<tauri::AppHandle>,
@@ -2566,6 +2604,7 @@ fn run_backend(
     );
 
     let (reader_tx, reader_rx) = mpsc::channel();
+    wake.install(reader_tx.clone());
     thread::spawn(move || {
         let mut output = output;
         loop {
@@ -2909,7 +2948,7 @@ fn run_backend(
             };
         }
 
-        let read = reader_rx.recv_timeout(CAPTURE_COMMAND_POLL_INTERVAL);
+        let read = reader_rx.recv_timeout(worker_wait_interval(probe_permit.is_some()));
         if probe_permit.is_some_and(|permit| !permit.is_valid()) {
             // The bounded worker can exit while this receive is blocked.
             // Return through confirmed cancellation, not a synthetic protocol
@@ -3408,6 +3447,9 @@ fn run_backend(
                 return AttemptResult::Stopped;
             }
             Ok(HelperRead::Frame(_)) => {}
+            // A queued command: the loop reads its command queue before it
+            // blocks again, so this only needs to end the wait.
+            Ok(HelperRead::Wake) => {}
             Ok(HelperRead::Invalid) | Err(RecvTimeoutError::Disconnected) => {
                 end_permission_prompt_pause(
                     &mut permission_prompt_started,
@@ -3649,6 +3691,7 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
         probe_permit,
         owner,
         command_receiver,
+        wake,
         shared,
         active,
         app_handle,
@@ -3704,6 +3747,7 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
                     backend_attempt,
                 },
                 &command_receiver,
+                &wake,
                 &shared,
                 &active,
                 &app_handle,
@@ -3821,6 +3865,129 @@ mod tests {
         assert_eq!(AUDIO_LEVEL_EVENT, "audio-level");
         assert_eq!(OVERLAY_AUDIO_LEVEL_EVENT, "overlay-audio-level");
         assert_ne!(AUDIO_LEVEL_EVENT, OVERLAY_AUDIO_LEVEL_EVENT);
+    }
+
+    /// Run the worker's blocking wait on its own thread and report how it
+    /// ended and how long it took. The timeout is far longer than any test
+    /// bound, so returning early can only mean something woke the wait.
+    fn blocked_wait(
+        rx: mpsc::Receiver<HelperRead>,
+    ) -> thread::JoinHandle<(Result<HelperRead, RecvTimeoutError>, Duration)> {
+        thread::spawn(move || {
+            let started = Instant::now();
+            let read = rx.recv_timeout(Duration::from_secs(30));
+            (read, started.elapsed())
+        })
+    }
+
+    #[test]
+    fn a_stop_command_ends_the_blocking_wait_through_the_wake_handle() {
+        let wake = WorkerWake::default();
+        let (reader_tx, reader_rx) = mpsc::channel();
+        wake.install(reader_tx);
+        let (commands, command_receiver) = mpsc::channel();
+        let waiter = blocked_wait(reader_rx);
+        thread::sleep(Duration::from_millis(15));
+        commands.send(AudioCommand::Stop).unwrap();
+        wake.wake();
+        let (read, elapsed) = waiter.join().unwrap();
+        assert!(matches!(read, Ok(HelperRead::Wake)));
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+        // The command is in the queue before the wake, so the worker that
+        // wakes always finds it.
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Ok(AudioCommand::Stop)
+        ));
+    }
+
+    #[test]
+    fn a_wake_before_the_wait_starts_is_not_lost() {
+        let wake = WorkerWake::default();
+        let (reader_tx, reader_rx) = mpsc::channel();
+        wake.install(reader_tx);
+        wake.wake();
+        let started = Instant::now();
+        assert!(matches!(
+            reader_rx.recv_timeout(Duration::from_secs(30)),
+            Ok(HelperRead::Wake)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn waking_without_an_attempt_or_after_it_ended_is_harmless() {
+        let wake = WorkerWake::default();
+        wake.wake();
+        let (reader_tx, reader_rx) = mpsc::channel();
+        wake.install(reader_tx);
+        drop(reader_rx);
+        wake.wake();
+        wake.wake();
+    }
+
+    #[test]
+    fn a_new_attempt_takes_over_the_wake_handle() {
+        let wake = WorkerWake::default();
+        let (first_tx, first_rx) = mpsc::channel();
+        wake.install(first_tx);
+        let (second_tx, second_rx) = mpsc::channel();
+        wake.install(second_tx);
+        wake.wake();
+        assert!(matches!(second_rx.try_recv(), Ok(HelperRead::Wake)));
+        assert!(matches!(
+            first_rx.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn a_helper_that_closes_or_corrupts_its_pipe_still_ends_the_wait() {
+        // Helper crash: its reader thread exits and drops the sender.
+        let (reader_tx, reader_rx) = mpsc::channel::<HelperRead>();
+        let waiter = blocked_wait(reader_rx);
+        thread::sleep(Duration::from_millis(15));
+        drop(reader_tx);
+        let (read, elapsed) = waiter.join().unwrap();
+        assert!(matches!(read, Err(RecvTimeoutError::Disconnected)));
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+
+        // Corrupt frame: the reader reports it and the wait ends.
+        let (reader_tx, reader_rx) = mpsc::channel::<HelperRead>();
+        let waiter = blocked_wait(reader_rx);
+        thread::sleep(Duration::from_millis(15));
+        reader_tx.send(HelperRead::Invalid).unwrap();
+        let (read, elapsed) = waiter.join().unwrap();
+        assert!(matches!(read, Ok(HelperRead::Invalid)));
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+    }
+
+    #[test]
+    fn a_dropped_supervisor_is_noticed_within_the_housekeeping_interval() {
+        // The supervisor dropping its command sender (shutdown) cannot wake
+        // the worker, so the wait must be bounded by the housekeeping wake and
+        // never by an unbounded block.
+        let (commands, command_receiver) = mpsc::channel::<AudioCommand>();
+        let (_reader_tx, reader_rx) = mpsc::channel::<HelperRead>();
+        drop(commands);
+        let started = Instant::now();
+        let read = reader_rx.recv_timeout(worker_wait_interval(false));
+        assert!(matches!(read, Err(RecvTimeoutError::Timeout)));
+        assert!(matches!(
+            command_receiver.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn worker_wait_is_long_for_dictation_and_short_only_for_revocable_probes() {
+        assert_eq!(worker_wait_interval(false), CAPTURE_WORKER_IDLE_WAKE);
+        assert_eq!(worker_wait_interval(true), CAPTURE_PROBE_POLL_INTERVAL);
+        assert!(CAPTURE_WORKER_IDLE_WAKE >= CAPTURE_PROBE_POLL_INTERVAL);
+        // Housekeeping (permission polling, budgets) runs on seconds-scale
+        // deadlines; the interval must stay far below the permission poll.
+        assert!(CAPTURE_WORKER_IDLE_WAKE < PERMISSION_POLL_INTERVAL);
     }
 
     /// A stand-in helper process: replies with `reply` on stdout and records
@@ -4594,6 +4761,7 @@ mod tests {
                     backend_attempt: 1,
                 },
                 &receiver,
+                &WorkerWake::default(),
                 &shared,
                 &Arc::new(AtomicBool::new(false)),
                 &None,
@@ -4708,6 +4876,7 @@ mod tests {
                         backend_attempt,
                     },
                     &receiver,
+                    &WorkerWake::default(),
                     &shared,
                     &active,
                     &None,
