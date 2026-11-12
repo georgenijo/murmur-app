@@ -401,12 +401,22 @@ fn fold_fingerprint(mut hash: u64, base: usize, samples: &[f32]) -> u64 {
 
 const FINGERPRINT_SEED: u64 = 0xcbf2_9ce4_8422_2325;
 
+/// The segments implied by the audio scored so far (see
+/// [`IncrementalVad::snapshot`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamSnapshot {
+    /// Padded `(start, end)` sample bounds, in order.
+    pub segments: Vec<(usize, usize)>,
+    /// Samples covered by whole scored windows. Never above what was pushed.
+    pub scored_samples: usize,
+}
+
 /// The result of finishing a stream at Stop.
 pub struct Finished {
     pub result: crate::vad::VadResult,
-    /// Padded segment bounds in samples (as `vad::filter_speech_with_segments`);
-    /// collected only for the differential tests.
-    #[cfg(test)]
+    /// Padded segment bounds in samples (as `vad::filter_speech_with_segments`).
+    /// Decode reuse (`stream_reuse`) compares them with the segments it planned
+    /// from during recording.
     pub bounds: Vec<(usize, usize)>,
     /// Windows scored at Stop (the unfinished tail, including the padded last).
     pub tail_windows: usize,
@@ -477,6 +487,22 @@ impl<S: WindowScorer> IncrementalVad<S> {
         Ok(())
     }
 
+    /// The segments the probabilities scored so far imply, as padded sample
+    /// bounds, plus the length those probabilities cover. The last segment may
+    /// still be growing: `stream_reuse` decides which are final.
+    pub fn snapshot(&self, params: SegmentParams) -> StreamSnapshot {
+        let scored_samples = self.probs.len() * WINDOW_SAMPLES;
+        let segments = segments_from_probs(&self.probs, params)
+            .into_iter()
+            .map(|(start, end)| crate::vad::segment_sample_bounds(start, end, scored_samples))
+            .filter(|(start, end)| start < end)
+            .collect();
+        StreamSnapshot {
+            segments,
+            scored_samples,
+        }
+    }
+
     /// Score the final partial window (zero-padded, as ggml does) and return
     /// every probability.
     fn flush(&mut self) -> Result<(), String> {
@@ -513,13 +539,10 @@ impl<S: WindowScorer> IncrementalVad<S> {
         let (result, bounds) = if segments.is_empty() {
             (crate::vad::VadResult::NoSpeech, Vec::new())
         } else {
-            crate::vad::speech_from_segments::<{ cfg!(test) }>(segments, samples)
+            crate::vad::speech_from_segments::<true>(segments, samples)
         };
-        #[cfg(not(test))]
-        let _ = bounds;
         Ok(Finished {
             result,
-            #[cfg(test)]
             bounds,
             tail_windows: self.probs.len() - windows_before,
             total_windows: self.probs.len(),
@@ -584,6 +607,16 @@ impl StreamSlot {
             return false;
         }
         true
+    }
+
+    /// The segments scored so far, or `None` when `recording_id` does not own
+    /// the slot or its stream has failed.
+    pub fn snapshot(&self, recording_id: u64, params: SegmentParams) -> Option<StreamSnapshot> {
+        self.inner
+            .lock_or_recover()
+            .as_ref()
+            .filter(|stream| stream.recording_id == recording_id && stream.failed.is_none())
+            .map(|stream| stream.vad.snapshot(params))
     }
 
     pub fn mark_failed(&self, recording_id: u64, reason: FallbackReason) {
@@ -741,10 +774,28 @@ pub fn filter_speech_or_batch(
     samples: &[f32],
     threshold: f32,
 ) -> Result<crate::vad::VadResult, String> {
+    filter_speech_or_batch_with_bounds(handoff, recording_id, model_path, samples, threshold)
+        .map(|(result, _)| result)
+}
+
+/// [`filter_speech_or_batch`], also returning the padded segment bounds when
+/// the incremental result was used. `None` means the batch VAD produced the
+/// audio, so anything planned from the incremental segments cannot be proven
+/// to match it (decode reuse then falls back to the whole-clip decode).
+pub fn filter_speech_or_batch_with_bounds(
+    handoff: Option<StreamHandoff>,
+    recording_id: u64,
+    model_path: &str,
+    samples: &[f32],
+    threshold: f32,
+) -> Result<(crate::vad::VadResult, Option<Vec<(usize, usize)>>), String> {
+    let batch = || {
+        crate::vad::filter_speech(model_path, samples, threshold).map(|result| (result, None))
+    };
     let started = std::time::Instant::now();
     let Some(handoff) = handoff else {
         emit_outcome(recording_id, FallbackReason::NotStarted.as_str(), 0, 0, 0);
-        return crate::vad::filter_speech(model_path, samples, threshold);
+        return batch();
     };
     match handoff.finish(samples, SegmentParams::murmur(threshold)) {
         Ok(finished) => {
@@ -759,7 +810,7 @@ pub fn filter_speech_or_batch(
                     finished.total_windows,
                     finish_ms,
                 );
-                return crate::vad::filter_speech(model_path, samples, threshold);
+                return batch();
             }
             emit_outcome(
                 recording_id,
@@ -768,11 +819,11 @@ pub fn filter_speech_or_batch(
                 finished.total_windows,
                 finish_ms,
             );
-            Ok(finished.result)
+            Ok((finished.result, Some(finished.bounds)))
         }
         Err(reason) => {
             emit_outcome(recording_id, reason.as_str(), 0, 0, 0);
-            crate::vad::filter_speech(model_path, samples, threshold)
+            batch()
         }
     }
 }

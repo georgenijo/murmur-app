@@ -125,6 +125,22 @@ pub(crate) fn dictation_partial_is_current_if_uncontended(
         && !app_state.is_cancelled(recording_id)
 }
 
+/// Whether a new preview decode may start. Generation ownership as above, and
+/// nothing starts once the stop gesture has begun: a running Core ML call
+/// cannot be cancelled, so the final decode must never queue behind a decode
+/// that started after the user let go (workstream E3's cap). A decode that
+/// already runs may still finish and publish; only starting is refused.
+fn dictation_preview_may_start(app_state: &AppState, recording_id: u64) -> bool {
+    dictation_partial_is_current(app_state, recording_id)
+        && !crate::hotkey_release::stop_gesture_pending(recording_id)
+}
+
+/// [`dictation_preview_may_start`] for the moment the backend is acquired.
+fn dictation_preview_may_start_if_uncontended(app_state: &AppState, recording_id: u64) -> bool {
+    dictation_partial_is_current_if_uncontended(app_state, recording_id)
+        && !crate::hotkey_release::stop_gesture_pending(recording_id)
+}
+
 fn note_nonempty_dictation_preview(app_state: &AppState, recording_id: u64) {
     if dictation_partial_is_current(app_state, recording_id) {
         // A late old worker cannot overwrite evidence already owned by a newer ID.
@@ -178,13 +194,12 @@ struct DictationPartialLease<R: tauri::Runtime> {
 impl<R: tauri::Runtime> Drop for DictationPartialLease<R> {
     fn drop(&mut self) {
         let state = self.app.state::<State>();
-        #[cfg(feature = "preview-decode-reuse")]
         if std::thread::panicking() {
             state
                 .app_state
-                .preview_reuse
+                .stream_reuse
                 .lock_or_recover()
-                .fail(self.recording_id);
+                .fail(self.recording_id, crate::stream_reuse::Reason::Superseded);
         }
         if finish_dictation_partial(&state.app_state, self.recording_id) {
             state.meeting_suggestions.wake(false);
@@ -247,13 +262,23 @@ fn spawn_dictation_partial_ticker(
     if !register() {
         return;
     }
-    #[cfg(feature = "preview-decode-reuse")]
-    if !whisper {
-        app.state::<State>()
-            .app_state
-            .preview_reuse
-            .lock_or_recover()
-            .begin(recording_id);
+    // Decode while speaking: only for a recording that asked for it at start
+    // (frozen snapshot), runs Core ML, and whose incremental VAD is alive; the
+    // pieces are cut from that VAD's segments. Anything else decodes the whole
+    // clip at Stop, exactly as before.
+    {
+        let state = app.state::<State>();
+        if !whisper
+            && context.transcription.streaming_pipeline_enabled
+            && vad::is_enabled(context.transcription.vad_sensitivity)
+            && state.app_state.vad_stream.consumed(recording_id).is_some()
+        {
+            state
+                .app_state
+                .stream_reuse
+                .lock_or_recover()
+                .begin(recording_id);
+        }
     }
     let interval = if whisper {
         WHISPER_PARTIAL_INTERVAL
@@ -298,6 +323,84 @@ fn spawn_vad_stream(app: tauri::AppHandle, recording_id: u64) {
     crate::vad_stream::start(app, recording_id, dictation_partial_is_current);
 }
 
+/// A piece of VAD-trimmed speech ready to decode, with its plan.
+type StreamCommit = (crate::stream_reuse::CommitPlan, Vec<f32>);
+
+/// Decide, from the incremental VAD's current segments, whether a piece can be
+/// committed now, and gather exactly that piece's audio. Takes no backend lock
+/// and copies only the piece. Any inconsistency ends reuse for this recording
+/// (Stop then decodes the whole clip).
+fn prepare_stream_commit(
+    app_state: &AppState,
+    recording_id: u64,
+    vad_threshold: f32,
+) -> Option<StreamCommit> {
+    use crate::stream_reuse::{Plan, Reason};
+    if !app_state
+        .stream_reuse
+        .lock_or_recover()
+        .is_active(recording_id)
+    {
+        return None;
+    }
+    let fail = |reason| {
+        app_state
+            .stream_reuse
+            .lock_or_recover()
+            .fail(recording_id, reason);
+    };
+    let Some(snapshot) = app_state.vad_stream.snapshot(
+        recording_id,
+        crate::vad_stream::SegmentParams::murmur(vad_threshold),
+    ) else {
+        fail(Reason::VadNotIncremental);
+        return None;
+    };
+    let plan = app_state
+        .stream_reuse
+        .lock_or_recover()
+        .plan(recording_id, &snapshot);
+    let Plan::Commit(plan) = plan else {
+        return None;
+    };
+    let raw = match audio_lifecycle::peek_dictation_samples_since(recording_id, plan.raw_start) {
+        audio_lifecycle::PeekSince::Samples(raw) => raw,
+        _ => {
+            fail(Reason::BufferReset);
+            return None;
+        }
+    };
+    match plan.piece(&raw) {
+        Some(piece) => Some((plan, piece)),
+        None => {
+            fail(Reason::BufferReset);
+            None
+        }
+    }
+}
+
+/// Record a decoded piece. Runs with the backend held, so ownership is
+/// rechecked without waiting on any status lock; a piece that finishes after
+/// the recording stopped or was superseded is dropped without touching state.
+fn commit_stream_piece(
+    app_state: &AppState,
+    recording_id: u64,
+    plan: crate::stream_reuse::CommitPlan,
+    piece: Vec<f32>,
+    decoded: Result<String, String>,
+) {
+    if !dictation_partial_is_current_if_uncontended(app_state, recording_id) {
+        return;
+    }
+    let mut reuse = app_state.stream_reuse.lock_or_recover();
+    match decoded {
+        Ok(text) => {
+            let _ = reuse.commit(recording_id, plan, piece, &text);
+        }
+        Err(_) => reuse.fail(recording_id, crate::stream_reuse::Reason::DecodeError),
+    }
+}
+
 async fn decode_one_dictation_partial(
     app: &tauri::AppHandle,
     recording_id: u64,
@@ -307,6 +410,12 @@ async fn decode_one_dictation_partial(
         let state = app.state::<State>();
         if !dictation_partial_is_current(&state.app_state, recording_id) {
             return false;
+        }
+        // The user has let go: start nothing that the final decode could queue
+        // behind (a running Core ML call cannot be cancelled).
+        if crate::hotkey_release::stop_gesture_pending(recording_id) {
+            emit_dictation_partial_tick(recording_id, "stop_pending", 0);
+            return true;
         }
         if !try_begin_dictation_partial(&state.app_state, recording_id) {
             emit_dictation_partial_tick(recording_id, "in_flight", 0);
@@ -329,12 +438,8 @@ async fn decode_one_dictation_partial(
     } else {
         PARTIAL_WINDOW_SAMPLES
     };
-    #[cfg(feature = "preview-decode-reuse")]
-    let window_limit = if !whisper {
-        crate::preview_reuse::SNAPSHOT_LIMIT
-    } else {
-        window_limit
-    };
+    // Only the trailing display window is copied each tick, never the whole
+    // recording; decode reuse reads just the audio of the piece it commits.
     let samples =
         audio_lifecycle::peek_dictation_samples(recording_id, window_limit).unwrap_or_default();
     let sample_count = samples.len();
@@ -343,8 +448,7 @@ async fn decode_one_dictation_partial(
         return true;
     }
     let window = dictation_partial_window(&samples).to_vec();
-    #[cfg(feature = "preview-decode-reuse")]
-    let reuse_samples = samples;
+    drop(samples);
     let worker_app = app.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<Option<String>, &'static str> {
         // The blocking worker outlives cancellation of its awaiting task. Its
@@ -352,7 +456,7 @@ async fn decode_one_dictation_partial(
         let _lease = lease;
         let worker_preview = retained_preview;
         let state = worker_app.state::<State>();
-        if !dictation_partial_is_current(&state.app_state, recording_id) {
+        if !dictation_preview_may_start(&state.app_state, recording_id) {
             return Err("stopped");
         }
         let raw = if whisper {
@@ -384,73 +488,78 @@ async fn decode_one_dictation_partial(
                 )
                 .map_err(|_| "decode_error")?
         } else {
-            let raw = state
+            // Decode while speaking: decide, before taking the backend, whether
+            // a piece of VAD-trimmed speech is ready to commit. This reads the
+            // VAD stream and, for a piece, only that piece's audio.
+            let mut reuse_commit = prepare_stream_commit(
+                &state.app_state,
+                recording_id,
+                vad::threshold_for_sensitivity(transcription.vad_sensitivity),
+            );
+            let decoded = state
                 .app_state
                 .model_runtime
                 .try_with_ready_backend(
                     &transcription.model_name,
-                    || dictation_partial_is_current_if_uncontended(&state.app_state, recording_id),
+                    || dictation_preview_may_start_if_uncontended(&state.app_state, recording_id),
                     |backend| {
                         let _preview_backend = crate::shadow_measurement::PreviewBackendLease::new(
                             &state.app_state.preview_holds_backend,
                         );
-                        #[cfg(feature = "preview-decode-reuse")]
-                        let reuse_range = state
-                            .app_state
-                            .preview_reuse
-                            .lock_or_recover()
-                            .plan(recording_id, &reuse_samples);
-                        #[cfg(feature = "preview-decode-reuse")]
-                        if let Some(range) = reuse_range {
-                            // Never hold reuse state across inference. Stop/cancel may
-                            // clear it while this non-cancellable decode is running.
-                            let committed = backend.transcribe_preview(
-                                &reuse_samples[range.clone()],
+                        if let Some((plan, piece)) = reuse_commit.take() {
+                            // Never hold reuse state across inference. Stop/cancel
+                            // may clear it while this non-cancellable decode runs.
+                            let decoded = backend.transcribe_preview(
+                                &piece,
                                 &transcription.language,
                                 transcription.prompt.as_deref(),
                                 transcription.smart_punctuation,
                                 transcriber::PreviewPass::Dictation(recording_id),
                             );
-                            if dictation_partial_is_current_if_uncontended(
+                            commit_stream_piece(
                                 &state.app_state,
                                 recording_id,
-                            ) {
-                                let mut reuse = state.app_state.preview_reuse.lock_or_recover();
-                                match committed {
-                                    Ok(text) => {
-                                        reuse.commit(recording_id, range, &reuse_samples, &text)
-                                    }
-                                    Err(_) => reuse.fail(recording_id),
-                                }
-                            }
+                                plan,
+                                piece,
+                                decoded,
+                            );
                         }
-                        #[cfg(feature = "preview-decode-reuse")]
-                        if !dictation_partial_is_current_if_uncontended(
+                        // The stop gesture may have started during the piece's
+                        // decode: do not start the display decode behind it.
+                        if !dictation_preview_may_start_if_uncontended(
                             &state.app_state,
                             recording_id,
                         ) {
-                            return Err("Preview stopped".into());
+                            return Ok(None);
                         }
-                        backend.transcribe_preview(
-                            &window,
-                            &transcription.language,
-                            transcription.prompt.as_deref(),
-                            transcription.smart_punctuation,
-                            transcriber::PreviewPass::Dictation(recording_id),
-                        )
+                        backend
+                            .transcribe_preview(
+                                &window,
+                                &transcription.language,
+                                transcription.prompt.as_deref(),
+                                transcription.smart_punctuation,
+                                transcriber::PreviewPass::Dictation(recording_id),
+                            )
+                            .map(Some)
                     },
                 )
-                .map_err(|_| {
-                    #[cfg(feature = "preview-decode-reuse")]
-                    state
-                        .app_state
-                        .preview_reuse
-                        .lock_or_recover()
-                        .fail(recording_id);
-                    "decode_error"
-                })?
-                .ok_or("backend_unavailable")?;
-            raw
+                // A failed display decode leaves the committed pieces valid; a
+                // failed piece decode already ended reuse in `commit_stream_piece`.
+                .map_err(|_| "decode_error")?;
+            match decoded {
+                None => {
+                    return Err(
+                        if crate::hotkey_release::stop_gesture_pending(recording_id) {
+                            "stopped"
+                        } else {
+                            "backend_unavailable"
+                        },
+                    )
+                }
+                // The stop gesture skipped the display decode: nothing to show.
+                Some(None) => return Err("stopped"),
+                Some(Some(raw)) => raw,
+            }
         };
         let cleaned = raw.trim().to_string();
         if !cleaned.is_empty() {
@@ -465,13 +574,12 @@ async fn decode_one_dictation_partial(
         Err(outcome) => (None, outcome),
     };
     let state = app.state::<State>();
-    #[cfg(feature = "preview-decode-reuse")]
-    if no_text_outcome == "decode_error" || no_text_outcome == "worker_failed" {
+    if no_text_outcome == "worker_failed" {
         state
             .app_state
-            .preview_reuse
+            .stream_reuse
             .lock_or_recover()
-            .fail(recording_id);
+            .fail(recording_id, crate::stream_reuse::Reason::Superseded);
     }
     if let Some(text) = text {
         if dictation_partial_is_current(&state.app_state, recording_id) {
@@ -2577,44 +2685,154 @@ fn transcribe_with_coreml_vad_retry_report(
     Ok(BackendTranscriptionAttempt { text, empty_error })
 }
 
-// With the feature absent this calls the pre-existing whole-clip decoder
-// with precisely the same PCM, settings, retry policy, and returned bytes.
+/// What the final decode did with decode reuse.
+struct FinalDecode {
+    attempt: BackendTranscriptionAttempt,
+    /// `None` when the recording asked for no reuse decision (setting off).
+    reuse: Option<crate::stream_reuse::Outcome>,
+}
+
+/// The final decode. Without a reuse decision (`reuse` is `Ok(None)`: setting
+/// off) this is the pre-existing whole-clip decoder with precisely the same
+/// PCM, settings, retry policy and returned bytes.
+///
+/// With one, the stitched result is used only when every proof in
+/// [`crate::stream_reuse::StreamReuse::take_final`] passed and the decoded tail
+/// starts with the committed overlap text. Any doubt, a decode error, or a
+/// failed stitch runs the unchanged whole-clip decode on `filtered`. The
+/// stitched text is raw ASR text: the one ordered transform pipeline runs over
+/// it once, afterwards.
 fn decode_final_transcript(
     backend: &mut dyn transcriber::TranscriptionBackend,
     transcription: &dictation_context::TranscriptionSettings,
     filtered: &[f32],
     original: &[f32],
     vad_trimmed: bool,
-    #[cfg(feature = "preview-decode-reuse")] plan: Option<&crate::preview_reuse::FinalPlan>,
-) -> Result<BackendTranscriptionAttempt, String> {
-    #[cfg(feature = "preview-decode-reuse")]
-    if transcriber::is_coreml_model(&transcription.model_name) {
-        if let Some(plan) = plan {
-            if let Ok(tail) = backend.transcribe(
-                &original[plan.start..],
-                &transcription.language,
-                transcription.prompt.as_deref(),
-                transcription.smart_punctuation,
-            ) {
-                if let Some(text) = plan.stitch(&tail) {
-                    return Ok(BackendTranscriptionAttempt {
-                        text,
-                        empty_error: None,
-                    });
-                }
-            }
+    reuse: Result<Option<crate::stream_reuse::FinalPlan>, crate::stream_reuse::Reason>,
+) -> Result<FinalDecode, String> {
+    use crate::stream_reuse::{Outcome, Reason};
+    let whole_clip = |backend: &mut dyn transcriber::TranscriptionBackend| {
+        transcribe_with_coreml_vad_retry_report(
+            backend,
+            &transcription.model_name,
+            filtered,
+            original,
+            vad_trimmed,
+            &transcription.language,
+            transcription.prompt.as_deref(),
+            transcription.smart_punctuation,
+        )
+    };
+    let fallback = |backend: &mut dyn transcriber::TranscriptionBackend,
+                    reason: Reason,
+                    pieces: u32,
+                    overlap_words: u64| {
+        whole_clip(backend).map(|attempt| FinalDecode {
+            attempt,
+            reuse: Some(Outcome {
+                code: reason.as_str(),
+                pieces,
+                decoded_ms: samples_to_ms(filtered.len()),
+                overlap_words,
+            }),
+        })
+    };
+    let plan = match reuse {
+        Ok(None) => {
+            return whole_clip(backend).map(|attempt| FinalDecode {
+                attempt,
+                reuse: None,
+            })
         }
+        Err(reason) => return fallback(backend, reason, 0, 0),
+        Ok(Some(plan)) => plan,
+    };
+    let reused = |text: String, decoded_samples: usize| FinalDecode {
+        attempt: BackendTranscriptionAttempt {
+            text,
+            empty_error: None,
+        },
+        reuse: Some(Outcome {
+            code: "reused",
+            pieces: plan.pieces,
+            decoded_ms: samples_to_ms(decoded_samples),
+            overlap_words: plan.overlap_words as u64,
+        }),
+    };
+    if let Some(text) = plan.complete_text() {
+        // The committed pieces already cover every kept sample.
+        return Ok(reused(text, 0));
     }
-    transcribe_with_coreml_vad_retry_report(
-        backend,
-        &transcription.model_name,
-        filtered,
-        original,
-        vad_trimmed,
+    let tail = &filtered[plan.start..];
+    let stitched = match backend.transcribe(
+        tail,
         &transcription.language,
         transcription.prompt.as_deref(),
         transcription.smart_punctuation,
-    )
+    ) {
+        Ok(decoded) => plan
+            .stitch(&decoded)
+            .ok_or(Reason::StitchMismatch)
+            .map(|text| reused(text, tail.len())),
+        Err(_) => Err(Reason::TailDecodeError),
+    };
+    match stitched {
+        Ok(decode) => Ok(decode),
+        Err(reason) => fallback(backend, reason, plan.pieces, plan.overlap_words as u64),
+    }
+}
+
+fn samples_to_ms(samples: usize) -> u64 {
+    (samples / 16) as u64
+}
+
+/// The Stop-time reuse decision for `recording_id`, taken after the backend is
+/// held. `Ok(None)` means the recording never asked for reuse. The plan is
+/// consumed at most once, and only for the recording that is still the live,
+/// uncancelled one.
+fn take_stream_reuse_plan(
+    app_state: &AppState,
+    transcription: &dictation_context::TranscriptionSettings,
+    recording_id: u64,
+    final_bounds: Option<&[crate::stream_reuse::Bounds]>,
+    filtered: &[f32],
+) -> Result<Option<crate::stream_reuse::FinalPlan>, crate::stream_reuse::Reason> {
+    use crate::stream_reuse::Reason;
+    if !transcription.streaming_pipeline_enabled
+        || !vad::is_enabled(transcription.vad_sensitivity)
+        || !transcriber::is_coreml_model(&transcription.model_name)
+    {
+        return Ok(None);
+    }
+    // A preview that still holds its lease finishes in microseconds once it
+    // has dropped the backend (we hold the backend, so it can no longer commit
+    // anything); wait for that briefly rather than lose reuse to the race.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(10);
+    while app_state
+        .dictation_partial_in_flight_id
+        .load(Ordering::SeqCst)
+        != 0
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::yield_now();
+    }
+    let session = app_state
+        .stream_reuse
+        .lock_or_recover()
+        .take_final(recording_id, final_bounds, filtered);
+    if app_state.recording_id.load(Ordering::SeqCst) != recording_id
+        || app_state.is_cancelled(recording_id)
+    {
+        return Err(Reason::Superseded);
+    }
+    if app_state
+        .dictation_partial_in_flight_id
+        .load(Ordering::SeqCst)
+        != 0
+    {
+        return Err(Reason::Busy);
+    }
+    session.map(Some)
 }
 
 /// Register only after Idle and captured delivery timing. Ownership moves into
@@ -2742,6 +2960,10 @@ async fn run_transcription_pipeline(
     performance_guard.enter(PerformanceStageV1::Vad);
     let t_vad = std::time::Instant::now();
     gaps.prologue_us = micros_between(t_pipeline, t_vad);
+    // `final_bounds`: the incremental VAD's padded segment bounds, present only
+    // when that result (not the batch VAD) produced the kept audio. Decode reuse
+    // compares them with the segments it decoded during recording.
+    let mut final_bounds: Option<Vec<(usize, usize)>> = None;
     let (samples_for_transcription, vad_trimmed) = if !vad::is_enabled(
         transcription.vad_sensitivity,
     ) {
@@ -2762,14 +2984,15 @@ async fn run_transcription_pipeline(
                 let vad_result = match tokio::task::spawn_blocking(move || {
                     let queue_us = micros(vad_queued_at);
                     let result = match stream_handoff {
-                        Some(handoff) => crate::vad_stream::filter_speech_or_batch(
+                        Some(handoff) => crate::vad_stream::filter_speech_or_batch_with_bounds(
                             handoff,
                             recording_id,
                             &vad_path_str,
                             &samples_owned,
                             vad_threshold,
                         ),
-                        None => vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold),
+                        None => vad::filter_speech(&vad_path_str, &samples_owned, vad_threshold)
+                            .map(|result| (result, None)),
                     };
                     (result, queue_us)
                 })
@@ -2777,7 +3000,10 @@ async fn run_transcription_pipeline(
                 {
                     Ok((result, queue_us)) => {
                         gaps.vad_blocking_queue_us = queue_us;
-                        result
+                        result.map(|(result, bounds)| {
+                            final_bounds = bounds;
+                            result
+                        })
                     }
                     Err(e) => Err(format!("VAD task panicked: {}", e)),
                 };
@@ -2855,32 +3081,29 @@ async fn run_transcription_pipeline(
         |backend| {
             let decode_started = std::time::Instant::now();
             gaps.backend_acquire_us = micros_between(t_backend, decode_started);
-            // Take only after acquiring the backend, so a preview already in
-            // flight has either finished or still owns its lease. In the latter
-            // case discard reuse rather than racing a late decode failure.
-            #[cfg(feature = "preview-decode-reuse")]
-            let reuse_plan = app_state
-                .preview_reuse
-                .lock_or_recover()
-                .take_final(recording_id, samples)
-                .filter(|_| {
-                    app_state
-                        .dictation_partial_in_flight_id
-                        .load(Ordering::SeqCst)
-                        == 0
-                });
+            // Take only after acquiring the backend: a preview decode that was
+            // running holds it, so by now it has finished and committed or not.
+            let reuse_plan = take_stream_reuse_plan(
+                app_state,
+                transcription,
+                recording_id,
+                final_bounds.as_deref(),
+                &samples_for_transcription,
+            );
             let result = decode_final_transcript(
                 backend,
                 transcription,
                 &samples_for_transcription,
                 samples,
                 vad_trimmed,
-                #[cfg(feature = "preview-decode-reuse")]
-                reuse_plan.as_ref().filter(|_| {
-                    app_state.recording_id.load(Ordering::SeqCst) == recording_id
-                        && !app_state.is_cancelled(recording_id)
-                }),
-            );
+                reuse_plan,
+            )
+            .map(|decoded| {
+                if let Some(outcome) = &decoded.reuse {
+                    crate::stream_reuse::emit_outcome(recording_id, outcome);
+                }
+                decoded.attempt
+            });
             decode_ms = decode_started.elapsed().as_millis() as u64;
             let decode_ended = std::time::Instant::now();
             gaps.backend_decode_us = micros_between(decode_started, decode_ended);

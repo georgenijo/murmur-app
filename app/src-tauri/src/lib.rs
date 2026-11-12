@@ -66,10 +66,6 @@ mod model_hardware_guidance;
 mod model_runtime;
 mod performance_metrics;
 mod platform;
-#[cfg(feature = "preview-decode-reuse")]
-mod preview_pause;
-#[cfg(feature = "preview-decode-reuse")]
-mod preview_reuse;
 mod resource_monitor;
 mod shadow_measurement;
 mod smart_auto_probe;
@@ -80,6 +76,7 @@ mod spoken_numbers;
 mod spoken_structure;
 mod sqlite_support;
 mod state;
+mod stream_reuse;
 pub mod telemetry;
 pub mod transcriber;
 mod transcript_transform;
