@@ -2798,11 +2798,15 @@ fn take_stream_reuse_plan(
     filtered: &[f32],
 ) -> Result<Option<crate::stream_reuse::FinalPlan>, crate::stream_reuse::Reason> {
     use crate::stream_reuse::Reason;
-    if !transcription.streaming_pipeline_enabled
-        || !vad::is_enabled(transcription.vad_sensitivity)
+    if !transcription.streaming_pipeline_enabled {
+        return Ok(None);
+    }
+    // Setting on, but this recording could not have a reuse session (no VAD to
+    // cut pieces from, or a model other than Core ML): say so, decode whole.
+    if !vad::is_enabled(transcription.vad_sensitivity)
         || !transcriber::is_coreml_model(&transcription.model_name)
     {
-        return Ok(None);
+        return Err(Reason::Inactive);
     }
     // A preview that still holds its lease finishes in microseconds once it
     // has dropped the backend (we hold the backend, so it can no longer commit
@@ -8143,6 +8147,40 @@ pub(crate) mod tests {
                     }
                 );
             }
+        }
+    }
+
+    #[test]
+    fn the_stop_reuse_decision_is_silent_when_off_and_reports_why_when_inactive() {
+        let state = AppState::default();
+        let settings = |model: &str, sensitivity: u32, streaming: bool| {
+            dictation_context::TranscriptionSettings {
+                model_name: model.into(),
+                language: "auto".into(),
+                vad_sensitivity: sensitivity,
+                prompt: None,
+                smart_punctuation: true,
+                streaming_pipeline_enabled: streaming,
+            }
+        };
+        let audio = vec![0.0_f32; 16_000];
+        let decide = |settings: &dictation_context::TranscriptionSettings| {
+            take_stream_reuse_plan(&state, settings, 1, None, &audio)
+        };
+        // Setting off: no decision at all, so no telemetry and today's path.
+        assert!(matches!(
+            decide(&settings(transcriber::COREML_MODEL_NAME, 50, false)),
+            Ok(None)
+        ));
+        // Setting on, but no reuse session is possible for this recording.
+        for inactive in [
+            settings("tiny.en", 50, true),
+            settings(transcriber::COREML_MODEL_NAME, 0, true),
+        ] {
+            assert!(matches!(
+                decide(&inactive),
+                Err(crate::stream_reuse::Reason::Inactive)
+            ));
         }
     }
 
