@@ -256,6 +256,14 @@ released, instead of ending at the space. That recording is transcribed on
 release: silence ends as `no_speech`, and speech in the room is delivered
 into the app the user switched input sources in.
 
+**Fn + letter (Globe shortcuts).** Murmur listens only, so it cannot stop
+macOS from running a Globe shortcut such as Globe+E (Emoji & Symbols) or
+Globe+N (Notification Center) for a letter typed while Fn is held; observed
+natively with HID-level events. In the first second the letter still ends the
+hold, as before. After that the shortcut runs and the dictation continues, so
+the transcript is delivered on release into whatever has focus then, for
+example the emoji picker's search field.
+
 **Known limit: a missed release.** If the trigger's release never reaches the
 listener (the event tap was disabled by a timeout, or secure input was on
 when the key came up), a hold stays held. Before #1109 the next typed key
