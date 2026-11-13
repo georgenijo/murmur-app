@@ -123,6 +123,20 @@ jobs:
           add-job-id-key: false
           save-if: ${{ needs.context.outputs.cache-write == 'true' }}
 
+      - name: Refresh sherpa-onnx native libraries
+        # rust-cache prunes files under target/sherpa-onnx-prebuilt but keeps
+        # the build-script fingerprint. On a partial hit Cargo can reuse that
+        # fingerprint while recompiling the crate, leaving its native libs
+        # missing ("could not find native static library `sherpa-onnx-c-api`").
+        # Remove the empty directories too: the build script treats an existing
+        # lib directory as a complete download. This job builds the release
+        # profile, so `cargo clean` needs --release; the plain form only cleans
+        # the dev profile.
+        run: |
+          cd app/src-tauri
+          rm -rf target/sherpa-onnx-prebuilt
+          cargo clean --release -p sherpa-onnx-sys
+
       - name: Install frontend dependencies
         run: cd app && npm ci
 

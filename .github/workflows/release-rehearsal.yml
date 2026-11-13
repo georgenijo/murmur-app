@@ -134,6 +134,16 @@ jobs:
           add-job-id-key: false
           save-if: ${{ needs.context.outputs.cache-write == 'true' }}
 
+      - name: Refresh sherpa-onnx native libraries
+        # Same partial-cache-hit guard as release-build.yml: rust-cache prunes
+        # target/sherpa-onnx-prebuilt but keeps the build-script fingerprint, so
+        # a partial hit can recompile the crate without its native libraries.
+        # Release profile, hence --release.
+        run: |
+          cd app/src-tauri
+          rm -rf target/sherpa-onnx-prebuilt
+          cargo clean --release -p sherpa-onnx-sys
+
       - name: Install frontend dependencies
         run: cd app && npm ci
 

@@ -582,6 +582,44 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             validate_release_build(leaked)
 
+    def test_release_cache_restores_must_refresh_sherpa_libraries(self) -> None:
+        for path, validate in (
+            (".github/workflows/release-build.yml", validate_release_build),
+            (".github/workflows/release-rehearsal.yml", validate_release_rehearsal),
+        ):
+            workflow = (ROOT / path).read_text()
+            step = "      - name: Refresh sherpa-onnx native libraries\n"
+            self.assertIn(step, workflow)
+            for label, mutated in (
+                (
+                    "step removed",
+                    workflow.replace(step, "      - name: Something else\n", 1),
+                ),
+                (
+                    "dev-profile clean",
+                    workflow.replace("cargo clean --release -p", "cargo clean -p", 1),
+                ),
+                (
+                    "directory not removed",
+                    workflow.replace("rm -rf target/sherpa-onnx-prebuilt", "true", 1),
+                ),
+            ):
+                with self.subTest(path=path, mutation=label):
+                    self.assertNotEqual(workflow, mutated)
+                    with self.assertRaises(AssertionError):
+                        validate(mutated)
+
+    def test_sherpa_refresh_must_run_before_the_build_and_after_the_restore(self) -> None:
+        workflow = (ROOT / ".github/workflows/release-build.yml").read_text()
+        start = workflow.index("      - name: Refresh sherpa-onnx native libraries\n")
+        end = workflow.index("      - name: Install frontend dependencies")
+        guard = workflow[start:end]
+        without = workflow[:start] + workflow[end:]
+        anchor = "      - name: Import Developer ID certificate\n"
+        late = without.replace(anchor, guard + anchor, 1)
+        with self.assertRaises(AssertionError):
+            validate_release_build(late)
+
     def test_release_rehearsal_requires_main_workflow_definition(self) -> None:
         workflow = (ROOT / ".github/workflows/release-rehearsal.yml").read_text()
         mutated = workflow.replace(
