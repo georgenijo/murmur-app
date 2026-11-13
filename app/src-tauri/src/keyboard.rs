@@ -44,6 +44,25 @@ const HOLD_DOWN_COOLDOWN_MS: u128 = 50;
 const MODIFIER_HOLD_ARMING_MS: u128 = 150;
 const _: () = assert!(MODIFIER_HOLD_ARMING_MS < MAX_HOLD_DURATION_MS);
 
+/// A non-modifier key other than space, pressed after the arming window while
+/// the trigger is held, ends the hold only while the hold is younger than
+/// this. A slow chord (Shift held, then an arrow to select; Fn held, then an
+/// arrow for Home/End) presses its key well inside a second and ends the
+/// short recording it started. After a second the user is dictating: a key
+/// typed then must not end the dictation (#1109). Only the trigger's release
+/// stops it. Space is ignored at any age once the arming window has passed
+/// (`key_ends_young_hold`).
+const HOLD_CHORD_WINDOW_MS: u128 = 1000;
+const _: () = assert!(HOLD_CHORD_WINDOW_MS > MAX_HOLD_DURATION_MS);
+
+/// Whether a non-modifier `key`, pressed after the arming window into a hold
+/// `held_ms` old, ends that hold as a chord with the trigger. Space never
+/// does: no slow chord on a supported trigger uses it except Right Control +
+/// Space (input source switch), and it is typed mid-dictation (#1109).
+fn key_ends_young_hold(key: Key, held_ms: u128) -> bool {
+    key != Key::Space && held_ms < HOLD_CHORD_WINDOW_MS
+}
+
 /// Report callback inactivity after this duration; it is not a health check.
 const TAP_SILENCE_WARNING_MS: u64 = 5 * 60 * 1000;
 
@@ -661,6 +680,10 @@ enum HoldDownEvent {
     None,
     Start,
     Stop,
+    /// A non-modifier key was pressed after `HOLD_CHORD_WINDOW_MS`. The hold
+    /// continues; the caller decides whether a hold over another recording
+    /// ends here (Both mode) and otherwise ignores the key.
+    KeyDuringHold,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -677,6 +700,11 @@ struct HoldDownDetector {
     /// listener commits the recording start only after the window (0 = off).
     arming_ms: u128,
     held_at: Instant,
+    /// Keys ignored during the current hold (`KeyDuringHold`).
+    ignored_keys: u32,
+    /// The count of a hold that ended with ignored keys, until the listener
+    /// logs it.
+    ignored_summary: Option<u32>,
 }
 
 impl HoldDownDetector {
@@ -687,7 +715,24 @@ impl HoldDownDetector {
             last_stopped_at: None,
             arming_ms: 0,
             held_at: Instant::now(),
+            ignored_keys: 0,
+            ignored_summary: None,
         }
+    }
+
+    /// Every exit from `Held` goes through here so a hold's ignored-key count
+    /// is reported once, whatever ended it.
+    fn leave_held(&mut self) {
+        self.state = HoldState::Idle;
+        if self.ignored_keys > 0 {
+            self.ignored_summary = Some(self.ignored_keys);
+        }
+        self.ignored_keys = 0;
+    }
+
+    /// The ignored-key count of the last hold that ended, once.
+    fn take_ignored_summary(&mut self) -> Option<u32> {
+        self.ignored_summary.take()
     }
 
     fn is_arming(&self) -> bool {
@@ -703,7 +748,7 @@ impl HoldDownDetector {
     fn set_target(&mut self, key: Option<Key>) -> bool {
         let was_held = self.state == HoldState::Held;
         if was_held {
-            self.state = HoldState::Idle;
+            self.leave_held();
             self.last_stopped_at = Some(Instant::now());
         }
         self.target_key = key;
@@ -711,7 +756,25 @@ impl HoldDownDetector {
     }
 
     fn reset(&mut self) {
-        self.state = HoldState::Idle;
+        self.leave_held();
+    }
+
+    /// End a held hold now; the trigger's later release is then a no-op.
+    fn end_hold(&mut self) {
+        self.leave_held();
+        self.last_stopped_at = Some(Instant::now());
+    }
+
+    /// Both mode: the `KeyDuringHold` key ends a hold promoted over another
+    /// recording after all, so it was not an ignored key.
+    fn end_hold_on_key(&mut self) {
+        self.ignored_keys = self.ignored_keys.saturating_sub(1);
+        self.end_hold();
+    }
+
+    /// Escape: end any hold and treat the trigger's coming release as a no-op.
+    fn escape(&mut self) {
+        self.end_hold();
     }
 
     fn in_cooldown(&self) -> bool {
@@ -774,8 +837,7 @@ impl HoldDownDetector {
             return match self.state {
                 HoldState::Idle => HoldDownEvent::None,
                 HoldState::Held => {
-                    self.state = HoldState::Idle;
-                    self.last_stopped_at = Some(Instant::now());
+                    self.end_hold();
                     HoldDownEvent::Stop
                 }
             };
@@ -787,6 +849,7 @@ impl HoldDownDetector {
                     if is_target_key(*key, target) && !self.in_cooldown() {
                         self.state = HoldState::Held;
                         self.held_at = Instant::now();
+                        self.ignored_keys = 0;
                         return HoldDownEvent::Start;
                     }
                 }
@@ -796,8 +859,7 @@ impl HoldDownDetector {
             HoldState::Held => {
                 match event_type {
                     EventType::KeyRelease(key) if is_target_key(*key, target) => {
-                        self.state = HoldState::Idle;
-                        self.last_stopped_at = Some(Instant::now());
+                        self.end_hold();
                         HoldDownEvent::Stop
                     }
                     EventType::KeyPress(key) if is_target_key(*key, target) => {
@@ -812,15 +874,21 @@ impl HoldDownDetector {
                         // Shift+letter or Shift+Command: ordinary typing, not
                         // dictation. Ends the hold before the listener commits
                         // a start; the caller logs it without the key.
-                        self.state = HoldState::Idle;
-                        self.last_stopped_at = Some(Instant::now());
+                        self.end_hold();
                         HoldDownEvent::Stop
+                    }
+                    EventType::KeyPress(key)
+                        if !is_modifier(*key)
+                            && !key_ends_young_hold(*key, self.held_at.elapsed().as_millis()) =>
+                    {
+                        // Typing during a dictation, not a chord: keep holding.
+                        self.ignored_keys = self.ignored_keys.saturating_add(1);
+                        HoldDownEvent::KeyDuringHold
                     }
                     EventType::KeyPress(key) if !is_modifier(*key) => {
                         // User is typing a combo like Shift+A — cancel hold
                         self.log_rejection(RejectionReason::ComboCancelled, event_type);
-                        self.state = HoldState::Idle;
-                        self.last_stopped_at = Some(Instant::now());
+                        self.end_hold();
                         HoldDownEvent::Stop
                     }
                     _ => HoldDownEvent::None,
@@ -1334,19 +1402,29 @@ fn log_rejection(reason: RejectionReason, mode: DetectorMode, event_type: &Event
 struct HoldArming {
     window_ms: u128,
     held_ms: u64,
+    /// Keys ignored so far in this hold, including the current event.
+    ignored_keys: u32,
 }
 
 impl HoldArming {
     const OFF: Self = Self {
         window_ms: 0,
         held_ms: 0,
+        ignored_keys: 0,
     };
 
     fn of(detector: &HoldDownDetector) -> Self {
         Self {
             window_ms: detector.arming_ms,
             held_ms: detector.held_ms(),
+            ignored_keys: detector.ignored_keys,
         }
+    }
+
+    /// Only the first ignored key of a hold is logged on its own; the rest are
+    /// counted into the summary when the hold ends.
+    fn first_ignored_key(self) -> bool {
+        self.ignored_keys == 1
     }
 
     /// The hold's duration when `event_type` (which ended an unpromoted hold)
@@ -1367,6 +1445,11 @@ enum HoldDownSignal {
     },
     ArmingCancelled {
         reason: &'static str,
+        held_ms: u64,
+    },
+    /// The first key ignored during a hold; the hold and its recording
+    /// continue. Later ignored keys are only counted.
+    KeyIgnored {
         held_ms: u64,
     },
 }
@@ -1406,7 +1489,53 @@ fn dispatch_hold_down(
             }
         }
         HoldDownEvent::Stop => signal(HoldDownSignal::Stop),
+        HoldDownEvent::KeyDuringHold if arming.first_ignored_key() => {
+            signal(HoldDownSignal::KeyIgnored {
+                held_ms: arming.held_ms,
+            })
+        }
+        HoldDownEvent::KeyDuringHold => {}
         HoldDownEvent::None => {}
+    }
+}
+
+/// Both mode: whether a key during a mature hold still ends that hold. Only a
+/// hold promoted over a recording it did not start ends there, as it always
+/// has: the key is a shortcut such as Cmd+Shift+4, the recording continues,
+/// and the trigger's release must not stop it. A hold that started its own
+/// recording keeps holding (#1109).
+fn key_during_hold_ends_hold(promoted: Option<bool>) -> bool {
+    promoted == Some(true)
+}
+
+/// One content-free record for the first key ignored during a hold. Carries
+/// only the bounded key class, never the key. Later keys in the same hold
+/// (typing, auto-repeat) are counted, not logged one by one.
+fn log_hold_key_ignored(mode: DetectorMode, event_type: &EventType, held_ms: u64) {
+    tracing::info!(
+        target: "keyboard",
+        event_code = "keyboard.hold_key_ignored",
+        mode = mode.as_str(),
+        key_class = event_key_class(event_type),
+        held_ms,
+        "key during dictation hold ignored"
+    );
+}
+
+/// When a hold that ignored keys has ended, log one content-free count.
+fn log_hold_ignored_summary(mode: DetectorMode) {
+    let summary = HOLD_DOWN_DETECTOR
+        .lock_or_recover()
+        .as_mut()
+        .and_then(HoldDownDetector::take_ignored_summary);
+    if let Some(ignored_keys) = summary {
+        tracing::info!(
+            target: "keyboard",
+            event_code = "keyboard.hold_keys_ignored_summary",
+            mode = mode.as_str(),
+            ignored_keys,
+            "dictation hold ended after ignoring keys"
+        );
     }
 }
 
@@ -1931,10 +2060,10 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                     {
                         let mut det = HOLD_DOWN_DETECTOR.lock().unwrap_or_else(|p| p.into_inner());
                         if let Some(d) = det.as_mut() {
-                            d.reset();
-                            d.last_stopped_at = Some(Instant::now());
+                            d.escape();
                         }
                     }
+                    log_hold_ignored_summary(mode);
                     {
                         let mut det = DOUBLE_TAP_DETECTOR
                             .lock()
@@ -2072,6 +2201,9 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                 }
                                 HoldDownSignal::ArmingCancelled { reason, held_ms } => {
                                     log_hotkey_arming_cancelled(mode, reason, held_ms);
+                                }
+                                HoldDownSignal::KeyIgnored { held_ms } => {
+                                    log_hold_key_ignored(mode, &event.event_type, held_ms);
                                 }
                             },
                         );
@@ -2216,6 +2348,27 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                     );
                                 }
                             }
+                            HoldDownEvent::KeyDuringHold => {
+                                // No detector lock is held here: promotion
+                                // locks before detector locks.
+                                if key_during_hold_ends_hold(HOLD_PROMOTION.promoted()) {
+                                    if let Some(d) = HOLD_DOWN_DETECTOR.lock_or_recover().as_mut() {
+                                        d.log_rejection(
+                                            RejectionReason::ComboCancelled,
+                                            &event.event_type,
+                                        );
+                                        d.end_hold_on_key();
+                                    }
+                                    HOLD_PROMOTION.finish(|promoted| {
+                                        if promoted.is_some() {
+                                            tracing::info!(target: "keyboard", "BOTH -> emit hold-over-recording-end (combo; recording continues)");
+                                            let _ = handle.emit("hold-over-recording-end", ());
+                                        }
+                                    });
+                                } else if arming.first_ignored_key() {
+                                    log_hold_key_ignored(mode, &event.event_type, arming.held_ms);
+                                }
+                            }
                             HoldDownEvent::None => {
                                 if dtap_fired {
                                     tracing::info!(target: "keyboard", "BOTH -> emit double-tap-toggle (hold=None)");
@@ -2224,6 +2377,9 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                             }
                         }
                     }
+                }
+                if mode != DetectorMode::DoubleTap {
+                    log_hold_ignored_summary(mode);
                 }
                 if fn_trigger {
                     fn_capture::after_event(
@@ -3882,6 +4038,13 @@ mod tests {
                 }
                 // else: short single tap, nothing to do
             }
+            HoldDownEvent::KeyDuringHold => {
+                let promotion = promoted.then_some(over_recording);
+                if key_during_hold_ends_hold(promotion) {
+                    hold.end_hold_on_key();
+                    emitted.push(BothEmit::HoldOverRecordingEnd);
+                }
+            }
             HoldDownEvent::None => {
                 if dtap_fired {
                     emitted.push(BothEmit::DoubleTapToggle);
@@ -3889,6 +4052,413 @@ mod tests {
             }
         }
         emitted
+    }
+
+    /// Age a held hold past the chord window without sleeping.
+    fn mature(hold: &mut HoldDownDetector) {
+        assert_eq!(hold.state, HoldState::Held);
+        hold.held_at = Instant::now() - Duration::from_millis(HOLD_CHORD_WINDOW_MS as u64 + 50);
+    }
+
+    /// Keys typed during a dictation (#1109) and the triggers it was seen on.
+    const KEYS_DURING_HOLD: [Key; 5] = [
+        Key::Space,
+        Key::KeyA,
+        Key::Return,
+        Key::Num4,
+        Key::RightArrow,
+    ];
+    const HOLD_TRIGGERS: [Key; 4] = [Key::Function, Key::ShiftLeft, Key::Alt, Key::F8];
+
+    #[test]
+    fn hold_down_key_during_mature_hold_keeps_recording_until_release() {
+        for trigger in HOLD_TRIGGERS {
+            for key in KEYS_DURING_HOLD {
+                let promotion = HoldPromotion::new();
+                let mut hold = make_armed_hold_detector(DetectorMode::HoldDown, trigger);
+                let mut signals = Vec::new();
+                hold_down_step(&mut hold, &promotion, &press(trigger), &mut signals);
+                if hold.arming_ms > 0 {
+                    hold.held_at = Instant::now() - Duration::from_millis(hold.arming_ms as u64);
+                    assert!(fire_arming_timer(&hold, &promotion, &mut signals));
+                }
+                mature(&mut hold);
+                let started = signals.len();
+                hold_down_step(&mut hold, &promotion, &press(key), &mut signals);
+                hold_down_step(&mut hold, &promotion, &release(key), &mut signals);
+                assert_eq!(hold.state, HoldState::Held, "{trigger:?}+{key:?}");
+                assert!(
+                    matches!(signals[started..], [HoldDownSignal::KeyIgnored { held_ms }] if held_ms as u128 >= HOLD_CHORD_WINDOW_MS),
+                    "{trigger:?}+{key:?}: {signals:?}"
+                );
+                hold_down_step(&mut hold, &promotion, &release(trigger), &mut signals);
+                assert_eq!(
+                    signals.last(),
+                    Some(&HoldDownSignal::Stop),
+                    "{trigger:?}+{key:?}"
+                );
+                assert_eq!(hold.state, HoldState::Idle);
+            }
+        }
+    }
+
+    #[test]
+    fn hold_down_key_inside_chord_window_still_ends_the_hold() {
+        // A slow chord (Fn held, then an arrow; Shift held, then an arrow to
+        // select) presses its key after arming but within the chord window.
+        for trigger in HOLD_TRIGGERS {
+            for key in KEYS_DURING_HOLD
+                .into_iter()
+                .filter(|key| *key != Key::Space)
+            {
+                let mut hold = make_hold_detector(trigger);
+                assert_eq!(hold.handle_event(&press(trigger)), HoldDownEvent::Start);
+                hold.held_at = Instant::now() - Duration::from_millis(400);
+                assert_eq!(
+                    hold.handle_event(&press(key)),
+                    HoldDownEvent::Stop,
+                    "{trigger:?}+{key:?}"
+                );
+                assert_eq!(hold.handle_event(&release(trigger)), HoldDownEvent::None);
+            }
+        }
+    }
+
+    /// Age a held hold to `ms` without sleeping.
+    fn age(hold: &mut HoldDownDetector, ms: u64) {
+        assert_eq!(hold.state, HoldState::Held);
+        hold.held_at = Instant::now() - Duration::from_millis(ms);
+    }
+
+    #[test]
+    fn chord_window_boundary_is_exact_and_space_is_never_a_chord_key() {
+        let last_chord_ms = HOLD_CHORD_WINDOW_MS - 1;
+        for key in [Key::KeyA, Key::Return, Key::RightArrow, Key::Backspace] {
+            assert!(key_ends_young_hold(key, 0), "{key:?}");
+            assert!(key_ends_young_hold(key, last_chord_ms), "{key:?}");
+            assert!(!key_ends_young_hold(key, HOLD_CHORD_WINDOW_MS), "{key:?}");
+            assert!(
+                !key_ends_young_hold(key, HOLD_CHORD_WINDOW_MS + 1),
+                "{key:?}"
+            );
+        }
+        for held_ms in [0, 1, last_chord_ms, HOLD_CHORD_WINDOW_MS] {
+            assert!(!key_ends_young_hold(Key::Space, held_ms), "{held_ms}");
+        }
+    }
+
+    #[test]
+    fn detector_switches_from_chord_to_ignore_at_the_window() {
+        // 990 ms leaves a 10 ms margin against the clock ticking during the
+        // test; the exact 999/1000 boundary is the pure predicate above.
+        let mut hold = make_hold_detector(Key::Function);
+        hold.handle_event(&press(Key::Function));
+        age(&mut hold, 990);
+        assert_eq!(hold.handle_event(&press(Key::KeyA)), HoldDownEvent::Stop);
+
+        let mut hold = make_hold_detector(Key::Function);
+        hold.handle_event(&press(Key::Function));
+        age(&mut hold, HOLD_CHORD_WINDOW_MS as u64);
+        assert_eq!(
+            hold.handle_event(&press(Key::KeyA)),
+            HoldDownEvent::KeyDuringHold
+        );
+    }
+
+    #[test]
+    fn hold_down_space_after_arming_is_ignored_at_any_age() {
+        for trigger in HOLD_TRIGGERS {
+            let arming = hold_arming_ms(DetectorMode::HoldDown, Some(trigger)) as u64;
+            for held_ms in [arming + 5, 400, 990, 1500] {
+                let promotion = HoldPromotion::new();
+                let mut hold = make_armed_hold_detector(DetectorMode::HoldDown, trigger);
+                let mut signals = Vec::new();
+                hold_down_step(&mut hold, &promotion, &press(trigger), &mut signals);
+                if arming > 0 {
+                    assert!(fire_arming_timer(&hold, &promotion, &mut signals));
+                }
+                age(&mut hold, held_ms);
+                let started = signals.len();
+                hold_down_step(&mut hold, &promotion, &press(Key::Space), &mut signals);
+                hold_down_step(&mut hold, &promotion, &release(Key::Space), &mut signals);
+                assert_eq!(hold.state, HoldState::Held, "{trigger:?} {held_ms}");
+                assert!(
+                    matches!(signals[started..], [HoldDownSignal::KeyIgnored { .. }]),
+                    "{trigger:?} {held_ms}: {signals:?}"
+                );
+                hold_down_step(&mut hold, &promotion, &release(trigger), &mut signals);
+                assert_eq!(signals.last(), Some(&HoldDownSignal::Stop));
+            }
+        }
+    }
+
+    #[test]
+    fn hold_down_fast_trigger_space_inside_arming_never_starts_recording() {
+        // Shift+Space, Fn+Space, Right Control+Space typed quickly.
+        for trigger in [Key::ShiftLeft, Key::Function, Key::ControlRight, Key::Alt] {
+            let promotion = HoldPromotion::new();
+            let mut hold = make_armed_hold_detector(DetectorMode::HoldDown, trigger);
+            let mut signals = Vec::new();
+            hold_down_step(&mut hold, &promotion, &press(trigger), &mut signals);
+            hold_down_step(&mut hold, &promotion, &press(Key::Space), &mut signals);
+            assert_eq!(hold.state, HoldState::Idle, "{trigger:?}");
+            assert!(!fire_arming_timer(&hold, &promotion, &mut signals));
+            hold_down_step(&mut hold, &promotion, &release(trigger), &mut signals);
+            assert!(
+                matches!(
+                    signals[1..],
+                    [HoldDownSignal::ArmingCancelled {
+                        reason: "other_key",
+                        ..
+                    }]
+                ),
+                "{trigger:?}: {signals:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_mode_space_follows_arming_promotion_and_over_recording_rules() {
+        let trigger = Key::Function;
+        // Inside Both mode's 200 ms window: ends the hold, no emission.
+        let mut hold = make_armed_hold_detector(DetectorMode::Both, trigger);
+        let mut dtap = make_detector(trigger);
+        assert!(both_handle_event(&mut hold, &mut dtap, &press(trigger), false).is_empty());
+        assert!(both_handle_event(&mut hold, &mut dtap, &press(Key::Space), false).is_empty());
+        assert_eq!(hold.state, HoldState::Idle);
+        assert!(both_handle_event(&mut hold, &mut dtap, &release(trigger), false).is_empty());
+
+        // Promoted hold that started its own recording, young or mature:
+        // space is ignored and the release stops it.
+        for held_ms in [250, 600, 1500] {
+            let mut hold = make_armed_hold_detector(DetectorMode::Both, trigger);
+            let mut dtap = make_detector(trigger);
+            both_handle_event(&mut hold, &mut dtap, &press(trigger), false);
+            age(&mut hold, held_ms);
+            dtap.state_entered_at = hold.held_at;
+            assert!(both_handle_event(&mut hold, &mut dtap, &press(Key::Space), true).is_empty());
+            assert_eq!(hold.state, HoldState::Held, "{held_ms}");
+            assert_eq!(
+                both_handle_event(&mut hold, &mut dtap, &release(trigger), true),
+                vec![BothEmit::HoldStop],
+                "{held_ms}"
+            );
+        }
+
+        // Promoted over a toggle recording it did not start: space still
+        // ends the hold, the toggle recording continues, and the release is
+        // then a no-op.
+        let mut hold = make_armed_hold_detector(DetectorMode::Both, trigger);
+        let mut dtap = make_detector(trigger);
+        both_handle_event_over(&mut hold, &mut dtap, &press(trigger), false, false);
+        age(&mut hold, 600);
+        assert_eq!(
+            both_handle_event_over(&mut hold, &mut dtap, &press(Key::Space), true, true),
+            vec![BothEmit::HoldOverRecordingEnd]
+        );
+        assert_eq!(hold.take_ignored_summary(), None, "the key ended the hold");
+        assert!(
+            both_handle_event_over(&mut hold, &mut dtap, &release(trigger), true, true).is_empty()
+        );
+    }
+
+    #[test]
+    fn escape_after_an_ignored_key_ends_the_hold_and_reports_once() {
+        let mut hold = make_hold_detector(Key::Function);
+        hold.handle_event(&press(Key::Function));
+        mature(&mut hold);
+        assert_eq!(
+            hold.handle_event(&press(Key::KeyA)),
+            HoldDownEvent::KeyDuringHold
+        );
+        hold.escape();
+        assert_eq!(hold.state, HoldState::Idle);
+        assert_eq!(hold.take_ignored_summary(), Some(1));
+        assert_eq!(hold.take_ignored_summary(), None);
+        // The trigger's release after Escape is a no-op, and an immediate
+        // re-press is inside the cooldown.
+        assert_eq!(
+            hold.handle_event(&release(Key::Function)),
+            HoldDownEvent::None
+        );
+        assert_eq!(
+            hold.handle_event(&press(Key::Function)),
+            HoldDownEvent::None
+        );
+    }
+
+    #[test]
+    fn trigger_repeat_after_an_ignored_key_keeps_holding() {
+        let mut hold = make_hold_detector(Key::F8);
+        hold.handle_event(&press(Key::F8));
+        mature(&mut hold);
+        assert_eq!(
+            hold.handle_event(&press(Key::Space)),
+            HoldDownEvent::KeyDuringHold
+        );
+        assert_eq!(hold.handle_event(&press(Key::F8)), HoldDownEvent::None);
+        assert_eq!(hold.state, HoldState::Held);
+        assert_eq!(hold.handle_event(&release(Key::F8)), HoldDownEvent::Stop);
+        assert_eq!(hold.take_ignored_summary(), Some(1));
+    }
+
+    #[test]
+    fn many_ignored_keys_log_once_and_summarise_the_count() {
+        let promotion = HoldPromotion::new();
+        let mut hold = make_armed_hold_detector(DetectorMode::HoldDown, Key::Function);
+        let mut signals = Vec::new();
+        hold_down_step(&mut hold, &promotion, &press(Key::Function), &mut signals);
+        assert!(fire_arming_timer(&hold, &promotion, &mut signals));
+        mature(&mut hold);
+        let started = signals.len();
+        // A typed word, then Backspace auto-repeat (repeated KeyPress).
+        for key in [Key::KeyH, Key::KeyI, Key::Space] {
+            hold_down_step(&mut hold, &promotion, &press(key), &mut signals);
+            hold_down_step(&mut hold, &promotion, &release(key), &mut signals);
+        }
+        for _ in 0..30 {
+            hold_down_step(&mut hold, &promotion, &press(Key::Backspace), &mut signals);
+        }
+        hold_down_step(
+            &mut hold,
+            &promotion,
+            &release(Key::Backspace),
+            &mut signals,
+        );
+        assert!(
+            matches!(signals[started..], [HoldDownSignal::KeyIgnored { .. }]),
+            "{signals:?}"
+        );
+        assert_eq!(
+            hold.take_ignored_summary(),
+            None,
+            "reported only at hold end"
+        );
+        hold_down_step(&mut hold, &promotion, &release(Key::Function), &mut signals);
+        assert_eq!(signals.last(), Some(&HoldDownSignal::Stop));
+        assert_eq!(hold.take_ignored_summary(), Some(33));
+
+        // The next hold starts from zero and a clean hold reports nothing.
+        sleep(Duration::from_millis(HOLD_DOWN_COOLDOWN_MS as u64 + 10));
+        hold_down_step(&mut hold, &promotion, &press(Key::Function), &mut signals);
+        hold_down_step(&mut hold, &promotion, &release(Key::Function), &mut signals);
+        assert_eq!(hold.take_ignored_summary(), None);
+    }
+
+    #[test]
+    fn hold_ignored_summary_event_code_is_allowlisted() {
+        assert_eq!(
+            crate::telemetry::canonical_event_code("keyboard.hold_keys_ignored_summary"),
+            Some("keyboard.hold_keys_ignored_summary")
+        );
+    }
+
+    #[test]
+    fn hold_down_mature_hold_still_ignores_modifiers_and_pointer() {
+        let mut hold = make_hold_detector(Key::Function);
+        assert_eq!(
+            hold.handle_event(&press(Key::Function)),
+            HoldDownEvent::Start
+        );
+        mature(&mut hold);
+        for event in [
+            press(Key::ShiftLeft),
+            release(Key::ShiftLeft),
+            EventType::ButtonPress(rdev::Button::Left),
+            EventType::Wheel {
+                delta_x: 0,
+                delta_y: 1,
+            },
+            press(Key::Function),
+        ] {
+            assert_eq!(hold.handle_event(&event), HoldDownEvent::None, "{event:?}");
+        }
+        assert_eq!(
+            hold.handle_event(&release(Key::Function)),
+            HoldDownEvent::Stop
+        );
+    }
+
+    #[test]
+    fn function_key_trigger_shortcut_modifier_still_ends_a_mature_hold() {
+        let mut hold = make_hold_detector(Key::F8);
+        assert_eq!(hold.handle_event(&press(Key::F8)), HoldDownEvent::Start);
+        mature(&mut hold);
+        assert_eq!(
+            hold.handle_event_with_shortcut_modifiers(&press(Key::MetaLeft), true),
+            HoldDownEvent::Stop
+        );
+        assert_eq!(hold.handle_event(&release(Key::F8)), HoldDownEvent::None);
+    }
+
+    #[test]
+    fn both_mode_key_during_own_hold_recording_keeps_recording() {
+        for trigger in HOLD_TRIGGERS {
+            for key in KEYS_DURING_HOLD {
+                let mut hold = make_hold_detector(trigger);
+                let mut dtap = make_detector(trigger);
+                assert!(both_handle_event(&mut hold, &mut dtap, &press(trigger), false).is_empty());
+                mature(&mut hold);
+                dtap.state_entered_at = hold.held_at;
+                assert!(both_handle_event(&mut hold, &mut dtap, &press(key), true).is_empty());
+                assert!(both_handle_event(&mut hold, &mut dtap, &release(key), true).is_empty());
+                assert_eq!(hold.state, HoldState::Held, "{trigger:?}+{key:?}");
+                assert_eq!(
+                    both_handle_event(&mut hold, &mut dtap, &release(trigger), true),
+                    vec![BothEmit::HoldStop],
+                    "{trigger:?}+{key:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn both_mode_key_during_mature_hold_over_toggle_recording_keeps_recording() {
+        // 1ddb8ee2: the key ends a hold over a recording it did not start, so
+        // the trigger's release afterwards does not stop that recording.
+        let mut hold = make_hold_detector(Key::ShiftLeft);
+        let mut dtap = make_detector(Key::ShiftLeft);
+        both_handle_event_over(&mut hold, &mut dtap, &press(Key::ShiftLeft), false, false);
+        mature(&mut hold);
+        assert_eq!(
+            both_handle_event_over(&mut hold, &mut dtap, &press(Key::Num4), true, true),
+            vec![BothEmit::HoldOverRecordingEnd]
+        );
+        assert_eq!(hold.state, HoldState::Idle);
+        assert!(
+            both_handle_event_over(&mut hold, &mut dtap, &release(Key::ShiftLeft), true, true)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn key_during_hold_ends_only_a_hold_over_another_recording() {
+        assert!(key_during_hold_ends_hold(Some(true)));
+        assert!(!key_during_hold_ends_hold(Some(false)));
+        assert!(!key_during_hold_ends_hold(None));
+    }
+
+    #[test]
+    fn double_tap_toggle_recording_ignores_typed_keys() {
+        for trigger in HOLD_TRIGGERS {
+            for key in KEYS_DURING_HOLD {
+                let mut d = make_detector(trigger);
+                d.recording = true;
+                assert!(!d.handle_event(&press(key)), "{trigger:?}+{key:?}");
+                assert!(!d.handle_event(&release(key)), "{trigger:?}+{key:?}");
+                assert_eq!(d.state, DetectorState::Idle);
+                assert!(!d.handle_event(&press(trigger)));
+                assert!(d.handle_event(&release(trigger)), "{trigger:?}+{key:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn hold_key_ignored_event_code_is_allowlisted() {
+        assert_eq!(
+            crate::telemetry::canonical_event_code("keyboard.hold_key_ignored"),
+            Some("keyboard.hold_key_ignored")
+        );
     }
 
     #[test]
