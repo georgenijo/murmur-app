@@ -192,6 +192,8 @@ class SignatureParsingTests(unittest.TestCase):
             dev.designated_requirement(output),
             'identifier "com.localdictation.dev" and anchor apple generic',
         )
+        ad_hoc = 'Executable=/A.app/Contents/MacOS/a\n# designated => cdhash H"abc"\n'
+        self.assertEqual(dev.designated_requirement(ad_hoc), 'cdhash H"abc"')
 
     def test_team_warnings(self) -> None:
         ad_hoc = dev.Selection("-", "ad-hoc", "unset")
@@ -213,9 +215,11 @@ class FakeRunner:
         self.keychain = keychain
         self.team = team
         self.commands: list[list[str]] = []
+        self.envs: list[dict[str, str] | None] = []
 
     def __call__(self, command, **kwargs) -> subprocess.CompletedProcess[str]:
         self.commands.append(list(command))
+        self.envs.append(kwargs.get("env"))
         if command[0] == "security":
             if self.keychain is None:
                 raise FileNotFoundError("security")
@@ -266,6 +270,19 @@ class MainFlowTests(unittest.TestCase):
         self.assertEqual(
             [Path(path).name for path in signed], ["murmur", *dev.BUNDLED_EXECUTABLES]
         )
+
+    def test_helper_build_runs_without_the_custom_target_dir(self) -> None:
+        runner = FakeRunner(keychain=FIND_IDENTITY, team="P2U3P8B923")
+        env = {**self.env, "PATH": "/usr/bin", dev.IDENTITY_ENV: DEVELOPMENT}
+        code, _, err = self.run_main(runner, env=env)
+        self.assertEqual(code, 0, err)
+        index = next(
+            i for i, c in enumerate(runner.commands) if c[1].endswith("build_capture_helpers.py")
+        )
+        helper_env = runner.envs[index]
+        self.assertIsNotNone(helper_env)
+        self.assertNotIn("CARGO_TARGET_DIR", helper_env)
+        self.assertEqual(helper_env["PATH"], "/usr/bin")
 
     def test_unset_variable_builds_ad_hoc_and_warns_after_the_build(self) -> None:
         for keychain in (FIND_IDENTITY, None):

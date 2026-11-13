@@ -204,6 +204,16 @@ def helper_build_command(*, debug: bool) -> list[str]:
     return command
 
 
+def helper_build_env(env: Mapping[str, str]) -> dict[str, str]:
+    """Environment for ``build_capture_helpers.py``.
+
+    That script looks for its outputs under ``app/src-tauri/target``, so it
+    runs without ``CARGO_TARGET_DIR``. Only the Tauri build uses the custom
+    target directory.
+    """
+    return {key: value for key, value in env.items() if key != "CARGO_TARGET_DIR"}
+
+
 def tauri_build_command(config: Path, *, debug: bool) -> list[str]:
     # --no-sign also ignores APPLE_SIGNING_IDENTITY in the environment, so a
     # stray release variable can never sign this bundle through Tauri.
@@ -250,9 +260,12 @@ def team_identifier(codesign_details: str) -> str | None:
 
 
 def designated_requirement(codesign_requirements: str) -> str | None:
-    for line in codesign_requirements.splitlines():
-        if line.startswith("designated => "):
-            return line.split("=> ", 1)[1].strip()
+    # An explicit requirement prints as "designated => ...". An implicit one,
+    # such as an ad-hoc signature's cdhash, is commented: "# designated => ...".
+    for prefix in ("designated => ", "# designated => "):
+        for line in codesign_requirements.splitlines():
+            if line.startswith(prefix):
+                return line[len(prefix):].strip()
     return None
 
 
@@ -355,11 +368,18 @@ def main(
             "dev signing: ad-hoc bundles get a new signature on every rebuild, so macOS "
             "asks for Microphone and Accessibility again. See docs/DEVELOPMENT.md."
         )
+    # Show the selection before the build output when stdout is a pipe or file.
+    sys.stdout.flush()
 
     app = bundle_path(product_name, debug=args.debug, env=env)
     if not args.sign_only:
         if not args.skip_helpers:
-            run(helper_build_command(debug=args.debug), cwd=ROOT, check=True)
+            run(
+                helper_build_command(debug=args.debug),
+                cwd=ROOT,
+                env=helper_build_env(env),
+                check=True,
+            )
         run(tauri_build_command(config, debug=args.debug), cwd=APP_DIR, check=True)
     if not app.is_dir():
         print(f"error: bundle not found at {app}", file=sys.stderr)
