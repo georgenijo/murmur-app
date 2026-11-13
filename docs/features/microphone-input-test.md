@@ -20,7 +20,9 @@ the input is too quiet or clipping.
   then opens it only after teardown is confirmed. A teardown timeout preserves
   the selection but does not risk a second Core Audio owner.
 - Monitoring yields automatically when dictation starts and resumes when the
-  recording/transcription cycle returns to Idle. It also stops when the user
+  recording/transcription cycle returns to Idle. A flowing test hands its open
+  device to the dictation, so an open Settings window costs a dictation no
+  startup time and no first-word audio (see Capture ownership). It also stops when the user
   leaves Dictation Settings, closes or hides Settings, or the Mac sleeps.
   Startup, permission, missing-device, runtime-unplug, and slow-teardown
   failures stay actionable in the row.
@@ -38,6 +40,26 @@ Corpus capture and benchmark startup stop
 the exact Preview owner, wait for confirmed worker teardown, and claim their
 work under the same short `recording_transition` lock. Preview startup still
 refuses while any real pipeline owns audio.
+
+Dictation is the exception when the visible test is flowing (`Active`, no
+error, not automatic) on the dictation's input under the current topology.
+The supervisor then hands the running worker to the dictation instead of
+stopping it: an Fn key-down capture takes it over at key-down, and a confirmed
+start with no key-down capture adopts it directly. Under the buffer lock,
+retention starts empty at the handoff and the worker stops serving the meter,
+VAD, and signal verification, then behaves as dictation capture (it retains
+PCM, seals its drained stop, and publishes dictation levels once adopted). The
+Preview's claim ends at the handoff: its owner is replaced in one supervisor
+step and its `Idle` event tells Settings the test has yielded. The worker
+exits only with its new owner, so there is still one owner and no reopened
+device. Any test that cannot be handed off is stopped with confirmed teardown
+first, as before. A dictation that took over the test is a warm capture, like
+an adopted key-down capture: a newer input topology cancels it. While an
+unconfirmed key-down capture is open, a test start waits for that gesture to
+resolve (at most the key-down backstop) rather than superseding it. Closing
+or hiding Settings during that wait revokes the start: it returns the
+quiet dictation pause instead of claiming the microphone, and reopening
+Settings starts a fresh test.
 
 Stop acknowledgement is not teardown authority. The preview remains claimed
 through Starting, Recording, Stopping, and Recovering, and clears only after the

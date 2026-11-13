@@ -5476,6 +5476,26 @@ pub(crate) fn dictation_prepare_refusal(state: &State) -> Option<&'static str> {
     dictation_refusal(state, true)
 }
 
+/// Admission for an Fn key-down capture: `Ok(Some(preview))` when the only
+/// obstacle is the visible Settings microphone test, which the capture takes
+/// over in place instead of being skipped. Any other refusal is unchanged.
+pub(crate) fn key_down_capture_admission(state: &State) -> Result<Option<u64>, &'static str> {
+    key_down_admission_from(dictation_prepare_refusal(state), || {
+        state.app_state.microphone_preview.handoff_candidate()
+    })
+}
+
+fn key_down_admission_from(
+    refusal: Option<&'static str>,
+    handoff_candidate: impl FnOnce() -> Option<u64>,
+) -> Result<Option<u64>, &'static str> {
+    match refusal {
+        None => Ok(None),
+        Some("preview_active") => handoff_candidate().map(Some).ok_or("preview_active"),
+        Some(reason) => Err(reason),
+    }
+}
+
 /// Whether anything dictation-related is in progress, for a permission
 /// relaunch. A relaunch that has itself committed does not count.
 pub(crate) fn dictation_relaunch_busy(state: &State) -> Option<&'static str> {
@@ -5520,11 +5540,16 @@ pub async fn start_native_recording(
     let speculative = audio_lifecycle::speculative::claim(gesture_token.as_deref());
     // This lock covers only the synchronous ownership transition. Core Audio
     // initialization happens on the supervisor and never waits under it.
-    let _transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+    // A flowing Settings microphone test is not stopped here: the supervisor
+    // hands its open device to this dictation (see `hand_preview_to`).
+    let _transition = crate::commands::microphone_preview::transition_for_dictation_start(
         &app_handle,
         state.inner(),
     )
     .await?;
+    // Under the transition, a current mic test is one this start kept for the
+    // supervisor; if it cannot be taken over, the start queues behind its exit.
+    let kept_preview = state.app_state.microphone_preview.is_active();
     if keyboard::is_app_disabled() {
         tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
         return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
@@ -5678,13 +5703,31 @@ pub async fn start_native_recording(
         crate::audio_inventory::production_device_kind(selected_device_name.as_deref()),
     );
     dictation_performance_begins().register(rid);
-    if let Err(error) = audio_lifecycle::start_dictation_recording(
-        app_handle.clone(),
-        selected_device_name,
-        rid,
-        origin,
-        gesture,
-    ) {
+    let audio_started = if kept_preview {
+        // May wait for the kept test's confirmed exit (see
+        // `START_AFTER_PREVIEW_TIMEOUT`), so never on an async worker.
+        let start_handle = app_handle.clone();
+        tokio::task::spawn_blocking(move || {
+            audio_lifecycle::start_dictation_recording_after_preview(
+                start_handle,
+                selected_device_name,
+                rid,
+                origin,
+                gesture,
+            )
+        })
+        .await
+        .unwrap_or(Err(AudioStartError::SupervisorUnavailable))
+    } else {
+        audio_lifecycle::start_dictation_recording(
+            app_handle.clone(),
+            selected_device_name,
+            rid,
+            origin,
+            gesture,
+        )
+    };
+    if let Err(error) = audio_started {
         dictation_performance_begins().abort(rid, &state.performance);
         tracing::error!(target: "audio", "start_native_recording: audio failed: {}", error);
         state.app_state.clear_active_context(rid);
@@ -6852,6 +6895,43 @@ pub async fn transcribe_file(
 pub(crate) mod tests {
     use super::*;
     use std::collections::VecDeque;
+
+    #[test]
+    fn fn_key_down_takes_over_an_open_mic_test_instead_of_skipping() {
+        // The observed regression: every key-down with Settings open logged
+        // `fn_capture_skipped reason="preview_active"`.
+        assert_eq!(
+            key_down_admission_from(None, || panic!("not asked")),
+            Ok(None)
+        );
+        assert_eq!(
+            key_down_admission_from(Some("preview_active"), || Some(7)),
+            Ok(Some(7))
+        );
+        // A test that is connecting, stopping, failed or automatic is no
+        // handoff candidate: the old refusal stands.
+        assert_eq!(
+            key_down_admission_from(Some("preview_active"), || None),
+            Err("preview_active")
+        );
+        for reason in ["dictation_busy", "microphone_busy", "cleanup_pending"] {
+            assert_eq!(
+                key_down_admission_from(Some(reason), || panic!("not asked")),
+                Err(reason)
+            );
+        }
+        let state = crate::State::for_test();
+        assert_eq!(key_down_capture_admission(&state), Ok(None));
+        let id = state.app_state.microphone_preview.claim(50).unwrap();
+        assert_eq!(key_down_capture_admission(&state), Err("preview_active"));
+        state
+            .app_state
+            .microphone_preview
+            .set_phase_if(id, crate::microphone_preview::PreviewPhase::Active);
+        assert_eq!(key_down_capture_admission(&state), Ok(Some(id)));
+        // First-tap preparation still refuses while any test runs.
+        assert_eq!(dictation_prepare_refusal(&state), Some("preview_active"));
+    }
 
     #[test]
     fn a_committed_permission_relaunch_refuses_a_dictation_start() {
