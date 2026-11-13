@@ -8,12 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
-- Typing a key while holding the dictation trigger no longer ends the
-  dictation (#1109). Once a hold has lasted one second, space, letters, and
-  other keys are ignored and only releasing the trigger stops the recording.
-  A key pressed in the first second still ends the hold, so slow chords such
-  as Shift+arrow selection or Fn+arrow navigation stay a no-op. Double-tap
-  recordings already ignored typed keys.
+- Typing while holding the dictation trigger no longer ends the dictation
+  (#1109). Space is ignored as soon as the recording starts, and any other key
+  once the hold has lasted one second; only releasing the trigger stops the
+  recording. Another key in the first second still ends the hold, so a slow
+  chord such as Shift+arrow selection or Fn+arrow navigation ends the short
+  recording it started instead of running on. Double-tap recordings already
+  ignored typed keys. Known limit: if the trigger's release is missed, typing
+  no longer ends the hold; tap the trigger or press Escape.
 
 ## [0.66.0] - 2026-11-12
 

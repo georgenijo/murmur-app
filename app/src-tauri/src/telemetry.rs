@@ -239,6 +239,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "keyboard.escape_cancel" => Some("keyboard.escape_cancel"),
         "keyboard.hotkey_arming_cancelled" => Some("keyboard.hotkey_arming_cancelled"),
         "keyboard.hold_key_ignored" => Some("keyboard.hold_key_ignored"),
+        "keyboard.hold_keys_ignored_summary" => Some("keyboard.hold_keys_ignored_summary"),
         "keyboard.fn_capture_skipped" => Some("keyboard.fn_capture_skipped"),
         "keyboard.globe_companion_ignored" => Some("keyboard.globe_companion_ignored"),
         "audio.capture_backend_timeout" => Some("audio.capture_backend_timeout"),
@@ -3784,6 +3785,7 @@ mod tests {
             "keyboard.fn_capture_skipped",
             "keyboard.globe_companion_ignored",
             "keyboard.hold_key_ignored",
+            "keyboard.hold_keys_ignored_summary",
         ] {
             assert_eq!(canonical_event_code(code), Some(code));
             let data = serde_json::json!({"event_code": code, "capture_id": 4});
