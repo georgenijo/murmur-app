@@ -313,6 +313,11 @@ pub(crate) struct CaptureSamples {
     /// standby pre-roll) is discarded. Every later append, including PCM the
     /// helper flushes while draining a Stop, is dropped under this lock.
     retention_revoked: bool,
+    /// Set once, under this lock, when a running Settings preview worker is
+    /// handed to a key-down capture or dictation. From then on the worker
+    /// retains PCM and behaves as dictation capture; preview PCM from before
+    /// the handoff was never retained. Never reversed for the same buffer.
+    handed_off: bool,
 }
 
 impl std::ops::Deref for CaptureSamples {
@@ -356,6 +361,15 @@ impl CaptureSamples {
         self.retention_revoked = true;
         self.samples = Vec::new();
     }
+    /// Hand a running preview worker to dictation capture. Retention starts
+    /// empty at this instant: nothing the preview saw is ever kept.
+    pub(crate) fn begin_handoff_retention(&mut self) {
+        self.handed_off = true;
+        self.samples = Vec::new();
+    }
+    pub(crate) fn handed_off(&self) -> bool {
+        self.handed_off
+    }
     #[cfg(test)]
     pub(crate) fn retention_revoked(&self) -> bool {
         self.retention_revoked
@@ -370,12 +384,33 @@ pub(crate) fn retain_pcm(
     pcm: &[f32],
     rate: u32,
 ) {
-    if owner.retains_samples() {
-        shared
+    let retains = owner.retains_samples();
+    if retains || owner.preview_id().is_some() {
+        let mut samples = shared
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .append_pcm(pcm, rate);
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if retains || samples.handed_off {
+            samples.append_pcm(pcm, rate);
+        }
     }
+}
+
+/// Whether a running preview worker has been handed to dictation capture.
+pub(crate) fn capture_handed_off(shared: &Mutex<CaptureSamples>) -> bool {
+    shared
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .handed_off()
+}
+
+/// The Settings preview this worker still serves, or `None` once it has been
+/// handed to dictation capture (or was never a preview). Only a serving
+/// preview drives the Settings meter, VAD, and signal verification.
+fn serving_preview(
+    owner: crate::audio_lifecycle::AudioOwner,
+    shared: &Mutex<CaptureSamples>,
+) -> Option<u64> {
+    owner.preview_id().filter(|_| !capture_handed_off(shared))
 }
 
 pub(crate) enum AudioCommand {
@@ -1499,8 +1534,8 @@ fn read_stopping_frames(
     }
 }
 
-/// Production drain-to-supervisor handoff. Only validated final PCM followed
-/// by an exact Stopped receipt may seal the recording before process exit.
+/// `drain_stopping_capture` for a worker whose identity alone decides sealing.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn drain_stopping_recording(
     reader: &Receiver<HelperRead>,
@@ -1512,13 +1547,43 @@ pub(crate) fn drain_stopping_recording(
     received: &mut u64,
     accept: &mut impl FnMut(&[f32]),
 ) -> StopReadOutcome {
+    drain_stopping_capture(
+        reader,
+        deadline,
+        sequence,
+        sample_rate,
+        owner,
+        owner.is_dictation_capture(),
+        events,
+        received,
+        accept,
+    )
+}
+
+/// Production drain-to-supervisor handoff. Only validated final PCM followed
+/// by an exact Stopped receipt may seal the recording before process exit.
+/// `seals` is whether this worker's drained stop belongs to a dictation: a
+/// dictation-capture identity, or a preview worker handed to one.
+#[allow(clippy::too_many_arguments)]
+fn drain_stopping_capture(
+    reader: &Receiver<HelperRead>,
+    deadline: Instant,
+    sequence: &mut u64,
+    sample_rate: Option<u32>,
+    owner: crate::audio_lifecycle::AudioOwner,
+    seals: bool,
+    events: &AudioWorkerEventSender,
+    received: &mut u64,
+    accept: &mut impl FnMut(&[f32]),
+) -> StopReadOutcome {
     let outcome = read_stopping_frames(reader, deadline, sequence, sample_rate, &mut |samples| {
         *received += samples.len() as u64;
         accept(samples);
     });
-    // An adopted key-down worker keeps its speculative identity; its drained
-    // stop seals the dictation that owns it now.
-    if owner.is_dictation_capture() && outcome.fully_drained(*received) {
+    // An adopted key-down worker keeps its speculative identity (and a handed
+    // off preview its preview identity); its drained stop seals the dictation
+    // that owns it now.
+    if seals && outcome.fully_drained(*received) {
         let _ = events.send(AudioWorkerEvent::RecordingSealed { owner });
     }
     outcome
@@ -2705,12 +2770,13 @@ fn run_backend(
                 )
                 .is_ok()
                 {
-                    drain_stopping_recording(
+                    drain_stopping_capture(
                         &reader_rx,
                         drain_started + COOPERATIVE_STOP_GRACE,
                         &mut expected_sequence,
                         sample_rate,
                         owner,
+                        owner.is_dictation_capture() || capture_handed_off(shared),
                         event_sender,
                         &mut received_samples,
                         &mut accept,
@@ -3086,7 +3152,10 @@ fn run_backend(
                         elapsed_ms: first_wait_ms.unwrap_or_default(),
                     });
                 }
-                if let Some(preview_id) = owner.preview_id() {
+                // A preview handed to dictation capture stops serving Settings
+                // at once; from then on it publishes dictation levels instead.
+                let serving = serving_preview(owner, shared);
+                if let Some(preview_id) = serving {
                     if let Some(handle) = app_handle.as_ref() {
                         handle
                             .state::<crate::State>()
@@ -3133,7 +3202,7 @@ fn run_backend(
                     && last_level_emit.elapsed() >= Duration::from_millis(AUDIO_LEVEL_THROTTLE_MS)
                 {
                     if let Some(handle) = app_handle {
-                        if let Some(preview_id) = owner.preview_id() {
+                        if let Some(preview_id) = serving {
                             let (rms, peak) = preview_levels.take();
                             let raw = classify_level(rms, peak);
                             let (classification, first_observation) =

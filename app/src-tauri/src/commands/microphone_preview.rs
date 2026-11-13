@@ -7,6 +7,10 @@ use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
 const CONFIRMED_STOP_TIMEOUT: Duration = Duration::from_secs(15);
+/// An unconfirmed Fn key-down capture lives at most its backstop TTL, then
+/// tears down. A mic test start waits that long for it instead of killing it.
+const KEY_DOWN_RESOLUTION_WAIT: Duration = Duration::from_millis(2_500);
+const KEY_DOWN_RESOLUTION_POLL: Duration = Duration::from_millis(20);
 
 fn require_main_window(window: &tauri::WebviewWindow) -> Result<(), String> {
     if window.label() == "main" {
@@ -126,6 +130,28 @@ pub(crate) fn preview_audio_blocker(
     audio_active().then_some(PREVIEW_AUDIO_BUSY)
 }
 
+/// Take the recording transition once no unconfirmed Fn key-down capture holds
+/// the microphone. That capture may be the first word of a dictation (it may
+/// even have just taken over this test's device), so the test waits for its
+/// gesture to resolve rather than discarding it. Key-down admission needs this
+/// same lock, so none can be admitted while the guard is held. Bounded: past
+/// the deadline the old supersession applies.
+async fn transition_after_key_down_resolves<'a>(
+    transition: &'a tokio::sync::Mutex<()>,
+    unconfirmed_key_down: impl Fn() -> bool,
+    deadline: Duration,
+) -> tokio::sync::MutexGuard<'a, ()> {
+    let deadline = tokio::time::Instant::now() + deadline;
+    loop {
+        let guard = transition.lock().await;
+        if !unconfirmed_key_down() || tokio::time::Instant::now() >= deadline {
+            return guard;
+        }
+        drop(guard);
+        tokio::time::sleep(KEY_DOWN_RESOLUTION_POLL).await;
+    }
+}
+
 #[tauri::command]
 pub async fn start_microphone_preview(
     window: tauri::WebviewWindow,
@@ -136,13 +162,20 @@ pub async fn start_microphone_preview(
     vad_sensitivity: u32,
 ) -> Result<MicrophonePreviewStatus, String> {
     require_main_window(&window)?;
-    crate::audio_lifecycle::retire_standby();
     let device_id = normalized_device_id(device_id)?;
     crate::smart_auto_probe::preempt();
     if let Some(id) = state.app_state.microphone_preview.automatic_id() {
         stop_exact_preview(&app_handle, state.inner(), id).await?;
     }
-    let transition = state.app_state.recording_transition.lock().await;
+    let transition = transition_after_key_down_resolves(
+        &state.app_state.recording_transition,
+        audio_lifecycle::is_unconfirmed_key_down_capture,
+        KEY_DOWN_RESOLUTION_WAIT,
+    )
+    .await;
+    // Standby is retired only now: no key-down capture is pending and none can
+    // be admitted while the transition is held.
+    crate::audio_lifecycle::retire_standby();
     {
         let dictation = state.app_state.dictation.lock_or_recover();
         if dictation.status != DictationStatus::Idle {
@@ -336,7 +369,25 @@ pub(crate) async fn transition_after_stopping_preview<'a>(
     app_handle: &tauri::AppHandle,
     state: &'a State,
 ) -> Result<tokio::sync::MutexGuard<'a, ()>, String> {
-    transition_after_preview_cleanup(&state.app_state, |preview_id| async move {
+    transition_after_preview_cleanup(&state.app_state, false, |preview_id| async move {
+        stop_exact_preview(app_handle, state, preview_id)
+            .await
+            .map(|_| ())
+    })
+    .await
+}
+
+/// The dictation start's transition. Like `transition_after_stopping_preview`,
+/// except a flowing visible microphone test is left running: the supervisor
+/// hands its open device to the dictation, so the start pays no teardown or
+/// reopen and loses no audio. Background checks and a test that is still
+/// connecting or already stopping are stopped first, as before. Holding the
+/// returned guard keeps the test from stopping before the start claims it.
+pub(crate) async fn transition_for_dictation_start<'a>(
+    app_handle: &tauri::AppHandle,
+    state: &'a State,
+) -> Result<tokio::sync::MutexGuard<'a, ()>, String> {
+    transition_after_preview_cleanup(&state.app_state, true, |preview_id| async move {
         stop_exact_preview(app_handle, state, preview_id)
             .await
             .map(|_| ())
@@ -346,6 +397,7 @@ pub(crate) async fn transition_after_stopping_preview<'a>(
 
 async fn transition_after_preview_cleanup<'a, Stop, Stopped>(
     app_state: &'a crate::state::AppState,
+    keep_handoff_candidate: bool,
     mut stop: Stop,
 ) -> Result<tokio::sync::MutexGuard<'a, ()>, String>
 where
@@ -355,7 +407,11 @@ where
     crate::smart_auto_probe::preempt();
     loop {
         let transition = app_state.recording_transition.lock().await;
-        let Some(preview_id) = app_state.microphone_preview.current_id() else {
+        let preview = &app_state.microphone_preview;
+        let Some(preview_id) = preview
+            .current_id()
+            .filter(|&id| !(keep_handoff_candidate && preview.handoff_candidate() == Some(id)))
+        else {
             crate::meeting_diarization::preempt()?;
             return Ok(transition);
         };
@@ -438,7 +494,7 @@ mod tests {
             let task_seen = stop_seen.clone();
             let task_teardown = teardown.clone();
             let task = tokio::spawn(async move {
-                let _transition = transition_after_preview_cleanup(&owned, |actual| {
+                let _transition = transition_after_preview_cleanup(&owned, false, |actual| {
                     let owned = owned.clone();
                     let seen = task_seen.clone();
                     let teardown = task_teardown.clone();
@@ -485,7 +541,7 @@ mod tests {
     async fn failed_preview_teardown_does_not_release_a_processing_transition() {
         let app_state = crate::state::AppState::default();
         let id = app_state.microphone_preview.claim_automatic().unwrap();
-        let result = transition_after_preview_cleanup(&app_state, |_| async {
+        let result = transition_after_preview_cleanup(&app_state, false, |_| async {
             Err("still recovering".into())
         })
         .await;
@@ -495,6 +551,114 @@ mod tests {
             app_state.dictation.lock_or_recover().status,
             DictationStatus::Idle
         );
+    }
+
+    #[tokio::test]
+    async fn dictation_start_keeps_only_a_flowing_visible_mic_test_for_handoff() {
+        let app_state = crate::state::AppState::default();
+        let preview = &app_state.microphone_preview;
+        let id = preview.claim(50).unwrap();
+        preview.set_phase_if(id, PreviewPhase::Active);
+        // A dictation start leaves it running for the supervisor to adopt.
+        let guard = transition_after_preview_cleanup(&app_state, true, |_| async {
+            panic!("a flowing mic test is handed over, not stopped")
+        })
+        .await
+        .unwrap();
+        assert!(preview.is_current(id));
+        drop(guard);
+
+        // Every other real pipeline still stops it first.
+        let stops = std::sync::atomic::AtomicUsize::new(0);
+        let _guard = transition_after_preview_cleanup(&app_state, false, |actual| {
+            stops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(actual, id);
+            preview.clear_if(actual);
+            async { Ok(()) }
+        })
+        .await
+        .unwrap();
+        assert_eq!(stops.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn dictation_start_still_stops_a_mic_test_it_cannot_take_over() {
+        for (automatic, phase) in [
+            (false, None),
+            (false, Some(PreviewPhase::Stopping)),
+            (true, Some(PreviewPhase::Active)),
+        ] {
+            let app_state = crate::state::AppState::default();
+            let preview = &app_state.microphone_preview;
+            let id = if automatic {
+                preview.claim_automatic().unwrap()
+            } else {
+                preview.claim(50).unwrap()
+            };
+            if let Some(phase) = phase {
+                preview.set_phase_if(id, phase);
+            }
+            let stops = std::sync::atomic::AtomicUsize::new(0);
+            let _guard = transition_after_preview_cleanup(&app_state, true, |actual| {
+                stops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                preview.clear_if(actual);
+                async { Ok(()) }
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                stops.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "{automatic} {phase:?}"
+            );
+            assert!(!preview.is_active());
+        }
+    }
+
+    #[tokio::test]
+    async fn mic_test_restart_waits_for_a_pending_key_down_gesture_instead_of_killing_it() {
+        let transition = tokio::sync::Mutex::new(());
+        let pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let observed = pending.clone();
+        let started = tokio::time::Instant::now();
+        let resolve = pending.clone();
+        let resolver = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            resolve.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+        let _guard = transition_after_key_down_resolves(
+            &transition,
+            || observed.load(std::sync::atomic::Ordering::SeqCst),
+            Duration::from_secs(2),
+        )
+        .await;
+        assert!(
+            started.elapsed() >= Duration::from_millis(60),
+            "waited for the gesture"
+        );
+        assert!(!pending.load(std::sync::atomic::Ordering::SeqCst));
+        resolver.await.unwrap();
+        drop(_guard);
+
+        // The transition is free while waiting, so the gesture's own confirmed
+        // start (or its discard) can take it.
+        let waiter = {
+            let transition = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+            let held = transition.clone();
+            let task = tokio::spawn(async move {
+                let _guard =
+                    transition_after_key_down_resolves(&held, || true, Duration::from_millis(80))
+                        .await;
+            });
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            assert!(transition.try_lock().is_ok(), "not held across the wait");
+            task
+        };
+        // Bounded: past the backstop it proceeds and the old supersession applies.
+        tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[test]

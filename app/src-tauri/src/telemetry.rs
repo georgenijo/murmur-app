@@ -256,6 +256,8 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "audio.speculative_capture_adopted" => Some("audio.speculative_capture_adopted"),
         "audio.speculative_capture_discarded" => Some("audio.speculative_capture_discarded"),
         "audio.speculative_capture_closed" => Some("audio.speculative_capture_closed"),
+        "audio.preview_handed_off" => Some("audio.preview_handed_off"),
+        "audio.preview_yielded" => Some("audio.preview_yielded"),
         "audio.capture_failed" => Some("audio.capture_failed"),
         "audio.lifecycle_failed" => Some("audio.lifecycle_failed"),
         "audio.permission_prompt_changed" => Some("audio.permission_prompt_changed"),
@@ -3780,6 +3782,8 @@ mod tests {
             "audio.speculative_capture_adopted",
             "audio.speculative_capture_discarded",
             "audio.speculative_capture_closed",
+            "audio.preview_handed_off",
+            "audio.preview_yielded",
             "keyboard.fn_capture_skipped",
             "keyboard.globe_companion_ignored",
         ] {

@@ -51,13 +51,22 @@ capture. It shows no UI and publishes no levels.
   keyboard listener's key-down stamp, not from supervisor acceptance, and a
   request that arrives after it has elapsed is never opened.
 
-- **Settings microphone test**: while the test owns the microphone, an Fn press
-  opens no key-down capture (`preview_active`); a confirmed dictation stops the
-  test as before and takes the ordinary start path. If the test starts while
-  an unconfirmed key-down capture is open, it supersedes that capture. A
-  dictation that wins the race pauses the test quietly ("Level monitoring
-  pauses…") rather than showing an error, and the test resumes when the
-  dictation ends.
+- **Settings microphone test**: an open test never delays a dictation or
+  clips its first word. When the visible test is flowing on the same input,
+  Fn key-down takes over its open device in place
+  (`audio.preview_handed_off`): no teardown, no reopen, and PCM from key-down.
+  From there the capture is an ordinary unconfirmed key-down capture: it is
+  adopted by its confirmed start or discarded with its samples. A confirmed
+  start with no key-down capture (any other trigger) adopts the flowing test
+  the same way. Nothing the test heard before the handoff is kept. A test that
+  is still connecting, stopping, failed, on another input, or an automatic
+  background check is not taken over: key-down keeps the `preview_active` skip
+  and the confirmed start stops the test (`audio.preview_yielded`) and opens
+  its input cold. A test that restarts while an unconfirmed key-down capture
+  is open waits for the gesture to resolve (bounded by the backstop) instead
+  of superseding it. A dictation that wins the race pauses the test quietly
+  ("Level monitoring pauses…") rather than showing an error, and the test
+  resumes when the dictation ends.
 - **Diagnostics**: `keyboard.fn_capture_skipped` carries the first blocking
   fact as `reason` (`listener_changed`, `processing_skipped`, `disabled`,
   `gesture_ended`, `permission_not_granted`, `dictation_busy`,

@@ -573,6 +573,9 @@ struct SpeculativeStartRequest {
     pressed_at: Instant,
     device_id: Option<String>,
     app_handle: Option<tauri::AppHandle>,
+    /// The interactive Settings preview this key-down capture may take over in
+    /// place, when the admission found it flowing (see `hand_preview_to`).
+    adopt_preview: Option<u64>,
     response: Sender<bool>,
 }
 
@@ -894,6 +897,33 @@ fn run_supervisor(
                                 "key-down capture refused; its backstop elapsed before admission"
                             );
                             let _ = request.response.send(false);
+                        } else if let Some(preview_id) = request.adopt_preview.filter(|&id| {
+                            pending_start.is_none()
+                                && !crate::keyboard::is_app_disabled()
+                                && attempt.as_ref().is_some_and(|a| {
+                                    preview_handoff_ready(a, id, &request.device_id)
+                                })
+                        }) {
+                            let current = attempt.as_mut().expect("handoff checked the attempt");
+                            hand_preview_to(
+                                current,
+                                PreviewHandoff::KeyDown {
+                                    id: request.id,
+                                    deadline: request.pressed_at
+                                        + speculative::SPECULATIVE_CAPTURE_TTL,
+                                },
+                                request.app_handle,
+                                sink.as_ref(),
+                                &public,
+                            );
+                            tracing::info!(target: "audio",
+                                event_code = "audio.speculative_capture_flowing",
+                                capture_id = request.id,
+                                preview_id,
+                                startup_ms = 0u64,
+                                "key-down capture took over the running microphone test"
+                            );
+                            let _ = request.response.send(true);
                         } else if attempt.is_none()
                             && pending_start.is_none()
                             && !crate::keyboard::is_app_disabled()
@@ -910,7 +940,11 @@ fn run_supervisor(
                             tracing::info!(target: "audio",
                                 event_code = "audio.speculative_capture_refused",
                                 capture_id = request.id,
-                                reason = "microphone_busy",
+                                reason = if request.adopt_preview.is_some() {
+                                    "preview_not_handed_off"
+                                } else {
+                                    "microphone_busy"
+                                },
                                 busy_owner = attempt
                                     .as_ref()
                                     .map(|a| a.owner.kind())
@@ -975,6 +1009,42 @@ fn run_supervisor(
                             );
                             // Runs cold only after the discarded worker's
                             // confirmed exit.
+                            pending_start = Some(request);
+                        }
+                        continue;
+                    }
+                    SupervisorMessage::Start(request)
+                        if pending_start.is_none()
+                            && request.owner.dictation_id().is_some()
+                            && attempt.as_ref().is_some_and(is_interactive_preview) =>
+                    {
+                        let current = attempt.as_mut().unwrap();
+                        let preview_id = current.owner.telemetry_id();
+                        if preview_handoff_ready(current, preview_id, &request.device_id) {
+                            hand_preview_to(
+                                current,
+                                PreviewHandoff::Dictation(&request),
+                                request.app_handle.clone(),
+                                sink.as_ref(),
+                                &public,
+                            );
+                            let _ = request.response.send(Ok(()));
+                        } else {
+                            // Not flowing yet, or another input: yield the
+                            // preview and start cold after its confirmed exit.
+                            tracing::info!(target: "audio",
+                                event_code = "audio.preview_yielded",
+                                preview_id,
+                                recording_id = request.owner.telemetry_id(),
+                                "microphone test stopped for a dictation it could not hand off to"
+                            );
+                            begin_recovery(
+                                &mut attempt,
+                                AudioCancelReason::User,
+                                sink.as_ref(),
+                                &public,
+                                None,
+                            );
                             pending_start = Some(request);
                         }
                         continue;
@@ -1618,6 +1688,160 @@ fn start_speculative(
         public.set_phase(PublicPhase::Speculative);
     }
     let _ = request.response.send(started);
+}
+
+/// A visible Settings microphone test that still owns its own worker (never an
+/// automatic background check) and is starting or flowing.
+fn is_interactive_preview(current: &Attempt) -> bool {
+    matches!(current.owner, AudioOwner::Preview(_))
+        && current.owner == current.worker_owner
+        && current.probe_permit.is_none()
+        && matches!(
+            current.phase,
+            AttemptPhase::Starting | AttemptPhase::Recording
+        )
+}
+
+/// Whether the exact preview's worker can be handed to dictation capture with
+/// no teardown: it is flowing on the same input under the current topology,
+/// and no stop has been accepted for it.
+fn preview_handoff_ready(current: &Attempt, preview_id: u64, device_id: &Option<String>) -> bool {
+    is_interactive_preview(current)
+        && current.owner == AudioOwner::Preview(preview_id)
+        && current.phase == AttemptPhase::Recording
+        && current.ready_at.is_some()
+        && current.stop_response.is_none()
+        && current.tail_deadline.is_none()
+        && current.device_id == *device_id
+        && current.input_topology_generation == INPUT_TOPOLOGY_GENERATION.load(Ordering::Acquire)
+}
+
+enum PreviewHandoff<'a> {
+    /// An Fn key-down capture: invisible and unconfirmed, adopted by its
+    /// confirmed start or discarded with its samples like any other.
+    KeyDown { id: u64, deadline: Instant },
+    /// A confirmed dictation start with no key-down capture of its own.
+    Dictation(&'a StartRequest),
+}
+
+/// Hand the running preview worker to dictation capture in place. The device
+/// stays open, so the new owner has PCM from this instant; nothing the preview
+/// saw is retained. The preview's claim ends here: its owner is replaced under
+/// the supervisor, and its `Idle` tells Settings the test has yielded. The
+/// worker exits only with its new owner, so there is never a second owner.
+fn hand_preview_to(
+    current: &mut Attempt,
+    handoff: PreviewHandoff<'_>,
+    app_handle: Option<tauri::AppHandle>,
+    sink: &dyn LifecycleSink,
+    public: &PublicState,
+) {
+    let preview = current.owner;
+    let preview_app_handle = current.app_handle.take();
+    current
+        .shared
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .begin_handoff_retention();
+    public.clear_owner(preview);
+    current.recording_stop_owner = None;
+    current.app_handle = app_handle;
+    current.accepted_at = Instant::now();
+    let preview_open_ms = current
+        .ready_at
+        .map(|ready| ready.elapsed().as_millis() as u64);
+    match handoff {
+        PreviewHandoff::KeyDown { id, deadline } => {
+            // Invisible until confirmed: no level meter, no diagnostic cursor.
+            current.active.store(false, Ordering::SeqCst);
+            *public
+                .diagnostic_cursor
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = None;
+            current.owner = AudioOwner::Speculative(id);
+            current.origin = "speculative".to_string();
+            current.gesture = None;
+            current.speculative = Some(SpeculativeAttempt { id, deadline });
+            current.phase = AttemptPhase::Speculative;
+            public.flowing_speculative.store(id, Ordering::SeqCst);
+            public.set_owner(current.owner);
+            public.set_phase(PublicPhase::Speculative);
+            sink.notify(
+                preview_app_handle.as_ref(),
+                preview,
+                AudioLifecycleEvent::Idle,
+            );
+        }
+        PreviewHandoff::Dictation(request) => {
+            current.owner = request.owner;
+            current.origin = request.origin.clone();
+            current.gesture = request.gesture.timing;
+            sink.notify(
+                preview_app_handle.as_ref(),
+                preview,
+                AudioLifecycleEvent::Idle,
+            );
+            sink.notify(
+                current.app_handle.as_ref(),
+                current.owner,
+                AudioLifecycleEvent::StartupDiagnostic(
+                    audio::AudioStartupDiagnostic::GestureAccepted {
+                        gesture_expected: request.gesture.expected,
+                        double_tap_expected: request.gesture.expected && current.origin == "toggle",
+                        press_to_accepted_ms: current.gesture.map(|g| {
+                            gesture::millis(
+                                g.accepted.saturating_duration_since(g.candidate.pressed),
+                            )
+                        }),
+                        double_tap_gap_ms: current.gesture.and_then(|g| g.gap_ms),
+                    },
+                ),
+            );
+            tracing::info!(
+                target: "audio",
+                event_code = "audio.capture_started",
+                recording_id = current.owner.telemetry_id(),
+                owner = current.owner.telemetry_id(),
+                owner_kind = current.owner.kind(),
+                origin = current.origin.as_str(),
+                preview_handoff = true,
+                "audio initialization accepted"
+            );
+            current.ready_at = Some(Instant::now());
+            current.phase = AttemptPhase::Recording;
+            current.active.store(true, Ordering::SeqCst);
+            *public
+                .diagnostic_cursor
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = Some((
+                current.owner,
+                Arc::clone(&current.shared),
+                current.sample_rate,
+            ));
+            public.set_owner(current.owner);
+            public.set_phase(PublicPhase::Recording);
+            publish_gesture_ready(current, sink, Instant::now());
+            sink.notify(
+                current.app_handle.as_ref(),
+                current.owner,
+                AudioLifecycleEvent::Accepted,
+            );
+            sink.notify(
+                current.app_handle.as_ref(),
+                current.owner,
+                AudioLifecycleEvent::Ready,
+            );
+            tracing::info!(target: "audio", event_code = "audio.capture_ready", recording_id = current.owner.telemetry_id(), owner_kind = current.owner.kind(), warm = true, preview_handoff = true, startup_ms = current.accepted_at.elapsed().as_millis() as u64, "microphone test PCM available at confirmed start");
+        }
+    }
+    tracing::info!(target: "audio",
+        event_code = "audio.preview_handed_off",
+        preview_id = preview.telemetry_id(),
+        owner_kind = current.owner.kind(),
+        owner = current.owner.telemetry_id(),
+        preview_open_ms,
+        "microphone test handed its open device to dictation capture"
+    );
 }
 
 /// The confirmed dictation start for the same Fn gesture takes over the
@@ -3176,6 +3400,7 @@ pub(crate) fn request_speculative_capture(
     pressed_at: Instant,
     device_id: Option<String>,
     app_handle: Option<tauri::AppHandle>,
+    adopt_preview: Option<u64>,
 ) -> Receiver<bool> {
     let (response, admitted) = mpsc::channel();
     let request = SpeculativeStartRequest {
@@ -3183,6 +3408,7 @@ pub(crate) fn request_speculative_capture(
         pressed_at,
         device_id,
         app_handle,
+        adopt_preview,
         response,
     };
     if let Err(mpsc::SendError(SupervisorMessage::SpeculativeStart(request))) = supervisor()
@@ -5436,6 +5662,10 @@ mod tests {
 
     mod capture_speculative_tests {
         include!("capture_speculative_tests.rs");
+    }
+
+    mod capture_preview_handoff_tests {
+        include!("capture_preview_handoff_tests.rs");
     }
 
     #[test]
