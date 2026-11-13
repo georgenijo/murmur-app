@@ -225,6 +225,7 @@ def validate_ci(ci: str) -> int:
         "tests/test_ci_rust_library.py",
         "tests/test_capture_agent_matrix.py",
         "tests/test_event_store.py",
+        "tests/test_dev_signing.py",
     ):
         assert marker in validation, marker
     capture_build = named_step_block(
@@ -628,6 +629,17 @@ def validate_promotion_policy(workflow: str) -> int:
     return len(publish_steps) + len(auto_cases)
 
 
+DEV_SIGNING_MARKERS = ("MURMUR_DEV_SIGNING_IDENTITY", "build_dev_bundle")
+
+
+def validate_dev_signing_isolation(workflows: dict[str, str]) -> int:
+    """Keep the opt-in dev signing identity out of CI and release paths."""
+    for name, workflow in workflows.items():
+        for marker in DEV_SIGNING_MARKERS:
+            assert marker not in workflow, f"{name} must not use dev signing ({marker})"
+    return len(workflows)
+
+
 def main() -> None:
     ci = CI_WORKFLOW.read_text()
     release_build = RELEASE_BUILD_WORKFLOW.read_text()
@@ -642,6 +654,12 @@ def main() -> None:
     validate_release_start(RELEASE_START_WORKFLOW.read_text())
     validate_ota_canary(OTA_CANARY_WORKFLOW.read_text())
     publication_steps = validate_promotion_policy(release)
+    validate_dev_signing_isolation(
+        {
+            path.name: path.read_text()
+            for path in sorted((ROOT / ".github/workflows").glob("*.yml"))
+        }
+    )
 
     print(
         "workflow policy validation passed "

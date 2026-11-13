@@ -70,13 +70,100 @@ depends on how you are running it:
 - **`npm run tauri:dev`** — grant them to your *terminal app* (Ghostty, iTerm,
   Terminal). Dev builds are re-signed on every rebuild, so granting the dev
   binary itself is futile. Restart the dev server after granting.
-- **A built `.app`** — grant them to the app itself.
+- **A built `.app`** — grant them to the app itself. To keep a dev bundle's
+  grants across rebuilds, sign it with a stable identity (see
+  [Stable signing for dev bundles](#stable-signing-for-dev-bundles)).
 
 The setup assistant hides its Microphone, Accessibility, and Calendar Reset
 buttons under `tauri:dev`: their `tccutil` commands target the running bundle
 identifier, which is not the terminal's permission identity. Recovery guidance
 instead points to the launching terminal in System Settings. For a built
 `.app`, the Reset actions remain available and target that app only.
+
+## Stable signing for dev bundles
+
+macOS saves each Microphone and Accessibility grant together with the app's
+*designated requirement*, a rule its code signature must keep satisfying.
+Ad-hoc signatures use the code hash as that rule, so every rebuild becomes a
+new app. macOS then prompts again, and System Settings keeps a switch for the
+old build that looks on but no longer applies. A certificate-backed signature
+uses a rule based on the bundle identifier and the certificate, which stays the
+same across rebuilds.
+
+`scripts/build_dev_bundle.py` builds the dev bundle (`Local Dictation Dev.app`,
+`com.localdictation.dev`) unsigned. It then signs every binary with the
+identity named by `MURMUR_DEV_SIGNING_IDENTITY`: the main app and the capture
+agent, helper and worker. Signing goes through the release finalizer, so each
+helper keeps its own entitlements and fixed identifier. If the variable is
+unset, set to `-`, or names no valid identity in the keychain, the script warns
+and signs ad-hoc as before. CI and the release workflows never read the
+variable, and the script refuses the production identifier.
+
+### Which certificate
+
+| Certificate | Grants survive rebuilds | Dictation in a release-profile dev bundle |
+|---|---|---|
+| **Apple Development** (recommended) | Yes | Yes |
+| Self-signed code-signing certificate | Yes, while you keep the same certificate | No, use `--debug` |
+| Ad-hoc (no identity) | No | No, use `--debug` |
+
+Release-profile builds check each bundled helper before they spawn it. The
+helper must chain to Apple and carry the main app's Team ID. A self-signed or
+ad-hoc signature has no Team ID, so dictation fails with `signature_invalid`.
+Debug-profile builds (`--debug`) skip that check. An Apple Development
+certificate passes the check and is free with any Apple ID, including a
+personal team. Developer ID would also work, but it is reserved for releases.
+
+### One-time setup
+
+1. Find an existing identity:
+
+   ```bash
+   security find-identity -v -p codesigning
+   ```
+
+   Look for a line such as
+   `"Apple Development: George Nijo (R99GZN6ALR)"`.
+2. If there is none, create one: Xcode → Settings → Accounts → add your Apple
+   ID → *Manage Certificates…* → **+** → *Apple Development*. Run the command
+   from step 1 again to confirm it is listed as valid.
+3. Export the variable in your shell profile. It accepts the full name, a
+   unique part of it, or the 40-character hash from step 1:
+
+   ```bash
+   export MURMUR_DEV_SIGNING_IDENTITY="Apple Development: George Nijo (R99GZN6ALR)"
+   ```
+
+4. Build from the repository root, in a Terminal on the Mac's desktop session.
+   The first signature may ask to use the key in your keychain; choose *Always
+   Allow*. Over SSH the login keychain is often locked, and signing fails.
+
+   ```bash
+   python3 scripts/build_dev_bundle.py --require-identity
+   ```
+
+   `--require-identity` fails instead of falling back to ad-hoc. Other options
+   are `--debug`, `--skip-helpers`, `--sign-only` (re-sign the last bundle),
+   and `--config app/src-tauri/tauri.refactor-test.conf.json` for the
+   refactor-test bundle. The script prints the Team ID and designated
+   requirement it produced, and the bundle path as `DEV_APP=…`.
+5. Clear the stale rows left by earlier ad-hoc builds once. Quit System
+   Settings first, because it keeps showing old rows until it reopens:
+
+   ```bash
+   tccutil reset Microphone com.localdictation.dev
+   tccutil reset Accessibility com.localdictation.dev
+   ```
+
+   Open System Settings → Privacy & Security → Accessibility. If a *Local
+   Dictation Dev* row is still listed, remove it with **−**. Launch the new
+   bundle and grant Microphone and Accessibility once. Later rebuilds signed
+   with the same identity keep both grants.
+
+Grants follow the bundle identifier and the certificate, not the file path.
+You can run the bundle from `target/` or copy it anywhere. A grant made under
+one identity does not carry over to another, so switching identities, or
+falling back to ad-hoc, means granting again.
 
 ## Project Structure
 
@@ -130,8 +217,11 @@ Structured JSONL rotates at 5 MB. In-app: **Settings → Performance**. See
 
 ### Permission prompt on every rebuild
 
-Dev builds get a different signature each time. Grant Accessibility to your
-terminal app instead of the dev binary. If its grant is stale, turn the
+An ad-hoc signed dev bundle gets a different signature on every build. Sign it
+with a stable identity instead (see
+[Stable signing for dev bundles](#stable-signing-for-dev-bundles)). Under
+`npm run tauri:dev`, grant Accessibility to your terminal app instead of the dev
+binary. If its grant is stale, turn the
 terminal's permission off and on under Privacy & Security, then restart the dev
 server. Use the same terminal identity for Microphone and optional Calendar
 access. The wizard's bundle-targeted Reset actions are hidden in development;

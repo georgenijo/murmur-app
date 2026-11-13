@@ -539,7 +539,7 @@ cd app && npx tsc --noEmit && npm test
 
 `tauri.macos.conf.json` declares the three capture-helper executables. Build them before `tauri dev`, `cargo check`, or `cargo test`. See [DEVELOPMENT.md](DEVELOPMENT.md).
 
-`tauri.dev.conf.json` overrides only `identifier` → `com.localdictation.dev` and `productName` → `Local Dictation Dev`, so dev installs alongside the release build.
+`tauri.dev.conf.json` overrides only `identifier` → `com.localdictation.dev` and `productName` → `Local Dictation Dev`, so dev installs alongside the release build. `scripts/build_dev_bundle.py` bundles it and signs every nested binary with the opt-in `MURMUR_DEV_SIGNING_IDENTITY`, falling back to ad-hoc, so macOS permission grants survive rebuilds ([DEVELOPMENT.md](DEVELOPMENT.md#stable-signing-for-dev-bundles)).
 
 ### Release pipeline
 

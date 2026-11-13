@@ -10,6 +10,7 @@ from scripts.validate_workflow_policy import (
     should_auto_promote,
     tag_action,
     validate_ci,
+    validate_dev_signing_isolation,
     validate_promotion_policy,
     validate_release_build,
     validate_release_rehearsal,
@@ -218,6 +219,30 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
                 self.assertNotEqual(workflow, mutated)
                 with self.assertRaises(AssertionError):
                     validate_ci(mutated)
+
+    def test_ci_runs_dev_signing_tests(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        mutated = workflow.replace("            tests/test_dev_signing.py \\\n", "", 1)
+        self.assertNotEqual(workflow, mutated)
+        with self.assertRaises(AssertionError):
+            validate_ci(mutated)
+
+    def test_workflows_never_use_dev_signing(self) -> None:
+        workflows = {
+            path.name: path.read_text()
+            for path in sorted((ROOT / ".github/workflows").glob("*.yml"))
+        }
+        self.assertIn("release-build.yml", workflows)
+        self.assertEqual(validate_dev_signing_isolation(workflows), len(workflows))
+        for marker in (
+            "          MURMUR_DEV_SIGNING_IDENTITY: x\n",
+            "          python3 scripts/build_dev_bundle.py\n",
+        ):
+            for name in ("release-build.yml", "release-rehearsal.yml", "release.yml", "ci.yml"):
+                with self.subTest(workflow=name, marker=marker.strip()):
+                    mutated = {**workflows, name: workflows[name] + marker}
+                    with self.assertRaises(AssertionError):
+                        validate_dev_signing_isolation(mutated)
 
     def test_ci_installs_pinned_python_test_dependencies(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
