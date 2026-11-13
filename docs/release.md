@@ -58,6 +58,15 @@ preparation job. Missing or expired credentials fail without publishing.
 - Release-profile Cargo cache writes are authorized only for trusted `main`
   pushes or a manually dispatched cache-prime rehearsal. Pull requests restore
   default-branch caches but never save release-profile caches.
+- Every job that restores a release-profile Cargo cache (`Release Build` and
+  `Release Rehearsal`) runs **Refresh sherpa-onnx native libraries** right after
+  the restore. The cache action prunes `target/sherpa-onnx-prebuilt` but keeps
+  the `sherpa-onnx-sys` build fingerprint, so a partial cache hit can fail the
+  build with `could not find native static library sherpa-onnx-c-api`. The step
+  deletes that directory and runs `cargo clean --release -p sherpa-onnx-sys`
+  (`--release` is required; the plain form only cleans the dev profile), so the
+  libraries are downloaded fresh on every run. The cache never keeps them, so
+  the step must stay. The policy validator enforces this step and its position.
 - No release workflow uses a self-hosted runner. In particular, pull-request
   code is never sent to a Mac Mini or other signing/release host.
 

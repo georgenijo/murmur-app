@@ -72,6 +72,24 @@ def named_step_block(text: str, name: str, indent: int) -> str:
     return text[start:next_step]
 
 
+def validate_sherpa_refresh(job: str, build_marker: str) -> None:
+    """A release-profile Rust cache restore must be followed by the sherpa guard.
+
+    rust-cache can restore a partial hit that keeps the sherpa-onnx-sys build
+    fingerprint but not its native libraries, failing the build with "could not
+    find native static library". The guard has to run after the restore and
+    before the first step that compiles the application.
+    """
+    guard = named_step_block(job, "Refresh sherpa-onnx native libraries", 6)
+    assert "cd app/src-tauri" in guard
+    assert "rm -rf target/sherpa-onnx-prebuilt" in guard
+    # Release builds use the release profile; plain `cargo clean -p` only
+    # cleans the dev profile and would leave the stale fingerprint in place.
+    assert "cargo clean --release -p sherpa-onnx-sys" in guard
+    restore = job.index("uses: swatinem/rust-cache@v2")
+    assert restore < job.index(guard) < job.index(build_marker)
+
+
 def should_run_ci(event_name: str, head_commit_message: Optional[str]) -> bool:
     return event_name != "push" or not (head_commit_message or "").startswith(
         "chore: bump version"
@@ -378,6 +396,9 @@ def validate_release_build(workflow: str) -> int:
     assert "Print :CFBundleExecutable" in workflow
     assert '$(ls "$APP/Contents/MacOS/" | head -1)' not in workflow
     assert workflow.count("${{ needs.context.outputs.cache-write == 'true' }}") == 1
+    validate_sherpa_refresh(
+        job_block(workflow, "release-macos"), "- name: Build capture helpers"
+    )
 
     cases = (
         ("push", "chore: bump version to 0.17.0", True),
@@ -430,6 +451,9 @@ def validate_release_rehearsal(workflow: str) -> int:
     )
     assert "macos-release-v1" not in workflow
     assert "macos-release-v2" not in workflow
+    validate_sherpa_refresh(
+        job_block(workflow, "rehearse-macos"), "- name: Build capture helpers"
+    )
     assert workflow.count("--no-sign") == 1
     assert '"proxy": "unsigned-release-build"' in workflow
     assert '"workflow_sha": os.environ["WORKFLOW_SHA"]' in workflow
