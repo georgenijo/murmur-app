@@ -55,21 +55,49 @@ class IdentitySelectionTests(unittest.TestCase):
             DEVELOPMENT,
         )
 
-    def test_missing_identity_falls_back_to_ad_hoc(self) -> None:
-        selection = dev.select_identity("Murmur Dev Self-Signed", IDENTITIES)
-        self.assertTrue(selection.ad_hoc)
-        self.assertIn("falling back to ad-hoc", selection.reason)
-        self.assertTrue(dev.select_identity("A" * 40, IDENTITIES).ad_hoc)
+    def test_set_but_missing_identity_is_an_error(self) -> None:
+        # A typo, or the certificate expiring, must not quietly sign ad-hoc.
+        for requested in ("Murmur Dev Self-Signed", "Apple Developmnet", "A" * 40):
+            with self.subTest(requested=requested):
+                with self.assertRaisesRegex(dev.DevSigningError, "matches no valid"):
+                    dev.select_identity(requested, IDENTITIES)
+        expired = [identity for identity in IDENTITIES if "Development" not in identity.name]
+        with self.assertRaisesRegex(dev.DevSigningError, "expired or missing"):
+            dev.select_identity("Apple Development", expired)
+        with self.assertRaisesRegex(dev.DevSigningError, "matches no valid"):
+            dev.select_identity("Apple Development", [])
 
-    def test_unreadable_keychain_falls_back_to_ad_hoc(self) -> None:
-        selection = dev.select_identity("Apple Development", None)
-        self.assertTrue(selection.ad_hoc)
-        self.assertIn("could not be queried", selection.reason)
+    def test_set_but_unreadable_keychain_is_an_error(self) -> None:
+        with self.assertRaisesRegex(dev.DevSigningError, "could not be queried"):
+            dev.select_identity("Apple Development", None)
 
-    def test_require_identity_refuses_fallback(self) -> None:
-        for requested in (None, "Murmur Dev Self-Signed"):
-            with self.assertRaises(dev.DevSigningError):
-                dev.select_identity(requested, IDENTITIES, require=True)
+    def test_unset_with_unreadable_keychain_is_ad_hoc(self) -> None:
+        self.assertTrue(dev.select_identity(None, None).ad_hoc)
+
+    def test_require_identity_refuses_unset(self) -> None:
+        for requested in (None, "", "-"):
+            with self.subTest(requested=requested):
+                with self.assertRaisesRegex(dev.DevSigningError, "--require-identity"):
+                    dev.select_identity(requested, IDENTITIES, require=True)
+        self.assertEqual(
+            dev.select_identity("Apple Development", IDENTITIES, require=True).codesign_identity,
+            DEVELOPMENT,
+        )
+
+    def test_release_identities_are_refused(self) -> None:
+        for requested in (
+            "Developer ID",
+            "Developer ID Application: George Nijo (P2U3P8B923)",
+            DEVELOPER_ID,
+            "Apple Distribution",
+            "22EC3AA931CA33E65CDB872A7F031D0053B84AE9",
+        ):
+            with self.subTest(requested=requested):
+                with self.assertRaisesRegex(dev.DevSigningError, "release identity"):
+                    dev.select_identity(requested, IDENTITIES)
+        installer = [dev.Identity("E" * 40, "3rd Party Mac Developer Application: X (ABCDE12345)")]
+        with self.assertRaisesRegex(dev.DevSigningError, "release identity"):
+            dev.select_identity("3rd Party", installer)
 
     def test_ambiguous_identity_is_an_error(self) -> None:
         with self.assertRaisesRegex(dev.DevSigningError, "several identities"):
@@ -239,30 +267,49 @@ class MainFlowTests(unittest.TestCase):
             [Path(path).name for path in signed], ["murmur", *dev.BUNDLED_EXECUTABLES]
         )
 
-    def test_unset_variable_builds_ad_hoc(self) -> None:
-        runner = FakeRunner(keychain=FIND_IDENTITY, team=None)
-        code, out, err = self.run_main(runner)
-        self.assertEqual(code, 0)
-        self.assertEqual(self.finalize_identity(runner), "-")
-        self.assertIn("ad-hoc", out)
-        self.assertIn("signature_invalid", err)
-
-    def test_missing_identity_and_missing_security_tool_build_ad_hoc(self) -> None:
+    def test_unset_variable_builds_ad_hoc_and_warns_after_the_build(self) -> None:
         for keychain in (FIND_IDENTITY, None):
             runner = FakeRunner(keychain=keychain, team=None)
-            env = {**self.env, dev.IDENTITY_ENV: "Murmur Dev Self-Signed"}
-            code, out, _ = self.run_main(runner, "--skip-helpers", env=env)
+            code, out, err = self.run_main(runner, "--skip-helpers")
             self.assertEqual(code, 0)
             self.assertEqual(self.finalize_identity(runner), "-")
-            self.assertIn("falling back to ad-hoc", out)
+            self.assertIn("ad-hoc", out)
+            self.assertIn("signature_invalid", err)
+            self.assertIn("will not survive the next rebuild", err)
             self.assertFalse(
                 any(c[1].endswith("build_capture_helpers.py") for c in runner.commands)
             )
 
-    def test_require_identity_stops_before_building(self) -> None:
+    def test_debug_ad_hoc_build_still_warns_after_the_build(self) -> None:
+        debug_app = Path(self.temp.name) / "debug/bundle/macos/Local Dictation Dev.app"
+        (debug_app / "Contents/MacOS").mkdir(parents=True)
+        with (debug_app / "Contents/Info.plist").open("wb") as handle:
+            plistlib.dump({"CFBundleExecutable": "murmur"}, handle)
         runner = FakeRunner(keychain=FIND_IDENTITY, team=None)
-        env = {**self.env, dev.IDENTITY_ENV: "Murmur Dev Self-Signed"}
-        code, _, err = self.run_main(runner, "--require-identity", env=env)
+        code, _, err = self.run_main(runner, "--debug")
+        self.assertEqual(code, 0)
+        self.assertNotIn("signature_invalid", err)
+        self.assertIn("will not survive the next rebuild", err)
+
+    def test_set_but_unresolvable_identity_stops_before_building(self) -> None:
+        cases = (
+            (FIND_IDENTITY, "Murmur Dev Self-Signed", "matches no valid"),
+            (None, "Apple Development", "could not be queried"),
+            (FIND_IDENTITY, "George Nijo", "several identities"),
+            (FIND_IDENTITY, "Developer ID", "release identity"),
+        )
+        for keychain, requested, message in cases:
+            with self.subTest(requested=requested, keychain=keychain is not None):
+                runner = FakeRunner(keychain=keychain, team=None)
+                env = {**self.env, dev.IDENTITY_ENV: requested}
+                code, _, err = self.run_main(runner, env=env)
+                self.assertEqual(code, 2)
+                self.assertIn(message, err)
+                self.assertEqual([c[0] for c in runner.commands], ["security"])
+
+    def test_require_identity_stops_unset_build(self) -> None:
+        runner = FakeRunner(keychain=FIND_IDENTITY, team=None)
+        code, _, err = self.run_main(runner, "--require-identity")
         self.assertEqual(code, 2)
         self.assertIn("--require-identity", err)
         self.assertEqual([c[0] for c in runner.commands], ["security"])

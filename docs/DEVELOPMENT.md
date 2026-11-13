@@ -95,9 +95,13 @@ same across rebuilds.
 identity named by `MURMUR_DEV_SIGNING_IDENTITY`: the main app and the capture
 agent, helper and worker. Signing goes through the release finalizer, so each
 helper keeps its own entitlements and fixed identifier. If the variable is
-unset, set to `-`, or names no valid identity in the keychain, the script warns
-and signs ad-hoc as before. CI and the release workflows never read the
-variable, and the script refuses the production identifier.
+unset, empty, or `-`, the script signs ad-hoc as before and warns before and
+after the build. If it is set but matches no valid identity, matches several,
+or the keychain cannot be read, the script stops before building. A quiet
+ad-hoc fallback would lose the grants again, for example after a typo or once
+the certificate expires. CI and the release workflows never read the variable.
+The script refuses the production identifier and release identities
+(Developer ID, Apple Distribution).
 
 ### Which certificate
 
@@ -112,7 +116,8 @@ helper must chain to Apple and carry the main app's Team ID. A self-signed or
 ad-hoc signature has no Team ID, so dictation fails with `signature_invalid`.
 Debug-profile builds (`--debug`) skip that check. An Apple Development
 certificate passes the check and is free with any Apple ID, including a
-personal team. Developer ID would also work, but it is reserved for releases.
+personal team. Developer ID would also pass, but it is reserved for releases,
+so the script refuses it.
 
 ### One-time setup
 
@@ -142,11 +147,15 @@ personal team. Developer ID would also work, but it is reserved for releases.
    python3 scripts/build_dev_bundle.py --require-identity
    ```
 
-   `--require-identity` fails instead of falling back to ad-hoc. Other options
+   `--require-identity` also fails when the variable is unset. Other options
    are `--debug`, `--skip-helpers`, `--sign-only` (re-sign the last bundle),
    and `--config app/src-tauri/tauri.refactor-test.conf.json` for the
    refactor-test bundle. The script prints the Team ID and designated
    requirement it produced, and the bundle path as `DEV_APP=…`.
+
+   Certificate signing adds a secure timestamp, so the build needs network
+   access to Apple's timestamp service (`timestamp.apple.com`). Offline,
+   codesign fails; build ad-hoc meanwhile by unsetting the variable.
 5. Clear the stale rows left by earlier ad-hoc builds once. Quit System
    Settings first, because it keeps showing old rows until it reopens:
 
@@ -156,14 +165,43 @@ personal team. Developer ID would also work, but it is reserved for releases.
    ```
 
    Open System Settings → Privacy & Security → Accessibility. If a *Local
-   Dictation Dev* row is still listed, remove it with **−**. Launch the new
-   bundle and grant Microphone and Accessibility once. Later rebuilds signed
-   with the same identity keep both grants.
+   Dictation Dev* row is still listed, remove it with **−**. Start the new
+   bundle with `open "$DEV_APP"` (or from Finder) and grant Microphone and
+   Accessibility once. Do not run `Contents/MacOS/…` from Terminal: Terminal
+   then becomes the responsible process, and macOS checks Terminal's grants
+   instead of the bundle's. Later rebuilds signed with the same identity keep
+   both grants.
 
 Grants follow the bundle identifier and the certificate, not the file path.
 You can run the bundle from `target/` or copy it anywhere. A grant made under
 one identity does not carry over to another, so switching identities, or
 falling back to ad-hoc, means granting again.
+
+### Shared helper identifiers
+
+The finalizer gives the dev bundle's helpers the same signing identifiers as
+production's, `com.localdictation.capture-agent`, `-helper` and `-worker`. It
+also gives them the same app-sandbox entitlement, and the same launchd label
+and Mach service, `com.localdictation.capture-agent.xpc`. The identifiers are
+hard-coded in the Rust and Swift validation code, so a dev bundle cannot
+change them yet. Two consequences on a Mac that also runs
+`/Applications/Murmur.app`:
+
+- Dev and production helpers share the sandbox containers
+  `~/Library/Containers/com.localdictation.capture-*`. Since macOS 14 each
+  container records the code identity that owns it, and macOS asks before
+  other code may use it. Apple's guidance is that code signed by the same Team
+  ID counts as the same owner, while ad-hoc code can never be recognised and
+  always triggers the warning. An Apple Development dev bundle on team
+  `P2U3P8B923` should therefore share production's containers without a
+  prompt. An ad-hoc dev bundle may prompt, or fail to start a helper. The
+  helper and agent sources write no files; they exchange audio with the app
+  over pipes and XPC. So a shared container passes no data between dev and
+  production.
+- Normal launches never register the capture agent with launchd. Only the
+  `--capture-agent-service register` probe does. Do not run that probe from a
+  dev bundle on a Mac where production has registered its agent, because both
+  use one label.
 
 ## Project Structure
 

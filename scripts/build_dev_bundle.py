@@ -8,9 +8,12 @@ keychain identity gives every rebuild the same requirement, so grants survive.
 
 Set ``MURMUR_DEV_SIGNING_IDENTITY`` to a code-signing identity name, a unique
 part of one, or its SHA-1 hash (see ``security find-identity -v -p
-codesigning``). When it is unset, ``-``, or not a valid identity in the
-keychain, the bundle is ad-hoc signed as before. ``--require-identity`` turns
-the missing-identity fallback into an error.
+codesigning``). When it is unset, empty, or ``-``, the bundle is ad-hoc
+signed as before; ``--require-identity`` makes that an error too. When it is
+set but does not resolve to exactly one valid identity (a typo, an expired
+certificate, an unreadable keychain), the script fails rather than quietly
+signing ad-hoc: an ad-hoc build would lose the grants the stable identity
+kept. Release identities (Developer ID, Apple Distribution) are refused.
 
 The bundle is built unsigned and signed by ``finalize_macos_bundle.py``, the
 same finalizer the release uses, so every nested binary gets its own
@@ -49,6 +52,15 @@ BUNDLED_EXECUTABLES = (
 _IDENTITY_LINE = re.compile(r'^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"(.+)"\s*$')
 _SHA1 = re.compile(r"^[0-9A-Fa-f]{40}$")
 _TEAM_ID = re.compile(r"^[A-Z0-9]{10}$")
+# Distribution identities belong to the release workflow, never a dev bundle.
+RELEASE_IDENTITY_PREFIXES = (
+    "Developer ID Application:",
+    "Developer ID Installer:",
+    "Apple Distribution:",
+    "3rd Party Mac Developer Application:",
+    "3rd Party Mac Developer Installer:",
+    "Mac Developer Application:",
+)
 
 
 class DevSigningError(Exception):
@@ -96,6 +108,11 @@ def select_identity(
     follows codesign: a full SHA-1 hash, an exact name, or a unique substring of
     a name. The selection always names the matched certificate by hash so that
     codesign cannot pick a different certificate with the same name.
+
+    Only an unset, empty, or ``-`` value selects ad-hoc. A value that is set
+    but unresolvable is an error: falling back would sign ad-hoc, macOS would
+    store the next grant against that build's code hash, and the grants the
+    stable identity kept would be lost again.
     """
     value = (requested or "").strip()
     if not value or value == AD_HOC:
@@ -105,16 +122,17 @@ def select_identity(
             )
         return Selection(AD_HOC, "ad-hoc", f"{IDENTITY_ENV} is not set")
 
+    unset_hint = f"Unset {IDENTITY_ENV} (or set it to -) to build ad-hoc on purpose."
     if identities is None:
-        matches: list[Identity] = []
-        reason = "the keychain could not be queried"
-    elif _SHA1.match(value):
+        raise DevSigningError(
+            f"{IDENTITY_ENV}={value!r} is set but the keychain could not be queried "
+            f"(security find-identity failed). {unset_hint}"
+        )
+    if _SHA1.match(value):
         matches = [identity for identity in identities if identity.sha1 == value.upper()]
-        reason = f"no valid code-signing identity has hash {value}"
     else:
         exact = [identity for identity in identities if identity.name == value]
         matches = exact or [identity for identity in identities if value in identity.name]
-        reason = f"no valid code-signing identity matches {value!r}"
 
     unique = {identity.sha1: identity for identity in matches}
     if len(unique) > 1:
@@ -126,10 +144,17 @@ def select_identity(
             f"set it to one hash: {choices}"
         )
     if not unique:
-        if require:
-            raise DevSigningError(f"{reason}; --require-identity forbids ad-hoc fallback")
-        return Selection(AD_HOC, "ad-hoc", f"{reason}; falling back to ad-hoc")
+        raise DevSigningError(
+            f"{IDENTITY_ENV}={value!r} matches no valid code-signing identity "
+            "(typo, expired or missing certificate?). Check "
+            f"`security find-identity -v -p codesigning`. {unset_hint}"
+        )
     identity = next(iter(unique.values()))
+    if identity.name.startswith(RELEASE_IDENTITY_PREFIXES):
+        raise DevSigningError(
+            f"{IDENTITY_ENV}={value!r} selects the release identity {identity.name!r}; "
+            "dev bundles use an Apple Development identity."
+        )
     return Selection(identity.sha1, f"{identity.name} ({identity.sha1})", f"{IDENTITY_ENV}")
 
 
@@ -300,7 +325,7 @@ def main(
     parser.add_argument(
         "--require-identity",
         action="store_true",
-        help=f"fail instead of falling back to ad-hoc when {IDENTITY_ENV} does not resolve",
+        help=f"fail instead of building ad-hoc when {IDENTITY_ENV} is unset",
     )
     parser.add_argument(
         "--sign-only",
@@ -354,6 +379,13 @@ def main(
     requirement = designated_requirement(signature_text(run, ["-d", "-r-", str(app)]))
     print(f"team id: {teams[main_name] or 'none'}")
     print(f"designated requirement: {requirement or 'unknown'}")
+    if selection.ad_hoc:
+        # Repeat after the long build output so an ad-hoc result is not missed.
+        print(
+            f"warning: {app.name} is ad-hoc signed; macOS permission grants will not "
+            "survive the next rebuild",
+            file=sys.stderr,
+        )
     print(f"DEV_APP={app}")
     return 0
 
