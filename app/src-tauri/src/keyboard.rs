@@ -765,6 +765,13 @@ impl HoldDownDetector {
         self.last_stopped_at = Some(Instant::now());
     }
 
+    /// Both mode: the `KeyDuringHold` key ends a hold promoted over another
+    /// recording after all, so it was not an ignored key.
+    fn end_hold_on_key(&mut self) {
+        self.ignored_keys = self.ignored_keys.saturating_sub(1);
+        self.end_hold();
+    }
+
     /// Escape: end any hold and treat the trigger's coming release as a no-op.
     fn escape(&mut self) {
         self.end_hold();
@@ -2350,7 +2357,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                                             RejectionReason::ComboCancelled,
                                             &event.event_type,
                                         );
-                                        d.end_hold();
+                                        d.end_hold_on_key();
                                     }
                                     HOLD_PROMOTION.finish(|promoted| {
                                         if promoted.is_some() {
@@ -4034,7 +4041,7 @@ mod tests {
             HoldDownEvent::KeyDuringHold => {
                 let promotion = promoted.then_some(over_recording);
                 if key_during_hold_ends_hold(promotion) {
-                    hold.end_hold();
+                    hold.end_hold_on_key();
                     emitted.push(BothEmit::HoldOverRecordingEnd);
                 }
             }
@@ -4249,6 +4256,7 @@ mod tests {
             both_handle_event_over(&mut hold, &mut dtap, &press(Key::Space), true, true),
             vec![BothEmit::HoldOverRecordingEnd]
         );
+        assert_eq!(hold.take_ignored_summary(), None, "the key ended the hold");
         assert!(
             both_handle_event_over(&mut hold, &mut dtap, &release(trigger), true, true).is_empty()
         );
