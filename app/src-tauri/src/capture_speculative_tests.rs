@@ -107,7 +107,7 @@ fn open_pressed(supervisor: &AudioSupervisor, id: u64, device_id: Option<&str>, 
     let (response, admitted) = mpsc::channel();
     supervisor
         .sender
-        .send(SupervisorMessage::SpeculativeStart(SpeculativeStartRequest { id, pressed_at, device_id: device_id.map(str::to_string), app_handle: None, response }))
+        .send(SupervisorMessage::SpeculativeStart(SpeculativeStartRequest { id, pressed_at, device_id: device_id.map(str::to_string), app_handle: None, adopt_preview: None, response }))
         .unwrap();
     admitted.recv_timeout(Duration::from_secs(1)).unwrap()
 }

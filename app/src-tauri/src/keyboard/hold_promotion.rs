@@ -52,6 +52,14 @@ impl HoldPromotion {
         true
     }
 
+    /// The current press's promotion: `Some(over_recording)` once promoted.
+    pub(super) fn promoted(&self) -> Option<bool> {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .promoted
+    }
+
     pub(super) fn finish<T>(&self, publish: impl FnOnce(Option<bool>) -> T) -> T {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.sequence = state.sequence.wrapping_add(1);

@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Typing while holding the dictation trigger no longer ends the dictation
+  (#1109). Space is ignored as soon as the recording starts, and any other key
+  once the hold has lasted one second; only releasing the trigger stops the
+  recording. Another key in the first second still ends the hold, so a slow
+  chord such as Shift+arrow selection or Fn+arrow navigation ends the short
+  recording it started instead of running on. Double-tap recordings already
+  ignored typed keys. Known limit: if the trigger's release is missed, typing
+  no longer ends the hold; tap the trigger, or press Escape to discard the
+  recording.
+
 ## [0.66.0] - 2026-11-12
 
 <!-- Release notes generated using configuration in .github/release.yml at 0ffda8cb1c1b8af33195289ae821c8327d4d585b -->

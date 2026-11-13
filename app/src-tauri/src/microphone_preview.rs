@@ -80,6 +80,10 @@ pub struct MicrophonePreviewStatus {
 
 pub(crate) struct MicrophonePreviewState {
     next_id: AtomicU64,
+    /// Bumped whenever Settings leaves or hides while a test start may still be
+    /// waiting (for example on a pending Fn key-down gesture). A start that
+    /// began under an older value never claims the microphone.
+    start_revocations: AtomicU64,
     inner: Mutex<PreviewInner>,
     changed: Notify,
 }
@@ -88,6 +92,7 @@ impl Default for MicrophonePreviewState {
     fn default() -> Self {
         Self {
             next_id: AtomicU64::new(0),
+            start_revocations: AtomicU64::new(0),
             inner: Mutex::new(PreviewInner::default()),
             changed: Notify::new(),
         }
@@ -103,6 +108,21 @@ impl MicrophonePreviewState {
 
     pub(crate) fn claim(&self, vad_sensitivity: u32) -> Result<u64, String> {
         self.claim_for(vad_sensitivity, false)
+    }
+
+    /// The revocation generation a test start captures before it waits.
+    pub(crate) fn start_generation(&self) -> u64 {
+        self.start_revocations.load(Ordering::SeqCst)
+    }
+
+    /// Settings left or hid: no start captured before now may claim the mic.
+    pub(crate) fn revoke_pending_starts(&self) {
+        self.start_revocations.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Whether a start that captured `generation` was revoked since.
+    pub(crate) fn start_revoked(&self, generation: u64) -> bool {
+        self.start_generation() != generation
     }
 
     pub(crate) fn claim_automatic(&self) -> Result<u64, String> {
@@ -263,6 +283,18 @@ impl MicrophonePreviewState {
 
     pub(crate) fn is_active(&self) -> bool {
         self.inner().active.is_some()
+    }
+
+    /// The visible microphone test a dictation may take over in place: it is
+    /// flowing, healthy, and no stop has begun. Background checks never are.
+    pub(crate) fn handoff_candidate(&self) -> Option<u64> {
+        self.inner()
+            .active
+            .as_ref()
+            .filter(|active| {
+                !active.automatic && active.phase == PreviewPhase::Active && active.error.is_none()
+            })
+            .map(|active| active.id)
     }
 
     pub(crate) fn is_current(&self, preview_id: u64) -> bool {
@@ -833,6 +865,38 @@ impl PreviewLevelTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_flowing_visible_test_can_be_handed_to_a_dictation() {
+        let state = MicrophonePreviewState::default();
+        assert_eq!(state.handoff_candidate(), None);
+        let id = state.claim(50).unwrap();
+        assert_eq!(
+            state.handoff_candidate(),
+            None,
+            "still connecting: nothing to hand over"
+        );
+        state.set_phase_if(id, PreviewPhase::Active);
+        assert_eq!(state.handoff_candidate(), Some(id));
+        state.set_phase_if(id, PreviewPhase::Stopping);
+        assert_eq!(state.handoff_candidate(), None, "a stop has begun");
+        state.set_phase_if(id, PreviewPhase::Active);
+        state.set_error_if(id, "stream_interrupted", "stopped");
+        assert_eq!(
+            state.handoff_candidate(),
+            None,
+            "a failed test is not handed over"
+        );
+        assert!(state.clear_if(id));
+
+        let automatic = state.claim_automatic().unwrap();
+        state.set_phase_if(automatic, PreviewPhase::Active);
+        assert_eq!(
+            state.handoff_candidate(),
+            None,
+            "background checks are never handed over"
+        );
+    }
 
     #[tokio::test]
     async fn automatic_preview_keeps_exact_owner_until_teardown_and_hides_interactive_meter() {

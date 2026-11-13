@@ -302,6 +302,7 @@ fn spawn_open(
             return;
         };
         let mut refusal = None;
+        let mut adopt_preview = None;
         let Some(_transition) = crate::audio::prepare::admission_transition(
             &state.app_state.recording_transition,
             || {
@@ -311,7 +312,15 @@ fn spawn_open(
                     APP_DISABLED.load(Ordering::SeqCst),
                     TRACKER.lock_or_recover().is_active(id),
                     &crate::commands::permissions::check_microphone_permission_status(),
-                    || crate::commands::recording::dictation_prepare_refusal(&state),
+                    || match crate::commands::recording::key_down_capture_admission(&state) {
+                        // An open Settings microphone test is taken over in
+                        // place under this same transition, never skipped.
+                        Ok(preview) => {
+                            adopt_preview = preview;
+                            None
+                        }
+                        Err(reason) => Some(reason),
+                    },
                 );
                 refusal.is_none()
             },
@@ -343,6 +352,7 @@ fn spawn_open(
                 pressed_at,
                 device_id,
                 Some(handle.clone()),
+                adopt_preview,
             )
         };
         // Hold the transition until the supervisor has published ownership,

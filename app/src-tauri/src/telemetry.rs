@@ -238,6 +238,8 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "keyboard.listener_failed" => Some("keyboard.listener_failed"),
         "keyboard.escape_cancel" => Some("keyboard.escape_cancel"),
         "keyboard.hotkey_arming_cancelled" => Some("keyboard.hotkey_arming_cancelled"),
+        "keyboard.hold_key_ignored" => Some("keyboard.hold_key_ignored"),
+        "keyboard.hold_keys_ignored_summary" => Some("keyboard.hold_keys_ignored_summary"),
         "keyboard.fn_capture_skipped" => Some("keyboard.fn_capture_skipped"),
         "keyboard.globe_companion_ignored" => Some("keyboard.globe_companion_ignored"),
         "audio.capture_backend_timeout" => Some("audio.capture_backend_timeout"),
@@ -256,6 +258,8 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "audio.speculative_capture_adopted" => Some("audio.speculative_capture_adopted"),
         "audio.speculative_capture_discarded" => Some("audio.speculative_capture_discarded"),
         "audio.speculative_capture_closed" => Some("audio.speculative_capture_closed"),
+        "audio.preview_handed_off" => Some("audio.preview_handed_off"),
+        "audio.preview_yielded" => Some("audio.preview_yielded"),
         "audio.capture_failed" => Some("audio.capture_failed"),
         "audio.output_quieting" => Some("audio.output_quieting"),
         "audio.lifecycle_failed" => Some("audio.lifecycle_failed"),
@@ -3781,8 +3785,12 @@ mod tests {
             "audio.speculative_capture_adopted",
             "audio.speculative_capture_discarded",
             "audio.speculative_capture_closed",
+            "audio.preview_handed_off",
+            "audio.preview_yielded",
             "keyboard.fn_capture_skipped",
             "keyboard.globe_companion_ignored",
+            "keyboard.hold_key_ignored",
+            "keyboard.hold_keys_ignored_summary",
         ] {
             assert_eq!(canonical_event_code(code), Some(code));
             let data = serde_json::json!({"event_code": code, "capture_id": 4});
