@@ -257,6 +257,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "audio.speculative_capture_discarded" => Some("audio.speculative_capture_discarded"),
         "audio.speculative_capture_closed" => Some("audio.speculative_capture_closed"),
         "audio.capture_failed" => Some("audio.capture_failed"),
+        "audio.output_quieting" => Some("audio.output_quieting"),
         "audio.lifecycle_failed" => Some("audio.lifecycle_failed"),
         "audio.permission_prompt_changed" => Some("audio.permission_prompt_changed"),
         "pipeline.dictation_requested" => Some("pipeline.dictation_requested"),
@@ -3790,6 +3791,23 @@ mod tests {
                 code
             );
         }
+    }
+
+    #[test]
+    fn output_quieting_code_survives_release_summaries() {
+        let code = "audio.output_quieting";
+        assert_eq!(canonical_event_code(code), Some(code));
+        let data = serde_json::json!({
+            "event_code": code,
+            "recording_id": 4,
+            "outcome": "engaged",
+            "transport": "built_in",
+            "hal_us": 210
+        });
+        assert_eq!(
+            sanitized_summary("audio", Some("PRIVATE_SENTINEL".into()), &data, false),
+            code
+        );
     }
 
     #[test]

@@ -64,6 +64,7 @@ mod model_digest;
 mod model_download;
 mod model_hardware_guidance;
 mod model_runtime;
+mod output_quieting;
 mod performance_metrics;
 mod platform;
 mod resource_monitor;
@@ -464,13 +465,17 @@ pub fn run() {
             // capture can start, so a relaunch keeps the fast-fail tier a
             // known-bad machine already earned. Fail-open: an unavailable
             // directory just means this session stays in memory only.
-            match commands::settings_store::data_dir(app.handle()) {
-                Ok(dir) => audio::initialize_capture_memo_persistence(dir),
+            let settings_dir = commands::settings_store::data_dir(app.handle());
+            match &settings_dir {
+                Ok(dir) => audio::initialize_capture_memo_persistence(dir.clone()),
                 Err(error) => tracing::warn!(
                     target: "audio",
                     "capture backend memo persistence unavailable: {error}"
                 ),
             }
+            // Restores speakers a previous process left muted mid-dictation,
+            // on its own thread. Without a data directory it never mutes.
+            output_quieting::initialize(settings_dir.ok());
             log_shipper::start(app.handle());
 
             if let Some(main_window) = app.get_webview_window("main") {
@@ -720,6 +725,7 @@ pub fn run() {
             }
 
             if let RunEvent::Exit = &_event {
+                output_quieting::shutdown();
                 audio_lifecycle::retire_standby();
                 window_state::flush(_app_handle);
                 smart_destination::set_enabled(false);

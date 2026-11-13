@@ -17,6 +17,11 @@ describe('buildConfigureOptions', () => {
     expect(buildConfigureOptions({ ...DEFAULT_SETTINGS, streamingPipelineEnabled: true }).streamingPipelineEnabled).toBe(true);
   });
 
+  it('sends mute speakers while dictating, off by default', () => {
+    expect(buildConfigureOptions(DEFAULT_SETTINGS).muteSpeakersWhileDictating).toBe(false);
+    expect(buildConfigureOptions({ ...DEFAULT_SETTINGS, muteSpeakersWhileDictating: true }).muteSpeakersWhileDictating).toBe(true);
+  });
+
   it('sends smart formatting and its independent per-app override to Rust', () => {
     const options = buildConfigureOptions({
       ...DEFAULT_SETTINGS,

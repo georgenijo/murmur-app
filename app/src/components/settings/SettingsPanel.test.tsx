@@ -545,6 +545,23 @@ describe('SettingsPanel information architecture', () => {
     expect(onUpdateSettings).toHaveBeenCalledWith({ meetingSoundCuesEnabled: true });
   });
 
+  it('shows mute speakers while dictating off by default in Recording and toggles it', async () => {
+    const recording = Array.from(container.querySelectorAll('nav button')).find(
+      (button) => button.textContent === 'Recording',
+    ) as HTMLButtonElement;
+    await act(async () => recording.click());
+    // Visible without opening Advanced, next to the other input settings.
+    const muteSwitch = container.querySelector('[role="switch"][aria-label="Mute speakers while dictating"]') as HTMLElement;
+    expect(muteSwitch).toBeTruthy();
+    expect(muteSwitch.closest('.settings-advanced')).toBeNull();
+    expect(muteSwitch.getAttribute('aria-checked')).toBe('false');
+    const row = container.querySelector('[data-setting-target="mute-speakers"]')!;
+    expect(row.textContent).toContain('calls go quiet too');
+    expect(row.textContent).toContain('headphones are left alone');
+    await act(async () => muteSwitch.click());
+    expect(onUpdateSettings).toHaveBeenCalledWith({ muteSpeakersWhileDictating: true });
+  });
+
   it('renders a setting toggle as an accessible switch that reflects checked state and reports clicks', async () => {
     const recording = Array.from(container.querySelectorAll('nav button')).find(
       (button) => button.textContent === 'Recording',
@@ -947,6 +964,8 @@ describe('SettingsPanel information architecture', () => {
     ['overlay position', 'Calibrate overlay position', 'overlay-calibration', 'General'],
     ['paste delay', 'Paste delay', 'paste-delay', 'Delivery'],
     ['sound cues', 'Sound cues', 'sound-cues', 'Recording'],
+    ['music', 'Mute speakers while dictating', 'mute-speakers', 'Recording'],
+    ['volume', 'Mute speakers while dictating', 'mute-speakers', 'Recording'],
     ['history days', 'Meeting retention', 'meeting-retention', 'Meetings'],
     ['speaker names', 'Remote speaker labels', 'meeting-speakers', 'Meetings'],
     ['vocabulary', 'Vocabulary', 'vocabulary', 'Text & vocabulary'],

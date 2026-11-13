@@ -856,6 +856,16 @@ describe('loadSettings', () => {
     }
   });
 
+  it('keeps mute speakers while dictating off for old and malformed settings, preserving explicit opt-in', () => {
+    expect(DEFAULT_SETTINGS.muteSpeakersWhileDictating).toBe(false);
+    for (const value of [undefined, 'true', 1, null, false, true]) {
+      localStorage.setItem('dictation-settings', JSON.stringify({
+        ...DEFAULT_SETTINGS, muteSpeakersWhileDictating: value,
+      }));
+      expect(loadSettings().muteSpeakersWhileDictating).toBe(value === true);
+    }
+  });
+
   it('migrates legacy custom vocabulary into enabled global entries', () => {
     const legacy = { ...DEFAULT_SETTINGS } as Record<string, unknown>;
     delete legacy.vocabularyEntries;

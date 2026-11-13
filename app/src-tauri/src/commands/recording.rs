@@ -659,6 +659,13 @@ fn transition_dictation_status(
     let from = dictation.status;
     dictation.status = to;
     emit_dictation_state_changed(recording_id, from, to);
+    // Sends one message to the output-quieting worker; never waits on it.
+    crate::output_quieting::observe_transition(
+        recording_id,
+        from,
+        to,
+        dictation.mute_speakers_while_dictating,
+    );
     from
 }
 
@@ -4343,6 +4350,14 @@ pub async fn configure_dictation(
         .and_then(|v| v.as_bool())
     {
         dictation.homophone_context_enabled = v;
+    }
+
+    // Applies to the next recording: the seam reads it at Idle -> Starting.
+    if let Some(v) = options
+        .get("muteSpeakersWhileDictating")
+        .and_then(|v| v.as_bool())
+    {
+        dictation.mute_speakers_while_dictating = v;
     }
 
     // Streaming setting (E1 incremental VAD). Applies to the next recording.

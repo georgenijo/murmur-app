@@ -205,6 +205,10 @@ pub struct DictationState {
     /// batch VAD remains the fallback. Resolved once at recording start.
     #[serde(default)]
     pub streaming_pipeline_enabled: bool,
+    /// Opt-in: mute the speakers while a live dictation records. Read once at
+    /// the Idle -> Starting transition (`output_quieting`).
+    #[serde(default)]
+    pub mute_speakers_while_dictating: bool,
     pub save_transcript: bool,
     pub save_audio: bool,
     /// Opt-in: mirror each final transcript to a local file NotchPill can tail.
@@ -276,6 +280,7 @@ impl Default for DictationState {
             vocabulary_entries: Vec::new(),
             smart_punctuation: true,
             streaming_pipeline_enabled: false,
+            mute_speakers_while_dictating: false,
             save_transcript: false,
             save_audio: false,
             mirror_to_notchpill: false,

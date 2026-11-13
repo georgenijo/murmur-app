@@ -124,6 +124,7 @@ export interface ConfigureOptions {
   correctionFuzzy?: boolean;
   homophoneContextEnabled?: boolean;
   streamingPipelineEnabled?: boolean;
+  muteSpeakersWhileDictating?: boolean;
 }
 
 // Settings sends full snapshots; other callers may send partial updates. Keep
@@ -192,6 +193,7 @@ export function buildConfigureOptions(s: Settings): ConfigureOptions {
     correctionFuzzy: s.correctionFuzzy,
     homophoneContextEnabled: s.homophoneContextEnabled,
     streamingPipelineEnabled: s.streamingPipelineEnabled,
+    muteSpeakersWhileDictating: s.muteSpeakersWhileDictating,
   };
 }
 

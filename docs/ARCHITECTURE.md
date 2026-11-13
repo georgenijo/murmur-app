@@ -270,6 +270,7 @@ stay local and never reach logs or telemetry. See
 | `model_runtime.rs` | Model catalog + lifecycle manager (load/warm/readiness/unload, generation-ordered status events) |
 | `microphone_auto.rs` | Cached-only Smart Auto input policy that freezes an eligible stable microphone ID for one recording |
 | `microphone_preview.rs` | Capture-only microphone-test state, VAD analysis, level accumulation, and quiet or clipping classification |
+| `output_quieting.rs` | Opt-in mute of the default output during live dictation: status-seam signals, background Core Audio mute/unmute, content-free crash record |
 | `model_artifact.rs` | Size and prefix validation that rejects HTML, JSON, and Git LFS responses masquerading as downloaded model binaries |
 | `coreml_installer.rs` | Same-signed killable Core ML install worker/supervisor: bounded phases, hard deadline, confirmed process-group cleanup |
 | `performance_metrics/` | SQLite run history, stage timings, resource samples, retention |
