@@ -194,7 +194,8 @@ pub(crate) trait OutputHal {
 pub(crate) struct QuietRecord {
     pub device_uid: String,
     pub elements: Vec<u32>,
-    /// Wall-clock time of the mute, Unix milliseconds.
+    /// Wall-clock start of the expiry window, Unix milliseconds: the time of
+    /// the mute, or the dictation's end when its live restore failed.
     pub muted_at_unix_ms: u64,
 }
 
@@ -684,9 +685,13 @@ impl<H: OutputHal, S: RecordStore> Controller<H, S> {
     /// process applied it moments or minutes ago and still owns it. If the
     /// restore cannot finish, the record's expiry clock starts now, when this
     /// process lets go of the mute, so a long dictation still gets the full
-    /// retry window.
+    /// retry window. Older records for the same device are dropped first:
+    /// their mute ended when this dictation took the device over, so retrying
+    /// them later could only undo a mute the user set after this restore.
     fn restore_live(&mut self, engaged: Engaged, now: Now) -> Event {
         let mut record = engaged.record;
+        self.outstanding
+            .retain(|older| older.device_uid != record.device_uid);
         record.muted_at_unix_ms = now.unix_ms;
         let event = self.restore(engaged.recording_id, record, Outcome::Restored);
         let _ = self.persist();
@@ -1962,13 +1967,26 @@ mod tests {
             vec![Outcome::Restored]
         );
         assert!(!c.hal.is_muted(1));
-        // The older record finds the speakers already restored and is dropped
-        // without another write.
+        // Dictation 2's restore replaced the older record for the speakers.
+        assert!(c.store.records.is_empty());
+        // The user mutes right after (to take a call): no later retry undoes it.
+        c.hal.user_sets(1, true);
         let writes = c.hal.writes.len();
+        let mut polls = 0;
         while let Some(due) = c.next_due() {
             c.poll(clock.at(due.duration_since(clock.instant)));
+            polls += 1;
+            assert!(polls < 100, "retrying must end");
         }
-        assert_eq!(c.hal.writes.len(), writes);
+        for offset in [MS(46_000), MS(80_000), MS(120_000)] {
+            c.poll(clock.at(offset));
+        }
+        assert!(c.hal.is_muted(1));
+        assert_eq!(
+            c.hal.writes.len(),
+            writes,
+            "no unmute after the user's mute"
+        );
         assert!(c.store.records.is_empty());
     }
 

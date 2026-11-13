@@ -88,8 +88,8 @@ Murmur also does nothing when:
   The retries back off at 0.5, 1, 2, 4, 8 and 15 seconds, then every 30
   seconds. They also run at the next dictation start, and they stop when the
   record expires. A retry never touches a device that a later dictation has
-  muted: the record waits until that dictation's own restore, and is dropped
-  if the device is already unmuted by then.
+  muted: the record waits, and it is dropped when that dictation's restore
+  runs. A mute the user sets after that restore is left alone.
 
 ## Crash safety and expiry
 
@@ -110,9 +110,10 @@ At launch, a background thread reads the file:
   device (`expired`).
 - A record from an earlier version, which has no mute time, is dropped.
 
-Records waiting for a retry expire the same way, but their 10 minutes count
-from the end of the dictation, when the restore first failed. A long dictation
-therefore gets the full retry window.
+Records waiting for a retry expire the same way. A record from a failed
+restore at the end of a dictation counts its 10 minutes from that moment, so a
+long dictation still gets the full retry window. A record kept after a failed
+launch-recovery restore still counts from the original mute time.
 
 Why 10 minutes: an unexpected unmute is worse than a Mac left muted. A muted Mac
 shows the muted speaker in the menu bar, and one key press fixes it. An unmute
