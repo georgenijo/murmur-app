@@ -681,9 +681,14 @@ impl<H: OutputHal, S: RecordStore> Controller<H, S> {
     }
 
     /// Restore the live generation's mute. Never subject to expiry: this
-    /// process applied it moments or minutes ago and still owns it.
+    /// process applied it moments or minutes ago and still owns it. If the
+    /// restore cannot finish, the record's expiry clock starts now, when this
+    /// process lets go of the mute, so a long dictation still gets the full
+    /// retry window.
     fn restore_live(&mut self, engaged: Engaged, now: Now) -> Event {
-        let event = self.restore(engaged.recording_id, engaged.record, Outcome::Restored);
+        let mut record = engaged.record;
+        record.muted_at_unix_ms = now.unix_ms;
+        let event = self.restore(engaged.recording_id, record, Outcome::Restored);
         let _ = self.persist();
         self.schedule_retry(now);
         event
@@ -729,15 +734,19 @@ impl<H: OutputHal, S: RecordStore> Controller<H, S> {
     }
 
     /// Retry every outstanding record that is still fresh; drop expired ones
-    /// without touching their device.
+    /// without touching their device. A record for the device the live
+    /// dictation has muted keeps waiting: its mute is now the dictation's,
+    /// and the dictation's own restore schedules the next retry.
     fn retry_outstanding(&mut self, recording_id: u64, success: Outcome, now: Now) -> Vec<Event> {
         let records = std::mem::take(&mut self.outstanding);
         let had_records = !records.is_empty();
+        let live_uid = self
+            .engaged
+            .as_ref()
+            .map(|engaged| engaged.record.device_uid.clone());
         let mut events = Vec::with_capacity(records.len());
         for record in records {
-            if record.is_fresh(now.unix_ms) {
-                events.push(self.restore(recording_id, record, success));
-            } else {
+            if !record.is_fresh(now.unix_ms) {
                 events.push(Event {
                     recording_id,
                     outcome: Outcome::Expired,
@@ -746,6 +755,10 @@ impl<H: OutputHal, S: RecordStore> Controller<H, S> {
                     since_start_ms: None,
                     hal_us: 0,
                 });
+            } else if live_uid.as_deref() == Some(record.device_uid.as_str()) {
+                self.keep_outstanding(record);
+            } else {
+                events.push(self.restore(recording_id, record, success));
             }
         }
         if had_records {
@@ -1888,6 +1901,74 @@ mod tests {
         let events = arm(&mut c, 2, false, &clock, MS(1200));
         assert_eq!(outcomes(&events), vec![Outcome::Restored]);
         assert!(!c.hal.is_muted(1));
+        assert!(c.store.records.is_empty());
+    }
+
+    #[test]
+    fn a_failed_restore_after_a_long_dictation_still_gets_the_full_retry_window() {
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        start(&mut c, 1, &clock);
+        // Undocked just before stopping a dictation longer than the expiry.
+        let stop = RECORD_MAX_AGE + Duration::from_secs(120);
+        c.hal.device(1).present = false;
+        assert_eq!(
+            outcomes(&release(&mut c, 1, &clock, stop)),
+            vec![Outcome::DeviceMissing]
+        );
+        // The expiry clock restarts when this process lets go, and that is
+        // what a crash in the retry window would read back.
+        assert_eq!(
+            c.store.records,
+            vec![record("speakers", clock.at(stop).unix_ms)]
+        );
+        c.hal.device(1).present = true;
+        let due = c.next_due().expect("a retry is scheduled");
+        assert_eq!(
+            outcomes(&c.poll(Now {
+                instant: due,
+                unix_ms: clock.at(due.duration_since(clock.instant)).unix_ms,
+            })),
+            vec![Outcome::Restored]
+        );
+        assert!(!c.hal.is_muted(1));
+        assert!(c.store.records.is_empty());
+        assert!(c.next_due().is_none());
+    }
+
+    #[test]
+    fn a_waiting_retry_never_unmutes_a_later_dictation_on_the_same_device() {
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        start(&mut c, 1, &clock);
+        c.hal.device(1).present = false;
+        release(&mut c, 1, &clock, MS(1000));
+        // Dictation 2 starts while the speakers are still away.
+        arm(&mut c, 2, true, &clock, MS(1200));
+        // They come back with their mute reset, and dictation 2 mutes them.
+        c.hal.device(1).present = true;
+        c.hal.user_sets(1, false);
+        assert_eq!(
+            outcomes(&cue(&mut c, 2, &clock, MS(1310))),
+            vec![Outcome::Engaged]
+        );
+        // Every retry during dictation 2 leaves its mute alone.
+        for offset in [MS(2000), MS(4000), MS(10_000), MS(40_000)] {
+            assert!(c.poll(clock.at(offset)).is_empty());
+            assert!(c.hal.is_muted(1), "unmuted mid-dictation at {offset:?}");
+        }
+        assert_eq!(
+            outcomes(&release(&mut c, 2, &clock, MS(45_000))),
+            vec![Outcome::Restored]
+        );
+        assert!(!c.hal.is_muted(1));
+        // The older record finds the speakers already restored and is dropped
+        // without another write.
+        let writes = c.hal.writes.len();
+        while let Some(due) = c.next_due() {
+            c.poll(clock.at(due.duration_since(clock.instant)));
+        }
+        assert_eq!(c.hal.writes.len(), writes);
         assert!(c.store.records.is_empty());
     }
 

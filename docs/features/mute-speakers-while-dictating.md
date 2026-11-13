@@ -51,7 +51,9 @@ Murmur skips the mute when the microphone cannot hear the output:
   Silicon the jack is its own device. On the Mac mini used for testing, the
   Speakers device lists only the `'ispk'` source, and the headphone device only
   appears when something is plugged in, so neither check has been observed on
-  real headphones.
+  real headphones. Anything plugged into the 3.5 mm jack counts, including
+  powered speakers on a Mac mini, Mac Studio, or iMac: they are skipped, and
+  their playback can still reach the microphone.
 - **Bluetooth and Bluetooth LE outputs** (AirPods, headsets). On a Mac these
   are nearly always worn. Bluetooth speakers are a known limit: they are
   skipped too.
@@ -85,7 +87,9 @@ Murmur also does nothing when:
   Core Audio is removing or has not finished adding), and an unmute that fails.
   The retries back off at 0.5, 1, 2, 4, 8 and 15 seconds, then every 30
   seconds. They also run at the next dictation start, and they stop when the
-  record expires.
+  record expires. A retry never touches a device that a later dictation has
+  muted: the record waits until that dictation's own restore, and is dropped
+  if the device is already unmuted by then.
 
 ## Crash safety and expiry
 
@@ -106,7 +110,9 @@ At launch, a background thread reads the file:
   device (`expired`).
 - A record from an earlier version, which has no mute time, is dropped.
 
-Records waiting for a retry expire the same way.
+Records waiting for a retry expire the same way, but their 10 minutes count
+from the end of the dictation, when the restore first failed. A long dictation
+therefore gets the full retry window.
 
 Why 10 minutes: an unexpected unmute is worse than a Mac left muted. A muted Mac
 shows the muted speaker in the menu bar, and one key press fixes it. An unmute
@@ -170,7 +176,7 @@ One content-free event per decision, `audio.output_quieting`:
 
 | Field | Values |
 |-------|--------|
-| `recording_id` | Dictation generation (0 for launch recovery and background retries) |
+| `recording_id` | Dictation generation. Retries that run at a dictation start carry that dictation's id. Launch recovery and timed background retries use 0 |
 | `outcome` | `engaged`, `restored`, `restored_after_exit`, `user_changed`, `expired`, `skipped_no_output`, `skipped_headphones`, `skipped_bluetooth`, `skipped_no_mute_control`, `skipped_already_muted`, `skipped_record_unavailable`, `mute_failed`, `device_missing`, `restore_failed`, `unreadable` |
 | `transport` | `built_in`, `bluetooth`, `usb`, `hdmi`, `displayport`, `airplay`, `aggregate`, `virtual`, `thunderbolt`, `other`, `unknown`, `none` |
 | `trigger` | Engage decisions: `cue_finished` or `cap`; otherwise `none` |
