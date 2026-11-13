@@ -53,9 +53,13 @@ Preview's claim ends at the handoff: its owner is replaced in one supervisor
 step and its `Idle` event tells Settings the test has yielded. The worker
 exits only with its new owner, so there is still one owner and no reopened
 device. Any test that cannot be handed off is stopped with confirmed teardown
-first, as before. While an unconfirmed key-down capture is open, a test start
-waits for that gesture to resolve (at most the key-down backstop) rather than
-superseding it.
+first, as before. A dictation that took over the test is a warm capture, like
+an adopted key-down capture: a newer input topology cancels it. While an
+unconfirmed key-down capture is open, a test start waits for that gesture to
+resolve (at most the key-down backstop) rather than superseding it. Closing
+or hiding Settings during that wait revokes the start: it returns the
+quiet dictation pause instead of claiming the microphone, and reopening
+Settings starts a fresh test.
 
 Stop acknowledgement is not teardown authority. The preview remains claimed
 through Starting, Recording, Stopping, and Recovering, and clears only after the

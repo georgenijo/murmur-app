@@ -5547,6 +5547,9 @@ pub async fn start_native_recording(
         state.inner(),
     )
     .await?;
+    // Under the transition, a current mic test is one this start kept for the
+    // supervisor; if it cannot be taken over, the start queues behind its exit.
+    let kept_preview = state.app_state.microphone_preview.is_active();
     if keyboard::is_app_disabled() {
         tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
         return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
@@ -5700,13 +5703,31 @@ pub async fn start_native_recording(
         crate::audio_inventory::production_device_kind(selected_device_name.as_deref()),
     );
     dictation_performance_begins().register(rid);
-    if let Err(error) = audio_lifecycle::start_dictation_recording(
-        app_handle.clone(),
-        selected_device_name,
-        rid,
-        origin,
-        gesture,
-    ) {
+    let audio_started = if kept_preview {
+        // May wait for the kept test's confirmed exit (see
+        // `START_AFTER_PREVIEW_TIMEOUT`), so never on an async worker.
+        let start_handle = app_handle.clone();
+        tokio::task::spawn_blocking(move || {
+            audio_lifecycle::start_dictation_recording_after_preview(
+                start_handle,
+                selected_device_name,
+                rid,
+                origin,
+                gesture,
+            )
+        })
+        .await
+        .unwrap_or(Err(AudioStartError::SupervisorUnavailable))
+    } else {
+        audio_lifecycle::start_dictation_recording(
+            app_handle.clone(),
+            selected_device_name,
+            rid,
+            origin,
+            gesture,
+        )
+    };
+    if let Err(error) = audio_started {
         dictation_performance_begins().abort(rid, &state.performance);
         tracing::error!(target: "audio", "start_native_recording: audio failed: {}", error);
         state.app_state.clear_active_context(rid);

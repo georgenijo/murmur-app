@@ -58,15 +58,26 @@ capture. It shows no UI and publishes no levels.
   From there the capture is an ordinary unconfirmed key-down capture: it is
   adopted by its confirmed start or discarded with its samples. A confirmed
   start with no key-down capture (any other trigger) adopts the flowing test
-  the same way. Nothing the test heard before the handoff is kept. A test that
-  is still connecting, stopping, failed, on another input, or an automatic
-  background check is not taken over: key-down keeps the `preview_active` skip
-  and the confirmed start stops the test (`audio.preview_yielded`) and opens
-  its input cold. A test that restarts while an unconfirmed key-down capture
-  is open waits for the gesture to resolve (bounded by the backstop) instead
-  of superseding it. A dictation that wins the race pauses the test quietly
-  ("Level monitoring pauses…") rather than showing an error, and the test
-  resumes when the dictation ends.
+  the same way. Nothing the test heard before the handoff is kept. The
+  taken-over device was opened before the dictation, so it counts as a warm
+  capture: like an adopted key-down capture, a newer input topology cancels
+  it.
+  A test that is not taken over is stopped first. The confirmed start then
+  queues behind the test's confirmed exit (`audio.preview_yielded`) and opens
+  its input cold, waiting up to `START_AFTER_PREVIEW_TIMEOUT` for that exit.
+  What key-down does depends on why the test was not taken over:
+  - Connecting, stopping, failed or automatic test: the app skips key-down
+    (`keyboard.fn_capture_skipped reason="preview_active"`).
+  - Flowing test on another input, or opened before the latest topology
+    change: the app admits key-down, and the supervisor refuses it
+    (`audio.speculative_capture_refused reason=preview_not_handed_off`).
+
+  A test that restarts while an unconfirmed key-down capture is open waits
+  for the gesture to resolve (bounded by the backstop) instead of superseding
+  it. Closing or hiding Settings during that wait revokes the restart, so a
+  plain Fn tap never reopens the microphone with Settings closed. A dictation
+  that wins the race pauses the test quietly ("Level monitoring pauses…")
+  rather than showing an error, and the test resumes when the dictation ends.
 - **Diagnostics**: `keyboard.fn_capture_skipped` carries the first blocking
   fact as `reason` (`listener_changed`, `processing_skipped`, `disabled`,
   `gesture_ended`, `permission_not_granted`, `dictation_busy`,

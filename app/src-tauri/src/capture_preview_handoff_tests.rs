@@ -10,9 +10,14 @@ const DICTATION_PCM: f32 = 0.75;
 const COLD_PCM: f32 = 0.5;
 
 /// A worker that streams PCM continuously until Stop, like a real helper.
+/// `paused` is held across every append, so taking it guarantees no frame is
+/// in flight; a paused worker produces nothing.
 struct StreamingFactory {
     first_buffer: Option<Gate>,
     hearing: Arc<Mutex<f32>>,
+    paused: Arc<Mutex<bool>>,
+    /// Report a runtime failure, then hold teardown until this gate opens.
+    fail_after_ready: Option<(Arc<AtomicBool>, Gate)>,
     buffers: Arc<Mutex<Vec<Arc<Mutex<audio::CaptureSamples>>>>>,
     active: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
     spawns: Arc<AtomicUsize>,
@@ -25,6 +30,8 @@ impl WorkerFactory for StreamingFactory {
         self.active.lock().unwrap().push(spec.active.clone());
         let first_buffer = if index == 0 { self.first_buffer.clone() } else { None };
         let hearing = self.hearing.clone();
+        let paused = self.paused.clone();
+        let fail = if index == 0 { self.fail_after_ready.clone() } else { None };
         let cold = index > 0;
         Ok(std::thread::spawn(move || {
             if let Some(gate) = first_buffer {
@@ -34,10 +41,25 @@ impl WorkerFactory for StreamingFactory {
             audio::retain_pcm(&spec.shared, spec.owner, &frame(&hearing), 16_000);
             events.send(AudioWorkerEvent::FirstBuffer { owner: spec.owner, sample_rate: 16_000, sent_at: Instant::now() }).unwrap();
             loop {
+                if let Some((trigger, teardown)) = &fail {
+                    if trigger.load(Ordering::SeqCst) {
+                        events
+                            .send(AudioWorkerEvent::RuntimeFailed {
+                                owner: spec.owner,
+                                failure: AudioFailure::new(AudioFailureKind::BackendError, AudioInitPhase::Runtime),
+                            })
+                            .unwrap();
+                        teardown.wait();
+                        break;
+                    }
+                }
                 match spec.command_receiver.recv_timeout(Duration::from_millis(1)) {
                     Ok(AudioCommand::Stop) | Err(RecvTimeoutError::Disconnected) => break,
                     Err(RecvTimeoutError::Timeout) => {
-                        audio::retain_pcm(&spec.shared, spec.owner, &frame(&hearing), 16_000);
+                        let paused = paused.lock().unwrap();
+                        if !*paused {
+                            audio::retain_pcm(&spec.shared, spec.owner, &frame(&hearing), 16_000);
+                        }
                     }
                 }
             }
@@ -51,28 +73,43 @@ struct Handoff {
     supervisor: AudioSupervisor,
     sink: Arc<RecordingSink>,
     hearing: Arc<Mutex<f32>>,
+    paused: Arc<Mutex<bool>>,
     buffers: Arc<Mutex<Vec<Arc<Mutex<audio::CaptureSamples>>>>>,
     active: Arc<Mutex<Vec<Arc<AtomicBool>>>>,
     spawns: Arc<AtomicUsize>,
 }
 
 fn handoff(first_buffer: Option<Gate>) -> Handoff {
+    handoff_with(first_buffer, None)
+}
+
+fn handoff_with(first_buffer: Option<Gate>, fail_after_ready: Option<(Arc<AtomicBool>, Gate)>) -> Handoff {
     let hearing = Arc::new(Mutex::new(PREVIEW_PCM));
+    let paused = Arc::new(Mutex::new(false));
     let buffers = Arc::new(Mutex::new(Vec::new()));
     let active = Arc::new(Mutex::new(Vec::new()));
     let spawns = Arc::new(AtomicUsize::new(0));
     let sink = Arc::new(RecordingSink::default());
     let supervisor = spawn_supervisor(
-        Arc::new(StreamingFactory { first_buffer, hearing: hearing.clone(), buffers: buffers.clone(), active: active.clone(), spawns: spawns.clone() }),
+        Arc::new(StreamingFactory { first_buffer, hearing: hearing.clone(), paused: paused.clone(), fail_after_ready, buffers: buffers.clone(), active: active.clone(), spawns: spawns.clone() }),
         sink.clone(),
         SupervisorConfig::default(),
     );
-    Handoff { supervisor, sink, hearing, buffers, active, spawns }
+    Handoff { supervisor, sink, hearing, paused, buffers, active, spawns }
 }
 
 impl Handoff {
     fn hear(&self, value: f32) {
         *self.hearing.lock().unwrap() = value;
+    }
+
+    /// Stop the fake device between frames; returns once no frame is in flight.
+    fn pause(&self) {
+        *self.paused.lock().unwrap() = true;
+    }
+
+    fn resume(&self) {
+        *self.paused.lock().unwrap() = false;
     }
 
     fn retained(&self, worker: usize) -> Vec<f32> {
@@ -145,6 +182,10 @@ fn fn_key_down_takes_over_a_flowing_mic_test_without_reopening_the_device() {
     flowing_preview(&t, preview, None);
 
     // Fn goes down while the meter is live: the capture is open at once.
+    // Pausing between frames makes every frame before the switch below a
+    // preview frame and every frame after it a dictation frame, so any kept
+    // preview audio would show up in the final assertion.
+    t.pause();
     assert!(key_down(&t, 31, None, Some(5)));
     assert_eq!(t.supervisor.public.phase(), PublicPhase::Speculative);
     assert!(t.supervisor.public.owns(AudioOwner::Speculative(31)), "single owner: the key-down capture");
@@ -154,6 +195,7 @@ fn fn_key_down_takes_over_a_flowing_mic_test_without_reopening_the_device() {
 
     // The user speaks the first word before the gesture is confirmed.
     t.hear(DICTATION_PCM);
+    t.resume();
     wait_until("key-down capture retains PCM", || !t.retained(0).is_empty());
     let dictation = AudioOwner::Dictation(41);
     assert_eq!(start(&t.supervisor, dictation, Some(31), None).recv().unwrap(), Ok(()));
@@ -173,10 +215,11 @@ fn confirmed_start_without_a_key_down_capture_adopts_a_flowing_mic_test() {
     let t = handoff(None);
     let preview = AudioOwner::Preview(6);
     flowing_preview(&t, preview, Some("usb-mic"));
-    t.hear(DICTATION_PCM);
-
+    t.pause();
     let dictation = AudioOwner::Dictation(42);
     assert_eq!(start(&t.supervisor, dictation, None, Some("usb-mic")).recv().unwrap(), Ok(()));
+    t.hear(DICTATION_PCM);
+    t.resume();
     assert!(t.supervisor.public.is_recording_for(dictation), "ready at the confirmed start");
     assert_eq!(t.spawns.load(Ordering::SeqCst), 1);
     assert!(t.active.lock().unwrap()[0].load(Ordering::SeqCst), "dictation levels flow at once");
@@ -250,6 +293,66 @@ fn a_mic_test_still_connecting_is_not_taken_over() {
     assert!(!key_down(&t, 34, None, Some(10)), "nothing is flowing to hand over");
     assert!(t.supervisor.public.owns(preview));
     first_buffer.open();
+    shutdown(&t.supervisor);
+}
+
+#[test]
+fn a_mic_test_failing_at_runtime_never_fails_the_dictation_behind_it() {
+    // The test's device failed, and its worker is still tearing down when a
+    // confirmed start (no key-down capture) arrives. The start must wait for
+    // that exit and open cold, never report the test's recovery as its own.
+    let (failed, teardown) = (Arc::new(AtomicBool::new(false)), Gate::closed());
+    let t = handoff_with(None, Some((failed.clone(), teardown.clone())));
+    let preview = AudioOwner::Preview(13);
+    flowing_preview(&t, preview, None);
+    failed.store(true, Ordering::SeqCst);
+    wait_until("the test is recovering", || !t.supervisor.public.is_recording_for(preview));
+
+    let dictation = AudioOwner::Dictation(44);
+    let started = start(&t.supervisor, dictation, None, None);
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(started.try_recv().is_err(), "queued behind the failed test's exit");
+    teardown.open();
+    assert_eq!(started.recv_timeout(Duration::from_secs(2)).unwrap(), Ok(()));
+    wait_until("cold dictation ready", || t.supervisor.public.is_recording_for(dictation));
+    assert_eq!(t.spawns.load(Ordering::SeqCst), 2, "opened its own device");
+    let samples = stop(&t, dictation);
+    assert!(!samples.is_empty() && samples.iter().all(|&s| s == COLD_PCM));
+    shutdown(&t.supervisor);
+}
+
+#[test]
+fn a_dictation_that_took_over_the_mic_test_is_cancelled_by_a_topology_change() {
+    // Like an adopted key-down capture, the taken-over device is warm: it was
+    // opened before the dictation's own start, so a newer topology revokes it.
+    let t = handoff(None);
+    flowing_preview(&t, AudioOwner::Preview(14), None);
+    let dictation = AudioOwner::Dictation(45);
+    assert_eq!(start(&t.supervisor, dictation, None, None).recv().unwrap(), Ok(()));
+    wait_until("dictation ready", || t.supervisor.public.is_recording_for(dictation));
+    crate::audio_inventory::topology_changed();
+    t.supervisor.sender.send(SupervisorMessage::InputTopologyChanged).unwrap();
+    wait_until("warm dictation revoked", || !t.supervisor.public.is_recording_for(dictation));
+    assert_eq!(t.spawns.load(Ordering::SeqCst), 1);
+    shutdown(&t.supervisor);
+}
+
+#[test]
+fn a_mic_test_opened_before_a_topology_change_is_never_taken_over() {
+    let t = handoff(None);
+    let preview = AudioOwner::Preview(15);
+    flowing_preview(&t, preview, None);
+    crate::audio_inventory::topology_changed();
+    t.supervisor.sender.send(SupervisorMessage::InputTopologyChanged).unwrap();
+    assert!(!key_down(&t, 37, None, Some(15)), "the open device may be the old input");
+    let dictation = AudioOwner::Dictation(46);
+    let started = start(&t.supervisor, dictation, None, None);
+    assert_eq!(started.recv_timeout(Duration::from_secs(1)).unwrap(), Ok(()));
+    wait_until("cold dictation ready", || t.supervisor.public.is_recording_for(dictation));
+    assert_eq!(t.spawns.load(Ordering::SeqCst), 2, "reopened under the new topology");
+    assert!(t.position((preview, AudioLifecycleEvent::Idle)).is_some());
+    let samples = stop(&t, dictation);
+    assert!(!samples.is_empty() && samples.iter().all(|&s| s == COLD_PCM));
     shutdown(&t.supervisor);
 }
 

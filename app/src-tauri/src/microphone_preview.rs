@@ -80,6 +80,10 @@ pub struct MicrophonePreviewStatus {
 
 pub(crate) struct MicrophonePreviewState {
     next_id: AtomicU64,
+    /// Bumped whenever Settings leaves or hides while a test start may still be
+    /// waiting (for example on a pending Fn key-down gesture). A start that
+    /// began under an older value never claims the microphone.
+    start_revocations: AtomicU64,
     inner: Mutex<PreviewInner>,
     changed: Notify,
 }
@@ -88,6 +92,7 @@ impl Default for MicrophonePreviewState {
     fn default() -> Self {
         Self {
             next_id: AtomicU64::new(0),
+            start_revocations: AtomicU64::new(0),
             inner: Mutex::new(PreviewInner::default()),
             changed: Notify::new(),
         }
@@ -103,6 +108,21 @@ impl MicrophonePreviewState {
 
     pub(crate) fn claim(&self, vad_sensitivity: u32) -> Result<u64, String> {
         self.claim_for(vad_sensitivity, false)
+    }
+
+    /// The revocation generation a test start captures before it waits.
+    pub(crate) fn start_generation(&self) -> u64 {
+        self.start_revocations.load(Ordering::SeqCst)
+    }
+
+    /// Settings left or hid: no start captured before now may claim the mic.
+    pub(crate) fn revoke_pending_starts(&self) {
+        self.start_revocations.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Whether a start that captured `generation` was revoked since.
+    pub(crate) fn start_revoked(&self, generation: u64) -> bool {
+        self.start_generation() != generation
     }
 
     pub(crate) fn claim_automatic(&self) -> Result<u64, String> {

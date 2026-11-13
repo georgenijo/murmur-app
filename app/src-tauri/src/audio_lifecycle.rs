@@ -1016,7 +1016,7 @@ fn run_supervisor(
                     SupervisorMessage::Start(request)
                         if pending_start.is_none()
                             && request.owner.dictation_id().is_some()
-                            && attempt.as_ref().is_some_and(is_interactive_preview) =>
+                            && attempt.as_ref().is_some_and(is_visible_preview) =>
                     {
                         let current = attempt.as_mut().unwrap();
                         let preview_id = current.owner.telemetry_id();
@@ -1030,8 +1030,10 @@ fn run_supervisor(
                             );
                             let _ = request.response.send(Ok(()));
                         } else {
-                            // Not flowing yet, or another input: yield the
-                            // preview and start cold after its confirmed exit.
+                            // Not flowing yet, another input, a newer topology,
+                            // or already failing/stopping: yield the preview
+                            // (a no-op if it is already tearing down) and start
+                            // cold after its confirmed exit, as before handoff.
                             tracing::info!(target: "audio",
                                 event_code = "audio.preview_yielded",
                                 preview_id,
@@ -1691,22 +1693,19 @@ fn start_speculative(
 }
 
 /// A visible Settings microphone test that still owns its own worker (never an
-/// automatic background check) and is starting or flowing.
-fn is_interactive_preview(current: &Attempt) -> bool {
+/// automatic background check), in any phase. A dictation start meeting one
+/// either takes it over or queues behind its confirmed exit.
+fn is_visible_preview(current: &Attempt) -> bool {
     matches!(current.owner, AudioOwner::Preview(_))
         && current.owner == current.worker_owner
         && current.probe_permit.is_none()
-        && matches!(
-            current.phase,
-            AttemptPhase::Starting | AttemptPhase::Recording
-        )
 }
 
 /// Whether the exact preview's worker can be handed to dictation capture with
 /// no teardown: it is flowing on the same input under the current topology,
 /// and no stop has been accepted for it.
 fn preview_handoff_ready(current: &Attempt, preview_id: u64, device_id: &Option<String>) -> bool {
-    is_interactive_preview(current)
+    is_visible_preview(current)
         && current.owner == AudioOwner::Preview(preview_id)
         && current.phase == AttemptPhase::Recording
         && current.ready_at.is_some()
@@ -3019,6 +3018,47 @@ fn send_start_with_permit(
     probe_permit: Option<Arc<crate::smart_auto_probe::ProbePermit>>,
     gesture: gesture::StartGesture,
 ) -> Result<(), AudioStartError> {
+    let timeout = if wait_until_ready {
+        HARD_INITIALIZATION_DEADLINE + Duration::from_secs(2)
+    } else {
+        SUPERVISOR_RESPONSE_TIMEOUT
+    };
+    send_start_request(
+        owner,
+        app_handle,
+        device_id,
+        origin,
+        wait_until_ready,
+        probe_permit,
+        gesture,
+        timeout,
+    )
+}
+
+fn send_start_with_timeout(
+    owner: AudioOwner,
+    app_handle: Option<tauri::AppHandle>,
+    device_id: Option<String>,
+    origin: &str,
+    gesture: gesture::StartGesture,
+    timeout: Duration,
+) -> Result<(), AudioStartError> {
+    send_start_request(
+        owner, app_handle, device_id, origin, false, None, gesture, timeout,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn send_start_request(
+    owner: AudioOwner,
+    app_handle: Option<tauri::AppHandle>,
+    device_id: Option<String>,
+    origin: &str,
+    wait_until_ready: bool,
+    probe_permit: Option<Arc<crate::smart_auto_probe::ProbePermit>>,
+    gesture: gesture::StartGesture,
+    timeout: Duration,
+) -> Result<(), AudioStartError> {
     let (response_sender, response_receiver) = mpsc::channel();
     let caller_alive = Arc::new(AtomicBool::new(true));
     supervisor()
@@ -3035,11 +3075,6 @@ fn send_start_with_permit(
             probe_permit,
         }))
         .map_err(|_| AudioStartError::SupervisorUnavailable)?;
-    let timeout = if wait_until_ready {
-        HARD_INITIALIZATION_DEADLINE + Duration::from_secs(2)
-    } else {
-        SUPERVISOR_RESPONSE_TIMEOUT
-    };
     await_start_response(
         supervisor(),
         owner,
@@ -3089,6 +3124,33 @@ pub(crate) fn start_dictation_recording(
         false,
         None,
         gesture,
+    )
+}
+
+/// How long a dictation start that kept a Settings microphone test running
+/// may wait for its response. A test it can take over answers at once; one it
+/// cannot (another input, a newer topology, or a failure) queues this start
+/// behind the test's confirmed exit, which gets the same budget as the
+/// confirmed stop dictation used before handoff, plus the ordinary response.
+pub(crate) const START_AFTER_PREVIEW_TIMEOUT: Duration =
+    Duration::from_secs(15).saturating_add(SUPERVISOR_RESPONSE_TIMEOUT);
+
+/// `start_dictation_recording` for a start that kept a mic test running.
+/// Blocking for up to `START_AFTER_PREVIEW_TIMEOUT`; run it off the async runtime.
+pub(crate) fn start_dictation_recording_after_preview(
+    app_handle: tauri::AppHandle,
+    device_id: Option<String>,
+    recording_id: u64,
+    origin: &str,
+    gesture: gesture::StartGesture,
+) -> Result<(), AudioStartError> {
+    send_start_with_timeout(
+        AudioOwner::Dictation(recording_id),
+        Some(app_handle),
+        device_id,
+        origin,
+        gesture,
+        START_AFTER_PREVIEW_TIMEOUT,
     )
 }
 

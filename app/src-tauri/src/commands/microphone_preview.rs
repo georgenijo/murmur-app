@@ -111,6 +111,21 @@ pub async fn verify_microphone_preview_signal(
     Ok(preview.finish_signal_verification(preview_id))
 }
 
+fn refuse_revoked_start(
+    preview: &crate::microphone_preview::MicrophonePreviewState,
+    start_generation: u64,
+) -> Result<(), String> {
+    if preview.start_revoked(start_generation) {
+        Err(PREVIEW_DICTATION_BUSY.to_string())
+    } else {
+        Ok(())
+    }
+}
+
+/// The frontend treats exactly this text as a quiet "paused for dictation".
+pub(crate) const PREVIEW_DICTATION_BUSY: &str =
+    "Finish the current dictation before testing the microphone";
+
 pub(crate) const PREVIEW_AUDIO_BUSY: &str =
     "The microphone is still in use or recovering. Wait for Murmur to become ready.";
 
@@ -162,6 +177,8 @@ pub async fn start_microphone_preview(
     vad_sensitivity: u32,
 ) -> Result<MicrophonePreviewStatus, String> {
     require_main_window(&window)?;
+    // Captured before any wait: leaving or hiding Settings revokes this start.
+    let start_generation = state.app_state.microphone_preview.start_generation();
     let device_id = normalized_device_id(device_id)?;
     crate::smart_auto_probe::preempt();
     if let Some(id) = state.app_state.microphone_preview.automatic_id() {
@@ -177,9 +194,14 @@ pub async fn start_microphone_preview(
     // be admitted while the transition is held.
     crate::audio_lifecycle::retire_standby();
     {
+        // Settings left or hid while this start waited (for example on a plain
+        // Fn tap that took the test over): never open the microphone for a
+        // test nobody is looking at. The quiet pause reason; reopening
+        // Settings starts a fresh test.
+        refuse_revoked_start(&state.app_state.microphone_preview, start_generation)?;
         let dictation = state.app_state.dictation.lock_or_recover();
         if dictation.status != DictationStatus::Idle {
-            return Err("Finish the current dictation before testing the microphone".to_string());
+            return Err(PREVIEW_DICTATION_BUSY.to_string());
         }
         if state.app_state.meeting_blocks_asr() {
             return Err(
@@ -460,10 +482,25 @@ pub async fn cancel_microphone_preview(
     preview_id: Option<u64>,
 ) -> Result<bool, String> {
     require_main_window(&window)?;
+    if preview_id.is_none() {
+        // "Whatever is there": also a test start still waiting to claim.
+        app_handle
+            .state::<State>()
+            .app_state
+            .microphone_preview
+            .revoke_pending_starts();
+    }
     cancel_exact_preview(app_handle, preview_id).await
 }
 
 pub(crate) fn cancel_for_window_close(app_handle: tauri::AppHandle) {
+    // Synchronously, before the window hides: a test start still waiting
+    // (it has no preview to cancel yet) must not open the mic afterwards.
+    app_handle
+        .state::<State>()
+        .app_state
+        .microphone_preview
+        .revoke_pending_starts();
     tauri::async_runtime::spawn(async move {
         if app_handle
             .state::<State>()
@@ -659,6 +696,55 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn settings_closed_during_a_key_down_wait_never_opens_the_mic_test() {
+        // Fn tap with Settings open: the takeover clears the test, Settings
+        // restarts it, and that start waits for the tap to resolve. Settings
+        // closes during the wait; there is no preview yet for the close to
+        // cancel, so the waiting start itself must refuse afterwards.
+        let preview =
+            std::sync::Arc::new(crate::microphone_preview::MicrophonePreviewState::default());
+        let transition = tokio::sync::Mutex::new(());
+        let pending = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let start_generation = preview.start_generation();
+        let closer = {
+            let preview = preview.clone();
+            let pending = pending.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                preview.revoke_pending_starts(); // window close / Settings hidden
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                pending.store(false, std::sync::atomic::Ordering::SeqCst); // tap discarded
+            })
+        };
+        let observed = pending.clone();
+        let _guard = transition_after_key_down_resolves(
+            &transition,
+            || observed.load(std::sync::atomic::Ordering::SeqCst),
+            Duration::from_secs(2),
+        )
+        .await;
+        closer.await.unwrap();
+        assert_eq!(
+            refuse_revoked_start(&preview, start_generation),
+            Err(PREVIEW_DICTATION_BUSY.to_string()),
+            "the quiet dictation pause, not an alert"
+        );
+        assert_eq!(preview.current_id(), None, "nothing claimed the microphone");
+
+        // Reopening Settings starts afresh and is not affected.
+        let reopened = preview.start_generation();
+        assert_eq!(refuse_revoked_start(&preview, reopened), Ok(()));
+    }
+
+    #[test]
+    fn a_start_that_kept_the_mic_test_waits_as_long_as_the_test_may_take_to_close() {
+        // When the kept test cannot be taken over, the start queues behind the
+        // test's confirmed exit. It must not give up sooner than the stop it
+        // replaced (the ordinary 2 s start response would fail a slow close).
+        assert!(audio_lifecycle::START_AFTER_PREVIEW_TIMEOUT > CONFIRMED_STOP_TIMEOUT);
     }
 
     #[test]
