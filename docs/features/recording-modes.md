@@ -169,8 +169,9 @@ so a cancelled press never emits `hold-down-start`, never calls
 `start_native_recording`, and never shows the overlay. During the window **any**
 other key press ends the hold, including a second modifier (Shift+Command+Z).
 Releasing the trigger within the window is treated as a stray tap. After the
-window, today's rules apply: another modifier is ignored, and a non-modifier
-key stops the recording.
+window, another modifier is ignored, and a non-modifier key stops the
+recording until the hold is one second old (see
+[Typing during a hold](#typing-during-a-hold)).
 
 Each cancelled window logs one content-free `keyboard.hotkey_arming_cancelled`
 event. It carries only `mode`, `reason` (`other_key` or `released`), and
@@ -212,11 +213,34 @@ cancelled start.
 next key, for example a slow Shift+arrow selection, still starts and then
 cancels. So does Shift+click, because the listener sees only key events.
 
+### Typing during a hold
+
+A non-modifier key pressed while the trigger is held is read by the hold's
+age (`HOLD_CHORD_WINDOW_MS`, 1 second):
+
+- **Younger than one second**: a chord with the trigger. It ends the hold and
+  emits `hold-down-stop`, as before. A slow Shift+arrow selection or an
+  Fn+arrow (Home/End) press lands here. Its recording is a few hundred
+  milliseconds long and ends as `too_short` or `cancelled_starting`.
+- **One second or older**: typing during a dictation (#1109). The key is
+  ignored and the recording continues until the trigger is released. Each
+  ignored key logs one content-free `keyboard.hold_key_ignored` event with
+  `mode`, `key_class`, and `held_ms`, never the key.
+
+Murmur listens only, so the key still reaches the frontmost app as usual.
+Ignoring it adds no work to start or stop: the start still waits only for the
+arming window, and the stop still fires on the trigger's release event.
+In Both mode, a hold promoted over a recording it did not start still ends on
+the key and emits `hold-over-recording-end`, so a later release cannot stop
+that recording. A shortcut modifier during a function-key hold still ends the
+hold at any age.
+
 ### Rejection Rules
 
 - **Key repeat** while held: Ignored (stays in Held state)
 - **Any other key during a modifier trigger's arming window**: Ends the hold silently; no start is emitted
-- **Trigger key + another non-modifier** (for example Shift+A or F8+A): Cancels hold, emits stop
+- **Trigger key + another non-modifier within one second** (for example Shift+A or F8+A): Cancels hold, emits stop
+- **Another non-modifier after one second of holding**: Ignored; the dictation continues until release
 - **Shortcut modifier held before a function key** (for example Command, then F8): Ignored while idle; Fn remains allowed for Apple function-key rows
 - **Shortcut modifier pressed during a function-key hold**: Cancels the hold and emits stop if recording already started
 - **Cooldown**: 50ms after stop before re-trigger is allowed
