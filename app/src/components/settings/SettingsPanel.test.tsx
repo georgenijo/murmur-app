@@ -556,8 +556,10 @@ describe('SettingsPanel information architecture', () => {
     expect(muteSwitch.closest('.settings-advanced')).toBeNull();
     expect(muteSwitch.getAttribute('aria-checked')).toBe('false');
     const row = container.querySelector('[data-setting-target="mute-speakers"]')!;
-    expect(row.textContent).toContain('calls go quiet too');
-    expect(row.textContent).toContain('headphones are left alone');
+    expect(row.textContent).toContain('quiets calls too');
+    expect(row.textContent).toContain('skipped for Bluetooth and the headphone jack');
+    // USB headsets are muted, so the copy must not promise headphones in general.
+    expect(row.textContent).not.toMatch(/headphones are/i);
     await act(async () => muteSwitch.click());
     expect(onUpdateSettings).toHaveBeenCalledWith({ muteSpeakersWhileDictating: true });
   });

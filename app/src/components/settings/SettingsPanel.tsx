@@ -1068,7 +1068,7 @@ export const SettingsPanel = memo(function SettingsPanel({
             />
             <SettingToggle
               targetId="mute-speakers" title="Mute speakers while dictating"
-              description="Keeps playback out of transcripts; calls go quiet too, headphones are left alone"
+              description="Keeps playback out of transcripts and quiets calls too; skipped for Bluetooth and the headphone jack"
               checked={settings.muteSpeakersWhileDictating} defaultChecked={DEFAULT_SETTINGS.muteSpeakersWhileDictating}
               onChange={() => onUpdateSettings({ muteSpeakersWhileDictating: !settings.muteSpeakersWhileDictating })}
             />

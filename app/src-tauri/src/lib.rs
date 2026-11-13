@@ -275,6 +275,7 @@ pub fn run() {
             commands::recording::process_audio,
             commands::recording::get_status,
             commands::recording::configure_dictation,
+            commands::recording::report_start_cue_finished,
             commands::recording::start_native_recording,
             commands::recording::stop_native_recording,
             commands::recording::cancel_native_recording,

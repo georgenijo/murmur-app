@@ -9,7 +9,7 @@ Dictation and meeting transcription run locally.
 - [Architecture](docs/ARCHITECTURE.md): module ownership, data flow, and native boundaries.
 - [Features](docs/FEATURES.md): feature index and links to detailed behavior.
 - [Development](docs/DEVELOPMENT.md): setup, permissions, builds, and troubleshooting.
-- [API reference](docs/reference/commands.md): 157 registered commands.
+- [API reference](docs/reference/commands.md): 158 registered commands.
 
 Read the documentation relevant to the task. Search the source for individual
 files and symbols instead of maintaining another file inventory here.

@@ -11,15 +11,23 @@
 //! Rules, each covered by the tests below:
 //! - Only the mute property changes. The volume level is never written, so a
 //!   restore returns the exact prior level.
-//! - Engage is skipped when the output is headphones (built-in jack data
-//!   source) or Bluetooth (AirPods, headsets), when the device has no settable
-//!   mute (many HDMI/DisplayPort outputs), or when it is already muted.
+//! - The mute waits for the start cue: the main window reports when the cue
+//!   has played out (or that there is none). A hard cap mutes anyway if that
+//!   report never arrives.
+//! - Engage is skipped when the output is headphones (built-in jack) or
+//!   Bluetooth (AirPods, headsets), when the device has no settable mute (many
+//!   HDMI/DisplayPort outputs), or when it is already muted. Each generation
+//!   decides once.
 //! - Restore touches only the device Murmur muted, found again by its UID. If
 //!   the user unmuted it during the dictation (volume keys unmute), the restore
 //!   leaves it alone. A new default output is never touched.
-//! - Before muting, a content-free record (device UID and mute elements) is
-//!   written to `output-quieting.json`. The next launch restores from it if the
-//!   app died mid-dictation. If the record cannot be written, nothing is muted.
+//! - After a successful mute, a local record (device UID, mute elements, mute
+//!   time) is written to `output-quieting.json`. The next launch restores from
+//!   it if the app died mid-dictation, but only while the record is younger
+//!   than [`RECORD_MAX_AGE`]. An older record is dropped without touching the
+//!   device: an unexpected unmute is worse than a Mac left muted.
+//! - A restore that cannot finish (device gone, read or write failed) is
+//!   retried on a short backoff until the record expires.
 //! - All work runs on one background thread. The dictation status seam only
 //!   sends a message, so start and stop never wait on Core Audio.
 
@@ -33,20 +41,41 @@ use serde::{Deserialize, Serialize};
 use crate::state::DictationStatus;
 
 const RECORD_FILE_NAME: &str = "output-quieting.json";
-const RECORD_SCHEMA_VERSION: u32 = 1;
+const RECORD_SCHEMA_VERSION: u32 = 2;
 const RECORD_MAX_BYTES: u64 = 8 * 1024;
 const RECORD_MAX_ENTRIES: usize = 4;
 const RECORD_MAX_ELEMENTS: usize = 8;
 
-/// Murmur's start cue is a 70 ms tone scheduled when the dictation is
-/// accepted. Muting waits this long after the start so the cue stays audible.
-pub(crate) const START_CUE_GUARD: Duration = Duration::from_millis(150);
+/// A record older than this is never acted on. Long enough to relaunch after
+/// a crash; short enough that a later deliberate mute is unlikely to be undone.
+pub(crate) const RECORD_MAX_AGE: Duration = Duration::from_secs(10 * 60);
+
+/// Mute at the latest this long after the start if the main window never
+/// reports that the start cue finished (webview busy, cue never played).
+pub(crate) const START_CUE_CAP: Duration = Duration::from_millis(500);
+
+/// Backoff for restores that could not finish. The last delay repeats until
+/// the record reaches [`RECORD_MAX_AGE`], so retrying always ends.
+const RETRY_DELAYS: [Duration; 7] = [
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(8),
+    Duration::from_secs(15),
+    Duration::from_secs(30),
+];
 
 /// Bound on how long app exit waits for the worker to unmute.
 const SHUTDOWN_WAIT: Duration = Duration::from_millis(750);
 
 /// `'hdpn'`: the built-in output's headphone-jack data source.
 const DATA_SOURCE_HEADPHONES: u32 = u32::from_be_bytes(*b"hdpn");
+
+/// Apple Silicon Macs publish the headphone jack as its own built-in device.
+/// Its UID is fixed and not localized. Not observed on hardware in this repo's
+/// tests; the `'hdpn'` data source check also applies to it.
+const BUILT_IN_HEADPHONE_UID: &str = "BuiltInHeadphoneOutputDevice";
 
 // ---------------------------------------------------------------------------
 // Device model
@@ -108,7 +137,8 @@ impl Transport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OutputDevice {
     pub id: u32,
-    /// Stable Core Audio UID. Persisted locally only; never logged.
+    /// Core Audio UID. For USB devices it can contain a product name and a
+    /// serial number. Persisted locally (mode 0600) only; never logged.
     pub uid: String,
     pub transport: Transport,
     /// The device's current output data source is the headphone jack.
@@ -128,11 +158,13 @@ enum Route {
 /// the user asked for playback to stay out of transcripts, and a needless mute
 /// is undone at stop, while a wrong skip silently defeats the setting. Bluetooth
 /// counts as headphones because on a Mac it is nearly always AirPods or a
-/// headset; Bluetooth speakers are a documented limit.
+/// headset; Bluetooth speakers are a documented limit. USB headsets are muted.
 fn route(device: &OutputDevice) -> Route {
     if device.transport == Transport::Bluetooth {
         Route::Bluetooth
-    } else if device.headphone_source {
+    } else if device.headphone_source
+        || (device.transport == Transport::BuiltIn && device.uid == BUILT_IN_HEADPHONE_UID)
+    {
         Route::Headphones
     } else {
         Route::Speakers
@@ -155,12 +187,24 @@ pub(crate) trait OutputHal {
 // Durable record
 // ---------------------------------------------------------------------------
 
-/// "Murmur muted these elements on this device." No audio, transcript,
-/// clipboard, or app identity: only a device UID and element numbers.
+/// "Murmur muted these elements on this device at this time." Written only
+/// after the mute succeeded, so its existence means the mute was applied. No
+/// audio, transcript, clipboard, selection, or app identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct QuietRecord {
     pub device_uid: String,
     pub elements: Vec<u32>,
+    /// Wall-clock time of the mute, Unix milliseconds.
+    pub muted_at_unix_ms: u64,
+}
+
+impl QuietRecord {
+    /// Young enough to act on. A time in the future (clock moved back) counts
+    /// as expired: when in doubt, leave the device alone.
+    fn is_fresh(&self, now_unix_ms: u64) -> bool {
+        now_unix_ms >= self.muted_at_unix_ms
+            && now_unix_ms - self.muted_at_unix_ms <= RECORD_MAX_AGE.as_millis() as u64
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -183,6 +227,8 @@ fn encode_records(records: &[QuietRecord]) -> Option<String> {
     .ok()
 }
 
+/// A different schema (including the v1 records without a mute time) is
+/// dropped, never acted on.
 fn decode_records(contents: &str) -> Vec<QuietRecord> {
     let Ok(document) = serde_json::from_str::<PersistedRecords>(contents) else {
         return Vec::new();
@@ -214,11 +260,23 @@ impl FileStore {
     }
 }
 
+/// `fsync` on macOS does not flush the drive's cache; `F_FULLFSYNC` does.
+/// Falls back to `sync_all` where the filesystem refuses it.
+fn full_sync(file: &std::fs::File) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::io::AsRawFd;
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_FULLFSYNC) } == 0 {
+            return Ok(());
+        }
+    }
+    file.sync_all()
+}
+
 fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
     use std::io::Write;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
     let temp = path.with_file_name(format!(".{RECORD_FILE_NAME}.murmur-tmp"));
     let result = (|| {
         let mut file = std::fs::File::create(&temp)?;
@@ -228,9 +286,10 @@ fn write_atomically(path: &Path, contents: &str) -> std::io::Result<()> {
             file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         }
         file.write_all(contents.as_bytes())?;
-        // The record must survive a crash that follows the mute.
-        file.sync_all()?;
-        std::fs::rename(&temp, path)
+        full_sync(&file)?;
+        std::fs::rename(&temp, path)?;
+        // Persist the rename itself.
+        full_sync(&std::fs::File::open(parent)?)
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&temp);
@@ -279,6 +338,7 @@ pub(crate) enum Outcome {
     Restored,
     RestoredAfterExit,
     UserChanged,
+    Expired,
     SkippedNoOutput,
     SkippedHeadphones,
     SkippedBluetooth,
@@ -298,6 +358,7 @@ impl Outcome {
             Self::Restored => "restored",
             Self::RestoredAfterExit => "restored_after_exit",
             Self::UserChanged => "user_changed",
+            Self::Expired => "expired",
             Self::SkippedNoOutput => "skipped_no_output",
             Self::SkippedHeadphones => "skipped_headphones",
             Self::SkippedBluetooth => "skipped_bluetooth",
@@ -310,6 +371,32 @@ impl Outcome {
             Self::Unreadable => "unreadable",
         }
     }
+
+    /// The restore could not finish; the record stays for a retry.
+    fn keeps_record(self) -> bool {
+        matches!(
+            self,
+            Self::DeviceMissing | Self::RestoreFailed | Self::Unreadable
+        )
+    }
+}
+
+/// What released a pending mute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Trigger {
+    /// The main window reported the start cue finished, or that none played.
+    CueFinished,
+    /// [`START_CUE_CAP`] elapsed without that report.
+    Cap,
+}
+
+impl Trigger {
+    fn label(self) -> &'static str {
+        match self {
+            Self::CueFinished => "cue_finished",
+            Self::Cap => "cap",
+        }
+    }
 }
 
 /// Content-free evidence for one decision.
@@ -318,8 +405,31 @@ pub(crate) struct Event {
     pub recording_id: u64,
     pub outcome: Outcome,
     pub transport: Option<Transport>,
-    /// Time spent in Core Audio for this decision.
+    pub trigger: Option<Trigger>,
+    /// Engage only: time from the dictation start to the mute decision.
+    pub since_start_ms: Option<u64>,
+    /// Time spent in Core Audio and the record store for this decision.
     pub hal_us: u64,
+}
+
+/// The controller's view of "now": a monotonic instant for scheduling and a
+/// wall-clock time for record age.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Now {
+    pub instant: Instant,
+    pub unix_ms: u64,
+}
+
+impl Now {
+    pub(crate) fn current() -> Self {
+        Self {
+            instant: Instant::now(),
+            unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_millis() as u64)
+                .unwrap_or(0),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -330,30 +440,22 @@ pub(crate) enum Command {
         enabled: bool,
         at: Instant,
     },
-    /// Entered Recording (including after a recovery).
-    Engage {
+    /// The main window finished (or skipped) this generation's start cue.
+    CueFinished {
         recording_id: u64,
-        at: Instant,
     },
-    /// Left live capture. `terminal` ends the generation.
+    /// Left live capture: Recovering, Processing, or Idle.
     Release {
         recording_id: u64,
-        terminal: bool,
     },
     Shutdown(mpsc::Sender<()>),
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Armed {
-    recording_id: u64,
-    enabled: bool,
-    at: Instant,
-}
-
-#[derive(Debug, Clone, Copy)]
 struct Pending {
     recording_id: u64,
-    due: Instant,
+    started: Instant,
+    cap: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -362,15 +464,23 @@ struct Engaged {
     record: QuietRecord,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Retry {
+    due: Instant,
+    attempt: usize,
+}
+
 pub(crate) struct Controller<H, S> {
     hal: H,
     store: S,
-    armed: Option<Armed>,
+    /// At most one undecided mute: created at Arm, consumed by the first of
+    /// cue-finished, cap, or release. Each generation therefore decides once.
     pending: Option<Pending>,
     engaged: Option<Engaged>,
-    /// Records whose restore could not finish yet (device unplugged, write
-    /// failed). Retried at the next dictation start and the next launch.
+    /// Records whose restore could not finish yet. Retried on [`RETRY_DELAYS`]
+    /// and at the next start until they expire.
     outstanding: Vec<QuietRecord>,
+    retry: Option<Retry>,
 }
 
 impl<H: OutputHal, S: RecordStore> Controller<H, S> {
@@ -378,29 +488,35 @@ impl<H: OutputHal, S: RecordStore> Controller<H, S> {
         Self {
             hal,
             store,
-            armed: None,
             pending: None,
             engaged: None,
             outstanding: Vec::new(),
+            retry: None,
         }
     }
 
-    /// Launch recovery: restore anything a previous process left muted.
-    pub(crate) fn recover_after_exit(&mut self) -> Vec<Event> {
+    /// Launch recovery: restore what a previous process left muted, if the
+    /// record is still fresh.
+    pub(crate) fn recover_after_exit(&mut self, now: Now) -> Vec<Event> {
         self.outstanding = self.store.load();
         if self.outstanding.is_empty() {
             // Clear a stale or unreadable file so it is not reread forever.
             let _ = self.persist();
             return Vec::new();
         }
-        self.retry_outstanding(0, Outcome::RestoredAfterExit)
+        self.retry_outstanding(0, Outcome::RestoredAfterExit, now)
     }
 
     pub(crate) fn next_due(&self) -> Option<Instant> {
-        self.pending.map(|pending| pending.due)
+        let pending = self.pending.map(|pending| pending.cap);
+        let retry = self.retry.map(|retry| retry.due);
+        match (pending, retry) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
-    pub(crate) fn handle(&mut self, command: Command, now: Instant) -> Vec<Event> {
+    pub(crate) fn handle(&mut self, command: Command, now: Now) -> Vec<Event> {
         let mut events = Vec::new();
         match command {
             Command::Arm {
@@ -411,44 +527,28 @@ impl<H: OutputHal, S: RecordStore> Controller<H, S> {
                 // A previous generation is always released before a new start;
                 // if one somehow is not, restore it rather than leak a mute.
                 if let Some(engaged) = self.engaged.take() {
-                    events.push(self.restore(
-                        engaged.recording_id,
-                        engaged.record,
-                        Outcome::Restored,
-                    ));
+                    events.push(self.restore_live(engaged, now));
                 }
                 self.pending = None;
-                events.extend(self.retry_outstanding(recording_id, Outcome::Restored));
-                self.armed = Some(Armed {
-                    recording_id,
-                    enabled,
-                    at,
-                });
+                events.extend(self.retry_outstanding(recording_id, Outcome::Restored, now));
                 if enabled {
                     self.pending = Some(Pending {
                         recording_id,
-                        due: at + START_CUE_GUARD,
+                        started: at,
+                        cap: at + START_CUE_CAP,
                     });
                 }
             }
-            Command::Engage { recording_id, at } => {
-                if let Some(armed) = self.armed {
-                    if armed.recording_id == recording_id
-                        && armed.enabled
-                        && self.engaged.is_none()
-                        && self.pending.is_none()
-                    {
-                        self.pending = Some(Pending {
-                            recording_id,
-                            due: at.max(armed.at + START_CUE_GUARD),
-                        });
-                    }
+            Command::CueFinished { recording_id } => {
+                if let Some(pending) = self
+                    .pending
+                    .filter(|pending| pending.recording_id == recording_id)
+                {
+                    self.pending = None;
+                    events.push(self.engage(pending, Trigger::CueFinished, now));
                 }
             }
-            Command::Release {
-                recording_id,
-                terminal,
-            } => {
+            Command::Release { recording_id } => {
                 if self
                     .pending
                     .is_some_and(|pending| pending.recording_id == recording_id)
@@ -461,43 +561,38 @@ impl<H: OutputHal, S: RecordStore> Controller<H, S> {
                     .is_some_and(|engaged| engaged.recording_id == recording_id)
                 {
                     let engaged = self.engaged.take().expect("checked above");
-                    events.push(self.restore(recording_id, engaged.record, Outcome::Restored));
-                }
-                if terminal
-                    && self
-                        .armed
-                        .is_some_and(|armed| armed.recording_id == recording_id)
-                {
-                    self.armed = None;
+                    events.push(self.restore_live(engaged, now));
                 }
             }
-            Command::Shutdown(_) => {
-                events.extend(self.shutdown());
-            }
+            Command::Shutdown(_) => events.extend(self.shutdown(now)),
         }
         events.extend(self.poll(now));
         events
     }
 
-    /// Run a due engage.
-    pub(crate) fn poll(&mut self, now: Instant) -> Vec<Event> {
-        match self.pending {
-            Some(pending) if pending.due <= now => {
-                self.pending = None;
-                vec![self.engage(pending.recording_id)]
-            }
-            _ => Vec::new(),
+    /// Run a capped engage or a due retry.
+    pub(crate) fn poll(&mut self, now: Now) -> Vec<Event> {
+        let mut events = Vec::new();
+        if let Some(pending) = self.pending.filter(|pending| pending.cap <= now.instant) {
+            self.pending = None;
+            events.push(self.engage(pending, Trigger::Cap, now));
         }
+        if let Some(retry) = self.retry.filter(|retry| retry.due <= now.instant) {
+            self.retry = Some(Retry {
+                due: now.instant,
+                attempt: retry.attempt + 1,
+            });
+            events.extend(self.retry_outstanding(0, Outcome::Restored, now));
+        }
+        events
     }
 
     /// App exit: never leave the speakers muted behind a clean quit.
-    pub(crate) fn shutdown(&mut self) -> Vec<Event> {
+    pub(crate) fn shutdown(&mut self, now: Now) -> Vec<Event> {
         self.pending = None;
-        self.armed = None;
+        self.retry = None;
         match self.engaged.take() {
-            Some(engaged) => {
-                vec![self.restore(engaged.recording_id, engaged.record, Outcome::Restored)]
-            }
+            Some(engaged) => vec![self.restore_live(engaged, now)],
             None => Vec::new(),
         }
     }
@@ -510,12 +605,19 @@ impl<H: OutputHal, S: RecordStore> Controller<H, S> {
         self.store.save(&records)
     }
 
-    fn engage(&mut self, recording_id: u64) -> Event {
+    fn engage(&mut self, pending: Pending, trigger: Trigger, now: Now) -> Event {
         let started = Instant::now();
+        let recording_id = pending.recording_id;
+        let since_start_ms = now
+            .instant
+            .saturating_duration_since(pending.started)
+            .as_millis() as u64;
         let event = |outcome, transport| Event {
             recording_id,
             outcome,
             transport,
+            trigger: Some(trigger),
+            since_start_ms: Some(since_start_ms),
             hal_us: started.elapsed().as_micros() as u64,
         };
         let Some(device) = self.hal.default_output() else {
@@ -552,60 +654,69 @@ impl<H: OutputHal, S: RecordStore> Controller<H, S> {
         if to_mute.is_empty() {
             return event(Outcome::SkippedAlreadyMuted, transport);
         }
-        let record = QuietRecord {
-            device_uid: device.uid.clone(),
-            elements: to_mute,
-        };
-        // Write the record first: a crash after the mute must still find it.
-        self.engaged = Some(Engaged {
-            recording_id,
-            record: record.clone(),
-        });
-        if !self.persist() {
-            self.engaged = None;
-            let _ = self.persist();
-            return event(Outcome::SkippedRecordUnavailable, transport);
-        }
-        if !self.hal.set_muted(device.id, &record.elements, true) {
+        if !self.hal.set_muted(device.id, &to_mute, true) {
             // A partial write leaves some elements muted; they were audible a
             // moment ago, so unmuting them returns the device to its state.
-            let _ = self.hal.set_muted(device.id, &record.elements, false);
-            self.engaged = None;
-            let _ = self.persist();
+            let _ = self.hal.set_muted(device.id, &to_mute, false);
             return event(Outcome::MuteFailed, transport);
+        }
+        // The record is written only once the mute is applied. A crash in the
+        // moment between leaves the Mac muted, the safe direction.
+        self.engaged = Some(Engaged {
+            recording_id,
+            record: QuietRecord {
+                device_uid: device.uid,
+                elements: to_mute.clone(),
+                muted_at_unix_ms: now.unix_ms,
+            },
+        });
+        if !self.persist() {
+            // Without a record a crash could not be recovered: undo now.
+            self.engaged = None;
+            let _ = self.hal.set_muted(device.id, &to_mute, false);
+            let _ = self.persist();
+            return event(Outcome::SkippedRecordUnavailable, transport);
         }
         event(Outcome::Engaged, transport)
     }
 
-    /// Restore one record. Leaves the device alone if the user changed it.
+    /// Restore the live generation's mute. Never subject to expiry: this
+    /// process applied it moments or minutes ago and still owns it.
+    fn restore_live(&mut self, engaged: Engaged, now: Now) -> Event {
+        let event = self.restore(engaged.recording_id, engaged.record, Outcome::Restored);
+        let _ = self.persist();
+        self.schedule_retry(now);
+        event
+    }
+
+    /// One restore attempt. Records that cannot finish return to `outstanding`.
     fn restore(&mut self, recording_id: u64, record: QuietRecord, success: Outcome) -> Event {
         let started = Instant::now();
         let outcome = match self.hal.device_for_uid(&record.device_uid) {
-            None => {
-                self.keep_outstanding(record);
-                Outcome::DeviceMissing
-            }
+            None => Outcome::DeviceMissing,
             Some(device) => match self.hal.muted(device, &record.elements) {
                 Some(states) if states.len() == record.elements.len() => {
-                    if states.iter().all(|muted| *muted) {
-                        if self.hal.set_muted(device, &record.elements, false) {
-                            success
-                        } else {
-                            self.keep_outstanding(record);
-                            Outcome::RestoreFailed
-                        }
-                    } else {
+                    if !states.iter().all(|muted| *muted) {
                         Outcome::UserChanged
+                    } else if self.hal.set_muted(device, &record.elements, false) {
+                        success
+                    } else {
+                        Outcome::RestoreFailed
                     }
                 }
+                // Mid-removal or not yet ready: the device may still be muted.
                 _ => Outcome::Unreadable,
             },
         };
-        let _ = self.persist();
+        if outcome.keeps_record() {
+            self.keep_outstanding(record);
+        }
         Event {
             recording_id,
             outcome,
             transport: None,
+            trigger: None,
+            since_start_ms: None,
             hal_us: started.elapsed().as_micros() as u64,
         }
     }
@@ -617,16 +728,49 @@ impl<H: OutputHal, S: RecordStore> Controller<H, S> {
         self.outstanding.drain(..excess);
     }
 
-    fn retry_outstanding(&mut self, recording_id: u64, success: Outcome) -> Vec<Event> {
+    /// Retry every outstanding record that is still fresh; drop expired ones
+    /// without touching their device.
+    fn retry_outstanding(&mut self, recording_id: u64, success: Outcome, now: Now) -> Vec<Event> {
         let records = std::mem::take(&mut self.outstanding);
-        let mut events: Vec<Event> = records
-            .into_iter()
-            .map(|record| self.restore(recording_id, record, success))
-            .collect();
-        // A device that stays unplugged is retried silently at each start;
-        // launch recovery (recording 0) still reports it once.
-        events.retain(|event| event.outcome != Outcome::DeviceMissing || recording_id == 0);
+        let had_records = !records.is_empty();
+        let mut events = Vec::with_capacity(records.len());
+        for record in records {
+            if record.is_fresh(now.unix_ms) {
+                events.push(self.restore(recording_id, record, success));
+            } else {
+                events.push(Event {
+                    recording_id,
+                    outcome: Outcome::Expired,
+                    transport: None,
+                    trigger: None,
+                    since_start_ms: None,
+                    hal_us: 0,
+                });
+            }
+        }
+        if had_records {
+            let _ = self.persist();
+        }
+        self.schedule_retry(now);
+        // A device that stays unplugged is retried quietly; its first miss
+        // and its expiry are what get logged.
+        if self.retry.is_some_and(|retry| retry.attempt >= 1) {
+            events.retain(|event| event.outcome != Outcome::DeviceMissing);
+        }
         events
+    }
+
+    fn schedule_retry(&mut self, now: Now) {
+        if self.outstanding.is_empty() {
+            self.retry = None;
+            return;
+        }
+        let attempt = self.retry.map_or(0, |retry| retry.attempt);
+        let delay = RETRY_DELAYS[attempt.min(RETRY_DELAYS.len() - 1)];
+        self.retry = Some(Retry {
+            due: now.instant + delay,
+            attempt,
+        });
     }
 }
 
@@ -637,31 +781,34 @@ impl<H: OutputHal, S: RecordStore> Controller<H, S> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Signal {
     Arm,
-    Engage,
-    Release { terminal: bool },
+    Release,
 }
 
 /// Map a dictation status transition to a controller signal. Fn key-down
 /// capture that is discarded never leaves Idle, file transcription goes
 /// Idle -> Processing without an Arm, and meetings and the microphone test do
-/// not use dictation status, so none of them can engage.
+/// not use dictation status, so none of them can engage. Recording is only
+/// entered from Starting, so it needs no signal of its own.
 pub(crate) fn signal_for(from: DictationStatus, to: DictationStatus) -> Option<Signal> {
     if from == to {
         return None;
     }
     match to {
         DictationStatus::Starting if from == DictationStatus::Idle => Some(Signal::Arm),
-        DictationStatus::Starting => None,
-        DictationStatus::Recording => Some(Signal::Engage),
-        // Capture is interrupted: there is nothing to protect until it resumes.
-        DictationStatus::Recovering => Some(Signal::Release { terminal: false }),
-        DictationStatus::Processing | DictationStatus::Idle => {
-            Some(Signal::Release { terminal: true })
+        DictationStatus::Starting | DictationStatus::Recording => None,
+        DictationStatus::Recovering | DictationStatus::Processing | DictationStatus::Idle => {
+            Some(Signal::Release)
         }
     }
 }
 
 static WORKER: OnceLock<mpsc::Sender<Command>> = OnceLock::new();
+
+fn send(command: Command) {
+    if let Some(sender) = WORKER.get() {
+        let _ = sender.send(command);
+    }
+}
 
 /// Called from the dictation status seam with the dictation lock held. Only
 /// sends a message; a missing worker (unit tests, setup failure) is a no-op.
@@ -674,26 +821,22 @@ pub(crate) fn observe_transition(
     if recording_id == 0 {
         return;
     }
-    let Some(signal) = signal_for(from, to) else {
-        return;
-    };
-    let Some(sender) = WORKER.get() else {
-        return;
-    };
-    let at = Instant::now();
-    let command = match signal {
-        Signal::Arm => Command::Arm {
+    match signal_for(from, to) {
+        Some(Signal::Arm) => send(Command::Arm {
             recording_id,
             enabled,
-            at,
-        },
-        Signal::Engage => Command::Engage { recording_id, at },
-        Signal::Release { terminal } => Command::Release {
-            recording_id,
-            terminal,
-        },
-    };
-    let _ = sender.send(command);
+            at: Instant::now(),
+        }),
+        Some(Signal::Release) => send(Command::Release { recording_id }),
+        None => {}
+    }
+}
+
+/// The main window finished this generation's start cue, or played none.
+pub(crate) fn start_cue_finished(recording_id: u64) {
+    if recording_id != 0 {
+        send(Command::CueFinished { recording_id });
+    }
 }
 
 fn log(events: Vec<Event>) {
@@ -704,6 +847,8 @@ fn log(events: Vec<Event>) {
             recording_id = event.recording_id,
             outcome = event.outcome.code(),
             transport = event.transport.map(Transport::label).unwrap_or("none"),
+            trigger = event.trigger.map(Trigger::label).unwrap_or("none"),
+            since_start_ms = event.since_start_ms.unwrap_or(0),
             hal_us = event.hal_us,
             "output quieting decision"
         );
@@ -714,7 +859,7 @@ fn run<H: OutputHal, S: RecordStore>(
     mut controller: Controller<H, S>,
     rx: mpsc::Receiver<Command>,
 ) {
-    log(controller.recover_after_exit());
+    log(controller.recover_after_exit(Now::current()));
     loop {
         let received = match controller.next_due() {
             Some(due) => match rx.recv_timeout(due.saturating_duration_since(Instant::now())) {
@@ -729,12 +874,12 @@ fn run<H: OutputHal, S: RecordStore>(
         };
         match received {
             Some(Command::Shutdown(ack)) => {
-                log(controller.shutdown());
+                log(controller.shutdown(Now::current()));
                 let _ = ack.send(());
                 break;
             }
-            Some(command) => log(controller.handle(command, Instant::now())),
-            None => log(controller.poll(Instant::now())),
+            Some(command) => log(controller.handle(command, Now::current())),
+            None => log(controller.poll(Now::current())),
         }
     }
 }
@@ -1069,14 +1214,18 @@ mod tests {
         elements: Option<Vec<u32>>,
         muted: HashMap<u32, bool>,
         present: bool,
+        /// The device is listed but its mute cannot be read (mid-removal).
+        read_fails: bool,
     }
 
     #[derive(Default)]
     struct FakeHal {
         devices: HashMap<u32, FakeDevice>,
         default: Option<u32>,
-        fail_set: bool,
+        fail_mute: bool,
+        fail_unmute: bool,
         writes: Vec<(u32, Vec<u32>, bool)>,
+        queries: usize,
     }
 
     impl FakeHal {
@@ -1109,8 +1258,13 @@ mod tests {
                     elements,
                     muted,
                     present: true,
+                    read_fails: false,
                 },
             );
+        }
+
+        fn device(&mut self, id: u32) -> &mut FakeDevice {
+            self.devices.get_mut(&id).unwrap()
         }
 
         fn is_muted(&self, id: u32) -> bool {
@@ -1118,7 +1272,7 @@ mod tests {
         }
 
         fn user_sets(&mut self, id: u32, muted: bool) {
-            for value in self.devices.get_mut(&id).unwrap().muted.values_mut() {
+            for value in self.device(id).muted.values_mut() {
                 *value = muted;
             }
         }
@@ -1126,6 +1280,7 @@ mod tests {
 
     impl OutputHal for FakeHal {
         fn default_output(&mut self) -> Option<OutputDevice> {
+            self.queries += 1;
             let id = self.default?;
             let device = self.devices.get(&id).filter(|device| device.present)?;
             Some(OutputDevice {
@@ -1149,6 +1304,9 @@ mod tests {
 
         fn muted(&mut self, device: u32, elements: &[u32]) -> Option<Vec<bool>> {
             let device = self.devices.get(&device)?;
+            if device.read_fails {
+                return None;
+            }
             elements
                 .iter()
                 .map(|element| device.muted.get(element).copied())
@@ -1157,7 +1315,7 @@ mod tests {
 
         fn set_muted(&mut self, device: u32, elements: &[u32], muted: bool) -> bool {
             self.writes.push((device, elements.to_vec(), muted));
-            if self.fail_set && muted {
+            if (self.fail_mute && muted) || (self.fail_unmute && !muted) {
                 return false;
             }
             let Some(device) = self.devices.get_mut(&device) else {
@@ -1193,6 +1351,29 @@ mod tests {
 
     type TestController = Controller<FakeHal, MemoryStore>;
 
+    /// A fixed origin; tests move both clocks together.
+    struct Clock {
+        instant: Instant,
+        unix_ms: u64,
+    }
+
+    impl Clock {
+        fn new() -> Self {
+            Self {
+                instant: Instant::now(),
+                unix_ms: 1_800_000_000_000,
+            }
+        }
+        fn at(&self, offset: Duration) -> Now {
+            Now {
+                instant: self.instant + offset,
+                unix_ms: self.unix_ms + offset.as_millis() as u64,
+            }
+        }
+    }
+
+    const MS: fn(u64) -> Duration = Duration::from_millis;
+
     fn controller(hal: FakeHal) -> TestController {
         Controller::new(hal, MemoryStore::default())
     }
@@ -1201,401 +1382,556 @@ mod tests {
         events.iter().map(|event| event.outcome).collect()
     }
 
-    /// Arm at `t0`, enter Recording, then run the due engage.
-    fn start(controller: &mut TestController, rid: u64, enabled: bool, t0: Instant) -> Vec<Event> {
-        let mut events = controller.handle(
+    fn record(uid: &str, muted_at_unix_ms: u64) -> QuietRecord {
+        QuietRecord {
+            device_uid: uid.into(),
+            elements: vec![0],
+            muted_at_unix_ms,
+        }
+    }
+
+    fn arm(
+        c: &mut TestController,
+        rid: u64,
+        enabled: bool,
+        clock: &Clock,
+        at: Duration,
+    ) -> Vec<Event> {
+        c.handle(
             Command::Arm {
                 recording_id: rid,
                 enabled,
-                at: t0,
+                at: clock.at(at).instant,
             },
-            t0,
-        );
-        events.extend(controller.handle(
-            Command::Engage {
-                recording_id: rid,
-                at: t0 + Duration::from_millis(20),
-            },
-            t0 + Duration::from_millis(20),
-        ));
-        events.extend(controller.poll(t0 + START_CUE_GUARD));
-        events
-    }
-
-    fn release(controller: &mut TestController, rid: u64) -> Vec<Event> {
-        controller.handle(
-            Command::Release {
-                recording_id: rid,
-                terminal: true,
-            },
-            Instant::now(),
+            clock.at(at),
         )
     }
 
+    fn cue(c: &mut TestController, rid: u64, clock: &Clock, at: Duration) -> Vec<Event> {
+        c.handle(Command::CueFinished { recording_id: rid }, clock.at(at))
+    }
+
+    fn release(c: &mut TestController, rid: u64, clock: &Clock, at: Duration) -> Vec<Event> {
+        c.handle(Command::Release { recording_id: rid }, clock.at(at))
+    }
+
+    /// Production ordering: Starting (Arm), the cue report ~110 ms later.
+    fn start(c: &mut TestController, rid: u64, clock: &Clock) -> Vec<Event> {
+        let mut events = arm(c, rid, true, clock, MS(0));
+        events.extend(cue(c, rid, clock, MS(110)));
+        events
+    }
+
     #[test]
-    fn engages_after_the_start_cue_and_restores_at_stop() {
-        let mut controller = controller(FakeHal::speakers());
-        let t0 = Instant::now();
-        controller.handle(
-            Command::Arm {
-                recording_id: 7,
-                enabled: true,
-                at: t0,
-            },
-            t0,
-        );
-        // Before the cue guard elapses nothing is muted.
-        assert!(controller.poll(t0 + Duration::from_millis(100)).is_empty());
-        assert!(!controller.hal.is_muted(1));
-        assert_eq!(controller.next_due(), Some(t0 + START_CUE_GUARD));
+    fn mutes_when_the_start_cue_finishes_and_restores_at_stop() {
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        assert!(arm(&mut c, 7, true, &clock, MS(0)).is_empty());
+        // Nothing before the cue report, even past its 70 ms tone.
+        assert!(c.poll(clock.at(MS(100))).is_empty());
+        assert!(!c.hal.is_muted(1));
+        assert_eq!(c.next_due(), Some(clock.at(START_CUE_CAP).instant));
 
-        let events = controller.poll(t0 + START_CUE_GUARD);
+        let events = cue(&mut c, 7, &clock, MS(120));
         assert_eq!(outcomes(&events), vec![Outcome::Engaged]);
+        assert_eq!(events[0].trigger, Some(Trigger::CueFinished));
+        assert_eq!(events[0].since_start_ms, Some(120));
         assert_eq!(events[0].transport, Some(Transport::BuiltIn));
-        assert!(controller.hal.is_muted(1));
+        assert!(c.hal.is_muted(1));
         assert_eq!(
-            controller.store.records,
-            vec![QuietRecord {
-                device_uid: "speakers".into(),
-                elements: vec![0]
-            }]
+            c.store.records,
+            vec![record("speakers", clock.at(MS(120)).unix_ms)]
         );
+        assert!(c.next_due().is_none());
 
         assert_eq!(
-            outcomes(&release(&mut controller, 7)),
+            outcomes(&release(&mut c, 7, &clock, MS(4000))),
             vec![Outcome::Restored]
         );
-        assert!(!controller.hal.is_muted(1));
-        assert!(controller.store.records.is_empty());
+        assert!(!c.hal.is_muted(1));
+        assert!(c.store.records.is_empty());
     }
 
     #[test]
-    fn the_record_is_written_before_the_mute() {
-        let mut controller = controller(FakeHal::speakers());
-        controller.store.fail_save = true;
-        let events = start(&mut controller, 1, true, Instant::now());
-        assert_eq!(outcomes(&events), vec![Outcome::SkippedRecordUnavailable]);
-        assert!(
-            controller.hal.writes.is_empty(),
-            "no mute without a durable record"
-        );
-        assert!(!controller.hal.is_muted(1));
+    fn a_missing_cue_report_mutes_at_the_cap() {
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        arm(&mut c, 1, true, &clock, MS(0));
+        assert!(c.poll(clock.at(START_CUE_CAP - MS(1))).is_empty());
+        let events = c.poll(clock.at(START_CUE_CAP));
+        assert_eq!(outcomes(&events), vec![Outcome::Engaged]);
+        assert_eq!(events[0].trigger, Some(Trigger::Cap));
+        // A late report changes nothing.
+        assert!(cue(&mut c, 1, &clock, MS(900)).is_empty());
+        assert_eq!(c.hal.writes.len(), 1);
     }
 
     #[test]
-    fn disabled_setting_never_touches_the_device() {
-        let mut controller = controller(FakeHal::speakers());
-        let events = start(&mut controller, 1, false, Instant::now());
-        assert!(events.is_empty());
-        assert!(release(&mut controller, 1).is_empty());
-        assert!(controller.hal.writes.is_empty());
+    fn the_cap_outlasts_the_start_cue() {
+        // soundCues.ts: start cue 70 ms; useSoundCues adds output latency and
+        // a 30 ms margin. The cap must leave room for a slow webview on top.
+        assert!(START_CUE_CAP >= MS(70 + 30) * 4);
+    }
+
+    #[test]
+    fn each_generation_decides_once() {
+        // Headphones: skipped once, and repeated reports never query again.
+        let mut hal = FakeHal::default();
+        hal.add(9, "out", Transport::BuiltIn, true, Some(vec![0]));
+        hal.default = Some(9);
+        let clock = Clock::new();
+        let mut c = controller(hal);
+        let events = start(&mut c, 1, &clock);
+        assert_eq!(outcomes(&events), vec![Outcome::SkippedHeadphones]);
+        assert!(cue(&mut c, 1, &clock, MS(160)).is_empty());
+        assert!(c.poll(clock.at(MS(600))).is_empty());
+        assert_eq!(c.hal.queries, 1);
+
+        // A failed mute is not attempted a second time either.
+        let mut hal = FakeHal::speakers();
+        hal.fail_mute = true;
+        let mut c = controller(hal);
         assert_eq!(
-            controller.store.saves, 0,
-            "a disabled dictation does no disk work"
+            outcomes(&start(&mut c, 1, &clock)),
+            vec![Outcome::MuteFailed]
+        );
+        assert!(cue(&mut c, 1, &clock, MS(160)).is_empty());
+        assert!(c.poll(clock.at(MS(600))).is_empty());
+        assert_eq!(
+            c.hal.writes.iter().filter(|(_, _, muted)| *muted).count(),
+            1
         );
     }
 
     #[test]
-    fn a_stop_before_the_cue_guard_cancels_the_engage() {
-        let mut controller = controller(FakeHal::speakers());
-        let t0 = Instant::now();
-        controller.handle(
-            Command::Arm {
-                recording_id: 3,
-                enabled: true,
-                at: t0,
-            },
-            t0,
+    fn the_record_is_written_after_the_mute_and_a_failed_write_undoes_it() {
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        c.store.fail_save = true;
+        let events = start(&mut c, 1, &clock);
+        assert_eq!(outcomes(&events), vec![Outcome::SkippedRecordUnavailable]);
+        assert_eq!(
+            c.hal.writes,
+            vec![(1, vec![0], true), (1, vec![0], false)],
+            "muted, then undone because a crash could not be recovered"
         );
-        // Quick cancel (or a start that failed) while still Starting.
-        assert!(release(&mut controller, 3).is_empty());
-        assert!(controller.next_due().is_none());
-        assert!(controller.poll(t0 + Duration::from_secs(1)).is_empty());
-        // A late Recording for the finished generation cannot re-arm it.
-        controller.handle(
-            Command::Engage {
-                recording_id: 3,
-                at: t0,
-            },
-            t0,
+        assert!(!c.hal.is_muted(1));
+        assert!(release(&mut c, 1, &clock, MS(500)).is_empty());
+    }
+
+    #[test]
+    fn a_failed_mute_writes_no_record() {
+        let clock = Clock::new();
+        let mut hal = FakeHal::speakers();
+        hal.fail_mute = true;
+        let mut c = controller(hal);
+        assert_eq!(
+            outcomes(&start(&mut c, 1, &clock)),
+            vec![Outcome::MuteFailed]
         );
-        assert!(controller.poll(t0 + Duration::from_secs(1)).is_empty());
-        assert!(controller.hal.writes.is_empty());
+        assert_eq!(c.store.saves, 0);
+        assert!(release(&mut c, 1, &clock, MS(500)).is_empty());
+    }
+
+    #[test]
+    fn disabled_setting_never_touches_the_device_or_disk() {
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        assert!(arm(&mut c, 1, false, &clock, MS(0)).is_empty());
+        assert!(cue(&mut c, 1, &clock, MS(100)).is_empty());
+        assert!(c.poll(clock.at(MS(900))).is_empty());
+        assert!(release(&mut c, 1, &clock, MS(1000)).is_empty());
+        assert!(c.hal.writes.is_empty());
+        assert_eq!(c.hal.queries, 0);
+        assert_eq!(c.store.saves, 0);
+    }
+
+    #[test]
+    fn a_stop_before_the_cue_finishes_cancels_the_mute() {
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        arm(&mut c, 3, true, &clock, MS(0));
+        assert!(release(&mut c, 3, &clock, MS(60)).is_empty());
+        assert!(c.next_due().is_none());
+        assert!(cue(&mut c, 3, &clock, MS(110)).is_empty());
+        assert!(c.poll(clock.at(MS(900))).is_empty());
+        assert!(c.hal.writes.is_empty());
     }
 
     #[test]
     fn user_unmuting_during_the_dictation_is_left_alone() {
-        let mut controller = controller(FakeHal::speakers());
-        start(&mut controller, 2, true, Instant::now());
-        assert!(controller.hal.is_muted(1));
-        // Volume keys unmute and change the level.
-        controller.hal.user_sets(1, false);
-        let writes_before = controller.hal.writes.len();
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        start(&mut c, 2, &clock);
+        c.hal.user_sets(1, false);
+        let writes_before = c.hal.writes.len();
         assert_eq!(
-            outcomes(&release(&mut controller, 2)),
+            outcomes(&release(&mut c, 2, &clock, MS(3000))),
             vec![Outcome::UserChanged]
         );
-        assert_eq!(
-            controller.hal.writes.len(),
-            writes_before,
-            "no write after a user change"
-        );
-        assert!(controller.store.records.is_empty());
+        assert_eq!(c.hal.writes.len(), writes_before);
+        assert!(c.store.records.is_empty());
     }
 
     #[test]
     fn a_device_change_restores_the_original_and_leaves_the_new_one() {
+        let clock = Clock::new();
         let mut hal = FakeHal::speakers();
         hal.add(2, "display", Transport::Hdmi, false, Some(vec![0]));
-        let mut controller = controller(hal);
-        start(&mut controller, 4, true, Instant::now());
-        assert!(controller.hal.is_muted(1));
-        // The user switches output mid-dictation.
-        controller.hal.default = Some(2);
+        let mut c = controller(hal);
+        start(&mut c, 4, &clock);
+        c.hal.default = Some(2);
         assert_eq!(
-            outcomes(&release(&mut controller, 4)),
+            outcomes(&release(&mut c, 4, &clock, MS(3000))),
             vec![Outcome::Restored]
         );
-        assert!(!controller.hal.is_muted(1));
-        assert!(!controller.hal.is_muted(2));
-        assert!(controller
-            .hal
-            .writes
-            .iter()
-            .all(|(device, _, _)| *device == 1));
+        assert!(!c.hal.is_muted(1));
+        assert!(!c.hal.is_muted(2));
+        assert!(c.hal.writes.iter().all(|(device, _, _)| *device == 1));
     }
 
     #[test]
     fn no_software_mute_means_no_change() {
+        let clock = Clock::new();
         let mut hal = FakeHal::default();
         hal.add(5, "hdmi", Transport::Hdmi, false, None);
         hal.default = Some(5);
-        let mut controller = controller(hal);
-        let events = start(&mut controller, 1, true, Instant::now());
-        assert_eq!(outcomes(&events), vec![Outcome::SkippedNoMuteControl]);
-        assert!(controller.hal.writes.is_empty());
-        assert!(controller.store.records.is_empty());
-        assert!(release(&mut controller, 1).is_empty());
+        let mut c = controller(hal);
+        assert_eq!(
+            outcomes(&start(&mut c, 1, &clock)),
+            vec![Outcome::SkippedNoMuteControl]
+        );
+        assert!(c.hal.writes.is_empty());
+        assert_eq!(c.store.saves, 0);
+        assert!(release(&mut c, 1, &clock, MS(500)).is_empty());
     }
 
     #[test]
     fn per_channel_mute_is_used_when_there_is_no_main_element() {
+        let clock = Clock::new();
         let mut hal = FakeHal::default();
         hal.add(6, "usb", Transport::Usb, false, Some(vec![1, 2]));
         hal.default = Some(6);
-        let mut controller = controller(hal);
-        start(&mut controller, 1, true, Instant::now());
-        assert!(controller.hal.is_muted(6));
-        assert_eq!(controller.store.records[0].elements, vec![1, 2]);
-        release(&mut controller, 1);
-        assert!(!controller.hal.is_muted(6));
+        let mut c = controller(hal);
+        start(&mut c, 1, &clock);
+        assert!(c.hal.is_muted(6));
+        assert_eq!(c.store.records[0].elements, vec![1, 2]);
+        release(&mut c, 1, &clock, MS(500));
+        assert!(!c.hal.is_muted(6));
     }
 
     #[test]
     fn headphones_and_bluetooth_are_skipped() {
-        for (transport, headphone_source, expected) in [
-            (Transport::BuiltIn, true, Outcome::SkippedHeadphones),
-            (Transport::Bluetooth, false, Outcome::SkippedBluetooth),
+        for (transport, headphone_source, uid, expected) in [
+            (Transport::BuiltIn, true, "out", Outcome::SkippedHeadphones),
+            (
+                Transport::BuiltIn,
+                false,
+                BUILT_IN_HEADPHONE_UID,
+                Outcome::SkippedHeadphones,
+            ),
+            (
+                Transport::Bluetooth,
+                false,
+                "out",
+                Outcome::SkippedBluetooth,
+            ),
         ] {
+            let clock = Clock::new();
             let mut hal = FakeHal::default();
-            hal.add(9, "out", transport, headphone_source, Some(vec![0]));
+            hal.add(9, uid, transport, headphone_source, Some(vec![0]));
             hal.default = Some(9);
-            let mut controller = controller(hal);
-            let events = start(&mut controller, 1, true, Instant::now());
-            assert_eq!(outcomes(&events), vec![expected]);
-            assert!(controller.hal.writes.is_empty());
+            let mut c = controller(hal);
+            assert_eq!(outcomes(&start(&mut c, 1, &clock)), vec![expected]);
+            assert!(c.hal.writes.is_empty());
         }
     }
 
     #[test]
-    fn unclear_routes_still_mute() {
+    fn unclear_routes_and_usb_headsets_still_mute() {
         for transport in [
             Transport::Unknown,
             Transport::Aggregate,
             Transport::Virtual,
             Transport::AirPlay,
             Transport::DisplayPort,
+            Transport::Usb,
         ] {
+            let clock = Clock::new();
             let mut hal = FakeHal::default();
             hal.add(9, "out", transport, false, Some(vec![0]));
             hal.default = Some(9);
-            let mut controller = controller(hal);
-            let events = start(&mut controller, 1, true, Instant::now());
-            assert_eq!(outcomes(&events), vec![Outcome::Engaged], "{transport:?}");
+            let mut c = controller(hal);
+            assert_eq!(
+                outcomes(&start(&mut c, 1, &clock)),
+                vec![Outcome::Engaged],
+                "{transport:?}"
+            );
         }
     }
 
     #[test]
     fn an_already_muted_output_is_not_recorded_or_unmuted() {
+        let clock = Clock::new();
         let mut hal = FakeHal::speakers();
         hal.user_sets(1, true);
-        let mut controller = controller(hal);
-        let events = start(&mut controller, 1, true, Instant::now());
-        assert_eq!(outcomes(&events), vec![Outcome::SkippedAlreadyMuted]);
-        assert!(release(&mut controller, 1).is_empty());
-        assert!(controller.hal.is_muted(1), "the user's mute stays");
-        assert!(controller.hal.writes.is_empty());
+        let mut c = controller(hal);
+        assert_eq!(
+            outcomes(&start(&mut c, 1, &clock)),
+            vec![Outcome::SkippedAlreadyMuted]
+        );
+        assert!(release(&mut c, 1, &clock, MS(500)).is_empty());
+        assert!(c.hal.is_muted(1));
+        assert!(c.hal.writes.is_empty());
     }
 
     #[test]
     fn only_audible_channels_are_muted_and_restored() {
+        let clock = Clock::new();
         let mut hal = FakeHal::default();
         hal.add(6, "usb", Transport::Usb, false, Some(vec![1, 2]));
         hal.default = Some(6);
-        hal.devices.get_mut(&6).unwrap().muted.insert(2, true);
-        let mut controller = controller(hal);
-        start(&mut controller, 1, true, Instant::now());
-        assert_eq!(controller.store.records[0].elements, vec![1]);
-        release(&mut controller, 1);
-        assert!(!controller.hal.devices[&6].muted[&1]);
-        assert!(controller.hal.devices[&6].muted[&2]);
+        hal.device(6).muted.insert(2, true);
+        let mut c = controller(hal);
+        start(&mut c, 1, &clock);
+        assert_eq!(c.store.records[0].elements, vec![1]);
+        release(&mut c, 1, &clock, MS(500));
+        assert!(!c.hal.devices[&6].muted[&1]);
+        assert!(c.hal.devices[&6].muted[&2]);
     }
 
     #[test]
-    fn a_failed_mute_clears_the_record() {
-        let mut hal = FakeHal::speakers();
-        hal.fail_set = true;
-        let mut controller = controller(hal);
-        let events = start(&mut controller, 1, true, Instant::now());
-        assert_eq!(outcomes(&events), vec![Outcome::MuteFailed]);
-        assert!(controller.store.records.is_empty());
-        assert!(release(&mut controller, 1).is_empty());
-    }
-
-    #[test]
-    fn crash_recovery_restores_from_the_record() {
+    fn crash_recovery_restores_a_fresh_record() {
+        let clock = Clock::new();
         let mut hal = FakeHal::speakers();
         hal.user_sets(1, true);
-        let mut controller = controller(hal);
-        controller.store.records = vec![QuietRecord {
-            device_uid: "speakers".into(),
-            elements: vec![0],
-        }];
-        let events = controller.recover_after_exit();
+        let mut c = controller(hal);
+        c.store.records = vec![record("speakers", clock.unix_ms)];
+        let events = c.recover_after_exit(clock.at(Duration::from_secs(90)));
         assert_eq!(outcomes(&events), vec![Outcome::RestoredAfterExit]);
         assert_eq!(events[0].recording_id, 0);
-        assert!(!controller.hal.is_muted(1));
-        assert!(controller.store.records.is_empty());
+        assert!(!c.hal.is_muted(1));
+        assert!(c.store.records.is_empty());
+    }
+
+    #[test]
+    fn an_expired_record_is_dropped_without_touching_the_device() {
+        let clock = Clock::new();
+        let mut hal = FakeHal::speakers();
+        // The user muted on purpose after the crash.
+        hal.user_sets(1, true);
+        let mut c = controller(hal);
+        c.store.records = vec![record("speakers", clock.unix_ms)];
+        let events = c.recover_after_exit(clock.at(RECORD_MAX_AGE + MS(1)));
+        assert_eq!(outcomes(&events), vec![Outcome::Expired]);
+        assert!(c.hal.is_muted(1), "a deliberate mute is never undone");
+        assert!(c.hal.writes.is_empty());
+        assert!(c.store.records.is_empty());
+        assert!(c.next_due().is_none());
+    }
+
+    #[test]
+    fn a_record_from_the_future_counts_as_expired() {
+        let clock = Clock::new();
+        let mut hal = FakeHal::speakers();
+        hal.user_sets(1, true);
+        let mut c = controller(hal);
+        c.store.records = vec![record("speakers", clock.unix_ms + 60_000)];
+        assert_eq!(
+            outcomes(&c.recover_after_exit(clock.at(MS(0)))),
+            vec![Outcome::Expired]
+        );
+        assert!(c.hal.writes.is_empty());
     }
 
     #[test]
     fn crash_recovery_respects_a_user_unmute_and_clears_the_record() {
-        let mut controller = controller(FakeHal::speakers());
-        controller.store.records = vec![QuietRecord {
-            device_uid: "speakers".into(),
-            elements: vec![0],
-        }];
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        c.store.records = vec![record("speakers", clock.unix_ms)];
         assert_eq!(
-            outcomes(&controller.recover_after_exit()),
+            outcomes(&c.recover_after_exit(clock.at(MS(5000)))),
             vec![Outcome::UserChanged]
         );
-        assert!(controller.hal.writes.is_empty());
-        assert!(controller.store.records.is_empty());
+        assert!(c.hal.writes.is_empty());
+        assert!(c.store.records.is_empty());
     }
 
     #[test]
-    fn a_missing_device_keeps_the_record_and_retries_at_the_next_start() {
-        let mut controller = controller(FakeHal::speakers());
-        start(&mut controller, 1, true, Instant::now());
-        controller.hal.devices.get_mut(&1).unwrap().present = false;
+    fn an_unreadable_mute_keeps_the_record_and_retries_promptly() {
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        start(&mut c, 1, &clock);
+        // Undocking: the device is still listed but its mute cannot be read.
+        c.hal.device(1).read_fails = true;
         assert_eq!(
-            outcomes(&release(&mut controller, 1)),
+            outcomes(&release(&mut c, 1, &clock, MS(2000))),
+            vec![Outcome::Unreadable]
+        );
+        assert_eq!(c.store.records.len(), 1, "kept on disk");
+        assert!(c.hal.is_muted(1));
+        let due = c.next_due().expect("a retry is scheduled");
+        assert_eq!(due, clock.at(MS(2000) + RETRY_DELAYS[0]).instant);
+
+        // Still unreadable on the first retry; readable on the next.
+        assert_eq!(
+            outcomes(&c.poll(clock.at(MS(2500)))),
+            vec![Outcome::Unreadable]
+        );
+        assert_eq!(c.store.records.len(), 1);
+        c.hal.device(1).read_fails = false;
+        let next = c.next_due().unwrap();
+        assert_eq!(next, clock.at(MS(2500) + RETRY_DELAYS[1]).instant);
+        assert_eq!(
+            outcomes(&c.poll(clock.at(MS(3500)))),
+            vec![Outcome::Restored]
+        );
+        assert!(!c.hal.is_muted(1));
+        assert!(c.store.records.is_empty());
+        assert!(c.next_due().is_none());
+    }
+
+    #[test]
+    fn an_unreadable_mute_at_launch_keeps_the_record() {
+        let clock = Clock::new();
+        let mut hal = FakeHal::speakers();
+        hal.user_sets(1, true);
+        hal.device(1).read_fails = true;
+        let mut c = controller(hal);
+        c.store.records = vec![record("speakers", clock.unix_ms)];
+        assert_eq!(
+            outcomes(&c.recover_after_exit(clock.at(MS(1000)))),
+            vec![Outcome::Unreadable]
+        );
+        assert_eq!(c.store.records.len(), 1);
+        c.hal.device(1).read_fails = false;
+        assert_eq!(
+            outcomes(&c.poll(clock.at(MS(1500)))),
+            vec![Outcome::Restored]
+        );
+        assert!(!c.hal.is_muted(1));
+        assert!(c.store.records.is_empty());
+    }
+
+    #[test]
+    fn a_failed_unmute_is_retried() {
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        start(&mut c, 1, &clock);
+        c.hal.fail_unmute = true;
+        assert_eq!(
+            outcomes(&release(&mut c, 1, &clock, MS(1000))),
+            vec![Outcome::RestoreFailed]
+        );
+        c.hal.fail_unmute = false;
+        assert_eq!(
+            outcomes(&c.poll(clock.at(MS(1500)))),
+            vec![Outcome::Restored]
+        );
+        assert!(!c.hal.is_muted(1));
+    }
+
+    #[test]
+    fn a_replugged_device_is_restored_without_waiting_for_a_dictation() {
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        start(&mut c, 1, &clock);
+        c.hal.device(1).present = false;
+        assert_eq!(
+            outcomes(&release(&mut c, 1, &clock, MS(1000))),
             vec![Outcome::DeviceMissing]
         );
+        // Quiet retries while it stays unplugged.
+        assert!(c.poll(clock.at(MS(1500))).is_empty());
+        assert!(c.poll(clock.at(MS(2500))).is_empty());
+        c.hal.device(1).present = true;
         assert_eq!(
-            controller.store.records.len(),
-            1,
-            "kept for the next launch"
+            outcomes(&c.poll(clock.at(MS(4500)))),
+            vec![Outcome::Restored]
         );
+        assert!(!c.hal.is_muted(1));
+        assert!(c.next_due().is_none());
+    }
 
-        // Plugged back in; the next dictation start restores it first.
-        controller.hal.devices.get_mut(&1).unwrap().present = true;
-        let t1 = Instant::now();
-        let events = controller.handle(
-            Command::Arm {
-                recording_id: 2,
-                enabled: false,
-                at: t1,
-            },
-            t1,
-        );
+    #[test]
+    fn retries_stop_when_the_record_expires() {
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        start(&mut c, 1, &clock);
+        c.hal.device(1).present = false;
+        release(&mut c, 1, &clock, MS(1000));
+        let mut polls = 0;
+        let mut last = Vec::new();
+        while let Some(due) = c.next_due() {
+            let offset = due.duration_since(clock.instant);
+            last = c.poll(clock.at(offset));
+            polls += 1;
+            assert!(polls < 100, "retrying must end");
+        }
+        assert_eq!(outcomes(&last), vec![Outcome::Expired]);
+        assert!(c.store.records.is_empty());
+        // Replugged later: a deliberate mute after replug is left alone.
+        c.hal.device(1).present = true;
+        assert!(arm(&mut c, 2, false, &clock, RECORD_MAX_AGE * 2).is_empty());
+        assert!(c.hal.is_muted(1));
+    }
+
+    #[test]
+    fn a_missing_device_is_retried_at_the_next_start_too() {
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        start(&mut c, 1, &clock);
+        c.hal.device(1).present = false;
+        release(&mut c, 1, &clock, MS(1000));
+        c.hal.device(1).present = true;
+        // The next dictation starts before the first retry is due.
+        let events = arm(&mut c, 2, false, &clock, MS(1200));
         assert_eq!(outcomes(&events), vec![Outcome::Restored]);
-        assert!(!controller.hal.is_muted(1));
-        assert!(controller.store.records.is_empty());
+        assert!(!c.hal.is_muted(1));
+        assert!(c.store.records.is_empty());
     }
 
     #[test]
     fn stale_generations_cannot_release_or_engage_the_current_one() {
-        let mut controller = controller(FakeHal::speakers());
-        start(&mut controller, 10, true, Instant::now());
-        assert!(release(&mut controller, 9).is_empty());
-        assert!(controller.hal.is_muted(1));
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        arm(&mut c, 10, true, &clock, MS(0));
+        assert!(cue(&mut c, 9, &clock, MS(100)).is_empty());
+        assert!(!c.hal.is_muted(1));
+        cue(&mut c, 10, &clock, MS(110));
+        assert!(release(&mut c, 9, &clock, MS(500)).is_empty());
+        assert!(c.hal.is_muted(1));
         assert_eq!(
-            outcomes(&release(&mut controller, 10)),
+            outcomes(&release(&mut c, 10, &clock, MS(900))),
             vec![Outcome::Restored]
         );
     }
 
     #[test]
     fn a_new_start_restores_a_generation_that_was_never_released() {
-        let mut controller = controller(FakeHal::speakers());
-        start(&mut controller, 1, true, Instant::now());
-        let t1 = Instant::now();
-        let events = controller.handle(
-            Command::Arm {
-                recording_id: 2,
-                enabled: true,
-                at: t1,
-            },
-            t1,
-        );
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        start(&mut c, 1, &clock);
+        let events = arm(&mut c, 2, true, &clock, MS(2000));
         assert_eq!(outcomes(&events), vec![Outcome::Restored]);
-        assert!(!controller.hal.is_muted(1));
+        assert!(!c.hal.is_muted(1));
         assert_eq!(
-            outcomes(&controller.poll(t1 + START_CUE_GUARD)),
+            outcomes(&cue(&mut c, 2, &clock, MS(2100))),
             vec![Outcome::Engaged]
         );
     }
 
     #[test]
-    fn recovering_releases_and_a_resumed_recording_engages_again() {
-        let mut controller = controller(FakeHal::speakers());
-        let t0 = Instant::now();
-        start(&mut controller, 5, true, t0);
-        let events = controller.handle(
-            Command::Release {
-                recording_id: 5,
-                terminal: false,
-            },
-            t0 + Duration::from_secs(1),
-        );
-        assert_eq!(outcomes(&events), vec![Outcome::Restored]);
-        assert!(!controller.hal.is_muted(1));
-        let resumed = t0 + Duration::from_secs(2);
-        let events = controller.handle(
-            Command::Engage {
-                recording_id: 5,
-                at: resumed,
-            },
-            resumed,
-        );
-        assert_eq!(
-            outcomes(&events),
-            vec![Outcome::Engaged],
-            "guard already elapsed"
-        );
-        assert!(controller.hal.is_muted(1));
-        release(&mut controller, 5);
-        assert!(!controller.hal.is_muted(1));
-    }
-
-    #[test]
     fn shutdown_restores_an_engaged_mute() {
-        let mut controller = controller(FakeHal::speakers());
-        start(&mut controller, 1, true, Instant::now());
-        assert_eq!(outcomes(&controller.shutdown()), vec![Outcome::Restored]);
-        assert!(!controller.hal.is_muted(1));
-        assert!(controller.store.records.is_empty());
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        start(&mut c, 1, &clock);
+        assert_eq!(
+            outcomes(&c.shutdown(clock.at(MS(900)))),
+            vec![Outcome::Restored]
+        );
+        assert!(!c.hal.is_muted(1));
+        assert!(c.store.records.is_empty());
     }
 
     #[test]
@@ -1603,43 +1939,52 @@ mod tests {
         use DictationStatus::*;
         assert_eq!(signal_for(Idle, Starting), Some(Signal::Arm));
         assert_eq!(signal_for(Recovering, Starting), None);
-        assert_eq!(signal_for(Starting, Recording), Some(Signal::Engage));
-        assert_eq!(signal_for(Recovering, Recording), Some(Signal::Engage));
-        assert_eq!(
-            signal_for(Recording, Recovering),
-            Some(Signal::Release { terminal: false })
-        );
-        for to in [Processing, Idle] {
-            for from in [Starting, Recording, Recovering] {
-                assert_eq!(
-                    signal_for(from, to),
-                    Some(Signal::Release { terminal: true })
-                );
+        assert_eq!(signal_for(Starting, Recording), None);
+        for to in [Recovering, Processing, Idle] {
+            for from in [Starting, Recording, Recovering, Processing] {
+                if from != to {
+                    assert_eq!(
+                        signal_for(from, to),
+                        Some(Signal::Release),
+                        "{from:?}->{to:?}"
+                    );
+                }
             }
         }
-        // File transcription never arms.
-        assert_eq!(
-            signal_for(Idle, Processing),
-            Some(Signal::Release { terminal: true })
-        );
+        // File transcription never arms; its release is a no-op.
+        assert_eq!(signal_for(Idle, Processing), Some(Signal::Release));
         assert_eq!(signal_for(Recording, Recording), None);
     }
 
     #[test]
     fn route_classification() {
-        let device = |transport, headphone_source| OutputDevice {
+        let device = |transport, headphone_source, uid: &str| OutputDevice {
             id: 1,
-            uid: "x".into(),
+            uid: uid.into(),
             transport,
             headphone_source,
         };
-        assert_eq!(route(&device(Transport::BuiltIn, false)), Route::Speakers);
-        assert_eq!(route(&device(Transport::BuiltIn, true)), Route::Headphones);
         assert_eq!(
-            route(&device(Transport::Bluetooth, false)),
+            route(&device(Transport::BuiltIn, false, "BuiltInSpeakerDevice")),
+            Route::Speakers
+        );
+        assert_eq!(
+            route(&device(Transport::BuiltIn, true, "x")),
+            Route::Headphones
+        );
+        assert_eq!(
+            route(&device(Transport::BuiltIn, false, BUILT_IN_HEADPHONE_UID)),
+            Route::Headphones
+        );
+        // The UID alone is not trusted on a non-built-in device.
+        assert_eq!(
+            route(&device(Transport::Usb, false, BUILT_IN_HEADPHONE_UID)),
+            Route::Speakers
+        );
+        assert_eq!(
+            route(&device(Transport::Bluetooth, false, "x")),
             Route::Bluetooth
         );
-        assert_eq!(route(&device(Transport::Usb, false)), Route::Speakers);
         assert_eq!(Transport::from_code(None), Transport::Unknown);
         assert_eq!(
             Transport::from_code(Some(u32::from_be_bytes(*b"zzzz"))),
@@ -1648,46 +1993,48 @@ mod tests {
     }
 
     #[test]
-    fn file_store_round_trips_a_content_free_record() {
+    fn file_store_round_trips_a_record() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = FileStore::new(Some(dir.path().to_path_buf()));
         assert!(store.load().is_empty());
-        let record = QuietRecord {
+        let saved = QuietRecord {
             device_uid: "BuiltInSpeakerDevice".into(),
             elements: vec![0],
+            muted_at_unix_ms: 1_800_000_000_000,
         };
-        assert!(store.save(std::slice::from_ref(&record)));
+        assert!(store.save(std::slice::from_ref(&saved)));
         let path = dir.path().join(RECORD_FILE_NAME);
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["schema_version"], 2);
         let keys: Vec<_> = json["entries"][0]
             .as_object()
             .unwrap()
             .keys()
             .cloned()
             .collect();
-        assert_eq!(keys, vec!["device_uid".to_string(), "elements".to_string()]);
+        assert_eq!(keys, vec!["device_uid", "elements", "muted_at_unix_ms"]);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600);
         }
-        assert_eq!(store.load(), vec![record]);
+        assert_eq!(store.load(), vec![saved]);
         assert!(store.save(&[]));
         assert!(!path.exists());
         assert!(store.save(&[]), "clearing a missing file succeeds");
     }
 
     #[test]
-    fn file_store_rejects_bad_or_oversized_files() {
+    fn file_store_rejects_old_bad_or_oversized_files() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(RECORD_FILE_NAME);
         let mut store = FileStore::new(Some(dir.path().to_path_buf()));
+        // v1 records carry no mute time; they are never acted on.
         std::fs::write(
             &path,
-            "{\"schema_version\":2,\"entries\":[{\"device_uid\":\"a\",\"elements\":[0]}]}",
+            "{\"schema_version\":1,\"entries\":[{\"device_uid\":\"a\",\"elements\":[0]}]}",
         )
         .unwrap();
         assert!(store.load().is_empty());
@@ -1695,24 +2042,20 @@ mod tests {
         assert!(store.load().is_empty());
         std::fs::write(
             &path,
-            "{\"schema_version\":1,\"entries\":[{\"device_uid\":\"\",\"elements\":[0]}]}",
+            "{\"schema_version\":2,\"entries\":[{\"device_uid\":\"\",\"elements\":[0],\"muted_at_unix_ms\":1}]}",
         )
         .unwrap();
         assert!(store.load().is_empty());
         std::fs::write(&path, " ".repeat(RECORD_MAX_BYTES as usize + 1)).unwrap();
         assert!(store.load().is_empty());
-        // No data directory: nothing can be recorded, so nothing is muted.
-        assert!(!FileStore::new(None).save(&[QuietRecord {
-            device_uid: "a".into(),
-            elements: vec![0]
-        }]));
+        assert!(!FileStore::new(None).save(&[record("a", 1)]));
     }
 
     #[test]
     fn a_stale_unreadable_record_file_is_cleared_at_launch() {
-        let mut controller = controller(FakeHal::speakers());
-        controller.store.records = Vec::new();
-        assert!(controller.recover_after_exit().is_empty());
-        assert_eq!(controller.store.saves, 1);
+        let clock = Clock::new();
+        let mut c = controller(FakeHal::speakers());
+        assert!(c.recover_after_exit(clock.at(MS(0))).is_empty());
+        assert_eq!(c.store.saves, 1);
     }
 }

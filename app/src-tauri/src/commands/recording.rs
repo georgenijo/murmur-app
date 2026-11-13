@@ -4147,6 +4147,14 @@ pub(crate) fn sanitize_app_profiles(
         .collect()
 }
 
+/// The main window finished this dictation's start cue (or played none), so
+/// "Mute speakers while dictating" may mute now. Fire-and-forget: it only sends
+/// a message to the output-quieting worker, which ignores stale generations.
+#[tauri::command]
+pub fn report_start_cue_finished(recording_id: u64) {
+    crate::output_quieting::start_cue_finished(recording_id);
+}
+
 #[tauri::command]
 pub async fn configure_dictation(
     options: serde_json::Value,
