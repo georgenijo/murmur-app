@@ -65,8 +65,8 @@ preparation job. Missing or expired credentials fail without publishing.
   build with `could not find native static library sherpa-onnx-c-api`. The step
   deletes that directory and runs `cargo clean --release -p sherpa-onnx-sys`
   (`--release` is required; the plain form only cleans the dev profile), so the
-  libraries are downloaded fresh and the saved cache is complete. The policy
-  validator enforces this step and its position.
+  libraries are downloaded fresh on every run. The cache never keeps them, so
+  the step must stay. The policy validator enforces this step and its position.
 - No release workflow uses a self-hosted runner. In particular, pull-request
   code is never sent to a Mac Mini or other signing/release host.
 
