@@ -15,7 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
   chord such as Shift+arrow selection or Fn+arrow navigation ends the short
   recording it started instead of running on. Double-tap recordings already
   ignored typed keys. Known limit: if the trigger's release is missed, typing
-  no longer ends the hold; tap the trigger or press Escape.
+  no longer ends the hold; tap the trigger, or press Escape to discard the
+  recording.
 
 ## [0.66.0] - 2026-11-12
 

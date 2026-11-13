@@ -219,7 +219,10 @@ A non-modifier key pressed after the arming window, while the trigger is still
 held, is judged by the key and the hold's age (`HOLD_CHORD_WINDOW_MS`,
 1 second). For a modifier or Fn trigger, every key inside the arming window
 still ends the hold before a recording starts, so a fast Shift+Space or
-Fn+Space never records. F-key triggers have no arming window.
+Fn+Space never records. F-key triggers have no arming window. In Both mode an
+F-key hold still waits 200 ms before it becomes a recording, and a space in
+that time is ignored rather than ending the hold, so the recording then starts
+and runs until the key is released.
 
 - **Space, at any age**: ignored. The recording continues until the trigger
   is released (#1109).
@@ -268,7 +271,7 @@ example the emoji picker's search field.
 listener (the event tap was disabled by a timeout, or secure input was on
 when the key came up), a hold stays held. Before #1109 the next typed key
 ended it. Now the recording continues until the next press and release of
-the trigger, or Escape.
+the trigger, or Escape, which discards the recording.
 
 ### Rejection Rules
 
