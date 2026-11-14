@@ -381,7 +381,9 @@ pub(crate) fn ensure_window(app: &tauri::AppHandle) {
     if app.get_webview_window(label).is_some() {
         return;
     }
-    let blob = super::settings_store::read_settings_blob(app).ok().flatten();
+    let blob = super::settings_store::read_settings_blob(app)
+        .ok()
+        .flatten();
     if !live_words_enabled(blob.as_deref()) {
         return;
     }
