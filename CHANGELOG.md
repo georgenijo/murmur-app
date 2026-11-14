@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.66.1] - 2026-11-14
+
 ### Fixed
 
 - Typing while holding the dictation trigger no longer ends the dictation
