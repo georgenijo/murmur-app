@@ -12,16 +12,26 @@ import {
 
 const DIAGNOSTICS_TAB_REQUESTED_EVENT = 'diagnostics-tab-requested';
 
-/** The window is created hidden at launch. Its data loads (event history,
- * performance runs, resource samples) wait until the window is first shown:
- * `show_diagnostics_window` emits the tab request, and a focus covers any other
- * way the window reaches the user. Once shown it stays live, so reopening it
- * costs nothing and events keep accumulating. The listeners attach only after
- * settings hydration, so a window that was shown or focused before then (a
- * pop-out right after launch) is detected on mount. */
+declare global {
+  interface Window { __MURMUR_DIAGNOSTICS_TAB__?: string }
+}
+
+/** The tab `show_diagnostics_window` asked for when it built this window. The
+ * tab event it also emits can arrive before this page listens. */
+export function initialDiagnosticsTab(): DiagnosticsTab | null {
+  const tab = typeof window === 'undefined' ? undefined : window.__MURMUR_DIAGNOSTICS_TAB__;
+  return typeof tab === 'string' && isDiagnosticsTab(tab) ? tab : null;
+}
+
+/** The window is built when it is first opened and destroyed on close. Its
+ * data loads (event history, performance runs, resource samples) wait until
+ * the window is shown: a build carries the requested tab, a reopen of a live
+ * window emits it, and a focus covers any other way the window reaches the
+ * user. The listeners attach only after settings hydration, so a window that
+ * was shown or focused before then is detected on mount. */
 export function DiagnosticsWindowApp() {
-  const [requestedTab, setRequestedTab] = useState<DiagnosticsTab>('events');
-  const [shown, setShown] = useState(false);
+  const [requestedTab, setRequestedTab] = useState<DiagnosticsTab>(() => initialDiagnosticsTab() ?? 'events');
+  const [shown, setShown] = useState(() => initialDiagnosticsTab() !== null);
 
   useEffect(() => {
     let disposed = false;

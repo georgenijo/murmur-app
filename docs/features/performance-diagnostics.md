@@ -194,7 +194,7 @@ never enter this event.
 | `get_performance_store_health` | Read available/unavailable state and bounded recovery evidence |
 | `recover_performance_store` | Explicitly retry initialization without restarting Murmur; destructive reinitialization requires confirmed caller intent |
 | `clear_performance_diagnostics` | Clear only the diagnostics database |
-| `show_diagnostics_window` | Show the persistent pop-out on an exact allowlisted tab. The pop-out is created hidden at launch and loads nothing until it is first shown (the tab request or a focus activates it); after that it stays live |
+| `show_diagnostics_window` | Show the persistent pop-out on an exact allowlisted tab. The pop-out is built on first open with that tab and destroyed on close; reopening a live pop-out emits the tab request |
 | `performance-run-completed` | Live typed completion event |
 | `performance-resource-sample` | Live typed one-second sample event |
 

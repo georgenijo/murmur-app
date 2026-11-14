@@ -136,6 +136,32 @@ describe('DiagnosticsWindowApp native chrome', () => {
     expect(lastProps().active).toBe(false);
   });
 
+  it('opens on the tab it was built with, before any tab event arrives', async () => {
+    await act(async () => root.unmount());
+    workspaceMock.mockClear();
+    window.__MURMUR_DIAGNOSTICS_TAB__ = 'runs';
+    try {
+      root = createRoot(container);
+      await act(async () => root.render(<DiagnosticsWindowApp />));
+      expect(workspaceMock.mock.calls[0]?.[0]).toMatchObject({ active: true, requestedTab: 'runs' });
+    } finally {
+      delete window.__MURMUR_DIAGNOSTICS_TAB__;
+    }
+  });
+
+  it('ignores an unknown built-with tab', async () => {
+    await act(async () => root.unmount());
+    workspaceMock.mockClear();
+    window.__MURMUR_DIAGNOSTICS_TAB__ = 'nope';
+    try {
+      root = createRoot(container);
+      await act(async () => root.render(<DiagnosticsWindowApp />));
+      expect(lastProps()).toMatchObject({ active: false, requestedTab: 'events' });
+    } finally {
+      delete window.__MURMUR_DIAGNOSTICS_TAB__;
+    }
+  });
+
   it('activates on mount when the document already has focus', async () => {
     await act(async () => root.unmount());
     workspaceMock.mockClear();

@@ -357,13 +357,72 @@ fn hide_for_recording(app: &tauri::AppHandle, recording_id: u64, trigger: HideTr
     }));
 }
 
-pub(crate) fn apply_initial_size(app: &tauri::AppHandle) {
+fn apply_initial_size(app: &tauri::AppHandle) {
     POPOVER.apply_initial_size(app, WIDTH, HEIGHT);
+}
+
+/// Whether a settings blob leaves Live Words on. A missing or unreadable value
+/// means the default, which is on.
+fn live_words_enabled(blob: Option<&str>) -> bool {
+    blob.and_then(|blob| serde_json::from_str::<serde_json::Value>(blob).ok())
+        .and_then(|value| value.get("overlayLiveWords").and_then(|v| v.as_bool()))
+        .unwrap_or(true)
+}
+
+/// Build the Live Words window the first time a dictation that can show it
+/// starts, rather than at launch: someone who has Live Words off, or uses a
+/// model without live partials, never pays for its webview. The page loads
+/// while the first partial is still being decoded, and partials carry all the
+/// words so far, so a tick that lands before it is ready loses nothing. It
+/// asks the overlay for its current lift on load. Blocking: it waits for the
+/// main thread to build the webview, so run it off the async workers.
+pub(crate) fn ensure_window(app: &tauri::AppHandle) {
+    let label = super::overlay_material::LIVE_WORDS_LABEL;
+    if app.get_webview_window(label).is_some() {
+        return;
+    }
+    let blob = super::settings_store::read_settings_blob(app)
+        .ok()
+        .flatten();
+    if !live_words_enabled(blob.as_deref()) {
+        return;
+    }
+    let Some(config) = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == label)
+        .cloned()
+    else {
+        return;
+    };
+    let built = tauri::WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build());
+    match built {
+        Ok(_) => {
+            apply_initial_size(app);
+            tracing::info!(target: "system", "dictation preview window created");
+        }
+        // Another dictation built it first.
+        Err(_) if app.get_webview_window(label).is_some() => {}
+        Err(error) => {
+            tracing::warn!(target: "system", %error, "dictation preview window could not be created");
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_words_follows_the_saved_setting_and_defaults_on() {
+        assert!(live_words_enabled(None));
+        assert!(live_words_enabled(Some("not json")));
+        assert!(live_words_enabled(Some(r#"{"model":"tiny.en"}"#)));
+        assert!(live_words_enabled(Some(r#"{"overlayLiveWords":true}"#)));
+        assert!(!live_words_enabled(Some(r#"{"overlayLiveWords":false}"#)));
+    }
 
     fn recording_owner(log: &std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> PreviewHideOwner {
         let log = log.clone();

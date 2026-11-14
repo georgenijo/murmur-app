@@ -437,14 +437,13 @@ pub fn run() {
                     commands::overlay_material::window_destroyed(window.app_handle(), window.label());
                 }
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                    // Hide instead of destroy for persistent windows
-                    if window.label() == "main" || window.label() == "diagnostics" {
+                    // Main hides instead of closing: its webview owns dictation
+                    // state. Diagnostics really closes and is rebuilt on demand.
+                    if window.label() == "main" {
                         api.prevent_close();
-                        if window.label() == "main" {
-                            commands::microphone_preview::cancel_for_window_close(
-                                window.app_handle().clone(),
-                            );
-                        }
+                        commands::microphone_preview::cancel_for_window_close(
+                            window.app_handle().clone(),
+                        );
                         let _ = window.hide();
                         tracing::info!(target: "system", "{} window hidden on close request", window.label());
                     }
@@ -482,10 +481,6 @@ pub fn run() {
             if let Some(main_window) = app.get_webview_window("main") {
                 commands::native_window::hide_titlebar_separator(&main_window);
             }
-            if let Some(diagnostics_window) = app.get_webview_window("diagnostics") {
-                commands::native_window::hide_titlebar_separator(&diagnostics_window);
-            }
-            commands::dictation_preview::apply_initial_size(app.handle());
 
             let app_data_root = app.path().app_data_dir()?;
             #[cfg(target_os = "macos")]

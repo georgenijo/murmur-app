@@ -26,6 +26,7 @@
       },
       {
         "label": "diagnostics",
+        "create": false,
         "title": "Murmur Diagnostics",
         "url": "diagnostics.html",
         "width": 1100,
@@ -55,6 +56,7 @@
       },
       {
         "label": "dictation-preview",
+        "create": false,
         "title": "",
         "url": "dictation-preview.html",
         "width": 560,

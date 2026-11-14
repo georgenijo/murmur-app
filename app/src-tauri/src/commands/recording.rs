@@ -291,6 +291,11 @@ fn spawn_dictation_partial_ticker(
     };
     let preview: WhisperPreview = Arc::new(Mutex::new(None));
     drop(tauri::async_runtime::spawn(async move {
+        let window_app = app.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            crate::commands::dictation_preview::ensure_window(&window_app)
+        })
+        .await;
         loop {
             tokio::time::sleep(interval).await;
             if !dictation_partial_is_current(&app.state::<State>().app_state, recording_id) {
