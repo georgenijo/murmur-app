@@ -271,6 +271,21 @@ mod native {
                 let _: () = unsafe { msg_send![super(self), viewDidChangeEffectiveAppearance] };
                 self.restyle();
             }
+
+            /// Pin the blur and tint to the container's bounds. Autoresizing
+            /// only applies size deltas, so interrupted animations and
+            /// clamped shrinks left the blur short of the capsule's edge.
+            /// This runs inside any animation group moving the container,
+            /// so the layers move with it.
+            #[unsafe(method(resizeSubviewsWithOldSize:))]
+            fn resize_subviews_with_old_size(&self, _old: NSSize) {
+                let bounds = self.bounds();
+                for subview in self.subviews().iter() {
+                    if !same(subview.frame(), bounds) {
+                        subview.setFrame(bounds);
+                    }
+                }
+            }
         }
     );
 
