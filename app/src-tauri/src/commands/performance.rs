@@ -55,7 +55,7 @@ fn diagnostics_window(app: &tauri::AppHandle, tab: &str) -> Result<tauri::Webvie
             tracing::warn!(target: "system", %error, "could not configure Diagnostics window");
             unavailable()
         })?
-        .initialization_script(&initial_tab_script(tab))
+        .initialization_script(initial_tab_script(tab))
         .build()
         .map_err(|error| {
             tracing::warn!(target: "system", %error, "could not create Diagnostics window");
