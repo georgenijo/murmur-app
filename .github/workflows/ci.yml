@@ -111,6 +111,7 @@ jobs:
             tests/test_release_start.py \
             tests/test_workflow_policy.py \
             tests/test_ci_rust_library.py \
+            tests/test_dev_signing.py \
             tests/test_capture_agent_matrix.py \
             tests/test_capture_worker_smoke.py \
             tests/test_capture_first_pcm.py \
