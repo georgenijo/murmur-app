@@ -2,7 +2,6 @@ import { DEFAULT_SETTINGS } from '../../lib/settings';
 import { SettingsRow } from './SettingsRow';
 import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { useEffect, useState } from 'react';
-import { useBlockWindowParking } from '../../lib/windowParking';
 import { listen } from '@tauri-apps/api/event';
 import {
   downloadDiarizationModel,
@@ -35,7 +34,6 @@ export function MeetingDiarizationSettings({
 }: MeetingDiarizationSettingsProps) {
   const [status, setStatus] = useState<DiarizationModelStatus | null>(null);
   const [operation, setOperation] = useState<'idle' | 'downloading' | 'removing'>('idle');
-  useBlockWindowParking(operation !== 'idle');
   const [progress, setProgress] = useState<ModelDownloadProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [howItWorksOpen, setHowItWorksOpen] = useState(false);

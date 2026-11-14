@@ -1,7 +1,6 @@
 import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { Button } from '../ui/FormControls';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useBlockWindowParking } from '../../lib/windowParking';
 import { listen } from '@tauri-apps/api/event';
 import type { AudioInputInventoryV2 } from '../../lib/audioDevices';
 import {
@@ -96,7 +95,6 @@ export function MicrophoneStartupBenchmark({
   const [reports, setReports] = useState<MicrophoneStartupBenchmarkReport[]>(loadMicrophoneStartupReports);
   const [selectedAt, setSelectedAt] = useState<string | null>(() => reports[0]?.startedAt ?? null);
   const [running, setRunning] = useState(false);
-  useBlockWindowParking(running);
   const [cancelling, setCancelling] = useState(false);
   const [progress, setProgress] = useState<MicrophoneStartupBenchmarkProgress | null>(null);
   const [error, setError] = useState<string | null>(null);

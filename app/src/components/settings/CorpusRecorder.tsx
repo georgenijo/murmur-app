@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useBlockWindowParking } from '../../lib/windowParking';
 import { listen } from '@tauri-apps/api/event';
 import {
   audioDeviceSelectOptions,
@@ -70,7 +69,6 @@ export function CorpusRecorder({
   const [deviceId, setDeviceId] = useState(settings.microphone);
   const [promptIndex, setPromptIndex] = useState(0);
   const [phase, setPhase] = useState<RecorderPhase>('idle');
-  useBlockWindowParking(phase !== 'idle' && phase !== 'error');
   const [level, setLevel] = useState(0);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [summary, setSummary] = useState<CorpusSummary | null>(null);
