@@ -49,6 +49,14 @@ feature doc. For system structure see [ARCHITECTURE.md](ARCHITECTURE.md).
 - Optional amber overlay flash when a double-tap's second-tap window expires (`hotkeyMissFeedback`, off by default).
 - Global disable from the tray ("Disable Murmur") or the overlay's power button.
 
+### Mute speakers while dictating — [features/mute-speakers-while-dictating.md](features/mute-speakers-while-dictating.md)
+
+- Opt-in (`muteSpeakersWhileDictating`, off by default): mutes the default output while a live dictation records so playback stays out of the transcript, then unmutes it. Calls on that output go quiet too.
+- Changes only the output's mute, never the volume level or media playback, and opens no audio unit.
+- Skips headphones (built-in jack) and Bluetooth outputs, outputs with no software mute, and outputs that are already muted. Never applies to meetings, the microphone test, or discarded Fn key-down capture.
+- Mutes once the start cue has played out (500 ms cap) and unmutes when the stop is accepted.
+- Restores only the device it muted and leaves it alone if the user unmuted it. A local record (device UID, elements, mute time) restores the speakers at the next launch after a crash, only within 10 minutes; an older record is dropped and the Mac stays muted. Unfinished restores retry on a short backoff until then.
+
 ### Stop on silence — [features/silence-auto-stop.md](features/silence-auto-stop.md)
 
 - Opt-in hands-free finish for toggle-started recordings: 1.5s / 2.5s / 4s of trailing quiet ends the recording.
@@ -297,7 +305,7 @@ headless runner, and regression gate are excluded from normal distribution.
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 157 registered commands |
+| Rust backend | `app/src-tauri/src/` — 158 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |
 | Diagnostics MCP tool | `tools/murmur-diag/` |

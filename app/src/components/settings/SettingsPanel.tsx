@@ -329,6 +329,7 @@ const SETTINGS_SEARCH_ITEMS = [
   { page: 'general', target: 'reset-statistics', title: 'Reset statistics', detail: 'Reset local usage counters', keywords: 'stats clear' },
   { page: 'recording', target: 'microphone', title: 'Microphone', detail: 'Choose an input and check its live level', keywords: 'audio input device test level gain' },
   { page: 'recording', target: 'voice-detection', title: 'Voice detection', detail: 'Adjust silence filtering sensitivity', keywords: 'vad sensitivity noise silence' },
+  { page: 'recording', target: 'mute-speakers', title: 'Mute speakers while dictating', detail: 'Keep playback out of transcripts', keywords: 'audio volume quiet lower duck music video media playback output sound' },
   { page: 'recording', target: 'recording-trigger', title: 'Recording trigger', detail: 'Hold, double-tap, or use both', keywords: 'hotkey shortcut key timing feedback' },
   { page: 'recording', target: 'stop-on-silence', title: 'Stop on silence', detail: 'Finish hands-free recordings after quiet', keywords: 'automatic stop vad pause' },
   { page: 'delivery', target: 'auto-paste', title: 'Auto-paste', detail: 'Paste clipboard results into the active app', keywords: 'auto paste autopaste delivery clipboard' },
@@ -1064,6 +1065,12 @@ export const SettingsPanel = memo(function SettingsPanel({
                 onPreview={setPreviewVadSensitivity}
                 onCommit={(vadSensitivity) => onUpdateSettings({ vadSensitivity })}
               />}
+            />
+            <SettingToggle
+              targetId="mute-speakers" title="Mute speakers while dictating"
+              description="Keeps playback out of transcripts and quiets calls too; skipped for Bluetooth and the headphone jack"
+              checked={settings.muteSpeakersWhileDictating} defaultChecked={DEFAULT_SETTINGS.muteSpeakersWhileDictating}
+              onChange={() => onUpdateSettings({ muteSpeakersWhileDictating: !settings.muteSpeakersWhileDictating })}
             />
             </SettingsGroup>
             <SettingsGroup title="Controls">

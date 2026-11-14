@@ -1,12 +1,15 @@
 import { useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import type { MeetingRuntimePhase } from '../meetings';
+import { reportStartCueFinished } from '../dictation';
 import { playSoundCue, type SoundCue } from '../soundCues';
 
 interface SoundCueSettings {
   soundCuesEnabled: boolean;
   soundCueVolume: number;
   meetingSoundCuesEnabled: boolean;
+  /** When on, report each start cue's play-out so the speakers mute after it. */
+  muteSpeakersWhileDictating?: boolean;
 }
 
 function deliveryCue(payload: unknown): SoundCue | null {
@@ -24,20 +27,32 @@ export function useSoundCues(settings: SoundCueSettings, meetingPhase: MeetingRu
   useEffect(() => { meetingPhaseRef.current = meetingPhase; }, [meetingPhase]);
 
   useEffect(() => {
-    const play = (cue: SoundCue) => {
+    const play = (cue: SoundCue): Promise<void> | void => {
       const current = settingsRef.current;
       if (!current.soundCuesEnabled || !['idle', 'failed'].includes(meetingPhaseRef.current)) return;
-      playSoundCue(cue, current.soundCueVolume);
+      return playSoundCue(cue, current.soundCueVolume);
+    };
+    // The speakers mute only once the start cue has played out, or at once
+    // when there is no cue to wait for.
+    const startCue = (payload: unknown) => {
+      const played = play('start');
+      const recordingId = (payload as { recordingId?: unknown } | null)?.recordingId;
+      if (!settingsRef.current.muteSpeakersWhileDictating || typeof recordingId !== 'number') return;
+      void Promise.resolve(played).then(() => reportStartCueFinished(recordingId));
     };
     let cancelled = false;
     const unlistens: Array<() => void> = [];
+    const register = (event: string, handler: (payload: unknown) => void) => {
+      listen<unknown>(event, ({ payload }) => handler(payload))
+        .then((unlisten) => cancelled ? unlisten() : unlistens.push(unlisten)).catch(() => {});
+    };
     const subscribe = (event: string, cue: SoundCue | ((payload: unknown) => SoundCue | null)) => {
-      listen<unknown>(event, ({ payload }) => {
+      register(event, (payload) => {
         const resolved = typeof cue === 'function' ? cue(payload) : cue;
         if (resolved) play(resolved);
-      }).then((unlisten) => cancelled ? unlisten() : unlistens.push(unlisten)).catch(() => {});
+      });
     };
-    subscribe('dictation-generation-started', 'start');
+    register('dictation-generation-started', startCue);
     subscribe('recording-status-changed', (payload) => payload === 'processing' ? 'stop' : null);
     subscribe('dictation-delivery-outcome', deliveryCue);
     subscribe('recording-initialization-failed', 'failure');

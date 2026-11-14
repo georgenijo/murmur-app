@@ -538,6 +538,7 @@ const COMMAND_LABELS: &[&str] = &[
     "remove_smart_turn_model",
     "remove_streaming_vad_model",
     "rename_meeting_remote_speaker",
+    "report_start_cue_finished",
     "request_accessibility_permission",
     "request_calendar_permission",
     "request_microphone_access",

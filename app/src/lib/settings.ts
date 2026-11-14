@@ -332,6 +332,13 @@ export interface Settings {
    * the regular VAD. Fetches a small (2.3 MB) VAD model the first time it is on.
    */
   streamingPipelineEnabled: boolean;
+  /**
+   * Mute the Mac's speakers while a dictation records, then unmute them when it
+   * ends, so playback stays out of the transcript. Off by default because it
+   * also silences calls. Skipped for headphones and Bluetooth outputs, never
+   * used for meetings, and resolved once when a dictation starts.
+   */
+  muteSpeakersWhileDictating: boolean;
 }
 
 export type ModelOption =
@@ -547,6 +554,7 @@ export const DEFAULT_SETTINGS: Settings = {
   correctionFuzzy: true,
   homophoneContextEnabled: false,
   streamingPipelineEnabled: false,
+  muteSpeakersWhileDictating: false,
 };
 
 export const STORAGE_KEY = 'dictation-settings';
@@ -1172,6 +1180,11 @@ function settingsFromBlob(stored: string | null, repairCache: boolean): Settings
       // Experimental and opt-in: absent or malformed values stay off.
       if (typeof parsed.streamingPipelineEnabled !== 'boolean') {
         parsed.streamingPipelineEnabled = DEFAULT_SETTINGS.streamingPipelineEnabled;
+      }
+
+      // Opt-in: absent or malformed values leave the speakers alone.
+      if (typeof parsed.muteSpeakersWhileDictating !== 'boolean') {
+        parsed.muteSpeakersWhileDictating = DEFAULT_SETTINGS.muteSpeakersWhileDictating;
       }
 
       let settings = { ...DEFAULT_SETTINGS, ...parsed } as Settings;
