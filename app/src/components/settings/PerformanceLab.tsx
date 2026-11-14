@@ -2,6 +2,7 @@ import { MiddleTruncate } from '../ui/middle-truncate';
 import { ConfirmActionButton } from '../ui/ConfirmActionButton';
 import { Button } from '../ui/FormControls';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useBlockWindowParking } from '../../lib/windowParking';
 import { listen } from '@tauri-apps/api/event';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
@@ -171,6 +172,7 @@ export function PerformanceLab({ status, settings, onUpdateSettings, audioInvent
   const [copied, setCopied] = useState(false);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [downloading, setDownloading] = useState<string | null>(null);
+  useBlockWindowParking(running || downloading !== null);
   const [downloadProgress, setDownloadProgress] = useState<ModelDownloadProgress | null>(null);
   const [fileTranscribing, setFileTranscribing] = useState(false);
   const [corpusBusy, setCorpusBusy] = useState(false);

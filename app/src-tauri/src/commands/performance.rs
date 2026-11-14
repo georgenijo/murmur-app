@@ -26,14 +26,53 @@ fn require_diagnostics_window(label: &str) -> Result<(), String> {
     }
 }
 
+const DIAGNOSTICS_LABEL: &str = "diagnostics";
+
+/// The script that hands a newly built Diagnostics page its first tab: the
+/// page is still loading when `show_diagnostics_window` would emit it.
+fn initial_tab_script(tab: &str) -> String {
+    let tab = serde_json::to_string(tab).unwrap_or_else(|_| "\"events\"".to_string());
+    format!("window.__MURMUR_DIAGNOSTICS_TAB__ = {tab};")
+}
+
+/// Diagnostics is built on first open, not at launch, and destroyed on close,
+/// so its webview costs nothing until someone uses it.
+fn diagnostics_window(app: &tauri::AppHandle, tab: &str) -> Result<tauri::WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(DIAGNOSTICS_LABEL) {
+        return Ok(window);
+    }
+    let unavailable = || "The Diagnostics window is unavailable.".to_string();
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == DIAGNOSTICS_LABEL)
+        .cloned()
+        .ok_or_else(unavailable)?;
+    let window = tauri::WebviewWindowBuilder::from_config(app, &config)
+        .map_err(|error| {
+            tracing::warn!(target: "system", %error, "could not configure Diagnostics window");
+            unavailable()
+        })?
+        .initialization_script(&initial_tab_script(tab))
+        .build()
+        .map_err(|error| {
+            tracing::warn!(target: "system", %error, "could not create Diagnostics window");
+            unavailable()
+        })?;
+    crate::commands::native_window::hide_titlebar_separator(&window);
+    crate::window_state::restore_created(&window);
+    Ok(window)
+}
+
+// Async: building a webview must not run inside a main-thread command.
 #[tauri::command]
-pub fn show_diagnostics_window(app: tauri::AppHandle, tab: String) -> Result<(), String> {
+pub async fn show_diagnostics_window(app: tauri::AppHandle, tab: String) -> Result<(), String> {
     if !DIAGNOSTICS_TABS.contains(&tab.as_str()) {
         return Err("Unknown diagnostics tab.".to_string());
     }
-    let Some(window) = app.get_webview_window("diagnostics") else {
-        return Err("The Diagnostics window is unavailable.".to_string());
-    };
+    let window = diagnostics_window(&app, &tab)?;
     window.show().map_err(|error| {
         tracing::warn!(target: "system", %error, "could not show Diagnostics window");
         "The Diagnostics window could not be opened.".to_string()
@@ -113,7 +152,17 @@ pub fn clear_performance_diagnostics(state: tauri::State<'_, State>) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use super::{require_diagnostics_window, DIAGNOSTICS_TABS, DIAGNOSTICS_WINDOW_LABELS};
+    use super::{
+        initial_tab_script, require_diagnostics_window, DIAGNOSTICS_TABS, DIAGNOSTICS_WINDOW_LABELS,
+    };
+
+    #[test]
+    fn a_built_diagnostics_window_receives_its_tab_as_a_json_string() {
+        assert_eq!(
+            initial_tab_script("runs"),
+            r#"window.__MURMUR_DIAGNOSTICS_TAB__ = "runs";"#
+        );
+    }
 
     #[test]
     fn pop_out_tab_allowlist_covers_every_diagnostics_view() {

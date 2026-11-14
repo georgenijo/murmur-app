@@ -8,6 +8,7 @@ import { Button, Input } from '../ui/FormControls';
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { defaultButtonKeyDown } from '../../lib/defaultButton';
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useId } from 'react';
+import { useBlockWindowParking } from '../../lib/windowParking';
 import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import {
@@ -667,6 +668,7 @@ export const SettingsPanel = memo(function SettingsPanel({
     | { phase: 'downloading'; progress: ModelDownloadProgress }
     | { phase: 'error'; message: string }
   >({ phase: 'idle' });
+  useBlockWindowParking(modelDownload.phase === 'downloading');
   const downloadUnlistenRef = useRef<(() => void) | null>(null);
   const downloadModelRef = useRef<string | null>(null);
   const downloadAttemptRef = useRef<number | null>(null);

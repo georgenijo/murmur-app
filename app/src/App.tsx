@@ -1,6 +1,7 @@
 import { dictationKeyLabel } from './lib/settings';
 import { MeetingsPanel } from './components/history';
 import { useHomeSidebar } from './lib/hooks/useHomeSidebar';
+import { useWindowParked } from './lib/windowParking';
 import { AppSurface } from './components/ui/AppSurface';
 import { useId, useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { defaultButtonKeyDown } from './lib/defaultButton';
@@ -110,6 +111,7 @@ function App() {
     };
   }, []);
 
+  const windowParked = useWindowParked();
   const [modelReady, setModelReady] = useState<boolean | null>(null);
   const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>('unknown');
   const mainAppReady = onboardingState === 'done' && modelReady === true;
@@ -707,8 +709,12 @@ function App() {
     presentDeliveryRecoveryNotice,
   ]);
 
-  if (onboardingState === 'unknown' || modelReady === null) {
-    return <div className="h-full min-h-0 bg-background" />;
+  // A long-hidden main window keeps its hooks but drops its visible UI, which
+  // is most of this webview's memory. Showing the window renders it again.
+  // First-run setup is never parked: its step and download live in the UI.
+  const parkUi = windowParked && mainAppReady;
+  if (parkUi || onboardingState === 'unknown' || modelReady === null) {
+    return <div className="h-full min-h-0 bg-background" data-window-parked={parkUi || undefined} />;
   }
   if (onboardingState === 'needed') {
     return (
