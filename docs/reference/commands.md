@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 158 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 159 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -251,7 +251,8 @@ frontend.
 | `recover_performance_store` | `allow_reinitialize: bool` | `Result<PerformanceStoreHealthV1, String>` | Main/Diagnostics-window-only explicit reopen/check. Quarantine/reinitialize additionally requires confirmed caller intent plus fresh corruption or invalid-record evidence; a healthy database is never deleted. |
 | `get_capture_health_history` | — | `CaptureHealthHistoryV1` | The 20 newest finalized dictation startup observations. Each contains only `startupMs`, `usedFallback`, and an optional allowlisted fallback backend enum. |
 | `clear_performance_diagnostics` | — | `Result<(), String>` | Deletes local run history, samples, and capture-startup observations; emits `performance-diagnostics-cleared`. |
-| `show_diagnostics_window` | `tab: String` | `Result<(), String>` | Shows and focuses the persistent Diagnostics window, selecting one of its exact allowlisted tabs. |
+| `show_diagnostics_window` | `tab: String` | `Result<(), String>` | Builds the Diagnostics window if it is not open, shows and focuses it, and selects one of its exact allowlisted tabs. The request is retained in Rust with an increasing sequence number and emitted as `diagnostics-tab-requested`. |
+| `get_requested_diagnostics_tab` | — | `Option<DiagnosticsTabRequest>` | The newest tab request `{tab, seq}`, for a Diagnostics page that subscribed after it was emitted. Only the Diagnostics window gets an answer. |
 
 ## Logging (`commands/logging.rs`)
 

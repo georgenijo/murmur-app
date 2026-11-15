@@ -194,7 +194,7 @@ never enter this event.
 | `get_performance_store_health` | Read available/unavailable state and bounded recovery evidence |
 | `recover_performance_store` | Explicitly retry initialization without restarting Murmur; destructive reinitialization requires confirmed caller intent |
 | `clear_performance_diagnostics` | Clear only the diagnostics database |
-| `show_diagnostics_window` | Show the persistent pop-out on an exact allowlisted tab. The pop-out is created hidden at launch and loads nothing until it is first shown (the tab request or a focus activates it); after that it stays live |
+| `show_diagnostics_window` | Show the pop-out on an exact allowlisted tab. The pop-out is built on first open and destroyed on close. Rust retains the newest request `{tab, seq}` and emits it; the page subscribes first, then reads it with `get_requested_diagnostics_tab`, and keeps the higher `seq`, so a request made while the page loads is never lost or overwritten by an older one |
 | `performance-run-completed` | Live typed completion event |
 | `performance-resource-sample` | Live typed one-second sample event |
 
@@ -209,8 +209,8 @@ the structured canonical correlation field rather than parsing event summaries.
 Every Diagnostics tab has a **Pop out** action. It opens the persistent
 Diagnostics window on the currently selected tab, allowing the main window to
 remain navigable while events, resource samples, and UI latency samples update.
-Closing the pop-out hides it so opening it again avoids another WebView cold
-start.
+Closing the pop-out destroys its WebView, so it costs no memory while closed;
+opening it again builds a new one.
 
 The production regression watch counts exhausted
 `performance.store_operation_failed` events by install, app version,

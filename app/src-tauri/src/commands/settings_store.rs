@@ -348,6 +348,10 @@ fn notify_settings_committed(app: &tauri::AppHandle, blob: &str) {
         .and_then(|value| value.get("overlayLiveWords").and_then(|v| v.as_bool()))
         .unwrap_or(true);
     let _ = app.emit_to("dictation-preview", "live-words-consent-persisted", enabled);
+    if enabled {
+        // Live Words turned on during a recording whose window was skipped.
+        crate::commands::dictation_preview::ensure_window_after_consent(app);
+    }
     let _ = app.emit_to("overlay", "overlay-settings-persisted", ());
 }
 

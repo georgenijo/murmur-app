@@ -210,6 +210,11 @@ impl HideOwnership {
         true
     }
 
+    /// The recording whose partial ticker last started.
+    fn ticker_recording(&self) -> u64 {
+        self.ticker.load(Ordering::SeqCst)
+    }
+
     /// Whether the ticker for `recording_id` should hide on exit.
     pub(crate) fn ticker_should_hide(&self, recording_id: u64) -> bool {
         self.delivery.load(Ordering::SeqCst) != recording_id
@@ -357,13 +362,251 @@ fn hide_for_recording(app: &tauri::AppHandle, recording_id: u64, trigger: HideTr
     }));
 }
 
-pub(crate) fn apply_initial_size(app: &tauri::AppHandle) {
+fn apply_initial_size(app: &tauri::AppHandle) {
     POPOVER.apply_initial_size(app, WIDTH, HEIGHT);
+}
+
+/// Whether a settings blob leaves Live Words on. A missing or unreadable value
+/// means the default, which is on.
+fn live_words_enabled(blob: Option<&str>) -> bool {
+    blob.and_then(|blob| serde_json::from_str::<serde_json::Value>(blob).ok())
+        .and_then(|value| value.get("overlayLiveWords").and_then(|v| v.as_bool()))
+        .unwrap_or(true)
+}
+
+/// Serializes every attempt to build the Live Words window (the ticker's start
+/// and a consent commit). Tauri validates a label and registers the window in
+/// separate steps, so two builders can both pass validation and create two
+/// native windows. Held across the build, which waits for the main thread:
+/// only blocking-pool workers take it, never the main thread, the dictation
+/// start path, or the settings save path (those only spawn a worker).
+static CREATE_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Build once under `gate`: the window must still be absent, the recording
+/// still current, and Live Words on, all checked after the gate is held. The
+/// recording is checked again after the settings read, the slow step. Returns
+/// whether `build` ran.
+fn create_once(
+    gate: &std::sync::Mutex<()>,
+    window_exists: impl Fn() -> bool,
+    recording_is_current: impl Fn() -> bool,
+    live_words_on: impl FnOnce() -> bool,
+    build: impl FnOnce(),
+) -> bool {
+    let _gate = gate.lock_or_recover();
+    if window_exists() || !recording_is_current() || !live_words_on() || !recording_is_current() {
+        return false;
+    }
+    build();
+    true
+}
+
+/// Build the Live Words window the first time a dictation that can show it
+/// starts, rather than at launch: someone who has Live Words off, or uses a
+/// model without live partials, never pays for its webview. The page loads
+/// while the first partial is still being decoded, and partials carry all the
+/// words so far, so a tick that lands before it is ready loses nothing. It
+/// asks the overlay for its current lift on load. Blocking: it waits for the
+/// main thread to build the webview, so run it off the async workers. Builds
+/// only for `recording_id` while that recording is current.
+pub(crate) fn ensure_window(app: &tauri::AppHandle, recording_id: u64) {
+    let label = super::overlay_material::LIVE_WORDS_LABEL;
+    create_once(
+        &CREATE_GATE,
+        || app.get_webview_window(label).is_some(),
+        || can_show(&app.state::<State>().app_state, recording_id),
+        || {
+            let blob = super::settings_store::read_settings_blob(app)
+                .ok()
+                .flatten();
+            live_words_enabled(blob.as_deref())
+        },
+        || build_window(app, label),
+    );
+}
+
+fn build_window(app: &tauri::AppHandle, label: &str) {
+    let Some(config) = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == label)
+        .cloned()
+    else {
+        return;
+    };
+    let built = tauri::WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build());
+    match built {
+        Ok(_) => {
+            apply_initial_size(app);
+            tracing::info!(target: "system", "dictation preview window created");
+        }
+        Err(error) => {
+            tracing::warn!(target: "system", %error, "dictation preview window could not be created");
+        }
+    }
+}
+
+/// The recording a missing Live Words window should be built for once Live
+/// Words is switched on: the current recording while it is still recording and
+/// its partial ticker runs (so the model can show live words). `None` when
+/// the window exists or no such recording is active.
+fn recording_awaiting_window(
+    app_state: &crate::state::AppState,
+    ownership: &HideOwnership,
+    window_exists: bool,
+) -> Option<u64> {
+    if window_exists {
+        return None;
+    }
+    let recording_id = ownership.ticker_recording();
+    can_show(app_state, recording_id).then_some(recording_id)
+}
+
+/// Live Words was committed on. If it was off when the current recording's
+/// ticker started, `ensure_window` skipped building the window and will not
+/// run again for that recording, so build it now, in the background. The
+/// recording is rechecked on the worker, again under the creation gate.
+pub(crate) fn ensure_window_after_consent(app: &tauri::AppHandle) {
+    let label = super::overlay_material::LIVE_WORDS_LABEL;
+    let window_exists = app.get_webview_window(label).is_some();
+    let Some(recording_id) =
+        recording_awaiting_window(&app.state::<State>().app_state, &OWNERSHIP, window_exists)
+    else {
+        return;
+    };
+    let app = app.clone();
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        if recording_awaiting_window(&app.state::<State>().app_state, &OWNERSHIP, false)
+            == Some(recording_id)
+        {
+            ensure_window(&app, recording_id);
+        }
+    }));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+    #[test]
+    fn overlapping_creation_attempts_build_exactly_one_window() {
+        // The ticker's start-up worker and a consent-triggered worker both see
+        // Live Words on and no window. Only one may build.
+        let gate = std::sync::Mutex::new(());
+        let exists = AtomicBool::new(false);
+        let builds = AtomicUsize::new(0);
+        let start = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    start.wait();
+                    create_once(
+                        &gate,
+                        || exists.load(Ordering::SeqCst),
+                        || true,
+                        || true,
+                        || {
+                            builds.fetch_add(1, Ordering::SeqCst);
+                            // Native creation takes a while; registration
+                            // happens only after it.
+                            std::thread::sleep(std::time::Duration::from_millis(60));
+                            exists.store(true, Ordering::SeqCst);
+                        },
+                    );
+                });
+            }
+        });
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn creation_rechecks_the_recording_after_the_gate_and_after_settings_io() {
+        let gate = std::sync::Mutex::new(());
+        let built = AtomicBool::new(false);
+        let calls = AtomicUsize::new(0);
+        // The recording ends while the settings are read: current at first
+        // check, gone at the second.
+        let made = create_once(
+            &gate,
+            || false,
+            || calls.fetch_add(1, Ordering::SeqCst) == 0,
+            || true,
+            || built.store(true, Ordering::SeqCst),
+        );
+        assert!(!made && !built.load(Ordering::SeqCst));
+        // Live Words off builds nothing.
+        assert!(!create_once(&gate, || false, || true, || false, || {}));
+    }
+
+    #[test]
+    fn enabling_live_words_mid_recording_asks_for_the_missing_window() {
+        // Off at launch, a dictation starts and its ticker registers; the
+        // window was not built. Turning Live Words on must ask for it without
+        // another recording starting.
+        let app_state = crate::state::AppState::default();
+        let ownership = HideOwnership::new();
+        assert_eq!(
+            recording_awaiting_window(&app_state, &ownership, false),
+            None
+        );
+
+        app_state.recording_id.store(7, Ordering::SeqCst);
+        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        assert!(ownership.ticker_started(7));
+        assert_eq!(
+            recording_awaiting_window(&app_state, &ownership, false),
+            Some(7)
+        );
+        // An existing window needs nothing.
+        assert_eq!(
+            recording_awaiting_window(&app_state, &ownership, true),
+            None
+        );
+    }
+
+    #[test]
+    fn a_recording_that_is_over_or_replaced_gets_no_late_window() {
+        let app_state = crate::state::AppState::default();
+        let ownership = HideOwnership::new();
+        app_state.recording_id.store(7, Ordering::SeqCst);
+        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        assert!(ownership.ticker_started(7));
+
+        // Cancelled.
+        app_state.cancelled_id.store(7, Ordering::SeqCst);
+        assert_eq!(
+            recording_awaiting_window(&app_state, &ownership, false),
+            None
+        );
+        app_state.cancelled_id.store(0, Ordering::SeqCst);
+
+        // Stopped.
+        app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        assert_eq!(
+            recording_awaiting_window(&app_state, &ownership, false),
+            None
+        );
+        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+
+        // A successor without a ticker (model without live words) is not eligible.
+        app_state.recording_id.store(8, Ordering::SeqCst);
+        assert_eq!(
+            recording_awaiting_window(&app_state, &ownership, false),
+            None
+        );
+    }
+
+    #[test]
+    fn live_words_follows_the_saved_setting_and_defaults_on() {
+        assert!(live_words_enabled(None));
+        assert!(live_words_enabled(Some("not json")));
+        assert!(live_words_enabled(Some(r#"{"model":"tiny.en"}"#)));
+        assert!(live_words_enabled(Some(r#"{"overlayLiveWords":true}"#)));
+        assert!(!live_words_enabled(Some(r#"{"overlayLiveWords":false}"#)));
+    }
 
     fn recording_owner(log: &std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> PreviewHideOwner {
         let log = log.clone();

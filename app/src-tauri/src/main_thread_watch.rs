@@ -502,6 +502,7 @@ const COMMAND_LABELS: &[&str] = &[
     "get_performance_resource_window",
     "get_performance_run",
     "get_performance_store_health",
+    "get_requested_diagnostics_tab",
     "get_resource_usage",
     "get_smart_auto_microphone_status",
     "get_status",

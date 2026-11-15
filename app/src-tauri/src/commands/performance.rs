@@ -1,7 +1,7 @@
 use crate::performance_metrics::{
     PerformanceRunListV1, PerformanceRunV1, PerformanceStoreHealthV1, ResourceSampleV1,
 };
-use crate::State;
+use crate::{MutexExt, State};
 use tauri::{Emitter, Manager};
 
 const DIAGNOSTICS_TABS: [&str; 6] = [
@@ -26,14 +26,83 @@ fn require_diagnostics_window(label: &str) -> Result<(), String> {
     }
 }
 
+const DIAGNOSTICS_LABEL: &str = "diagnostics";
+
+/// One request to show a Diagnostics tab. `seq` grows with each request, so a
+/// page that hears about the same request twice (event and read) or in the
+/// wrong order keeps the newest.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct DiagnosticsTabRequest {
+    tab: String,
+    seq: u64,
+}
+
+/// The latest tab asked for, retained in Rust: the page may not be listening
+/// yet when a request is emitted (a new window is still loading, or a second
+/// request arrives while the first page hydrates). A page subscribes to the
+/// event first, then reads this.
+#[derive(Default)]
+struct TabRequests(std::sync::Mutex<Option<DiagnosticsTabRequest>>);
+
+impl TabRequests {
+    fn request(&self, tab: &str) -> DiagnosticsTabRequest {
+        let mut latest = self.0.lock_or_recover();
+        let seq = latest.as_ref().map_or(1, |request| request.seq + 1);
+        let request = DiagnosticsTabRequest {
+            tab: tab.to_string(),
+            seq,
+        };
+        *latest = Some(request.clone());
+        request
+    }
+
+    fn latest(&self) -> Option<DiagnosticsTabRequest> {
+        self.0.lock_or_recover().clone()
+    }
+}
+
+static TAB_REQUESTS: TabRequests = TabRequests(std::sync::Mutex::new(None));
+
+/// Diagnostics is built on first open, not at launch, and destroyed on close,
+/// so its webview costs nothing until someone uses it.
+fn diagnostics_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(DIAGNOSTICS_LABEL) {
+        return Ok(window);
+    }
+    let unavailable = || "The Diagnostics window is unavailable.".to_string();
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == DIAGNOSTICS_LABEL)
+        .cloned()
+        .ok_or_else(unavailable)?;
+    let window = tauri::WebviewWindowBuilder::from_config(app, &config)
+        .map_err(|error| {
+            tracing::warn!(target: "system", %error, "could not configure Diagnostics window");
+            unavailable()
+        })?
+        .build()
+        .map_err(|error| {
+            tracing::warn!(target: "system", %error, "could not create Diagnostics window");
+            unavailable()
+        })?;
+    crate::commands::native_window::hide_titlebar_separator(&window);
+    crate::window_state::restore_created(&window);
+    Ok(window)
+}
+
+// Async: building a webview must not run inside a main-thread command.
 #[tauri::command]
-pub fn show_diagnostics_window(app: tauri::AppHandle, tab: String) -> Result<(), String> {
+pub async fn show_diagnostics_window(app: tauri::AppHandle, tab: String) -> Result<(), String> {
     if !DIAGNOSTICS_TABS.contains(&tab.as_str()) {
         return Err("Unknown diagnostics tab.".to_string());
     }
-    let Some(window) = app.get_webview_window("diagnostics") else {
-        return Err("The Diagnostics window is unavailable.".to_string());
-    };
+    // Record the request before anything is built or shown, so a page that
+    // loads late reads it and a later request always carries a higher `seq`.
+    let request = TAB_REQUESTS.request(&tab);
+    let window = diagnostics_window(&app)?;
     window.show().map_err(|error| {
         tracing::warn!(target: "system", %error, "could not show Diagnostics window");
         "The Diagnostics window could not be opened.".to_string()
@@ -41,11 +110,23 @@ pub fn show_diagnostics_window(app: tauri::AppHandle, tab: String) -> Result<(),
     let _ = window.unminimize();
     let _ = window.set_focus();
     window
-        .emit("diagnostics-tab-requested", tab)
+        .emit("diagnostics-tab-requested", request)
         .map_err(|error| {
             tracing::warn!(target: "system", %error, "could not select Diagnostics tab");
             "The Diagnostics tab could not be selected.".to_string()
         })
+}
+
+/// The newest tab request, for a Diagnostics page that subscribed to
+/// `diagnostics-tab-requested` after it was emitted.
+#[tauri::command]
+pub fn get_requested_diagnostics_tab(
+    window: tauri::WebviewWindow,
+) -> Option<DiagnosticsTabRequest> {
+    if window.label() != DIAGNOSTICS_LABEL {
+        return None;
+    }
+    TAB_REQUESTS.latest()
 }
 
 /// Run a diagnostics-store read on the blocking pool. These reads open and scan
@@ -113,7 +194,19 @@ pub fn clear_performance_diagnostics(state: tauri::State<'_, State>) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use super::{require_diagnostics_window, DIAGNOSTICS_TABS, DIAGNOSTICS_WINDOW_LABELS};
+    use super::{
+        require_diagnostics_window, TabRequests, DIAGNOSTICS_TABS, DIAGNOSTICS_WINDOW_LABELS,
+    };
+
+    #[test]
+    fn the_latest_tab_request_is_retained_with_a_growing_sequence() {
+        let requests = TabRequests::default();
+        assert_eq!(requests.latest(), None);
+        let first = requests.request("events");
+        let second = requests.request("runs");
+        assert!(second.seq > first.seq);
+        assert_eq!(requests.latest(), Some(second));
+    }
 
     #[test]
     fn pop_out_tab_allowlist_covers_every_diagnostics_view() {

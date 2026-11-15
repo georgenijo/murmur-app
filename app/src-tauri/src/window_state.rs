@@ -168,6 +168,111 @@ pub(crate) struct WindowState {
     painted: std::sync::atomic::AtomicBool,
 }
 
+/// Apply the saved background and geometry to a workspace window, or centre it
+/// at the default size and record that as its geometry.
+fn restore_window(window: &tauri::WebviewWindow, saved: &mut SavedState) -> tauri::Result<()> {
+    let label = window.label();
+    if let Some(color) = saved
+        .backgrounds
+        .get(label)
+        .and_then(|value| parse_background(value).ok())
+    {
+        // A renderer failure uses the last resolved background rather
+        // than flashing the configuration fallback in a dark theme.
+        window.set_background_color(Some(color))?;
+    }
+    let monitors = window.available_monitors()?;
+    let displays: Vec<_> = monitors
+        .iter()
+        .map(|monitor| {
+            Display::from_physical(
+                Rect {
+                    x: monitor.position().x as f64,
+                    y: monitor.position().y as f64,
+                    width: monitor.size().width as f64,
+                    height: monitor.size().height as f64,
+                },
+                monitor.scale_factor(),
+            )
+        })
+        .collect();
+    let restored = saved
+        .windows
+        .get(label)
+        .and_then(|saved| restore_geometry(saved, &displays));
+    if let Some(restored) = restored {
+        // Tao converts Physical arguments using the window's CURRENT
+        // scale, which can still be the launch display's scale. Logical
+        // arguments preserve the target geometry through that move.
+        window.set_size(restored.inner_size)?;
+        window.set_position(LogicalPosition::new(restored.bounds.x, restored.bounds.y))?;
+        if restored.maximized {
+            window.maximize()?;
+        }
+    } else {
+        window.set_size(tauri::LogicalSize::new(1100.0, 780.0))?;
+        window.center()?;
+        let position = window.outer_position()?;
+        let size = window.outer_size()?;
+        let inner = window.inner_size()?;
+        saved.windows.insert(
+            label.into(),
+            SavedWindow {
+                bounds: Rect {
+                    x: position.x as f64,
+                    y: position.y as f64,
+                    width: size.width as f64,
+                    height: size.height as f64,
+                }
+                .rounded(),
+                inner_width: inner.width,
+                inner_height: inner.height,
+                maximized: false,
+                scale_factor: Some(window.scale_factor()?),
+            },
+        );
+    }
+    Ok(())
+}
+
+/// Restore a workspace window created after launch (Diagnostics is built on
+/// first open) the same way `initialize` restores the launch windows.
+pub(crate) fn restore_created(window: &tauri::WebviewWindow) {
+    if !LABELS.contains(&window.label()) {
+        return;
+    }
+    let Some(state) = window.try_state::<WindowState>() else {
+        return;
+    };
+    // Restore from a copy: the resize and move it applies raise window events
+    // whose handler (`on_event`) takes the store lock on the main thread.
+    let label = window.label();
+    let mut copy = SavedState::default();
+    {
+        let store = state.store.lock_or_recover();
+        if let Some(background) = store.saved.backgrounds.get(label) {
+            copy.backgrounds.insert(label.into(), background.clone());
+        }
+        if let Some(geometry) = store.saved.windows.get(label) {
+            copy.windows.insert(label.into(), geometry.clone());
+        }
+    }
+    if let Err(error) = restore_window(window, &mut copy) {
+        tracing::warn!(target: "system", "window state restore failed: {error}");
+        return;
+    }
+    if let Some(geometry) = copy.windows.remove(label) {
+        state
+            .store
+            .lock_or_recover()
+            .saved
+            .windows
+            .entry(label.into())
+            .or_insert(geometry);
+    }
+    let _ = state.changed.send(());
+}
+
 pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
     let path = app.path().app_data_dir()?.join("window-state.json");
     let mut saved: SavedState = std::fs::read(&path)
@@ -177,66 +282,7 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> tauri::Result<()> {
         .unwrap_or_default();
     for label in LABELS {
         if let Some(window) = app.get_webview_window(label) {
-            if let Some(color) = saved
-                .backgrounds
-                .get(label)
-                .and_then(|value| parse_background(value).ok())
-            {
-                // A renderer failure uses the last resolved background rather
-                // than flashing the configuration fallback in a dark theme.
-                window.set_background_color(Some(color))?;
-            }
-            let monitors = window.available_monitors()?;
-            let displays: Vec<_> = monitors
-                .iter()
-                .map(|monitor| {
-                    Display::from_physical(
-                        Rect {
-                            x: monitor.position().x as f64,
-                            y: monitor.position().y as f64,
-                            width: monitor.size().width as f64,
-                            height: monitor.size().height as f64,
-                        },
-                        monitor.scale_factor(),
-                    )
-                })
-                .collect();
-            let restored = saved
-                .windows
-                .get(label)
-                .and_then(|saved| restore_geometry(saved, &displays));
-            if let Some(restored) = restored {
-                // Tao converts Physical arguments using the window's CURRENT
-                // scale, which can still be the launch display's scale. Logical
-                // arguments preserve the target geometry through that move.
-                window.set_size(restored.inner_size)?;
-                window.set_position(LogicalPosition::new(restored.bounds.x, restored.bounds.y))?;
-                if restored.maximized {
-                    window.maximize()?;
-                }
-            } else {
-                window.set_size(tauri::LogicalSize::new(1100.0, 780.0))?;
-                window.center()?;
-                let position = window.outer_position()?;
-                let size = window.outer_size()?;
-                let inner = window.inner_size()?;
-                saved.windows.insert(
-                    label.into(),
-                    SavedWindow {
-                        bounds: Rect {
-                            x: position.x as f64,
-                            y: position.y as f64,
-                            width: size.width as f64,
-                            height: size.height as f64,
-                        }
-                        .rounded(),
-                        inner_width: inner.width,
-                        inner_height: inner.height,
-                        maximized: false,
-                        scale_factor: Some(window.scale_factor()?),
-                    },
-                );
-            }
+            restore_window(&window, &mut saved)?;
         }
     }
     let store = Arc::new(Mutex::new(Store { path, saved }));

@@ -1,6 +1,6 @@
 import { AppSurface } from '../ui/AppSurface';
 import { useEffect, useState } from 'react';
-import { isTauri } from '@tauri-apps/api/core';
+import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { WindowHeader } from '../ui/WindowHeader';
@@ -11,14 +11,23 @@ import {
 } from './DiagnosticsWorkspace';
 
 const DIAGNOSTICS_TAB_REQUESTED_EVENT = 'diagnostics-tab-requested';
+const GET_REQUESTED_TAB_COMMAND = 'get_requested_diagnostics_tab';
 
-/** The window is created hidden at launch. Its data loads (event history,
- * performance runs, resource samples) wait until the window is first shown:
- * `show_diagnostics_window` emits the tab request, and a focus covers any other
- * way the window reaches the user. Once shown it stays live, so reopening it
- * costs nothing and events keep accumulating. The listeners attach only after
- * settings hydration, so a window that was shown or focused before then (a
- * pop-out right after launch) is detected on mount. */
+interface DiagnosticsTabRequest { tab: string; seq: number }
+
+function isTabRequest(value: unknown): value is DiagnosticsTabRequest {
+  if (typeof value !== 'object' || value === null) return false;
+  const { tab, seq } = value as Partial<DiagnosticsTabRequest>;
+  return typeof tab === 'string' && typeof seq === 'number';
+}
+
+/** The window is built when it is first opened and destroyed on close. Its
+ * data loads (event history, performance runs, resource samples) wait until
+ * the window is shown: a tab request shows it, and a focus covers any other
+ * way the window reaches the user. Rust retains the newest request with an
+ * increasing `seq`. The page subscribes to the event first and then reads the
+ * retained request, so a request made while the page was loading is found,
+ * and whichever of the two answers is older never overwrites a newer one. */
 export function DiagnosticsWindowApp() {
   const [requestedTab, setRequestedTab] = useState<DiagnosticsTab>('events');
   const [shown, setShown] = useState(false);
@@ -26,13 +35,22 @@ export function DiagnosticsWindowApp() {
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | undefined;
-    void listen<string>(DIAGNOSTICS_TAB_REQUESTED_EVENT, event => {
-      if (disposed) return;
+    let newestSeq = 0;
+    const apply = (request: unknown) => {
+      if (disposed || !isTabRequest(request) || request.seq <= newestSeq) return;
+      newestSeq = request.seq;
       setShown(true);
-      if (isDiagnosticsTab(event.payload)) setRequestedTab(event.payload);
-    }).then(stop => {
-      if (disposed) stop();
-      else unlisten = stop;
+      if (isDiagnosticsTab(request.tab)) setRequestedTab(request.tab);
+    };
+    void listen<unknown>(DIAGNOSTICS_TAB_REQUESTED_EVENT, event => apply(event.payload)).then(stop => {
+      if (disposed) {
+        stop();
+        return;
+      }
+      unlisten = stop;
+      if (isTauri()) {
+        void invoke<unknown>(GET_REQUESTED_TAB_COMMAND).then(apply).catch(() => {});
+      }
     });
     return () => {
       disposed = true;
