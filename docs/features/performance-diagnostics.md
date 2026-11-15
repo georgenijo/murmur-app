@@ -601,7 +601,9 @@ the decision is recorded on #1081 and the reuse step is not being built. The
 database version stays 9, so existing `performance.sqlite3` files open
 unchanged. Runs written while the companion existed keep their `shadow` JSON in
 the stored payload; it is ignored on read and no longer returned, so those runs
-display normally with no shadow section. Older builds refuse this database.
+display normally with no shadow section. Builds that support only versions
+below 9 refuse this database; previous version-9 builds accept rows without
+`shadow`.
 
 Double-tap/Both-mode single-tap stops stamp native press and release instants.
 `stopPressToRelease` measures the gesture, and `stopReleaseToCommand` measures
