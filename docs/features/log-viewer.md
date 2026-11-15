@@ -121,6 +121,16 @@ Tracing targets map to stream names used for filtering:
 
 `meeting` and `hunt` are also streams (`hunt` carries debug-only [`hunt!`](#hunting-logs) lines). The former `recording` target used by the Smart Turn check now logs as `pipeline`, and a straggler on `recording` is sanitized as `pipeline`, so string fields such as an error carrying a model path never reach `events.jsonl` or the shipper.
 
+### Hunting logs
+
+Temporary logs added while chasing a bug use `hunt!` instead of `info!`/`warn!`:
+
+```rust
+hunt!(issue = 1234, queue_len = queue.len() as u64, armed = armed, "queue state at stop");
+```
+
+It requires the issue number first, takes numeric or boolean fields and a literal message, and emits at debug on the `hunt` stream, so it is off by default, local-only and never shipped. The sanitizer drops string fields from `hunt` events in every build. Remove every `hunt!` for an issue when the issue closes. `python3 scripts/check_hunt_sites.py` (run by the `policy` CI job, covered by `tests/test_hunt_sites.py`) lists each site and fails if one has no issue number or if code emits on the `hunt` target directly; it does not call GitHub, so removal at close stays a review habit. An event that must stay on by default is not a hunting log: give it a stable `event_code` in `canonical_event_code` (`telemetry.rs`) and, if it carries any string field, an exact schema in the sanitizer.
+
 ### Session stamp
 
 Once per launch, right after telemetry starts, one `system.session_started` info event records `app_version`, a random per-launch `session_id` (16 hex characters) and `build` (`release` or `debug`). `recording_id` restarts on every launch, so a reader joins a recording to a version and launch by the nearest earlier session line instead of inferring from timestamps. Events themselves do not carry these fields.

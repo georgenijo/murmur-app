@@ -77,6 +77,13 @@ missing verification without claiming a pass, and open a user-visible UI change
 as a draft PR: it is not ready to merge until it has been exercised in the
 native app. Automated tests supplement native interaction.
 
+## Logging
+
+Hunting logs use `hunt!(issue = <number>, ...)`: debug level, local only, numeric
+and boolean fields, removed when the issue closes (`scripts/check_hunt_sites.py`
+lists them in CI). A new always-on event needs an event code in the registry.
+Debug is off by default: `MURMUR_LOG=debug` or a `debug-logging.on` flag file.
+
 ## Optional performance work
 
 Discuss benchmarks only when George mentions them. Run them only when he explicitly
