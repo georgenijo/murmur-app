@@ -24,8 +24,10 @@ Arm it either way:
 
 **The watch is armed or not only at launch, in both directions.** The switch
 saves the setting and nothing else; the control then says "Takes effect after
-you restart Murmur." until the running state matches the saved one. Turning it
-off is the same: the watch keeps running until the next launch. This is a
+you restart Murmur." until the running state matches the saved one, unless the
+environment variable forces the watch on, in which case no restart note is
+shown because a restart under the same environment would not stop it. Turning
+it off is the same: the watch keeps running until the next launch. This is a
 deliberate choice. Starting and stopping the watch while the app runs meant
 handing observers, the reporter's buffers and the busy-stretch statistics
 between two periods on a live main run loop, and each interleaving of a switch
