@@ -220,7 +220,7 @@ fn dictation_partial_window(samples: &[f32]) -> &[f32] {
 }
 
 fn emit_dictation_partial_tick(recording_id: u64, outcome: &'static str, sample_count: usize) {
-    tracing::info!(
+    tracing::debug!(
         target: "pipeline",
         event_code = "pipeline.dictation_partial_tick",
         recording_id,
@@ -5002,7 +5002,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                     | audio::AudioStartupDiagnostic::GesturePcm { .. }
                     | audio::AudioStartupDiagnostic::GestureReady { .. }
             ) {
-                tracing::info!(target: "audio", event_code = "audio.gesture_start_timing", recording_id,
+                tracing::debug!(target: "audio", event_code = "audio.gesture_start_timing", recording_id,
                     timing = ?diagnostic, "content-free physical gesture startup timing");
             }
             state

@@ -783,7 +783,7 @@ fn spawn_helper_checked(
             },
         });
     }
-    tracing::info!(
+    tracing::debug!(
         target: "audio",
         capture_id,
         resolve_ms,
@@ -3275,7 +3275,7 @@ fn run_backend(
                         active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
                     };
                 }
-                tracing::info!(
+                tracing::debug!(
                     target: "audio",
                     capture_id,
                     backend = backend_label(backend),
@@ -3440,7 +3440,7 @@ fn run_backend(
                         },
                     });
                 }
-                tracing::info!(
+                tracing::debug!(
                     target: "audio",
                     capture_id,
                     backend = backend_label(backend),

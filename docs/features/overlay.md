@@ -158,7 +158,7 @@ re-checks. Each refresh re-measures the screen on the main thread, builds one
 its calibration intent and recomputing the effective offset, and emits
 `overlay-geometry-changed` (the frontend collapses its expansion state).
 
-Each refresh logs a content-free `overlay.placement` event (target `system`)
+Each refresh logs one content-free `overlay.placement` event (target `system`), at info when the placement changed and at debug when it did not,
 with the trigger, `physical_notch`, `menu_bar_visible`, `display_left`,
 `display_w`, the resolved `band_center_x`, `in_menu_bar_band`, and `changed`.
 It carries no app names, bundle identifiers, or titles.

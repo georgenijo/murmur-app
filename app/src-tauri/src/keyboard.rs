@@ -1698,7 +1698,7 @@ static LAST_TAP_SILENCE_WARNING_AT_MS: AtomicU64 = AtomicU64::new(0);
 pub fn set_processing(processing: bool) {
     let caller = std::panic::Location::caller();
     let was_processing = IS_PROCESSING.swap(processing, Ordering::SeqCst);
-    tracing::info!(
+    tracing::debug!(
         target: "keyboard",
         processing = processing,
         was_processing = was_processing,
@@ -2102,7 +2102,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                     dictation_target_key(),
                     Instant::now(),
                 ) {
-                    tracing::info!(
+                    tracing::debug!(
                         target: "keyboard",
                         event_code = "keyboard.globe_companion_ignored",
                         event_kind = event_kind(&event.event_type),

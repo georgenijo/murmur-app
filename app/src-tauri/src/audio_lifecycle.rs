@@ -2115,7 +2115,7 @@ fn handle_worker_event(
         }
         AudioWorkerEvent::PhaseEntered { phase, .. } => {
             current.init_phase = phase;
-            tracing::info!(
+            tracing::debug!(
                 target: "audio",
                 owner = owner.telemetry_id(),
                 owner_kind = owner.kind(),
@@ -2126,7 +2126,7 @@ fn handle_worker_event(
         AudioWorkerEvent::PhaseExited {
             phase, elapsed_ms, ..
         } => {
-            tracing::info!(
+            tracing::debug!(
                 target: "audio",
                 owner = owner.telemetry_id(),
                 owner_kind = owner.kind(),

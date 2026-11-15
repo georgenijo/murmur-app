@@ -900,7 +900,7 @@ fn post_paste_native_guarded(
     if !posted.is_posted() {
         return Ok(posted);
     }
-    tracing::info!(target: "pipeline", event_code = "pipeline.paste_safety", phase_code = "post", outcome_code = "key_posted", "Paste safety decision");
+    tracing::debug!(target: "pipeline", event_code = "pipeline.paste_safety", phase_code = "post", outcome_code = "key_posted", "Paste safety decision");
     Ok(PostDecision::Posted)
 }
 
@@ -1164,7 +1164,8 @@ fn focused_field_state_unmeasured(subrole: &mut FocusSubroleDiagnostics) -> Focu
             // fail-open behavior immediately. Finder remains on the fallback
             // path because its desktop/file views are the reason this safety
             // check exists.
-            tracing::warn!(target: "pipeline", "focused_field_state: native AX query returned no focused element; allowing paste without osascript fallback");
+            // Expected for web-backed editors, so it is not a warning.
+            tracing::debug!(target: "pipeline", "focused_field_state: native AX query returned no focused element; allowing paste without osascript fallback");
             return FocusedFieldState::Unknown;
         }
         Err(native_err) => {

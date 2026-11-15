@@ -392,19 +392,29 @@ pub(crate) fn helper_entered_detached_reap() {
 }
 
 fn log_refresh(snapshot: &AudioInputInventorySnapshot, changed: bool, reason: &'static str) {
-    tracing::info!(
-        target: "audio",
-        event_code = "audio.input_inventory_refreshed",
-        schema_version = snapshot.schema_version,
-        revision = snapshot.revision,
-        status = ?snapshot.status,
-        error_code = ?snapshot.error_code,
-        input_device_count = snapshot.devices.len(),
-        default_input_available = snapshot.default_input_id.is_some(),
-        changed,
-        refresh_reason = reason,
-        "shared microphone inventory refresh completed"
-    );
+    // An unchanged refresh is routine; only a change is worth an info line.
+    macro_rules! refresh_event {
+        ($level:ident) => {
+            tracing::$level!(
+                target: "audio",
+                event_code = "audio.input_inventory_refreshed",
+                schema_version = snapshot.schema_version,
+                revision = snapshot.revision,
+                status = ?snapshot.status,
+                error_code = ?snapshot.error_code,
+                input_device_count = snapshot.devices.len(),
+                default_input_available = snapshot.default_input_id.is_some(),
+                changed,
+                refresh_reason = reason,
+                "shared microphone inventory refresh completed"
+            )
+        };
+    }
+    if changed {
+        refresh_event!(info);
+    } else {
+        refresh_event!(debug);
+    }
 }
 
 fn spawn_pending_refresh(reason: &'static str, after_idle: bool) {

@@ -243,7 +243,7 @@ impl CoreMlBackend {
             strip_punctuation(&text)
         };
 
-        tracing::info!(
+        tracing::debug!(
             target: "pipeline",
             pass_kind,
             recording_id,

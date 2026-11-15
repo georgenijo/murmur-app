@@ -914,7 +914,7 @@ pub(crate) fn detect_notch_info() -> Option<NotchInfo> {
         left_w,
         right_w,
     );
-    tracing::info!(
+    tracing::debug!(
         target: "system",
         "detect_notch_info: notch_w={}, menu_bar_h={}, safe_top={}, visible_top_gap={}, display_left={}, screen_w={}",
         info.width,
@@ -1081,17 +1081,27 @@ fn apply_placement(
         *state.display_snapshot.lock_or_recover() = Some(snapshot);
         *state.notch_info.lock_or_recover() = notch;
     }
-    tracing::info!(
-        target: "system",
-        event_code = "overlay.placement",
-        trigger = trigger.as_str(),
-        physical_notch = notch.map(|info| info.physical_notch),
-        menu_bar_visible = notch.map(|info| info.menu_bar_visible),
-        display_left,
-        display_w,
-        changed,
-        "overlay placement refreshed"
-    );
+    // One line per refresh: info when the placement changed, debug otherwise.
+    macro_rules! placement_event {
+        ($level:ident) => {
+            tracing::$level!(
+                target: "system",
+                event_code = "overlay.placement",
+                trigger = trigger.as_str(),
+                physical_notch = notch.map(|info| info.physical_notch),
+                menu_bar_visible = notch.map(|info| info.menu_bar_visible),
+                display_left,
+                display_w,
+                changed,
+                "overlay placement refreshed"
+            )
+        };
+    }
+    if changed {
+        placement_event!(info);
+    } else {
+        placement_event!(debug);
+    }
     if !changed {
         return;
     }
