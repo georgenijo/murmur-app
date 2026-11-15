@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.66.2] - 2026-11-15
+
+<!-- Release notes generated using configuration in .github/release.yml at 4fbc1877d973d09d53fd224bbd5f3bdc10ac24f9 -->
+
+## What's Changed
+### Other Changes
+* fix(overlay): keep the pill's blur fitted to the capsule by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1129
+* perf: build the Diagnostics and Live Words webviews on demand by @georgenijo in https://github.com/georgenijo/murmur-app/pull/1130
+
+
+**Full Changelog**: https://github.com/georgenijo/murmur-app/compare/v0.66.1...v0.66.2
+
 ## [0.66.1] - 2026-11-14
 
 ### Fixed
