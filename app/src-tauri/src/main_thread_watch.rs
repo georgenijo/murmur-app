@@ -837,12 +837,26 @@ fn should_arm(persisted: bool, env_armed: bool) -> bool {
     persisted || env_armed
 }
 
+/// Counts arms. The reporter keeps the number it last saw; a different one
+/// means a new armed period began, even if the reporter never saw the watch
+/// off in between.
+static PERIOD: AtomicU64 = AtomicU64::new(0);
+/// When the newest armed period began (µs since the epoch). Everything the
+/// watch records in that period is stamped at or after it, so the reporter
+/// drops older spans and pastes by timestamp and never touches newer ones,
+/// however its cleanup interleaves with a re-arm.
+static PERIOD_START_US: AtomicU64 = AtomicU64::new(0);
+
 /// Install the observers and start (or wake) the reporter. Main thread only.
 fn arm() {
     if ENABLED.load(Ordering::Acquire) {
         return;
     }
     let _ = epoch();
+    // Before anything can be recorded, so every record of this period is
+    // stamped at or after the start. The start is published before the number.
+    PERIOD_START_US.store(now_us(), Ordering::Release);
+    PERIOD.fetch_add(1, Ordering::Release);
     IS_MAIN.with(|flag| flag.set(true));
     let _ = RING.set(Ring::new());
     #[cfg(target_os = "macos")]
@@ -872,8 +886,9 @@ fn arm() {
 }
 
 /// Remove the observers and silence every hook. Main thread only, so removal
-/// cannot race an observer callback. The reporter notices on its next pass,
-/// discards what it holds, and parks until the next arm.
+/// cannot race an observer callback. The reporter notices on its next pass and
+/// parks until the next arm; what the period left behind is dropped when the
+/// next period begins (see [`PERIOD`]).
 fn disarm() {
     if !ENABLED.swap(false, Ordering::AcqRel) {
         return;
@@ -900,17 +915,28 @@ fn ensure_reporter() -> bool {
         }
         return true;
     }
-    let spawned = std::thread::Builder::new()
+    match std::thread::Builder::new()
         .name("main-thread-watch".into())
         .spawn(reporter_loop)
-        .is_ok();
-    if !spawned {
-        REPORTER_SPAWNED.store(false, Ordering::Release);
+    {
+        Ok(handle) => {
+            // Published by the spawner, so the thread's own start-up cannot
+            // race a later wake.
+            let _ = REPORTER_THREAD.set(handle.thread().clone());
+            true
+        }
+        Err(_) => {
+            REPORTER_SPAWNED.store(false, Ordering::Release);
+            false
+        }
     }
-    spawned
 }
 
 struct Reporter {
+    /// The armed period this reporter last synchronised with.
+    period: u64,
+    /// Spans and pastes stamped before this belong to an earlier period.
+    period_start_us: u64,
     history: VecDeque<Span>,
     scratch: Vec<Span>,
     standalone_window_start_us: u64,
@@ -925,6 +951,8 @@ struct Reporter {
 impl Reporter {
     fn new() -> Self {
         Self {
+            period: 0,
+            period_start_us: 0,
             history: VecDeque::with_capacity(RING_CAPACITY),
             scratch: Vec::with_capacity(RING_CAPACITY),
             standalone_window_start_us: 0,
@@ -937,19 +965,30 @@ impl Reporter {
         }
     }
 
-    /// Ready for the next armed period: spans, pending pastes and pacing from
-    /// the last one are dropped. A sampler that was turned off for holding the
-    /// main thread too long stays off for the process.
-    fn reset(&mut self) {
-        if let Some(ring) = RING.get() {
-            self.scratch.clear();
-            ring.drain_into(&mut self.scratch);
+    /// Begin the newest armed period if one started since the last look. Run
+    /// at the top of every armed pass, so a disarm and re-arm the reporter
+    /// never saw as "off" is still a new period.
+    fn sync_period(&mut self) {
+        let period = PERIOD.load(Ordering::Acquire);
+        if period != self.period {
+            self.period = period;
+            self.begin_period(PERIOD_START_US.load(Ordering::Acquire));
         }
+    }
+
+    /// Drop what earlier periods left: history, pending pastes and pacing.
+    /// Records are told apart by timestamp, not by clearing everything, so
+    /// anything the new period already recorded survives even if it arrived
+    /// while this ran; a later arm just runs this again with a later start.
+    /// A sampler that was turned off for holding the main thread too long
+    /// stays off for the process.
+    fn begin_period(&mut self, start_us: u64) {
+        self.period_start_us = start_us;
+        self.history.retain(|span| span.start_us >= start_us);
         PENDING_PASTES
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .clear();
-        self.history.clear();
+            .retain(|paste| paste.queued_us >= start_us);
         self.scratch.clear();
         self.standalone_window_start_us = 0;
         self.standalone_in_window = 0;
@@ -986,23 +1025,23 @@ fn reporter_loop() {
     // Bind the Mach calls the sampler makes while the main thread is
     // suspended, so no lazy-binding stub takes dyld's lock then.
     stack::warm_up();
-    let _ = REPORTER_THREAD.set(std::thread::current());
     let mut reporter = Reporter::new();
-    let mut holds_armed_state = true;
     loop {
+        #[cfg(test)]
+        if tests::REPORTER_STOP.load(Ordering::Acquire) {
+            return;
+        }
         if !ENABLED.load(Ordering::Acquire) {
-            // Disarmed: drop what the last armed period left, then sleep until
-            // the next arm unparks us. The timeout only covers an arm that
-            // raced this thread's start; it is a wake every 30 s, not a poll.
-            if holds_armed_state {
-                reporter.reset();
-                holds_armed_state = false;
-            }
+            // Disarmed: sleep until the next arm unparks us. The timeout only
+            // covers an arm that raced this thread's start; it is a wake every
+            // 30 s, not a poll. What the period left in shared buffers is
+            // dropped by timestamp when the next period begins.
+            reporter.history.clear();
             REPORTER_PARKED.store(false, Ordering::SeqCst);
             std::thread::park_timeout(DISARMED_PARK);
             continue;
         }
-        holds_armed_state = true;
+        reporter.sync_period();
         let now = now_us();
         reporter.sample_stack(now);
         reporter.report_rates(now);
@@ -1331,6 +1370,10 @@ impl Reporter {
         let now = now_us();
         let drained = std::mem::take(&mut self.scratch);
         for span in &drained {
+            if span.start_us < self.period_start_us {
+                // Left in the ring by an earlier armed period.
+                continue;
+            }
             if should_log_standalone(span) {
                 self.log_standalone(span, now);
             }
@@ -1394,6 +1437,11 @@ impl Reporter {
     }
 
     fn report_paste(&mut self, paste: &PasteState, now: u64) {
+        #[cfg(test)]
+        tests::REPORTED_PASTES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(paste.recording_id);
         let queued = paste.queued_us;
         let started = paste.started_us.load(Ordering::Acquire);
         let finished = paste.finished_us.load(Ordering::Acquire);
@@ -2265,11 +2313,18 @@ mod runloop {
             }
         }
         STATE.with(|state| {
-            let mut state = state.borrow_mut();
+            // The whole state, not just the timestamps: a disarm in the middle
+            // of a busy stretch leaves its phase statistics behind, and the
+            // first stretch of the next period must not inherit them.
             let now = now_us();
-            state.last_mark_us = now;
-            state.phase = Phase::Labelled(runloop_labels::OUTSIDE);
-            state.busy_start_us = now;
+            *state.borrow_mut() = State {
+                last_mark_us: now,
+                phase: Phase::Labelled(runloop_labels::OUTSIDE),
+                busy_start_us: now,
+                longest_phase: "",
+                longest_phase_us: 0,
+                segments: 0,
+            };
             BUSY_SINCE_US.store(now, Ordering::Release);
         });
         installed
@@ -2331,6 +2386,49 @@ mod runloop {
                 .iter()
                 .any(|s| s.kind == Kind::RunloopSegment && s.label == runloop_labels::WAKE));
             assert_eq!(state.busy_start_us, 0);
+        }
+
+        #[test]
+        fn arming_again_starts_the_run_loop_state_clean() {
+            let _guard = super::super::tests::enable_for_test();
+            // A disarm in the middle of a long busy stretch leaves its phase
+            // statistics in this thread's state.
+            STATE.with(|state| {
+                let mut state = state.borrow_mut();
+                transition(&mut state, Phase::Labelled(runloop_labels::DRAIN), 1_000);
+                transition(&mut state, Phase::Labelled(runloop_labels::OUTSIDE), 91_000);
+                assert_eq!(state.longest_phase_us, 90_000);
+                assert_eq!(state.longest_phase, runloop_labels::DRAIN);
+                assert_eq!(state.segments, 1);
+            });
+            super::super::tests::drain_ring();
+
+            install();
+            let (start, left_over) = STATE.with(|state| {
+                let state = state.borrow();
+                (
+                    state.busy_start_us,
+                    (state.longest_phase_us, state.longest_phase, state.segments),
+                )
+            });
+            assert_eq!(left_over, (0, "", 0), "no statistics from the last period");
+
+            // The first stretch of the new period is short and is recorded.
+            STATE.with(|state| transition(&mut state.borrow_mut(), Phase::Sleep, start + 5_000));
+            let spans = super::super::tests::drain_ring();
+            let busy = spans
+                .iter()
+                .find(|s| s.kind == Kind::RunloopBusy)
+                .expect("busy span");
+            assert_eq!(busy.duration_us, 5_000);
+            assert!(
+                busy.longest_phase_us <= busy.duration_us,
+                "a phase cannot outlast its stretch"
+            );
+            assert_eq!(busy.longest_phase, runloop_labels::OUTSIDE);
+            assert_eq!(installed_count(), 3);
+            remove();
+            assert_eq!(installed_count(), 0);
         }
     }
 }
@@ -3124,19 +3222,167 @@ mod tests {
         assert_inert();
     }
 
+    /// Makes a test-owned reporter thread return.
+    pub(super) static REPORTER_STOP: AtomicBool = AtomicBool::new(false);
+    /// Recording ids of the pastes the reporter reported.
+    pub(super) static REPORTED_PASTES: Mutex<Vec<u64>> = Mutex::new(Vec::new());
+
+    fn paste_state(recording_id: u64, queued_us: u64, submitted_us: u64) -> Arc<PasteState> {
+        Arc::new(PasteState {
+            recording_id,
+            queued_us,
+            started_us: AtomicU64::new(0),
+            finished_us: AtomicU64::new(0),
+            submitted_us: AtomicU64::new(submitted_us),
+        })
+    }
+
+    fn pending_ids() -> Vec<u64> {
+        PENDING_PASTES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .map(|paste| paste.recording_id)
+            .collect()
+    }
+
     #[test]
-    fn a_reset_reporter_drops_the_last_period_but_keeps_a_stopped_sampler_off() {
+    fn a_new_period_drops_earlier_records_by_timestamp_and_keeps_newer_ones() {
         let _guard = enable_for_test();
+        PENDING_PASTES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
         let mut reporter = Reporter::new();
-        reporter.history.push_back(Span::EMPTY);
+        reporter.history.push_back(span(Kind::Job, "old", 100, 200));
+        reporter
+            .history
+            .push_back(span(Kind::Job, "new", 5_000, 5_100));
         reporter.dropped = 4;
         reporter.stacks.disabled = true;
-        record(span(Kind::Job, "stale", 1, 2));
-        reporter.reset();
-        assert!(reporter.history.is_empty());
+        // Submitted just now, so none is due while the test runs.
+        let submitted = now_us();
+        {
+            let mut pending = PENDING_PASTES.lock().unwrap_or_else(|p| p.into_inner());
+            pending.push(paste_state(1, 100, submitted));
+            pending.push(paste_state(2, 6_000, submitted));
+        }
+        // The new period's spans are already in the ring when cleanup runs,
+        // next to a leftover of the old one.
+        record(span(Kind::Job, "leftover", 150, 250));
+        record(span(Kind::Job, "fresh", 5_500, 5_600));
+
+        reporter.begin_period(5_000);
+        let labels = |reporter: &Reporter| -> Vec<&'static str> {
+            reporter.history.iter().map(|s| s.label).collect()
+        };
+        assert_eq!(labels(&reporter), ["new"]);
+        assert_eq!(pending_ids(), [2], "only the newer paste survives");
         assert_eq!(reporter.dropped, 0);
         assert!(reporter.stacks.disabled, "the stop lasts for the process");
-        assert!(drain_ring().is_empty(), "the ring is emptied");
+
+        reporter.tick();
+        assert_eq!(
+            labels(&reporter),
+            ["new", "fresh"],
+            "a leftover in the ring is skipped, the new span kept"
+        );
+
+        // A later re-arm runs it again with a later start and drops what lay
+        // between the two.
+        reporter.begin_period(5_200);
+        assert_eq!(labels(&reporter), ["fresh"]);
+        PENDING_PASTES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+    }
+
+    #[test]
+    fn the_reporter_begins_a_period_for_every_arm_even_one_it_never_saw_off() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        ENABLED.store(false, Ordering::SeqCst);
+        IS_MAIN.with(|flag| flag.set(true));
+        let mut reporter = Reporter::new();
+        arm();
+        reporter.sync_period();
+        let first = reporter.period;
+        let first_start = reporter.period_start_us;
+        assert!(first_start > 0);
+        // Nothing changed: no new period.
+        reporter
+            .history
+            .push_back(span(Kind::Job, "kept", first_start, first_start + 1));
+        reporter.sync_period();
+        assert_eq!(reporter.history.len(), 1);
+        // Off and on again between two looks.
+        disarm();
+        arm();
+        reporter.sync_period();
+        assert_eq!(reporter.period, first + 1);
+        assert!(reporter.period_start_us > first_start);
+        assert!(
+            reporter.history.is_empty(),
+            "the old period's span is dropped"
+        );
+        disarm();
+    }
+
+    #[test]
+    fn the_real_reporter_drops_a_rapid_rearm_s_pastes_and_keeps_the_new_periods() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        ENABLED.store(false, Ordering::SeqCst);
+        IS_MAIN.with(|flag| flag.set(true));
+        REPORTER_STOP.store(false, Ordering::SeqCst);
+        REPORTED_PASTES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        PENDING_PASTES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+
+        arm();
+        let reporter = std::thread::spawn(reporter_loop);
+        // Let it start and begin the first period.
+        std::thread::sleep(Duration::from_millis(250));
+        let stale_at = now_us();
+        PENDING_PASTES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(paste_state(101, stale_at, stale_at));
+        std::thread::sleep(Duration::from_millis(2));
+        // Off and on again within microseconds, as a fast double click would:
+        // the reporter, asleep, never sees the watch off.
+        disarm();
+        arm();
+        reporter.thread().unpark();
+        let fresh_at = now_us();
+        PENDING_PASTES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(paste_state(102, fresh_at, fresh_at));
+        // Past the report delay and a drain.
+        std::thread::sleep(REPORT_DELAY + Duration::from_millis(900));
+        let reported = REPORTED_PASTES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+
+        REPORTER_STOP.store(true, Ordering::SeqCst);
+        reporter.thread().unpark();
+        reporter.join().unwrap();
+        disarm();
+        PENDING_PASTES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clear();
+        assert_eq!(
+            reported,
+            [102],
+            "the first period's paste must not be reported in the second"
+        );
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

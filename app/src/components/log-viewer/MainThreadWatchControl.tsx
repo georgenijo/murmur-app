@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   getMainThreadWatchStatus,
+  listenMainThreadWatchStatus,
   setMainThreadWatchArmed,
   type MainThreadWatchStatus,
 } from '../../lib/mainThreadWatch';
@@ -19,34 +20,55 @@ export function MainThreadWatchControl({ active = true }: { active?: boolean }) 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mountedRef = useRef(true);
+  // The newest status seen, from a read, a change made here, or a change made
+  // in another Diagnostics view. Older ones are ignored.
+  const seqRef = useRef(-1);
 
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
   }, []);
 
+  const accept = useCallback((next: MainThreadWatchStatus) => {
+    if (!mountedRef.current || next.seq < seqRef.current) return;
+    seqRef.current = next.seq;
+    setStatus(next);
+    setError(null);
+  }, []);
+
   useEffect(() => {
     if (!active) return;
     let cancelled = false;
-    getMainThreadWatchStatus()
-      .then(next => { if (!cancelled) setStatus(next); })
+    let unlisten: (() => void) | null = null;
+    // Subscribe first, then read: a change made between the two is heard, and
+    // a read that resolves after a newer event cannot overwrite it.
+    listenMainThreadWatchStatus(accept)
+      .then(stop => {
+        if (cancelled) stop();
+        else unlisten = stop;
+      })
+      .catch(() => {})
+      .then(() => getMainThreadWatchStatus())
+      .then(next => { if (!cancelled) accept(next); })
       .catch(() => { if (!cancelled) setError('Murmur could not read the main-thread watch setting.'); });
-    return () => { cancelled = true; };
-  }, [active]);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [accept, active]);
 
   const toggle = useCallback(async () => {
     if (!status || saving) return;
     setSaving(true);
     setError(null);
     try {
-      const next = await setMainThreadWatchArmed(!status.setting);
-      if (mountedRef.current) setStatus(next);
+      accept(await setMainThreadWatchArmed(!status.setting));
     } catch {
       if (mountedRef.current) setError(SAVE_ERROR);
     } finally {
       if (mountedRef.current) setSaving(false);
     }
-  }, [saving, status]);
+  }, [accept, saving, status]);
 
   const running = status?.running ?? false;
   return (

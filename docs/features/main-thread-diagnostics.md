@@ -26,10 +26,25 @@ Arm it either way:
 Arming runs on the main thread: it adds the three run-loop observers and starts
 the reporter (the first time) or wakes it. Disarming runs on the main thread
 too, so removal cannot race an observer callback: it clears the flag, removes
-the observers, and the reporter drops its buffered spans and parks, waking only
-on the next arm (and once every 30 s as a safety net). Re-arming after a
-disarm starts a clean period. A stack sampler that stopped itself for holding
-the main thread too long stays off until the next launch.
+the observers, and the reporter parks, waking only on the next arm (and once
+every 30 s as a safety net).
+
+Every arm starts a new *period*, stamped with a number and a start time before
+anything can be recorded. The reporter compares the number on each pass and, on
+a change, drops older history, pending pastes and pacing by timestamp, and skips
+older spans it drains from the ring. Because it drops by timestamp, not by
+clearing, a disarm and re-arm the reporter never saw as "off", or a re-arm that
+lands while it is cleaning up, can neither leak the old period into the new one
+nor discard what the new one already recorded. The run-loop observer state is
+reset in full on every arm, so a stretch cut short by a disarm leaves no phase
+statistics behind. A stack sampler that stopped itself for holding the main
+thread too long stays off until the next launch.
+
+Changes are serialized end to end (save, apply on the main thread, broadcast),
+so the file, the setting in memory and the running watch always agree. The new
+status is broadcast as `main-thread-watch-status` to the main window and the
+Diagnostics pop-out, so both show the same state. Only those two windows may
+read or change the setting.
 
 What stays on regardless: the per-dictation `deliveryTiming` in the performance
 store (`injectQueueUs`, `injectWorkUs`; see

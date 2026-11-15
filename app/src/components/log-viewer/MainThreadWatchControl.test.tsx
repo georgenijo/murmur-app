@@ -6,24 +6,42 @@ import { MainThreadWatchControl } from './MainThreadWatchControl';
 
 const getStatus = vi.hoisted(() => vi.fn<() => Promise<MainThreadWatchStatus>>());
 const setArmed = vi.hoisted(() => vi.fn<(armed: boolean) => Promise<MainThreadWatchStatus>>());
+const listeners = vi.hoisted(() => new Set<(status: MainThreadWatchStatus) => void>());
 
 vi.mock('../../lib/mainThreadWatch', () => ({
   getMainThreadWatchStatus: getStatus,
   setMainThreadWatchArmed: setArmed,
+  listenMainThreadWatchStatus: async (onStatus: (status: MainThreadWatchStatus) => void) => {
+    listeners.add(onStatus);
+    return () => { listeners.delete(onStatus); };
+  },
 }));
 
-const OFF: MainThreadWatchStatus = { setting: false, running: false, forcedByEnv: false };
+const OFF: MainThreadWatchStatus = { setting: false, running: false, forcedByEnv: false, seq: 0 };
+
+/** What Rust does after a change: every owner window hears the new status. */
+function broadcast(status: MainThreadWatchStatus) {
+  for (const listener of [...listeners]) listener(status);
+}
 
 describe('MainThreadWatchControl', () => {
   let container: HTMLDivElement;
   let root: Root;
+  /** The native side: one status, `seq` grows with every change. */
+  let native: MainThreadWatchStatus;
 
   beforeEach(() => {
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
-    getStatus.mockResolvedValue(OFF);
-    setArmed.mockImplementation(async armed => ({ setting: armed, running: armed, forcedByEnv: false }));
+    native = OFF;
+    listeners.clear();
+    getStatus.mockImplementation(async () => native);
+    setArmed.mockImplementation(async armed => {
+      native = { setting: armed, running: armed, forcedByEnv: false, seq: native.seq + 1 };
+      broadcast(native);
+      return native;
+    });
   });
 
   afterEach(async () => {
@@ -38,10 +56,14 @@ describe('MainThreadWatchControl', () => {
     });
   }
 
+  function switches(): HTMLElement[] {
+    return Array.from(container.querySelectorAll<HTMLElement>('[role="switch"][aria-label="Main-thread watch"]'));
+  }
+
   function watchSwitch(): HTMLElement {
-    const control = container.querySelector<HTMLElement>('[role="switch"][aria-label="Main-thread watch"]');
-    expect(control).not.toBeNull();
-    return control!;
+    const [control] = switches();
+    expect(control).toBeDefined();
+    return control;
   }
 
   it('shows one labelled control, off by default, with a one-line cost note', async () => {
@@ -65,7 +87,7 @@ describe('MainThreadWatchControl', () => {
   });
 
   it('cannot turn off a watch the environment armed', async () => {
-    getStatus.mockResolvedValue({ setting: false, running: true, forcedByEnv: true });
+    native = { setting: false, running: true, forcedByEnv: true, seq: 0 };
     await render();
     expect(watchSwitch().getAttribute('aria-checked')).toBe('true');
     expect(watchSwitch().hasAttribute('data-disabled')).toBe(true);
@@ -86,5 +108,67 @@ describe('MainThreadWatchControl', () => {
     await render();
     expect(watchSwitch().hasAttribute('data-disabled')).toBe(true);
     expect(container.querySelector('[role="alert"]')).not.toBeNull();
+  });
+
+  describe('two views of the same setting (main window and the pop-out)', () => {
+    let second: HTMLDivElement;
+    let secondRoot: Root;
+
+    beforeEach(async () => {
+      second = document.createElement('div');
+      document.body.appendChild(second);
+      secondRoot = createRoot(second);
+      await render();
+      await act(async () => { secondRoot.render(<MainThreadWatchControl />); });
+    });
+
+    afterEach(async () => {
+      await act(async () => secondRoot.unmount());
+      second.remove();
+    });
+
+    const other = () => second.querySelector<HTMLElement>('[role="switch"]')!;
+
+    it('shows a change made in one in the other, and sends the right value from the other', async () => {
+      expect(watchSwitch().getAttribute('aria-checked')).toBe('false');
+      expect(other().getAttribute('aria-checked')).toBe('false');
+
+      await act(async () => { other().click(); });
+      expect(setArmed).toHaveBeenLastCalledWith(true);
+      expect(watchSwitch().getAttribute('aria-checked')).toBe('true');
+      expect(other().getAttribute('aria-checked')).toBe('true');
+
+      // The first view was never touched, yet its next click turns the watch
+      // off: it acts on the status it heard, not a stale cached one.
+      await act(async () => { watchSwitch().click(); });
+      expect(setArmed).toHaveBeenLastCalledWith(false);
+      expect(watchSwitch().getAttribute('aria-checked')).toBe('false');
+      expect(other().getAttribute('aria-checked')).toBe('false');
+    });
+
+    it('stops listening once a view is unmounted', async () => {
+      expect(listeners.size).toBe(2);
+      await act(async () => secondRoot.render(null));
+      expect(listeners.size).toBe(1);
+    });
+  });
+
+  it('keeps the newest status when an older one arrives late', async () => {
+    // The first read is slow and returns the state from before a change that
+    // another window made and broadcast in the meantime.
+    let finishRead: (status: MainThreadWatchStatus) => void = () => {};
+    getStatus.mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve; }));
+    await render();
+    await act(async () => {
+      broadcast({ setting: true, running: true, forcedByEnv: false, seq: 5 });
+    });
+    expect(watchSwitch().getAttribute('aria-checked')).toBe('true');
+    await act(async () => { finishRead({ ...OFF, seq: 4 }); });
+    expect(watchSwitch().getAttribute('aria-checked')).toBe('true');
+    // And an older broadcast is ignored the same way.
+    await act(async () => { broadcast({ ...OFF, seq: 3 }); });
+    expect(watchSwitch().getAttribute('aria-checked')).toBe('true');
+    await act(async () => { broadcast({ ...OFF, seq: 6 }); });
+    expect(watchSwitch().getAttribute('aria-checked')).toBe('false');
   });
 });
