@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { flog } from '../log';
 import type { OverlayActivity, OverlayContent, OverlayPlacement } from '../overlayGeometry';
 import {
   COLLAPSE_DELAY_MS,
@@ -189,23 +188,13 @@ export function useOverlayExpansion({
       if (gen !== genRef.current) return SUPERSEDED; // a newer request will reconcile
       reconcileOnSuccess(desiredExpanded);
       return applied;
-    } catch (err) {
+    } catch {
       if (!mountedRef.current || gen !== genRef.current) return SUPERSEDED; // stale failure — ignore
       if (!desiredExpanded && collapseAttempt < COLLAPSE_RETRY_DELAYS_MS.length) {
         const delay = COLLAPSE_RETRY_DELAYS_MS[collapseAttempt];
-        flog.warn('overlay', 'set_overlay_expanded collapse failed; retrying', {
-          attempt: collapseAttempt + 1,
-          delayMs: delay,
-          error: String(err),
-        });
         await new Promise<void>((resolve) => { setTimeout(resolve, delay); });
         return applyIfLatest(gen, collapseAttempt + 1, deferShrink);
       }
-      flog.warn('overlay', 'set_overlay_expanded failed', {
-        expanded: desiredExpanded,
-        attempts: desiredExpanded ? 1 : collapseAttempt + 1,
-        error: String(err),
-      });
       reconcileOnFailure(desiredExpanded);
       return SUPERSEDED;
     }
@@ -486,8 +475,8 @@ export function useOverlayExpansion({
             clearOpenDwell();
           }
         }
-      } catch (err) {
-        flog.warn('overlay', 'hover poll failed', { error: String(err) });
+      } catch {
+        // The next poll retries.
       } finally {
         pollInFlightRef.current = false;
       }

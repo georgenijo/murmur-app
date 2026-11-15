@@ -104,8 +104,8 @@ describe('useAutoUpdater presentation state', () => {
       version: '0.24.0', notes: expect.stringContaining('Old notes'),
     });
     expect(JSON.parse(localStorage.getItem('pending-update-release-notes')!).notes).toContain('New notes');
-    expect(mocks.flogInfo).toHaveBeenCalledWith('updater', 'starting download', {
-      event_code: 'updater.download_starting', version: '0.24.0', selection: 'fresh_check',
+    expect(mocks.flogInfo).toHaveBeenCalledWith('updater.download_starting', {
+      version: '0.24.0', selection: 'fresh_check',
     });
     await act(async () => current.restartUpdate());
     expect(newInstall).toHaveBeenCalledOnce();
@@ -141,8 +141,8 @@ describe('useAutoUpdater presentation state', () => {
     now.mockReturnValue(1_000_000 + UPDATE_FRESHNESS_WINDOW_MS + 1);
     await act(async () => current.startDownload());
     expect(download).toHaveBeenCalledOnce();
-    expect(mocks.flogInfo).toHaveBeenCalledWith('updater', 'starting download', {
-      event_code: 'updater.download_starting', version: '0.23.0', selection: 'retained',
+    expect(mocks.flogInfo).toHaveBeenCalledWith('updater.download_starting', {
+      version: '0.23.0', selection: 'retained',
     });
     await act(async () => current.restartUpdate());
     expect(install).toHaveBeenCalledOnce();
@@ -281,10 +281,6 @@ describe('useAutoUpdater presentation state', () => {
     await relaunchWithPendingUpdate('0.22.1');
 
     expect(current.completedUpdate?.version).toBe('0.22.1');
-    expect(mocks.flogWarn).toHaveBeenCalledWith(
-      'updater', 'could not focus the app after updating',
-      { error: 'Error: Focus unavailable' },
-    );
   });
 
   it('keeps optional availability after Later and can reopen it from the pill', async () => {
@@ -339,11 +335,7 @@ describe('useAutoUpdater presentation state', () => {
 
     await act(async () => current.checkForUpdate());
 
-    expect(mocks.flogInfo).toHaveBeenCalledWith(
-      'updater',
-      'no update available',
-      { event_code: 'updater.check_current' },
-    );
+    expect(mocks.flogInfo).toHaveBeenCalledWith('updater.check_current');
   });
 
   it('leaves the canary path inert when the launch marker is absent', async () => {
@@ -553,14 +545,7 @@ describe('useAutoUpdater presentation state', () => {
     });
     expect(current.isUpdateDialogOpen).toBe(true);
     expect(mocks.check).toHaveBeenCalledTimes(2);
-    expect(mocks.flogError).toHaveBeenCalledWith(
-      'updater',
-      'check failed',
-      {
-        event_code: 'updater.check_failed',
-        error: 'Error: offline',
-      },
-    );
+    expect(mocks.flogError).toHaveBeenCalledWith('updater.check_failed');
   });
 
   it('recovers from a transient updater-feed failure before showing an error', async () => {
@@ -582,14 +567,6 @@ describe('useAutoUpdater presentation state', () => {
       phase: 'available',
       version: '0.23.0',
     });
-    expect(mocks.flogWarn).toHaveBeenCalledWith(
-      'updater',
-      'check failed; retrying',
-      {
-        attempt: 1,
-        error: 'Error: temporary feed failure',
-      },
-    );
     expect(mocks.flogError).not.toHaveBeenCalled();
   });
 
@@ -615,11 +592,6 @@ describe('useAutoUpdater presentation state', () => {
     expect(current.isUpdateDialogOpen).toBe(true);
     expect(mocks.getVersion).not.toHaveBeenCalled();
     expect(localStorage.getItem('updater-last-check')).not.toBeNull();
-    expect(mocks.flogWarn).toHaveBeenCalledWith(
-      'updater',
-      'could not verify update policy',
-      { error: 'Update manifest was not an object.' },
-    );
     expect(mocks.flogError).not.toHaveBeenCalled();
   });
 
@@ -692,11 +664,7 @@ describe('useAutoUpdater presentation state', () => {
       .toContain('read-only security location');
     expect(localStorage.getItem('pending-update-release-notes')).toBeNull();
     expect(current.isUpdateDialogOpen).toBe(true);
-    expect(mocks.flogWarn).toHaveBeenCalledWith(
-      'updater',
-      'install blocked by macOS App Translocation',
-      { event_code: 'updater.install_blocked' },
-    );
+    expect(mocks.flogWarn).toHaveBeenCalledWith('updater.install_blocked');
   });
 
   it('downloads to a ready state and waits for explicit restart before installing', async () => {
@@ -728,11 +696,7 @@ describe('useAutoUpdater presentation state', () => {
       version: '0.24.2',
       isForced: false,
     });
-    expect(mocks.flogInfo).toHaveBeenCalledWith(
-      'updater',
-      'download ready',
-      { event_code: 'updater.download_ready', version: '0.24.2' },
-    );
+    expect(mocks.flogInfo).toHaveBeenCalledWith('updater.download_ready', { version: '0.24.2' });
 
     await act(async () => current.dismissUpdate());
     expect(current.isUpdateDialogOpen).toBe(false);
@@ -861,14 +825,7 @@ describe('useAutoUpdater presentation state', () => {
 
     expect(mocks.relaunch).not.toHaveBeenCalled();
     expect(current.updateStatus).toMatchObject({ phase: 'error', stage: 'install' });
-    expect(mocks.flogError).toHaveBeenCalledWith(
-      'updater',
-      'download failed',
-      {
-        event_code: 'updater.install_failed',
-        error: 'Error: disk full',
-      },
-    );
+    expect(mocks.flogError).toHaveBeenCalledWith('updater.install_failed');
 
     await act(async () => current.startDownload());
     expect(download).toHaveBeenCalledTimes(2);

@@ -25,7 +25,7 @@ Promise.all([
   hydrateUserDataFromDisk(),
   hydrateThemeLibraryFromDisk(),
 ]).finally(() => {
-  flog.info('main', 'Frontend hydrated', { event_code: 'system.launch_frontend_hydrated' });
+  flog.info('system.launch_frontend_hydrated');
   root.render(
     <React.StrictMode>
       <AppearanceProvider>

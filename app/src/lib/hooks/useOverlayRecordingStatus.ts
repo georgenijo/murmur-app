@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { isDictationStatus, type DictationStatus } from '../types';
-import { flog } from '../log';
 
 export function useOverlayRecordingStatus() {
   const [status, setStatus] = useState<DictationStatus>('idle');
@@ -15,7 +14,6 @@ export function useOverlayRecordingStatus() {
     const applyStatus = (next: DictationStatus) => {
       statusRef.current = next;
       setStatus(next);
-      flog.info('overlay', 'status changed', { status: next });
     };
 
     void listen<unknown>('recording-status-changed', ({ payload }) => {
@@ -38,11 +36,7 @@ export function useOverlayRecordingStatus() {
         throw new Error('Invalid recording status snapshot');
       }
       applyStatus(snapshot.state);
-    }).catch((error: unknown) => {
-      if (!disposed) {
-        flog.warn('overlay', 'recording status synchronization failed', { error: String(error) });
-      }
-    });
+    }).catch(() => {});
 
     return () => {
       disposed = true;

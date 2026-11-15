@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { flog } from '../log';
 import {
   initialSilenceState,
   latchSilenceStop,
@@ -103,12 +102,6 @@ export function useSilenceAutoStop({
           if (statusRef.current !== 'recording' || getOrigin() === 'hold') return;
           if (smartTurnVerdict(stateRef.current, pause, answer) !== 'stop') return;
           stateRef.current = latchSilenceStop(stateRef.current);
-          flog.info('recording', 'smart auto-stop fired', {
-            probability: answer.outcome === 'scored' ? Math.round(answer.probability * 1000) / 1000 : null,
-            inferenceMs: answer.outcome === 'scored' ? answer.inferenceMs : null,
-            silenceMs: Math.round(stateRef.current.silenceMs),
-            speechMs: Math.round(stateRef.current.speechMs),
-          });
           onAutoStopRef.current();
         })
         .catch(() => {})
@@ -136,10 +129,6 @@ export function useSilenceAutoStop({
         }
         return;
       }
-      flog.info('recording', 'silence auto-stop fired', {
-        silenceMs: silenceMsRef.current,
-        speechMs: Math.round(result.state.speechMs),
-      });
       onAutoStopRef.current();
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }

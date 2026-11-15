@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { flog } from '../log';
 import { isOverlayGeometry } from '../overlayGeometry';
 import type { OverlayContent, OverlayGeometry } from '../overlayGeometry';
 
@@ -31,7 +30,6 @@ export function useOverlayGeometry(content: OverlayContent = 'controls'): Overla
       if (cancelled || eventGeneration !== fetchGeneration) return;
       const delay = FETCH_RETRY_DELAYS_MS[attempt];
       if (delay === undefined) {
-        flog.warn('overlay', 'get_overlay_geometry exhausted retries', { attempts: attempt + 1 });
         return;
       }
       retryTimer = setTimeout(() => {
@@ -51,15 +49,12 @@ export function useOverlayGeometry(content: OverlayContent = 'controls'): Overla
         const value = await invoke<unknown>('get_overlay_geometry', { content });
         if (cancelled || eventGeneration !== fetchGeneration) return;
         if (isOverlayGeometry(value)) {
-          flog.info('overlay', 'geometry loaded', { windowW: value.windowW, collapsedH: value.collapsedH });
           setGeometry(value);
         } else {
-          flog.warn('overlay', 'get_overlay_geometry returned invalid payload', { attempt });
           scheduleRetry(attempt, fetchGeneration);
         }
-      } catch (e) {
+      } catch {
         if (cancelled || eventGeneration !== fetchGeneration) return;
-        flog.warn('overlay', 'get_overlay_geometry failed', { attempt, error: String(e) });
         scheduleRetry(attempt, fetchGeneration);
       }
     }
@@ -79,8 +74,6 @@ export function useOverlayGeometry(content: OverlayContent = 'controls'): Overla
             setGeometry(null);
             void attemptFetch(0);
           }
-        } else {
-          flog.warn('overlay', 'overlay-geometry-changed had invalid payload');
         }
       });
 
@@ -101,9 +94,7 @@ export function useOverlayGeometry(content: OverlayContent = 'controls'): Overla
       }
     }).catch(() => () => {});
 
-    initialize().catch((e) => {
-      flog.warn('overlay', 'overlay geometry listener setup failed', { error: String(e) });
-    });
+    initialize().catch(() => {});
 
     return () => {
       cancelled = true;

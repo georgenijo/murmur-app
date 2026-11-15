@@ -260,7 +260,7 @@ frontend.
 |---------|-----------|---------|-------------|
 | `get_log_contents` | `lines: usize` | `String` | Last N lines of the pretty log file. |
 | `clear_logs` | — | `Result<(), String>` | Removes log files (including rotated and JSONL variants) and clears the ring buffer. |
-| `log_frontend` | `level`, `message`, `transform_pass_id: Option<u64>`, `event_code: Option<String>` | `()` | Logs a content-free frontend event with an allowlisted code, optionally correlated to a transform pass. The main hydration code records native monotonic launch time once. Message contents are discarded. |
+| `log_frontend` | `level`, `event_code: String`, `updater_version: Option<String>`, `updater_selection: Option<String>` | `()` | Logs a content-free frontend event with an allowlisted code; any other code is dropped. Updater codes carry a validated version and selection. The main hydration code records native monotonic launch time once. |
 
 ## Export (`commands/export.rs`)
 
