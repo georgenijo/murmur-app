@@ -25,8 +25,13 @@ const MAX_BATCH_BYTES: usize = 256 * 1024;
 
 enum Message {
     Event(Box<AppEvent>),
-    /// Acknowledged once every message queued before it has been written.
-    Flush(SyncSender<()>),
+    /// Acknowledged, with whether the last write succeeded, once every event
+    /// queued before it has been written.
+    Flush(SyncSender<bool>),
+    /// Runs on the writer thread once every event queued before it has been
+    /// written, with nothing written meanwhile. Clear logs uses it so events
+    /// queued before a clear can never land in the fresh file.
+    Exclusive(Box<dyn FnOnce() + Send>),
 }
 
 #[derive(Clone)]
@@ -34,6 +39,52 @@ pub(super) struct EventWriter {
     queue: SyncSender<Message>,
     dropped: Arc<AtomicU64>,
     dropped_total: Arc<AtomicU64>,
+}
+
+/// Loss accounting for the writer thread.
+#[derive(Default)]
+struct Writing {
+    /// Events in batches the sink rejected, not yet recorded in the file.
+    failed: u64,
+    last_ok: bool,
+}
+
+/// Write `batch` (`events` lines) to `sink`, ahead of it one `Log events
+/// dropped` line for everything lost since the last successful write: events
+/// dropped by a full queue and events in batches the sink rejected.
+fn write_batch<F>(
+    sink: &mut F,
+    state: &mut Writing,
+    dropped: &AtomicU64,
+    batch: &mut Vec<u8>,
+    events: &mut u64,
+    force: bool,
+) where
+    F: FnMut(&[u8]) -> io::Result<()>,
+{
+    // A pending loss alone is written only when a flush or clear asks, never as
+    // a silent retry after the caller has been told the last write failed.
+    if batch.is_empty() && !force {
+        return;
+    }
+    let lost = dropped.swap(0, Ordering::Relaxed) + state.failed;
+    if lost > 0 || !batch.is_empty() {
+        let mut out = Vec::with_capacity(batch.len() + 128);
+        if lost > 0 {
+            out.extend_from_slice(super::event_drop_note(lost).as_bytes());
+        }
+        out.extend_from_slice(batch);
+        if sink(&out).is_ok() {
+            state.failed = 0;
+            state.last_ok = true;
+        } else {
+            // The note was not written either: carry its count forward.
+            state.failed = lost + *events;
+            state.last_ok = false;
+        }
+    }
+    batch.clear();
+    *events = 0;
 }
 
 impl EventWriter {
@@ -50,16 +101,12 @@ impl EventWriter {
             .name("event-log-writer".into())
             .spawn(move || {
                 let mut batch: Vec<u8> = Vec::with_capacity(16 * 1024);
-                let mut acks: Vec<SyncSender<()>> = Vec::new();
+                let mut events = 0u64;
+                let mut state = Writing {
+                    last_ok: true,
+                    ..Writing::default()
+                };
                 while let Ok(first) = receiver.recv() {
-                    batch.clear();
-                    acks.clear();
-                    // Events dropped before these ones are noted first, so the
-                    // file reads in the order things happened.
-                    let lost = worker_dropped.swap(0, Ordering::Relaxed);
-                    if lost > 0 {
-                        batch.extend_from_slice(super::event_drop_note(lost).as_bytes());
-                    }
                     let mut next = Some(first);
                     while let Some(message) = next.take() {
                         match message {
@@ -67,20 +114,48 @@ impl EventWriter {
                                 if let Ok(line) = serde_json::to_string(&*event) {
                                     batch.extend_from_slice(line.as_bytes());
                                     batch.push(b'\n');
+                                    events += 1;
                                 }
                             }
-                            Message::Flush(ack) => acks.push(ack),
+                            Message::Flush(ack) => {
+                                write_batch(
+                                    &mut sink,
+                                    &mut state,
+                                    &worker_dropped,
+                                    &mut batch,
+                                    &mut events,
+                                    true,
+                                );
+                                let _ = ack.send(state.last_ok);
+                            }
+                            Message::Exclusive(action) => {
+                                write_batch(
+                                    &mut sink,
+                                    &mut state,
+                                    &worker_dropped,
+                                    &mut batch,
+                                    &mut events,
+                                    false,
+                                );
+                                action();
+                                // The action resets the file: earlier losses
+                                // belong to what it removed.
+                                worker_dropped.store(0, Ordering::Relaxed);
+                                state.failed = 0;
+                            }
                         }
                         if batch.len() < MAX_BATCH_BYTES {
                             next = receiver.try_recv().ok();
                         }
                     }
-                    if !batch.is_empty() {
-                        let _ = sink(&batch);
-                    }
-                    for ack in acks.drain(..) {
-                        let _ = ack.send(());
-                    }
+                    write_batch(
+                        &mut sink,
+                        &mut state,
+                        &worker_dropped,
+                        &mut batch,
+                        &mut events,
+                        false,
+                    );
                 }
             });
         Self {
@@ -107,15 +182,11 @@ impl EventWriter {
         self.dropped_total.load(Ordering::Relaxed)
     }
 
-    /// Wait until everything queued so far is written, or `timeout` passes.
-    /// Returns whether the queue drained.
-    pub(crate) fn flush(&self, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
-        let (ack, acked) = mpsc::sync_channel(1);
-        let mut message = Message::Flush(ack);
+    /// Queue a control message, waiting for room until `deadline`.
+    fn enqueue(&self, mut message: Message, deadline: Instant) -> bool {
         loop {
             match self.queue.try_send(message) {
-                Ok(()) => break,
+                Ok(()) => return true,
                 Err(TrySendError::Full(returned)) if Instant::now() < deadline => {
                     message = returned;
                     std::thread::sleep(Duration::from_millis(1));
@@ -123,9 +194,40 @@ impl EventWriter {
                 Err(_) => return false,
             }
         }
+    }
+
+    /// Wait until everything queued so far is written, or `timeout` passes.
+    /// Returns whether it was written: a rejected write reports `false`.
+    pub(crate) fn flush(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let (ack, acked) = mpsc::sync_channel(1);
+        if !self.enqueue(Message::Flush(ack), deadline) {
+            return false;
+        }
         acked
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .is_ok()
+            .unwrap_or(false)
+    }
+
+    /// Run `action` on the writer thread after every event queued so far has
+    /// been written and before any later one. `None` if it could not be queued
+    /// or did not finish within `timeout`.
+    pub(super) fn run_exclusive<R, F>(&self, action: F, timeout: Duration) -> Option<R>
+    where
+        R: Send + 'static,
+        F: FnOnce() -> R + Send + 'static,
+    {
+        let deadline = Instant::now() + timeout;
+        let (result, received) = mpsc::sync_channel(1);
+        let message = Message::Exclusive(Box::new(move || {
+            let _ = result.send(action());
+        }));
+        if !self.enqueue(message, deadline) {
+            return None;
+        }
+        received
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .ok()
     }
 }
 
@@ -251,6 +353,133 @@ mod tests {
         writer.send(event(2));
         assert!(writer.flush(Duration::from_secs(5)));
         assert_eq!(numbers(&std::fs::read(&path).unwrap()), vec![2]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn events_queued_before_a_clear_never_land_in_the_fresh_file() {
+        use std::io::Write;
+        let dir =
+            std::env::temp_dir().join(format!("murmur-writer-pending-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("events.jsonl");
+        let file = super::super::SizeRotatingFile::open(path.clone(), 1 << 20, 2).unwrap();
+
+        // The sink pauses before its first write, so later events sit queued.
+        let gate = Arc::new((Mutex::new(false), Condvar::new()));
+        let sink_gate = Arc::clone(&gate);
+        let mut sink = file.clone();
+        let writer = EventWriter::spawn(
+            move |bytes| {
+                let (open, signal) = &*sink_gate;
+                let mut open = open.lock().unwrap();
+                while !*open {
+                    open = signal.wait(open).unwrap();
+                }
+                drop(open);
+                sink.write_all(bytes)
+            },
+            QUEUE_CAPACITY,
+        );
+        for n in 1..=5 {
+            writer.send(event(n));
+        }
+        let clearing = {
+            let writer = writer.clone();
+            let file = file.clone();
+            std::thread::spawn(move || {
+                writer.run_exclusive(
+                    move || super::super::reset_writers(&[file]),
+                    Duration::from_secs(10),
+                )
+            })
+        };
+        // Clear is queued behind the events; releasing the sink lets them be
+        // written and then removed by the reset.
+        {
+            let (open, signal) = &*gate;
+            *open.lock().unwrap() = true;
+            signal.notify_all();
+        }
+        assert!(clearing.join().unwrap().is_some());
+        writer.send(event(99));
+        assert!(writer.flush(Duration::from_secs(5)));
+        assert_eq!(numbers(&std::fs::read(&path).unwrap()), vec![99]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rejected_batch_is_counted_by_events_not_by_failed_writes() {
+        let accept = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sink_accept = Arc::clone(&accept);
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&written);
+        let writer = EventWriter::spawn(
+            move |bytes| {
+                if sink_accept.load(Ordering::SeqCst) {
+                    sink.lock().unwrap().extend_from_slice(bytes);
+                    Ok(())
+                } else {
+                    Err(io::Error::other("injected"))
+                }
+            },
+            QUEUE_CAPACITY,
+        );
+        // Three batches, one event each, all rejected; flush says so.
+        for n in 0..3 {
+            writer.send(event(n));
+            assert!(!writer.flush(Duration::from_secs(5)));
+        }
+        // A batch of four rejected at once is four losses, not one.
+        accept.store(false, Ordering::SeqCst);
+        for n in 3..7 {
+            writer.send(event(n));
+        }
+        assert!(!writer.flush(Duration::from_secs(5)));
+
+        accept.store(true, Ordering::SeqCst);
+        writer.send(event(100));
+        assert!(writer.flush(Duration::from_secs(5)));
+        let written = String::from_utf8(written.lock().unwrap().clone()).unwrap();
+        let note: AppEvent = serde_json::from_str(written.lines().next().unwrap()).unwrap();
+        assert_eq!(note.summary, "Log events dropped");
+        assert_eq!(note.data["dropped_events"], 7, "{written}");
+        assert_eq!(numbers(written.as_bytes()), vec![100]);
+    }
+
+    #[test]
+    fn failed_creation_then_recovery_records_every_lost_event() {
+        use std::io::Write;
+        let dir =
+            std::env::temp_dir().join(format!("murmur-writer-recover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("events.jsonl");
+        let fs = Arc::new(super::super::FailingFs::default());
+        // A one-byte cap rotates before every write after the first.
+        let file = super::super::SizeRotatingFile::open_with(fs.clone(), path.clone(), 1, 2)
+            .unwrap()
+            .with_create_retry(Duration::ZERO);
+        let mut sink = file.clone();
+        let writer = EventWriter::spawn(move |bytes| sink.write_all(bytes), QUEUE_CAPACITY);
+
+        writer.send(event(1));
+        assert!(writer.flush(Duration::from_secs(5)));
+        fs.fail_create.store(true, Ordering::SeqCst);
+        for n in 2..=4 {
+            writer.send(event(n));
+            assert!(!writer.flush(Duration::from_secs(5)), "event {n}");
+        }
+        fs.fail_create.store(false, Ordering::SeqCst);
+        writer.send(event(5));
+        assert!(writer.flush(Duration::from_secs(5)));
+
+        let current = std::fs::read_to_string(&path).unwrap();
+        let note: AppEvent = serde_json::from_str(current.lines().next().unwrap()).unwrap();
+        assert_eq!(note.summary, "Log events dropped");
+        assert_eq!(note.data["dropped_events"], 3, "{current}");
+        assert_eq!(numbers(current.as_bytes()), vec![5]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

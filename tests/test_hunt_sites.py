@@ -47,6 +47,44 @@ class HuntSiteCheckTests(unittest.TestCase):
                 self.assertIn("NO ISSUE NUMBER", out)
                 self.assertIn("a.rs:2", err)
 
+    def test_brace_and_bracket_invocations_are_sites(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "a.rs", 'fn f() {\n    hunt!{ issue = 5, "brace" };\n    hunt![issue = 6, "bracket"];\n}\n')
+            write(root, "b.rs", 'fn g() {\n    hunt! { "no issue" };\n    hunt![ "no issue" ];\n}\n')
+            sites, problems = scan(root)
+            self.assertEqual(
+                [(site.path.split("/")[-1], site.issue) for site in sites],
+                [("a.rs", 5), ("a.rs", 6), ("b.rs", None), ("b.rs", None)],
+            )
+            code, out, _ = run(root)
+            self.assertEqual(code, 1)
+
+    def test_block_comment_examples_are_not_sites(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "a.rs", '/* example:\n   hunt!("no issue");\n*/\nfn f() { hunt!(issue = 3, "real"); }\n')
+            sites, problems = scan(root)
+            self.assertEqual([(site.line, site.issue) for site in sites], [(4, 3)])
+            self.assertEqual(problems, [])
+
+    def test_telemetry_rs_is_scanned_except_its_macro_and_test_module(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(
+                root,
+                "telemetry.rs",
+                "#[macro_export]\nmacro_rules! hunt {\n    (issue = $i:literal, $m:literal) => {\n"
+                '        ::tracing::debug!(target: "hunt", issue = $i as u64, "{}", $m)\n    };\n}\n'
+                'fn real() { hunt!("forgot the issue"); }\n'
+                '#[cfg(test)]\nmod tests {\n    fn t() { hunt!("fixture"); tracing::debug!(target: "hunt", "x"); }\n}\n',
+            )
+            code, out, err = run(root)
+            self.assertEqual(code, 1)
+            self.assertIn("hunt sites: 1", out)
+            self.assertIn("telemetry.rs:7  NO ISSUE NUMBER", out)
+            self.assertNotIn("bypasses", err)
+
     def test_comments_and_the_macro_definition_are_not_sites(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

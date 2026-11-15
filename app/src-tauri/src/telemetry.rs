@@ -24,7 +24,8 @@ pub(crate) const HUNT_STREAM: &str = "hunt";
 /// A temporary hunting log for an open issue. It requires the issue number,
 /// emits at debug (so it is local-only, off by default and never shipped), takes
 /// numeric or boolean fields and a literal message, and is removed when the
-/// issue closes. `scripts/check_hunt_sites.py` lists every site and fails CI if
+/// issue closes. The message is passed as a value, never as a format string, so
+/// `"state {transcript}"` logs those characters and cannot capture a variable. `scripts/check_hunt_sites.py` lists every site and fails CI if
 /// one has no issue number.
 ///
 /// ```ignore
@@ -37,6 +38,7 @@ macro_rules! hunt {
             target: "hunt",
             issue = $issue as u64,
             $($name = $value,)*
+            "{}",
             $message
         )
     };
@@ -2732,26 +2734,6 @@ fn log_session_start() {
     );
 }
 
-/// Trim oversized rotated logs and stale dev leftovers once, off the launch path.
-fn spawn_legacy_trim(log_dir: PathBuf) {
-    let _ = std::thread::Builder::new()
-        .name("log-trim".into())
-        .spawn(move || {
-            let report = legacy::trim_legacy_logs(
-                &log_dir,
-                !cfg!(debug_assertions),
-                std::time::SystemTime::now(),
-            );
-            tracing::debug!(
-                target: "system",
-                trimmed_files = report.trimmed_files,
-                removed_files = report.removed_files,
-                reclaimed_bytes = report.reclaimed_bytes,
-                "legacy log trim"
-            );
-        });
-}
-
 /// Whether the text `app.log` formats an event of `level` (debug lines take the
 /// emitter layer's sanitized path instead). `events.jsonl` already records every
 /// info event, so the text log repeats them only while debug is on.
@@ -2763,6 +2745,7 @@ fn pretty_log_admits(level: tracing::Level, debug: bool) -> bool {
 /// panic paths can flush them.
 static EVENT_WRITER: OnceLock<writer::EventWriter> = OnceLock::new();
 static PRETTY_GUARD: Mutex<Option<tracing_appender::non_blocking::WorkerGuard>> = Mutex::new(None);
+const CLEAR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// Write out everything queued for `events.jsonl` and `app.log`. Call on exit.
@@ -2816,6 +2799,14 @@ pub fn init(app_handle: tauri::AppHandle) {
         "app.log"
     };
 
+    // Before any writer opens: this process's rotation and Clear logs cannot
+    // race it. Bounded; see `legacy.rs`.
+    let trim_report = legacy::trim_legacy_logs(
+        &log_dir,
+        !cfg!(debug_assertions),
+        std::time::SystemTime::now(),
+    );
+
     // Seed ring buffer from existing JSONL before subscribing
     let buffer = get_event_buffer();
     seed_buffer_from_jsonl(&buffer, 500);
@@ -2827,8 +2818,7 @@ pub fn init(app_handle: tauri::AppHandle) {
         EVENT_LOG_MAX_BYTES,
         EVENT_LOG_GENERATIONS,
     )
-    .expect("Could not open JSONL file")
-    .with_drop_note(event_drop_note);
+    .expect("Could not open JSONL file");
     register_writer(&jsonl_writer);
 
     let log_level_dir = log_dir.clone();
@@ -2884,7 +2874,13 @@ pub fn init(app_handle: tauri::AppHandle) {
     if !level_pinned {
         level::spawn_flag_watcher(log_level_dir.clone());
     }
-    spawn_legacy_trim(log_level_dir);
+    tracing::debug!(
+        target: "system",
+        trimmed_files = trim_report.trimmed_files,
+        removed_files = trim_report.removed_files,
+        reclaimed_bytes = trim_report.reclaimed_bytes,
+        "legacy log trim"
+    );
 
     tracing::info!(
         target: "system",
@@ -2963,7 +2959,14 @@ pub fn clear_all_logs() -> Result<(), String> {
     // Every file a live writer manages (current and rotated generations) is
     // excluded below: logging resumes once the locks drop, and a rotation in
     // the meantime must not be deleted by the unlocked passes.
-    let live = reset_writers(&writers);
+    // Through the writer queue when it runs: events queued before the clear are
+    // written first and then removed, so none can land in the fresh file.
+    let live = match EVENT_WRITER.get() {
+        Some(events) => events
+            .run_exclusive(move || reset_writers(&writers), CLEAR_TIMEOUT)
+            .ok_or("The log writer is busy. Try Clear logs again.")?,
+        None => reset_writers(&writers),
+    };
     for file in files {
         let path = dir.join(file);
         if !live.contains(&path) {
@@ -3061,6 +3064,30 @@ mod tests {
         assert!(!lines[0].contains("outcome="), "{}", lines[0]);
         assert!(lines[1].contains("DEBUG audio: capture helper setup step capture_id=3"));
         assert!(lines.iter().all(|line| line.ends_with('\n')));
+    }
+
+    #[test]
+    fn hunt_messages_are_values_and_never_capture_variables() {
+        let transcript = "SECRET TRANSCRIPT WORDS";
+        let selection = "SECRET SELECTED TEXT";
+        let path = "/Users/someone/secret-recording.wav";
+        let lines = local_lines(|| {
+            crate::hunt!(
+                issue = 1,
+                "state {transcript} / {selection} / {path} / {0} / {}"
+            );
+        });
+        let _ = (transcript, selection, path);
+        assert_eq!(lines.len(), 1);
+        let line = &lines[0];
+        // The braces are logged as written; nothing was substituted.
+        assert!(
+            line.contains("{transcript}") && line.contains("{path}"),
+            "{line}"
+        );
+        for secret in ["SECRET", "someone", "secret-recording"] {
+            assert!(!line.contains(secret), "{secret} leaked: {line}");
+        }
     }
 
     #[test]
