@@ -293,7 +293,7 @@ fn spawn_dictation_partial_ticker(
     drop(tauri::async_runtime::spawn(async move {
         let window_app = app.clone();
         let _ = tauri::async_runtime::spawn_blocking(move || {
-            crate::commands::dictation_preview::ensure_window(&window_app)
+            crate::commands::dictation_preview::ensure_window(&window_app, recording_id)
         })
         .await;
         loop {
