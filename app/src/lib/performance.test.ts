@@ -627,54 +627,16 @@ describe('performance contracts', () => {
 
 });
 
-describe('shadow diagnostics contract', () => {
-  const shadow = {
-    schemaVersion: 1, pressSample: 16000, pauseSample: 20800,
-    trailingSilenceBeforePressMs: 0, trailingSilenceBeforeStopMs: 500,
-    pressInputMatches: false, pauseInputMatches: true, previewHeldBackendAtPress: false,
-    determinism: 'disabled', decodeMatches: null,
-  };
-  it('accepts either V1 companion or both while validating each independently', () => {
-    for (const companions of [{}, { shadow }, { deliveryTiming: deliveryTimingFixture },
-      { shadow, deliveryTiming: deliveryTimingFixture }]) {
-      expect(isPerformanceRunV1({ ...makeRun(), ...companions })).toBe(true);
-    }
-    const combined = { ...makeRun(), shadow, deliveryTiming: deliveryTimingFixture };
-    expect(isPerformanceRunV1({ ...combined, shadow: { ...shadow, schemaVersion: 2 } })).toBe(false);
-    expect(isPerformanceRunV1({ ...combined,
-      deliveryTiming: { ...deliveryTimingFixture, schemaVersion: 2 } })).toBe(false);
-    expect(isPerformanceRunV1({ ...combined, shadow: { ...shadow, decodeMatches: true } })).toBe(false);
-    expect(isPerformanceRunV1({ ...combined, deliveryTiming: null })).toBe(false);
-  });
-  it('reads historical runs and validates the versioned content-free companion', () => {
+describe('delivery timing companion contract', () => {
+  it('accepts the optional companion and validates it', () => {
     expect(isPerformanceRunV1(makeRun())).toBe(true);
-    expect(isPerformanceRunV1({ ...makeRun(), shadow })).toBe(true);
-    expect(isPerformanceRunV1({ ...makeRun(), shadow: { ...shadow, schemaVersion: 2 } })).toBe(false);
-    expect(isPerformanceRunV1({ ...makeRun(), shadow: { ...shadow, pressSample: -1 } })).toBe(false);
-    expect(isPerformanceRunV1({ ...makeRun(), shadow: { ...shadow, text: 'forbidden' } })).toBe(false);
-    expect(isPerformanceRunV1({ ...makeRun(), shadow: { ...shadow, decodeMatches: true } })).toBe(false);
-    expect(isPerformanceRunV1({ ...makeRun(), shadow: { ...shadow, determinism: 'compared', decodeMatches: true } })).toBe(true);
+    const withTiming = { ...makeRun(), deliveryTiming: deliveryTimingFixture };
+    expect(isPerformanceRunV1(withTiming)).toBe(true);
+    expect(isPerformanceRunV1({ ...withTiming,
+      deliveryTiming: { ...deliveryTimingFixture, schemaVersion: 2 } })).toBe(false);
+    expect(isPerformanceRunV1({ ...withTiming, deliveryTiming: null })).toBe(false);
   });
-});
-
-it('accepts the bounded repeat skip reason and rejects a fabricated comparison', () => {
-  const shadow = {
-    schemaVersion: 1, pressSample: null, pauseSample: null,
-    trailingSilenceBeforePressMs: null, trailingSilenceBeforeStopMs: null,
-    pressInputMatches: false, pauseInputMatches: null, previewHeldBackendAtPress: false,
-    determinism: 'skippedForegroundLatencyRisk', decodeMatches: null,
-  };
-  expect(isPerformanceRunV1({ ...makeRun(), shadow })).toBe(true);
-  expect(isPerformanceRunV1({ ...makeRun(), shadow: { ...shadow, decodeMatches: false } })).toBe(false);
-});
-
-it('accepts not measured in app without inventing a comparison', () => {
-  const shadow = {
-    schemaVersion: 1, pressSample: null, pauseSample: null,
-    trailingSilenceBeforePressMs: null, trailingSilenceBeforeStopMs: null,
-    pressInputMatches: null, pauseInputMatches: null, previewHeldBackendAtPress: null,
-    determinism: 'notMeasuredInApp', decodeMatches: null,
-  };
-  expect(isPerformanceRunV1({ ...makeRun(), shadow })).toBe(true);
-  expect(isPerformanceRunV1({ ...makeRun(), shadow: { ...shadow, decodeMatches: true } })).toBe(false);
+  it('does not accept the retired shadow companion', () => {
+    expect(isPerformanceRunV1({ ...makeRun(), shadow: null })).toBe(false);
+  });
 });
