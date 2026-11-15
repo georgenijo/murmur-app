@@ -8,12 +8,15 @@ import {
 import { Toggle } from '../settings/SettingToggle';
 
 const LABEL = 'Main-thread watch';
+const RESTART_NOTE = 'Takes effect after you restart Murmur.';
 const SAVE_ERROR = 'Murmur could not change the main-thread watch.';
 
 /**
  * The one switch for the main-thread watch: run-loop observers, a reporter
  * thread and stack sampling that explain slow pastes. It is off until asked
- * for, and takes effect immediately in both directions.
+ * for. The switch only saves the setting: the watch starts or stops at the
+ * next launch, so the control shows the saved setting and, when that differs
+ * from what this launch is doing, says a restart is needed.
  */
 export function MainThreadWatchControl({ active = true }: { active?: boolean }) {
   const [status, setStatus] = useState<MainThreadWatchStatus | null>(null);
@@ -70,7 +73,8 @@ export function MainThreadWatchControl({ active = true }: { active?: boolean }) 
     }
   }, [accept, saving, status]);
 
-  const running = status?.running ?? false;
+  const wanted = status ? status.setting || status.forcedByEnv : false;
+  const restartPending = status !== null && wanted !== status.runningThisLaunch;
   return (
     <div
       data-testid="main-thread-watch-control"
@@ -85,14 +89,22 @@ export function MainThreadWatchControl({ active = true }: { active?: boolean }) 
         </div>
         <Toggle
           label={LABEL}
-          checked={running}
+          checked={status?.setting ?? false}
           onChange={() => { void toggle(); }}
-          disabled={!status || saving || status.forcedByEnv}
+          disabled={!status || saving}
         />
       </div>
       {status?.forcedByEnv && (
         <p className="mt-1 text-[length:var(--ui-font-caption)] text-on-surface-variant">
-          Turned on by the MURMUR_MAIN_THREAD_WATCH environment variable for this launch.
+          Running in this launch because of the MURMUR_MAIN_THREAD_WATCH environment variable.
+        </p>
+      )}
+      {restartPending && (
+        <p
+          data-testid="main-thread-watch-restart-note"
+          className="mt-1 text-[length:var(--ui-font-caption)] text-on-surface-variant"
+        >
+          {RESTART_NOTE}
         </p>
       )}
       {error && (

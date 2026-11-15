@@ -266,8 +266,8 @@ frontend.
 
 | Command | Parameters | Returns | Description |
 |---------|-----------|---------|-------------|
-| `get_main_thread_watch_status` | — | `MainThreadWatchStatus` | `{setting, running, forcedByEnv, seq}`: the persisted Diagnostics setting, whether the watch is running now, whether `MURMUR_MAIN_THREAD_WATCH` arms it for this launch, and a sequence number that grows with every change. Only the `main` and `diagnostics` windows may call it. |
-| `set_main_thread_watch_armed` | `armed: bool` | `MainThreadWatchStatus` | Persists the setting to `main-thread-watch.json` in the app data directory, then has the main thread add or remove the run-loop observers. Takes effect without a restart; the environment variable keeps the watch armed regardless. Changes are serialized: each one saves, applies on the main thread, and broadcasts the new status as `main-thread-watch-status` to the `main` and `diagnostics` windows before the next starts. Only those two windows may call it. |
+| `get_main_thread_watch_status` | — | `MainThreadWatchStatus` | `{setting, runningThisLaunch, forcedByEnv, seq}`: the saved Diagnostics setting, whether the watch is running in this launch (fixed for the process), whether `MURMUR_MAIN_THREAD_WATCH` arms it, and a sequence number that grows with every change. Taken under the same lock a change holds, so it is one coherent snapshot. Only the `main` and `diagnostics` windows may call it. |
+| `set_main_thread_watch_armed` | `armed: bool` | `MainThreadWatchStatus` | Saves the setting to `main-thread-watch.json` in the app data directory (atomic write) and broadcasts the new status as `main-thread-watch-status` to the `main` and `diagnostics` windows. It does not start or stop the watch: that is decided only at launch, so a change takes effect after a restart. Changes are serialized with status reads, and a failed write changes and publishes nothing. Only those two windows may call it. |
 
 ## Export (`commands/export.rs`)
 

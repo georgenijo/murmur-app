@@ -17,7 +17,7 @@ vi.mock('../../lib/mainThreadWatch', () => ({
   },
 }));
 
-const OFF: MainThreadWatchStatus = { setting: false, running: false, forcedByEnv: false, seq: 0 };
+const OFF: MainThreadWatchStatus = { setting: false, runningThisLaunch: false, forcedByEnv: false, seq: 0 };
 
 /** What Rust does after a change: every owner window hears the new status. */
 function broadcast(status: MainThreadWatchStatus) {
@@ -38,7 +38,8 @@ describe('MainThreadWatchControl', () => {
     listeners.clear();
     getStatus.mockImplementation(async () => native);
     setArmed.mockImplementation(async armed => {
-      native = { setting: armed, running: armed, forcedByEnv: false, seq: native.seq + 1 };
+      // Saving never starts or stops the watch: `runningThisLaunch` is fixed.
+      native = { ...native, setting: armed, seq: native.seq + 1 };
       broadcast(native);
       return native;
     });
@@ -75,23 +76,48 @@ describe('MainThreadWatchControl', () => {
     expect(watchSwitch().hasAttribute('data-disabled')).toBe(false);
   });
 
-  it('arms and disarms through the native command and shows the running state', async () => {
+  function restartNote(root: ParentNode = container): string | null {
+    return root.querySelector('[data-testid="main-thread-watch-restart-note"]')?.textContent ?? null;
+  }
+
+  it('saves the setting and says a restart is needed, in both directions', async () => {
     await render();
+    expect(restartNote()).toBeNull();
+
     await act(async () => { watchSwitch().click(); });
     expect(setArmed).toHaveBeenLastCalledWith(true);
     expect(watchSwitch().getAttribute('aria-checked')).toBe('true');
+    expect(restartNote()).toBe('Takes effect after you restart Murmur.');
 
+    // Back to what this launch is doing: nothing left to restart for.
     await act(async () => { watchSwitch().click(); });
     expect(setArmed).toHaveBeenLastCalledWith(false);
     expect(watchSwitch().getAttribute('aria-checked')).toBe('false');
+    expect(restartNote()).toBeNull();
   });
 
-  it('cannot turn off a watch the environment armed', async () => {
-    native = { setting: false, running: true, forcedByEnv: true, seq: 0 };
+  it('turning a running watch off also needs a restart', async () => {
+    native = { setting: true, runningThisLaunch: true, forcedByEnv: false, seq: 0 };
     await render();
     expect(watchSwitch().getAttribute('aria-checked')).toBe('true');
-    expect(watchSwitch().hasAttribute('data-disabled')).toBe(true);
+    expect(restartNote()).toBeNull();
+
+    await act(async () => { watchSwitch().click(); });
+    expect(watchSwitch().getAttribute('aria-checked')).toBe('false');
+    expect(restartNote()).toBe('Takes effect after you restart Murmur.');
+  });
+
+  it('shows the saved setting, and a switch that is still usable, when the environment runs the watch', async () => {
+    native = { setting: false, runningThisLaunch: true, forcedByEnv: true, seq: 0 };
+    await render();
+    expect(watchSwitch().getAttribute('aria-checked')).toBe('false');
+    expect(watchSwitch().hasAttribute('data-disabled')).toBe(false);
     expect(container.textContent).toContain('MURMUR_MAIN_THREAD_WATCH');
+    // The environment keeps it running either way, so there is nothing pending.
+    expect(restartNote()).toBeNull();
+    await act(async () => { watchSwitch().click(); });
+    expect(watchSwitch().getAttribute('aria-checked')).toBe('true');
+    expect(restartNote()).toBeNull();
   });
 
   it('reports a failed change and stays off', async () => {
@@ -133,10 +159,16 @@ describe('MainThreadWatchControl', () => {
       expect(watchSwitch().getAttribute('aria-checked')).toBe('false');
       expect(other().getAttribute('aria-checked')).toBe('false');
 
+      expect(restartNote(container)).toBeNull();
+      expect(restartNote(second)).toBeNull();
+
       await act(async () => { other().click(); });
       expect(setArmed).toHaveBeenLastCalledWith(true);
       expect(watchSwitch().getAttribute('aria-checked')).toBe('true');
       expect(other().getAttribute('aria-checked')).toBe('true');
+      // Both views show the same state and the same restart note.
+      expect(restartNote(container)).toBe('Takes effect after you restart Murmur.');
+      expect(restartNote(second)).toBe('Takes effect after you restart Murmur.');
 
       // The first view was never touched, yet its next click turns the watch
       // off: it acts on the status it heard, not a stale cached one.
@@ -144,6 +176,8 @@ describe('MainThreadWatchControl', () => {
       expect(setArmed).toHaveBeenLastCalledWith(false);
       expect(watchSwitch().getAttribute('aria-checked')).toBe('false');
       expect(other().getAttribute('aria-checked')).toBe('false');
+      expect(restartNote(container)).toBeNull();
+      expect(restartNote(second)).toBeNull();
     });
 
     it('stops listening once a view is unmounted', async () => {
@@ -153,6 +187,24 @@ describe('MainThreadWatchControl', () => {
     });
   });
 
+  it('settles on the change when a read spans it, whichever of read and event lands first', async () => {
+    // The read was started before the change and resolves after the change's
+    // event; Rust returns the same snapshot (same seq) to both.
+    let finishRead: (status: MainThreadWatchStatus) => void = () => {};
+    getStatus.mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve; }));
+    await render();
+    const changed: MainThreadWatchStatus = { ...OFF, setting: true, seq: 1 };
+    await act(async () => { broadcast(changed); });
+    expect(watchSwitch().getAttribute('aria-checked')).toBe('true');
+    expect(restartNote()).toBe('Takes effect after you restart Murmur.');
+    await act(async () => { finishRead(changed); });
+    expect(watchSwitch().getAttribute('aria-checked')).toBe('true');
+    expect(restartNote()).toBe('Takes effect after you restart Murmur.');
+    // An event delivered twice changes nothing.
+    await act(async () => { broadcast(changed); });
+    expect(watchSwitch().getAttribute('aria-checked')).toBe('true');
+  });
+
   it('keeps the newest status when an older one arrives late', async () => {
     // The first read is slow and returns the state from before a change that
     // another window made and broadcast in the meantime.
@@ -160,7 +212,7 @@ describe('MainThreadWatchControl', () => {
     getStatus.mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve; }));
     await render();
     await act(async () => {
-      broadcast({ setting: true, running: true, forcedByEnv: false, seq: 5 });
+      broadcast({ setting: true, runningThisLaunch: false, forcedByEnv: false, seq: 5 });
     });
     expect(watchSwitch().getAttribute('aria-checked')).toBe('true');
     await act(async () => { finishRead({ ...OFF, seq: 4 }); });

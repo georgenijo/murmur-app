@@ -18,33 +18,33 @@ Arm it either way:
 
 - **Diagnostics → Performance → Main-thread watch.** A switch persisted in
   `main-thread-watch.json` beside `settings.json` (Rust-owned, so no window's
-  cached settings can overwrite it). Switching it applies immediately, in both
-  directions, with no restart.
+  cached settings can overwrite it).
 - **`MURMUR_MAIN_THREAD_WATCH=1`** (or `true`) in the environment, for scripted
-  runs. It arms the watch for that launch and the switch cannot turn it off.
+  runs. It arms the watch for that launch whatever the switch says.
 
-Arming runs on the main thread: it adds the three run-loop observers and starts
-the reporter (the first time) or wakes it. Disarming runs on the main thread
-too, so removal cannot race an observer callback: it clears the flag, removes
-the observers, and the reporter parks, waking only on the next arm (and once
-every 30 s as a safety net).
+**The watch is armed or not only at launch, in both directions.** The switch
+saves the setting and nothing else; the control then says "Takes effect after
+you restart Murmur." until the running state matches the saved one. Turning it
+off is the same: the watch keeps running until the next launch. This is a
+deliberate choice. Starting and stopping the watch while the app runs meant
+handing observers, the reporter's buffers and the busy-stretch statistics
+between two periods on a live main run loop, and each interleaving of a switch
+change with a re-arm needed its own coordination. With one arm per process
+there is no hand-over: `arm` runs at most once, on the main thread, adds the
+three run-loop observers and starts the reporter, and nothing removes them. The
+cost is one relaunch for a diagnostic, which is fine.
 
-Every arm starts a new *period*, stamped with a number and a start time before
-anything can be recorded. The reporter compares the number on each pass and, on
-a change, drops older history, pending pastes and pacing by timestamp, and skips
-older spans it drains from the ring. Because it drops by timestamp, not by
-clearing, a disarm and re-arm the reporter never saw as "off", or a re-arm that
-lands while it is cleaning up, can neither leak the old period into the new one
-nor discard what the new one already recorded. The run-loop observer state is
-reset in full on every arm, so a stretch cut short by a disarm leaves no phase
-statistics behind. A stack sampler that stopped itself for holding the main
-thread too long stays off until the next launch.
+A stack sampler that stopped itself for holding the main thread too long stays
+off for the rest of the process.
 
-Changes are serialized end to end (save, apply on the main thread, broadcast),
-so the file, the setting in memory and the running watch always agree. The new
-status is broadcast as `main-thread-watch-status` to the main window and the
-Diagnostics pop-out, so both show the same state. Only those two windows may
-read or change the setting.
+The setting is saved by Rust under one lock (`CHANGE_LOCK`): a change writes the
+file (a temp sibling, then a rename), bumps `seq`, and broadcasts the new status
+as `main-thread-watch-status` to the main window and the Diagnostics pop-out
+before the lock is released. A status read takes the same lock, so it returns one
+coherent snapshot, `{ setting, runningThisLaunch, forcedByEnv, seq }`, and can
+never put an older state on screen after a newer event. `runningThisLaunch`
+never changes within a process. A failed write changes nothing and publishes
+nothing. Only the main and Diagnostics windows may read or change the setting.
 
 What stays on regardless: the per-dictation `deliveryTiming` in the performance
 store (`injectQueueUs`, `injectWorkUs`; see
@@ -91,7 +91,7 @@ reporter about five wakeups a second.
 
 | Event code | When | Key fields |
 |---|---|---|
-| `system.main_thread_watch_started` | each time the watch is armed (at launch or from the switch) | `epoch_unix_ms` (the zero for every `*_us` timestamp), `observers_installed` |
+| `system.main_thread_watch_started` | once per launch, when the watch is armed (by the setting or the environment) | `epoch_unix_ms` (the zero for every `*_us` timestamp), `observers_installed` |
 | `system.main_thread_span` | any span ≥ 10 ms, or a job queued ≥ 20 ms (at most 30 per 10 s) | `kind`, `label`, `start_us`, `start_unix_ms`, `duration_us`, `queue_us`, `longest_phase`, `longest_phase_us`, `segments` |
 | `pipeline.main_thread_paste_wait` | every dictation paste, about 1.2 s after it | `recording_id`, `inject_queue_us`, `inject_job_us`, `queued_us`, `started_us`, `slow`, `runloop_busy_us`, `runloop_idle_us`, `labelled_us`, `unlabelled_busy_us`, `job_us`, `command_us`, `callback_us`, `section_us`, `event_loop_drain_us`, `longest_label`, `longest_kind`, `longest_us` |
 | `system.main_thread_paste_span` | every span that overlapped a paste wait ≥ 20 ms (at most 48) | the span fields plus `recording_id` and `overlap_us` |
@@ -176,7 +176,7 @@ How the capture stays safe (macOS arm64 only; other targets log no stacks):
   bundle's macOS 14 minimum, where the linker decides how imports bind.
 - `held_us` is how long the main thread stayed suspended (normally a few
   microseconds). If one capture holds it longer than 2 ms, the event reports
-  `sampling_stopped: true` and sampling stays off until the next launch, even if the watch is disarmed and armed again.
+  `sampling_stopped: true` and sampling stays off until the next launch.
 - A stack is dropped if the stretch ended while it was being read.
 - `MURMUR_DISABLE_MAIN_THREAD_STACKS=1` (or `true`) turns sampling off at
   launch; other values, including `0`, leave it on. The
@@ -270,8 +270,8 @@ them.
 
 ## Querying
 
-These events exist only for a period in which the watch was armed. Arm it before
-reproducing the slow paste (see [Arming](#arming)).
+These events exist only in a launch where the watch was armed. Turn it on and
+restart Murmur before reproducing the slow paste (see [Arming](#arming)).
 
 ```bash
 LOG=~/Library/Application\ Support/local-dictation/logs/events.jsonl   # events.dev.jsonl for tauri:dev

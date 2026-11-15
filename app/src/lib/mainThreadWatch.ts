@@ -3,10 +3,10 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { isNonNegativeInteger, isRecord } from './typeGuards';
 
 export interface MainThreadWatchStatus {
-  /** The persisted Diagnostics setting. */
+  /** The saved Diagnostics setting. It applies at the next launch. */
   setting: boolean;
-  /** The watch is running now. */
-  running: boolean;
+  /** The watch is running in this launch. Fixed for the life of the process. */
+  runningThisLaunch: boolean;
   /** `MURMUR_MAIN_THREAD_WATCH` arms it, so the setting cannot turn it off. */
   forcedByEnv: boolean;
   /** Grows with every change. A view keeps the newest status it has seen. */
@@ -18,7 +18,7 @@ export const MAIN_THREAD_WATCH_STATUS_EVENT = 'main-thread-watch-status';
 function isMainThreadWatchStatus(value: unknown): value is MainThreadWatchStatus {
   return isRecord(value)
     && typeof value.setting === 'boolean'
-    && typeof value.running === 'boolean'
+    && typeof value.runningThisLaunch === 'boolean'
     && typeof value.forcedByEnv === 'boolean'
     && isNonNegativeInteger(value.seq);
 }

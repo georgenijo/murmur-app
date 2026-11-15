@@ -5,9 +5,12 @@
 //! emits none of its events unless the Diagnostics setting or the
 //! `MURMUR_MAIN_THREAD_WATCH` environment variable arms it. Every hook below
 //! begins with one relaxed load of the armed flag and returns at once while it
-//! is clear. Arming and disarming take effect at runtime, on the main thread:
-//! [`arm`] adds the observers, [`disarm`] removes them, and the reporter parks
-//! until the next arm. The per-dictation paste timing in the performance store
+//! is clear. Arming happens only at launch, on the main thread: [`arm`] runs
+//! at most once per process and adds the observers and the reporter, and
+//! nothing removes them again. Changing the Diagnostics setting therefore
+//! takes effect at the next launch, which keeps the watch's lifecycle to one
+//! step with no runtime hand-over to get wrong. The per-dictation paste
+//! timing in the performance store
 //! (`inject_queue_us`, `inject_work_us`) does not use this module.
 //!
 //! Slow pastes spend their time waiting for the main thread, not pasting.
@@ -808,27 +811,17 @@ pub(crate) fn is_armed() -> bool {
     ENABLED.load(Ordering::Acquire)
 }
 
-/// Set once the reporter thread exists. It is started by the first arm and
-/// then parks while disarmed, so a launch that never arms never creates it.
-static REPORTER_SPAWNED: AtomicBool = AtomicBool::new(false);
-
 /// Launch: the watch stays off unless the environment or the persisted
-/// setting asks for it. Main thread, after telemetry and after Tauri created
-/// its event loop.
+/// setting asks for it. Runs once, on the main thread, after telemetry and
+/// after Tauri created its event loop. There is no other way to arm it and
+/// no way to disarm it: a changed setting is read at the next launch.
 pub(crate) fn start_at_launch(persisted: bool) {
-    if should_arm(persisted, armed_by_env()) {
-        arm();
-    }
+    start_at_launch_with(persisted, armed_by_env());
 }
 
-/// Arm or disarm the watch to match the setting. Main thread only: observers
-/// are added to and removed from the main run loop, and the stack sampler
-/// records the calling thread's stack. The environment keeps the watch armed.
-pub(crate) fn apply_setting(persisted: bool) {
-    if should_arm(persisted, armed_by_env()) {
+fn start_at_launch_with(persisted: bool, env_armed: bool) {
+    if should_arm(persisted, env_armed) {
         arm();
-    } else {
-        disarm();
     }
 }
 
@@ -837,26 +830,16 @@ fn should_arm(persisted: bool, env_armed: bool) -> bool {
     persisted || env_armed
 }
 
-/// Counts arms. The reporter keeps the number it last saw; a different one
-/// means a new armed period began, even if the reporter never saw the watch
-/// off in between.
-static PERIOD: AtomicU64 = AtomicU64::new(0);
-/// When the newest armed period began (µs since the epoch). Everything the
-/// watch records in that period is stamped at or after it, so the reporter
-/// drops older spans and pastes by timestamp and never touches newer ones,
-/// however its cleanup interleaves with a re-arm.
-static PERIOD_START_US: AtomicU64 = AtomicU64::new(0);
-
-/// Install the observers and start (or wake) the reporter. Main thread only.
+/// Install the observers and start the reporter. Main thread only, because
+/// the observers go on the main run loop and the stack sampler records the
+/// calling thread's stack. Runs at most once per process.
 fn arm() {
     if ENABLED.load(Ordering::Acquire) {
         return;
     }
+    #[cfg(test)]
+    tests::ARMS.fetch_add(1, Ordering::SeqCst);
     let _ = epoch();
-    // Before anything can be recorded, so every record of this period is
-    // stamped at or after the start. The start is published before the number.
-    PERIOD_START_US.store(now_us(), Ordering::Release);
-    PERIOD.fetch_add(1, Ordering::Release);
     IS_MAIN.with(|flag| flag.set(true));
     let _ = RING.set(Ring::new());
     #[cfg(target_os = "macos")]
@@ -864,7 +847,6 @@ fn arm() {
     #[cfg(not(target_os = "macos"))]
     let observers_installed = false;
     // The calling thread is the main thread: remember its stack for sampling.
-    // The capture is made once; a later arm reuses it.
     let stack_sampling = observers_installed
         && !stacks_disabled_by_env(std::env::var_os(DISABLE_STACKS_ENV).as_deref())
         && (STACK_TARGET.get().is_some()
@@ -885,58 +867,19 @@ fn arm() {
     );
 }
 
-/// Remove the observers and silence every hook. Main thread only, so removal
-/// cannot race an observer callback. The reporter notices on its next pass and
-/// parks until the next arm; what the period left behind is dropped when the
-/// next period begins (see [`PERIOD`]).
-fn disarm() {
-    if !ENABLED.swap(false, Ordering::AcqRel) {
-        return;
-    }
-    #[cfg(target_os = "macos")]
-    runloop::remove();
-    BUSY_SINCE_US.store(0, Ordering::Release);
-    if let Some(thread) = REPORTER_THREAD.get() {
-        thread.unpark();
-    }
-    tracing::info!(target: "system", "main-thread watch stopped");
-}
-
-/// Start the reporter the first time, wake it on later arms. Tests share
-/// process statics with the reporter's own tests, so arming in a test never
-/// starts the real thread.
+/// Start the reporter. Tests share process statics with the reporter's own
+/// tests, so arming in a test never starts the real thread.
 fn ensure_reporter() -> bool {
     if cfg!(test) {
         return false;
     }
-    if REPORTER_SPAWNED.swap(true, Ordering::AcqRel) {
-        if let Some(thread) = REPORTER_THREAD.get() {
-            thread.unpark();
-        }
-        return true;
-    }
-    match std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("main-thread-watch".into())
         .spawn(reporter_loop)
-    {
-        Ok(handle) => {
-            // Published by the spawner, so the thread's own start-up cannot
-            // race a later wake.
-            let _ = REPORTER_THREAD.set(handle.thread().clone());
-            true
-        }
-        Err(_) => {
-            REPORTER_SPAWNED.store(false, Ordering::Release);
-            false
-        }
-    }
+        .is_ok()
 }
 
 struct Reporter {
-    /// The armed period this reporter last synchronised with.
-    period: u64,
-    /// Spans and pastes stamped before this belong to an earlier period.
-    period_start_us: u64,
     history: VecDeque<Span>,
     scratch: Vec<Span>,
     standalone_window_start_us: u64,
@@ -951,8 +894,6 @@ struct Reporter {
 impl Reporter {
     fn new() -> Self {
         Self {
-            period: 0,
-            period_start_us: 0,
             history: VecDeque::with_capacity(RING_CAPACITY),
             scratch: Vec::with_capacity(RING_CAPACITY),
             standalone_window_start_us: 0,
@@ -964,47 +905,7 @@ impl Reporter {
             rates: RatePacer::default(),
         }
     }
-
-    /// Begin the newest armed period if one started since the last look. Run
-    /// at the top of every armed pass, so a disarm and re-arm the reporter
-    /// never saw as "off" is still a new period.
-    fn sync_period(&mut self) {
-        let period = PERIOD.load(Ordering::Acquire);
-        if period != self.period {
-            self.period = period;
-            self.begin_period(PERIOD_START_US.load(Ordering::Acquire));
-        }
-    }
-
-    /// Drop what earlier periods left: history, pending pastes and pacing.
-    /// Records are told apart by timestamp, not by clearing everything, so
-    /// anything the new period already recorded survives even if it arrived
-    /// while this ran; a later arm just runs this again with a later start.
-    /// A sampler that was turned off for holding the main thread too long
-    /// stays off for the process.
-    fn begin_period(&mut self, start_us: u64) {
-        self.period_start_us = start_us;
-        self.history.retain(|span| span.start_us >= start_us);
-        PENDING_PASTES
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .retain(|paste| paste.queued_us >= start_us);
-        self.scratch.clear();
-        self.standalone_window_start_us = 0;
-        self.standalone_in_window = 0;
-        self.suppressed = 0;
-        self.dropped = 0;
-        self.last_drain_us = 0;
-        self.stacks = StackPacer {
-            disabled: self.stacks.disabled,
-            ..StackPacer::default()
-        };
-        self.rates = RatePacer::default();
-    }
 }
-
-/// How long a disarmed reporter sleeps between safety wakes.
-const DISARMED_PARK: Duration = Duration::from_secs(30);
 
 /// The reporter suspends the main thread for each stack sample, so it must
 /// never be the one that waits to be scheduled: run it at the main thread's
@@ -1025,23 +926,10 @@ fn reporter_loop() {
     // Bind the Mach calls the sampler makes while the main thread is
     // suspended, so no lazy-binding stub takes dyld's lock then.
     stack::warm_up();
+    // The observer wakes this thread through the handle.
+    let _ = REPORTER_THREAD.set(std::thread::current());
     let mut reporter = Reporter::new();
     loop {
-        #[cfg(test)]
-        if tests::REPORTER_STOP.load(Ordering::Acquire) {
-            return;
-        }
-        if !ENABLED.load(Ordering::Acquire) {
-            // Disarmed: sleep until the next arm unparks us. The timeout only
-            // covers an arm that raced this thread's start; it is a wake every
-            // 30 s, not a poll. What the period left in shared buffers is
-            // dropped by timestamp when the next period begins.
-            reporter.history.clear();
-            REPORTER_PARKED.store(false, Ordering::SeqCst);
-            std::thread::park_timeout(DISARMED_PARK);
-            continue;
-        }
-        reporter.sync_period();
         let now = now_us();
         reporter.sample_stack(now);
         reporter.report_rates(now);
@@ -1370,10 +1258,6 @@ impl Reporter {
         let now = now_us();
         let drained = std::mem::take(&mut self.scratch);
         for span in &drained {
-            if span.start_us < self.period_start_us {
-                // Left in the ring by an earlier armed period.
-                continue;
-            }
             if should_log_standalone(span) {
                 self.log_standalone(span, now);
             }
@@ -1437,11 +1321,6 @@ impl Reporter {
     }
 
     fn report_paste(&mut self, paste: &PasteState, now: u64) {
-        #[cfg(test)]
-        tests::REPORTED_PASTES
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(paste.recording_id);
         let queued = paste.queued_us;
         let started = paste.started_us.load(Ordering::Acquire);
         let finished = paste.finished_us.load(Ordering::Acquire);
@@ -2148,7 +2027,7 @@ mod runloop {
         kCFRunLoopAfterWaiting, kCFRunLoopBeforeSources, kCFRunLoopBeforeTimers,
         kCFRunLoopBeforeWaiting, kCFRunLoopCommonModes, kCFRunLoopEntry, kCFRunLoopExit,
         CFRunLoopActivity, CFRunLoopAddObserver, CFRunLoopGetMain, CFRunLoopObserverCreate,
-        CFRunLoopObserverRef, CFRunLoopRemoveObserver,
+        CFRunLoopObserverRef,
     };
 
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2176,8 +2055,6 @@ mod runloop {
             longest_phase_us: 0,
             segments: 0,
         }) };
-        /// The observers this thread added, as addresses, for `remove`.
-        static OBSERVERS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     }
 
     const EARLY: usize = 1;
@@ -2189,9 +2066,6 @@ mod runloop {
         activity: CFRunLoopActivity,
         info: *mut std::ffi::c_void,
     ) {
-        if !ENABLED.load(Ordering::Relaxed) {
-            return;
-        }
         let which = info as usize;
         let next = match (which, activity) {
             (EARLY, a) if a == kCFRunLoopEntry => Phase::Labelled(runloop_labels::ENTRY),
@@ -2307,15 +2181,12 @@ mod runloop {
                     installed = false;
                     continue;
                 }
-                // The run loop retains it; `remove` drops our reference too.
+                // The run loop retains it, and nothing removes it, so our own
+                // reference is simply kept for the life of the process.
                 CFRunLoopAddObserver(main, observer, kCFRunLoopCommonModes);
-                OBSERVERS.with(|held| held.borrow_mut().push(observer as usize));
             }
         }
         STATE.with(|state| {
-            // The whole state, not just the timestamps: a disarm in the middle
-            // of a busy stretch leaves its phase statistics behind, and the
-            // first stretch of the next period must not inherit them.
             let now = now_us();
             *state.borrow_mut() = State {
                 last_mark_us: now,
@@ -2328,30 +2199,6 @@ mod runloop {
             BUSY_SINCE_US.store(now, Ordering::Release);
         });
         installed
-    }
-
-    /// Take the observers off the main run loop. Run on the thread that added
-    /// them (the main thread), so no callback is mid-flight. A callback the run
-    /// loop already collected for this pass may still fire once; `observe`
-    /// returns at once while the watch is off.
-    pub(super) fn remove() {
-        let observers = OBSERVERS.with(|held| std::mem::take(&mut *held.borrow_mut()));
-        // SAFETY: each pointer came from `CFRunLoopObserverCreate` in
-        // `install` on this thread and is released exactly once here.
-        unsafe {
-            let main = CFRunLoopGetMain();
-            for observer in observers {
-                let observer = observer as CFRunLoopObserverRef;
-                CFRunLoopRemoveObserver(main, observer, kCFRunLoopCommonModes);
-                core_foundation::base::CFRelease(observer as *const std::ffi::c_void);
-            }
-        }
-    }
-
-    /// How many observers this thread has installed and not yet removed.
-    #[cfg(test)]
-    pub(super) fn installed_count() -> usize {
-        OBSERVERS.with(|held| held.borrow().len())
     }
 
     #[cfg(test)]
@@ -2386,49 +2233,6 @@ mod runloop {
                 .iter()
                 .any(|s| s.kind == Kind::RunloopSegment && s.label == runloop_labels::WAKE));
             assert_eq!(state.busy_start_us, 0);
-        }
-
-        #[test]
-        fn arming_again_starts_the_run_loop_state_clean() {
-            let _guard = super::super::tests::enable_for_test();
-            // A disarm in the middle of a long busy stretch leaves its phase
-            // statistics in this thread's state.
-            STATE.with(|state| {
-                let mut state = state.borrow_mut();
-                transition(&mut state, Phase::Labelled(runloop_labels::DRAIN), 1_000);
-                transition(&mut state, Phase::Labelled(runloop_labels::OUTSIDE), 91_000);
-                assert_eq!(state.longest_phase_us, 90_000);
-                assert_eq!(state.longest_phase, runloop_labels::DRAIN);
-                assert_eq!(state.segments, 1);
-            });
-            super::super::tests::drain_ring();
-
-            install();
-            let (start, left_over) = STATE.with(|state| {
-                let state = state.borrow();
-                (
-                    state.busy_start_us,
-                    (state.longest_phase_us, state.longest_phase, state.segments),
-                )
-            });
-            assert_eq!(left_over, (0, "", 0), "no statistics from the last period");
-
-            // The first stretch of the new period is short and is recorded.
-            STATE.with(|state| transition(&mut state.borrow_mut(), Phase::Sleep, start + 5_000));
-            let spans = super::super::tests::drain_ring();
-            let busy = spans
-                .iter()
-                .find(|s| s.kind == Kind::RunloopBusy)
-                .expect("busy span");
-            assert_eq!(busy.duration_us, 5_000);
-            assert!(
-                busy.longest_phase_us <= busy.duration_us,
-                "a phase cannot outlast its stretch"
-            );
-            assert_eq!(busy.longest_phase, runloop_labels::OUTSIDE);
-            assert_eq!(installed_count(), 3);
-            remove();
-            assert_eq!(installed_count(), 0);
         }
     }
 }
@@ -3179,210 +2983,37 @@ mod tests {
             "a disarmed watch counts and queues nothing"
         );
         assert!(!is_armed());
-        #[cfg(target_os = "macos")]
-        assert_eq!(runloop::installed_count(), 0, "no observers while disarmed");
     }
 
+    /// Counts the arms that got past the once-per-process guard.
+    pub(super) static ARMS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
     #[test]
-    fn off_by_default_installs_nothing_and_arming_installs_then_disarming_removes() {
+    fn off_by_default_installs_nothing_and_arming_happens_once() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         ENABLED.store(false, Ordering::SeqCst);
         IS_MAIN.with(|flag| flag.set(true));
+        let arms = ARMS.load(Ordering::SeqCst);
 
         // The default: no setting, no environment.
-        if should_arm(false, false) {
-            arm();
-        }
+        start_at_launch_with(false, false);
         assert_inert();
-        assert!(!REPORTER_SPAWNED.load(Ordering::Relaxed));
+        assert_eq!(ARMS.load(Ordering::SeqCst), arms, "nothing was installed");
 
-        // Armed: observers are installed and the hooks record.
-        arm();
+        // Armed at launch: the hooks record.
+        start_at_launch_with(true, false);
         assert!(is_armed());
-        #[cfg(target_os = "macos")]
-        assert_eq!(runloop::installed_count(), 3);
+        assert_eq!(ARMS.load(Ordering::SeqCst), arms + 1);
         drain_ring();
         job("armed.job", || {})();
         assert!(drain_ring().iter().any(|s| s.label == "armed.job"));
-        // Arming twice installs nothing more.
-        arm();
-        #[cfg(target_os = "macos")]
-        assert_eq!(runloop::installed_count(), 3);
 
-        // Disarmed again: observers are gone and the hooks are inert.
-        disarm();
-        assert_inert();
-
-        // And it can be armed once more.
+        // Nothing arms it twice: not a second launch step, not the environment.
+        start_at_launch_with(true, true);
         arm();
+        assert_eq!(ARMS.load(Ordering::SeqCst), arms + 1, "installed once");
         assert!(is_armed());
-        #[cfg(target_os = "macos")]
-        assert_eq!(runloop::installed_count(), 3);
-        disarm();
-        assert_inert();
-    }
-
-    /// Makes a test-owned reporter thread return.
-    pub(super) static REPORTER_STOP: AtomicBool = AtomicBool::new(false);
-    /// Recording ids of the pastes the reporter reported.
-    pub(super) static REPORTED_PASTES: Mutex<Vec<u64>> = Mutex::new(Vec::new());
-
-    fn paste_state(recording_id: u64, queued_us: u64, submitted_us: u64) -> Arc<PasteState> {
-        Arc::new(PasteState {
-            recording_id,
-            queued_us,
-            started_us: AtomicU64::new(0),
-            finished_us: AtomicU64::new(0),
-            submitted_us: AtomicU64::new(submitted_us),
-        })
-    }
-
-    fn pending_ids() -> Vec<u64> {
-        PENDING_PASTES
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .iter()
-            .map(|paste| paste.recording_id)
-            .collect()
-    }
-
-    #[test]
-    fn a_new_period_drops_earlier_records_by_timestamp_and_keeps_newer_ones() {
-        let _guard = enable_for_test();
-        PENDING_PASTES
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
-        let mut reporter = Reporter::new();
-        reporter.history.push_back(span(Kind::Job, "old", 100, 200));
-        reporter
-            .history
-            .push_back(span(Kind::Job, "new", 5_000, 5_100));
-        reporter.dropped = 4;
-        reporter.stacks.disabled = true;
-        // Submitted just now, so none is due while the test runs.
-        let submitted = now_us();
-        {
-            let mut pending = PENDING_PASTES.lock().unwrap_or_else(|p| p.into_inner());
-            pending.push(paste_state(1, 100, submitted));
-            pending.push(paste_state(2, 6_000, submitted));
-        }
-        // The new period's spans are already in the ring when cleanup runs,
-        // next to a leftover of the old one.
-        record(span(Kind::Job, "leftover", 150, 250));
-        record(span(Kind::Job, "fresh", 5_500, 5_600));
-
-        reporter.begin_period(5_000);
-        let labels = |reporter: &Reporter| -> Vec<&'static str> {
-            reporter.history.iter().map(|s| s.label).collect()
-        };
-        assert_eq!(labels(&reporter), ["new"]);
-        assert_eq!(pending_ids(), [2], "only the newer paste survives");
-        assert_eq!(reporter.dropped, 0);
-        assert!(reporter.stacks.disabled, "the stop lasts for the process");
-
-        reporter.tick();
-        assert_eq!(
-            labels(&reporter),
-            ["new", "fresh"],
-            "a leftover in the ring is skipped, the new span kept"
-        );
-
-        // A later re-arm runs it again with a later start and drops what lay
-        // between the two.
-        reporter.begin_period(5_200);
-        assert_eq!(labels(&reporter), ["fresh"]);
-        PENDING_PASTES
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
-    }
-
-    #[test]
-    fn the_reporter_begins_a_period_for_every_arm_even_one_it_never_saw_off() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         ENABLED.store(false, Ordering::SeqCst);
-        IS_MAIN.with(|flag| flag.set(true));
-        let mut reporter = Reporter::new();
-        arm();
-        reporter.sync_period();
-        let first = reporter.period;
-        let first_start = reporter.period_start_us;
-        assert!(first_start > 0);
-        // Nothing changed: no new period.
-        reporter
-            .history
-            .push_back(span(Kind::Job, "kept", first_start, first_start + 1));
-        reporter.sync_period();
-        assert_eq!(reporter.history.len(), 1);
-        // Off and on again between two looks.
-        disarm();
-        arm();
-        reporter.sync_period();
-        assert_eq!(reporter.period, first + 1);
-        assert!(reporter.period_start_us > first_start);
-        assert!(
-            reporter.history.is_empty(),
-            "the old period's span is dropped"
-        );
-        disarm();
-    }
-
-    #[test]
-    fn the_real_reporter_drops_a_rapid_rearm_s_pastes_and_keeps_the_new_periods() {
-        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        ENABLED.store(false, Ordering::SeqCst);
-        IS_MAIN.with(|flag| flag.set(true));
-        REPORTER_STOP.store(false, Ordering::SeqCst);
-        REPORTED_PASTES
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
-        PENDING_PASTES
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
-
-        arm();
-        let reporter = std::thread::spawn(reporter_loop);
-        // Let it start and begin the first period.
-        std::thread::sleep(Duration::from_millis(250));
-        let stale_at = now_us();
-        PENDING_PASTES
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(paste_state(101, stale_at, stale_at));
-        std::thread::sleep(Duration::from_millis(2));
-        // Off and on again within microseconds, as a fast double click would:
-        // the reporter, asleep, never sees the watch off.
-        disarm();
-        arm();
-        reporter.thread().unpark();
-        let fresh_at = now_us();
-        PENDING_PASTES
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .push(paste_state(102, fresh_at, fresh_at));
-        // Past the report delay and a drain.
-        std::thread::sleep(REPORT_DELAY + Duration::from_millis(900));
-        let reported = REPORTED_PASTES
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone();
-
-        REPORTER_STOP.store(true, Ordering::SeqCst);
-        reporter.thread().unpark();
-        reporter.join().unwrap();
-        disarm();
-        PENDING_PASTES
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
-        assert_eq!(
-            reported,
-            [102],
-            "the first period's paste must not be reported in the second"
-        );
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
