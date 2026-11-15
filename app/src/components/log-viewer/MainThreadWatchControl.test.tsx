@@ -48,7 +48,7 @@ describe('MainThreadWatchControl', () => {
     await render();
     expect(container.querySelectorAll('[role="switch"]')).toHaveLength(1);
     expect(container.textContent).toContain('Main-thread watch');
-    expect(container.textContent).toContain('Adds a little CPU and log volume while on');
+    expect(container.textContent).toContain('Uses extra CPU and log volume while on');
     expect(watchSwitch().getAttribute('aria-checked')).toBe('false');
     expect(watchSwitch().hasAttribute('data-disabled')).toBe(false);
   });

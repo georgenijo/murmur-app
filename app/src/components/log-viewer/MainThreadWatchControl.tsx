@@ -58,8 +58,7 @@ export function MainThreadWatchControl({ active = true }: { active?: boolean }) 
         <div className="min-w-0">
           <div className="text-[length:var(--ui-font-body)] font-medium text-on-surface">{LABEL}</div>
           <p className="mt-0.5 text-[length:var(--ui-font-caption)] text-on-surface-variant">
-            Explains slow pastes by sampling what the main thread is doing. Adds a little CPU and
-            log volume while on; turn it on to investigate, then off again.
+            Explains slow pastes. Uses extra CPU and log volume while on.
           </p>
         </div>
         <Toggle
