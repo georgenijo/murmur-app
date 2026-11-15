@@ -425,6 +425,8 @@ pub fn run() {
             commands::overlay::get_overlay_geometry,
             commands::overlay::overlay_pointer_sample,
             commands::dictation_preview::show_dictation_preview,
+            commands::main_thread_watch::get_main_thread_watch_status,
+            commands::main_thread_watch::set_main_thread_watch_armed,
             telemetry::get_event_history,
             telemetry::clear_event_history,
             resource_monitor::get_resource_usage,
@@ -454,9 +456,10 @@ pub fn run() {
         .setup(|app| {
             window_state::initialize(app.handle())?;
             telemetry::init(app.handle().clone());
-            // After telemetry and Tauri's event loop: observes every main-thread
-            // busy span and labels the app's own main-thread work.
-            main_thread_watch::install();
+            // After telemetry and Tauri's event loop. Off unless the Diagnostics
+            // setting or MURMUR_MAIN_THREAD_WATCH arms it; then it observes every
+            // main-thread busy span and labels the app's own main-thread work.
+            commands::main_thread_watch::initialize(app.handle());
             launch::milestone("system.launch_process_start");
             launch::prepare(app.handle());
             audio_inventory::initialize(app.handle().clone());

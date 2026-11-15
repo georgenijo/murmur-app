@@ -700,6 +700,10 @@ omits it. Durations use monotonic **microseconds**, wrapped in the existing
 measurement status contract; unavailable is never a numeric zero. The existing
 `clipboardPaste` stage and `inject timing` log retain their original meanings.
 `clipboardPaste` measures the whole delivery stage, not visible insertion.
+`deliveryTiming` is recorded for every dictation, and its `injectQueueUs` and
+`injectWorkUs` fields (main-queue wait and paste work) are how a slow paste is
+noticed. It does not depend on the [main-thread watch](main-thread-diagnostics.md),
+which is off until armed and only explains a slow paste after the fact.
 
 The companion separates accepted/actual route (normal, Smart current field,
 Smart handoff, or clipboard only), configured delay, permission, and final

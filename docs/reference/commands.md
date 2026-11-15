@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 159 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 161 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -261,6 +261,13 @@ frontend.
 | `get_log_contents` | `lines: usize` | `String` | Last N lines of the pretty log file. |
 | `clear_logs` | — | `Result<(), String>` | Removes log files (including rotated and JSONL variants) and clears the ring buffer. |
 | `log_frontend` | `level`, `message`, `transform_pass_id: Option<u64>`, `event_code: Option<String>` | `()` | Logs a content-free frontend event with an allowlisted code, optionally correlated to a transform pass. The main hydration code records native monotonic launch time once. Message contents are discarded. |
+
+## Main-thread watch (`commands/main_thread_watch.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `get_main_thread_watch_status` | — | `MainThreadWatchStatus` | `{setting, running, forcedByEnv}`: the persisted Diagnostics setting, whether the watch is running now, and whether `MURMUR_MAIN_THREAD_WATCH` arms it for this launch. |
+| `set_main_thread_watch_armed` | `armed: bool` | `MainThreadWatchStatus` | Persists the setting to `main-thread-watch.json` in the app data directory, then has the main thread add or remove the run-loop observers. Takes effect without a restart; the environment variable keeps the watch armed regardless. |
 
 ## Export (`commands/export.rs`)
 

@@ -7,6 +7,7 @@ pub mod export;
 pub mod integrations;
 pub mod keyboard;
 pub mod logging;
+pub mod main_thread_watch;
 pub mod meeting;
 pub mod meeting_calendar;
 pub mod microphone_preview;

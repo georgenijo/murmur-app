@@ -150,6 +150,12 @@ describe('DiagnosticsWorkspace shared diagnostics shell', () => {
     await act(async () => (tabs[2] as HTMLButtonElement).click());
     expect(container.querySelector('#diagnostics-panel-performance')).not.toBeNull();
     expect(tabs[2].getAttribute('aria-selected')).toBe('true');
+    expect(
+      container.querySelector(
+        '#diagnostics-panel-performance [data-testid="main-thread-watch-control"] [role="switch"]',
+      ),
+    ).not.toBeNull();
+    expect(container.querySelector('#diagnostics-panel-runs')).toBeNull();
 
     await act(async () => (tabs[3] as HTMLButtonElement).click());
     expect(container.querySelector('#diagnostics-panel-latency')).not.toBeNull();
