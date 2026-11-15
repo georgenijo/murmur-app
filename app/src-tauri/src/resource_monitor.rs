@@ -198,19 +198,36 @@ pub fn start_heartbeat(app_handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
         let mut ticks = 0_u64;
+        // One warning per outage: an unavailable store stays unavailable, so a
+        // per-second warning only fills the log.
+        let mut persist_failure_reported = false;
         loop {
             interval.tick().await;
             ticks = ticks.saturating_add(1);
 
             let state = app_handle.state::<crate::State>();
-            let sample = sample_resources();
-            if let Err(error) = state.performance.insert_resource_sample(&sample) {
-                tracing::warn!(
-                    target: "system",
-                    diagnostics_available = false,
-                    "performance resource sample not persisted: {}",
-                    error
-                );
+            let persist_failure = if state.performance.health().status
+                == crate::performance_metrics::PerformanceStoreStatusV1::Unavailable
+            {
+                Some("the diagnostics store is unavailable".to_string())
+            } else {
+                state
+                    .performance
+                    .insert_resource_sample(&sample_resources())
+                    .err()
+            };
+            match persist_failure {
+                Some(error) if !persist_failure_reported => {
+                    persist_failure_reported = true;
+                    tracing::warn!(
+                        target: "system",
+                        diagnostics_available = false,
+                        "performance resource samples not persisted: {}",
+                        error
+                    );
+                }
+                Some(_) => {}
+                None => persist_failure_reported = false,
             }
 
             if ticks.is_multiple_of(60) {
