@@ -246,7 +246,7 @@ pub async fn check_smart_turn(
     match scored {
         Ok(score) => {
             tracing::info!(
-                target: "recording",
+                target: "pipeline",
                 recording_id,
                 probability = score.probability,
                 inference_ms = score.inference_ms,
@@ -261,7 +261,7 @@ pub async fn check_smart_turn(
         }
         Err(error) => {
             tracing::info!(
-                target: "recording",
+                target: "pipeline",
                 recording_id,
                 outcome = error.as_str(),
                 "smart turn check unavailable"

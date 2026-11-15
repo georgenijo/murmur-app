@@ -119,7 +119,7 @@ pub fn score(samples: &[f32]) -> Result<Score, CheckError> {
             return Err(CheckError::NotInstalled);
         }
         load_onnx(&path).map_err(|error| {
-            tracing::warn!(target: "recording", error = %error, "smart turn model load failed");
+            tracing::warn!(target: "pipeline", error = %error, "smart turn model load failed");
             CheckError::LoadFailed
         })
     })

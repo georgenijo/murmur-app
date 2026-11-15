@@ -119,6 +119,16 @@ Tracing targets map to stream names used for filtering:
 | `transform` | transform | Correlated transform key, state, capture, audio, effects, and terminal outcomes |
 | `system` | system | Startup, permissions, updates, resource usage |
 
+`meeting` and `hunt` are also streams (`hunt` carries debug-only [`hunt!`](#hunting-logs) lines). The former `recording` target used by the Smart Turn check now logs as `pipeline`, and a straggler on `recording` is sanitized as `pipeline`, so string fields such as an error carrying a model path never reach `events.jsonl` or the shipper.
+
+### Session stamp
+
+Once per launch, right after telemetry starts, one `system.session_started` info event records `app_version`, a random per-launch `session_id` (16 hex characters) and `build` (`release` or `debug`). `recording_id` restarts on every launch, so a reader joins a recording to a version and launch by the nearest earlier session line instead of inferring from timestamps. Events themselves do not carry these fields.
+
+### Launch-time cleanup of legacy files
+
+On a background thread at launch, `telemetry/legacy.rs` trims a rotated generation (`app.log.1`, `app.dev.log.1`, `events*.jsonl.1`/`.2`) that is more than 1MB over its cap down to its last cap's worth of whole lines (written beside it and renamed over it), and, in a release install only, deletes `app.dev.log*`, `events.dev.jsonl*`, `frontend.dev.log*` and `transcriptions.dev.jsonl*` files untouched for three days. It handles a fixed set of names, reads at most one cap per file, deletes at most 16 files a launch, and never touches a current file.
+
 ### Frontend Logging
 
 The `flog` utility (`lib/log.ts`) routes frontend log messages through the Rust tracing system via the `log_frontend` command. Messages appear in the Performance workspace alongside Rust-originated events.

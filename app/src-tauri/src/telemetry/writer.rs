@@ -179,10 +179,13 @@ mod tests {
         // The sink blocks on its first write, so the queue fills behind it.
         let gate = Arc::new((Mutex::new(false), Condvar::new()));
         let sink_gate = Arc::clone(&gate);
+        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let sink_entered = Arc::clone(&entered);
         let written = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&written);
         let writer = EventWriter::spawn(
             move |bytes| {
+                sink_entered.store(true, Ordering::SeqCst);
                 let (open, signal) = &*sink_gate;
                 let mut open = open.lock().unwrap();
                 while !*open {
@@ -193,16 +196,21 @@ mod tests {
             },
             8,
         );
+        // Let the first event reach the blocked sink, then flood the queue.
+        writer.send(event(0));
+        while !entered.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
         let started = Instant::now();
-        for n in 0..100 {
+        for n in 1..100 {
             writer.send(event(n));
         }
         assert!(
             started.elapsed() < Duration::from_secs(2),
             "send must never wait on the sink"
         );
-        // One event is held by the blocked sink, eight sit in the queue.
-        assert!(writer.dropped_total() >= 80, "{}", writer.dropped_total());
+        // Eight sit in the queue behind the held batch; the rest are dropped.
+        assert_eq!(writer.dropped_total(), 99 - 8);
 
         {
             let (open, signal) = &*gate;

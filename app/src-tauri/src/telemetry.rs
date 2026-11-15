@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, Manager};
 
 mod key_identity;
+mod legacy;
 mod level;
 mod writer;
 pub(crate) use key_identity::sanitize_persisted_line;
@@ -311,6 +312,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "system.launch_model_ready" => Some("system.launch_model_ready"),
         "system.launch_frontend_hydrated" => Some("system.launch_frontend_hydrated"),
         "system.debug_logging_changed" => Some("system.debug_logging_changed"),
+        "system.session_started" => Some("system.session_started"),
         "keyboard.listener_started" => Some("keyboard.listener_started"),
         "keyboard.listener_silent" => Some("keyboard.listener_silent"),
         "keyboard.listener_failed" => Some("keyboard.listener_failed"),
@@ -2130,6 +2132,20 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
         });
         return;
     }
+    if obj.get("event_code").and_then(serde_json::Value::as_str) == Some("system.session_started") {
+        obj.retain(|key, value| match key.as_str() {
+            "event_code" => true,
+            "app_version" => value.as_str().is_some_and(is_safe_updater_version),
+            "session_id" => value
+                .as_str()
+                .is_some_and(|id| id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit())),
+            "build" => value
+                .as_str()
+                .is_some_and(|b| matches!(b, "release" | "debug")),
+            _ => false,
+        });
+        return;
+    }
     if key_identity::sanitize_fields(stream, obj) {
         return;
     }
@@ -2236,7 +2252,9 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
         obj.retain(|key, value| is_safe_performance_store_field(key, value));
         return;
     }
-    if !debug_build && stream == "pipeline" {
+    // `recording` is the old name of a call-site target that now logs as
+    // `pipeline`; treating a straggler the same keeps its strings out.
+    if !debug_build && (stream == "pipeline" || stream == "recording") {
         obj.retain(|key, value| {
             !value.is_string()
                 || value.as_str().is_some_and(|value| match key.as_str() {
@@ -2692,6 +2710,48 @@ fn seed_buffer_from_jsonl(buffer: &Arc<Mutex<VecDeque<AppEvent>>>, n: usize) {
     }
 }
 
+/// The one line that tells a reader which build and which launch wrote the
+/// events after it. `recording_id` restarts on every launch, so joining by it
+/// needs the session.
+fn log_session_start() {
+    use std::hash::{BuildHasher, Hasher};
+    // A random 64-bit id from std's per-process random hash keys.
+    let session_id = format!(
+        "{:016x}",
+        std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish()
+    );
+    tracing::info!(
+        target: "system",
+        event_code = "system.session_started",
+        app_version = env!("CARGO_PKG_VERSION"),
+        session_id = session_id.as_str(),
+        build = if cfg!(debug_assertions) { "debug" } else { "release" },
+        "session started"
+    );
+}
+
+/// Trim oversized rotated logs and stale dev leftovers once, off the launch path.
+fn spawn_legacy_trim(log_dir: PathBuf) {
+    let _ = std::thread::Builder::new()
+        .name("log-trim".into())
+        .spawn(move || {
+            let report = legacy::trim_legacy_logs(
+                &log_dir,
+                !cfg!(debug_assertions),
+                std::time::SystemTime::now(),
+            );
+            tracing::debug!(
+                target: "system",
+                trimmed_files = report.trimmed_files,
+                removed_files = report.removed_files,
+                reclaimed_bytes = report.reclaimed_bytes,
+                "legacy log trim"
+            );
+        });
+}
+
 /// Whether the text `app.log` formats an event of `level` (debug lines take the
 /// emitter layer's sanitized path instead). `events.jsonl` already records every
 /// info event, so the text log repeats them only while debug is on.
@@ -2822,8 +2882,9 @@ pub fn init(app_handle: tauri::AppHandle) {
 
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
     if !level_pinned {
-        level::spawn_flag_watcher(log_level_dir);
+        level::spawn_flag_watcher(log_level_dir.clone());
     }
+    spawn_legacy_trim(log_level_dir);
 
     tracing::info!(
         target: "system",
@@ -2835,6 +2896,7 @@ pub fn init(app_handle: tauri::AppHandle) {
         debug_logging = debug_on,
         "telemetry initialized"
     );
+    log_session_start();
 
     // Held for the app's lifetime; `flush_on_exit` drops it to flush `app.log`.
     *PRETTY_GUARD.lock().unwrap_or_else(|p| p.into_inner()) = Some(pretty_guard);
@@ -3021,6 +3083,54 @@ mod tests {
             "{line}"
         );
         assert!(!line.contains("private.wav"), "{line}");
+    }
+
+    #[test]
+    fn the_session_start_line_keeps_only_version_session_and_build() {
+        for debug_build in [false, true] {
+            let mut data = serde_json::json!({
+                "event_code": "system.session_started",
+                "app_version": "0.66.2",
+                "session_id": "00ff00ff00ff00ff",
+                "build": "release",
+                "path": "/Users/someone/Library",
+            });
+            sanitize_event_data("system", &mut data, debug_build);
+            assert_eq!(
+                data,
+                serde_json::json!({
+                    "event_code": "system.session_started",
+                    "app_version": "0.66.2",
+                    "session_id": "00ff00ff00ff00ff",
+                    "build": "release",
+                })
+            );
+            let mut data = serde_json::json!({
+                "event_code": "system.session_started",
+                "app_version": "/Users/someone/0.66.2",
+                "session_id": "not hex",
+                "build": "other",
+            });
+            sanitize_event_data("system", &mut data, debug_build);
+            assert_eq!(
+                data,
+                serde_json::json!({ "event_code": "system.session_started" })
+            );
+        }
+    }
+
+    #[test]
+    fn a_recording_target_gets_the_pipeline_string_boundary_in_release() {
+        let mut data = serde_json::json!({
+            "recording_id": 4,
+            "error": "failed to load /Users/someone/Library/models/smart-turn.onnx",
+        });
+        sanitize_event_data("recording", &mut data, false);
+        assert_eq!(data, serde_json::json!({ "recording_id": 4 }));
+        // The call sites now use the documented stream.
+        let mut data = serde_json::json!({ "error": "/Users/someone/x" });
+        sanitize_event_data("pipeline", &mut data, false);
+        assert_eq!(data, serde_json::json!({}));
     }
 
     #[test]
