@@ -232,6 +232,29 @@ mod tests {
     }
 
     #[test]
+    fn clear_logs_resets_the_file_under_the_writer_thread() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("murmur-writer-clear-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("events.jsonl");
+        let file = super::super::SizeRotatingFile::open(path.clone(), 1 << 20, 2).unwrap();
+        let mut sink = file.clone();
+        let writer = EventWriter::spawn(move |bytes| sink.write_all(bytes), QUEUE_CAPACITY);
+        writer.send(event(1));
+        assert!(writer.flush(Duration::from_secs(5)));
+        assert_eq!(numbers(&std::fs::read(&path).unwrap()), vec![1]);
+
+        // What Clear logs does: delete and reopen under the writer's own lock.
+        super::super::reset_writers(&[file]);
+        assert_eq!(std::fs::read(&path).unwrap().len(), 0);
+        writer.send(event(2));
+        assert!(writer.flush(Duration::from_secs(5)));
+        assert_eq!(numbers(&std::fs::read(&path).unwrap()), vec![2]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn flush_waits_for_queued_events_and_reports_a_stuck_sink() {
         let written = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&written);
