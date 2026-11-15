@@ -13,9 +13,11 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 const windowState = vi.hoisted(() => ({ tauri: false, visible: false }));
+const invokeMock = vi.hoisted(() => vi.fn());
 
 vi.mock('@tauri-apps/api/core', () => ({
   isTauri: () => windowState.tauri,
+  invoke: invokeMock,
 }));
 
 vi.mock('@tauri-apps/api/window', () => ({
@@ -45,6 +47,8 @@ describe('DiagnosticsWindowApp native chrome', () => {
   beforeEach(async () => {
     workspaceMock.mockClear();
     listeners.clear();
+    invokeMock.mockReset();
+    invokeMock.mockResolvedValue(null);
     windowState.tauri = false;
     windowState.visible = false;
     container = document.createElement('div');
@@ -87,7 +91,7 @@ describe('DiagnosticsWindowApp native chrome', () => {
 
   it('activates the workspace and selects the tab when the window is shown', async () => {
     await act(async () => {
-      listeners.get('diagnostics-tab-requested')?.({ payload: 'runs' });
+      listeners.get('diagnostics-tab-requested')?.({ payload: { tab: 'runs', seq: 1 } });
     });
     expect(lastProps()).toMatchObject({ active: true, requestedTab: 'runs' });
   });
@@ -102,10 +106,10 @@ describe('DiagnosticsWindowApp native chrome', () => {
 
   it('stays active once shown, so reopening does not reload the workspace', async () => {
     await act(async () => {
-      listeners.get('diagnostics-tab-requested')?.({ payload: 'runs' });
+      listeners.get('diagnostics-tab-requested')?.({ payload: { tab: 'runs', seq: 1 } });
     });
     await act(async () => {
-      listeners.get('diagnostics-tab-requested')?.({ payload: 'performance' });
+      listeners.get('diagnostics-tab-requested')?.({ payload: { tab: 'performance', seq: 2 } });
     });
     await act(async () => {
       window.dispatchEvent(new Event('focus'));
@@ -136,30 +140,55 @@ describe('DiagnosticsWindowApp native chrome', () => {
     expect(lastProps().active).toBe(false);
   });
 
-  it('opens on the tab it was built with, before any tab event arrives', async () => {
+  async function mountInTauri() {
     await act(async () => root.unmount());
     workspaceMock.mockClear();
-    window.__MURMUR_DIAGNOSTICS_TAB__ = 'runs';
-    try {
-      root = createRoot(container);
-      await act(async () => root.render(<DiagnosticsWindowApp />));
-      expect(workspaceMock.mock.calls[0]?.[0]).toMatchObject({ active: true, requestedTab: 'runs' });
-    } finally {
-      delete window.__MURMUR_DIAGNOSTICS_TAB__;
-    }
+    windowState.tauri = true;
+    root = createRoot(container);
+  }
+
+  it('reads the retained request after subscribing, so a request made during startup is not lost', async () => {
+    await mountInTauri();
+    invokeMock.mockResolvedValue({ tab: 'runs', seq: 1 });
+    await act(async () => root.render(<DiagnosticsWindowApp />));
+    expect(invokeMock).toHaveBeenCalledWith('get_requested_diagnostics_tab');
+    expect(listeners.has('diagnostics-tab-requested')).toBe(true);
+    expect(lastProps()).toMatchObject({ active: true, requestedTab: 'runs' });
   });
 
-  it('ignores an unknown built-with tab', async () => {
-    await act(async () => root.unmount());
-    workspaceMock.mockClear();
-    window.__MURMUR_DIAGNOSTICS_TAB__ = 'nope';
-    try {
-      root = createRoot(container);
-      await act(async () => root.render(<DiagnosticsWindowApp />));
-      expect(lastProps()).toMatchObject({ active: false, requestedTab: 'events' });
-    } finally {
-      delete window.__MURMUR_DIAGNOSTICS_TAB__;
-    }
+  it('keeps the newer of two different requests when the read answers after the event', async () => {
+    await mountInTauri();
+    let answer: (value: unknown) => void = () => {};
+    invokeMock.mockReturnValue(new Promise(resolve => { answer = resolve; }));
+    await act(async () => root.render(<DiagnosticsWindowApp />));
+    // Request 2 (Performance) is delivered while the read of request 1 (Runs) is in flight.
+    await act(async () => {
+      listeners.get('diagnostics-tab-requested')?.({ payload: { tab: 'performance', seq: 2 } });
+    });
+    await act(async () => answer({ tab: 'runs', seq: 1 }));
+    expect(lastProps()).toMatchObject({ active: true, requestedTab: 'performance' });
+  });
+
+  it('applies a newer read over an older event', async () => {
+    await mountInTauri();
+    let answer: (value: unknown) => void = () => {};
+    invokeMock.mockReturnValue(new Promise(resolve => { answer = resolve; }));
+    await act(async () => root.render(<DiagnosticsWindowApp />));
+    await act(async () => {
+      listeners.get('diagnostics-tab-requested')?.({ payload: { tab: 'events', seq: 1 } });
+    });
+    await act(async () => answer({ tab: 'runs', seq: 2 }));
+    expect(lastProps()).toMatchObject({ active: true, requestedTab: 'runs' });
+  });
+
+  it('ignores an unknown tab and malformed requests', async () => {
+    await mountInTauri();
+    invokeMock.mockResolvedValue({ tab: 'nope', seq: 1 });
+    await act(async () => root.render(<DiagnosticsWindowApp />));
+    await act(async () => {
+      listeners.get('diagnostics-tab-requested')?.({ payload: 'runs' });
+    });
+    expect(lastProps()).toMatchObject({ requestedTab: 'events' });
   });
 
   it('activates on mount when the document already has focus', async () => {

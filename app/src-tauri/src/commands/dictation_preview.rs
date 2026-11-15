@@ -210,6 +210,11 @@ impl HideOwnership {
         true
     }
 
+    /// The recording whose partial ticker last started.
+    fn ticker_recording(&self) -> u64 {
+        self.ticker.load(Ordering::SeqCst)
+    }
+
     /// Whether the ticker for `recording_id` should hide on exit.
     pub(crate) fn ticker_should_hide(&self, recording_id: u64) -> bool {
         self.delivery.load(Ordering::SeqCst) != recording_id
@@ -411,9 +416,105 @@ pub(crate) fn ensure_window(app: &tauri::AppHandle) {
     }
 }
 
+/// The recording a missing Live Words window should be built for once Live
+/// Words is switched on: the current recording while it is still recording and
+/// its partial ticker runs (so the model can show live words). `None` when
+/// the window exists or no such recording is active.
+fn recording_awaiting_window(
+    app_state: &crate::state::AppState,
+    ownership: &HideOwnership,
+    window_exists: bool,
+) -> Option<u64> {
+    if window_exists {
+        return None;
+    }
+    let recording_id = ownership.ticker_recording();
+    can_show(app_state, recording_id).then_some(recording_id)
+}
+
+/// Live Words was committed on. If it was off when the current recording's
+/// ticker started, `ensure_window` skipped building the window and will not
+/// run again for that recording, so build it now, in the background. The
+/// recording is rechecked on the worker before anything is built.
+pub(crate) fn ensure_window_after_consent(app: &tauri::AppHandle) {
+    let label = super::overlay_material::LIVE_WORDS_LABEL;
+    let window_exists = app.get_webview_window(label).is_some();
+    let Some(recording_id) =
+        recording_awaiting_window(&app.state::<State>().app_state, &OWNERSHIP, window_exists)
+    else {
+        return;
+    };
+    let app = app.clone();
+    drop(tauri::async_runtime::spawn_blocking(move || {
+        if recording_awaiting_window(&app.state::<State>().app_state, &OWNERSHIP, false)
+            == Some(recording_id)
+        {
+            ensure_window(&app);
+        }
+    }));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn enabling_live_words_mid_recording_asks_for_the_missing_window() {
+        // Off at launch, a dictation starts and its ticker registers; the
+        // window was not built. Turning Live Words on must ask for it without
+        // another recording starting.
+        let app_state = crate::state::AppState::default();
+        let ownership = HideOwnership::new();
+        assert_eq!(
+            recording_awaiting_window(&app_state, &ownership, false),
+            None
+        );
+
+        app_state.recording_id.store(7, Ordering::SeqCst);
+        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        assert!(ownership.ticker_started(7));
+        assert_eq!(
+            recording_awaiting_window(&app_state, &ownership, false),
+            Some(7)
+        );
+        // An existing window needs nothing.
+        assert_eq!(
+            recording_awaiting_window(&app_state, &ownership, true),
+            None
+        );
+    }
+
+    #[test]
+    fn a_recording_that_is_over_or_replaced_gets_no_late_window() {
+        let app_state = crate::state::AppState::default();
+        let ownership = HideOwnership::new();
+        app_state.recording_id.store(7, Ordering::SeqCst);
+        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        assert!(ownership.ticker_started(7));
+
+        // Cancelled.
+        app_state.cancelled_id.store(7, Ordering::SeqCst);
+        assert_eq!(
+            recording_awaiting_window(&app_state, &ownership, false),
+            None
+        );
+        app_state.cancelled_id.store(0, Ordering::SeqCst);
+
+        // Stopped.
+        app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        assert_eq!(
+            recording_awaiting_window(&app_state, &ownership, false),
+            None
+        );
+        app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+
+        // A successor without a ticker (model without live words) is not eligible.
+        app_state.recording_id.store(8, Ordering::SeqCst);
+        assert_eq!(
+            recording_awaiting_window(&app_state, &ownership, false),
+            None
+        );
+    }
 
     #[test]
     fn live_words_follows_the_saved_setting_and_defaults_on() {

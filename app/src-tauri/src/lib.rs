@@ -381,6 +381,7 @@ pub fn run() {
             commands::performance::recover_performance_store,
             commands::performance::clear_performance_diagnostics,
             commands::performance::show_diagnostics_window,
+            commands::performance::get_requested_diagnostics_tab,
             commands::dictation_diagnostics::arm_next_dictation_diagnostic_capture,
             commands::dictation_diagnostics::disarm_next_dictation_diagnostic_capture,
             commands::dictation_diagnostics::get_dictation_diagnostic_capture_status,
