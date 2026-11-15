@@ -2340,7 +2340,7 @@ fn handle_worker_event(
             }
         }
         AudioWorkerEvent::StreamStopped { .. } => {
-            tracing::info!(
+            tracing::debug!(
                 target: "audio",
                 owner = owner.telemetry_id(),
                 owner_kind = owner.kind(),
@@ -2366,7 +2366,7 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
             );
         }
     }
-    tracing::info!(
+    tracing::debug!(
         target: "audio",
         owner = finished.owner.telemetry_id(),
         owner_kind = finished.owner.kind(),
@@ -2537,7 +2537,7 @@ fn take_samples(attempt: &mut Attempt) -> Result<Vec<f32>, String> {
     } else {
         0.0
     };
-    tracing::info!(
+    tracing::debug!(
         target: "audio",
         owner = attempt.owner.telemetry_id(),
         raw_samples = raw.len(),

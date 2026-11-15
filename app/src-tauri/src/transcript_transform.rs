@@ -369,7 +369,7 @@ impl TranscriptPipeline {
 }
 
 fn log_stage(context: &TranscriptContext, report: &StageReport) {
-    tracing::info!(
+    tracing::debug!(
         target: "pipeline",
         session_id = context.session_id,
         source = context.source.as_str(),

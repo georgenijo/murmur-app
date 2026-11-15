@@ -584,7 +584,7 @@ fn inject_text_with_policy(
     authority: Option<&PasteAttempt>,
 ) -> Result<InjectionResult, InjectionError> {
     let inject_started = Instant::now();
-    tracing::info!(target: "pipeline", "inject_text called with auto_paste={}, delay_ms={}, text_len={}", auto_paste, delay_ms, text.len());
+    tracing::debug!(target: "pipeline", "inject_text called with auto_paste={}, delay_ms={}, text_len={}", auto_paste, delay_ms, text.len());
 
     // Skip if text is empty
     if text.trim().is_empty() {
