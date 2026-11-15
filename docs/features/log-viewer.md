@@ -41,6 +41,15 @@ type AppEvent = {
 | JSONL file | One JSON object per line | 5MB before rotation | Persistent log, survives restarts |
 | `app-event` emission | `AppEvent` payload | Real-time stream | Live updates in the Performance workspace |
 
+### Log levels and debug logging
+
+The default level is `info`. Debug is opt-in and local:
+
+- `MURMUR_LOG=debug` in the environment turns it on for that launch.
+- `debug-logging.on`, an empty file in the log directory (`~/Library/Application Support/local-dictation/logs/` for production), turns it on at launch and while the app runs. Create or remove it and the level follows within about three seconds; no rebuild or restart is needed. `telemetry::set_debug_logging` writes it for a future Settings control. There is no Tauri command or Diagnostics toggle yet.
+
+Debug events are admitted only from Murmur's own targets (`pipeline`, `audio`, `system`, `keyboard`, `meeting`, `transform`, `overlay`, `recording`, `hunt` and the `ui_lib` module paths); dependency crates stay at `info`. A debug or trace event is written only to the local `app.log`. It never reaches `events.jsonl`, the ring buffer, the Events tab, capture health or the `app-event` emission, and the log shipper also drops any `debug` or `trace` line it finds. Its fields pass through the release-strength structured-event sanitizer in every build, so `pipeline` strings and unknown fields are dropped; the message keeps its text with key identity redacted, as info lines in `app.log` always have.
+
 ### JSONL Rotation
 
 The JSONL file is rotated while the app runs, not only at launch. `SizeRotatingFile` (`telemetry.rs`) tracks the file size and, before the first event written after the file reaches 5MB, shifts `events.jsonl.1` → `.2`, renames `events.jsonl` → `.1`, and starts a fresh file. Rotation happens between events, so rotated files always end on a line boundary. Two rotated generations are kept (`.1` newest, `.2` oldest; the oldest is overwritten by the next rotation). A file that is already over the cap at launch is rotated the same way. Failures are handled per step. If shifting or renaming fails, the current file is intact: the writer keeps appending to it (events are never dropped) and retries after another 1MB. If the rename succeeds but re-creating `events.jsonl` fails, the writer has no file and drops events rather than appending to `.1`, which the shipper treats as complete. It tries to create the file at most once per second, counts the dropped events without writing to stderr under the lock, and writes a single `Log events dropped` system line with the count when the file is writable again. Nothing is buffered. Clear logs unlinks each writer's file and rotated generations and reopens it on a fresh file under that writer's own short lock, so output after a clear is neither lost nor written to an unlinked handle; the slower cleanup of other files and dated rolling files runs afterwards with no lock held and skips every file a live writer manages, so a rotation during cleanup is never deleted.

@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, Manager};
 
 mod key_identity;
+mod level;
 pub(crate) use key_identity::sanitize_persisted_line;
 
 const REFACTOR_TEST_IDENTIFIER: &str = "com.localdictation.refactor-test";
@@ -14,6 +15,30 @@ const BENCH_IDENTIFIER: &str = "com.localdictation.bench";
 const PRODUCTION_LOG_DIRECTORY: &str = "local-dictation";
 const REFACTOR_TEST_LOG_DIRECTORY: &str = "local-dictation-refactor-test";
 const BENCH_LOG_DIRECTORY: &str = "local-dictation-bench";
+
+/// Target of [`hunt!`] events.
+pub(crate) const HUNT_STREAM: &str = "hunt";
+
+/// A temporary hunting log for an open issue. It requires the issue number,
+/// emits at debug (so it is local-only, off by default and never shipped), takes
+/// numeric or boolean fields and a literal message, and is removed when the
+/// issue closes. `scripts/check_hunt_sites.py` lists every site and fails CI if
+/// one has no issue number.
+///
+/// ```ignore
+/// hunt!(issue = 1234, queue_len = queue.len(), armed = armed, "queue state at stop");
+/// ```
+#[macro_export]
+macro_rules! hunt {
+    (issue = $issue:literal, $($name:ident = $value:expr,)* $message:literal $(,)?) => {
+        ::tracing::debug!(
+            target: "hunt",
+            issue = $issue as u64,
+            $($name = $value,)*
+            $message
+        )
+    };
+}
 
 /// A structured event emitted to the frontend and stored in the ring buffer.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -136,6 +161,8 @@ pub struct TauriEmitterLayer {
     app_handle: tauri::AppHandle,
     buffer: Arc<Mutex<VecDeque<AppEvent>>>,
     jsonl_writer: Mutex<SizeRotatingFile>,
+    /// The `app.log` writer. Debug and trace events go here and nowhere else.
+    local_log: tracing_appender::non_blocking::NonBlocking,
 }
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer {
@@ -166,9 +193,18 @@ impl TauriEmitterLayer {
         }
         .to_string();
 
-        let (summary, data) = sanitized_event_payload(&stream, event, cfg!(debug_assertions));
-
         let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+        // Debug and trace are local-only: no events.jsonl (so the shipper never
+        // sees them), no ring buffer or Events tab, no capture-health input.
+        if *meta.level() > tracing::Level::INFO {
+            let (summary, data) = local_log_payload(&stream, event);
+            let line = local_log_line(&timestamp, &level, &stream, &summary, &data);
+            let _ = self.local_log.clone().write_all(line.as_bytes());
+            return;
+        }
+
+        let (summary, data) = sanitized_event_payload(&stream, event, cfg!(debug_assertions));
 
         let app_event = AppEvent {
             timestamp,
@@ -207,6 +243,51 @@ impl TauriEmitterLayer {
     }
 }
 
+/// One `app.log` line. Strings are quoted and escaped so a value cannot forge a
+/// line or blur field boundaries.
+fn local_log_line(
+    timestamp: &str,
+    level: &str,
+    stream: &str,
+    summary: &str,
+    data: &serde_json::Value,
+) -> String {
+    let mut line = format!(
+        "{timestamp} {:>5} {stream}: {summary}",
+        level.to_ascii_uppercase()
+    );
+    if let Some(fields) = data.as_object() {
+        for (key, value) in fields {
+            match value {
+                serde_json::Value::String(value) => line.push_str(&format!(" {key}={value:?}")),
+                value => line.push_str(&format!(" {key}={value}")),
+            }
+        }
+    }
+    line.push('\n');
+    line
+}
+
+/// Summary and fields for a debug line in the local `app.log`. Fields go through
+/// the release-strength structured-event sanitizer in every build, so `pipeline`
+/// strings and anything outside a schema's allowlist are dropped. Events without
+/// an allowlisted summary keep their message, with key identity redacted, which
+/// is what `app.log` has always held for info lines.
+fn local_log_payload(stream: &str, event: &tracing::Event<'_>) -> (String, serde_json::Value) {
+    let mut visitor = JsonVisitor::new();
+    event.record(&mut visitor);
+    let message = visitor.message;
+    let mut data = serde_json::Value::Object(visitor.fields);
+    sanitize_event_data(stream, &mut data, false);
+    let summary = sanitized_summary(stream, message.clone(), &data, false);
+    let summary = if summary == "Structured event" {
+        key_identity::bounded_summary(stream, message.unwrap_or_default())
+    } else {
+        summary
+    };
+    (summary, data)
+}
+
 /// Collect an event's fields and apply the structured-event privacy boundary.
 /// Returns the summary and data persisted to JSONL and emitted to windows.
 fn sanitized_event_payload(
@@ -233,6 +314,7 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "system.launch_listener_armed" => Some("system.launch_listener_armed"),
         "system.launch_model_ready" => Some("system.launch_model_ready"),
         "system.launch_frontend_hydrated" => Some("system.launch_frontend_hydrated"),
+        "system.debug_logging_changed" => Some("system.debug_logging_changed"),
         "keyboard.listener_started" => Some("keyboard.listener_started"),
         "keyboard.listener_silent" => Some("keyboard.listener_silent"),
         "keyboard.listener_failed" => Some("keyboard.listener_failed"),
@@ -2019,6 +2101,12 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     let Some(obj) = data.as_object_mut() else {
         return;
     };
+    if stream == HUNT_STREAM {
+        // Temporary hunting logs describe state with numbers and flags only. A
+        // string field could carry a path, a transcript or any other content.
+        obj.retain(|_, value| value.is_number() || value.is_boolean());
+        return;
+    }
     if obj
         .get("event_code")
         .and_then(serde_json::Value::as_str)
@@ -2639,6 +2727,8 @@ pub fn init(app_handle: tauri::AppHandle) {
     .with_drop_note(event_drop_note);
     register_writer(&jsonl_writer);
 
+    let log_level_dir = log_dir.clone();
+
     // Layer 1: Pretty file. Size-capped; the non-blocking worker thread does
     // the rotation, so logging call sites never wait on it.
     let pretty_file = SizeRotatingFile::open(
@@ -2652,19 +2742,25 @@ pub fn init(app_handle: tauri::AppHandle) {
     });
     register_writer(&pretty_file);
     let (pretty_writer, pretty_guard) = tracing_appender::non_blocking(pretty_file);
+    // Debug and trace lines are written by the emitter layer, through the full
+    // sanitizer; this layer formats info and above only.
     let pretty_layer = tracing_subscriber::fmt::layer()
         .event_format(key_identity::PrettyFormat)
-        .with_writer(pretty_writer)
-        .with_ansi(false);
+        .with_writer(pretty_writer.clone())
+        .with_ansi(false)
+        .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
+            *meta.level() <= tracing::Level::INFO
+        }));
 
     // Layer 2: Tauri event emitter (also writes JSONL)
     let emitter_layer = TauriEmitterLayer {
         app_handle,
         buffer,
         jsonl_writer: Mutex::new(jsonl_writer),
+        local_log: pretty_writer,
     };
 
-    let filter = tracing_subscriber::EnvFilter::new("info");
+    let (filter, debug_on, level_pinned) = level::initial_layer(&log_level_dir);
 
     let subscriber = tracing_subscriber::registry()
         .with(filter)
@@ -2672,6 +2768,9 @@ pub fn init(app_handle: tauri::AppHandle) {
         .with(emitter_layer);
 
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
+    if !level_pinned {
+        level::spawn_flag_watcher(log_level_dir);
+    }
 
     tracing::info!(
         target: "system",
@@ -2680,6 +2779,7 @@ pub fn init(app_handle: tauri::AppHandle) {
             BENCH_IDENTIFIER => "bench",
             _ => "production",
         },
+        debug_logging = debug_on,
         "telemetry initialized"
     );
 
@@ -2789,6 +2889,115 @@ pub fn clear_event_history() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Run `emit` under a subscriber that records each event's local `app.log`
+    /// line and whether it would reach the structured sinks.
+    fn local_lines(emit: impl FnOnce()) -> Vec<String> {
+        use tracing_subscriber::prelude::*;
+        #[derive(Clone, Default)]
+        struct Local(Arc<Mutex<Vec<String>>>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Local {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                let stream = event.metadata().target();
+                let (summary, data) = local_log_payload(stream, event);
+                let level = event.metadata().level().to_string();
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(local_log_line("T", &level, stream, &summary, &data));
+            }
+        }
+        let layer = Local::default();
+        let lines = layer.0.clone();
+        tracing::subscriber::with_default(
+            tracing_subscriber::registry()
+                .with(tracing_subscriber::EnvFilter::new(
+                    level::filter_directives(true),
+                ))
+                .with(layer),
+            emit,
+        );
+        let lines = lines.lock().unwrap().clone();
+        lines
+    }
+
+    #[test]
+    fn debug_lines_are_sanitized_like_structured_events() {
+        let lines = local_lines(|| {
+            tracing::debug!(
+                target: "pipeline",
+                recording_id = 7u64,
+                text = "private words",
+                outcome = "completed",
+                "raw step"
+            );
+            tracing::debug!(target: "audio", capture_id = 3u64, "capture helper setup step");
+        });
+        assert_eq!(lines.len(), 2);
+        // pipeline strings outside the allowlists never reach the file.
+        assert!(!lines[0].contains("private words"), "{}", lines[0]);
+        assert!(lines[0].contains("recording_id=7"), "{}", lines[0]);
+        // An outcome outside its allowlist is dropped too.
+        assert!(!lines[0].contains("outcome="), "{}", lines[0]);
+        assert!(lines[1].contains("DEBUG audio: capture helper setup step capture_id=3"));
+        assert!(lines.iter().all(|line| line.ends_with('\n')));
+    }
+
+    #[test]
+    fn hunt_events_keep_numbers_and_flags_and_drop_strings() {
+        let lines = local_lines(|| {
+            crate::hunt!(
+                issue = 1234,
+                queue_len = 5u64,
+                armed = true,
+                path = "/Users/someone/private.wav",
+                "queue state"
+            );
+        });
+        assert_eq!(lines.len(), 1);
+        let line = &lines[0];
+        assert!(line.contains("DEBUG hunt: queue state"), "{line}");
+        assert!(line.contains("issue=1234"), "{line}");
+        assert!(
+            line.contains("queue_len=5") && line.contains("armed=true"),
+            "{line}"
+        );
+        assert!(!line.contains("private.wav"), "{line}");
+    }
+
+    #[test]
+    fn debug_events_are_not_in_the_info_level_default() {
+        use tracing_subscriber::prelude::*;
+        let seen = Arc::new(Mutex::new(0usize));
+        #[derive(Clone)]
+        struct Count(Arc<Mutex<usize>>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Count {
+            fn on_event(
+                &self,
+                _: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                *self.0.lock().unwrap() += 1;
+            }
+        }
+        tracing::subscriber::with_default(
+            tracing_subscriber::registry()
+                .with(tracing_subscriber::EnvFilter::new(
+                    level::filter_directives(false),
+                ))
+                .with(Count(seen.clone())),
+            || {
+                crate::hunt!(issue = 1, "never emitted at the default level");
+                tracing::debug!(target: "audio", "also not emitted");
+                tracing::info!(target: "audio", "emitted");
+            },
+        );
+        assert_eq!(*seen.lock().unwrap(), 1);
+    }
 
     #[test]
     fn updater_events_keep_only_bounded_operational_fields() {
