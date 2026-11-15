@@ -79,8 +79,8 @@ native app. Automated tests supplement native interaction.
 
 ## Logging
 
-Hunting logs use `hunt!(issue = <number>, ...)`: debug level, local only, numeric
-and boolean fields, removed when the issue closes (`scripts/check_hunt_sites.py`
+Hunting logs use `hunt!(issue = <number>, "<literal>")`: debug level, local only,
+no fields, removed when the issue closes (`scripts/check_hunt_sites.py`
 lists them in CI). A new always-on event needs an event code in the registry.
 Debug is off by default: `MURMUR_LOG=debug` or a `debug-logging.on` flag file.
 

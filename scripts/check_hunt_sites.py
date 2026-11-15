@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""List every temporary `hunt!` log site and fail if one has no issue number.
+"""List every temporary `hunt!` log site and fail if one is malformed.
 
-Hunting logs are `hunt!(issue = <number>, ...)` calls in the Rust sources. They
-emit at debug level, stay local, and are removed when their issue closes. This
-check only reads the sources: it never calls the GitHub API, so it cannot tell
-whether an issue is still open. The listing is the reminder to remove them.
+Hunting logs are `hunt!(issue = <number>, "<literal>")` calls in the Rust
+sources: an issue number and a string literal, no fields. They emit at debug
+level, stay local, and are removed when their issue closes. This check only
+reads the sources: it never calls the GitHub API, so it cannot tell whether an
+issue is still open. The listing is the reminder to remove them.
 """
 
 from __future__ import annotations
@@ -19,53 +20,114 @@ SOURCE_DIR = Path("app/src-tauri/src")
 
 # `hunt!(`, `hunt!{` and `hunt![` all invoke the macro.
 SITE = re.compile(r"\bhunt!\s*[(\[{]")
-BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.S)
-LINE_COMMENT = re.compile(r"//[^\n]*")
-# Everything from a `#[cfg(test)] mod` to the end of the file is test code.
-TEST_MODULE = re.compile(r"#\[cfg\(test\)\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+")
-MACRO_DEFINITION = re.compile(r"macro_rules!\s+hunt\s*\{")
 ISSUE = re.compile(r"\s*issue\s*=\s*(\d+)\s*,")
-# Emitting on the hunt target directly would skip the macro's issue requirement.
+# The one accepted shape after the opening bracket.
+WELL_FORMED = re.compile(
+    r'\s*issue\s*=\s*\d+\s*,\s*"(?:[^"\\]|\\.)*"\s*,?\s*[)\]}]'
+)
+# Emitting on the hunt target directly would skip the macro's grammar.
 DIRECT_TARGET = re.compile(r"""target:\s*"hunt\"""")
+TEST_MODULE = re.compile(
+    r"#\[cfg\(test\)\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{"
+)
+MACRO_DEFINITION = re.compile(r"macro_rules!\s+hunt\s*\{")
+CHAR_LITERAL = re.compile(r"'(?:\\[^']+|[^\\'])'")
+RAW_STRING_START = re.compile(r'r(#*)"')
 
 
 class Site(NamedTuple):
     path: str
     line: int
     issue: int | None
+    well_formed: bool = True
 
 
 def _line_number(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
-def _blank(match: re.Match) -> str:
-    """Replace matched text with spaces, keeping newlines so line numbers hold."""
-    return re.sub(r"[^\n]", " ", match.group(0))
+def _mask(text: str) -> tuple[str, str]:
+    """Return `(code, skeleton)`, both the same length as `text`.
+
+    `code` has comments (line, and nested block) blanked; string literals are
+    kept, so `//` inside a URL string is not a comment. `skeleton` also blanks
+    string and character literal contents, so braces can be matched without
+    being fooled by text. Newlines survive in both, keeping line numbers.
+    """
+    code, skeleton = list(text), list(text)
+
+    def blank(chars: list[str], start: int, end: int) -> None:
+        for k in range(start, end):
+            if chars[k] != "\n":
+                chars[k] = " "
+
+    i, n = 0, len(text)
+    while i < n:
+        two = text[i : i + 2]
+        if two == "//":
+            end = text.find("\n", i)
+            end = n if end == -1 else end
+            blank(code, i, end)
+            blank(skeleton, i, end)
+            i = end
+        elif two == "/*":
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text.startswith("/*", j):
+                    depth, j = depth + 1, j + 2
+                elif text.startswith("*/", j):
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+            blank(code, i, j)
+            blank(skeleton, i, j)
+            i = j
+        elif text[i] == '"' or (raw := RAW_STRING_START.match(text, i)):
+            if text[i] == '"':
+                j = i + 1
+                while j < n and text[j] != '"':
+                    j += 2 if text[j] == "\\" else 1
+                j = min(j + 1, n)
+            else:
+                closing = '"' + raw.group(1)
+                found = text.find(closing, raw.end())
+                j = n if found == -1 else found + len(closing)
+            blank(skeleton, i + 1, max(i + 1, j - 1))
+            i = j
+        elif text[i] == "'" and (char := CHAR_LITERAL.match(text, i)):
+            blank(skeleton, i + 1, char.end() - 1)
+            i = char.end()
+        else:
+            i += 1
+    return "".join(code), "".join(skeleton)
 
 
-def _blank_macro_definition(text: str) -> str:
-    """Blank `macro_rules! hunt { ... }`, whose body names the target itself."""
-    match = MACRO_DEFINITION.search(text)
-    if match is None:
-        return text
-    depth, end = 1, match.end()
-    while end < len(text) and depth:
-        depth += {"{": 1, "}": -1}.get(text[end], 0)
-        end += 1
-    blanked = re.sub(r"[^\n]", " ", text[match.start() : end])
-    return text[: match.start()] + blanked + text[end:]
+def _blank_braced(code: str, skeleton: str, pattern: re.Pattern, whole: bool) -> tuple[str, str]:
+    """Blank every `pattern` block (up to its matching closing brace).
+
+    The pattern must end at the opening brace. With `whole` the match itself is
+    blanked too; otherwise only the body is.
+    """
+    out_code, out_skeleton = list(code), list(skeleton)
+    for match in pattern.finditer(skeleton):
+        depth, end = 1, match.end()
+        while end < len(skeleton) and depth:
+            depth += {"{": 1, "}": -1}.get(skeleton[end], 0)
+            end += 1
+        for k in range(match.start() if whole else match.end(), end):
+            if code[k] != "\n":
+                out_code[k] = out_skeleton[k] = " "
+    return "".join(out_code), "".join(out_skeleton)
 
 
 def code_only(text: str) -> str:
-    """The source with comments, the macro's own definition and test modules
-    blanked, so doc examples and fixtures are not counted as sites."""
-    test_module = TEST_MODULE.search(text)
-    if test_module is not None:
-        text = text[: test_module.start()]
-    text = BLOCK_COMMENT.sub(_blank, text)
-    text = LINE_COMMENT.sub(_blank, text)
-    return _blank_macro_definition(text)
+    """The source with comments, the macro's own definition and the bodies of
+    `#[cfg(test)]` modules blanked, so doc examples, the definition and fixtures
+    are not counted as sites. Production code after a test module still counts."""
+    code, skeleton = _mask(text)
+    code, skeleton = _blank_braced(code, skeleton, MACRO_DEFINITION, whole=True)
+    code, _ = _blank_braced(code, skeleton, TEST_MODULE, whole=False)
+    return code
 
 
 def scan(root: Path) -> tuple[list[Site], list[str]]:
@@ -82,12 +144,13 @@ def scan(root: Path) -> tuple[list[Site], list[str]]:
                     str(relative),
                     _line_number(text, match.start()),
                     int(issue.group(1)) if issue else None,
+                    WELL_FORMED.match(text, match.end()) is not None,
                 )
             )
         for match in DIRECT_TARGET.finditer(text):
             problems.append(
                 f'{relative}:{_line_number(text, match.start())}: '
-                'target: "hunt" bypasses hunt!; use hunt!(issue = <number>, ...)'
+                'target: "hunt" bypasses hunt!; use hunt!(issue = <number>, "<literal>")'
             )
     return sites, problems
 
@@ -102,6 +165,11 @@ def main(root: Path = ROOT) -> int:
         if site.issue is None:
             problems.append(
                 f"{site.path}:{site.line}: hunt! needs `issue = <number>,` as its first argument"
+            )
+        elif not site.well_formed:
+            problems.append(
+                f"{site.path}:{site.line}: hunt! takes only `issue = <number>, \"<literal>\"`; "
+                "it accepts no fields"
             )
     for problem in problems:
         print(f"error: {problem}", file=sys.stderr)

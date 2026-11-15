@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, Manager};
 
 mod key_identity;
-mod legacy;
 mod level;
 mod writer;
 pub(crate) use key_identity::sanitize_persisted_line;
@@ -21,26 +20,33 @@ const BENCH_LOG_DIRECTORY: &str = "local-dictation-bench";
 /// Target of [`hunt!`] events.
 pub(crate) const HUNT_STREAM: &str = "hunt";
 
-/// A temporary hunting log for an open issue. It requires the issue number,
-/// emits at debug (so it is local-only, off by default and never shipped), takes
-/// numeric or boolean fields and a literal message, and is removed when the
-/// issue closes. The message is passed as a value, never as a format string, so
-/// `"state {transcript}"` logs those characters and cannot capture a variable. `scripts/check_hunt_sites.py` lists every site and fails CI if
-/// one has no issue number.
+/// A temporary hunting log for an open issue. It takes the issue number and a
+/// string literal, nothing else: no fields, so there is no value to leak. It
+/// emits at debug (local-only, off by default, never shipped) and is removed
+/// when the issue closes. The literal is passed as a value, never as a format
+/// string, so `"state {transcript}"` logs those characters and captures no
+/// variable. `scripts/check_hunt_sites.py` lists every site and fails CI if one
+/// has no issue number.
 ///
-/// ```ignore
-/// hunt!(issue = 1234, queue_len = queue.len(), armed = armed, "queue state at stop");
+/// ```no_run
+/// ui_lib::hunt!(issue = 1234, "queue drained at stop");
+/// ```
+///
+/// (`no_run`: the doctest binary cannot load the crate's Swift dylibs, but it
+/// compiles, which is what pins the `compile_fail` cases below to the field and
+/// not to an unrelated error.) A field is a compile error:
+///
+/// ```compile_fail
+/// ui_lib::hunt!(issue = 1234, message = "x", "queue drained at stop");
+/// ```
+///
+/// ```compile_fail
+/// ui_lib::hunt!(issue = 1234, queue_len = 3u64, "queue drained at stop");
 /// ```
 #[macro_export]
 macro_rules! hunt {
-    (issue = $issue:literal, $($name:ident = $value:expr,)* $message:literal $(,)?) => {
-        ::tracing::debug!(
-            target: "hunt",
-            issue = $issue as u64,
-            $($name = $value,)*
-            "{}",
-            $message
-        )
+    (issue = $issue:literal, $message:literal $(,)?) => {
+        ::tracing::debug!(target: "hunt", issue = $issue as u64, "{}", $message)
     };
 }
 
@@ -2745,7 +2751,9 @@ fn pretty_log_admits(level: tracing::Level, debug: bool) -> bool {
 /// panic paths can flush them.
 static EVENT_WRITER: OnceLock<writer::EventWriter> = OnceLock::new();
 static PRETTY_GUARD: Mutex<Option<tracing_appender::non_blocking::WorkerGuard>> = Mutex::new(None);
-const CLEAR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long Clear logs waits for the writer to start the reset before it
+/// cancels it. The command is synchronous, so this bounds a wait on the caller.
+const CLEAR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// Write out everything queued for `events.jsonl` and `app.log`. Call on exit.
@@ -2798,14 +2806,6 @@ pub fn init(app_handle: tauri::AppHandle) {
     } else {
         "app.log"
     };
-
-    // Before any writer opens: this process's rotation and Clear logs cannot
-    // race it. Bounded; see `legacy.rs`.
-    let trim_report = legacy::trim_legacy_logs(
-        &log_dir,
-        !cfg!(debug_assertions),
-        std::time::SystemTime::now(),
-    );
 
     // Seed ring buffer from existing JSONL before subscribing
     let buffer = get_event_buffer();
@@ -2874,14 +2874,6 @@ pub fn init(app_handle: tauri::AppHandle) {
     if !level_pinned {
         level::spawn_flag_watcher(log_level_dir.clone());
     }
-    tracing::debug!(
-        target: "system",
-        trimmed_files = trim_report.trimmed_files,
-        removed_files = trim_report.removed_files,
-        reclaimed_bytes = trim_report.reclaimed_bytes,
-        "legacy log trim"
-    );
-
     tracing::info!(
         target: "system",
         log_namespace = match identifier.as_str() {
@@ -2959,12 +2951,16 @@ pub fn clear_all_logs() -> Result<(), String> {
     // Every file a live writer manages (current and rotated generations) is
     // excluded below: logging resumes once the locks drop, and a rotation in
     // the meantime must not be deleted by the unlocked passes.
-    // Through the writer queue when it runs: events queued before the clear are
-    // written first and then removed, so none can land in the fresh file.
+    //
+    // Through the `events.jsonl` writer queue when it runs, so events queued
+    // before the clear cannot land in the fresh file. All or nothing: if the
+    // writer cannot start the reset in time it is cancelled, never left queued,
+    // and nothing is cleared. (The `app.log` queue is separate; see the log
+    // viewer docs.)
     let live = match EVENT_WRITER.get() {
         Some(events) => events
             .run_exclusive(move || reset_writers(&writers), CLEAR_TIMEOUT)
-            .ok_or("The log writer is busy. Try Clear logs again.")?,
+            .ok_or("The log writer is busy, so nothing was cleared. Try Clear logs again.")?,
         None => reset_writers(&writers),
     };
     for file in files {
@@ -3091,10 +3087,22 @@ mod tests {
     }
 
     #[test]
-    fn hunt_events_keep_numbers_and_flags_and_drop_strings() {
+    fn a_hunt_line_carries_the_issue_and_the_literal_and_nothing_else() {
+        let lines = local_lines(|| crate::hunt!(issue = 1234, "queue state"));
+        assert_eq!(lines.len(), 1);
+        let line = &lines[0];
+        assert!(line.contains("DEBUG hunt: queue state"), "{line}");
+        assert!(line.contains("issue=1234"), "{line}");
+    }
+
+    #[test]
+    fn the_sanitizer_still_drops_strings_from_a_hunt_target_event() {
+        // Defense in depth: the macro takes no fields, and the check script
+        // rejects `target: "hunt"` elsewhere, but a straggler must not leak.
         let lines = local_lines(|| {
-            crate::hunt!(
-                issue = 1234,
+            tracing::debug!(
+                target: "hunt",
+                issue = 1234u64,
                 queue_len = 5u64,
                 armed = true,
                 path = "/Users/someone/private.wav",
@@ -3103,8 +3111,6 @@ mod tests {
         });
         assert_eq!(lines.len(), 1);
         let line = &lines[0];
-        assert!(line.contains("DEBUG hunt: queue state"), "{line}");
-        assert!(line.contains("issue=1234"), "{line}");
         assert!(
             line.contains("queue_len=5") && line.contains("armed=true"),
             "{line}"
