@@ -8,6 +8,7 @@ use tauri::{Emitter, Manager};
 
 mod key_identity;
 mod level;
+mod writer;
 pub(crate) use key_identity::sanitize_persisted_line;
 
 const REFACTOR_TEST_IDENTIFIER: &str = "com.localdictation.refactor-test";
@@ -160,7 +161,8 @@ impl tracing::field::Visit for JsonVisitor {
 pub struct TauriEmitterLayer {
     app_handle: tauri::AppHandle,
     buffer: Arc<Mutex<VecDeque<AppEvent>>>,
-    jsonl_writer: Mutex<SizeRotatingFile>,
+    /// Queue to the `events.jsonl` writer thread; sending never blocks.
+    jsonl: writer::EventWriter,
     /// The `app.log` writer. Debug and trace events go here and nowhere else.
     local_log: tracing_appender::non_blocking::NonBlocking,
 }
@@ -228,18 +230,12 @@ impl TauriEmitterLayer {
             buf.push_back(app_event.clone());
         }
 
-        // Write AppEvent JSON line to JSONL file
-        if let Ok(mut writer) = self.jsonl_writer.lock() {
-            if let Ok(mut line) = serde_json::to_string(&app_event) {
-                line.push('\n');
-                // One write per event: the rotation check runs between
-                // events, so a rotated file always ends on a line boundary.
-                let _ = writer.write_all(line.as_bytes());
-            }
-        }
-
         // Emit to all windows
         let _ = self.app_handle.emit("app-event", &app_event);
+
+        // Hand the event to the writer thread, which serialises it and writes
+        // whole lines in order. A full queue drops and counts, never blocks.
+        self.jsonl.send(app_event);
     }
 }
 
@@ -2703,6 +2699,47 @@ fn pretty_log_admits(level: tracing::Level, debug: bool) -> bool {
     level <= tracing::Level::WARN || (debug && level == tracing::Level::INFO)
 }
 
+/// The `events.jsonl` writer and the `app.log` worker guard, kept so exit and
+/// panic paths can flush them.
+static EVENT_WRITER: OnceLock<writer::EventWriter> = OnceLock::new();
+static PRETTY_GUARD: Mutex<Option<tracing_appender::non_blocking::WorkerGuard>> = Mutex::new(None);
+const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Write out everything queued for `events.jsonl` and `app.log`. Call on exit.
+/// The `app.log` worker only flushes when its guard drops, so logging to it
+/// stops afterwards.
+pub fn flush_on_exit() {
+    if let Some(writer) = EVENT_WRITER.get() {
+        writer.flush(FLUSH_TIMEOUT);
+    }
+    drop(
+        PRETTY_GUARD
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take(),
+    );
+}
+
+/// Chain a panic hook that flushes the log tail. A release build aborts on
+/// panic, so `app.log` is flushed too; a dev build unwinds and keeps logging.
+fn install_panic_flush() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        previous(info);
+        if let Some(writer) = EVENT_WRITER.get() {
+            writer.flush(std::time::Duration::from_millis(500));
+        }
+        if cfg!(panic = "abort") {
+            drop(
+                PRETTY_GUARD
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take(),
+            );
+        }
+    }));
+}
+
 pub fn init(app_handle: tauri::AppHandle) {
     use tracing_subscriber::prelude::*;
 
@@ -2760,11 +2797,19 @@ pub fn init(app_handle: tauri::AppHandle) {
             pretty_log_admits(*meta.level(), level::debug_enabled())
         }));
 
+    // The file write happens on its own thread; the rotating writer is shared
+    // with Clear logs, which resets it under its own lock.
+    let events_writer = {
+        let mut file = jsonl_writer;
+        writer::EventWriter::spawn(move |bytes| file.write_all(bytes), writer::QUEUE_CAPACITY)
+    };
+    let _ = EVENT_WRITER.set(events_writer.clone());
+
     // Layer 2: Tauri event emitter (also writes JSONL)
     let emitter_layer = TauriEmitterLayer {
         app_handle,
         buffer,
-        jsonl_writer: Mutex::new(jsonl_writer),
+        jsonl: events_writer,
         local_log: pretty_writer,
     };
 
@@ -2791,8 +2836,9 @@ pub fn init(app_handle: tauri::AppHandle) {
         "telemetry initialized"
     );
 
-    // Leak guard to keep writer alive for app lifetime
-    Box::leak(Box::new(pretty_guard));
+    // Held for the app's lifetime; `flush_on_exit` drops it to flush `app.log`.
+    *PRETTY_GUARD.lock().unwrap_or_else(|p| p.into_inner()) = Some(pretty_guard);
+    install_panic_flush();
 }
 
 // ---------------------------------------------------------------------------

@@ -735,6 +735,8 @@ pub fn run() {
                     state.meetings.shutdown(_app_handle);
                     state.meeting_suggestions.shutdown();
                 }
+                // Last: write out the log tail.
+                telemetry::flush_on_exit();
             }
         })
     });

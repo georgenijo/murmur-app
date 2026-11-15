@@ -33,7 +33,7 @@ type AppEvent = {
 ```
 
 3. **Ring buffer** — Pushed to an in-memory `VecDeque` capped at 500 events (FIFO eviction when full).
-4. **JSONL file** — Appended as a single JSON line to `events.jsonl` (release) or `events.dev.jsonl` (dev).
+4. **JSONL file** — Queued to the writer thread, which appends one JSON line per event to `events.jsonl` (release) or `events.dev.jsonl` (dev).
 5. **Frontend emission** — Emitted as an `app-event` Tauri event to all windows.
 
 ### Three Outputs
@@ -52,6 +52,10 @@ The default level is `info`. Debug is opt-in and local:
 - `debug-logging.on`, an empty file in the log directory (`~/Library/Application Support/local-dictation/logs/` for production), turns it on at launch and while the app runs. Create or remove it and the level follows within about three seconds; no rebuild or restart is needed. `telemetry::set_debug_logging` writes it for a future Settings control. There is no Tauri command or Diagnostics toggle yet.
 
 Debug events are admitted only from Murmur's own targets (`pipeline`, `audio`, `system`, `keyboard`, `meeting`, `transform`, `overlay`, `recording`, `hunt` and the `ui_lib` module paths); dependency crates stay at `info`. A debug or trace event is written only to the local `app.log`. It never reaches `events.jsonl`, the ring buffer, the Events tab, capture health or the `app-event` emission, and the log shipper also drops any `debug` or `trace` line it finds. Its fields pass through the release-strength structured-event sanitizer in every build, so `pipeline` strings and unknown fields are dropped; the message keeps its text with key identity redacted, as info lines in `app.log` always have.
+
+### Off-thread JSONL writes
+
+The `events.jsonl` write is not done on the thread that logged. `record_event` sanitizes the event, updates capture health and the ring buffer, emits it, and hands it to a bounded queue (4,096 events, `telemetry/writer.rs`). One `event-log-writer` thread drains the queue in order, joins up to 256KB of whole lines into a single `write` to the rotating file, and repeats. Ordering is the queue's FIFO order. Sending never blocks: a full queue drops the event, counts it, and the writer records the count as one `Log events dropped` line (`dropped_events`) ahead of the next batch. Nothing is buffered beyond the queue, so a killed process loses at most the events still queued. The app flushes the queue on exit (`RunEvent::Exit` calls `telemetry::flush_on_exit`) and from a chained panic hook, which also flushes `app.log` in a release build because release builds abort on panic. Neither takes a lock on the logging thread.
 
 ### JSONL Rotation
 
