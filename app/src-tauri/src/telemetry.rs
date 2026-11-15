@@ -2696,6 +2696,13 @@ fn seed_buffer_from_jsonl(buffer: &Arc<Mutex<VecDeque<AppEvent>>>, n: usize) {
     }
 }
 
+/// Whether the text `app.log` formats an event of `level` (debug lines take the
+/// emitter layer's sanitized path instead). `events.jsonl` already records every
+/// info event, so the text log repeats them only while debug is on.
+fn pretty_log_admits(level: tracing::Level, debug: bool) -> bool {
+    level <= tracing::Level::WARN || (debug && level == tracing::Level::INFO)
+}
+
 pub fn init(app_handle: tauri::AppHandle) {
     use tracing_subscriber::prelude::*;
 
@@ -2742,14 +2749,15 @@ pub fn init(app_handle: tauri::AppHandle) {
     });
     register_writer(&pretty_file);
     let (pretty_writer, pretty_guard) = tracing_appender::non_blocking(pretty_file);
-    // Debug and trace lines are written by the emitter layer, through the full
-    // sanitizer; this layer formats info and above only.
+    // `events.jsonl` is the record of every info event, so this text log holds
+    // warn and above unless debug is on. Debug and trace lines are written by
+    // the emitter layer, through the full sanitizer; this layer never sees them.
     let pretty_layer = tracing_subscriber::fmt::layer()
         .event_format(key_identity::PrettyFormat)
         .with_writer(pretty_writer.clone())
         .with_ansi(false)
         .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
-            *meta.level() <= tracing::Level::INFO
+            pretty_log_admits(*meta.level(), level::debug_enabled())
         }));
 
     // Layer 2: Tauri event emitter (also writes JSONL)
@@ -2967,6 +2975,20 @@ mod tests {
             "{line}"
         );
         assert!(!line.contains("private.wav"), "{line}");
+    }
+
+    #[test]
+    fn app_log_repeats_info_only_while_debug_is_on() {
+        use tracing::Level;
+        for level in [Level::ERROR, Level::WARN] {
+            assert!(pretty_log_admits(level, false) && pretty_log_admits(level, true));
+        }
+        assert!(!pretty_log_admits(Level::INFO, false));
+        assert!(pretty_log_admits(Level::INFO, true));
+        // Debug and trace take the emitter layer's sanitized path, never this one.
+        for level in [Level::DEBUG, Level::TRACE] {
+            assert!(!pretty_log_admits(level, false) && !pretty_log_admits(level, true));
+        }
     }
 
     #[test]

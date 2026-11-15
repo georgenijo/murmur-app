@@ -3,8 +3,11 @@
 ## Overview
 
 All application logging goes through Rust's `tracing` crate, captured by a custom
-`TauriEmitterLayer` that routes every event to three destinations: an in-memory
-ring buffer, a persistent JSONL file, and real-time frontend emission. The
+`TauriEmitterLayer` that routes every info-or-higher event to three destinations: an in-memory
+ring buffer, a persistent JSONL file, and real-time frontend emission.
+`events.jsonl` is the single record of those events. The human-readable
+`app.log` repeats only warn and above (or info as well while debug logging is
+on, plus the debug lines themselves), so each event is no longer stored twice. The
 embedded **Settings → Model → Advanced** workspace keeps these structured Events
 beside a typed live Performance view and bounded per-run history.
 
@@ -98,7 +101,7 @@ without permitting user content or arbitrary labels.
 
 ### Pretty-Printed Log File
 
-A separate human-readable log file (`app.log` or `app.dev.log`) is maintained via `tracing_appender::non_blocking` over the same `SizeRotatingFile` writer. `tracing_appender` has no size-based rotation, so the writer caps the file at 10MB and keeps one rotated generation (`app.log.1`). The rotation runs on the non-blocking worker thread, so logging call sites never wait on it. An oversized file left by an older build is rotated at launch. `get_log_contents` reads only the current file.
+A separate human-readable log file (`app.log` or `app.dev.log`) is maintained via `tracing_appender::non_blocking` over the same `SizeRotatingFile` writer. `tracing_appender` has no size-based rotation, so the writer caps the file at 10MB and keeps one rotated generation (`app.log.1`). The rotation runs on the non-blocking worker thread, so logging call sites never wait on it. An oversized file left by an older build is rotated at launch. `get_log_contents` reads only the current file. By default the file holds warn and error lines only; `events.jsonl` is the record of info events. With debug logging on it holds info, warn, error and debug lines, which makes it the file to read when hunting a bug. Clear logs removes it with the rest.
 
 ### Tracing Streams
 
@@ -290,7 +293,7 @@ All files stored in `~/Library/Application Support/local-dictation/logs/`:
 
 | File | Format | Purpose |
 |------|--------|---------|
-| `app.log` / `app.dev.log` | Pretty-printed text | Human-readable log (read by `get_log_contents`), rotated at 10MB at runtime |
+| `app.log` / `app.dev.log` | Pretty-printed text | Human-readable log (read by `get_log_contents`): warn and above, or everything when debug logging is on. Rotated at 10MB at runtime |
 | `app.log.1` / `app.dev.log.1` | Pretty-printed text | Previous rotated app log |
 | `events.jsonl` / `events.dev.jsonl` | JSONL | Structured events, rotated at 5MB at runtime |
 | `events.jsonl.1` / `events.dev.jsonl.1` | JSONL | Most recent rotated JSONL file |
