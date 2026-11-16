@@ -21,10 +21,6 @@ vi.mock('@tauri-apps/api/event', () => ({
     return mocks.unlisten;
   }),
 }));
-vi.mock('../log', () => ({
-  flog: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
-
 import { useOverlayGeometry } from './useOverlayGeometry';
 
 const notched: OverlayGeometry = {

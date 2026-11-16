@@ -914,7 +914,7 @@ pub(crate) fn detect_notch_info() -> Option<NotchInfo> {
         left_w,
         right_w,
     );
-    tracing::info!(
+    tracing::debug!(
         target: "system",
         "detect_notch_info: notch_w={}, menu_bar_h={}, safe_top={}, visible_top_gap={}, display_left={}, screen_w={}",
         info.width,
@@ -1081,17 +1081,29 @@ fn apply_placement(
         *state.display_snapshot.lock_or_recover() = Some(snapshot);
         *state.notch_info.lock_or_recover() = notch;
     }
-    tracing::info!(
-        target: "system",
-        event_code = "overlay.placement",
-        trigger = trigger.as_str(),
-        physical_notch = notch.map(|info| info.physical_notch),
-        menu_bar_visible = notch.map(|info| info.menu_bar_visible),
-        display_left,
-        display_w,
-        changed,
-        "overlay placement refreshed"
-    );
+    // One line per refresh: info when the placement changed or when this is the
+    // launch's first one (a stable launch still gets its baseline), else debug.
+    let log_at_info = placement_log_is_info(changed, &PLACEMENT_LOGGED);
+    macro_rules! placement_event {
+        ($level:ident) => {
+            tracing::$level!(
+                target: "system",
+                event_code = "overlay.placement",
+                trigger = trigger.as_str(),
+                physical_notch = notch.map(|info| info.physical_notch),
+                menu_bar_visible = notch.map(|info| info.menu_bar_visible),
+                display_left,
+                display_w,
+                changed,
+                "overlay placement refreshed"
+            )
+        };
+    }
+    if log_at_info {
+        placement_event!(info);
+    } else {
+        placement_event!(debug);
+    }
     if !changed {
         return;
     }
@@ -1988,9 +2000,36 @@ pub fn hide_overlay(app: tauri::AppHandle) -> Result<(), String> {
         }
     }
 }
+/// Set once this launch has logged an `overlay.placement` line.
+static PLACEMENT_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether a placement refresh logs at info: a change always does, and so does
+/// the first refresh of a launch, which would otherwise leave a stable launch
+/// with no placement baseline.
+fn placement_log_is_info(changed: bool, logged_before: &std::sync::atomic::AtomicBool) -> bool {
+    let first = !logged_before.swap(true, std::sync::atomic::Ordering::Relaxed);
+    changed || first
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_first_placement_of_a_launch_logs_at_info_even_when_unchanged() {
+        use std::sync::atomic::AtomicBool;
+        let logged = AtomicBool::new(false);
+        // A stable launch: geometry unchanged from the startup snapshot.
+        assert!(placement_log_is_info(false, &logged), "baseline");
+        assert!(
+            !placement_log_is_info(false, &logged),
+            "later unchanged refresh"
+        );
+        assert!(placement_log_is_info(true, &logged), "a change");
+        let logged = AtomicBool::new(false);
+        assert!(placement_log_is_info(true, &logged));
+        assert!(!placement_log_is_info(false, &logged));
+    }
 
     fn notched(width: f64, height: f64) -> NotchInfo {
         NotchInfo {

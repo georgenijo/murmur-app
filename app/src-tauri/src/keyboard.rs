@@ -96,9 +96,9 @@ impl RejectionReason {
 }
 
 struct DoubleTapDetector {
-    stop_press: Option<crate::shadow_measurement::StopPress>,
-    fired_stop: Option<crate::shadow_measurement::StopStamp>,
-    native_recording: Option<(u64, bool)>,
+    stop_press: Option<crate::stop_gesture::StopPress>,
+    fired_stop: Option<crate::stop_gesture::StopStamp>,
+    native_recording: Option<u64>,
     candidate: Option<Candidate>,
     fired_candidate: Option<Candidate>,
     state: DetectorState,
@@ -248,12 +248,7 @@ impl DoubleTapDetector {
         let state = handle.state::<crate::State>();
         self.native_recording = (state.app_state.dictation_status_if_uncontended()
             == Some(crate::state::DictationStatus::Recording))
-        .then(|| {
-            (
-                state.app_state.recording_id.load(Ordering::SeqCst),
-                state.app_state.preview_holds_backend.load(Ordering::SeqCst),
-            )
-        });
+        .then(|| state.app_state.recording_id.load(Ordering::SeqCst));
         self.handle_event_with_context(event, modifiers, repeated)
     }
 
@@ -298,18 +293,12 @@ impl DoubleTapDetector {
                     if is_target_key(*key, target) {
                         self.candidate = Some(Candidate::new());
                         if self.recording {
-                            self.stop_press = self.native_recording.map(
-                                |(recording_id, preview_held_backend)| {
-                                    crate::shadow_measurement::StopPress {
-                                        recording_id,
-                                        pressed_at: Instant::now(),
-                                        sample: crate::audio_lifecycle::dictation_sample_cursor(
-                                            recording_id,
-                                        ),
-                                        preview_held_backend,
-                                    }
-                                },
-                            );
+                            self.stop_press = self.native_recording.map(|recording_id| {
+                                crate::stop_gesture::StopPress {
+                                    recording_id,
+                                    pressed_at: Instant::now(),
+                                }
+                            });
                         }
                         self.transition(DetectorState::WaitingFirstUp);
                     }
@@ -326,7 +315,7 @@ impl DoubleTapDetector {
                                 // Single tap to stop — fire immediately
                                 let released_at = Instant::now();
                                 let stamp = self.stop_press.map(|press| {
-                                    crate::shadow_measurement::StopStamp { press, released_at }
+                                    crate::stop_gesture::StopStamp { press, released_at }
                                 });
                                 self.last_fired_at = Some(released_at);
                                 self.reset();
@@ -962,7 +951,7 @@ fn emit_dictation_toggle(handle: &tauri::AppHandle) {
         .as_mut()
         .and_then(|d| {
             if let Some(stamp) = d.fired_stop.take() {
-                crate::shadow_measurement::record(stamp);
+                crate::stop_gesture::record(stamp);
             }
             d.fired_candidate.take()
         });
@@ -1698,7 +1687,7 @@ static LAST_TAP_SILENCE_WARNING_AT_MS: AtomicU64 = AtomicU64::new(0);
 pub fn set_processing(processing: bool) {
     let caller = std::panic::Location::caller();
     let was_processing = IS_PROCESSING.swap(processing, Ordering::SeqCst);
-    tracing::info!(
+    tracing::debug!(
         target: "keyboard",
         processing = processing,
         was_processing = was_processing,
@@ -2102,7 +2091,7 @@ pub(crate) fn ensure_listener_thread_spawned(app_handle: tauri::AppHandle) {
                     dictation_target_key(),
                     Instant::now(),
                 ) {
-                    tracing::info!(
+                    tracing::debug!(
                         target: "keyboard",
                         event_code = "keyboard.globe_companion_ignored",
                         event_kind = event_kind(&event.event_type),
@@ -3344,7 +3333,7 @@ mod tests {
 
     #[test]
     fn stop_press_release_and_rejected_gestures_do_not_leak() {
-        use crate::shadow_measurement::StopPress;
+        use crate::stop_gesture::StopPress;
         let mut d = DoubleTapDetector::new();
         d.set_target(Some(Key::ShiftLeft));
         d.recording = true;
@@ -3352,8 +3341,6 @@ mod tests {
         let press = StopPress {
             recording_id: 17,
             pressed_at: Instant::now(),
-            sample: Some(32000),
-            preview_held_backend: true,
         };
         d.stop_press = Some(press);
         assert!(d.handle_event(&EventType::KeyRelease(Key::ShiftLeft)));
@@ -3387,7 +3374,7 @@ mod tests {
     fn recording_detector_with_stamped_press() -> DoubleTapDetector {
         let mut d = make_detector(Key::ShiftLeft);
         d.recording = true;
-        d.native_recording = Some((17, true));
+        d.native_recording = Some(17);
         assert!(!d.handle_event(&press(Key::ShiftLeft)));
         assert!(d.stop_press.is_some());
         d
@@ -3416,7 +3403,7 @@ mod tests {
     fn function_key_chords_drop_or_never_stamp_the_press() {
         let mut d = make_detector(Key::F8);
         d.recording = true;
-        d.native_recording = Some((17, true));
+        d.native_recording = Some(17);
         assert!(!d.handle_event_with_context(&press(Key::F8), false, false));
         assert!(d.stop_press.is_some());
         assert!(!d.handle_event_with_context(&press(Key::F8), true, false));
@@ -3425,7 +3412,7 @@ mod tests {
 
         let mut d = make_detector(Key::F8);
         d.recording = true;
-        d.native_recording = Some((17, true));
+        d.native_recording = Some(17);
         assert!(!d.handle_event_with_context(&press(Key::F8), true, false));
         assert!(d.stop_press.is_none());
         assert!(!d.handle_event_with_context(&release(Key::F8), false, false));
@@ -3452,7 +3439,7 @@ mod tests {
                 assert!(d.fired_stop.is_none());
                 assert!(!d.handle_event(&release(target)));
                 d.last_fired_at = None;
-                d.native_recording = Some((99, false));
+                d.native_recording = Some(99);
                 assert!(!d.handle_event(&press(target)));
                 assert!(d.handle_event(&release(target)));
                 assert_eq!(d.fired_stop.take().unwrap().press.recording_id, 99);

@@ -135,8 +135,9 @@ struct Batch {
 }
 
 /// Meeting sessions stay local even though their content-free lifecycle events
-/// remain useful in the on-device log viewer. Malformed JSONL lines are also
-/// dropped fail-closed rather than uploaded verbatim.
+/// remain useful in the on-device log viewer. Debug and trace lines stay local
+/// too. Malformed JSONL lines are also dropped fail-closed rather than uploaded
+/// verbatim.
 fn shippable_payload(data: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(data.len());
     for line in data.split_inclusive(|byte| *byte == b'\n') {
@@ -151,6 +152,14 @@ fn shippable_payload(data: &[u8]) -> Vec<u8> {
             continue;
         };
         if value.get("stream").and_then(|stream| stream.as_str()) == Some("meeting") {
+            continue;
+        }
+        // Debug output is local-only. The writer never puts it in this file;
+        // this keeps a stray line from ever leaving the machine.
+        if matches!(
+            value.get("level").and_then(|level| level.as_str()),
+            Some("debug" | "trace")
+        ) {
             continue;
         }
         if crate::telemetry::strip_private_meeting_metadata(&mut value) {
@@ -755,6 +764,18 @@ mod tests {
         assert_eq!(batch.next.offset, 16);
         // A position saved without an identity adopts the file's.
         assert!(batch.next.id.is_some());
+    }
+
+    #[test]
+    fn debug_and_trace_lines_are_never_shipped() {
+        let line = |level: &str| {
+            format!(
+                r#"{{"timestamp":"t","stream":"audio","level":"{level}","summary":"s","data":{{}}}}"#
+            ) + "\n"
+        };
+        let input = [line("debug"), line("info"), line("trace"), line("warn")].concat();
+        let shipped = String::from_utf8(shippable_payload(input.as_bytes())).unwrap();
+        assert_eq!(shipped, [line("info"), line("warn")].concat());
     }
 
     #[test]

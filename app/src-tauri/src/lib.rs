@@ -68,7 +68,6 @@ mod output_quieting;
 mod performance_metrics;
 mod platform;
 mod resource_monitor;
-mod shadow_measurement;
 mod smart_auto_probe;
 mod smart_destination;
 mod smart_formatting;
@@ -77,6 +76,7 @@ mod spoken_numbers;
 mod spoken_structure;
 mod sqlite_support;
 mod state;
+mod stop_gesture;
 mod stream_reuse;
 pub mod telemetry;
 pub mod transcriber;
@@ -738,6 +738,8 @@ pub fn run() {
                     state.meetings.shutdown(_app_handle);
                     state.meeting_suggestions.shutdown();
                 }
+                // Last: write out the log tail.
+                telemetry::flush_on_exit();
             }
         })
     });

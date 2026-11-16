@@ -310,10 +310,7 @@ impl PublicPhase {
     }
 }
 
-type DiagnosticCursor = (AudioOwner, Arc<Mutex<audio::CaptureSamples>>, u32);
-
 struct PublicState {
-    diagnostic_cursor: Mutex<Option<DiagnosticCursor>>,
     phase: AtomicU8,
     still_connecting: std::sync::atomic::AtomicBool,
     owner: Mutex<Option<AudioOwner>>,
@@ -324,7 +321,6 @@ struct PublicState {
 impl Default for PublicState {
     fn default() -> Self {
         Self {
-            diagnostic_cursor: Mutex::new(None),
             phase: AtomicU8::new(PublicPhase::Idle as u8),
             still_connecting: std::sync::atomic::AtomicBool::new(false),
             owner: Mutex::new(None),
@@ -1107,14 +1103,6 @@ fn run_supervisor(
                             current.standby_deadline = None;
                             current.phase = AttemptPhase::Recording;
                             current.active.store(true, Ordering::SeqCst);
-                            *public
-                                .diagnostic_cursor
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner()) = Some((
-                                current.owner,
-                                Arc::clone(&current.shared),
-                                current.sample_rate,
-                            ));
                             public.set_owner(current.owner);
                             public.set_phase(PublicPhase::Recording);
                             publish_gesture_ready(current, sink.as_ref(), Instant::now());
@@ -1753,10 +1741,6 @@ fn hand_preview_to(
         PreviewHandoff::KeyDown { id, deadline } => {
             // Invisible until confirmed: no level meter, no diagnostic cursor.
             current.active.store(false, Ordering::SeqCst);
-            *public
-                .diagnostic_cursor
-                .lock()
-                .unwrap_or_else(|p| p.into_inner()) = None;
             current.owner = AudioOwner::Speculative(id);
             current.origin = "speculative".to_string();
             current.gesture = None;
@@ -1809,14 +1793,6 @@ fn hand_preview_to(
             current.ready_at = Some(Instant::now());
             current.phase = AttemptPhase::Recording;
             current.active.store(true, Ordering::SeqCst);
-            *public
-                .diagnostic_cursor
-                .lock()
-                .unwrap_or_else(|p| p.into_inner()) = Some((
-                current.owner,
-                Arc::clone(&current.shared),
-                current.sample_rate,
-            ));
             public.set_owner(current.owner);
             public.set_phase(PublicPhase::Recording);
             publish_gesture_ready(current, sink, Instant::now());
@@ -1905,16 +1881,6 @@ fn adopt_speculative(
         current.ready_at = Some(Instant::now());
         current.phase = AttemptPhase::Recording;
         current.active.store(true, Ordering::SeqCst);
-        // Stop-press stamps read the adopted buffer through this cursor, as
-        // they do after cold readiness and standby resume.
-        *public
-            .diagnostic_cursor
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = Some((
-            current.owner,
-            Arc::clone(&current.shared),
-            current.sample_rate,
-        ));
         public.set_phase(PublicPhase::Recording);
         publish_gesture_ready(current, sink, Instant::now());
         sink.notify(
@@ -2115,7 +2081,7 @@ fn handle_worker_event(
         }
         AudioWorkerEvent::PhaseEntered { phase, .. } => {
             current.init_phase = phase;
-            tracing::info!(
+            tracing::debug!(
                 target: "audio",
                 owner = owner.telemetry_id(),
                 owner_kind = owner.kind(),
@@ -2126,7 +2092,7 @@ fn handle_worker_event(
         AudioWorkerEvent::PhaseExited {
             phase, elapsed_ms, ..
         } => {
-            tracing::info!(
+            tracing::debug!(
                 target: "audio",
                 owner = owner.telemetry_id(),
                 owner_kind = owner.kind(),
@@ -2183,11 +2149,6 @@ fn handle_worker_event(
                     return;
                 }
                 current.sample_rate = sample_rate;
-                *public
-                    .diagnostic_cursor
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner()) =
-                    Some((current.owner, Arc::clone(&current.shared), sample_rate));
                 let ready_at = Instant::now();
                 current.ready_at = Some(ready_at);
                 current.active.store(true, Ordering::SeqCst);
@@ -2340,7 +2301,7 @@ fn handle_worker_event(
             }
         }
         AudioWorkerEvent::StreamStopped { .. } => {
-            tracing::info!(
+            tracing::debug!(
                 target: "audio",
                 owner = owner.telemetry_id(),
                 owner_kind = owner.kind(),
@@ -2366,7 +2327,7 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
             );
         }
     }
-    tracing::info!(
+    tracing::debug!(
         target: "audio",
         owner = finished.owner.telemetry_id(),
         owner_kind = finished.owner.kind(),
@@ -2496,10 +2457,6 @@ fn finish_attempt(attempt: &mut Option<Attempt>, sink: &dyn LifecycleSink, publi
     }
     finished.active.store(false, Ordering::SeqCst);
     public.still_connecting.store(false, Ordering::SeqCst);
-    *public
-        .diagnostic_cursor
-        .lock()
-        .unwrap_or_else(|p| p.into_inner()) = None;
     public.clear_owner(finished.owner);
     public.set_phase(PublicPhase::Idle);
     crate::audio_inventory::lifecycle_became_idle();
@@ -2537,7 +2494,7 @@ fn take_samples(attempt: &mut Attempt) -> Result<Vec<f32>, String> {
     } else {
         0.0
     };
-    tracing::info!(
+    tracing::debug!(
         target: "audio",
         owner = attempt.owner.telemetry_id(),
         raw_samples = raw.len(),
@@ -3227,26 +3184,6 @@ pub(crate) fn stop_dictation_recording(
         trigger,
         released_at,
     )
-}
-
-/// Read only the retained sample count at a native stop-key press. Never queue,
-/// copy PCM, or wait for capture. Contention means unavailable, not zero.
-pub(crate) fn dictation_sample_cursor(recording_id: u64) -> Option<usize> {
-    sample_cursor_in(&supervisor().public, recording_id)
-}
-
-fn sample_cursor_in(public: &PublicState, recording_id: u64) -> Option<usize> {
-    use crate::MutexExt;
-    if public.phase() != PublicPhase::Recording {
-        return None;
-    }
-    let cursor = public.diagnostic_cursor.try_lock_or_recover()?;
-    let (owner, shared, rate) = cursor.as_ref()?;
-    if *owner != AudioOwner::Dictation(recording_id) || *rate == 0 {
-        return None;
-    }
-    let samples = shared.try_lock_or_recover()?;
-    Some(samples.len().saturating_mul(WHISPER_SAMPLE_RATE as usize) / *rate as usize)
 }
 
 /// Clone the live dictation buffer without stopping capture. The authoritative

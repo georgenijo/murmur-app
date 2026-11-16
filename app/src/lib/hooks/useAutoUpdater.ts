@@ -141,24 +141,13 @@ export function useAutoUpdater(
         if (cancelled) return;
         const completed = getPendingUpdateForVersion(currentVersion);
         if (completed) {
-          flog.info('updater', 'showing post-update release notes', {
-            version: completed.version,
-          });
           setCompletedUpdate(completed);
           // A process relaunch can leave macOS focused on another app. Bring
           // the confirmed update's window forward so What's New is visible.
-          void invoke('show_main_window').catch((err) => {
-            flog.warn('updater', 'could not focus the app after updating', {
-              error: String(err),
-            });
-          });
+          void invoke('show_main_window').catch(() => {});
         }
       })
-      .catch((err) => {
-        flog.warn('updater', 'could not resolve installed version for release notes', {
-          error: String(err),
-        });
-      });
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -170,9 +159,6 @@ export function useAutoUpdater(
       operationRef.current === 'ready' ||
       operationRef.current === 'restarting'
     ) {
-      flog.info('updater', 'check ignored while update owns updater', {
-        operation: operationRef.current,
-      });
       if (!opts.isBackground) setIsUpdateDialogOpen(true);
       return { kind: 'failed', version: 'unknown', stage: 'discover', message: 'Updater is busy.' };
     }
@@ -202,12 +188,6 @@ export function useAutoUpdater(
           break;
         } catch (error) {
           lastCheckError = error;
-          if (attempt < UPDATE_CHECK_ATTEMPTS) {
-            flog.warn('updater', 'check failed; retrying', {
-              attempt,
-              error: String(error),
-            });
-          }
         }
       }
       if (!checkSucceeded) throw lastCheckError;
@@ -221,9 +201,7 @@ export function useAutoUpdater(
         hasInstalledUpdateRef.current = false;
         isForcedRef.current = false;
         setLastCheckTimestamp(Date.now());
-        flog.info('updater', 'no update available', {
-          event_code: 'updater.check_current',
-        });
+        flog.info('updater.check_current');
         if (shouldPresentManualResult()) {
           setIsUpdateDialogOpen(false);
           setUpdateStatus({ phase: 'up-to-date' });
@@ -236,16 +214,11 @@ export function useAutoUpdater(
         return { kind: 'current', version: await getVersion() };
       }
 
-      flog.info('updater', 'update available', { event_code: 'updater.update_available', version: update.version });
+      flog.info('updater.update_available', { version: update.version });
 
       // Tauri exposes the exact native response as rawJson, so policy parsing
       // does not need a second cross-origin request from the webview.
       const policy = parseMinVersionPolicy(update.rawJson);
-      if (policy.status === 'unavailable') {
-        flog.warn('updater', 'could not verify update policy', {
-          error: policy.message,
-        });
-      }
       // A secondary policy read may fail to force an update; it must never
       // fail to offer a verified update.
       let isForced = false;
@@ -295,8 +268,8 @@ export function useAutoUpdater(
             });
             notifiedVersionRef.current = update.version;
           }
-        } catch (err) {
-          flog.warn('updater', 'notification failed', { error: String(err) });
+        } catch {
+          // A failed notification must not fail the check.
         }
       }
       return {
@@ -306,10 +279,7 @@ export function useAutoUpdater(
         policyVerified: policy.status !== 'unavailable',
       };
     } catch (err) {
-      flog.error('updater', 'check failed', {
-        event_code: 'updater.check_failed',
-        error: String(err),
-      });
+      flog.error('updater.check_failed');
       if (shouldPresentManualResult()) {
         setIsUpdateDialogOpen(true);
         setUpdateStatus({
@@ -351,13 +321,9 @@ export function useAutoUpdater(
   const startDownload = useCallback(async (): Promise<DownloadOutcome | undefined> => {
     setIsUpdateDialogOpen(true);
     if (operationRef.current === 'checking') {
-      flog.info('updater', 'download waiting for in-flight update check');
       await pendingCheckRef.current;
     }
     if (operationRef.current !== 'idle') {
-      flog.info('updater', 'download ignored because updater is already busy', {
-        operation: operationRef.current,
-      });
       return undefined;
     }
     let update = updateRef.current;
@@ -373,9 +339,6 @@ export function useAutoUpdater(
         const freshUpdate = await check();
         if (freshUpdate?.available && freshUpdate.version && compareSemver(freshUpdate.version, update.version) === 1) {
           const policy = parseMinVersionPolicy(freshUpdate.rawJson);
-          if (policy.status === 'unavailable') {
-            flog.warn('updater', 'could not verify update policy', { error: policy.message });
-          }
           let currentVersion = 'unknown';
           if (policy.status === 'present') {
             currentVersion = await getVersion().catch(() => 'unknown');
@@ -392,15 +355,13 @@ export function useAutoUpdater(
           updateRef.current = freshUpdate;
           updateDiscoveredAtRef.current = Date.now();
           selection = 'fresh_check';
-          flog.info('updater', 'update available', { event_code: 'updater.update_available', version: update.version });
+          flog.info('updater.update_available', { version: update.version });
           setUpdateStatus({ phase: 'preparing', version: update.version });
         } else if (freshUpdate) {
           void Promise.resolve().then(() => freshUpdate.close()).catch(() => {});
         }
       } catch (err) {
-        flog.warn('updater', 'freshness check failed; using retained update', {
-          event_code: 'updater.freshness_check_failed', version: update.version, error: String(err),
-        });
+        flog.warn('updater.freshness_check_failed', { version: update.version });
       }
     }
 
@@ -410,9 +371,7 @@ export function useAutoUpdater(
     try {
       const environment = await getUpdateInstallEnvironment();
       if (environment.appTranslocated) {
-        flog.warn('updater', 'install blocked by macOS App Translocation', {
-          event_code: 'updater.install_blocked',
-        });
+        flog.warn('updater.install_blocked');
         setUpdateStatus({
           phase: 'error',
           stage: 'install',
@@ -425,7 +384,7 @@ export function useAutoUpdater(
       }
 
       setUpdateStatus({ phase: 'downloading', version, progress: null });
-      flog.info('updater', 'starting download', { event_code: 'updater.download_starting', version, selection });
+      flog.info('updater.download_starting', { version, selection });
       setPendingUpdate({ version, notes: releaseNotesRef.current });
 
       let totalContentLength = 0;
@@ -437,7 +396,7 @@ export function useAutoUpdater(
           switch (event.event) {
             case 'Started':
               totalContentLength = event.data.contentLength ?? 0;
-              flog.info('updater', 'download started', { event_code: 'updater.download_started', version, contentLength: totalContentLength });
+              flog.info('updater.download_started', { version });
               break;
             case 'Progress':
               totalDownloaded += event.data.chunkLength;
@@ -450,7 +409,7 @@ export function useAutoUpdater(
               });
               break;
             case 'Finished':
-              flog.info('updater', 'download finished', { event_code: 'updater.download_finished', version });
+              flog.info('updater.download_finished', { version });
               break;
           }
         });
@@ -461,18 +420,12 @@ export function useAutoUpdater(
       hasDownloadedUpdateRef.current = true;
       operationRef.current = 'ready';
       setUpdateStatus({ phase: 'ready', version, isForced });
-      flog.info('updater', 'download ready', {
-        event_code: 'updater.download_ready',
-        version,
-      });
+      flog.info('updater.download_ready', { version });
       return { kind: 'ready', version };
     } catch (err) {
       operationRef.current = 'idle';
       hasDownloadedUpdateRef.current = false;
-      flog.error('updater', 'download failed', {
-        event_code: 'updater.install_failed',
-        error: String(err),
-      });
+      flog.error('updater.install_failed');
       setUpdateStatus({
         phase: 'error',
         stage: 'install',
@@ -490,13 +443,9 @@ export function useAutoUpdater(
 
   const restartUpdate = useCallback(async (lifecycle?: InstallLifecycle): Promise<InstallOutcome | undefined> => {
     if (operationRef.current === 'restarting') {
-      flog.info('updater', 'restart ignored because updater is already restarting');
       return undefined;
     }
     if (operationRef.current !== 'ready') {
-      flog.info('updater', 'restart ignored because update is not ready', {
-        operation: operationRef.current,
-      });
       return undefined;
     }
     const update = updateRef.current;
@@ -523,19 +472,13 @@ export function useAutoUpdater(
         hasDownloadedUpdateRef.current = false;
       }
       await lifecycle?.onInstalled?.();
-      flog.info('updater', 'installed, relaunching', {
-        event_code: 'updater.install_ready',
-        version,
-      });
+      flog.info('updater.install_ready', { version });
       relaunchStarted = true;
       await relaunch();
       return { kind: 'installed', version };
     } catch (err) {
       operationRef.current = 'ready';
-      flog.error('updater', relaunchStarted ? 'relaunch failed' : 'install failed', {
-        event_code: relaunchStarted ? 'updater.restart_failed' : 'updater.install_failed',
-        error: String(err),
-      });
+      flog.error(relaunchStarted ? 'updater.restart_failed' : 'updater.install_failed');
       setUpdateStatus({
         phase: 'error',
         stage: 'restart',
@@ -722,7 +665,6 @@ export function useAutoUpdater(
   // An absent marker falls straight through to the existing updater behavior.
   useEffect(() => {
     if (!automaticChecksEnabled) {
-      flog.info('updater', 'automatic update checks deferred or disabled');
       return;
     }
     let disposed = false;
@@ -734,8 +676,7 @@ export function useAutoUpdater(
         if (disposed) return;
         if (canary.path) await runCanary(canary.result, canary.dryRun);
         else await performCheck({ isBackground: true });
-      } catch (error) {
-        flog.warn('updater', 'could not inspect updater canary state', { error: String(error) });
+      } catch {
         if (!disposed) await performCheck({ isBackground: true });
       }
     };
@@ -761,9 +702,7 @@ export function useAutoUpdater(
         if (disposed) unlisten();
         else unlistenWake = unlisten;
       })
-      .catch((err) => {
-        flog.warn('updater', 'could not listen for native wake checks', { error: String(err) });
-      });
+      .catch(() => {});
 
     return () => {
       disposed = true;

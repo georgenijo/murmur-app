@@ -17,7 +17,6 @@ import {
   type HistoryPinnedFilter,
 } from '../../lib/history';
 import { copyHistoryExport, saveHistoryExport } from '../../lib/historyExport';
-import { flog } from '../../lib/log';
 import {
   AnimatedDropdown,
   AnimatedDropdownContent,
@@ -193,9 +192,8 @@ function HistoryPanelComponent({
       setCopiedId(entry.id);
       if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
       copyTimerRef.current = setTimeout(() => setCopiedId(null), 2000);
-    } catch (err) {
+    } catch {
       showNotice('Could not copy to the clipboard.');
-      flog.warn('main', 'History copy failed', { error: String(err) });
     }
   };
 
@@ -215,9 +213,8 @@ function HistoryPanelComponent({
       if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
       copyTimerRef.current = setTimeout(() => setCopiedId(null), 2000);
       showNotice('Copied transcript as Markdown.');
-    } catch (err) {
+    } catch {
       showNotice('Could not copy the Markdown transcript.');
-      flog.warn('main', 'History Markdown copy failed', { error: String(err) });
     }
   };
 
@@ -231,9 +228,8 @@ function HistoryPanelComponent({
     try {
       const count = await copyHistoryExport(visible, format);
       showNotice(`Copied ${count} ${count === 1 ? 'entry' : 'entries'} to the clipboard.`);
-    } catch (err) {
+    } catch {
       showNotice('Export to clipboard failed.');
-      flog.warn('main', 'History export copy failed', { error: String(err) });
     }
   };
 
@@ -244,7 +240,6 @@ function HistoryPanelComponent({
       if (path) showNotice(`Saved ${visible.length} ${visible.length === 1 ? 'entry' : 'entries'}.`);
     } catch (err) {
       showNotice(`Could not save the export: ${String(err)}`);
-      flog.warn('main', 'History export save failed', { error: String(err) });
     }
   };
 

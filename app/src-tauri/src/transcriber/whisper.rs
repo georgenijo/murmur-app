@@ -119,7 +119,7 @@ impl WhisperBackend {
             .state
             .as_mut()
             .ok_or_else(|| "Whisper state not initialized. Call load_model() first.".to_string())?;
-        tracing::info!(target: "pipeline", "whisper: reusing cached state for transcription");
+        tracing::debug!(target: "pipeline", "whisper: reusing cached state for transcription");
 
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_language(whisper_language_param(language));

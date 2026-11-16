@@ -358,14 +358,7 @@ trait TranscriptionBackend: Send + Sync {
 - **Parakeet CPU (sherpa-onnx)** — English fallback, also the non-macOS path.
 
 All backends take one authoritative final-after-stop pass; delivery happens exactly once.
-After confirmed delivery, Core ML shadow diagnostics compare VAD-filtered prefixes
-after Idle and the captured delivery timestamp. Full-clip shadow bounds are also
-recomputed there, with no bounds collection in final VAD. Live determinism always
-records `notMeasuredInApp`; an ignored developer-only model test measures repeat
-decode equality outside the app.
-Shadow work has no shared-backend capability and never supplies delivered text;
-only content-free evidence amends the completed
-run UUID. See [performance diagnostics](features/performance-diagnostics.md#early-final-shadow-measurement-1081-phase-3). Core ML and Whisper Tiny/Base also emit display-only partials. Whisper partials own a separate cancellable CPU context for the recording, leaving the final Metal context and runtime lock untouched.
+Core ML and Whisper Tiny/Base also emit display-only partials. Whisper partials own a separate cancellable CPU context for the recording, leaving the final Metal context and runtime lock untouched.
 
 ### `keyboard.rs` — Keyboard Detection
 
@@ -391,7 +384,7 @@ Focused-field role checks use native AX with a per-element messaging timeout and
 ```text
 tracing event
     |
-    +--> Pretty text file (app.log / app.dev.log)
+    +--> Pretty text file (app.log / app.dev.log): warn and above, plus info and debug while debug logging is on
     |
     +--> TauriEmitterLayer
              |

@@ -11,8 +11,6 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
-vi.mock('../log', () => ({ flog: { info: vi.fn(), warn: vi.fn() } }));
-
 import { useOverlayRecordingStatus } from './useOverlayRecordingStatus';
 
 function deferred<T>() {

@@ -783,7 +783,7 @@ fn spawn_helper_checked(
             },
         });
     }
-    tracing::info!(
+    tracing::debug!(
         target: "audio",
         capture_id,
         resolve_ms,
@@ -2671,7 +2671,7 @@ fn run_backend(
             active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
         };
     }
-    tracing::info!(
+    tracing::debug!(
         target: "audio",
         capture_id,
         backend = backend_label(backend),
@@ -2811,7 +2811,7 @@ fn run_backend(
                         StopReadOutcome::Deadline => ("timed_out", 0),
                         StopReadOutcome::Ended => ("ended", 0),
                     };
-                    tracing::info!(
+                    tracing::debug!(
                         target: "audio",
                         capture_id,
                         stop_to_exit_ms = stop_started.elapsed().as_millis() as u64,
@@ -3129,7 +3129,7 @@ fn run_backend(
                         event_sender,
                         pcm_at,
                     );
-                    tracing::info!(
+                    tracing::debug!(
                         target: "audio",
                         capture_id,
                         start_to_first_pcm_ms = start_to_pcm.as_millis() as u64,
@@ -3275,7 +3275,7 @@ fn run_backend(
                         active_elapsed_ms: clock.elapsed(Instant::now()).as_millis() as u64,
                     };
                 }
-                tracing::info!(
+                tracing::debug!(
                     target: "audio",
                     capture_id,
                     backend = backend_label(backend),
@@ -3440,7 +3440,7 @@ fn run_backend(
                         },
                     });
                 }
-                tracing::info!(
+                tracing::debug!(
                     target: "audio",
                     capture_id,
                     backend = backend_label(backend),
@@ -3780,7 +3780,7 @@ fn run_audio_capture(spec: AudioWorkerSpec, event_sender: &AudioWorkerEventSende
         app_handle,
         device_id,
     } = spec;
-    tracing::info!(
+    tracing::debug!(
         target: "audio",
         owner = owner.telemetry_id(),
         active_budget_ms = CAPTURE_ACTIVE_BUDGET.as_millis() as u64,

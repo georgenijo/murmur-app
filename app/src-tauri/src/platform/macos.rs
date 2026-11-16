@@ -48,6 +48,10 @@ pub(super) fn cpu_percent() -> Option<f32> {
     update_cpu_percent(&mut PREVIOUS.lock_or_recover(), current)
 }
 
+pub(super) fn reset_cpu_baseline() {
+    *PREVIOUS.lock_or_recover() = None;
+}
+
 #[link(name = "IOKit", kind = "framework")]
 unsafe extern "C" {
     fn IOPSCopyPowerSourcesInfo() -> core_foundation::base::CFTypeRef;

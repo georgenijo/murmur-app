@@ -1,6 +1,5 @@
 import { useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { flog } from '../log';
 import type { OverlayGeometry } from '../overlayGeometry';
 
 /**
@@ -17,11 +16,10 @@ export function useApplySavedOverlayOffset(
   useEffect(() => {
     if (!geometry || appliedSavedOffsetRef.current === savedOffset) return;
     appliedSavedOffsetRef.current = savedOffset;
-    void invoke('set_overlay_vertical_offset', { offset: savedOffset }).catch((error) => {
+    void invoke('set_overlay_vertical_offset', { offset: savedOffset }).catch(() => {
       if (appliedSavedOffsetRef.current === savedOffset) {
         appliedSavedOffsetRef.current = null;
       }
-      flog.warn('overlay', 'could not apply calibrated offset', { error: String(error) });
     });
   }, [geometry, savedOffset]);
 }

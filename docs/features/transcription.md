@@ -1030,7 +1030,7 @@ accepted stop, after the webview round trip, so the release stamp is the earlies
 signal that a stop is coming. A Core ML call that is already running cannot be
 cancelled and can still delay the final by up to one decode. The cap only affects
 previews: the final transcript is the same with it. Tick outcome `stop_pending`
-(`pipeline.dictation_partial_tick`) counts skipped ticks.
+(`pipeline.dictation_partial_tick`, a debug-level event: see [the log viewer](log-viewer.md#log-levels-and-debug-logging)) counts skipped ticks.
 
 ## Gesture-to-microphone-ready diagnostics
 

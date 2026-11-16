@@ -5,7 +5,6 @@ import { AppSurface } from './components/ui/AppSurface';
 import { useId, useState, useEffect, useCallback, useLayoutEffect, useMemo, useRef, type CSSProperties } from 'react';
 import { defaultButtonKeyDown } from './lib/defaultButton';
 import { listen } from '@tauri-apps/api/event';
-import { flog } from './lib/log';
 import {
   SettingsPanel,
   SettingsSurfaceActiveContext,
@@ -94,22 +93,6 @@ const PERFORMANCE_BUILD_BADGE = import.meta.env.VITE_MURMUR_BUILD_ID?.startsWith
   : undefined;
 
 function App() {
-  // --- Diagnostic: track when main window becomes visible/focused ---
-  useEffect(() => {
-    const onFocus = () => flog.info('main', 'FOCUS');
-    const onBlur = () => flog.info('main', 'BLUR');
-    const onVisibility = () => flog.info('main', 'VISIBILITY', { hidden: document.hidden });
-    window.addEventListener('focus', onFocus);
-    window.addEventListener('blur', onBlur);
-    document.addEventListener('visibilitychange', onVisibility);
-    flog.info('main', 'App mounted');
-    return () => {
-      window.removeEventListener('focus', onFocus);
-      window.removeEventListener('blur', onBlur);
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, []);
-
   const [modelReady, setModelReady] = useState<boolean | null>(null);
   const [onboardingState, setOnboardingState] = useState<'unknown' | 'needed' | 'done'>('unknown');
   const mainAppReady = onboardingState === 'done' && modelReady === true;
@@ -183,12 +166,10 @@ function App() {
       ]);
       const anyModelExists = modelCatalog.some((model) => model.installState === 'installed');
       if (micStatus === 'granted' && axGranted && anyModelExists) {
-        flog.info('main', 'Onboarding grandfathered: permissions and a model already present');
         markOnboardingComplete();
         initializeGrandfatheredDiscovery();
         setOnboardingState('done');
       } else {
-        flog.info('main', 'Onboarding needed', { micStatus, axGranted, anyModelExists });
         setOnboardingState('needed');
       }
     })();
@@ -319,11 +300,7 @@ function App() {
         if (disposed) unlisten();
         else unlistenCheck = unlisten;
       })
-      .catch((err) => {
-        flog.warn('updater', 'could not listen for menu-bar update checks', {
-          error: String(err),
-        });
-      });
+      .catch(() => {});
     return () => {
       disposed = true;
       unlistenCheck?.();
@@ -333,11 +310,7 @@ function App() {
   // Keep the native menu label in sync with the passive in-app indicator.
   useEffect(() => {
     const version = 'version' in updateStatus ? updateStatus.version : null;
-    setTrayUpdateAvailable(version).catch((err: unknown) => {
-      flog.warn('updater', 'could not update menu-bar update item', {
-        error: String(err),
-      });
-    });
+    setTrayUpdateAvailable(version).catch(() => {});
   }, [updateStatus]);
 
   const [settingsPageRequest, setSettingsPageRequest] = useState<SettingsPageRequest | null>(null);
@@ -348,11 +321,7 @@ function App() {
     if (isSettingsOpen) return;
     // Settings is warm-mounted behind the main surface. Explicitly cancel its
     // capture-only preview whenever that surface is hidden.
-    void cancelMicrophonePreview().catch((error: unknown) => {
-      flog.warn('audio', 'could not cancel hidden microphone preview', {
-        error: String(error),
-      });
-    });
+    void cancelMicrophonePreview().catch(() => {});
   }, [isSettingsOpen]);
   const trackSettingsView = useCallback((view: string) => {
     settingsViewRef.current = view;
@@ -414,8 +383,8 @@ function App() {
       });
       const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
       if (paths.length > 0) fileTranscription.enqueue(paths);
-    } catch (e) {
-      flog.warn('file-transcribe', 'file dialog failed', { error: String(e) });
+    } catch {
+      // The dialog failing leaves nothing to enqueue.
     }
   }, [fileTranscription.enqueue]);
 
@@ -566,8 +535,7 @@ function App() {
         section: 'History',
         keywords: ['clipboard', 'again'],
         run: async () => {
-          await navigator.clipboard.writeText(lastEntry.text).catch((e: unknown) =>
-            flog.warn('main', 'Palette copy failed', { error: String(e) }));
+          await navigator.clipboard.writeText(lastEntry.text).catch(() => {});
         },
       }, {
         id: 'history-export',
@@ -575,8 +543,7 @@ function App() {
         section: 'History',
         keywords: ['save', 'download', 'markdown'],
         run: async () => {
-          await saveHistoryExport(historyEntries, 'markdown').catch((e: unknown) =>
-            flog.warn('main', 'Palette export failed', { error: String(e) }));
+          await saveHistoryExport(historyEntries, 'markdown').catch(() => {});
         },
       }] : []),
       {

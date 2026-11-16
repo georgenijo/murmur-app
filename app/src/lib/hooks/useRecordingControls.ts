@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { flog } from '../log';
 import { DEFAULT_SETTINGS, loadSettings, smartAutoMicrophoneRequest } from '../settings';
 import type { DictationStatus } from '../types';
 import type { DictationResponse } from '../dictation';
@@ -16,13 +15,12 @@ export interface UseRecordingControlsArgs {
 
 export interface RecordingControls {
   lockedMode: boolean;
-  handleMouseDown: (e: React.MouseEvent) => void;
-  handleClick: (e: React.MouseEvent) => void;
-  handleDoubleClick: (e: React.MouseEvent) => void;
+  handleClick: () => void;
+  handleDoubleClick: () => void;
 }
 
 /**
- * Owns click/double-click/mousedown disambiguation and "locked mode" — whether
+ * Owns click/double-click disambiguation and "locked mode" — whether
  * recording was started from the overlay itself (vs. the keyboard hotkey).
  */
 export function useRecordingControls({
@@ -49,12 +47,7 @@ export function useRecordingControls({
   }, []);
 
   // Double-click: toggle locked mode. Cancel any pending single-click first.
-  const handleDoubleClick = useCallback(async (e: React.MouseEvent) => {
-    flog.info('overlay', 'DOUBLE-CLICK', {
-      locked: lockedRef.current, status: statusRef.current,
-      x: Math.round(e.clientX), y: Math.round(e.clientY),
-      target: (e.target as HTMLElement).tagName,
-    });
+  const handleDoubleClick = useCallback(async () => {
     const currentStatus = statusRef.current;
     if (currentStatus === 'processing' || currentStatus === 'recovering') return;
     if (disabledRef.current && currentStatus === 'idle') return;
@@ -63,7 +56,6 @@ export function useRecordingControls({
       clickTimerRef.current = null;
     }
     if (expandedRef.current) {
-      flog.info('overlay', 'double-click ignored while expanded', { status: currentStatus });
       return;
     }
     const currentLocked = lockedRef.current;
@@ -71,8 +63,8 @@ export function useRecordingControls({
       setLockedMode(false);
       try {
         await invoke('cancel_native_recording');
-      } catch (err) {
-        flog.error('overlay', 'cancel_native_recording error', { error: String(err) });
+      } catch {
+        // status will sync via event
       }
       return;
     }
@@ -94,19 +86,15 @@ export function useRecordingControls({
             smartAuto = smartAutoMicrophoneRequest(settings);
             if (smartAuto) deviceName = null;
           } catch { /* ignore parse errors */ }
-          flog.info('overlay', 'invoking start_native_recording', { deviceName });
           const res = await invoke<DictationResponse>('start_native_recording', {
             deviceName,
             smartAuto,
             origin: 'toggle',
           });
-          flog.info('overlay', 'start_native_recording result', { type: res.type, state: res.state });
           if (res.type !== 'recording_starting') {
-            flog.warn('overlay', 'recording start declined', { type: res.type });
             setLockedMode(false);
           }
-        } catch (err) {
-          flog.error('overlay', 'start_native_recording error', { error: String(err) });
+        } catch {
           setLockedMode(false);
         }
       }
@@ -115,29 +103,21 @@ export function useRecordingControls({
       setLockedMode(false);
       if (currentStatus === 'recording') {
         try {
-          flog.info('overlay', 'invoking stop_native_recording');
-          const res = await invoke('stop_native_recording', { stopTrigger: 'overlay' });
-          flog.info('overlay', 'stop_native_recording result', { res: res as Record<string, unknown> });
-        } catch (err) {
-          flog.error('overlay', 'stop_native_recording error', { error: String(err) });
+          await invoke('stop_native_recording', { stopTrigger: 'overlay' });
+        } catch {
+          // status will sync via event
         }
       }
     }
   }, [statusRef, disabledRef, expandedRef]);
 
   // Single-click: debounced so it doesn't fire when the user double-clicks.
-  const handleClick = useCallback((e: React.MouseEvent) => {
+  const handleClick = useCallback(() => {
     if (clickTimerRef.current) {
       clearTimeout(clickTimerRef.current);
     }
-    flog.info('overlay', 'CLICK (pending 250ms debounce)', {
-      locked: lockedRef.current, status: statusRef.current,
-      x: Math.round(e.clientX), y: Math.round(e.clientY),
-      target: (e.target as HTMLElement).tagName,
-    });
     clickTimerRef.current = setTimeout(async () => {
       clickTimerRef.current = null;
-      flog.info('overlay', 'click fired', { locked: lockedRef.current, status: statusRef.current });
       // Single click stops recording (regardless of locked mode)
       if (statusRef.current === 'starting') {
         setLockedMode(false);
@@ -157,15 +137,5 @@ export function useRecordingControls({
     }, 250);
   }, [statusRef]);
 
-  // Raw mousedown — fires before click/double-click debouncing
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    flog.info('overlay', 'MOUSEDOWN', {
-      button: e.button, x: Math.round(e.clientX), y: Math.round(e.clientY),
-      target: (e.target as HTMLElement).tagName,
-      className: (e.target as HTMLElement).className?.slice(0, 50),
-      locked: lockedRef.current, status: statusRef.current,
-    });
-  }, [statusRef]);
-
-  return { lockedMode, handleMouseDown, handleClick, handleDoubleClick };
+  return { lockedMode, handleClick, handleDoubleClick };
 }

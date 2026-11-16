@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { flog } from '../log';
 import { applyMeetingCalendarEvent } from '../calendar';
 import { smartAutoMicrophoneRequest, type Settings } from '../settings';
 import {
@@ -229,8 +228,7 @@ export function useMeetings(settings: Settings) {
         if (permissionRevision.current === initialPermissionRevision) setPermission(next);
       }),
       refresh(),
-    ]).catch((cause) => {
-      flog.warn('main', 'Meeting initialization failed', { error: String(cause) });
+    ]).catch(() => {
       setLoading(false);
     });
 
@@ -292,9 +290,7 @@ export function useMeetings(settings: Settings) {
     ]).then((values) => {
       if (disposed) values.forEach((unlisten) => unlisten());
       else unlisteners.push(...values);
-    }).catch((cause) => {
-      flog.warn('main', 'Meeting event listeners unavailable', { error: String(cause) });
-    });
+    }).catch(() => {});
     return () => {
       disposed = true;
       ++searchTicketRef.current;

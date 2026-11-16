@@ -64,7 +64,8 @@ pub fn filter_speech(
     filter_speech_impl::<false>(model_path, samples, threshold).map(|(result, _)| result)
 }
 
-/// Same PCM recipe, with padded segment bounds for content-free shadow diagnostics.
+/// Same PCM recipe, with padded segment bounds; the streaming VAD tests compare against it.
+#[cfg(test)]
 pub fn filter_speech_with_segments(
     model_path: &str,
     samples: &[f32],

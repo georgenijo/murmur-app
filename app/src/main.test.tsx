@@ -37,8 +37,6 @@ describe('main hydration ordering', () => {
     expect(mocks.render).not.toHaveBeenCalled();
     settings.resolve(); history.resolve(); themes.resolve();
     await vi.waitFor(() => expect(mocks.render).toHaveBeenCalledTimes(1));
-    expect(mocks.log).toHaveBeenCalledWith('main', 'Frontend hydrated', {
-      event_code: 'system.launch_frontend_hydrated',
-    });
+    expect(mocks.log).toHaveBeenCalledWith('system.launch_frontend_hydrated');
   });
 });

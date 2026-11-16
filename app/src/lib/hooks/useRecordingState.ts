@@ -5,7 +5,6 @@ import type { SmartAutoMicrophoneRequest } from '../settings';
 import { isDictationStatus } from '../types';
 import type { DictationStatus } from '../types';
 import { updateStats } from '../stats';
-import { flog } from '../log';
 import type { HistoryInterruption, HistoryRecordingContext } from '../history';
 import {
   cleanupStalledPresentationFromPayload,
@@ -75,9 +74,7 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
   // Smart Auto requests are rebuilt every render; sync only real changes.
   const fnCaptureInputKey = JSON.stringify([microphone ?? null, smartAuto ?? null]);
   useEffect(() => {
-    syncFnCaptureInput(microphoneRef.current, smartAutoRef.current).catch((err) => {
-      flog.error('recording', 'Fn capture input sync failed', { error: String(err) });
-    });
+    syncFnCaptureInput(microphoneRef.current, smartAutoRef.current).catch(() => {});
   }, [fnCaptureInputKey]);
   const isStartingRef = useRef(false);
   const startOperationRef = useRef<Promise<void> | null>(null);
@@ -165,11 +162,6 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
     listen<string>('recording-status-changed', (event) => {
       if (isDictationStatus(event.payload)) {
         const previousStatus = statusRef.current;
-        flog.info('recording', 'status event: ' + event.payload, {
-          prevStatus: previousStatus,
-          recordingStartTime: recordingStartTimeRef.current,
-          isStopping: isStoppingRef.current,
-        });
         // Update the ref synchronously. Hotkey events can arrive before React
         // commits the state update, and transition decisions read this ref.
         statusRef.current = event.payload;
@@ -433,10 +425,6 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<{ text: string; rawText?: string; duration: number; interrupted?: HistoryInterruption; recording?: HistoryRecordingContext }>('transcription-complete', (event) => {
-      flog.info('recording', 'transcription-complete event', {
-        textLen: event.payload.text?.length, duration: event.payload.duration,
-        isStopping: isStoppingRef.current,
-      });
       // Single source of truth for history entries — always handle here,
       // never in handleStop, to avoid race-condition duplicates.
       const { text, rawText, duration, interrupted, recording } = event.payload;
@@ -465,9 +453,6 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
 
   const beginRecording = useCallback(async (origin: 'toggle' | 'hold', gestureToken?: string) => {
     if (canStart && !canStart()) return;
-    flog.info('recording', 'handleStart called', {
-      isStarting: isStartingRef.current, status: statusRef.current, origin,
-    });
     if (startOperationRef.current) {
       await startOperationRef.current;
       return;
@@ -521,13 +506,10 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
         if (stopRequested && res.type === 'recording_starting' && !generationEnded) {
           // The hold was released before this start was accepted. Cancel the
           // generation it created; a newer recording is never touched.
-          flog.info('recording', 'cancelling start released before acceptance', {
-            recordingId: res.recordingId,
-          });
           try {
             await cancelRecording(res.recordingId);
-          } catch (err) {
-            flog.error('recording', 'deferred release cancel failed', { error: String(err) });
+          } catch {
+            // The generation ended on its own; nothing is left to cancel.
           }
         }
       } catch (err) {
@@ -559,16 +541,11 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
   const handleHoldStart = useCallback((gestureToken?: string) => beginRecording('hold', gestureToken), [beginRecording]);
 
   const handleStop = useCallback(async (stopTrigger: DictationStopTrigger = 'other') => {
-    flog.info('recording', 'handleStop called', {
-      isStopping: isStoppingRef.current, status: statusRef.current,
-      recordingStartTime: recordingStartTimeRef.current,
-    });
     if (isStoppingRef.current) return;
     if (startOperationRef.current && statusRef.current === 'idle') {
       // The start IPC has not claimed ownership yet, so there is nothing to
       // stop now. Dropping this would let the start begin capture after the
       // key was already released.
-      flog.info('recording', 'handleStop deferred until start is accepted');
       stopRequestedDuringStartRef.current = true;
       return;
     }
@@ -576,7 +553,6 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
     const producerEpoch = errorProducerEpochRef.current;
     try {
       if (statusRef.current === 'starting') {
-        flog.info('recording', 'handleStop cancelling audio initialization');
         await cancelRecording();
         return;
       }
@@ -587,15 +563,8 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
         return;
       }
       if (statusRef.current !== 'recording') {
-        flog.info('recording', 'handleStop ignored', {
-          status: statusRef.current,
-        });
         return;
       }
-      const duration = recordingStartTimeRef.current
-        ? Math.floor((Date.now() - recordingStartTimeRef.current) / 1000)
-        : 0;
-      flog.info('recording', 'computed duration', { duration });
       statusRef.current = 'processing';
       setStatus('processing');
       const res = await stopRecording(stopTrigger);
@@ -626,7 +595,6 @@ export function useRecordingState({ addEntry, microphone, smartAuto = null, canS
 
   // Stable toggle for hotkey use — reads status from ref
   const toggleRecording = useCallback(async (gestureToken?: string) => {
-    flog.info('recording', 'toggleRecording', { status: statusRef.current });
     if (statusRef.current === 'processing' || statusRef.current === 'recovering') return;
     if (statusRef.current === 'recording' || statusRef.current === 'starting') {
       await handleStop('toggle');

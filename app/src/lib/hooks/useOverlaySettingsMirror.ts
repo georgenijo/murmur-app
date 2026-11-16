@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
-import { flog } from '../log';
 import {
   loadSettings,
   parseSettingsBlob,
@@ -137,8 +136,7 @@ export function useOverlaySettingsMirror({
       backendChanged = true;
       if (operation !== autoPasteOperation.current) return;
       await commitOwnedField('autoPaste', next);
-    } catch (err) {
-      flog.error('overlay', 'toggle autoPaste failed', { error: String(err) });
+    } catch {
       const confirmed = await refreshDurableRef.current();
       if (backendChanged && operation === autoPasteOperation.current) {
         // No full-file rollback. Restore only the backend value the failed
@@ -146,7 +144,7 @@ export function useOverlaySettingsMirror({
         const autoPaste = confirmed?.autoPaste ?? false;
         setAutoPaste(autoPaste);
         try { await invoke('configure_dictation', { options: { autoPaste } }); }
-        catch { flog.error('overlay', 'autoPaste reconciliation failed'); }
+        catch { /* the durable value stays authoritative */ }
       }
     }
   }, [commitOwnedField]);
@@ -161,14 +159,13 @@ export function useOverlaySettingsMirror({
       backendChanged = true;
       if (operation !== disabledOperation.current) return;
       await commitOwnedField('disabled', next);
-    } catch (err) {
-      flog.error('overlay', 'toggle disabled failed', { error: String(err) });
+    } catch {
       const confirmed = await refreshDurableRef.current();
       if (backendChanged && operation === disabledOperation.current) {
         const disabled = confirmed?.disabled ?? true;
         setDisabled(disabled);
         try { await invoke('set_app_disabled', { disabled }); }
-        catch { flog.error('overlay', 'disabled reconciliation failed'); }
+        catch { /* the durable value stays authoritative */ }
       }
     }
   }, [commitOwnedField, setDisabled]);
@@ -179,8 +176,8 @@ export function useOverlaySettingsMirror({
     try {
       await invoke('show_main_window');
       await emit('open-settings');
-    } catch (err) {
-      flog.error('overlay', 'open settings failed', { error: String(err) });
+    } catch {
+      // The main window is unavailable; there is nothing to open.
     }
   }, []);
 
