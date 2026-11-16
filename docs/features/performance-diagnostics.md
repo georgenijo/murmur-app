@@ -592,16 +592,18 @@ catalog startup-warm policy may omit early listener/model milestones. Failures
 use the existing frontend path. There is no new SQLite run kind or retained
 content; the telemetry boundary permits only the fixed code and elapsed integer.
 
-## Early-final shadow measurement (#1081 phase 3)
+## Stop-gesture stages and database versions
 
-SQLite `user_version = 7` adds `stopPressToRelease`, `stopReleaseToCommand`, and
-an optional dictation `shadow` companion (`schemaVersion: 1`). The metadata-only
-6 → 7 migration preserves historical JSON bytes. Run JSON remains V1; old
-records may omit the companion and stages. The metadata-only 7 → 8 migration
-adds the bounded repeat-skip enum without
-rewriting historical JSON. The metadata-only 8 → 9 migration adds
-`notMeasuredInApp`, preserving historical comparisons and skipped states. Older
-builds refuse this database.
+SQLite `user_version = 7` added `stopPressToRelease` and `stopReleaseToCommand`.
+Versions 8 and 9 were additive metadata-only migrations for the retired
+early-final shadow companion (#1081/#1082). That measurement has been removed:
+the decision is recorded on #1081 and the reuse step is not being built. The
+database version stays 9, so existing `performance.sqlite3` files open
+unchanged. Runs written while the companion existed keep their `shadow` JSON in
+the stored payload; it is ignored on read and no longer returned, so those runs
+display normally with no shadow section. Builds that support only versions
+below 9 refuse this database; previous version-9 builds accept rows without
+`shadow`.
 
 Double-tap/Both-mode single-tap stops stamp native press and release instants.
 `stopPressToRelease` measures the gesture, and `stopReleaseToCommand` measures
@@ -610,87 +612,8 @@ the detector and is cleared by reset, chords, excessive holds, or reconfiguratio
 Only an emitted stop publishes it; the accepted stop consumes it for the same
 generation within ten seconds. Only a resolved double-tap toggle stop attributes
 that stamp; an overlay, auto-stop, other stop, or matching hold release discards
-it without recording double-tap stages or press evidence. Hold-to-talk retains
-its existing release stages.
-The press reads a nonblocking retained-PCM sample count, without copying audio;
-contention records an unavailable (`null`) cursor. The count represents PCM
-already received at the host, not samples still buffered inside the helper.
-
-The companion records only numbers, booleans, and fixed enums:
-
-- `pressSample`, `pauseSample`: 16 kHz prefix endpoints, or null;
-- `trailingSilenceBeforePressMs`, `trailingSilenceBeforeStopMs`: silence after
-  the latest preceding padded full-clip VAD segment (zero within a segment);
-  before the first segment, measure from clip start, since complete VAD ranges
-  prove that prefix is silent. Missing VAD evidence remains null;
-- `pressInputMatches`, `pauseInputMatches`: byte-exact equality of separately
-  filtered prefixes against the final filtered PCM, or null when unavailable;
-- `previewHeldBackendAtPress`: whether display-only preview actually held the
-  shared backend at press, not whether a preview tick was merely scheduled;
-- `determinism`: `disabled`, `pending`, `compared`, `backendUnavailable`,
-  `superseded`, `decodeFailed`, `unsupportedBackend`, `notAttempted`,
-  `skippedForegroundLatencyRisk`, or `notMeasuredInApp`; all new live records
-  use `notMeasuredInApp`, and older comparison statuses stay readable;
-- `decodeMatches`: the in-memory hash comparison result only when `compared`.
-
-The pause endpoint is the first 300 ms point in the latest qualifying gap
-between padded speech segments, including trailing silence. Prefix VAD uses the
-same recording-start threshold and unchanged final PCM recipe. Full-clip bounds
-are recomputed in the worker, and used only if that PCM is byte-identical to the
-already-delivered final input; final VAD collects no shadow bounds. VAD-disabled,
-failed/missing VAD, absent clean press, and absent qualifying pause remain
-unavailable rather than becoming false or zero. This phase targets Core ML;
-Whisper and imported-file transcription are unchanged.
-
-All prefix passes run after confirmed delivery, off the pipeline, after the
-completed run UUID is durable. The pipeline returns its already-owned filtered
-PCM; after its Idle guard has dropped, the caller captures `delivered_at` and
-`totalProcessing`, then moves both original and filtered buffers into the shadow
-worker. There is no shadow PCM copy, text capture, or hashing. A boundary assertion
-and a move/ordering regression test keep shadow setup after the Idle observation
-and delivery timestamp. One process-wide shadow permit bounds retained audio/work.
-Runs without an admitted job still record `notMeasuredInApp`; completion starts
-with unavailable prefix evidence and a later atomic UPDATE fills it. Refresh
-Runs to read that amendment. Clear/pruning cannot recreate a row, and a reused recording ID cannot
-receive an old UUID's result. A quit before the amendment can leave the original
-unavailable prefix evidence. No shadow result changes delivered text or supplies a
-future decode.
-
-The Runs detail view renders the numeric/boolean shadow evidence and repeat
-status. False is shown as **No**, a missing measurement as **Unavailable**, and
-an absent historical companion as **Shadow evidence not recorded for this run**.
-Not measured in app, skipped, disabled, pending, not-attempted, unsupported, and
-older completed comparisons have separate labels; skipped work never appears
-as a failed or false comparison.
-
-Live determinism is **not measured in app**, regardless of environment or settings.
-The old `MURMUR_SHADOW_DETERMINISM` switch has no code path. Shadow work never
-acquires, waits for, holds, loads, or calls the transcription backend. The shared
-final decoder is non-preemptible, so even an idle admission could delay a later
-foreground request and is prohibited. The worker has only VAD capabilities.
-Concurrency tests hold shadow VAD work open and verify admission for dictation,
-file transcription, meetings, preview, model preparation, and other backend
-users, including an already-held backend. `decodeMatches` is always null on new
-live records. The moved PCM is dropped with its job.
-
-Determinism evidence is instead an ignored, developer-only Rust model test,
-compiled only into the macOS Apple Silicon test harness, never the app:
-
-```bash
-cd app/src-tauri
-cargo test synthetic_final_decode_is_deterministic -- --ignored --nocapture --test-threads=1
-```
-
-It requires the installed Parakeet Core ML and Silero models and macOS `say`.
-It generates 32 synthetic clips in a temporary directory: 16 short clips and 16
-clips whose VAD-filtered duration exceeds 15 seconds. It uses the app's final VAD
-recipe and `decode_final_transcript`, including its existing retry behavior. Each
-clip is decoded twice, with no warm-up before the first pair after model load.
-The test then unloads and reloads the model and repeats all pairs. It compares
-SHA-256 hashes in memory, requires nonempty successful decodes, and emits only
-counts/booleans; neither text nor hashes are printed or persisted. It accepts no
-user audio or external corpus path and removes generated audio on exit. This is
-evidence for those synthetic inputs, not a guarantee for every possible input.
+it without recording double-tap stages. Hold-to-talk retains its existing release
+stages. The stamp is two instants and one generation ID, with no content.
 
 ## Delivery attribution
 

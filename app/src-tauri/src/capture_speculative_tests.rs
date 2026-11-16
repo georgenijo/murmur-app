@@ -163,7 +163,6 @@ fn flowing_key_down_audio_is_adopted_by_its_confirmed_start_without_a_second_wor
     assert!(!t.active.lock().unwrap()[0].load(Ordering::SeqCst));
 
     let owner = AudioOwner::Dictation(21);
-    assert_eq!(sample_cursor_in(&t.supervisor.public, 21), None, "no cursor before adoption");
     assert_eq!(confirmed_start(&t.supervisor, owner, Some(11), None).recv().unwrap(), Ok(()));
     assert!(t.supervisor.public.is_recording_for(owner), "flowing adoption skips the connecting phase");
     assert_eq!(t.spawns.load(Ordering::SeqCst), 1);
@@ -173,14 +172,10 @@ fn flowing_key_down_audio_is_adopted_by_its_confirmed_start_without_a_second_wor
     let ready = events.iter().position(|e| *e == (owner, AudioLifecycleEvent::Ready)).unwrap();
     assert!(accepted < ready);
     assert_eq!(t.supervisor.public.flowing_speculative.load(Ordering::SeqCst), 0);
-    // The native stop-press stamp can read the adopted buffer (16 kHz here).
-    assert_eq!(sample_cursor_in(&t.supervisor.public, 21), Some(160));
-    assert_eq!(sample_cursor_in(&t.supervisor.public, 22), None);
 
     // Audio retained since key-down is the start of the transcribed recording.
     assert_eq!(stop_samples(&t.supervisor, owner), vec![KEY_DOWN_PCM; 160]);
     wait_until("adopted worker joined", || t.supervisor.public.phase() == PublicPhase::Idle);
-    assert_eq!(sample_cursor_in(&t.supervisor.public, 21), None);
     shutdown(&t.supervisor);
 }
 

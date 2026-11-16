@@ -8,7 +8,6 @@ import { useMeetings } from './useMeetings';
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), list: vi.fn(), metadata: vi.fn(), status: vi.fn() }));
 const events = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>());
-vi.mock('../log', () => ({ flog: { warn: vi.fn() } }));
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async (name: string, callback: (event: { payload: unknown }) => void) => {
     events.set(name, callback);

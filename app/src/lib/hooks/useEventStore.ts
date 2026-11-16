@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import type { AppEvent, StreamName, LevelName } from '../events';
+import type { AppEvent } from '../events';
 
 const MAX_EVENTS = 500;
 
@@ -56,19 +56,11 @@ export function useEventStore(enabled = true) {
     };
   }, [enabled, scheduleUpdate]);
 
-  const getByStream = useCallback((stream: StreamName) => {
-    return bufRef.current.filter(e => e.stream === stream);
-  }, []);
-
-  const getByLevel = useCallback((level: LevelName) => {
-    return bufRef.current.filter(e => e.level === level);
-  }, []);
-
   const clear = useCallback(() => {
     invoke('clear_event_history').catch(() => {});
     bufRef.current = [];
     setEvents([]);
   }, []);
 
-  return { events, getByStream, getByLevel, clear };
+  return { events, clear };
 }

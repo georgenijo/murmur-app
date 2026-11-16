@@ -34,10 +34,6 @@ vi.mock('../stats', () => ({
   updateStats: mocks.updateStats,
 }));
 
-vi.mock('../log', () => ({
-  flog: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
-
 import { useRecordingState } from './useRecordingState';
 
 type RecordingState = ReturnType<typeof useRecordingState>;

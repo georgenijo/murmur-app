@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { flog } from '../lib/log';
 import { useOverlayRecordingStatus } from '../lib/hooks/useOverlayRecordingStatus';
 import { useOverlayGeometry } from '../lib/hooks/useOverlayGeometry';
 import { useOverlayExpansion } from '../lib/hooks/useOverlayExpansion';
@@ -186,12 +185,6 @@ export function OverlayWidget() {
     return () => { cancelled = true; unlisten?.(); };
   }, []);
 
-  // Log mount/unmount.
-  useEffect(() => {
-    flog.info('overlay', 'mounted');
-    return () => { flog.info('overlay', 'unmounted'); };
-  }, []);
-
   // Refresh quick-control values from localStorage as the card starts opening,
   // so the dropdown (revealed once the resize acks) shows current settings. The
   // overlay has no shared React settings context, so it re-reads on each open.
@@ -225,7 +218,6 @@ export function OverlayWidget() {
         active={activity !== 'idle'}
         tapMissed={visual.showTapMissedLabel}
         material={material}
-        onMouseDown={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleMouseDown}
         onDoubleClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleDoubleClick}
         onClick={calibrating || meetingBusy || showMeetingSuggestion ? undefined : recordingControls.handleClick}
         onMouseEnter={calibrating ? undefined : onHoverStart}

@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { transcribeFile } from '../dictation';
-import { flog } from '../log';
 import {
   QueueItem,
   UNSUPPORTED_MESSAGE,
@@ -66,19 +65,16 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
         if (!item) break;
 
         publishQueue(updateItem(queueRef.current, item.id, { status: 'transcribing' }));
-        flog.info('file-transcribe', 'start', { name: item.name });
 
         const res = await transcribeFile(item.path);
 
         if (cancelledIdsRef.current.delete(item.id)) {
-          flog.info('file-transcribe', 'cancelled', { name: item.name });
           continue;
         }
 
         if (res.type === 'error') {
           const message = res.error || 'Transcription failed';
           publishQueue(updateItem(queueRef.current, item.id, { status: 'error', error: message }));
-          flog.warn('file-transcribe', 'error', { error: message });
           continue;
         }
 
@@ -87,7 +83,6 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
         if (text.trim()) {
           addEntryRef.current(text, res.duration ?? 0, 'file', item.name);
         }
-        flog.info('file-transcribe', 'complete', { textLen: text.length });
       }
     } finally {
       runningRef.current = false;
@@ -164,11 +159,9 @@ export function useFileTranscription({ addEntry }: UseFileTranscriptionProps) {
       }).then((fn) => {
         if (cancelled) fn();
         else unlisten = fn;
-      }).catch((e) => {
-        flog.warn('file-transcribe', 'drag-drop listener failed', { error: String(e) });
-      });
-    } catch (e) {
-      flog.warn('file-transcribe', 'drag-drop unavailable', { error: String(e) });
+      }).catch(() => {});
+    } catch {
+      // Drag-and-drop is unavailable; the file picker still works.
     }
 
     return () => {

@@ -17,7 +17,6 @@ const eventMocks = vi.hoisted(() => ({
   listeners: new Map<string, (event: { payload: unknown }) => void>(),
 }));
 
-vi.mock('../log', () => ({ flog: { warn: vi.fn() } }));
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(async (name: string, listener: (event: { payload: unknown }) => void) => {
     eventMocks.listeners.set(name, listener);
