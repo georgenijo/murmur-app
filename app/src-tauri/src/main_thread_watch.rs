@@ -1,5 +1,18 @@
 //! Content-free diagnostics for what occupies the macOS main thread.
 //!
+//! **Off by default.** The watch is demand-driven: a launch installs no
+//! run-loop observers, starts no reporter thread, samples no stacks, and
+//! emits none of its events unless the Diagnostics setting or the
+//! `MURMUR_MAIN_THREAD_WATCH` environment variable arms it. Every hook below
+//! begins with one relaxed load of the armed flag and returns at once while it
+//! is clear. Arming happens only at launch, on the main thread: [`arm`] runs
+//! at most once per process and adds the observers and the reporter, and
+//! nothing removes them again. Changing the Diagnostics setting therefore
+//! takes effect at the next launch, which keeps the watch's lifecycle to one
+//! step with no runtime hand-over to get wrong. The per-dictation paste
+//! timing in the performance store
+//! (`inject_queue_us`, `inject_work_us`) does not use this module.
+//!
 //! Slow pastes spend their time waiting for the main thread, not pasting.
 //! This module records, with static labels only:
 //!
@@ -387,13 +400,17 @@ fn wake_reporter_if_parked() {
 
 /// Count one `audio-level` event emitted to the main window.
 pub(crate) fn count_audio_level_emit() {
-    AUDIO_LEVEL_EMITS.fetch_add(1, Ordering::Relaxed);
+    if ENABLED.load(Ordering::Relaxed) {
+        AUDIO_LEVEL_EMITS.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Count one `overlay-audio-level` event emitted to the overlay window. Kept
 /// apart from `audio-level` so the two feeds' rates can be read separately.
 pub(crate) fn count_overlay_audio_level_emit() {
-    OVERLAY_AUDIO_LEVEL_EMITS.fetch_add(1, Ordering::Relaxed);
+    if ENABLED.load(Ordering::Relaxed) {
+        OVERLAY_AUDIO_LEVEL_EMITS.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// Time a main-thread callback the app registered.
@@ -485,6 +502,7 @@ const COMMAND_LABELS: &[&str] = &[
     "get_event_history",
     "get_ide_context_status",
     "get_log_contents",
+    "get_main_thread_watch_status",
     "get_meeting",
     "get_meeting_audio_capture_busy",
     "get_meeting_audio_manifest",
@@ -569,6 +587,7 @@ const COMMAND_LABELS: &[&str] = &[
     "set_fn_capture_input",
     "set_keyboard_recording",
     "set_live_words_material",
+    "set_main_thread_watch_armed",
     "set_overlay_expanded",
     "set_overlay_material",
     "set_overlay_vertical_offset",
@@ -763,12 +782,63 @@ impl Drop for PasteProbe {
 // Install and reporter
 // ---------------------------------------------------------------------------
 
-/// Install the observers and start the reporter. Must run on the main thread,
-/// after telemetry and after Tauri created its event loop.
-pub(crate) fn install() {
-    if RING.get().is_some() {
+/// Set to `1` or `true` to arm the watch at launch, for scripted runs. The
+/// persisted Diagnostics setting arms it too; either one is enough.
+pub(crate) const ARM_ENV: &str = "MURMUR_MAIN_THREAD_WATCH";
+
+/// Set to `1` or `true` to turn the stack sampler off while the watch is armed.
+const DISABLE_STACKS_ENV: &str = "MURMUR_DISABLE_MAIN_THREAD_STACKS";
+
+fn env_flag_set(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| {
+        let value = value.to_string_lossy();
+        let value = value.trim();
+        value == "1" || value.eq_ignore_ascii_case("true")
+    })
+}
+
+fn stacks_disabled_by_env(value: Option<&std::ffi::OsStr>) -> bool {
+    env_flag_set(value)
+}
+
+/// Whether the environment arms the watch.
+pub(crate) fn armed_by_env() -> bool {
+    env_flag_set(std::env::var_os(ARM_ENV).as_deref())
+}
+
+/// Whether the watch is running: observers installed and events flowing.
+pub(crate) fn is_armed() -> bool {
+    ENABLED.load(Ordering::Acquire)
+}
+
+/// Launch: the watch stays off unless the environment or the persisted
+/// setting asks for it. Runs once, on the main thread, after telemetry and
+/// after Tauri created its event loop. There is no other way to arm it and
+/// no way to disarm it: a changed setting is read at the next launch.
+pub(crate) fn start_at_launch(persisted: bool) {
+    start_at_launch_with(persisted, armed_by_env());
+}
+
+fn start_at_launch_with(persisted: bool, env_armed: bool) {
+    if should_arm(persisted, env_armed) {
+        arm();
+    }
+}
+
+/// Either the persisted setting or the environment arms the watch.
+fn should_arm(persisted: bool, env_armed: bool) -> bool {
+    persisted || env_armed
+}
+
+/// Install the observers and start the reporter. Main thread only, because
+/// the observers go on the main run loop and the stack sampler records the
+/// calling thread's stack. Runs at most once per process.
+fn arm() {
+    if ENABLED.load(Ordering::Acquire) {
         return;
     }
+    #[cfg(test)]
+    tests::ARMS.fetch_add(1, Ordering::SeqCst);
     let _ = epoch();
     IS_MAIN.with(|flag| flag.set(true));
     let _ = RING.set(Ring::new());
@@ -779,18 +849,16 @@ pub(crate) fn install() {
     // The calling thread is the main thread: remember its stack for sampling.
     let stack_sampling = observers_installed
         && !stacks_disabled_by_env(std::env::var_os(DISABLE_STACKS_ENV).as_deref())
-        && stack::Target::current().is_some_and(|target| STACK_TARGET.set(target).is_ok());
+        && (STACK_TARGET.get().is_some()
+            || stack::Target::current().is_some_and(|target| STACK_TARGET.set(target).is_ok()));
     ENABLED.store(true, Ordering::Release);
-    let spawned = std::thread::Builder::new()
-        .name("main-thread-watch".into())
-        .spawn(reporter_loop)
-        .is_ok();
+    let reporter_started = ensure_reporter();
     tracing::info!(
         target: "system",
         event_code = "system.main_thread_watch_started",
         epoch_unix_ms = epoch().1,
         observers_installed,
-        reporter_started = spawned,
+        reporter_started,
         log_span_min_us = LOG_SPAN_MIN_US,
         slow_paste_us = SLOW_PASTE_US,
         stack_sampling,
@@ -799,15 +867,16 @@ pub(crate) fn install() {
     );
 }
 
-/// Set to `1` or `true` to turn the stack sampler off.
-const DISABLE_STACKS_ENV: &str = "MURMUR_DISABLE_MAIN_THREAD_STACKS";
-
-fn stacks_disabled_by_env(value: Option<&std::ffi::OsStr>) -> bool {
-    value.is_some_and(|value| {
-        let value = value.to_string_lossy();
-        let value = value.trim();
-        value == "1" || value.eq_ignore_ascii_case("true")
-    })
+/// Start the reporter. Tests share process statics with the reporter's own
+/// tests, so arming in a test never starts the real thread.
+fn ensure_reporter() -> bool {
+    if cfg!(test) {
+        return false;
+    }
+    std::thread::Builder::new()
+        .name("main-thread-watch".into())
+        .spawn(reporter_loop)
+        .is_ok()
 }
 
 struct Reporter {
@@ -820,6 +889,22 @@ struct Reporter {
     last_drain_us: u64,
     stacks: StackPacer,
     rates: RatePacer,
+}
+
+impl Reporter {
+    fn new() -> Self {
+        Self {
+            history: VecDeque::with_capacity(RING_CAPACITY),
+            scratch: Vec::with_capacity(RING_CAPACITY),
+            standalone_window_start_us: 0,
+            standalone_in_window: 0,
+            suppressed: 0,
+            dropped: 0,
+            last_drain_us: 0,
+            stacks: StackPacer::default(),
+            rates: RatePacer::default(),
+        }
+    }
 }
 
 /// The reporter suspends the main thread for each stack sample, so it must
@@ -841,18 +926,9 @@ fn reporter_loop() {
     // Bind the Mach calls the sampler makes while the main thread is
     // suspended, so no lazy-binding stub takes dyld's lock then.
     stack::warm_up();
+    // The observer wakes this thread through the handle.
     let _ = REPORTER_THREAD.set(std::thread::current());
-    let mut reporter = Reporter {
-        history: VecDeque::with_capacity(RING_CAPACITY),
-        scratch: Vec::with_capacity(RING_CAPACITY),
-        standalone_window_start_us: 0,
-        standalone_in_window: 0,
-        suppressed: 0,
-        dropped: 0,
-        last_drain_us: 0,
-        stacks: StackPacer::default(),
-        rates: RatePacer::default(),
-    };
+    let mut reporter = Reporter::new();
     loop {
         let now = now_us();
         reporter.sample_stack(now);
@@ -2105,16 +2181,21 @@ mod runloop {
                     installed = false;
                     continue;
                 }
-                // App-lifetime observer; the run loop retains it.
+                // The run loop retains it, and nothing removes it, so our own
+                // reference is simply kept for the life of the process.
                 CFRunLoopAddObserver(main, observer, kCFRunLoopCommonModes);
             }
         }
         STATE.with(|state| {
-            let mut state = state.borrow_mut();
             let now = now_us();
-            state.last_mark_us = now;
-            state.phase = Phase::Labelled(runloop_labels::OUTSIDE);
-            state.busy_start_us = now;
+            *state.borrow_mut() = State {
+                last_mark_us: now,
+                phase: Phase::Labelled(runloop_labels::OUTSIDE),
+                busy_start_us: now,
+                longest_phase: "",
+                longest_phase_us: 0,
+                segments: 0,
+            };
             BUSY_SINCE_US.store(now, Ordering::Release);
         });
         installed
@@ -2858,6 +2939,81 @@ mod tests {
             queued_section("test.setter", "applied.test.setter", || Err("closed"));
         assert_eq!(failed, Err("closed"));
         assert_eq!(applied::MARKERS_QUEUED.load(Ordering::Relaxed), before + 1);
+    }
+
+    #[test]
+    fn the_watch_is_armed_only_by_the_setting_or_the_environment() {
+        use std::ffi::OsStr;
+        assert!(!should_arm(false, false));
+        assert!(should_arm(true, false));
+        assert!(should_arm(false, true));
+        assert!(!env_flag_set(None));
+        assert!(env_flag_set(Some(OsStr::new("1"))));
+        assert!(env_flag_set(Some(OsStr::new(" True "))));
+        for off in ["0", "", "false", "off"] {
+            assert!(!env_flag_set(Some(OsStr::new(off))), "{off:?}");
+        }
+    }
+
+    /// Everything the watch does when it is off: nothing is recorded, counted
+    /// or queued, and no observer is installed.
+    fn assert_inert() {
+        let before = (
+            AUDIO_LEVEL_EMITS.load(Ordering::Relaxed),
+            OVERLAY_AUDIO_LEVEL_EMITS.load(Ordering::Relaxed),
+            PENDING_PASTES.lock().unwrap().len(),
+        );
+        drain_ring();
+        let queued = job("inert.job", || {});
+        queued();
+        assert_eq!(section("inert.section", || 7), 7);
+        callback("inert.callback", || {});
+        count_audio_level_emit();
+        count_overlay_audio_level_emit();
+        note_preview_hide(9);
+        drop(PasteProbe::new(9));
+        assert!(drain_ring().is_empty(), "a disarmed watch records nothing");
+        assert_eq!(
+            before,
+            (
+                AUDIO_LEVEL_EMITS.load(Ordering::Relaxed),
+                OVERLAY_AUDIO_LEVEL_EMITS.load(Ordering::Relaxed),
+                PENDING_PASTES.lock().unwrap().len(),
+            ),
+            "a disarmed watch counts and queues nothing"
+        );
+        assert!(!is_armed());
+    }
+
+    /// Counts the arms that got past the once-per-process guard.
+    pub(super) static ARMS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    #[test]
+    fn off_by_default_installs_nothing_and_arming_happens_once() {
+        let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        ENABLED.store(false, Ordering::SeqCst);
+        IS_MAIN.with(|flag| flag.set(true));
+        let arms = ARMS.load(Ordering::SeqCst);
+
+        // The default: no setting, no environment.
+        start_at_launch_with(false, false);
+        assert_inert();
+        assert_eq!(ARMS.load(Ordering::SeqCst), arms, "nothing was installed");
+
+        // Armed at launch: the hooks record.
+        start_at_launch_with(true, false);
+        assert!(is_armed());
+        assert_eq!(ARMS.load(Ordering::SeqCst), arms + 1);
+        drain_ring();
+        job("armed.job", || {})();
+        assert!(drain_ring().iter().any(|s| s.label == "armed.job"));
+
+        // Nothing arms it twice: not a second launch step, not the environment.
+        start_at_launch_with(true, true);
+        arm();
+        assert_eq!(ARMS.load(Ordering::SeqCst), arms + 1, "installed once");
+        assert!(is_armed());
+        ENABLED.store(false, Ordering::SeqCst);
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

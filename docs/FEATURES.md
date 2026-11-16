@@ -273,7 +273,7 @@ rows, auto-scroll that disengages on manual scroll, copy-all and clear.
 Bounded local run history (200 runs, 600 resource samples) in SQLite: per-stage timings, CPU/memory timelines, transform-stage correlation, warm-vs-cold state, and RSS deltas. Incomplete runs claiming success are rejected. No dictated text is ever recorded.
 
 ### Main-thread diagnostics — [features/main-thread-diagnostics.md](features/main-thread-diagnostics.md)
-Content-free spans for every queued main-thread job, main-thread command, and run-loop busy span, joined to each paste's main-thread wait by recording id.
+Content-free spans for every queued main-thread job, main-thread command, and run-loop busy span, joined to each paste's main-thread wait by recording id. Off by default; armed at launch by the Diagnostics → Performance setting (takes effect after a restart) or by `MURMUR_MAIN_THREAD_WATCH=1`.
 
 ### Report comparison — [features/diagnostic-report-comparison.md](features/diagnostic-report-comparison.md)
 Portable reports import into a session-only Reports workspace for schema-validated side-by-side comparison. Imported data is never silently adopted into local run history; invalid or oversized reports fail closed.
@@ -305,7 +305,7 @@ headless runner, and regression gate are excluded from normal distribution.
 
 | Area | Location |
 |------|----------|
-| Rust backend | `app/src-tauri/src/` — 159 registered commands |
+| Rust backend | `app/src-tauri/src/` — 161 registered commands |
 | Frontend | `app/src/` — React 18 + TypeScript + Tailwind 4 |
 | Capture worker | `app/src-tauri/sidecars/capture/`, protocol in `crates/capture-helper-protocol` |
 | Diagnostics MCP tool | `tools/murmur-diag/` |

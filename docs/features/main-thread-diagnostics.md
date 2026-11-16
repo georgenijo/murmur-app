@@ -6,6 +6,53 @@ these events show what occupied it during that wait. The events carry only stati
 labels, recording ids, monotonic timestamps, and durations. The exact schema is
 enforced in `telemetry.rs` in every build.
 
+## Arming
+
+The watch is **off by default**. A launch that does not arm it installs no
+run-loop observers, starts no reporter thread, samples no stacks, and emits none
+of the events below. Every hook (`job`, `span`, the invoke wrapper, the rate
+counters, the paste probe) begins with one relaxed load of the armed flag and
+returns at once while it is clear.
+
+Arm it either way:
+
+- **Diagnostics → Performance → Main-thread watch.** A switch persisted in
+  `main-thread-watch.json` beside `settings.json` (Rust-owned, so no window's
+  cached settings can overwrite it).
+- **`MURMUR_MAIN_THREAD_WATCH=1`** (or `true`) in the environment, for scripted
+  runs. It arms the watch for that launch whatever the switch says.
+
+**The watch is armed or not only at launch, in both directions.** The switch
+saves the setting and nothing else; the control then says "Takes effect after
+you restart Murmur." until the running state matches the saved one, unless the
+environment variable forces the watch on, in which case no restart note is
+shown because a restart under the same environment would not stop it. Turning
+it off is the same: the watch keeps running until the next launch. This is a
+deliberate choice. Starting and stopping the watch while the app runs meant
+handing observers, the reporter's buffers and the busy-stretch statistics
+between two periods on a live main run loop, and each interleaving of a switch
+change with a re-arm needed its own coordination. With one arm per process
+there is no hand-over: `arm` runs at most once, on the main thread, adds the
+three run-loop observers and starts the reporter, and nothing removes them. The
+cost is one relaunch for a diagnostic, which is fine.
+
+A stack sampler that stopped itself for holding the main thread too long stays
+off for the rest of the process.
+
+The setting is saved by Rust under one lock (`CHANGE_LOCK`): a change writes the
+file (a temp sibling, then a rename), bumps `seq`, and broadcasts the new status
+as `main-thread-watch-status` to the main window and the Diagnostics pop-out
+before the lock is released. A status read takes the same lock, so it returns one
+coherent snapshot, `{ setting, runningThisLaunch, forcedByEnv, seq }`, and can
+never put an older state on screen after a newer event. `runningThisLaunch`
+never changes within a process. A failed write changes nothing and publishes
+nothing. Only the main and Diagnostics windows may read or change the setting.
+
+What stays on regardless: the per-dictation `deliveryTiming` in the performance
+store (`injectQueueUs`, `injectWorkUs`; see
+[Delivery attribution](performance-diagnostics.md#delivery-attribution)). It is
+content-free, one record per run, and does not use this module.
+
 ## What is recorded
 
 - **Jobs.** Every `run_on_main_thread` closure is wrapped in
@@ -46,7 +93,7 @@ reporter about five wakeups a second.
 
 | Event code | When | Key fields |
 |---|---|---|
-| `system.main_thread_watch_started` | once at launch | `epoch_unix_ms` (the zero for every `*_us` timestamp), `observers_installed` |
+| `system.main_thread_watch_started` | once per launch, when the watch is armed (by the setting or the environment) | `epoch_unix_ms` (the zero for every `*_us` timestamp), `observers_installed` |
 | `system.main_thread_span` | any span ≥ 10 ms, or a job queued ≥ 20 ms (at most 30 per 10 s) | `kind`, `label`, `start_us`, `start_unix_ms`, `duration_us`, `queue_us`, `longest_phase`, `longest_phase_us`, `segments` |
 | `pipeline.main_thread_paste_wait` | every dictation paste, about 1.2 s after it | `recording_id`, `inject_queue_us`, `inject_job_us`, `queued_us`, `started_us`, `slow`, `runloop_busy_us`, `runloop_idle_us`, `labelled_us`, `unlabelled_busy_us`, `job_us`, `command_us`, `callback_us`, `section_us`, `event_loop_drain_us`, `longest_label`, `longest_kind`, `longest_us` |
 | `system.main_thread_paste_span` | every span that overlapped a paste wait ≥ 20 ms (at most 48) | the span fields plus `recording_id` and `overlap_us` |
@@ -224,6 +271,9 @@ them.
 | `tail_us` | after the idle block → `totalProcessing` ends |
 
 ## Querying
+
+These events exist only in a launch where the watch was armed. Turn it on and
+restart Murmur before reproducing the slow paste (see [Arming](#arming)).
 
 ```bash
 LOG=~/Library/Application\ Support/local-dictation/logs/events.jsonl   # events.dev.jsonl for tauri:dev

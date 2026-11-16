@@ -10,6 +10,7 @@ import { StreamChips } from './StreamChips';
 import { LevelFilter } from './LevelFilter';
 import { EventRow } from './EventRow';
 import { PerformanceView } from './PerformanceView';
+import { MainThreadWatchControl } from './MainThreadWatchControl';
 import { RunsView } from './RunsView';
 import { ReportCompareView } from './ReportCompareView';
 import {
@@ -286,6 +287,9 @@ export function DiagnosticsWorkspace({
           aria-labelledby="diagnostics-tab-performance"
           className="flex-1 overflow-y-auto"
         >
+          <div className="px-4 pt-4">
+            <MainThreadWatchControl active={active} />
+          </div>
           <PerformanceView
             samples={performance.samples}
             loading={performance.resourcesLoading}

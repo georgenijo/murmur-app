@@ -1,6 +1,6 @@
 # Tauri Commands Reference
 
-The API reference covers 159 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
+The API reference covers 161 registered commands from `lib.rs`, grouped by source module under `app/src-tauri/src/`. The frontend calls these commands through `invoke()`.
 
 Parameters are listed with their Rust names; the frontend passes them camelCased (`model_name` → `modelName`). `app_handle` / `state` / `window` injections are omitted — they are supplied by Tauri, not by the caller.
 
@@ -261,6 +261,13 @@ frontend.
 | `get_log_contents` | `lines: usize` | `String` | Last N lines of the pretty log file. |
 | `clear_logs` | — | `Result<(), String>` | Removes log files (including rotated and JSONL variants) and clears the ring buffer. |
 | `log_frontend` | `level`, `event_code: String`, `updater_version: Option<String>`, `updater_selection: Option<String>` | `()` | Logs a content-free frontend event with an allowlisted code; any other code is dropped. Updater codes carry a validated version and selection. The main hydration code records native monotonic launch time once. |
+
+## Main-thread watch (`commands/main_thread_watch.rs`)
+
+| Command | Parameters | Returns | Description |
+|---------|-----------|---------|-------------|
+| `get_main_thread_watch_status` | — | `MainThreadWatchStatus` | `{setting, runningThisLaunch, forcedByEnv, seq}`: the saved Diagnostics setting, whether the watch is running in this launch (fixed for the process), whether `MURMUR_MAIN_THREAD_WATCH` arms it, and a sequence number that grows with every change. Taken under the same lock a change holds, so it is one coherent snapshot. Only the `main` and `diagnostics` windows may call it. |
+| `set_main_thread_watch_armed` | `armed: bool` | `MainThreadWatchStatus` | Saves the setting to `main-thread-watch.json` in the app data directory (atomic write) and broadcasts the new status as `main-thread-watch-status` to the `main` and `diagnostics` windows. It does not start or stop the watch: that is decided only at launch, so a change takes effect after a restart. Changes are serialized with status reads, and a failed write changes and publishes nothing. Only those two windows may call it. |
 
 ## Export (`commands/export.rs`)
 
