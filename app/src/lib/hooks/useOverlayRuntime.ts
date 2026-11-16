@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { flog } from '../log';
 import { loadSettings } from '../settings';
 import type { DictationStatus } from '../types';
 import {
@@ -350,12 +349,9 @@ export function useOverlayRuntime({
       setSmartDestinationSelection(selection);
     }).then((fn) => {
       if (cancelled) fn(); else unlisten = fn;
-    }).catch((cause: unknown) => {
+    }).catch(() => {
       if (!cancelled) {
         setSmartDestinationSelection(null);
-        flog.warn('overlay', 'smart-destination-selected listener unavailable', {
-          error: String(cause),
-        });
       }
     });
     return () => {
@@ -411,16 +407,13 @@ export function useOverlayRuntime({
       }, CLIPBOARD_ONLY_FLASH_MS);
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
-    }).catch((cause: unknown) => {
+    }).catch(() => {
       if (cancelled) return;
       clipboardListenerFailedRef.current = true;
       if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
       clipboardOnlyTimerRef.current = null;
       deliveryCueRef.current = null;
       setDeliveryCue(null);
-      flog.warn('overlay', 'dictation-delivery-outcome listener unavailable', {
-        error: String(cause),
-      });
     });
     return () => {
       cancelled = true;
@@ -462,7 +455,7 @@ export function useOverlayRuntime({
       setDeliveryCue(null);
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }
-    }).catch((cause: unknown) => {
+    }).catch(() => {
       if (cancelled) return;
       clipboardListenerFailedRef.current = true;
       if (clipboardOnlyTimerRef.current) clearTimeout(clipboardOnlyTimerRef.current);
@@ -471,9 +464,6 @@ export function useOverlayRuntime({
       deliveryRetryInFlightRef.current = false;
       deliveryCueRef.current = null;
       setDeliveryCue(null);
-      flog.warn('overlay', 'dictation-generation-started listener unavailable', {
-        error: String(cause),
-      });
     });
     return () => {
       cancelled = true;
@@ -527,13 +517,7 @@ export function useOverlayRuntime({
       if (presentation && cue) flashFailure(presentation.recordingId, cue);
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
-    }).catch((cause: unknown) => {
-      if (!cancelled) {
-        flog.warn('overlay', 'recording-initialization-failed listener unavailable', {
-          error: String(cause),
-        });
-      }
-    });
+    }).catch(() => {});
     listen<unknown>('recording-interrupted', (event) => {
       const presentation = interruptedPresentationFromPayload(event.payload);
       const cue = presentation
@@ -542,13 +526,7 @@ export function useOverlayRuntime({
       if (presentation && cue) flashFailure(presentation.recordingId, cue);
     }).then((fn) => {
       if (cancelled) fn(); else unlistens.push(fn);
-    }).catch((cause: unknown) => {
-      if (!cancelled) {
-        flog.warn('overlay', 'recording-interrupted listener unavailable', {
-          error: String(cause),
-        });
-      }
-    });
+    }).catch(() => {});
     return () => {
       cancelled = true;
       if (microphoneFailureTimerRef.current) {
@@ -565,7 +543,6 @@ export function useOverlayRuntime({
     let cancelled = false;
     let unlisten: (() => void) | null = null;
     listen<boolean>('app-disabled-changed', (event) => {
-      flog.info('overlay', 'app-disabled-changed', { disabled: event.payload });
       setDisabled(event.payload);
     }).then((fn) => {
       if (cancelled) { fn(); } else { unlisten = fn; }

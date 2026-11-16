@@ -19,10 +19,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
-vi.mock('../log', () => ({
-  flog: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
-
 import { useOverlayExpansion, type OverlayExpansion } from './useOverlayExpansion';
 
 // A pending set_overlay_expanded invocation the test controls.

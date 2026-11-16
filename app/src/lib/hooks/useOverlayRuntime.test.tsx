@@ -11,7 +11,6 @@ const mocks = vi.hoisted(() => ({
   listenFailures: new Set<string>(),
   deferredListeners: new Set<string>(),
   deferredResolves: new Map<string, () => void>(),
-  warn: vi.fn(),
   retryLastDelivery: vi.fn(),
   listen: vi.fn((event: string, handler: EventListener) => {
     if (mocks.listenFailures.has(event)) {
@@ -30,9 +29,6 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({ listen: mocks.listen }));
-vi.mock('../log', () => ({
-  flog: { info: vi.fn(), warn: mocks.warn, error: vi.fn() },
-}));
 vi.mock('../settings', () => ({
   loadSettings: () => ({ hotkeyMissFeedback: false }),
 }));
@@ -405,7 +401,6 @@ describe('useOverlayRuntime transient cues', () => {
     await act(async () => root.unmount());
     mocks.handlers.clear();
     mocks.unlistens.clear();
-    mocks.warn.mockClear();
     mocks.listenFailures.add('recording-initialization-failed');
     root = createRoot(container);
 
@@ -416,11 +411,6 @@ describe('useOverlayRuntime transient cues', () => {
     });
 
     expect(current?.showMicrophoneFailure).toBeNull();
-    expect(mocks.warn).toHaveBeenCalledWith(
-      'overlay',
-      'recording-initialization-failed listener unavailable',
-      { error: 'Error: recording-initialization-failed unavailable' },
-    );
 
     await act(async () => root.unmount());
     expect(mocks.unlistens.get('recording-interrupted')).toHaveBeenCalledOnce();
@@ -612,7 +602,6 @@ describe('useOverlayRuntime transient cues', () => {
     await act(async () => root.unmount());
     mocks.handlers.clear();
     mocks.unlistens.clear();
-    mocks.warn.mockClear();
     mocks.listenFailures.add(eventName);
     root = createRoot(container);
 
@@ -625,11 +614,6 @@ describe('useOverlayRuntime transient cues', () => {
 
     expect(current?.showClipboardOnly).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
-    expect(mocks.warn).toHaveBeenCalledWith(
-      'overlay',
-      `${eventName} listener unavailable`,
-      { error: `Error: ${eventName} unavailable` },
-    );
   });
 
   it('unsubscribes and clears the pending timeout on unmount', async () => {

@@ -373,7 +373,6 @@ pub struct AppState {
     pub recording_id: AtomicU64,
     /// Exact recording generation currently owning the single live partial decode.
     pub dictation_partial_in_flight_id: AtomicU64,
-    pub preview_holds_backend: AtomicBool,
     /// Decode-while-speaking session for the current recording (streaming
     /// setting, workstream E2). Inactive unless the recording asked for it.
     pub stream_reuse: Mutex<crate::stream_reuse::StreamReuse>,
@@ -524,7 +523,6 @@ impl Default for AppState {
             model_idle_policy: Mutex::new(ModelIdlePolicy::default()),
             recording_id: AtomicU64::new(0),
             dictation_partial_in_flight_id: AtomicU64::new(0),
-            preview_holds_backend: AtomicBool::new(false),
             stream_reuse: Mutex::new(crate::stream_reuse::StreamReuse::default()),
             vad_stream: crate::vad_stream::StreamSlot::default(),
             dictation_nonempty_preview_id: AtomicU64::new(0),

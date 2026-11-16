@@ -140,15 +140,14 @@ Once per launch, right after telemetry starts, one `system.session_started` info
 
 ### Frontend Logging
 
-The `flog` utility (`lib/log.ts`) routes frontend log messages through the Rust tracing system via the `log_frontend` command. Messages appear in the Performance workspace alongside Rust-originated events.
+The `flog` utility (`lib/log.ts`) records a content-free frontend event through the `log_frontend` command. It takes an event code from the `FrontendEventCode` union (the frontend hydration milestone and the `updater.*` codes), plus an updater version and selection where relevant. Free-text messages are not accepted: the backend never logs frontend text, and drops any code it does not allowlist (`canonical_event_code` in `telemetry.rs`). Coded events appear in the Events tab with `source: "frontend"`.
 
 ```typescript
-flog.info("overlay", "double-click detected");
-flog.warn("settings", "device not found", { device: name });
-flog.error("updater", "download failed", { error: msg });
+flog.info("updater.download_ready", { version });
+flog.error("updater.check_failed");
 ```
 
-Messages are formatted as `[tag] message` with optional JSON data. Calls are fire-and-forget (errors silenced).
+Calls are fire-and-forget (errors silenced). Add a new frontend event by adding its code to `canonical_event_code` and to `FrontendEventCode`; the type keeps uncoded calls from compiling.
 
 ## Embedded workspace
 
@@ -287,7 +286,6 @@ The frontend event buffer is managed by the `useEventStore` hook:
 - **Live streaming** — Listens for `app-event` Tauri events and appends to the buffer.
 - **Batched rendering** — Uses `requestAnimationFrame` to coalesce rapid event bursts into a single React state update.
 - **Capacity** — 500 events maximum (`MAX_EVENTS`).
-- **Filtering** — `getByStream(stream)` and `getByLevel(level)` methods.
 
 ## Commands
 
@@ -295,7 +293,7 @@ The frontend event buffer is managed by the `useEventStore` hook:
 |---------|-------------|
 | `get_log_contents` | Returns the last N lines from the pretty-printed log file |
 | `clear_logs` | Removes all log files and clears the in-memory event ring buffer |
-| `log_frontend` | Routes a frontend message through Rust tracing (INFO/WARN/ERROR) |
+| `log_frontend` | Records an allowlisted, content-free frontend event through Rust tracing (INFO/WARN/ERROR) |
 | `get_event_history` | Returns all events from the in-memory ring buffer (up to 500) |
 | `clear_event_history` | Clears the in-memory event ring buffer |
 | `list_performance_runs` | Returns at most 200 newest typed performance runs |

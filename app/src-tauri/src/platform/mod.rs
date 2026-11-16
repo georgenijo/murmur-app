@@ -7,6 +7,12 @@ pub(crate) fn cpu_percent() -> Option<f32> {
     current::cpu_percent()
 }
 
+/// Forget the cumulative host CPU baseline, so the next sample primes a new one
+/// and reports unavailable instead of averaging over the gap since the last one.
+pub(crate) fn reset_cpu_baseline() {
+    current::reset_cpu_baseline();
+}
+
 /// Whether the Mac currently draws from an adapter or desktop supply.
 /// Unknown power state reports `false`, so callers keep battery behavior.
 pub(crate) fn on_external_power() -> bool {
@@ -83,6 +89,27 @@ mod tests {
         assert_eq!(
             update_cpu_percent(&mut previous, Some(CpuTicks::new(1_025, 4_075))),
             Some(25.0)
+        );
+    }
+
+    #[test]
+    fn a_reset_baseline_does_not_average_over_the_gap() {
+        // 599 idle seconds pass unsampled, then one fully busy second.
+        let mut previous = Some(CpuTicks::new(0, 0));
+        let after_outage = CpuTicks::new(0, 599 * 100);
+        let busy_second = CpuTicks::new(100, 599 * 100);
+
+        // Without a reset the busy second is averaged with the whole outage.
+        let mut stale = previous;
+        let stale_percent = update_cpu_percent(&mut stale, Some(busy_second)).unwrap();
+        assert!(stale_percent < 0.2, "{stale_percent}");
+
+        // Resetting on resumption primes a fresh baseline instead.
+        previous = None;
+        assert_eq!(update_cpu_percent(&mut previous, Some(after_outage)), None);
+        assert_eq!(
+            update_cpu_percent(&mut previous, Some(busy_second)),
+            Some(100.0)
         );
     }
 

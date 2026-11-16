@@ -12,13 +12,6 @@ vi.mock('../dictation', () => ({
   transcribeFile: mocks.transcribeFile,
 }));
 
-vi.mock('../log', () => ({
-  flog: {
-    info: vi.fn(),
-    warn: vi.fn(),
-  },
-}));
-
 vi.mock('@tauri-apps/api/webview', () => ({
   getCurrentWebview: () => ({
     onDragDropEvent: vi.fn(async () => mocks.unlisten),

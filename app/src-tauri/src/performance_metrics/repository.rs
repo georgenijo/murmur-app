@@ -373,39 +373,6 @@ impl PerformanceRepository {
         })
     }
 
-    /// UPDATE only the exact completed UUID. Clear/pruning/restart cannot
-    /// resurrect rows or attach a delayed result to a reused generation.
-    pub(crate) fn update_completed_shadow(
-        &self,
-        run_id: &str,
-        recording_id: u64,
-        shadow: &crate::shadow_measurement::ShadowMeasurementV1,
-    ) -> StoreResult<bool> {
-        retry_operation(PerformanceStoreOperationV1::Update, || {
-            let mut connection = self.open()?;
-            let transaction = connection.transaction().map_err(db_error)?;
-            let payload = transaction.query_row(
-                "SELECT payload_json FROM completed_runs WHERE run_id = ? AND correlation_kind = 'dictation' AND correlation_id = ?",
-                params![run_id, to_i64(recording_id)?], |row| row.get::<_, String>(0))
-                .optional().map_err(db_error)?;
-            let Some(payload) = payload else {
-                return Ok(false);
-            };
-            let mut run =
-                serde_json::from_str::<PerformanceRunV1>(&payload).map_err(|_| invalid_record())?;
-            run.shadow = Some(shadow.clone());
-            let payload = serde_json::to_string(&run).map_err(|_| invalid_record())?;
-            let changed = transaction
-                .execute(
-                    "UPDATE completed_runs SET payload_json = ? WHERE run_id = ?",
-                    params![payload, run_id],
-                )
-                .map_err(db_error)?;
-            transaction.commit().map_err(db_error)?;
-            Ok(changed == 1)
-        })
-    }
-
     pub(crate) fn complete(
         &self,
         correlation: &RunCorrelationV1,
@@ -488,7 +455,6 @@ impl PerformanceRepository {
             finished_at_ms,
         )?;
         let run = PerformanceRunV1 {
-            shadow: (active.kind == PerformanceRunKindV1::Dictation).then(Default::default),
             schema_version: PERFORMANCE_RUN_SCHEMA_VERSION,
             run_id: active.run_id.clone(),
             kind: active.kind,
@@ -1525,58 +1491,7 @@ mod tests {
     }
 
     #[test]
-    fn shadow_amendment_preserves_delivery_and_cannot_resurrect_or_cross_generations() {
-        let temp = tempfile::tempdir().unwrap();
-        let repository = PerformanceRepository::initialize(temp.path().join("diagnostics"))
-            .unwrap()
-            .0;
-        repository
-            .begin(
-                PerformanceRunKindV1::Dictation,
-                correlation(77),
-                Vec::new(),
-                ContentFreeInputSummaryV1::default(),
-            )
-            .unwrap();
-        let delivery = crate::performance_metrics::delivery::DeliveryTimingV1::default();
-        let original = repository
-            .complete_with_delivery(
-                &correlation(77),
-                RunOutcomeV1::Success,
-                vec![StageTimingV1::measured(
-                    PerformanceStageV1::TotalProcessing,
-                    99,
-                )],
-                None,
-                None,
-                Some(delivery.clone()),
-            )
-            .unwrap()
-            .unwrap();
-        assert_eq!(original.delivery_timing.as_ref(), Some(&delivery));
-        let shadow = crate::shadow_measurement::ShadowMeasurementV1 {
-            press_input_matches: Some(true),
-            determinism: crate::shadow_measurement::DeterminismStatus::Disabled,
-            ..Default::default()
-        };
-        assert!(!repository
-            .update_completed_shadow(&original.run_id, 78, &shadow)
-            .unwrap());
-        assert!(repository
-            .update_completed_shadow(&original.run_id, 77, &shadow)
-            .unwrap());
-        let mut expected = original.clone();
-        expected.shadow = Some(shadow.clone());
-        assert_eq!(repository.get(&original.run_id).unwrap(), Some(expected));
-        repository.clear().unwrap();
-        assert!(!repository
-            .update_completed_shadow(&original.run_id, 77, &shadow)
-            .unwrap());
-        assert!(repository.list(10).unwrap().is_empty());
-    }
-
-    #[test]
-    fn v6_shadow_migration_keeps_legacy_payload_bytes() {
+    fn v6_migration_keeps_legacy_payload_bytes() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("diagnostics");
         let repository = PerformanceRepository::initialize(root.clone()).unwrap().0;
@@ -1599,7 +1514,6 @@ mod tests {
             .unwrap()
             .unwrap();
         let mut old = serde_json::to_value(run).unwrap();
-        old.as_object_mut().unwrap().remove("shadow");
         old["stages"].as_array_mut().unwrap().retain(|s| {
             !["stopPressToRelease", "stopReleaseToCommand"].contains(&s["stage"].as_str().unwrap())
         });
@@ -1617,12 +1531,10 @@ mod tests {
             .query_row("SELECT payload_json FROM completed_runs", [], |r| r.get(0))
             .unwrap();
         assert_eq!(saved, payload);
-        assert!(migrated.list(10).unwrap()[0].shadow.is_none());
     }
 
     #[test]
-    fn v8_migration_preserves_older_comparison_and_accepts_not_measured() {
-        use crate::shadow_measurement::{DeterminismStatus, ShadowMeasurementV1};
+    fn rows_written_with_the_retired_shadow_companion_still_decode() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("diagnostics");
         let repo = PerformanceRepository::initialize(root.clone()).unwrap().0;
@@ -1643,39 +1555,35 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        let mut shadow = ShadowMeasurementV1 {
-            determinism: DeterminismStatus::Compared,
-            decode_matches: Some(false),
-            ..Default::default()
-        };
-        repo.update_completed_shadow(&run.run_id, 79, &shadow)
-            .unwrap();
+        let mut old = serde_json::to_value(&run).unwrap();
+        old["shadow"] = serde_json::json!({
+            "schemaVersion": 1,
+            "pressSample": 16000,
+            "pauseSample": null,
+            "trailingSilenceBeforePressMs": 0,
+            "trailingSilenceBeforeStopMs": 500,
+            "pressInputMatches": true,
+            "pauseInputMatches": null,
+            "previewHeldBackendAtPress": false,
+            "determinism": "compared",
+            "decodeMatches": false
+        });
         let connection = repo.open().unwrap();
-        let before: String = connection
-            .query_row("SELECT payload_json FROM completed_runs", [], |r| r.get(0))
+        connection
+            .execute(
+                "UPDATE completed_runs SET payload_json = ?",
+                [serde_json::to_string(&old).unwrap()],
+            )
             .unwrap();
-        connection.pragma_update(None, "user_version", 8).unwrap();
         drop(connection);
-        let migrated = PerformanceRepository::initialize(root).unwrap().0;
-        let after: String = migrated
-            .open()
+        let reopened = PerformanceRepository::initialize(root).unwrap().0;
+        let listed = reopened.list(10).unwrap();
+        assert_eq!(listed, vec![run.clone()]);
+        assert_eq!(reopened.get(&run.run_id).unwrap(), Some(run));
+        assert!(serde_json::to_value(&listed[0])
             .unwrap()
-            .query_row("SELECT payload_json FROM completed_runs", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(before, after);
-        assert_eq!(
-            migrated.get(&run.run_id).unwrap().unwrap().shadow.as_ref(),
-            Some(&shadow)
-        );
-        shadow.determinism = DeterminismStatus::NotMeasuredInApp;
-        shadow.decode_matches = None;
-        migrated
-            .update_completed_shadow(&run.run_id, 79, &shadow)
-            .unwrap();
-        assert_eq!(
-            migrated.get(&run.run_id).unwrap().unwrap().shadow.as_ref(),
-            Some(&shadow)
-        );
+            .get("shadow")
+            .is_none());
     }
 
     #[test]
