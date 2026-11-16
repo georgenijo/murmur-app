@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{Emitter, Manager};
 
 mod key_identity;
+mod level;
+mod writer;
 pub(crate) use key_identity::sanitize_persisted_line;
 
 const REFACTOR_TEST_IDENTIFIER: &str = "com.localdictation.refactor-test";
@@ -14,6 +16,39 @@ const BENCH_IDENTIFIER: &str = "com.localdictation.bench";
 const PRODUCTION_LOG_DIRECTORY: &str = "local-dictation";
 const REFACTOR_TEST_LOG_DIRECTORY: &str = "local-dictation-refactor-test";
 const BENCH_LOG_DIRECTORY: &str = "local-dictation-bench";
+
+/// Target of [`hunt!`] events.
+pub(crate) const HUNT_STREAM: &str = "hunt";
+
+/// A temporary hunting log for an open issue. It takes the issue number and a
+/// string literal, nothing else: no fields, so there is no value to leak. It
+/// emits at debug (local-only, off by default, never shipped) and is removed
+/// when the issue closes. The literal is passed as a value, never as a format
+/// string, so `"state {transcript}"` logs those characters and captures no
+/// variable. `scripts/check_hunt_sites.py` lists every site and fails CI if one
+/// has no issue number.
+///
+/// ```no_run
+/// ui_lib::hunt!(issue = 1234, "queue drained at stop");
+/// ```
+///
+/// (`no_run`: the doctest binary cannot load the crate's Swift dylibs, but it
+/// compiles, which is what pins the `compile_fail` cases below to the field and
+/// not to an unrelated error.) A field is a compile error:
+///
+/// ```compile_fail
+/// ui_lib::hunt!(issue = 1234, message = "x", "queue drained at stop");
+/// ```
+///
+/// ```compile_fail
+/// ui_lib::hunt!(issue = 1234, queue_len = 3u64, "queue drained at stop");
+/// ```
+#[macro_export]
+macro_rules! hunt {
+    (issue = $issue:literal, $message:literal $(,)?) => {
+        ::tracing::debug!(target: "hunt", issue = $issue as u64, "{}", $message)
+    };
+}
 
 /// A structured event emitted to the frontend and stored in the ring buffer.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -135,7 +170,10 @@ impl tracing::field::Visit for JsonVisitor {
 pub struct TauriEmitterLayer {
     app_handle: tauri::AppHandle,
     buffer: Arc<Mutex<VecDeque<AppEvent>>>,
-    jsonl_writer: Mutex<SizeRotatingFile>,
+    /// Queue to the `events.jsonl` writer thread; sending never blocks.
+    jsonl: writer::EventWriter,
+    /// The `app.log` writer. Debug and trace events go here and nowhere else.
+    local_log: tracing_appender::non_blocking::NonBlocking,
 }
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TauriEmitterLayer {
@@ -166,9 +204,18 @@ impl TauriEmitterLayer {
         }
         .to_string();
 
-        let (summary, data) = sanitized_event_payload(&stream, event, cfg!(debug_assertions));
-
         let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+
+        // Debug and trace are local-only: no events.jsonl (so the shipper never
+        // sees them), no ring buffer or Events tab, no capture-health input.
+        if *meta.level() > tracing::Level::INFO {
+            let (summary, data) = local_log_payload(&stream, event);
+            let line = local_log_line(&timestamp, &level, &stream, &summary, &data);
+            let _ = self.local_log.clone().write_all(line.as_bytes());
+            return;
+        }
+
+        let (summary, data) = sanitized_event_payload(&stream, event, cfg!(debug_assertions));
 
         let app_event = AppEvent {
             timestamp,
@@ -192,19 +239,58 @@ impl TauriEmitterLayer {
             buf.push_back(app_event.clone());
         }
 
-        // Write AppEvent JSON line to JSONL file
-        if let Ok(mut writer) = self.jsonl_writer.lock() {
-            if let Ok(mut line) = serde_json::to_string(&app_event) {
-                line.push('\n');
-                // One write per event: the rotation check runs between
-                // events, so a rotated file always ends on a line boundary.
-                let _ = writer.write_all(line.as_bytes());
-            }
-        }
-
         // Emit to all windows
         let _ = self.app_handle.emit("app-event", &app_event);
+
+        // Hand the event to the writer thread, which serialises it and writes
+        // whole lines in order. A full queue drops and counts, never blocks.
+        self.jsonl.send(app_event);
     }
+}
+
+/// One `app.log` line. Strings are quoted and escaped so a value cannot forge a
+/// line or blur field boundaries.
+fn local_log_line(
+    timestamp: &str,
+    level: &str,
+    stream: &str,
+    summary: &str,
+    data: &serde_json::Value,
+) -> String {
+    let mut line = format!(
+        "{timestamp} {:>5} {stream}: {summary}",
+        level.to_ascii_uppercase()
+    );
+    if let Some(fields) = data.as_object() {
+        for (key, value) in fields {
+            match value {
+                serde_json::Value::String(value) => line.push_str(&format!(" {key}={value:?}")),
+                value => line.push_str(&format!(" {key}={value}")),
+            }
+        }
+    }
+    line.push('\n');
+    line
+}
+
+/// Summary and fields for a debug line in the local `app.log`. Fields go through
+/// the release-strength structured-event sanitizer in every build, so `pipeline`
+/// strings and anything outside a schema's allowlist are dropped. Events without
+/// an allowlisted summary keep their message, with key identity redacted, which
+/// is what `app.log` has always held for info lines.
+fn local_log_payload(stream: &str, event: &tracing::Event<'_>) -> (String, serde_json::Value) {
+    let mut visitor = JsonVisitor::new();
+    event.record(&mut visitor);
+    let message = visitor.message;
+    let mut data = serde_json::Value::Object(visitor.fields);
+    sanitize_event_data(stream, &mut data, false);
+    let summary = sanitized_summary(stream, message.clone(), &data, false);
+    let summary = if summary == "Structured event" {
+        key_identity::bounded_summary(stream, message.unwrap_or_default())
+    } else {
+        summary
+    };
+    (summary, data)
 }
 
 /// Collect an event's fields and apply the structured-event privacy boundary.
@@ -233,6 +319,8 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "system.launch_listener_armed" => Some("system.launch_listener_armed"),
         "system.launch_model_ready" => Some("system.launch_model_ready"),
         "system.launch_frontend_hydrated" => Some("system.launch_frontend_hydrated"),
+        "system.debug_logging_changed" => Some("system.debug_logging_changed"),
+        "system.session_started" => Some("system.session_started"),
         "keyboard.listener_started" => Some("keyboard.listener_started"),
         "keyboard.listener_silent" => Some("keyboard.listener_silent"),
         "keyboard.listener_failed" => Some("keyboard.listener_failed"),
@@ -2019,6 +2107,12 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     let Some(obj) = data.as_object_mut() else {
         return;
     };
+    if stream == HUNT_STREAM {
+        // Temporary hunting logs describe state with numbers and flags only. A
+        // string field could carry a path, a transcript or any other content.
+        obj.retain(|_, value| value.is_number() || value.is_boolean());
+        return;
+    }
     if obj
         .get("event_code")
         .and_then(serde_json::Value::as_str)
@@ -2042,6 +2136,20 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
         obj.retain(|key, value| match key.as_str() {
             "event_code" => value.as_str().and_then(canonical_event_code).is_some(),
             "launch_elapsed_ms" => value.as_u64().is_some(),
+            _ => false,
+        });
+        return;
+    }
+    if obj.get("event_code").and_then(serde_json::Value::as_str) == Some("system.session_started") {
+        obj.retain(|key, value| match key.as_str() {
+            "event_code" => true,
+            "app_version" => value.as_str().is_some_and(is_safe_updater_version),
+            "session_id" => value
+                .as_str()
+                .is_some_and(|id| id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit())),
+            "build" => value
+                .as_str()
+                .is_some_and(|b| matches!(b, "release" | "debug")),
             _ => false,
         });
         return;
@@ -2152,7 +2260,9 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
         obj.retain(|key, value| is_safe_performance_store_field(key, value));
         return;
     }
-    if !debug_build && stream == "pipeline" {
+    // `recording` is the old name of a call-site target that now logs as
+    // `pipeline`; treating a straggler the same keeps its strings out.
+    if !debug_build && (stream == "pipeline" || stream == "recording") {
         obj.retain(|key, value| {
             !value.is_string()
                 || value.as_str().is_some_and(|value| match key.as_str() {
@@ -2608,6 +2718,79 @@ fn seed_buffer_from_jsonl(buffer: &Arc<Mutex<VecDeque<AppEvent>>>, n: usize) {
     }
 }
 
+/// The one line that tells a reader which build and which launch wrote the
+/// events after it. `recording_id` restarts on every launch, so joining by it
+/// needs the session.
+fn log_session_start() {
+    use std::hash::{BuildHasher, Hasher};
+    // A random 64-bit id from std's per-process random hash keys.
+    let session_id = format!(
+        "{:016x}",
+        std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish()
+    );
+    tracing::info!(
+        target: "system",
+        event_code = "system.session_started",
+        app_version = env!("CARGO_PKG_VERSION"),
+        session_id = session_id.as_str(),
+        build = if cfg!(debug_assertions) { "debug" } else { "release" },
+        "session started"
+    );
+}
+
+/// Whether the text `app.log` formats an event of `level` (debug lines take the
+/// emitter layer's sanitized path instead). `events.jsonl` already records every
+/// info event, so the text log repeats them only while debug is on.
+fn pretty_log_admits(level: tracing::Level, debug: bool) -> bool {
+    level <= tracing::Level::WARN || (debug && level == tracing::Level::INFO)
+}
+
+/// The `events.jsonl` writer and the `app.log` worker guard, kept so exit and
+/// panic paths can flush them.
+static EVENT_WRITER: OnceLock<writer::EventWriter> = OnceLock::new();
+static PRETTY_GUARD: Mutex<Option<tracing_appender::non_blocking::WorkerGuard>> = Mutex::new(None);
+/// How long Clear logs waits for the writer to start the reset before it
+/// cancels it. The command is synchronous, so this bounds a wait on the caller.
+const CLEAR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Write out everything queued for `events.jsonl` and `app.log`. Call on exit.
+/// The `app.log` worker only flushes when its guard drops, so logging to it
+/// stops afterwards.
+pub fn flush_on_exit() {
+    if let Some(writer) = EVENT_WRITER.get() {
+        writer.flush(FLUSH_TIMEOUT);
+    }
+    drop(
+        PRETTY_GUARD
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take(),
+    );
+}
+
+/// Chain a panic hook that flushes the log tail. A release build aborts on
+/// panic, so `app.log` is flushed too; a dev build unwinds and keeps logging.
+fn install_panic_flush() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        previous(info);
+        if let Some(writer) = EVENT_WRITER.get() {
+            writer.flush(std::time::Duration::from_millis(500));
+        }
+        if cfg!(panic = "abort") {
+            drop(
+                PRETTY_GUARD
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take(),
+            );
+        }
+    }));
+}
+
 pub fn init(app_handle: tauri::AppHandle) {
     use tracing_subscriber::prelude::*;
 
@@ -2635,9 +2818,10 @@ pub fn init(app_handle: tauri::AppHandle) {
         EVENT_LOG_MAX_BYTES,
         EVENT_LOG_GENERATIONS,
     )
-    .expect("Could not open JSONL file")
-    .with_drop_note(event_drop_note);
+    .expect("Could not open JSONL file");
     register_writer(&jsonl_writer);
+
+    let log_level_dir = log_dir.clone();
 
     // Layer 1: Pretty file. Size-capped; the non-blocking worker thread does
     // the rotation, so logging call sites never wait on it.
@@ -2652,19 +2836,34 @@ pub fn init(app_handle: tauri::AppHandle) {
     });
     register_writer(&pretty_file);
     let (pretty_writer, pretty_guard) = tracing_appender::non_blocking(pretty_file);
+    // `events.jsonl` is the record of every info event, so this text log holds
+    // warn and above unless debug is on. Debug and trace lines are written by
+    // the emitter layer, through the full sanitizer; this layer never sees them.
     let pretty_layer = tracing_subscriber::fmt::layer()
         .event_format(key_identity::PrettyFormat)
-        .with_writer(pretty_writer)
-        .with_ansi(false);
+        .with_writer(pretty_writer.clone())
+        .with_ansi(false)
+        .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
+            pretty_log_admits(*meta.level(), level::debug_enabled())
+        }));
+
+    // The file write happens on its own thread; the rotating writer is shared
+    // with Clear logs, which resets it under its own lock.
+    let events_writer = {
+        let mut file = jsonl_writer;
+        writer::EventWriter::spawn(move |bytes| file.write_all(bytes), writer::QUEUE_CAPACITY)
+    };
+    let _ = EVENT_WRITER.set(events_writer.clone());
 
     // Layer 2: Tauri event emitter (also writes JSONL)
     let emitter_layer = TauriEmitterLayer {
         app_handle,
         buffer,
-        jsonl_writer: Mutex::new(jsonl_writer),
+        jsonl: events_writer,
+        local_log: pretty_writer,
     };
 
-    let filter = tracing_subscriber::EnvFilter::new("info");
+    let (filter, debug_on, level_pinned) = level::initial_layer(&log_level_dir);
 
     let subscriber = tracing_subscriber::registry()
         .with(filter)
@@ -2672,7 +2871,9 @@ pub fn init(app_handle: tauri::AppHandle) {
         .with(emitter_layer);
 
     tracing::subscriber::set_global_default(subscriber).expect("Failed to set tracing subscriber");
-
+    if !level_pinned {
+        level::spawn_flag_watcher(log_level_dir.clone());
+    }
     tracing::info!(
         target: "system",
         log_namespace = match identifier.as_str() {
@@ -2680,11 +2881,14 @@ pub fn init(app_handle: tauri::AppHandle) {
             BENCH_IDENTIFIER => "bench",
             _ => "production",
         },
+        debug_logging = debug_on,
         "telemetry initialized"
     );
+    log_session_start();
 
-    // Leak guard to keep writer alive for app lifetime
-    Box::leak(Box::new(pretty_guard));
+    // Held for the app's lifetime; `flush_on_exit` drops it to flush `app.log`.
+    *PRETTY_GUARD.lock().unwrap_or_else(|p| p.into_inner()) = Some(pretty_guard);
+    install_panic_flush();
 }
 
 // ---------------------------------------------------------------------------
@@ -2747,7 +2951,18 @@ pub fn clear_all_logs() -> Result<(), String> {
     // Every file a live writer manages (current and rotated generations) is
     // excluded below: logging resumes once the locks drop, and a rotation in
     // the meantime must not be deleted by the unlocked passes.
-    let live = reset_writers(&writers);
+    //
+    // Through the `events.jsonl` writer queue when it runs, so events queued
+    // before the clear cannot land in the fresh file. All or nothing: if the
+    // writer cannot start the reset in time it is cancelled, never left queued,
+    // and nothing is cleared. (The `app.log` queue is separate; see the log
+    // viewer docs.)
+    let live = match EVENT_WRITER.get() {
+        Some(events) => events
+            .run_exclusive(move || reset_writers(&writers), CLEAR_TIMEOUT)
+            .ok_or("The log writer is busy, so nothing was cleared. Try Clear logs again.")?,
+        None => reset_writers(&writers),
+    };
     for file in files {
         let path = dir.join(file);
         if !live.contains(&path) {
@@ -2789,6 +3004,211 @@ pub fn clear_event_history() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Run `emit` under a subscriber that records each event's local `app.log`
+    /// line and whether it would reach the structured sinks.
+    fn local_lines(emit: impl FnOnce()) -> Vec<String> {
+        use tracing_subscriber::prelude::*;
+        #[derive(Clone, Default)]
+        struct Local(Arc<Mutex<Vec<String>>>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Local {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                let stream = event.metadata().target();
+                let (summary, data) = local_log_payload(stream, event);
+                let level = event.metadata().level().to_string();
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(local_log_line("T", &level, stream, &summary, &data));
+            }
+        }
+        let layer = Local::default();
+        let lines = layer.0.clone();
+        tracing::subscriber::with_default(
+            tracing_subscriber::registry()
+                .with(tracing_subscriber::EnvFilter::new(
+                    level::filter_directives(true),
+                ))
+                .with(layer),
+            emit,
+        );
+        let lines = lines.lock().unwrap().clone();
+        lines
+    }
+
+    #[test]
+    fn debug_lines_are_sanitized_like_structured_events() {
+        let lines = local_lines(|| {
+            tracing::debug!(
+                target: "pipeline",
+                recording_id = 7u64,
+                text = "private words",
+                outcome = "completed",
+                "raw step"
+            );
+            tracing::debug!(target: "audio", capture_id = 3u64, "capture helper setup step");
+        });
+        assert_eq!(lines.len(), 2);
+        // pipeline strings outside the allowlists never reach the file.
+        assert!(!lines[0].contains("private words"), "{}", lines[0]);
+        assert!(lines[0].contains("recording_id=7"), "{}", lines[0]);
+        // An outcome outside its allowlist is dropped too.
+        assert!(!lines[0].contains("outcome="), "{}", lines[0]);
+        assert!(lines[1].contains("DEBUG audio: capture helper setup step capture_id=3"));
+        assert!(lines.iter().all(|line| line.ends_with('\n')));
+    }
+
+    #[test]
+    fn hunt_messages_are_values_and_never_capture_variables() {
+        let transcript = "SECRET TRANSCRIPT WORDS";
+        let selection = "SECRET SELECTED TEXT";
+        let path = "/Users/someone/secret-recording.wav";
+        let lines = local_lines(|| {
+            crate::hunt!(
+                issue = 1,
+                "state {transcript} / {selection} / {path} / {0} / {}"
+            );
+        });
+        let _ = (transcript, selection, path);
+        assert_eq!(lines.len(), 1);
+        let line = &lines[0];
+        // The braces are logged as written; nothing was substituted.
+        assert!(
+            line.contains("{transcript}") && line.contains("{path}"),
+            "{line}"
+        );
+        for secret in ["SECRET", "someone", "secret-recording"] {
+            assert!(!line.contains(secret), "{secret} leaked: {line}");
+        }
+    }
+
+    #[test]
+    fn a_hunt_line_carries_the_issue_and_the_literal_and_nothing_else() {
+        let lines = local_lines(|| crate::hunt!(issue = 1234, "queue state"));
+        assert_eq!(lines.len(), 1);
+        let line = &lines[0];
+        assert!(line.contains("DEBUG hunt: queue state"), "{line}");
+        assert!(line.contains("issue=1234"), "{line}");
+    }
+
+    #[test]
+    fn the_sanitizer_still_drops_strings_from_a_hunt_target_event() {
+        // Defense in depth: the macro takes no fields, and the check script
+        // rejects `target: "hunt"` elsewhere, but a straggler must not leak.
+        let lines = local_lines(|| {
+            tracing::debug!(
+                target: "hunt",
+                issue = 1234u64,
+                queue_len = 5u64,
+                armed = true,
+                path = "/Users/someone/private.wav",
+                "queue state"
+            );
+        });
+        assert_eq!(lines.len(), 1);
+        let line = &lines[0];
+        assert!(
+            line.contains("queue_len=5") && line.contains("armed=true"),
+            "{line}"
+        );
+        assert!(!line.contains("private.wav"), "{line}");
+    }
+
+    #[test]
+    fn the_session_start_line_keeps_only_version_session_and_build() {
+        for debug_build in [false, true] {
+            let mut data = serde_json::json!({
+                "event_code": "system.session_started",
+                "app_version": "0.66.2",
+                "session_id": "00ff00ff00ff00ff",
+                "build": "release",
+                "path": "/Users/someone/Library",
+            });
+            sanitize_event_data("system", &mut data, debug_build);
+            assert_eq!(
+                data,
+                serde_json::json!({
+                    "event_code": "system.session_started",
+                    "app_version": "0.66.2",
+                    "session_id": "00ff00ff00ff00ff",
+                    "build": "release",
+                })
+            );
+            let mut data = serde_json::json!({
+                "event_code": "system.session_started",
+                "app_version": "/Users/someone/0.66.2",
+                "session_id": "not hex",
+                "build": "other",
+            });
+            sanitize_event_data("system", &mut data, debug_build);
+            assert_eq!(
+                data,
+                serde_json::json!({ "event_code": "system.session_started" })
+            );
+        }
+    }
+
+    #[test]
+    fn a_recording_target_gets_the_pipeline_string_boundary_in_release() {
+        let mut data = serde_json::json!({
+            "recording_id": 4,
+            "error": "failed to load /Users/someone/Library/models/smart-turn.onnx",
+        });
+        sanitize_event_data("recording", &mut data, false);
+        assert_eq!(data, serde_json::json!({ "recording_id": 4 }));
+        // The call sites now use the documented stream.
+        let mut data = serde_json::json!({ "error": "/Users/someone/x" });
+        sanitize_event_data("pipeline", &mut data, false);
+        assert_eq!(data, serde_json::json!({}));
+    }
+
+    #[test]
+    fn app_log_repeats_info_only_while_debug_is_on() {
+        use tracing::Level;
+        for level in [Level::ERROR, Level::WARN] {
+            assert!(pretty_log_admits(level, false) && pretty_log_admits(level, true));
+        }
+        assert!(!pretty_log_admits(Level::INFO, false));
+        assert!(pretty_log_admits(Level::INFO, true));
+        // Debug and trace take the emitter layer's sanitized path, never this one.
+        for level in [Level::DEBUG, Level::TRACE] {
+            assert!(!pretty_log_admits(level, false) && !pretty_log_admits(level, true));
+        }
+    }
+
+    #[test]
+    fn debug_events_are_not_in_the_info_level_default() {
+        use tracing_subscriber::prelude::*;
+        let seen = Arc::new(Mutex::new(0usize));
+        #[derive(Clone)]
+        struct Count(Arc<Mutex<usize>>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Count {
+            fn on_event(
+                &self,
+                _: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                *self.0.lock().unwrap() += 1;
+            }
+        }
+        tracing::subscriber::with_default(
+            tracing_subscriber::registry()
+                .with(tracing_subscriber::EnvFilter::new(
+                    level::filter_directives(false),
+                ))
+                .with(Count(seen.clone())),
+            || {
+                crate::hunt!(issue = 1, "never emitted at the default level");
+                tracing::debug!(target: "audio", "also not emitted");
+                tracing::info!(target: "audio", "emitted");
+            },
+        );
+        assert_eq!(*seen.lock().unwrap(), 1);
+    }
 
     #[test]
     fn updater_events_keep_only_bounded_operational_fields() {

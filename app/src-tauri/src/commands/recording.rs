@@ -220,7 +220,7 @@ fn dictation_partial_window(samples: &[f32]) -> &[f32] {
 }
 
 fn emit_dictation_partial_tick(recording_id: u64, outcome: &'static str, sample_count: usize) {
-    tracing::info!(
+    tracing::debug!(
         target: "pipeline",
         event_code = "pipeline.dictation_partial_tick",
         recording_id,
@@ -1195,7 +1195,7 @@ fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, rec
                         report.load_ms,
                     ));
                 });
-                tracing::info!(
+                tracing::debug!(
                     target: "pipeline",
                     recording_id,
                     model = model_name.as_str(),
@@ -1259,7 +1259,7 @@ fn spawn_idle_model_preparation(
         );
         let total_ms = queued_at.elapsed().as_millis() as u64;
         match result {
-            Ok(report) => tracing::info!(
+            Ok(report) => tracing::debug!(
                 target: "pipeline",
                 model = model_name.as_str(),
                 backend = model_runtime::model_definition(&model_name).map(|model| model.backend.as_str()).unwrap_or("unknown"),
@@ -2982,7 +2982,7 @@ async fn run_transcription_pipeline(
                         });
                     }
                     Ok(vad::VadResult::Speech(trimmed)) => {
-                        tracing::info!(target: "pipeline", "VAD trimmed {} -> {} samples ({:.0}% speech, {:?})",
+                        tracing::debug!(target: "pipeline", "VAD trimmed {} -> {} samples ({:.0}% speech, {:?})",
                             samples.len(), trimmed.len(),
                             trimmed.len() as f64 / samples.len() as f64 * 100.0,
                             t_vad.elapsed());
@@ -3078,7 +3078,7 @@ async fn run_transcription_pipeline(
     let model_load_ms = load_report.load_ms;
     let inference_ms = t_transcribe.elapsed().as_millis() as u64;
     let rss_after_mb = crate::resource_monitor::get_process_rss_mb();
-    tracing::info!(target: "pipeline", "transcription ({} samples): {:?}", samples_for_transcription.len(), t_transcribe.elapsed());
+    tracing::debug!(target: "pipeline", "transcription ({} samples): {:?}", samples_for_transcription.len(), t_transcribe.elapsed());
     let mut timings = PipelineTimings {
         vad_ms,
         model_queue_ms: load_report.lock_wait_ms,
@@ -4904,7 +4904,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                     | audio::AudioStartupDiagnostic::GesturePcm { .. }
                     | audio::AudioStartupDiagnostic::GestureReady { .. }
             ) {
-                tracing::info!(target: "audio", event_code = "audio.gesture_start_timing", recording_id,
+                tracing::debug!(target: "audio", event_code = "audio.gesture_start_timing", recording_id,
                     timing = ?diagnostic, "content-free physical gesture startup timing");
             }
             state
@@ -5684,7 +5684,7 @@ pub async fn start_native_recording(
             other => Err(other.to_string()),
         };
     }
-    tracing::info!(
+    tracing::debug!(
         target: "pipeline",
         smart_auto_reason = smart_auto_reason.unwrap_or("not_used"),
         "start_native_recording: starting"
@@ -6039,7 +6039,7 @@ async fn stop_native_recording_for(
         }
     };
     keyboard::set_processing(true);
-    tracing::info!(target: "pipeline", "stop_native_recording: stopping");
+    tracing::debug!(target: "pipeline", "stop_native_recording: stopping");
     let _ = app_handle.emit("recording-status-changed", "processing");
 
     // Guard resets status to Idle if stop_recording fails or samples are empty;
@@ -6113,7 +6113,7 @@ async fn stop_native_recording_for(
         interrupted = interruption_error.is_some(),
         "dictation capture handed off for processing"
     );
-    tracing::info!(target: "pipeline", "audio teardown + resample: {:?}", t_total.elapsed());
+    tracing::debug!(target: "pipeline", "audio teardown + resample: {:?}", t_total.elapsed());
     let capture_finalization_us = micros(t_total);
     performance_guard.record(StageTimingV1::measured(
         PerformanceStageV1::CaptureFinalization,

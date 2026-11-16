@@ -241,7 +241,7 @@ smart preparation), each one of `disabled`, `clipboard_only`, `normal_paste`, or
 the existing unconfirmed delivery presentation. The same all-build sanitizer
 rules apply.
 
-`pipeline.paste_safety` records fixed, content-free native delivery decisions.
+`pipeline.paste_safety` records fixed, content-free native delivery decisions. The routine `post`/`key_posted` success is logged at debug level; every refusal or stop stays at info.
 Its exact all-build schema has `event_code`, `phase_code`, and `outcome_code`.
 Preparation additionally requires `route_code` with the same four route values
 as `pipeline.smart_destination_delivery`. Allowed phase/outcome pairs are:

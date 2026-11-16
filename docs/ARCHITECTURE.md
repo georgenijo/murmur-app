@@ -384,7 +384,7 @@ Focused-field role checks use native AX with a per-element messaging timeout and
 ```text
 tracing event
     |
-    +--> Pretty text file (app.log / app.dev.log)
+    +--> Pretty text file (app.log / app.dev.log): warn and above, plus info and debug while debug logging is on
     |
     +--> TauriEmitterLayer
              |

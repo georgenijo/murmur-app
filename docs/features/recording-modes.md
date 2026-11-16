@@ -112,7 +112,7 @@ natively. rdev reports it as `Key::Unknown(179)`, and it arrives within a few
 milliseconds of the Fn release. With Fn as the trigger, the listener drops a
 179 press that arrives within 100 ms of an Fn edge, and the one release that
 balances it, before any detector sees them. Without this, every Fn double-tap
-is cancelled as a chord. Each dropped event logs
+is cancelled as a chord. Each dropped event logs, at debug level,
 `keyboard.globe_companion_ignored` with `companion=globe`. Other `Unknown`
 codes are real keys (keypad digits, ISO Section, JIS Yen) and still cancel an
 Fn gesture, as does a 179 press outside the window.

@@ -469,7 +469,7 @@ Eight bounded pending stamps and a two-second validity window handle interleaved
 requests without assigning timing by the next recording ID. No key, token,
 transcript, audio, device UID, or content-derived hash is persisted.
 
-`audio.gesture_start_timing` logs `GestureAccepted`, `GesturePcm`, and
+`audio.gesture_start_timing` (debug level; the performance store receives the same diagnostics directly) logs `GestureAccepted`, `GesturePcm`, and
 `GestureReady` with the recording ID and content-free durations. Existing
 `readyMs` retains its supervisor-acceptance origin and must not be relabeled as
 physical press latency.

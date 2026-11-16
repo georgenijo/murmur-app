@@ -3,8 +3,14 @@
 ## Overview
 
 All application logging goes through Rust's `tracing` crate, captured by a custom
-`TauriEmitterLayer` that routes every event to three destinations: an in-memory
-ring buffer, a persistent JSONL file, and real-time frontend emission. The
+`TauriEmitterLayer` that routes every info-or-higher event to three destinations: an in-memory
+ring buffer, a persistent JSONL file, and real-time frontend emission.
+`events.jsonl` is the single record of those events. The human-readable
+`app.log` repeats only warn and above (or info as well while debug logging is
+on, plus the debug lines themselves), so each event is no longer stored twice.
+`app.log` is a local diagnostic file, not a privacy boundary: its lines pass the
+key-identity redaction, and debug lines also pass the structured-event sanitizer,
+but a warn or error message is otherwise written as its author wrote it. The
 embedded **Settings → Model → Advanced** workspace keeps these structured Events
 beside a typed live Performance view and bounded per-run history.
 
@@ -30,7 +36,7 @@ type AppEvent = {
 ```
 
 3. **Ring buffer** — Pushed to an in-memory `VecDeque` capped at 500 events (FIFO eviction when full).
-4. **JSONL file** — Appended as a single JSON line to `events.jsonl` (release) or `events.dev.jsonl` (dev).
+4. **JSONL file** — Queued to the writer thread, which appends one JSON line per event to `events.jsonl` (release) or `events.dev.jsonl` (dev).
 5. **Frontend emission** — Emitted as an `app-event` Tauri event to all windows.
 
 ### Three Outputs
@@ -41,9 +47,22 @@ type AppEvent = {
 | JSONL file | One JSON object per line | 5MB before rotation | Persistent log, survives restarts |
 | `app-event` emission | `AppEvent` payload | Real-time stream | Live updates in the Performance workspace |
 
+### Log levels and debug logging
+
+The default level is `info`. Debug is opt-in and local:
+
+- `MURMUR_LOG=debug` in the environment turns it on for that launch.
+- `debug-logging.on`, an empty file in the log directory (`~/Library/Application Support/local-dictation/logs/` for production), turns it on at launch and while the app runs. Create or remove it and the level follows within about three seconds; no rebuild or restart is needed. `telemetry::set_debug_logging` writes it for a future Settings control. There is no Tauri command or Diagnostics toggle yet.
+
+Debug events are admitted only from Murmur's own targets (`pipeline`, `audio`, `system`, `keyboard`, `meeting`, `transform`, `overlay`, `recording`, `hunt` and the `ui_lib` module paths); dependency crates stay at `info`. A debug or trace event is written only to the local `app.log`. It never reaches `events.jsonl`, the ring buffer, the Events tab, capture health or the `app-event` emission, and the log shipper also drops any `debug` or `trace` line it finds. Its fields pass through the release-strength structured-event sanitizer in every build, so `pipeline` strings and unknown fields are dropped; the message keeps its text with key identity redacted, as info lines in `app.log` always have.
+
+### Off-thread JSONL writes
+
+The `events.jsonl` write is not done on the thread that logged. `record_event` sanitizes the event, updates capture health and the ring buffer, emits it, and hands it to a bounded queue (4,096 events, `telemetry/writer.rs`). One `event-log-writer` thread drains the queue in order, joins up to 256KB of whole lines into a single `write` to the rotating file, and repeats. Ordering is the queue's FIFO order. Sending never blocks: a full queue drops the event, counts it, and the writer records the count as one `Log events dropped` line (`dropped_events`) ahead of the next batch. A batch the file rejects counts every event in it as lost (not one) and the count carries over to the next successful write. A flush reports failure if any event write was rejected since the previous flush, even when the loss note itself was then written successfully; the flush that reports it acknowledges it. Nothing is buffered beyond the queue, so a killed process loses at most the events still queued. The app flushes the queue on exit (`RunEvent::Exit` calls `telemetry::flush_on_exit`) and from a chained panic hook, which also flushes `app.log` in a release build because release builds abort on panic. Neither takes a lock on the logging thread.
+
 ### JSONL Rotation
 
-The JSONL file is rotated while the app runs, not only at launch. `SizeRotatingFile` (`telemetry.rs`) tracks the file size and, before the first event written after the file reaches 5MB, shifts `events.jsonl.1` → `.2`, renames `events.jsonl` → `.1`, and starts a fresh file. Rotation happens between events, so rotated files always end on a line boundary. Two rotated generations are kept (`.1` newest, `.2` oldest; the oldest is overwritten by the next rotation). A file that is already over the cap at launch is rotated the same way. Failures are handled per step. If shifting or renaming fails, the current file is intact: the writer keeps appending to it (events are never dropped) and retries after another 1MB. If the rename succeeds but re-creating `events.jsonl` fails, the writer has no file and drops events rather than appending to `.1`, which the shipper treats as complete. It tries to create the file at most once per second, counts the dropped events without writing to stderr under the lock, and writes a single `Log events dropped` system line with the count when the file is writable again. Nothing is buffered. Clear logs unlinks each writer's file and rotated generations and reopens it on a fresh file under that writer's own short lock, so output after a clear is neither lost nor written to an unlinked handle; the slower cleanup of other files and dated rolling files runs afterwards with no lock held and skips every file a live writer manages, so a rotation during cleanup is never deleted.
+The JSONL file is rotated while the app runs, not only at launch. `SizeRotatingFile` (`telemetry.rs`) tracks the file size and, before the first event written after the file reaches 5MB, shifts `events.jsonl.1` → `.2`, renames `events.jsonl` → `.1`, and starts a fresh file. Rotation happens between events, so rotated files always end on a line boundary. Two rotated generations are kept (`.1` newest, `.2` oldest; the oldest is overwritten by the next rotation). A file that is already over the cap at launch is rotated the same way. Failures are handled per step. If shifting or renaming fails, the current file is intact: the writer keeps appending to it (events are never dropped) and retries after another 1MB. If the rename succeeds but re-creating `events.jsonl` fails, the writer has no file and drops events rather than appending to `.1`, which the shipper treats as complete. It tries to create the file at most once per second, counts the dropped events without writing to stderr under the lock, and writes a single `Log events dropped` system line with the count when the file is writable again. Nothing is buffered. Clear logs unlinks each writer's file and rotated generations and reopens it on a fresh file under that writer's own short lock, so output after a clear is neither lost nor written to an unlinked handle. For `events.jsonl` the reset runs on the `event-log-writer` thread itself, behind every event already queued: events still queued or batched at that moment are discarded, so none of them can reappear in the fresh file afterwards (before the off-thread writer, `events.jsonl` was written synchronously on the logging thread, so this held trivially). The clear is all or nothing. If the writer has not started the reset within 2 seconds (its sink is stuck), the reset is cancelled before it runs, `clear_logs` returns an error saying nothing was cleared, and the Events buffer is left as it was; the cancelled reset is never executed late. Once the reset has started it is waited for to completion. Events dropped by a full queue while the reset runs are still counted and noted in the fresh file; losses from before it are discarded with the data they belonged to. The `app.log` queue (`tracing_appender`'s own worker) is not behind that barrier, exactly as before this change: a line already queued for `app.log` when Clear logs runs can still be written to the fresh file just after it. That race is pre-existing, is not made worse by the lower default volume, and is accepted rather than adding a second coordination mechanism; Clear logs also has no button in the current UI. the slower cleanup of other files and dated rolling files runs afterwards with no lock held and skips every file a live writer manages, so a rotation during cleanup is never deleted.
 
 The log shipper depends on this layout; see [log-shipping.md](log-shipping.md). On startup, the ring buffer is pre-populated with the last 500 valid events across all retained generations (`.2`, `.1`, then current, in chronological order), so a restart right after a rotation — or a crash between the rename and the re-create — still restores history.
 
@@ -89,7 +108,7 @@ without permitting user content or arbitrary labels.
 
 ### Pretty-Printed Log File
 
-A separate human-readable log file (`app.log` or `app.dev.log`) is maintained via `tracing_appender::non_blocking` over the same `SizeRotatingFile` writer. `tracing_appender` has no size-based rotation, so the writer caps the file at 10MB and keeps one rotated generation (`app.log.1`). The rotation runs on the non-blocking worker thread, so logging call sites never wait on it. An oversized file left by an older build is rotated at launch. `get_log_contents` reads only the current file.
+A separate human-readable log file (`app.log` or `app.dev.log`) is maintained via `tracing_appender::non_blocking` over the same `SizeRotatingFile` writer. `tracing_appender` has no size-based rotation, so the writer caps the file at 10MB and keeps one rotated generation (`app.log.1`). The rotation runs on the non-blocking worker thread, so logging call sites never wait on it. An oversized file left by an older build is rotated at launch. `get_log_contents` reads only the current file. By default the file holds warn and error lines only; `events.jsonl` is the record of info events. With debug logging on it also holds info lines and sanitized debug lines, which makes it the file to read when hunting a bug. It is never read by the log shipper. Clear logs removes it with the rest (see the note on its queue above).
 
 ### Tracing Streams
 
@@ -102,6 +121,22 @@ Tracing targets map to stream names used for filtering:
 | `keyboard` | keyboard | Hotkey detection, rejection reasons/timing, key class (never typed-key identity), mode changes, listener lifecycle |
 | `transform` | transform | Correlated transform key, state, capture, audio, effects, and terminal outcomes |
 | `system` | system | Startup, permissions, updates, resource usage |
+
+`meeting` and `hunt` are also streams (`hunt` carries debug-only [`hunt!`](#hunting-logs) lines). The former `recording` target used by the Smart Turn check now logs as `pipeline`, and a straggler on `recording` is sanitized as `pipeline`, so string fields such as an error carrying a model path never reach `events.jsonl` or the shipper.
+
+### Hunting logs
+
+Temporary logs added while chasing a bug use `hunt!` instead of `info!`/`warn!`:
+
+```rust
+hunt!(issue = 1234, "queue drained at stop");
+```
+
+It takes the issue number and a string literal and nothing else: no fields, so there is no value that could carry private content, and any other argument is a compile error (the macro's `compile_fail` doctests show a field and a `message =` argument being rejected). The literal is passed to the event as a value, not a format string, so `{name}` in it is logged as written and never expanded from a variable in scope. It emits at debug on the `hunt` stream, so it is off by default, local-only and never shipped; the sanitizer still drops string fields from any `hunt` event as a second line of defense. Remove every `hunt!` for an issue when the issue closes. `python3 scripts/check_hunt_sites.py` (run by the `policy` CI job, covered by `tests/test_hunt_sites.py`) lists each site and fails if one has no issue number, passes anything besides the literal, or if code emits on the `hunt` target directly; it recognizes `hunt!(`, `hunt!{` and `hunt![`, ignores comments (including nested block comments and `//` inside strings), the macro definition and `#[cfg(test)]` module bodies, and does not call GitHub, so removal at close stays a review habit. An event that must stay on by default is not a hunting log: give it a stable `event_code` in `canonical_event_code` (`telemetry.rs`) and, if it carries any string field, an exact schema in the sanitizer.
+
+### Session stamp
+
+Once per launch, right after telemetry starts, one `system.session_started` info event records `app_version`, a random per-launch `session_id` (16 hex characters) and `build` (`release` or `debug`). `recording_id` restarts on every launch, so a reader joins a recording to a version and launch by the nearest earlier session line instead of inferring from timestamps. Events themselves do not carry these fields.
 
 ### Frontend Logging
 
@@ -279,7 +314,7 @@ All files stored in `~/Library/Application Support/local-dictation/logs/`:
 
 | File | Format | Purpose |
 |------|--------|---------|
-| `app.log` / `app.dev.log` | Pretty-printed text | Human-readable log (read by `get_log_contents`), rotated at 10MB at runtime |
+| `app.log` / `app.dev.log` | Pretty-printed text | Human-readable log (read by `get_log_contents`): warn and above, or everything when debug logging is on. Rotated at 10MB at runtime |
 | `app.log.1` / `app.dev.log.1` | Pretty-printed text | Previous rotated app log |
 | `events.jsonl` / `events.dev.jsonl` | JSONL | Structured events, rotated at 5MB at runtime |
 | `events.jsonl.1` / `events.dev.jsonl.1` | JSONL | Most recent rotated JSONL file |
