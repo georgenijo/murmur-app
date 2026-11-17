@@ -132,3 +132,190 @@ impl ImportedAudioHost for TauriImportHost {
         ))
     }
 }
+
+// ------------------------------------------------------------ the effects
+
+use crate::dictation_context::DictationContextSnapshot as ContextSnapshot;
+use crate::dictation_executor::executor::{
+    Executor, PhaseCtx, PhaseReport, PortFailure, PortResult, Ports,
+};
+use crate::state::DictationState;
+use murmur_dictation_core::decision::Decision;
+use murmur_dictation_core::effects::{Effect, EventKind, Placement};
+use murmur_dictation_core::ids::RecordingId;
+use std::cell::{Cell, RefCell};
+
+/// Wrap a decision in an executor. The 301 decision has no awaited effect and the
+/// crate tests validate every row, so a failure here is a programming error.
+pub(super) fn executor<'a>(ports: &'a dyn Ports, decision: Decision) -> Executor<'a> {
+    Executor::new(ports, decision, false)
+        .expect("a process_audio decision is structurally valid (crate row tests)")
+}
+
+/// Run a (pure) decide function under the re-entrancy guard (C4.2).
+pub(super) fn decide(decide: impl FnOnce() -> Decision) -> Decision {
+    crate::dictation_executor::executor::decide_guarded(decide)
+}
+
+/// A decision made outside any core span is never `Invalid`.
+pub(super) fn expect_valid(decision: &Decision) {
+    if let murmur_dictation_core::decision::Verdict::Invalid(kind) = &decision.verdict {
+        unreachable!("a process_audio decision outside any core span was refused: {kind:?}");
+    }
+}
+
+/// Run one placement; the shell runs the phases in order outside any core span,
+/// so a refused or out-of-order run cannot happen and is never ignored.
+pub(super) fn run_phase(
+    executor: &mut Executor<'_>,
+    phase: Placement,
+    dictation: Option<&mut DictationState>,
+    recording_id: u64,
+) {
+    let mut ctx = PhaseCtx {
+        dictation,
+        recording_id,
+    };
+    if let PhaseReport::Invalid(kind) = executor.run(phase, &mut ctx) {
+        unreachable!(
+            "process_audio's {} phase was refused: {kind:?}",
+            phase.label()
+        );
+    }
+}
+
+/// Keep `IN_CORE` set around a synchronous host call that can emit inline (a
+/// resolver or helper outside the executor): a listener it invokes that re-enters
+/// the core is refused instead of asking for a lock the caller may hold. The shell
+/// is outside any core span here (it waited with `until_outside_core`); if it were
+/// not, the flag is already set and stays so.
+pub(super) fn in_core_span<R>(call: impl FnOnce() -> R) -> R {
+    let _entry = crate::dictation_executor::executor::CoreEntry::enter().ok();
+    call()
+}
+
+/// C4.1 step 0 / C4.2: the **first** statement of the command's entry, before any
+/// lock or await. D-S2-3: Tauri's own `State` extraction in IPC dispatch is exempt;
+/// the core never invokes an IPC command.
+pub(super) fn refuse_reentrant() -> Result<(), String> {
+    match crate::dictation_executor::executor::CoreEntry::enter() {
+        Ok(entry) => {
+            drop(entry);
+            Ok(())
+        }
+        Err(kind) => {
+            tracing::error!(
+                target: "pipeline",
+                refusal = ?kind,
+                "re-entrant process_audio refused before any lock"
+            );
+            Err(format!(
+                "The dictation core refused process_audio: {kind:?}"
+            ))
+        }
+    }
+}
+
+/// The ports of R301.5: `AX` (blocking) freezes the delivery target, `KB` and the
+/// two emits run after D and T are released. The recording id is a shell local the
+/// `ID+` effect produced (X4); the shell hands it over before `PostT`.
+pub(super) struct ProcessAudioPorts<'a> {
+    host: &'a dyn ImportedAudioHost,
+    app_state: &'a AppState,
+    recording_id: Cell<u64>,
+    delivery_target: RefCell<Option<crate::frontmost::DeliveryTargetSnapshot>>,
+}
+
+impl<'a> ProcessAudioPorts<'a> {
+    pub(super) fn new(host: &'a dyn ImportedAudioHost, app_state: &'a AppState) -> Self {
+        Self {
+            host,
+            app_state,
+            recording_id: Cell::new(0),
+            delivery_target: RefCell::new(None),
+        }
+    }
+
+    /// The id `ID+` allocated, for the `dictation-generation-started` payload.
+    pub(super) fn bind_recording_id(&self, recording_id: u64) {
+        self.recording_id.set(recording_id);
+    }
+
+    /// What `AX` froze at the accepted transition.
+    pub(super) fn take_delivery_target(&self) -> Option<crate::frontmost::DeliveryTargetSnapshot> {
+        self.delivery_target.borrow_mut().take()
+    }
+}
+
+impl Ports for ProcessAudioPorts<'_> {
+    fn app_state(&self) -> &AppState {
+        self.app_state
+    }
+
+    fn speculative_flowing(&self) -> bool {
+        false
+    }
+
+    fn context_snapshot(&self, _id: RecordingId) -> Option<Arc<ContextSnapshot>> {
+        None
+    }
+
+    fn emit(&self, effect: &Effect) -> PortResult {
+        match effect {
+            Effect::EmitEvent(EventKind::GenStarted) => self
+                .host
+                .emit_json(
+                    "dictation-generation-started",
+                    serde_json::json!({ "recordingId": self.recording_id.get() }),
+                )
+                .map_err(|_| PortFailure),
+            Effect::EmitStatus { status, .. } => self
+                .host
+                .emit_json(
+                    "recording-status-changed",
+                    serde_json::json!(status.as_str()),
+                )
+                .map_err(|_| PortFailure),
+            _ => Err(PortFailure),
+        }
+    }
+
+    fn trace(&self, _effect: &Effect) -> PortResult {
+        Err(PortFailure)
+    }
+
+    fn terminal(&self, _effect: &Effect) -> PortResult {
+        // `process_audio` never emits a terminal (A0 C2).
+        Err(PortFailure)
+    }
+
+    fn perf(&self, _effect: &Effect) -> PortResult {
+        Err(PortFailure)
+    }
+
+    fn keyboard(&self, effect: &Effect) -> PortResult {
+        let Effect::KeyboardProcessing(processing) = effect else {
+            return Err(PortFailure);
+        };
+        self.host.set_processing(*processing);
+        Ok(())
+    }
+
+    fn claims(&self, _effect: &Effect) -> PortResult {
+        Err(PortFailure)
+    }
+
+    fn blocking(&self, effect: &Effect) -> PortResult {
+        let Effect::AxSnapshot(_) = effect else {
+            return Err(PortFailure);
+        };
+        // Freeze the delivery target at the accepted transition, under the same
+        // lock that commits Processing.
+        *self.delivery_target.borrow_mut() = Some(self.host.capture_delivery_target_snapshot());
+        Ok(())
+    }
+
+    fn detached(&self, _effect: &Effect) -> PortResult {
+        Err(PortFailure)
+    }
+}

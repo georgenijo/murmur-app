@@ -739,6 +739,9 @@ pub(crate) fn emit_dictation_state_changed(
 /// Mutate the live dictation state and publish its bounded, content-free
 /// transition evidence as one operation. Keep production status writes on this
 /// seam so early returns cannot silently create gaps in the SLO timeline.
+/// Production writes go through the executor's `ST` (Stage 2a); this is the
+/// pre-extraction oracle the tests compare against.
+#[cfg(test)]
 fn transition_dictation_status(
     recording_id: u64,
     dictation: &mut crate::state::DictationState,
@@ -1220,15 +1223,26 @@ impl<'a> IdleGuard<'a> {
     }
 
     /// The legacy `process_audio` guard: a parse failure finishes it.
-    fn for_legacy_parse(app_state: &'a AppState, recording_id: u64) -> Self {
+    /// It holds the import's history entries (R301.5) until the pipeline's own
+    /// guard takes them over ([`Self::take_owner`]).
+    fn for_legacy_parse(
+        app_state: &'a AppState,
+        recording_id: u64,
+        owner: Option<PipelineOwner>,
+    ) -> Self {
         use murmur_dictation_core::inputs::GuardOrigin;
         Self::with_origins(
             app_state,
             recording_id,
             GuardOrigin::LegacyParse,
             GuardOrigin::Dropped,
-            None,
+            owner,
         )
+    }
+
+    /// Hand the history entries to the pipeline's guard.
+    fn take_owner(&mut self) -> Option<PipelineOwner> {
+        self.owner.take()
     }
 
     fn disarm(&mut self) {
@@ -1292,7 +1306,10 @@ impl<'a> IdleGuard<'a> {
         use murmur_dictation_core::decision::{Decision, RowId};
         use murmur_dictation_core::effects::Placement;
         use murmur_dictation_core::ids::RecordingId;
-        use murmur_dictation_core::inputs::GuardFinishInput;
+        use murmur_dictation_core::inputs::{
+            GuardFinishInput, GuardOrigin, ProcessAudioFinishInput, ProcessAudioFinishKind,
+        };
+        use murmur_dictation_core::process_audio as core_process_audio;
         use murmur_dictation_core::stop as core_stop;
 
         // Test builds: a point where a test observes locks (T) or fails a finish.
@@ -1327,8 +1344,24 @@ impl<'a> IdleGuard<'a> {
         // status write.
         let mut dictation = app_state.dictation.lock_or_recover();
         let view = FieldAdapter::project_lifecycle_view(app_state, &dictation);
-        let decide =
-            || stop_ports::decide(|| core_stop::decide_guard_finish(&view, input, core_now()));
+        // R302.1: the legacy parse failure is exactly the 204a `LegacyParse` rows,
+        // decided by site 302; every other origin is 204a.
+        let decide = || {
+            stop_ports::decide(|| match origin {
+                GuardOrigin::LegacyParse => core_process_audio::decide_process_audio_finish(
+                    &view,
+                    ProcessAudioFinishInput {
+                        rid: input.rid,
+                        kind: ProcessAudioFinishKind::ParseFailed,
+                        closure_emit: input.closure_emit,
+                    },
+                    core_now(),
+                ),
+                GuardOrigin::StopCapture | GuardOrigin::PipelineExit | GuardOrigin::Dropped => {
+                    core_stop::decide_guard_finish(&view, input, core_now())
+                }
+            })
+        };
         let decision = match owner.as_mut() {
             // `validate`, decide whatever the status, `ret_if_matches` (H1).
             Some(owner) => owner.op.consume(|_status| decide()),
@@ -1543,7 +1576,10 @@ fn run_pipeline_idle_emit(
     use crate::dictation_executor::FieldAdapter;
     use murmur_dictation_core::effects::Placement;
     use murmur_dictation_core::ids::RecordingId;
-    use murmur_dictation_core::inputs::PipelineIdleEmitInput;
+    use murmur_dictation_core::inputs::{
+        PipelineIdleEmitInput, PostKind, ProcessAudioFinishInput, ProcessAudioFinishKind,
+    };
+    use murmur_dictation_core::process_audio as core_process_audio;
     use murmur_dictation_core::stop as core_stop;
 
     // Test builds: a barrier between the pipeline guard's finish (204a) and this
@@ -1568,8 +1604,20 @@ fn run_pipeline_idle_emit(
         interrupted: None,
         char_count: 0,
     };
-    let decision =
-        stop_ports::decide(|| core_stop::decide_pipeline_idle_emit(&view, input, core_now()));
+    // R302.2: the legacy tail is exactly the 204b `LegacyPost` rows, decided by
+    // site 302; the stop command's tail is 204b.
+    let decision = stop_ports::decide(|| match kind {
+        PostKind::StopPost => core_stop::decide_pipeline_idle_emit(&view, input, core_now()),
+        PostKind::LegacyPost => core_process_audio::decide_process_audio_finish(
+            &view,
+            ProcessAudioFinishInput {
+                rid: input.rid,
+                kind: ProcessAudioFinishKind::PipelineDone,
+                closure_emit: true,
+            },
+            core_now(),
+        ),
+    });
     stop_ports::expect_valid(&decision);
     stop_ports::run_phase(
         &mut stop_ports::executor(&ports, decision),
@@ -4211,6 +4259,19 @@ pub async fn init_dictation(_state: tauri::State<'_, State>) -> Result<serde_jso
     }))
 }
 
+/// The `Err` of a refused `process_audio` decision (R301.1-.4): its literal text.
+fn refusal_reply(
+    decision: &murmur_dictation_core::decision::Decision,
+) -> Result<serde_json::Value, String> {
+    use murmur_dictation_core::replies::Reply;
+    match &decision.reply {
+        Some(Reply::Err(text)) => Err(text
+            .message()
+            .expect("a process_audio refusal carries its literal text")),
+        other => unreachable!("a refused process_audio decision replies Err(text), got {other:?}"),
+    }
+}
+
 #[tauri::command]
 pub async fn process_audio(
     app_handle: tauri::AppHandle,
@@ -4228,52 +4289,119 @@ async fn process_audio_inner(
     state: &State,
     audio_data: &str,
 ) -> Result<serde_json::Value, String> {
-    let transition = host.transition(state).await?;
-    if state.app_state.meeting_blocks_asr() {
-        return Err("Cannot process audio while a meeting transcript is active.".to_string());
-    }
-    let (rid, delivery_target, smart_enabled) = {
-        let mut dictation = state.app_state.dictation.lock_or_recover();
+    use crate::dictation_executor::executor::core_now;
+    use crate::dictation_executor::FieldAdapter;
+    use murmur_dictation_core::admission::Occupancy;
+    use murmur_dictation_core::decision::{ObsKind, Refusal, Verdict};
+    use murmur_dictation_core::effects::Placement;
+    use murmur_dictation_core::inputs::ProcessAudioStartInput;
+    use murmur_dictation_core::process_audio as core_pa;
+    use process_audio_ports::{
+        decide, executor, expect_valid, in_core_span, refuse_reentrant, run_phase,
+        ProcessAudioPorts,
+    };
+
+    // C4.1 step 0 / C4.2: the first statement, before the transition await, T, D or
+    // `core_history`.
+    refuse_reentrant()?;
+    let held_transition = host.transition(state).await?;
+    let app_state = &state.app_state;
+    // Site 301 (R301.1-R301.5). The section holds no await. Finishes queued
+    // re-entrantly while it held D run when it ends, after D and T are released
+    // (D-S2-4); declared first, so it drops last.
+    let (rid, delivery_target, smart_enabled, pipeline_owner) = {
+        let _drain = DrainDeferredFinishes(app_state);
+        let transition = held_transition;
+        let now = core_now();
+        let mut start_input = ProcessAudioStartInput {
+            occupancy: Occupancy {
+                meeting_active: app_state.meeting_active.load(Ordering::SeqCst),
+                meeting_inference_active: app_state.meeting_inference_active.load(Ordering::SeqCst),
+                ..Occupancy::default()
+            },
+            benchmark_running: None,
+        };
+        // R301.1 reads no D: a meeting refuses before the dictation lock.
+        if let Some(refused) = core_pa::decide_process_audio_start_pre(&start_input, now) {
+            return refusal_reply(&refused);
+        }
+        let mut dictation = app_state.dictation.lock_or_recover();
         // Same mutual exclusion as start_native_recording: this legacy base64
         // path also runs the shared Whisper backend, so refuse while a file
         // transcription holds the slot. Checked under the dictation lock.
-        if state.app_state.file_transcribing.load(Ordering::SeqCst) {
-            tracing::warn!(target: "pipeline", "process_audio: blocked — file transcription in progress");
-            return Err(
-                "Cannot process audio while a file transcription is in progress.".to_string(),
-            );
+        start_input.occupancy.file_transcribing =
+            app_state.file_transcribing.load(Ordering::SeqCst);
+        let view = FieldAdapter::project_lifecycle_view(app_state, &dictation);
+        let mut decision =
+            decide(|| core_pa::decide_process_audio_start(&view, start_input.clone(), now));
+        // D-S1-2: the coordinator mutex is read only when the decision asks, after
+        // the file check passed, in the same D hold.
+        if decision.verdict == Verdict::NeedObservation(ObsKind::BenchmarkRunning) {
+            start_input.benchmark_running = Some(state.benchmark.is_running());
+            decision = decide(|| core_pa::decide_process_audio_start(&view, start_input, now));
         }
-        if state.benchmark.is_running() {
-            tracing::warn!(target: "pipeline", "process_audio: blocked — benchmark in progress");
-            return Err("Cannot process audio while a benchmark is in progress.".to_string());
+        expect_valid(&decision);
+        match &decision.verdict {
+            Verdict::Applied => {}
+            Verdict::Refused(Refusal::ProcessAudio(kind)) => {
+                use murmur_dictation_core::replies::ProcessAudioRefusal;
+                match kind {
+                    ProcessAudioRefusal::FileTranscription => tracing::warn!(
+                        target: "pipeline",
+                        "process_audio: blocked — file transcription in progress"
+                    ),
+                    ProcessAudioRefusal::Benchmark => tracing::warn!(
+                        target: "pipeline",
+                        "process_audio: blocked — benchmark in progress"
+                    ),
+                    ProcessAudioRefusal::MeetingActive | ProcessAudioRefusal::LiveDictation => {}
+                }
+                return refusal_reply(&decision);
+            }
+            Verdict::Refused(other) => {
+                unreachable!("process_audio never refuses with {other:?}")
+            }
+            Verdict::Continue
+            | Verdict::Stale(_)
+            | Verdict::Invalid(_)
+            | Verdict::NeedObservation(_) => {
+                unreachable!("process_audio's start decided {:?}", decision.verdict)
+            }
         }
-
-        if dictation.status != DictationStatus::Idle {
-            return Err("Cannot process audio while live dictation is active.".to_string());
-        }
-        let recording_id =
-            crate::dictation_executor::FieldAdapter::alloc_id(&state.app_state, &mut dictation);
-        transition_dictation_status(recording_id, &mut dictation, DictationStatus::Processing);
-        let delivery_target = host.capture_delivery_target_snapshot();
-        (
-            recording_id,
-            delivery_target,
-            smart_destination_eligible(&dictation),
-        )
+        // R301.5: `H1 reg op_pl` and `H2 reg rid` right after the decision, before
+        // any effect (C4.3). The pipeline's guard takes the entries over; until
+        // then this owner retires both on every exit (a stale return, a parse
+        // failure, a panic).
+        let pipeline_owner = decision
+            .continuation
+            .map(|spec| PipelineOwner::register(&app_state.core_history, spec));
+        let ports = ProcessAudioPorts::new(host, app_state);
+        let mut exec = executor(&ports, decision);
+        // `In`: `ID+`, `ST→Processing`, `AX(s)`, in that order, under D and T.
+        run_phase(&mut exec, Placement::In, Some(&mut dictation), 0);
+        let recording_id = exec
+            .bound_recording_id()
+            .expect("R301.5's ID+ allocated the recording id");
+        ports.bind_recording_id(recording_id);
+        let delivery_target = ports
+            .take_delivery_target()
+            .expect("R301.5's AX froze the delivery target");
+        let smart_enabled = smart_destination_eligible(&dictation);
+        drop(dictation);
+        drop(transition);
+        // `PT`: `KB(true)`, `EV(GenStarted)`, `EM(processing)`, with D and T
+        // released and `IN_CORE` set around each port call.
+        run_phase(&mut exec, Placement::PostT, None, recording_id);
+        (recording_id, delivery_target, smart_enabled, pipeline_owner)
     };
-    drop(transition);
-    host.set_processing(true);
-    let _ = host.emit_json(
-        "dictation-generation-started",
-        serde_json::json!({ "recordingId": rid }),
-    );
-    let _ = host.emit_json("recording-status-changed", serde_json::json!("processing"));
     // Legacy process_audio has a single API acceptance boundary: audio has
     // already been recorded by its caller. Freeze its destination here, when
     // processing is accepted; the native recording path freezes at start.
     let smart_destination = host
         .capture_smart_destination(&delivery_target, smart_enabled)
         .await;
+    // D-S2-3: the next D section is entered only outside a core span.
+    until_outside_core().await;
     let capture_is_current = {
         let dictation = state.app_state.dictation.lock_or_recover();
         recording_capture_is_current(
@@ -4298,7 +4426,11 @@ async fn process_audio_inner(
     let destination = select_recording_destination(&delivery_target, smart_destination);
     let context = resolve_recording_context(&state.app_state, destination);
     if smart_enabled {
-        host.emit_smart_destination(&state.app_state, rid, &context, &delivery_target);
+        // A synchronous host call that can emit inline: `IN_CORE` stays set
+        // around it.
+        in_core_span(|| {
+            host.emit_smart_destination(&state.app_state, rid, &context, &delivery_target)
+        });
     }
     if let Err(error) = state.performance.begin_dictation_diagnosed(
         rid,
@@ -4312,7 +4444,9 @@ async fn process_audio_inner(
     );
 
     // Guard resets status to Idle if decode/parse fails before reaching the pipeline
-    let mut guard = IdleGuard::for_legacy_parse(&state.app_state, rid);
+    // It owns the pipeline's history entries (R302.1: a parse failure retires
+    // both) until the pipeline's own guard takes them over.
+    let mut guard = IdleGuard::for_legacy_parse(&state.app_state, rid, pipeline_owner);
 
     // Phase: Audio parse (base64 decode + WAV to samples)
     let t_parse = std::time::Instant::now();
@@ -4331,8 +4465,10 @@ async fn process_audio_inner(
     ));
     performance_guard.enter(PerformanceStageV1::Vad);
 
-    // Pipeline has its own guard, so disarm this one
+    // Pipeline has its own guard, so disarm this one and hand it the history
+    // entries.
     guard.disarm();
+    let pipeline_op = guard.take_owner();
 
     let t_total = std::time::Instant::now();
     let pipeline_result = host
@@ -4344,7 +4480,10 @@ async fn process_audio_inner(
             Arc::clone(&context),
             // Imported audio has no live stop transition: its snapshot is already
             // taken at the accepted Idle -> Processing transition.
-            PipelineStopContext::default(),
+            PipelineStopContext {
+                pipeline_op,
+                ..PipelineStopContext::default()
+            },
         )
         .await;
     // Only emit idle if this recording wasn't cancelled/superseded.

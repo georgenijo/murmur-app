@@ -48,6 +48,8 @@ struct FakeHost {
     /// parse guard exists (a newer start landing in that window).
     after_accept: StdMutex<Option<Hook>>,
     panic_in_capture: StdMutex<bool>,
+    /// Runs inline in the `dictation-generation-started` emit (a listener).
+    on_generation_started: StdMutex<Option<Box<dyn FnOnce(&FakeHost, &State) + Send>>>,
     history: crate::core_history::CoreHistoryLock,
     state: std::sync::Weak<State>,
 }
@@ -61,6 +63,7 @@ impl FakeHost {
             during_capture: StdMutex::new(None),
             after_accept: StdMutex::new(None),
             panic_in_capture: StdMutex::new(false),
+            on_generation_started: StdMutex::new(None),
             history: state.app_state.core_history.clone(),
         }
     }
@@ -91,6 +94,12 @@ impl ImportedAudioHost for FakeHost {
         // the guard's `In` effect, so this line shows what is registered then.
         let (h2, h1) = self.counts();
         self.push(format!("emit {event} {payload} h2={h2} h1={h1}"));
+        if event == "dictation-generation-started" {
+            let listener = locked(&self.on_generation_started).take();
+            if let (Some(listener), Some(state)) = (listener, self.state.upgrade()) {
+                listener(self, &state);
+            }
+        }
         Ok(())
     }
 
@@ -117,7 +126,8 @@ impl ImportedAudioHost for FakeHost {
         _expected: &'a crate::frontmost::DeliveryTargetSnapshot,
         enabled: bool,
     ) -> super::dictation_host::HostFuture<'a, crate::smart_destination::Snapshot> {
-        self.push("capture_destination");
+        let (h2, h1) = self.counts();
+        self.push(format!("capture_destination h2={h2} h1={h1}"));
         Box::pin(async move {
             let hook = locked(&self.during_capture).take();
             if let (Some(hook), Some(state)) = (hook, self.state.upgrade()) {
@@ -141,7 +151,10 @@ impl ImportedAudioHost for FakeHost {
         _context: &DictationContextSnapshot,
         _accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
     ) {
-        self.push(format!("emit_smart_destination {recording_id}"));
+        self.push(format!(
+            "emit_smart_destination {recording_id} in_core={}",
+            crate::dictation_executor::executor::in_core()
+        ));
         let hook = locked(&self.after_accept).take();
         if let (Some(hook), Some(state)) = (hook, self.state.upgrade()) {
             hook(&state.app_state);
@@ -280,6 +293,10 @@ impl Run {
             .recording_id
             .store(id, Ordering::SeqCst);
         self.state.app_state.dictation.lock_or_recover().status = status;
+    }
+
+    fn history(&self) -> (usize, usize) {
+        self.host.counts()
     }
 
     fn emits(&self, event: &str) -> Vec<String> {
@@ -521,5 +538,193 @@ fn a_running_benchmark_refuses() {
             "Cannot process audio while a benchmark is in progress."
         );
         assert_eq!(run.id(), 0);
+    });
+}
+
+// --------------------------------------------------------------- history
+
+fn line_with<'a>(lines: &'a [String], prefix: &str) -> &'a String {
+    lines
+        .iter()
+        .find(|line| line.starts_with(prefix))
+        .unwrap_or_else(|| panic!("no line starts with {prefix:?}: {lines:?}"))
+}
+
+/// R301.5: `H2 reg rid` and `H1 reg op_pl` are registered right after the
+/// decision, before any effect, and are still there while the pipeline runs.
+#[test]
+fn history_is_registered_before_the_effects_and_while_the_pipeline_runs() {
+    run(|run| {
+        assert_eq!(run.history(), (0, 0));
+        run.process(&wav_base64(8_000)).expect("success");
+        let lines = run.host.lines();
+        // Before any effect: the first line is `AX` (an `In` effect), which already
+        // sees both entries.
+        assert_eq!(line_with(&lines, "ax"), "ax", "{lines:?}");
+        assert!(
+            line_with(&lines, "emit recording-status-changed \"processing\"")
+                .ends_with("h2=1 h1=1"),
+            "{lines:?}"
+        );
+        assert!(line_with(&lines, "capture_destination").ends_with("h2=1 h1=1"));
+        assert!(line_with(&lines, "pipeline 1").ends_with("h2=1 h1=1"));
+        // Success: the pipeline guard (204a `PipelineExit`) retired both.
+        assert_eq!(run.history(), (0, 0));
+    });
+}
+
+/// R302.1: a parse failure retires `H2` and `H1` after the decision and **before**
+/// its `In` effects (the idle emit sees neither entry).
+#[test]
+fn history_is_retired_before_the_in_effects_of_a_parse_failure() {
+    for audio in ["not base64 !!".to_string(), {
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"junk")
+    }] {
+        run(|run| {
+            run.process(&audio).expect_err("parse failure");
+            let lines = run.host.lines();
+            let idle = lines
+                .iter()
+                .find(|line| line.starts_with("emit recording-status-changed \"idle\""))
+                .expect("the idle emit");
+            assert!(idle.ends_with("h2=0 h1=0"), "retired before In: {idle}");
+            assert_eq!(run.history(), (0, 0));
+            assert!(!lines.iter().any(|l| l.starts_with("pipeline")));
+        });
+    }
+}
+
+/// C3.9: a stale return, a stale parse failure, a stale pipeline exit, a cancel and
+/// a panic each leave neither entry behind.
+#[test]
+fn history_is_retired_on_every_exit() {
+    // stale at the destination capture (cancelled)
+    run(|run| {
+        *locked(&run.host.during_capture) = Some(Box::new(|app_state| {
+            FieldAdapter::cancel_through(app_state, 1);
+        }));
+        run.process(&wav_base64(8_000)).expect("stale reply");
+        assert_eq!(run.history(), (0, 0));
+    });
+    // stale at the destination capture (a newer recording)
+    run(|run| {
+        *locked(&run.host.during_capture) = Some(Box::new(|app_state| {
+            let newer =
+                FieldAdapter::alloc_id(app_state, &mut app_state.dictation.lock_or_recover());
+            FieldAdapter::set_status(
+                newer,
+                &mut app_state.dictation.lock_or_recover(),
+                DictationStatus::Recording,
+            );
+        }));
+        run.process(&wav_base64(8_000)).expect("stale reply");
+        assert_eq!(run.history(), (0, 0));
+    });
+    // a newer recording at the parse failure (R204a.5c): nothing is written, both retire
+    run(|run| {
+        {
+            let mut dictation = run.state.app_state.dictation.lock_or_recover();
+            dictation.smart_destination_enabled = true;
+            dictation.auto_paste = true;
+        }
+        *locked(&run.host.after_accept) = Some(Box::new(|app_state| {
+            let newer =
+                FieldAdapter::alloc_id(app_state, &mut app_state.dictation.lock_or_recover());
+            FieldAdapter::set_status(
+                newer,
+                &mut app_state.dictation.lock_or_recover(),
+                DictationStatus::Recording,
+            );
+        }));
+        run.process("not base64 !!").expect_err("parse failure");
+        assert_eq!(run.history(), (0, 0));
+    });
+    // a newer recording at the pipeline exit
+    run(|run| {
+        *locked(&run.host.pipeline) = Pipeline::NewerRecording;
+        run.process(&wav_base64(8_000)).expect("reply");
+        assert_eq!(run.history(), (0, 0));
+    });
+    // cancelled mid-pipeline
+    run(|run| {
+        *locked(&run.host.pipeline) = Pipeline::Cancelled;
+        run.process(&wav_base64(8_000)).expect("reply");
+        assert_eq!(run.history(), (0, 0));
+    });
+    // a panic in the pipeline
+    run(|run| {
+        *locked(&run.host.pipeline) = Pipeline::Panic;
+        let audio = wav_base64(8_000);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = run.process(&audio);
+        }));
+        assert_eq!(run.history(), (0, 0));
+    });
+    // a panic before the pipeline guard exists (the owner's `Drop` retires)
+    run(|run| {
+        *locked(&run.host.panic_in_capture) = true;
+        let audio = wav_base64(8_000);
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = run.process(&audio);
+        }));
+        assert!(panicked.is_err());
+        assert_eq!(run.history(), (0, 0));
+    });
+}
+
+/// A refused import registers nothing and burns no id.
+#[test]
+fn history_is_untouched_by_a_refusal() {
+    run(|run| {
+        run.set_status(DictationStatus::Processing, 3);
+        run.process(&wav_base64(8_000)).expect_err("refused");
+        assert_eq!(run.history(), (0, 0));
+        assert_eq!(run.id(), 3);
+    });
+}
+
+/// D-S2-2: the entry's first statement refuses a nested call before the transition
+/// await, T, D or `core_history`. A listener of the `PT` emits (D and T released,
+/// `IN_CORE` set around the port call) that calls the command again is refused and
+/// changes nothing; the outer import completes.
+#[test]
+fn a_nested_process_audio_is_refused_before_any_lock() {
+    run(|run| {
+        let nested = Arc::new(StdMutex::new(Vec::<String>::new()));
+        let seen = Arc::clone(&nested);
+        let audio = wav_base64(8_000);
+        *locked(&run.host.on_generation_started) = Some(Box::new(move |host, state| {
+            let reply = poll_to_end(process_audio_inner(host, state, "irrelevant"));
+            locked(&seen).push(format!("{reply:?}"));
+        }));
+        let outer = run.process(&audio).expect("the outer import completes");
+        assert_eq!(outer["type"], "transcription");
+        let nested = locked(&nested).clone();
+        assert_eq!(nested.len(), 1);
+        assert!(
+            nested[0].contains("refused process_audio") && nested[0].contains("Reentrant"),
+            "{nested:?}"
+        );
+        assert_eq!(run.id(), 1, "the refused entry burned no id");
+        assert_eq!(run.history(), (0, 0));
+    });
+}
+
+/// (a) from the lead: the synchronous Smart Destination emit runs with `IN_CORE` set.
+#[test]
+fn the_smart_destination_emit_keeps_in_core_set() {
+    run(|run| {
+        {
+            let mut dictation = run.state.app_state.dictation.lock_or_recover();
+            dictation.smart_destination_enabled = true;
+            dictation.auto_paste = true;
+        }
+        run.process(&wav_base64(8_000)).expect("success");
+        let lines = run.host.lines();
+        assert_eq!(
+            line_with(&lines, "emit_smart_destination"),
+            "emit_smart_destination 1 in_core=true"
+        );
+        assert!(!crate::dictation_executor::executor::in_core());
     });
 }
