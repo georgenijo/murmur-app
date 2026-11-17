@@ -24,6 +24,7 @@ supervisor.start_ack 1 Ok
 smart_destination.capture enabled=false
 refresh_expired_ide_context
 performance.production_context 1
+~ context 1 installed
 publish_recording_ready 1
 supervisor.is_dictation_recording 1 -> true
 emit recording-status-changed "recording"
@@ -45,6 +46,7 @@ supervisor.stop 1 Other
 supervisor.set_phase Stopping
 supervisor.notify 1 Idle
 ~ processing false
+~ context 1 cleared
 ~ terminal 1 PipelineFailure/RuntimeFailure
 ~ perf-claim 1 {"status":"failed","stage":"captureFinalization","errorCode":"audioCaptureFailed"}
 emit recording-status-changed "idle"
@@ -52,3 +54,4 @@ emit recording-status-changed "idle"
 ~ status Processing -> Idle
 performance.complete 1 {"status":"failed","stage":"captureFinalization","errorCode":"audioCaptureFailed"}
 reply stop Err stop timed out
+= final status=Idle processing=false context=none cancelled_through=0

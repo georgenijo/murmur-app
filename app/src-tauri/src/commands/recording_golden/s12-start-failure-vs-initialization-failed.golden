@@ -27,6 +27,7 @@ supervisor.notify 1 InitializationFailed(backend_error)
 ~ perf-claim 1 {"status":"failed","stage":"captureFinalization","errorCode":"audioCaptureFailed"}
 emit recording-initialization-failed {"actionCode":"retry","error":"scripted initialization failure","errorKind":"backend_error","recordingId":1,"statusCode":"microphone_initialization_failed"}
 supervisor.notify 1 Idle
+= final status=Idle processing=false context=none cancelled_through=0
 
 === 12b supervisor failure terminal before the ack ===
 mic_transition
@@ -51,6 +52,7 @@ supervisor.start_ack 1 Err(scripted start failure)
 performance.begin_abort 1
 emit recording-status-changed "idle"
 reply start Err scripted start failure
+= final status=Idle processing=false context=none cancelled_through=0
 
 === 12c 2 s start timeout with a supervisor Cancel{User} ===
 mic_transition
@@ -71,8 +73,9 @@ emit recording-status-changed "recovering"
 emit audio-recovery-started {"reason":"user","recordingId":1}
 ~ terminal 1 UserCancelledStarting/CancelledStarting
 emit recording-cancelled {"recordingId":1}
-supervisor.start_ack 1 Err(scripted 2 s start timeout)
+supervisor.start_ack 1 Err(Audio lifecycle supervisor is unavailable)
 performance.begin_abort 1
 emit recording-status-changed "idle"
 ~ status Recovering -> Idle
-reply start Err scripted 2 s start timeout
+reply start Err Audio lifecycle supervisor is unavailable
+= final status=Idle processing=false context=none cancelled_through=0

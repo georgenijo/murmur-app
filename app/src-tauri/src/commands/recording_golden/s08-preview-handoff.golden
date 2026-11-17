@@ -25,6 +25,7 @@ supervisor.start_ack 1 Ok
 smart_destination.capture enabled=false
 refresh_expired_ide_context
 performance.production_context 1
+~ context 1 installed
 publish_recording_ready 1
 supervisor.is_dictation_recording 1 -> true
 emit recording-status-changed "recording"
@@ -34,3 +35,4 @@ publish_recording_ready 1 -> true
 spawn_model_preparation 1
 performance.spawn_begin 1
 reply start Ok {"recordingId":1,"state":"starting","type":"recording_starting"}
+= final status=Recording processing=false context=1 cancelled_through=0

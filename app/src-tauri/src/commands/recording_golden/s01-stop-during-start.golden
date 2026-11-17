@@ -29,6 +29,7 @@ gate smart_capture opened
 gate smart_capture pass
 refresh_expired_ide_context
 performance.production_context 1
+~ context 1 installed
 publish_recording_ready 1
 supervisor.is_dictation_recording 1 -> true
 emit recording-status-changed "recording"
@@ -48,14 +49,22 @@ keyboard.set_processing true
 emit recording-status-changed "processing"
 supervisor.stop 1 Other
 supervisor.set_phase Stopping
-supervisor.set_phase Idle
+supervisor.sealed_delivery 1 samples=0
 performance.production_sample_count 1 0
 ~ processing false
+~ context 1 cleared
 ~ terminal 1 NoSpeech/EmptyAudio
 emit recording-status-changed "idle"
 ~ status Processing -> Idle
 ~ perf-claim 1 {"status":"noSpeech"}
 reply stop Ok {"state":"idle","text":"","type":"transcription"}
+# end of run: the supervisor finishes the sealed stop
+supervisor.clear_owner 1
+supervisor.set_phase Idle
+supervisor.notify 1 CleanupFinished
+emit recording-cleanup-finished {"recordingId":1}
+emit recording-status-changed "idle"
+= final status=Idle processing=false context=none cancelled_through=0
 
 === 1b stop finds the start still Starting ===
 mic_transition
@@ -76,6 +85,7 @@ supervisor.start_ack 1 Ok
 smart_destination.capture enabled=false
 refresh_expired_ide_context
 performance.production_context 1
+~ context 1 installed
 publish_recording_ready 1
 supervisor.is_dictation_recording 1 -> false
 publish_recording_ready 1 -> false
@@ -88,6 +98,7 @@ supervisor.cancel 1 user
 supervisor.set_phase Recovering
 supervisor.notify 1 Recovering(user)
 ~ status Starting -> Recovering
+~ context 1 cleared
 emit recording-status-changed "recovering"
 emit audio-recovery-started {"reason":"user","recordingId":1}
 ~ terminal 1 UserCancelledStarting/CancelledStarting
@@ -101,8 +112,11 @@ emit recording-status-changed "idle"
 ~ status Recovering -> Idle
 supervisor.clear_owner 1
 supervisor.set_phase Idle
+= final status=Idle processing=false context=none cancelled_through=0
 
 === 1c stop with a stale expected id ===
+~ context 2 installed
 supervisor.take_interrupted 1 -> none
 ~ terminal 1 Superseded/StaleOwner
 reply stop(expected=1) Ok {"state":"idle","type":"recording_superseded"}
+= final status=Recording processing=false context=2 cancelled_through=0

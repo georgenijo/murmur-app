@@ -24,6 +24,7 @@ emit recording-status-changed "idle"
 ~ terminal 1 CaptureInitFailure/RuntimeFailure
 reply start Err scripted start failure
 supervisor.notify 1 Idle
+= final status=Idle processing=false context=none cancelled_through=0
 
 === 11b after a stop finished ===
 mic_transition
@@ -45,6 +46,7 @@ supervisor.start_ack 1 Ok
 smart_destination.capture enabled=false
 refresh_expired_ide_context
 performance.production_context 1
+~ context 1 installed
 publish_recording_ready 1
 supervisor.is_dictation_recording 1 -> true
 emit recording-status-changed "recording"
@@ -64,16 +66,25 @@ keyboard.set_processing true
 emit recording-status-changed "processing"
 supervisor.stop 1 Other
 supervisor.set_phase Stopping
-supervisor.set_phase Idle
+supervisor.sealed_delivery 1 samples=0
 performance.production_sample_count 1 0
 ~ processing false
+~ context 1 cleared
 ~ terminal 1 NoSpeech/EmptyAudio
 emit recording-status-changed "idle"
 ~ status Processing -> Idle
 ~ perf-claim 1 {"status":"noSpeech"}
 reply stop Ok {"state":"idle","text":"","type":"transcription"}
 supervisor.notify 1 Idle
+# end of run: the supervisor finishes the sealed stop
+supervisor.clear_owner 1
+supervisor.set_phase Idle
+supervisor.notify 1 CleanupFinished
+emit recording-cleanup-finished {"recordingId":1}
+emit recording-status-changed "idle"
+= final status=Idle processing=false context=none cancelled_through=0
 
 === 11c with no earlier terminal ===
 supervisor.notify 1 Idle
 ~ terminal 1 Superseded/StaleOwner
+= final status=Idle processing=false context=none cancelled_through=0

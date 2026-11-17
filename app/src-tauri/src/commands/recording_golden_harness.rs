@@ -39,6 +39,7 @@ use super::dictation_host::{
 };
 use super::tests::test_state;
 use super::*;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::pin::Pin;
@@ -56,6 +57,20 @@ static GOLDEN_LOCK: StdMutex<()> = StdMutex::new(());
 
 /// The ids a scenario may use. Global stores are cleared for all of them.
 const MAX_ID: u64 = 16;
+
+thread_local! {
+    /// The one hook the bridge's S12 tail runs (see [`World::on_s12_tail`]).
+    static S12_TAIL: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+}
+
+/// Called by `handle_audio_lifecycle_and_ready_tasks` (test builds only) after
+/// S12 released the dictation lock and before its unscoped keyboard/emit tail.
+pub(super) fn run_s12_tail_hook() {
+    let hook = S12_TAIL.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
 
 /// Every event the lifecycle bridge emits through the app handle.
 const BRIDGE_EVENTS: [&str; 8] = [
@@ -176,11 +191,6 @@ pub(super) enum ColdStart {
     HoldBeforeReady,
 }
 
-pub(super) enum PipelineScript {
-    Success,
-    Cancelled,
-}
-
 pub(super) struct Knobs {
     pub(super) app_disabled: bool,
     pub(super) cold_start: ColdStart,
@@ -194,7 +204,10 @@ pub(super) struct Knobs {
     /// Samples a supervisor stop returns (`Err` is a stop timeout).
     pub(super) stop_result: Result<usize, &'static str>,
     pub(super) cancel_result: Result<bool, &'static str>,
-    pub(super) pipeline: PipelineScript,
+    /// The pipeline's delivery step takes the ownership fence D through the
+    /// production `with_current_delivery_owner` and holds it until the
+    /// scenario calls [`World::finish_delivery`] (C9.4 scenario 2).
+    pub(super) hold_delivery: bool,
 }
 
 impl Default for Knobs {
@@ -207,7 +220,7 @@ impl Default for Knobs {
             before_ack: Vec::new(),
             stop_result: Ok(0),
             cancel_result: Ok(true),
-            pipeline: PipelineScript::Success,
+            hold_delivery: false,
         }
     }
 }
@@ -257,6 +270,10 @@ struct Supervisor {
     held_owner_clear: Option<u64>,
     /// A cancelled attempt's own `Idle`, held until the scenario releases it.
     held_cancel_finish: Option<u64>,
+    /// A sealed stop's cleanup tail (`audio_lifecycle.rs:2280-2290`): the
+    /// samples left the supervisor, the owner stays `Dictation(id)` in
+    /// `Stopping` until `finish_attempt` clears it and sends `CleanupFinished`.
+    sealed_pending: Option<u64>,
 }
 
 impl Supervisor {
@@ -270,6 +287,10 @@ struct Seen {
     status: Option<DictationStatus>,
     id: u64,
     processing: bool,
+    /// The id of the installed recording context (M4), 0 for none.
+    context: u64,
+    /// `AppState::cancelled_id` (M3).
+    cancelled_through: u64,
     terminals: BTreeMap<u64, String>,
     perf: BTreeMap<u64, String>,
 }
@@ -285,6 +306,13 @@ pub(super) struct World {
     knobs: StdMutex<Knobs>,
     supervisor: StdMutex<Supervisor>,
     auto_stops: StdMutex<Vec<u64>>,
+    delivery: StdMutex<Option<Delivery>>,
+}
+
+/// A delivery operation parked inside the production ownership fence.
+struct Delivery {
+    release: std::sync::mpsc::Sender<()>,
+    thread: std::thread::JoinHandle<Option<()>>,
 }
 
 fn locked<T>(mutex: &StdMutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -304,6 +332,7 @@ impl World {
             knobs: StdMutex::new(Knobs::default()),
             supervisor: StdMutex::new(Supervisor::default()),
             auto_stops: StdMutex::new(Vec::new()),
+            delivery: StdMutex::new(None),
         })
     }
 
@@ -365,6 +394,22 @@ impl World {
             lines.push(format!("~ processing {processing}"));
             seen.processing = processing;
         }
+        let context = (1..=MAX_ID)
+            .find(|recording_id| state.app_state.active_context(*recording_id).is_some())
+            .unwrap_or(0);
+        if context != seen.context {
+            lines.push(if context == 0 {
+                format!("~ context {} cleared", seen.context)
+            } else {
+                format!("~ context {context} installed")
+            });
+            seen.context = context;
+        }
+        let cancelled_through = state.app_state.cancelled_id.load(Ordering::SeqCst);
+        if cancelled_through != seen.cancelled_through {
+            lines.push(format!("~ cancelled_through {cancelled_through}"));
+            seen.cancelled_through = cancelled_through;
+        }
         for recording_id in 1..=id {
             let terminal = state
                 .app_state
@@ -392,7 +437,35 @@ impl World {
     }
 
     fn finish(&self) -> Vec<String> {
+        // A sealed stop's cleanup tail always completes: a scenario that does
+        // not need it mid-run ends with it, so every golden shows the real tail.
+        let sealed = locked(&self.supervisor).sealed_pending;
+        if let Some(recording_id) = sealed {
+            self.note("end of run: the supervisor finishes the sealed stop");
+            self.finish_sealed_stop(recording_id);
+        }
+        assert!(
+            S12_TAIL.with(|slot| slot.borrow_mut().take()).is_none(),
+            "the S12 tail hook never fired"
+        );
+        assert!(
+            locked(&self.delivery).is_none(),
+            "a delivery is still holding the ownership fence"
+        );
         self.sample();
+        let state = self.state();
+        let status = state.app_state.dictation.lock_or_recover().status;
+        let context = (1..=MAX_ID)
+            .find(|recording_id| state.app_state.active_context(*recording_id).is_some())
+            .map_or_else(
+                || "none".to_string(),
+                |recording_id| recording_id.to_string(),
+            );
+        locked(&self.log).push(format!(
+            "= final status={status:?} processing={} context={context} cancelled_through={}",
+            keyboard::is_processing(),
+            state.app_state.cancelled_id.load(Ordering::SeqCst)
+        ));
         let leftover: Vec<String> = locked(&self.hooks)
             .iter()
             .filter(|(_, hooks)| !hooks.is_empty())
@@ -432,6 +505,16 @@ impl World {
         if let Some(hook) = hook {
             hook();
         }
+    }
+
+    /// Run `hook` once on the calling thread when the bridge's S12 tail reaches
+    /// the point after it released D and before its keyboard/emit statements
+    /// (`recording.rs`, `run_s12_tail_hook`; compiled into test builds only).
+    pub(super) fn on_s12_tail(&self, hook: impl FnOnce() + 'static) {
+        S12_TAIL.with(|slot| {
+            let previous = slot.borrow_mut().replace(Box::new(hook));
+            assert!(previous.is_none(), "an S12 tail hook is already set");
+        });
     }
 
     pub(super) fn close_gate(&self, label: &str) {
@@ -694,9 +777,114 @@ impl World {
         self.set_phase(Phase::Idle);
     }
 
+    /// A sealed stop's cleanup tail (`finish_attempt`, `audio_lifecycle.rs:
+    /// 2457-2467`): clear the owner, publish `Idle`, then send `CleanupFinished`.
+    /// A scenario runs it mid-run where production's order matters; otherwise
+    /// [`World::finish`] runs it at the end.
+    pub(super) fn finish_sealed_stop(&self, recording_id: u64) {
+        let pending = locked(&self.supervisor).sealed_pending.take();
+        assert_eq!(pending, Some(recording_id), "no sealed stop for this id");
+        self.set_owner(None);
+        self.push(format!("supervisor.clear_owner {recording_id}"));
+        self.set_phase(Phase::Idle);
+        self.notify(recording_id, AudioLifecycleEvent::CleanupFinished);
+    }
+
+    // ---- the delivery fence (C9.4 scenario 2)
+
+    /// The pipeline's delivery step: a thread takes D through the production
+    /// `with_current_delivery_owner` (the helper that makes cancellation atomic
+    /// with the clipboard write and paste) and parks inside it until
+    /// [`World::finish_delivery`]. Returns once D is held.
+    fn begin_delivery(self: &Arc<Self>, recording_id: u64) {
+        let (entered, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release, release_rx) = std::sync::mpsc::channel::<()>();
+        let world = Arc::clone(self);
+        let thread = std::thread::spawn(move || {
+            let state = world.state();
+            with_current_delivery_owner(&state.app_state, recording_id, || {
+                world.push(format!(
+                    "delivery {recording_id}: holds the ownership fence D"
+                ));
+                let _ = entered.send(());
+                let _ = release_rx.recv();
+                world.push(format!(
+                    "delivery {recording_id}: operation done, D released next"
+                ));
+            })
+        });
+        if entered_rx.recv().is_err() {
+            // The owner check refused: the operation never ran.
+            let _ = thread.join();
+            self.push(format!("delivery {recording_id}: refused, not the owner"));
+            return;
+        }
+        *locked(&self.delivery) = Some(Delivery { release, thread });
+    }
+
+    /// Let the parked delivery operation return and release D, then wait for
+    /// `cancel` (blocked on D) to finish. Nothing is logged between the release
+    /// and the joins: the two threads' lines are ordered by D alone.
+    pub(super) fn finish_delivery(&self, cancel: ConcurrentCancel) -> Result<(), String> {
+        let delivery = locked(&self.delivery).take().expect("a parked delivery");
+        let _ = delivery.release.send(());
+        let reply = cancel.thread.join().expect("the cancel thread panicked");
+        let delivered = delivery
+            .thread
+            .join()
+            .expect("the delivery thread panicked");
+        self.push(format!(
+            "delivery returned {}",
+            if delivered.is_some() { "Some" } else { "None" }
+        ));
+        reply
+    }
+
+    /// Run a cancel on its own thread: it blocks in the production `D` lock
+    /// while a delivery holds D.
+    pub(super) fn cancel_on_thread(self: &Arc<Self>) -> ConcurrentCancel {
+        let world = Arc::clone(self);
+        ConcurrentCancel {
+            thread: std::thread::spawn(move || {
+                let _runtime = runtime().enter();
+                let mut cancel = world.cancel(None);
+                complete_joining(&mut cancel)
+            }),
+        }
+    }
+
     fn dictation_owner_phase(&self, recording_id: u64) -> Option<Phase> {
         let supervisor = locked(&self.supervisor);
         (supervisor.owner == Some(recording_id)).then(|| supervisor.phase())
+    }
+}
+
+/// A cancel running on its own thread.
+pub(super) struct ConcurrentCancel {
+    thread: std::thread::JoinHandle<Result<(), String>>,
+}
+
+impl ConcurrentCancel {
+    /// Wait until the cancel holds the recording transition and so is at (or a
+    /// statement from) its `D` lock: the transition is released only at the
+    /// end of the command, so a held transition with an unfinished command is
+    /// a cancel that has not got past D. No clock: this spins on the lock
+    /// state, and gives up if the command finished.
+    pub(super) fn wait_until_blocked_on_d(&self, world: &World) {
+        while !self.thread.is_finished()
+            && world
+                .state()
+                .app_state
+                .recording_transition
+                .try_lock()
+                .is_ok()
+        {
+            std::thread::yield_now();
+        }
+        assert!(
+            !self.thread.is_finished(),
+            "the cancel finished while a delivery held the ownership fence"
+        );
     }
 }
 
@@ -765,8 +953,13 @@ impl SupervisorPort for World {
         let result = self.knobs().stop_result;
         match result {
             Ok(samples) => {
-                self.set_owner(None);
-                self.set_phase(Phase::Idle);
+                // `RecordingSealed`: the samples leave the supervisor, which
+                // keeps the owner in `Stopping` until the worker exit is
+                // confirmed (`finish_sealed_stop`).
+                locked(&self.supervisor).sealed_pending = Some(recording_id);
+                self.push(format!(
+                    "supervisor.sealed_delivery {recording_id} samples={samples}"
+                ));
                 Ok(vec![0.0; samples])
             }
             Err(error) => Err(error.to_string()),
@@ -1099,7 +1292,7 @@ impl DictationHost for Host {
     fn run_transcription_pipeline<'a>(
         &'a self,
         samples: &'a [f32],
-        _app_state: &'a AppState,
+        app_state: &'a AppState,
         recording_id: u64,
         _performance_guard: &'a mut NativeDictationPerformanceGuard,
         _context: Arc<DictationContextSnapshot>,
@@ -1109,12 +1302,29 @@ impl DictationHost for Host {
         world.push(format!("pipeline {recording_id} samples={}", samples.len()));
         Box::pin(async move {
             drop(stop);
+            // `run_transcription_pipeline` builds its `IdleGuard` first and
+            // drops it on return (`recording.rs`, the `_guard` at the pipeline's
+            // entry): the real guard, so what a return does to status and
+            // context is production's.
+            let mut guard = IdleGuard::new(app_state, recording_id);
             world.fire("pipeline");
+            let hold_delivery = world.knobs().hold_delivery;
+            if hold_delivery {
+                world.begin_delivery(recording_id);
+            }
             world.pass_gate("pipeline").await;
             world.push(format!("pipeline {recording_id} returns"));
-            let script = std::mem::replace(&mut world.knobs().pipeline, PipelineScript::Success);
-            match script {
-                PipelineScript::Success => Ok(PipelineResult {
+            // The checkpoint production's pipeline reads: `cancelled_id`.
+            let cancelled = app_state.is_cancelled(recording_id);
+            let result = if cancelled {
+                PipelineResult {
+                    text: String::new(),
+                    timings: PipelineTimings::default(),
+                    terminal: PipelineTerminal::Cancelled(PerformanceStageV1::InferenceDecode),
+                    history: None,
+                }
+            } else {
+                PipelineResult {
                     text: "scripted transcript".to_string(),
                     timings: PipelineTimings::default(),
                     terminal: PipelineTerminal::Success,
@@ -1122,14 +1332,16 @@ impl DictationHost for Host {
                         raw_text: "scripted transcript".to_string(),
                         stages: Vec::new(),
                     }),
-                }),
-                PipelineScript::Cancelled => Ok(PipelineResult {
-                    text: String::new(),
-                    timings: PipelineTimings::default(),
-                    terminal: PipelineTerminal::Cancelled(PerformanceStageV1::InferenceDecode),
-                    history: None,
-                }),
-            }
+                }
+            };
+            // The guard's drop is `finish`: it clears the context, then writes
+            // Idle on an id match alone, whatever the status (PD-6).
+            let mut wrote_idle = false;
+            guard.finish(|_| wrote_idle = true);
+            world.push(format!(
+                "pipeline {recording_id} idle_guard wrote_idle={wrote_idle}"
+            ));
+            Ok(result)
         })
     }
 }
@@ -1172,6 +1384,7 @@ fn reset_process_globals() {
 fn run_sub_run(sub_run: &SubRun) -> Vec<String> {
     let _serial = locked(&GOLDEN_LOCK);
     let _runtime = runtime().enter();
+    S12_TAIL.with(|slot| slot.borrow_mut().take());
     reset_process_globals();
     let app_state = AppState::default();
     app_state

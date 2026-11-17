@@ -5264,6 +5264,11 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 let mut dictation = state.app_state.dictation.lock_or_recover();
                 transition_dictation_status(recording_id, &mut dictation, DictationStatus::Idle);
                 drop(dictation);
+                // Stage 0b test seam (compiled out of every non-test build): a
+                // golden scenario stands here, after D is released and before
+                // the unscoped tail, to run what production can interleave.
+                #[cfg(test)]
+                golden_harness::run_s12_tail_hook();
                 keyboard::set_processing(false);
                 let _ = app_handle.emit("recording-status-changed", "idle");
             }

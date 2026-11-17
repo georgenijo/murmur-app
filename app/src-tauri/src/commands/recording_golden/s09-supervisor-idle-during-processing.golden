@@ -24,6 +24,7 @@ supervisor.start_ack 1 Ok
 smart_destination.capture enabled=false
 refresh_expired_ide_context
 performance.production_context 1
+~ context 1 installed
 publish_recording_ready 1
 supervisor.is_dictation_recording 1 -> true
 emit recording-status-changed "recording"
@@ -43,22 +44,31 @@ keyboard.set_processing true
 emit recording-status-changed "processing"
 supervisor.stop 1 Other
 supervisor.set_phase Stopping
-supervisor.set_phase Idle
+supervisor.sealed_delivery 1 samples=16000
 performance.production_sample_count 1 16000
 pipeline 1 samples=16000
 gate pipeline wait
 # the pipeline is running for id 1
 supervisor.notify 1 Idle
 ~ processing false
+~ context 1 cleared
 ~ terminal 1 PipelineFailure/RuntimeFailure
 ~ perf-claim 1 {"status":"failed","stage":"captureFinalization","errorCode":"audioCaptureFailed"}
 emit recording-status-changed "idle"
 ~ status Processing -> Idle
-# the pipeline now finishes and runs its own terminal
+# the pipeline now finishes: its IdleGuard writes Idle for the same id again
 gate pipeline opened
 gate pipeline pass
 pipeline 1 returns
+pipeline 1 idle_guard wrote_idle=true
 keyboard.set_processing false
 emit recording-status-changed "idle"
 emit transcription-complete {"duration":1,"interrupted":null,"rawText":"scripted transcript","recording":{"modelId":"base.en","profileId":null,"recordingId":1,"stages":[]},"recordingId":1,"text":"scripted transcript"}
 reply stop Ok {"state":"idle","text":"scripted transcript","type":"transcription"}
+# end of run: the supervisor finishes the sealed stop
+supervisor.clear_owner 1
+supervisor.set_phase Idle
+supervisor.notify 1 CleanupFinished
+emit recording-cleanup-finished {"recordingId":1}
+emit recording-status-changed "idle"
+= final status=Idle processing=false context=none cancelled_through=0

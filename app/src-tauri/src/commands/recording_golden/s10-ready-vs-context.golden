@@ -24,6 +24,7 @@ supervisor.start_ack 1 Ok
 smart_destination.capture enabled=false
 refresh_expired_ide_context
 performance.production_context 1
+~ context 1 installed
 publish_recording_ready 1
 supervisor.is_dictation_recording 1 -> false
 publish_recording_ready 1 -> false
@@ -37,6 +38,7 @@ supervisor.notify 1 Ready
 emit recording-status-changed "recording"
 ~ status Starting -> Recording
 SD ticker 1 registered=true
+= final status=Recording processing=false context=1 cancelled_through=0
 
 === 10b Ready first, then context ===
 mic_transition
@@ -58,6 +60,7 @@ supervisor.start_ack 1 Ok
 smart_destination.capture enabled=false
 refresh_expired_ide_context
 performance.production_context 1
+~ context 1 installed
 publish_recording_ready 1
 supervisor.is_dictation_recording 1 -> true
 emit recording-status-changed "recording"
@@ -67,6 +70,7 @@ publish_recording_ready 1 -> true
 spawn_model_preparation 1
 performance.spawn_begin 1
 reply start Ok {"recordingId":1,"state":"starting","type":"recording_starting"}
+= final status=Recording processing=false context=1 cancelled_through=0
 
 === 10c C8 forced (C9.5), known-bad ===
 mic_transition
@@ -88,6 +92,7 @@ supervisor.start_ack 1 Ok
 smart_destination.capture enabled=false
 refresh_expired_ide_context
 performance.production_context 1
+~ context 1 installed
 publish_recording_ready 1
 supervisor.is_dictation_recording 1 -> true
 emit recording-status-changed "recording"
@@ -113,13 +118,23 @@ keyboard.set_processing true
 emit recording-status-changed "processing"
 supervisor.stop 1 Other
 supervisor.set_phase Stopping
-supervisor.set_phase Idle
+supervisor.sealed_delivery 1 samples=16000
 performance.production_sample_count 1 16000
 pipeline 1 samples=16000
 pipeline 1 returns
-keyboard.set_processing false
+~ status Processing -> Idle
 ~ processing false
+~ context 1 cleared
+pipeline 1 idle_guard wrote_idle=true
+keyboard.set_processing false
 emit recording-status-changed "idle"
 ~ perf-claim 1 {"status":"success"}
 emit transcription-complete {"duration":1,"interrupted":null,"rawText":"scripted transcript","recording":{"modelId":"base.en","profileId":null,"recordingId":1,"stages":[]},"recordingId":1,"text":"scripted transcript"}
 reply stop Ok {"state":"idle","text":"scripted transcript","type":"transcription"}
+# end of run: the supervisor finishes the sealed stop
+supervisor.clear_owner 1
+supervisor.set_phase Idle
+supervisor.notify 1 CleanupFinished
+emit recording-cleanup-finished {"recordingId":1}
+emit recording-status-changed "idle"
+= final status=Idle processing=false context=none cancelled_through=0

@@ -24,6 +24,7 @@ supervisor.start_ack 1 Ok
 smart_destination.capture enabled=false
 refresh_expired_ide_context
 performance.production_context 1
+~ context 1 installed
 publish_recording_ready 1
 supervisor.is_dictation_recording 1 -> true
 emit recording-status-changed "recording"
@@ -41,12 +42,14 @@ emit audio-recovery-started {"reason":"runtime_failure","recordingId":1}
 supervisor.notify 1 Interrupted(runtime_failure, 6000 samples)
 emit recording-interrupted {"actionCode":"retry","autoTranscribe":false,"deliveredSamples":6000,"durationMs":375,"reason":"runtime_failure","recordingId":1,"statusCode":"microphone_interrupted"}
 ~ status Recovering -> Idle
+~ context 1 cleared
 ~ terminal 1 RuntimeInterruption/RuntimeFailure
 ~ perf-claim 1 {"status":"failed","stage":"captureFinalization","errorCode":"audioCaptureFailed"}
 emit recording-status-changed "idle"
 supervisor.hold_before_owner_clear 1
 supervisor.clear_owner 1
 supervisor.set_phase Idle
+= final status=Idle processing=false context=none cancelled_through=0
 
 === 4b S12 with a user stop between the check and the Idle write (PD-1) ===
 mic_transition
@@ -68,6 +71,7 @@ supervisor.start_ack 1 Ok
 smart_destination.capture enabled=false
 refresh_expired_ide_context
 performance.production_context 1
+~ context 1 installed
 publish_recording_ready 1
 supervisor.is_dictation_recording 1 -> true
 emit recording-status-changed "recording"
@@ -98,6 +102,7 @@ pipeline 1 samples=6000
 gate pipeline wait
 ~ status Processing -> Idle
 ~ processing false
+~ context 1 cleared
 ~ terminal 1 RuntimeInterruption/RuntimeFailure
 ~ perf-claim 1 {"status":"failed","stage":"captureFinalization","errorCode":"audioCaptureFailed"}
 emit recording-status-changed "idle"
@@ -106,12 +111,14 @@ supervisor.hold_before_owner_clear 1
 gate pipeline opened
 gate pipeline pass
 pipeline 1 returns
+pipeline 1 idle_guard wrote_idle=true
 keyboard.set_processing false
 emit recording-status-changed "idle"
 emit transcription-complete {"duration":0,"interrupted":{"deliveredSamples":6000,"durationMs":375,"reason":"stream_invalidated"},"rawText":"scripted transcript","recording":{"modelId":"base.en","profileId":null,"recordingId":1,"stages":[]},"recordingId":1,"text":"scripted transcript"}
 reply user stop Ok {"state":"idle","text":"scripted transcript","type":"transcription"}
 supervisor.clear_owner 1
 supervisor.set_phase Idle
+= final status=Idle processing=false context=none cancelled_through=0
 
 === 4c plain S12 observed at the supervisor: no Idle follows ===
 mic_transition
@@ -133,6 +140,7 @@ supervisor.start_ack 1 Ok
 smart_destination.capture enabled=false
 refresh_expired_ide_context
 performance.production_context 1
+~ context 1 installed
 publish_recording_ready 1
 supervisor.is_dictation_recording 1 -> true
 emit recording-status-changed "recording"
@@ -150,6 +158,7 @@ emit audio-recovery-started {"reason":"runtime_failure","recordingId":1}
 supervisor.notify 1 Interrupted(runtime_failure, 6000 samples)
 emit recording-interrupted {"actionCode":"retry","autoTranscribe":false,"deliveredSamples":6000,"durationMs":375,"reason":"runtime_failure","recordingId":1,"statusCode":"microphone_interrupted"}
 ~ status Recovering -> Idle
+~ context 1 cleared
 ~ terminal 1 RuntimeInterruption/RuntimeFailure
 ~ perf-claim 1 {"status":"failed","stage":"captureFinalization","errorCode":"audioCaptureFailed"}
 emit recording-status-changed "idle"
@@ -157,6 +166,7 @@ supervisor.hold_before_owner_clear 1
 # Interrupted was the last notification; the supervisor now clears its owner
 supervisor.clear_owner 1
 supervisor.set_phase Idle
+= final status=Idle processing=false context=none cancelled_through=0
 
 === 4d start takes R101.12 before the owner is cleared (PD-18 a) ===
 mic_transition
@@ -178,6 +188,7 @@ supervisor.start_ack 1 Ok
 smart_destination.capture enabled=false
 refresh_expired_ide_context
 performance.production_context 1
+~ context 1 installed
 publish_recording_ready 1
 supervisor.is_dictation_recording 1 -> true
 emit recording-status-changed "recording"
@@ -195,20 +206,23 @@ emit audio-recovery-started {"reason":"runtime_failure","recordingId":1}
 supervisor.notify 1 Interrupted(runtime_failure, 6000 samples)
 emit recording-interrupted {"actionCode":"retry","autoTranscribe":false,"deliveredSamples":6000,"durationMs":375,"reason":"runtime_failure","recordingId":1,"statusCode":"microphone_interrupted"}
 ~ status Recovering -> Idle
+~ context 1 cleared
 ~ terminal 1 RuntimeInterruption/RuntimeFailure
 ~ perf-claim 1 {"status":"failed","stage":"captureFinalization","errorCode":"audioCaptureFailed"}
-emit recording-status-changed "idle"
-supervisor.hold_before_owner_clear 1
-# the bridge restored Idle; the supervisor is held before clearing its owner
+# S12 wrote Idle and released D; its tail has not run; a start takes D
 mic_transition
 keyboard.is_app_disabled
 supervisor.is_dictation_cleanup_pending 1 -> true
 emit recording-status-changed "recovering"
 ~ status Idle -> Recovering
 reply start Ok {"state":"recovering","type":"audio_recovering"}
+emit recording-status-changed "idle"
+supervisor.hold_before_owner_clear 1
+# the bridge returned; the supervisor is held before clearing its owner
 supervisor.clear_owner 1
 supervisor.set_phase Idle
 # owner cleared; the supervisor has nothing more to notify
 mic_transition
 keyboard.is_app_disabled
 reply start again Ok {"state":"recovering","type":"audio_recovering"}
+= final status=Recovering processing=false context=none cancelled_through=0

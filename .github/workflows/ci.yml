@@ -334,6 +334,20 @@ jobs:
           cargo nextest run --cargo-metadata target/ci-cargo-metadata.json
           --binaries-metadata target/ci-test-binaries.json -E 'kind(lib)'
 
+      - name: Run golden dictation scenarios 100 times
+        if: needs.changes.outputs.verified != 'true'
+        # Stage 0b gates G1, G4 and G5: every golden scenario runs 100 times in
+        # one process and each run must equal its checked-in trace (about 1 s).
+        # The single pass above is the ordinary check; this one is the flake
+        # budget. Reuses the prebuild like the steps around it.
+        env:
+          MURMUR_GOLDEN_REPEAT: "100"
+        run: >-
+          cd app/src-tauri &&
+          cargo nextest run --cargo-metadata target/ci-cargo-metadata.json
+          --binaries-metadata target/ci-test-binaries.json
+          -E 'kind(lib) & test(/golden_tests::golden_/)'
+
       - name: Run capture worker unit tests
         if: needs.changes.outputs.verified != 'true'
         # Reuse both the helper's bin tests and topology_watch from the prebuild.

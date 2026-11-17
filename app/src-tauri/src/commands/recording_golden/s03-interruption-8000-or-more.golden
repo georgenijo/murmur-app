@@ -24,6 +24,7 @@ supervisor.start_ack 1 Ok
 smart_destination.capture enabled=false
 refresh_expired_ide_context
 performance.production_context 1
+~ context 1 installed
 publish_recording_ready 1
 supervisor.is_dictation_recording 1 -> true
 emit recording-status-changed "recording"
@@ -54,8 +55,11 @@ emit recording-status-changed "processing"
 performance.production_sample_count 1 9000
 pipeline 1 samples=9000
 pipeline 1 returns
-keyboard.set_processing false
+~ status Processing -> Idle
 ~ processing false
+~ context 1 cleared
+pipeline 1 idle_guard wrote_idle=true
+keyboard.set_processing false
 emit recording-status-changed "idle"
 ~ terminal 1 RuntimeInterruption/StreamInvalidated
 ~ perf-claim 1 {"status":"success"}
@@ -63,6 +67,7 @@ emit transcription-complete {"duration":0,"interrupted":{"deliveredSamples":9000
 reply auto-stop Ok {"state":"idle","text":"scripted transcript","type":"transcription"}
 supervisor.clear_owner 1
 supervisor.set_phase Idle
+= final status=Idle processing=false context=none cancelled_through=0
 
 === 3b auto-stop races a user stop: the user stop wins ===
 mic_transition
@@ -84,6 +89,7 @@ supervisor.start_ack 1 Ok
 smart_destination.capture enabled=false
 refresh_expired_ide_context
 performance.production_context 1
+~ context 1 installed
 publish_recording_ready 1
 supervisor.is_dictation_recording 1 -> true
 emit recording-status-changed "recording"
@@ -119,8 +125,11 @@ reply auto-stop Ok {"state":"processing","type":"already_processing"}
 gate pipeline opened
 gate pipeline pass
 pipeline 1 returns
-keyboard.set_processing false
+~ status Processing -> Idle
 ~ processing false
+~ context 1 cleared
+pipeline 1 idle_guard wrote_idle=true
+keyboard.set_processing false
 emit recording-status-changed "idle"
 ~ terminal 1 RuntimeInterruption/StreamInvalidated
 ~ perf-claim 1 {"status":"success"}
@@ -128,6 +137,7 @@ emit transcription-complete {"duration":0,"interrupted":{"deliveredSamples":9000
 reply user stop Ok {"state":"idle","text":"scripted transcript","type":"transcription"}
 supervisor.clear_owner 1
 supervisor.set_phase Idle
+= final status=Idle processing=false context=none cancelled_through=0
 
 === 3c auto-stop races a user stop: the auto-stop wins ===
 mic_transition
@@ -149,6 +159,7 @@ supervisor.start_ack 1 Ok
 smart_destination.capture enabled=false
 refresh_expired_ide_context
 performance.production_context 1
+~ context 1 installed
 publish_recording_ready 1
 supervisor.is_dictation_recording 1 -> true
 emit recording-status-changed "recording"
@@ -184,8 +195,11 @@ reply user stop Ok {"state":"processing","type":"already_processing"}
 gate pipeline opened
 gate pipeline pass
 pipeline 1 returns
-keyboard.set_processing false
+~ status Processing -> Idle
 ~ processing false
+~ context 1 cleared
+pipeline 1 idle_guard wrote_idle=true
+keyboard.set_processing false
 emit recording-status-changed "idle"
 ~ terminal 1 RuntimeInterruption/StreamInvalidated
 ~ perf-claim 1 {"status":"success"}
@@ -193,3 +207,4 @@ emit transcription-complete {"duration":0,"interrupted":{"deliveredSamples":9000
 reply auto-stop Ok {"state":"idle","text":"scripted transcript","type":"transcription"}
 supervisor.clear_owner 1
 supervisor.set_phase Idle
+= final status=Idle processing=false context=none cancelled_through=0

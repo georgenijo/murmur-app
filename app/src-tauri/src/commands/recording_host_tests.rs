@@ -47,6 +47,7 @@ enum Call {
     SupervisorStop,
     SupervisorCancel,
     SupervisorTakeInterrupted,
+    SupervisorIsDictationCleanupPending,
     KeyboardIsAppDisabled,
     KeyboardListenerGeneration,
     KeyboardSetProcessing,
@@ -67,7 +68,7 @@ impl Call {
     /// Adding a variant without listing it here fails to compile, and a
     /// variant missing from this list fails
     /// `call_kinds_match_the_trait_declarations`.
-    const ALL: [Call; 27] = [
+    const ALL: [Call; 28] = [
         Call::EmitJson,
         Call::MicrophoneTransition,
         Call::RefreshExpiredIdeContext,
@@ -81,6 +82,7 @@ impl Call {
         Call::SupervisorStop,
         Call::SupervisorCancel,
         Call::SupervisorTakeInterrupted,
+        Call::SupervisorIsDictationCleanupPending,
         Call::KeyboardIsAppDisabled,
         Call::KeyboardListenerGeneration,
         Call::KeyboardSetProcessing,
@@ -153,6 +155,11 @@ impl Call {
                 "SupervisorPort",
                 "take_interrupted_dictation",
                 "supervisor.take_interrupted",
+            ),
+            Call::SupervisorIsDictationCleanupPending => (
+                "SupervisorPort",
+                "is_dictation_cleanup_pending",
+                "supervisor.is_dictation_cleanup_pending",
             ),
             Call::KeyboardIsAppDisabled => (
                 "KeyboardPort",
@@ -236,6 +243,9 @@ struct Script {
     stop_result: Option<Result<Vec<f32>, String>>,
     cancel_result: Option<Result<bool, String>>,
     interrupted: Option<audio_lifecycle::InterruptedCapture>,
+    /// What `is_dictation_cleanup_pending` answers (the owner is still being
+    /// cleaned up).
+    cleanup_pending: bool,
     pipeline_error: Option<String>,
     on_emit_smart_destination: Option<Hook>,
     on_supervisor_start: Option<Hook>,
@@ -473,8 +483,12 @@ impl SupervisorPort for Shared {
         self.script().interrupted.take()
     }
 
-    fn is_dictation_cleanup_pending(&self, _recording_id: u64) -> bool {
-        false
+    fn is_dictation_cleanup_pending(&self, recording_id: u64) -> bool {
+        self.push(
+            Call::SupervisorIsDictationCleanupPending,
+            format!("{recording_id}"),
+        );
+        self.script().cleanup_pending
     }
 }
 
@@ -708,12 +722,17 @@ fn check(scenario: &Scenario) {
 // ------------------------------------------------------------------ start
 
 /// Start up to and including the begin reservation, as the accepted start
-/// reaches it: transition (5503), app-disabled read (5507), the listener
-/// generation only for a stamped hold (5593), the AX sample (5617), the
+/// reaches it: transition (5503), app-disabled read (5507), the cleanup-pending
+/// read of the current id under the dictation lock (5599), the listener
+/// generation only for a stamped hold (5650), the AX sample (5617), the
 /// generation-started and `starting` emits (5638, 5643), the production
 /// reservation (5648) and begin (5659).
 fn start_through_begin_register(hold: bool) -> Vec<String> {
-    let mut trace = strings(&["mic_transition", "keyboard.is_app_disabled"]);
+    let mut trace = strings(&[
+        "mic_transition",
+        "keyboard.is_app_disabled",
+        "supervisor.is_dictation_cleanup_pending 0",
+    ]);
     if hold {
         trace.push("keyboard.listener_generation".to_string());
     }
@@ -782,6 +801,32 @@ fn expected_start_refused() -> Vec<String> {
         "performance.begin_abort 1",
     ]));
     trace.push(status_event("idle"));
+    trace
+}
+
+/// An Idle status with the previous owner still being cleaned up: the start
+/// reads the pending cleanup of the current id (5599), writes `Recovering` with
+/// that id and answers `audio_recovering` before any allocation or AX sample.
+fn scenario_start_cleanup_pending() -> Recorded {
+    let (state, host) = fixture(DictationStatus::Idle, 7);
+    host.script().cleanup_pending = true;
+    let reply = start(&host, &state).expect("start replies");
+    assert_eq!(
+        reply,
+        serde_json::json!({ "type": "audio_recovering", "state": "recovering" })
+    );
+    assert_eq!(status(&state), DictationStatus::Recovering);
+    assert_eq!(state.app_state.recording_id.load(Ordering::SeqCst), 7);
+    host.recorded()
+}
+
+fn expected_start_cleanup_pending() -> Vec<String> {
+    let mut trace = strings(&[
+        "mic_transition",
+        "keyboard.is_app_disabled",
+        "supervisor.is_dictation_cleanup_pending 7",
+    ]);
+    trace.push(status_event("recovering"));
     trace
 }
 
@@ -1240,6 +1285,11 @@ fn scenarios() -> Vec<Scenario> {
             expected: expected_start_refused,
         },
         Scenario {
+            name: "start_cleanup_pending",
+            run: scenario_start_cleanup_pending,
+            expected: expected_start_cleanup_pending,
+        },
+        Scenario {
             name: "start_app_disabled",
             run: scenario_start_app_disabled,
             expected: expected_start_app_disabled,
@@ -1340,15 +1390,11 @@ fn every_scenario_follows_the_production_order() {
 // -------------------------------------------------------- port coverage
 
 /// Each `Call` is tied to one trait method, and every trait method (bar the
-/// accessors that only hand out a port, and the one read-only query the Stage 0b
-/// golden traces log instead) has a `Call`.
+/// accessors that only hand out a port) has a `Call`.
 #[test]
 fn call_kinds_match_the_trait_declarations() {
     use std::collections::BTreeSet;
-    const ACCESSORS: [(&str, &str); 6] = [
-        // A read-only process-state query; the golden traces
-        // (`recording_golden_tests.rs`) log it, these scenarios do not.
-        ("SupervisorPort", "is_dictation_cleanup_pending"),
+    const ACCESSORS: [(&str, &str); 5] = [
         ("DictationHost", "supervisor"),
         ("DictationHost", "keyboard"),
         ("DictationHost", "ax"),

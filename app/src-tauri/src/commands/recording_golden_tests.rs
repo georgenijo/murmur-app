@@ -102,36 +102,64 @@ fn s02b_cancel_recording(world: &Arc<World>) {
     world.release_cancel_finish();
 }
 
-/// Cancel while the pipeline still holds the delivery path: the stop is parked
-/// in the pipeline, the cancel resets the UI, and the pipeline returns
-/// afterwards.
-fn s02c_cancel_processing_with_the_pipeline_running(world: &Arc<World>) {
+/// Cancel while delivery holds the ownership fence (C9.4 scenario 2). The
+/// pipeline's delivery step runs the production `with_current_delivery_owner`
+/// on its own thread and parks inside it holding D. The cancel is blocked on D
+/// until delivery releases it, so nothing of the cancel is in the trace before
+/// the delivery's "operation done" line.
+fn s02c_cancel_waits_for_the_delivery_fence(world: &Arc<World>) {
     recording(world);
-    world.knobs().stop_result = Ok(16_000);
-    world.knobs().pipeline = PipelineScript::Cancelled;
+    {
+        let mut knobs = world.knobs();
+        knobs.stop_result = Ok(16_000);
+        knobs.hold_delivery = true;
+    }
     world.close_gate("pipeline");
     let mut stop = world.stop(None);
     assert!(poll_once(&mut stop).is_pending());
-    world.note("the pipeline is running: status is Processing and the transition is free");
+    world.note("the pipeline's delivery holds D; the recording transition is free");
+    let cancel = world.cancel_on_thread();
+    cancel.wait_until_blocked_on_d(world);
+    world.note("the cancel holds the transition and is blocked on D: none of it has run");
+    let reply = world.finish_delivery(cancel);
+    world.reply_unit("cancel", &reply);
+    world.open_gate("pipeline");
+    let reply = complete(&mut stop);
+    world.reply("stop", &reply);
+}
+
+/// PD-16: a sealed stop's `CleanupFinished` lands between the cancel's status
+/// write and its own idle emit (the hook runs at `set_processing`). The
+/// supervisor clears the owner and sends `CleanupFinished`; the bridge finds
+/// the current id with status Idle, so it publishes `recording-cleanup-finished`
+/// and an `idle`, and the cancel then emits its own `idle`.
+fn s02d_cancel_processing_with_a_supervisor_event_in_the_tail(world: &Arc<World>) {
+    recording(world);
+    world.knobs().stop_result = Ok(16_000);
+    world.close_gate("pipeline");
+    let mut stop = world.stop(None);
+    assert!(poll_once(&mut stop).is_pending());
+    world.note("the stop is sealed and in the pipeline; the owner is still Dictation(1)");
+    let tail = Arc::clone(world);
+    world.on("keyboard.set_processing:false", move || {
+        tail.finish_sealed_stop(1)
+    });
     cancelled(world, "cancel");
     world.open_gate("pipeline");
     let reply = complete(&mut stop);
     world.reply("stop", &reply);
 }
 
-/// PD-16: a supervisor `Idle` for the same id lands between the cancel's
-/// status write and its own idle emit (the hook runs at `set_processing`).
-fn s02d_cancel_processing_with_a_supervisor_event_in_the_tail(world: &Arc<World>) {
+/// Cancel while the pipeline is parked and holds no fence: the stop is in the
+/// pipeline, the cancel resets the UI, and the pipeline then returns and finds
+/// `cancelled_id` set.
+fn s02e_cancel_processing_with_the_pipeline_running(world: &Arc<World>) {
     recording(world);
     world.knobs().stop_result = Ok(16_000);
-    world.knobs().pipeline = PipelineScript::Cancelled;
     world.close_gate("pipeline");
     let mut stop = world.stop(None);
     assert!(poll_once(&mut stop).is_pending());
-    let tail = Arc::clone(world);
-    world.on("keyboard.set_processing:false", move || {
-        tail.notify(1, AudioLifecycleEvent::Idle)
-    });
+    world.note("the pipeline is running: status is Processing and the transition is free");
     cancelled(world, "cancel");
     world.open_gate("pipeline");
     let reply = complete(&mut stop);
@@ -236,15 +264,24 @@ fn s04c_no_idle_follows_an_interrupted_end(world: &Arc<World>) {
     );
 }
 
-/// (d) PD-18 (a): a start takes the lock after the bridge restored Idle and
-/// before the supervisor clears its owner. It reads cleanup pending, writes
-/// `Idle -> Recovering` and nothing is left to restore Idle.
+/// (d) PD-18 (a): S12 writes Idle and releases D; a start then takes D (the
+/// hook runs at S12's tail, before its keyboard/emit statements), reads
+/// cleanup pending because the supervisor still holds its owner, and writes
+/// `Idle -> Recovering` with the old id. S12 then emits its trailing `idle`:
+/// the frontend's last status is idle while the backend is Recovering, and
+/// nothing is left to restore Idle.
 fn s04d_start_before_the_owner_is_cleared(world: &Arc<World>) {
-    interrupted_recording(world, 6_000);
-    world.note("the bridge restored Idle; the supervisor is held before clearing its owner");
-    let mut start = world.start();
-    let reply = complete(&mut start);
-    world.reply("start", &reply);
+    recording(world);
+    world.runtime_failure(1);
+    let between = Arc::clone(world);
+    world.on_s12_tail(move || {
+        between.note("S12 wrote Idle and released D; its tail has not run; a start takes D");
+        let mut start = between.start();
+        let reply = complete(&mut start);
+        between.reply("start", &reply);
+    });
+    world.finish_interrupted(1, 6_000);
+    world.note("the bridge returned; the supervisor is held before clearing its owner");
     world.release_owner_clear();
     world.note("owner cleared; the supervisor has nothing more to notify");
     let mut again = world.start();
@@ -273,6 +310,8 @@ fn s05_stop_times_out_and_idle_follows(world: &Arc<World>) {
 fn s06a_stale_stop_after_a_newer_start(world: &Arc<World>) {
     recording(world);
     stopped(world, "stop", None);
+    world.note("the supervisor finishes the sealed stop before the newer start");
+    world.finish_sealed_stop(1);
     recording(world);
     stopped(world, "stale stop(expected=1)", Some(1));
 }
@@ -331,7 +370,7 @@ fn s09_supervisor_idle_while_the_pipeline_runs(world: &Arc<World>) {
     assert!(poll_once(&mut stop).is_pending());
     world.note("the pipeline is running for id 1");
     world.notify(1, AudioLifecycleEvent::Idle);
-    world.note("the pipeline now finishes and runs its own terminal");
+    world.note("the pipeline now finishes: its IdleGuard writes Idle for the same id again");
     world.open_gate("pipeline");
     let reply = complete(&mut stop);
     world.reply("stop", &reply);
@@ -433,14 +472,228 @@ fn s12b_supervisor_failure_before_the_ack(world: &Arc<World>) {
 fn s12c_start_timeout_with_a_user_cancel(world: &Arc<World>) {
     {
         let mut knobs = world.knobs();
-        knobs.start_ack = Some(AudioStartError::SpawnFailed(
-            "scripted 2 s start timeout".to_string(),
-        ));
+        // `await_start_response` after its 2 s timeout: it sends
+        // `Cancel{User}` and returns `SupervisorUnavailable`.
+        knobs.start_ack = Some(AudioStartError::SupervisorUnavailable);
         knobs.before_ack = vec![AudioLifecycleEventScript::Recovering(
             AudioCancelReason::User,
         )];
     }
     started(world);
+}
+
+// ------------------------------------------------------ semantic witnesses
+//
+// A golden is re-recorded with `MURMUR_GOLDEN_UPDATE=1`, which accepts any
+// trace. Each scenario therefore also asserts, on the recorded text, the lines
+// that make it a witness of the preserved defect (PD) its header names. A
+// re-record that stops showing the PD fails here instead of passing silently.
+
+/// One sub-run's text, from its `=== <prefix>` heading to the next heading.
+fn section<'a>(text: &'a str, prefix: &str) -> &'a str {
+    let part = text
+        .split("=== ")
+        .find(|part| part.starts_with(prefix))
+        .unwrap_or_else(|| panic!("the {prefix} sub-run is in the golden"));
+    part.split("\n=== ").next().unwrap_or(part)
+}
+
+/// Where `needle` first appears in `section`.
+fn at(section: &str, needle: &str) -> usize {
+    section
+        .find(needle)
+        .unwrap_or_else(|| panic!("the trace lacks `{needle}`:\n{section}"))
+}
+
+/// Where `needle` first appears at or after `from`.
+fn at_after(section: &str, from: usize, needle: &str) -> usize {
+    from + at(&section[from..], needle)
+}
+
+fn count(section: &str, needle: &str) -> usize {
+    section.matches(needle).count()
+}
+
+const IDLE_EMIT: &str = "emit recording-status-changed \"idle\"";
+
+/// PD-12: a stop for a stale id replies superseded and claims a terminal for
+/// it (6b: it wins the ledger; 6a: it loses to the earlier one).
+fn verify_s01(text: &str) {
+    let stale = section(text, "1c");
+    at(stale, "~ terminal 1 Superseded/StaleOwner");
+    at(stale, "recording_superseded");
+    assert!(
+        !stale.contains("supervisor.stop"),
+        "1c: a stale stop must not stop the live recording"
+    );
+}
+
+/// PD-16: cancel's tail runs with no recheck. 2d: `CleanupFinished` lands
+/// between the cancel's status write and its own emits, so `idle` is published
+/// twice and `recording-cleanup-finished` comes before `recording-cancelled`.
+/// 2c: the cancel's effects all follow the delivery's release of D.
+fn verify_s02(text: &str) {
+    let tail = section(text, "2d");
+    let cancel_status = at(tail, "~ status Processing -> Idle");
+    let finished = at_after(tail, cancel_status, "supervisor.notify 1 CleanupFinished");
+    let cleanup = at_after(tail, finished, "emit recording-cleanup-finished");
+    let cancelled = at_after(tail, cleanup, "emit recording-cancelled");
+    assert_eq!(
+        count(&tail[finished..cancelled], IDLE_EMIT),
+        2,
+        "2d: the cleanup's idle and the cancel's own idle are both published"
+    );
+    let fence = section(text, "2c");
+    let held = at(fence, "delivery 1: holds the ownership fence D");
+    let blocked = at_after(
+        fence,
+        held,
+        "the cancel holds the transition and is blocked on D",
+    );
+    let released = at_after(fence, blocked, "delivery 1: operation done");
+    let status = at_after(fence, released, "~ status Processing -> Idle");
+    let cancelled = at_after(fence, status, "emit recording-cancelled");
+    at_after(fence, cancelled, "reply cancel Ok");
+    assert!(
+        !fence[..released].contains("keyboard.set_processing false"),
+        "2c: nothing of the cancel runs while delivery holds D"
+    );
+}
+
+/// PD-15: the interrupted capture is taken once, destructively; the other
+/// path replies `already_processing` and never sees it.
+fn verify_s03(text: &str) {
+    for prefix in ["3b", "3c"] {
+        let race = section(text, prefix);
+        assert_eq!(
+            count(race, "supervisor.take_interrupted 1 -> 9000 samples"),
+            1,
+            "{prefix}: one path takes the capture"
+        );
+        at(race, "already_processing");
+    }
+    let accepted = section(text, "3a");
+    at(accepted, "supervisor.take_interrupted 1 -> 9000 samples");
+    // The pipeline's IdleGuard restores Idle and clears the context.
+    assert!(
+        accepted.contains("= final status=Idle processing=false context=none"),
+        "3a: the recording ends Idle with its context cleared"
+    );
+}
+
+/// PD-1 (4b): a user stop commits Processing between S12's currency check and
+/// its unguarded Idle write, which then overwrites Processing while the
+/// pipeline is still running. PD-15 (4b): that stop took the capture. PD-18 (a)
+/// (4d): a start refused `audio_recovering`, the run ends `Recovering`, and the
+/// frontend's last status is `idle`.
+fn verify_s04(text: &str) {
+    let race = section(text, "4b");
+    let interrupted = at(race, "emit recording-interrupted");
+    let taken = at_after(
+        race,
+        interrupted,
+        "supervisor.take_interrupted 1 -> 6000 samples",
+    );
+    let parked = at_after(race, taken, "gate pipeline wait");
+    let overwritten = at_after(race, parked, "~ status Processing -> Idle");
+    at_after(race, overwritten, "pipeline 1 returns");
+    let section = section(text, "4d");
+    assert!(section.contains("~ status Idle -> Recovering"));
+    assert_eq!(
+        count(section, "audio_recovering"),
+        2,
+        "4d: the start is refused audio_recovering and so is every later start"
+    );
+    let recovering = at(section, "emit recording-status-changed \"recovering\"");
+    let last_idle = section.rfind(IDLE_EMIT).expect("4d publishes idle");
+    assert!(
+        recovering < last_idle,
+        "4d: S12's trailing idle follows the start's recovering"
+    );
+    assert!(
+        section.contains("= final status=Recovering"),
+        "4d: nothing restores Idle"
+    );
+}
+
+/// PD-6 and PD-7: the supervisor's `Idle` lands while the stop is in
+/// Processing (the stop's own failure path then publishes `idle` again).
+fn verify_s05(text: &str) {
+    let run = section(text, "5");
+    let notified = at(run, "supervisor.notify 1 Idle");
+    at_after(run, notified, "~ terminal 1 PipelineFailure/RuntimeFailure");
+    assert_eq!(
+        count(&run[notified..], IDLE_EMIT),
+        2,
+        "5: the supervisor's idle and the stop guard's idle"
+    );
+    at_after(run, notified, "reply stop Err stop timed out");
+}
+
+/// PD-12: 6a loses the stale terminal to the earlier one; 6b claims it.
+fn verify_s06(text: &str) {
+    let lost = section(text, "6a");
+    at(lost, "recording_superseded");
+    assert!(
+        !lost.contains("~ terminal 1 Superseded"),
+        "6a: id 1 already has a terminal, so the stale stop's loses"
+    );
+    let claimed = section(text, "6b");
+    at(claimed, "~ terminal 1 Superseded/StaleOwner");
+}
+
+/// PD-7: the supervisor's `Idle` forces status Idle and claims a failure
+/// terminal while the pipeline runs. PD-6: the pipeline's `IdleGuard` then
+/// finishes for the same id and writes Idle again, and the stop publishes a
+/// second `idle`.
+fn verify_s09(text: &str) {
+    let run = section(text, "9");
+    let notified = at(run, "supervisor.notify 1 Idle");
+    let terminal = at_after(run, notified, "~ terminal 1 PipelineFailure/RuntimeFailure");
+    let forced = at_after(run, terminal, "~ status Processing -> Idle");
+    let returned = at_after(run, forced, "pipeline 1 returns");
+    let guard = at_after(run, returned, "pipeline 1 idle_guard wrote_idle=true");
+    assert!(
+        at_after(run, notified, IDLE_EMIT) < forced,
+        "9: the supervisor published idle"
+    );
+    at_after(run, guard, IDLE_EMIT);
+}
+
+/// PD-2: a supervisor `Idle` for a finished id. With an earlier terminal
+/// (11a, 11b) it adds none; with none (11c) it claims `Superseded`.
+fn verify_s11(text: &str) {
+    for prefix in ["11a", "11b"] {
+        let run = section(text, prefix);
+        let notified = at(run, "supervisor.notify 1 Idle");
+        assert!(
+            !run[notified..].contains("~ terminal"),
+            "{prefix}: the earlier terminal already won"
+        );
+        assert_eq!(count(run, "~ terminal 1"), 1, "{prefix}: one terminal");
+    }
+    let run = section(text, "11c");
+    let notified = at(run, "supervisor.notify 1 Idle");
+    at_after(run, notified, "~ terminal 1 Superseded/StaleOwner");
+}
+
+/// PD-3 (S3): the unconditional `idle` emit after a failed start's ack. 12b:
+/// the supervisor's `Idle` already restored Idle, and S3 publishes `idle`
+/// again with no status change. 12c: the real timeout error.
+fn verify_s12(text: &str) {
+    let run = section(text, "12b");
+    let ack = at(run, "supervisor.start_ack 1 Err(");
+    let reply = at_after(run, ack, "reply start Err");
+    assert_eq!(count(&run[ack..reply], IDLE_EMIT), 1, "12b: S3's idle emit");
+    assert!(
+        !run[ack..reply].contains("~ status"),
+        "12b: S3's emit comes with no status change"
+    );
+    let run = section(text, "12c");
+    at(run, "Err(Audio lifecycle supervisor is unavailable)");
+    let recovering = at(run, "emit recording-status-changed \"recovering\"");
+    let idle = at_after(run, recovering, IDLE_EMIT);
+    at_after(run, idle, "~ status Recovering -> Idle");
 }
 
 // ------------------------------------------------------------- the goldens
@@ -491,7 +744,7 @@ fn golden_s01_stop_during_start() {
                 s01c_stop_with_a_stale_expected_id,
             ),
         ],
-        &nothing,
+        &verify_s01,
     );
 }
 
@@ -506,15 +759,19 @@ fn golden_s02_cancel_in_each_phase() {
             sub("2a cancel while Starting", s02a_cancel_starting),
             sub("2b cancel while Recording", s02b_cancel_recording),
             sub(
-                "2c cancel while Processing, pipeline running",
-                s02c_cancel_processing_with_the_pipeline_running,
+                "2c cancel while delivery holds the ownership fence",
+                s02c_cancel_waits_for_the_delivery_fence,
             ),
             sub(
-                "2d cancel while Processing, supervisor event in the tail (PD-16)",
+                "2d cancel while Processing, CleanupFinished in the tail (PD-16)",
                 s02d_cancel_processing_with_a_supervisor_event_in_the_tail,
             ),
+            sub(
+                "2e cancel while Processing, pipeline running",
+                s02e_cancel_processing_with_the_pipeline_running,
+            ),
         ],
-        &nothing,
+        &verify_s02,
     );
 }
 
@@ -539,7 +796,7 @@ fn golden_s03_interruption_of_8000_samples_or_more() {
                 s03c_auto_stop_wins_the_race,
             ),
         ],
-        &nothing,
+        &verify_s03,
     );
 }
 
@@ -565,18 +822,7 @@ fn golden_s04_interruption_under_8000_samples() {
                 s04d_start_before_the_owner_is_cleared,
             ),
         ],
-        &|text| {
-            let section = text
-                .split("=== ")
-                .find(|part| part.starts_with("4d"))
-                .expect("the 4d sub-run is in the golden");
-            assert!(section.contains("~ status Idle -> Recovering"));
-            assert_eq!(
-                section.matches("audio_recovering").count(),
-                2,
-                "4d: the start is refused audio_recovering and so is every later start"
-            );
-        },
+        &verify_s04,
     );
 }
 
@@ -591,7 +837,7 @@ fn golden_s05_timeout_teardown() {
             "5 stop times out, supervisor Idle follows, the guard finishes",
             s05_stop_times_out_and_idle_follows,
         )],
-        &nothing,
+        &verify_s05,
     );
 }
 
@@ -614,7 +860,7 @@ fn golden_s06_stale_stop() {
                 s06b_stale_stop_for_an_unterminated_id,
             ),
         ],
-        &nothing,
+        &verify_s06,
     );
 }
 
@@ -665,7 +911,7 @@ fn golden_s09_supervisor_idle_during_processing() {
             "9 Idle for the current id while the pipeline runs",
             s09_supervisor_idle_while_the_pipeline_runs,
         )],
-        &nothing,
+        &verify_s09,
     );
 }
 
@@ -692,6 +938,10 @@ fn assert_c8_recorded(text: &str) {
         section.matches("SD ticker 1 registered=true").count(),
         2,
         "the second ticker registration is not suppressed"
+    );
+    assert!(
+        section.contains("= final status=Idle processing=false context=none"),
+        "10c: the recording ends Idle with its context cleared"
     );
 }
 
@@ -731,7 +981,7 @@ fn golden_s11_idle_on_a_finished_recording() {
                 s11c_idle_when_no_terminal_exists,
             ),
         ],
-        &nothing,
+        &verify_s11,
     );
 }
 
@@ -756,7 +1006,7 @@ fn golden_s12_start_failure_vs_initialization_failed() {
                 s12c_start_timeout_with_a_user_cancel,
             ),
         ],
-        &nothing,
+        &verify_s12,
     );
 }
 
