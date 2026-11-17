@@ -6156,7 +6156,7 @@ async fn start_native_recording_inner(
                     let request = smart_auto
                         .as_ref()
                         .expect("R101.13 asks only for a Smart Auto request");
-                    let result = host.resolve_smart_auto(request);
+                    let result = start_ports::observe_in_core(|| host.resolve_smart_auto(request));
                     input.smart_auto_result = Some(
                         result
                             .as_ref()

@@ -6,7 +6,7 @@
 //! `decide_*`; the awaited-effect and history witnesses read the executor's
 //! parked cursor and `core_history`, which only the refactored shell has.
 use super::golden_harness::*;
-use super::golden_tests::recording;
+use super::golden_tests::{cancelled, recording};
 use super::*;
 use std::task::Poll;
 
@@ -371,4 +371,89 @@ fn the_smart_destination_is_selected_only_for_a_current_capture() {
             .any(|l| l.starts_with("emit_smart_destination")),
         "a stale capture selects no destination: {stale:#?}"
     );
+
+// ------------------------------------------------- Smart Auto routing notification
+
+fn script_smart_auto(w: &Arc<World>) {
+    w.knobs().smart_auto = Some(Ok(crate::microphone_auto::SmartAutoSelection {
+        device_id: "mic-7".to_string(),
+        reason: crate::microphone_auto::SmartAutoReason::CurrentVerified,
+    }));
+}
+
+fn smart_auto_started(w: &Arc<World>) {
+    script_smart_auto(w);
+    w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+    let mut start = w.start_smart_auto(None);
+    let reply = complete(&mut start);
+    w.reply("start", &reply);
+    assert!(reply.is_ok(), "{reply:?}");
+}
+
+/// Decision D-S2-2: the Smart Auto resolver runs under T and D and emits
+/// `smart-auto-microphone-changed` inline on success. A listener of that
+/// notification that starts again would park on T; it is refused before any
+/// lock instead, and the refused entry changes nothing.
+#[test]
+fn a_start_nested_in_the_smart_auto_routing_notification_is_refused_before_any_lock() {
+    let (baseline, _) = under_watchdog("smart auto baseline", || {
+        NESTED.with(|nested| nested.borrow_mut().clear());
+        (trace(Setup::idle(), smart_auto_started), ())
+    });
+    let (lines, results) = under_watchdog("a start nested in the routing notification", || {
+        NESTED.with(|nested| nested.borrow_mut().clear());
+        let lines = trace(Setup::idle(), |w| {
+            w.on_inline("smart_auto.routing_changed", {
+                let world = Arc::clone(w);
+                move || nested_start(&world)
+            });
+            smart_auto_started(w);
+        });
+        (lines, NESTED.with(|nested| nested.borrow().clone()))
+    });
+    assert_eq!(results.len(), 1, "the listener ran once");
+    assert!(refused(&results[0]), "{}", results[0]);
+    assert_eq!(lines, baseline, "the refused start changed nothing");
+}
+
+/// A pipeline owner an inline listener of the routing notification drops while the
+/// start holds T and D does not ask for D (it would deadlock on the non-reentrant
+/// lock): its finish is queued and the start drains it after releasing D, so the
+/// owner's H1 and H2 entries are retired exactly once.
+#[test]
+fn dropping_a_pipeline_owner_from_the_smart_auto_routing_notification_defers_its_finish() {
+    under_watchdog("a pipeline dropped from the routing notification", || {
+        run_sub_run(&SubRun {
+            title: "pipeline finish from the routing notification",
+            setup: Setup::idle(),
+            body: |w| {
+                recording(w);
+                w.knobs().stop_result = Ok(16_000);
+                w.close_gate("pipeline");
+                let mut stop = w.stop(None);
+                assert!(poll_once(&mut stop).is_pending());
+                cancelled(w, "cancel");
+                w.finish_sealed_stop(1);
+                assert_eq!(history_counts(w), (1, 1), "the parked stop's pipeline");
+                let parked = Arc::new(std::sync::Mutex::new(Some(stop)));
+                let (observer, slot) = (Arc::clone(w), Arc::clone(&parked));
+                w.on_inline("smart_auto.routing_changed", move || {
+                    drop(slot.lock().expect("slot").take());
+                    assert_eq!(
+                        history_counts(&observer),
+                        (1, 1),
+                        "nothing is retired while the start holds D and T"
+                    );
+                });
+                smart_auto_started(w);
+                assert!(parked.lock().expect("slot").is_none(), "the listener ran");
+                assert!(
+                    DEFERRED_FINISHES.with(|queue| queue.borrow().is_empty()),
+                    "the queue was drained"
+                );
+                assert_eq!(history_counts(w), (0, 0), "H1 and H2 are retired");
+                w.open_gate("pipeline");
+            },
+        });
+    });
 }
