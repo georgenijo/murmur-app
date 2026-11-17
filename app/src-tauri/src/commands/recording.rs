@@ -185,6 +185,14 @@ mod golden_harness;
 mod golden_tests;
 
 #[cfg(test)]
+#[path = "recording_pd_witness_tests.rs"]
+mod pd_witness_tests;
+
+#[cfg(test)]
+#[path = "recording_contract_tests.rs"]
+mod contract_tests;
+
+#[cfg(test)]
 #[path = "recording_preview_tests.rs"]
 mod preview_tests;
 
@@ -313,23 +321,47 @@ fn spawn_dictation_partial_ticker(
             crate::commands::dictation_preview::ensure_window(&window_app, recording_id)
         })
         .await;
-        loop {
-            tokio::time::sleep(interval).await;
-            if !dictation_partial_is_current(&app.state::<State>().app_state, recording_id) {
-                break;
-            }
-            // Do not await a decode: ticks skip the global single-flight lease,
-            // and stop/hide must not wait for inference or model initialization.
-            let tick_app = app.clone();
-            let tick_preview = preview.clone();
-            drop(tauri::async_runtime::spawn(async move {
-                decode_one_dictation_partial(&tick_app, recording_id, tick_preview).await;
-            }));
-        }
-        // An accepted stop hands this hide to delivery, which queues it
-        // behind the paste; only cancels and interruptions hide here.
-        crate::commands::dictation_preview::hide_on_ticker_exit(&app, recording_id);
+        // The PD-14 witness covers `run_partial_ticker_loop` only. A panic
+        // guard added here, around or outside the loop call, would not be
+        // caught by that test (it injects the panic through the loop's closures).
+        run_partial_ticker_loop(
+            interval,
+            || dictation_partial_is_current(&app.state::<State>().app_state, recording_id),
+            || {
+                // Do not await a decode: ticks skip the global single-flight lease,
+                // and stop/hide must not wait for inference or model initialization.
+                let tick_app = app.clone();
+                let tick_preview = preview.clone();
+                drop(tauri::async_runtime::spawn(async move {
+                    decode_one_dictation_partial(&tick_app, recording_id, tick_preview).await;
+                }));
+            },
+            // An accepted stop hands this hide to delivery, which queues it
+            // behind the paste; only cancels and interruptions hide here.
+            || crate::commands::dictation_preview::hide_on_ticker_exit(&app, recording_id),
+        )
+        .await;
     }));
+}
+
+/// The partial ticker task's loop, with its three effects passed in. This is a
+/// behaviour-neutral extraction (Stage 1 PD-14 witness seam): `on_exit` runs
+/// only when the loop ends by itself, so a panic in `is_current` or `tick`
+/// unwinds past it and the preview pill is never hidden (PD-14, C7.1).
+async fn run_partial_ticker_loop(
+    interval: std::time::Duration,
+    is_current: impl Fn() -> bool,
+    tick: impl Fn(),
+    on_exit: impl FnOnce(),
+) {
+    loop {
+        tokio::time::sleep(interval).await;
+        if !is_current() {
+            break;
+        }
+        tick();
+    }
+    on_exit();
 }
 
 /// Start the incremental VAD (streaming setting, workstream E1) for a recording
