@@ -84,8 +84,8 @@ must call the **next** phase, never the one before the claim or the wait:
 | Sequence | Phases | Rule |
 |---|---|---|
 | Preview start | `PreviewStart` (before `preview.claim()`) → `PreviewStartRecheck` (`microphone_preview.rs:270`, `is_connecting(id)` only) | After the claim `preview_active` is true, so re-running `PreviewStart` would refuse the preview's own generation. The recheck repeats no admission check and claims nothing. |
-| Standby / key-down retirement (`PreviewStart`, `MicStartupBenchmarkPreClaim`) | `WaitThen(RetireStandby)` / `WaitThen(RetireKeyDownCapture)` → the same request with `standby_retire_attempted` / `key_down_retire_attempted` set | Each wait is returned **at most once**. If the retire timed out or left the capture present, the retry falls through to `audio_active` and refuses (`preview_audio_blocker`, `microphone_preview.rs:137-146`) instead of waiting again. |
-| File transcription | `PreClaim` → claim → `PostClaim` | `PostClaim` does not read `file_transcribing` (its own claim). The shell passes `file_claim_prior` once it has swapped. |
+| Standby / key-down retirement (`PreviewStart`, `MicStartupBenchmarkPreClaim`) | `WaitThen(RetireStandby)` / `WaitThen(RetireKeyDownCapture)` → the shell retires → `admit_after(request, retry, &fresh)` | **A retry resumes, it never restarts.** `admit_after` evaluates only the checks **after** the wait, against fresh facts; earlier checks are not re-run or re-read (production already passed them: Settings closing during a retire revokes the start, but production goes straight to `audio_active`, `microphone_preview.rs:137-146`). So a wait is returned at most once, and a retire that timed out falls through to the `audio_active` refusal. Standby resumes at the check after `standby` (`start_revoked` for preview, `meeting_blocks_asr` for the mic-startup benchmark); a key-down retire resumes at `audio_active`. |
+| File transcription | `PreClaim` → claim → `PostClaim` | `PostClaim` does not read `file_transcribing` (its own claim). The `file_transcribing` fallback of `PreClaim` is acceptable **only as a pre-claim view**: production wiring must preserve the atomic swap and its returned prior value (`recording.rs:6599-6605`); it cannot substitute a flag load for that result. |
 | Meeting | `PreClaim` → claim → `PostClaim` | `PostClaim` reads only the re-read `relaunch_committed`. |
 | Mic startup benchmark | `PreClaim` → `try_start()` → `PostClaim` | `PostClaim` reads only `second_claim`. |
 | Model preparation | `ModelPreparation` (twice around the backend wait, `recording.rs:1153`, `:1168`) | The recording id the worker was spawned for must equal the current id, evaluated first; a stale worker is never eligible. The idle warm-up has no generation guard (`recording.rs:1240`, `:1248`), and its read under its own `SharedBackendChange` claim does not see that claim. |
@@ -93,8 +93,10 @@ must call the **next** phase, never the one before the claim or the wait:
 | Single-phase claims (`DictationStart`, `Benchmark`, `Corpus`, `SharedBackendChange`, `ModelRemoval`) | one `admit`, then the claim | After the claim a second `admit` conflicts with the claim itself; the shell must not recheck through `admit` (C6.4's own recheck points apply). |
 
 `tests.rs` spans every row of this table (`preview_recheck_spans_the_claim`,
-`key_down_retirement_timeout_refuses_instead_of_waiting_again`,
-`standby_retirement_is_attempted_once_for_every_request_that_waits`,
+`key_down_retirement_resumes_at_the_audio_check` (revocation changes during the
+retire), `preview_standby_retirement_resumes_after_the_standby_check`,
+`mic_startup_benchmark_standby_retirement_resumes_after_the_standby_check`,
+`resume_evaluates_exactly_the_checks_after_the_wait`,
 `no_request_can_wait_more_than_once_per_kind`, `model_preparation_*`,
 `post_claim_phases_do_not_read_their_own_claim`,
 `single_phase_claims_are_terminal_and_must_not_be_readmitted`).
@@ -143,8 +145,8 @@ omits)
   `transition_lock_busy`, `dictation_lock_busy` (`ModelRemoval`'s two
   `try_lock`s), `model_matches`, `model_prep_variant`, `recording_id` /
   `expected_recording_id` (the model-preparation generation guard),
-  `standby_retire_attempted` and `key_down_retire_attempted` (a wait is
-  returned once).
+  and the `admit_after` resume API (a retry resumes after the wait instead of
+  re-running earlier checks).
 - `Request::PreviewStartRecheck`: a 17th request. C6.1 lists the recheck as part
   of `PreviewStart`; the code runs it after the claim, in another task.
 - `Admission::NeedObservation`: C6.2 #1 routes the smart-auto resolve "through

@@ -1414,27 +1414,40 @@ fn preview_recheck_spans_the_claim() {
     );
 }
 
-/// Follow `WaitThen` the way the shell does: run the retire, mark it attempted
-/// (the retire may leave the facts unchanged, e.g. on a timeout) and ask again.
-fn drive(request: Request, mut o: Occupancy) -> (Admission, Vec<Retry>) {
+/// What [`drive`] saw.
+struct Driven {
+    admission: Admission,
+    /// Waits returned, in order.
+    waits: Vec<Retry>,
+    /// The checks each resume evaluated, in order.
+    resumed: Vec<Vec<&'static str>>,
+}
+
+/// Follow `WaitThen` the way the shell does: run the retire (`during` changes
+/// the facts as the world moves on while it runs, e.g. Settings closing or a
+/// teardown timing out), then resume **after** the wait with the fresh facts.
+fn drive(request: Request, first: &Occupancy, mut during: impl FnMut(&mut Occupancy)) -> Driven {
+    let mut o = first.clone();
+    let mut admission = admit(request, &o);
     let mut waits = Vec::new();
-    loop {
-        match admit(request, &o) {
-            Admission::WaitThen(retry) => {
-                assert!(waits.len() < 4, "{request:?}: waits must terminate");
-                waits.push(retry);
-                match retry {
-                    Retry::RetireStandby => o.standby_retire_attempted = true,
-                    Retry::RetireKeyDownCapture => o.key_down_retire_attempted = true,
-                }
-            }
-            other => return (other, waits),
-        }
+    let mut resumed = Vec::new();
+    while let Admission::WaitThen(retry) = admission {
+        assert!(waits.len() < 4, "{request:?}: waits must terminate");
+        waits.push(retry);
+        during(&mut o);
+        let result = admit_after(request, retry, &o).expect("request has this wait");
+        resumed.push(result.evaluated);
+        admission = result.admission;
+    }
+    Driven {
+        admission,
+        waits,
+        resumed,
     }
 }
 
 #[test]
-fn key_down_retirement_timeout_refuses_instead_of_waiting_again() {
+fn key_down_retirement_resumes_at_the_audio_check() {
     let holding = Occupancy {
         unconfirmed_key_down: true,
         audio_active: true,
@@ -1444,67 +1457,194 @@ fn key_down_retirement_timeout_refuses_instead_of_waiting_again() {
         admit(Request::PreviewStart, &holding),
         Admission::WaitThen(Retry::RetireKeyDownCapture)
     );
-    // The bounded wait timed out: both flags are still true. The retry
-    // reaches `audio_active` (`preview_audio_blocker`) and refuses.
-    let timed_out = Occupancy {
-        key_down_retire_attempted: true,
+    // Settings closes during the retirement (the start is revoked) and the
+    // capture teardown times out: both facts stay true. Production passed the
+    // revocation check before retiring and goes straight to `audio_active`
+    // (`microphone_preview.rs:137-146`): `MicrophoneStillInUse`.
+    let driven = drive(Request::PreviewStart, &holding, |o| {
+        o.preview_start_revoked = true;
+    });
+    assert_eq!(driven.admission, refused(RefusalCode::MicrophoneStillInUse));
+    assert_eq!(driven.waits, vec![Retry::RetireKeyDownCapture]);
+    assert_eq!(driven.resumed, vec![vec!["audio_active"]]);
+    // Restarting from the top with the fresh facts would have given the wrong
+    // answer; that is the bug the resume avoids.
+    let restarted = Occupancy {
+        preview_start_revoked: true,
         ..holding.clone()
     };
-    let result = admit_traced(Request::PreviewStart, &timed_out);
-    assert_eq!(result.admission, refused(RefusalCode::MicrophoneStillInUse));
-    assert_eq!(result.evaluated.last(), Some(&"audio_active"));
-    // The retire worked: the microphone is free, the retry admits.
-    let retired = Occupancy {
-        key_down_retire_attempted: true,
-        ..quiet()
-    };
     assert_eq!(
-        admit(Request::PreviewStart, &retired),
+        admit(Request::PreviewStart, &restarted),
+        refused(RefusalCode::PreviewDictationBusy)
+    );
+    // The retire worked: the microphone is free. The revocation that happened
+    // meanwhile is not re-read either.
+    let freed = drive(Request::PreviewStart, &holding, |o| {
+        o.preview_start_revoked = true;
+        o.unconfirmed_key_down = false;
+        o.audio_active = false;
+    });
+    assert_eq!(
+        freed.admission,
         Admission::Admit(Claims::of(ClaimKind::PreviewGeneration))
     );
-    // Driven end to end: exactly one wait, then the refusal.
+    assert_eq!(freed.resumed, vec![vec!["audio_active"]]);
+}
+
+#[test]
+fn preview_standby_retirement_resumes_after_the_standby_check() {
+    let standby = Occupancy {
+        standby: true,
+        audio_active: true,
+        ..quiet()
+    };
+    // The retire leaves the standby in place, and the start is revoked meanwhile:
+    // production retires first, then reads revocation (`microphone_preview.rs:191`
+    // ahead of `refuse_revoked_start`): refuse as revoked, never wait again.
+    let revoked = drive(Request::PreviewStart, &standby, |o| {
+        o.preview_start_revoked = true;
+    });
     assert_eq!(
-        drive(Request::PreviewStart, holding),
-        (
-            refused(RefusalCode::MicrophoneStillInUse),
-            vec![Retry::RetireKeyDownCapture]
-        )
+        revoked.admission,
+        refused(RefusalCode::PreviewDictationBusy)
+    );
+    assert_eq!(revoked.waits, vec![Retry::RetireStandby]);
+    assert_eq!(revoked.resumed, vec![vec!["start_revoked"]]);
+    // Standby survived, nothing else changed: the resume reaches `audio_active`
+    // without re-running `standby`.
+    let survived = drive(Request::PreviewStart, &standby, |_| {});
+    assert_eq!(
+        survived.admission,
+        refused(RefusalCode::MicrophoneStillInUse)
+    );
+    assert_eq!(survived.resumed[0].first(), Some(&"start_revoked"));
+    assert_eq!(survived.resumed[0].last(), Some(&"audio_active"));
+    assert!(!survived.resumed[0].contains(&"standby"));
+    // Checks after the wait read fresh facts (they had not been read yet).
+    let meeting = drive(Request::PreviewStart, &standby, |o| {
+        o.standby = false;
+        o.audio_active = false;
+        o.meeting_active = true;
+    });
+    assert_eq!(meeting.admission, refused(RefusalCode::PreviewMeeting));
+    // A retired standby followed by an unconfirmed key-down capture waits once
+    // more, for the other kind, and resumes after that.
+    let both = Occupancy {
+        unconfirmed_key_down: true,
+        ..standby.clone()
+    };
+    let chained = drive(Request::PreviewStart, &both, |o| {
+        o.standby = false;
+    });
+    assert_eq!(
+        chained.waits,
+        vec![Retry::RetireStandby, Retry::RetireKeyDownCapture]
+    );
+    assert_eq!(chained.resumed[1], vec!["audio_active"]);
+    assert_eq!(
+        chained.admission,
+        refused(RefusalCode::MicrophoneStillInUse)
     );
 }
 
 #[test]
-fn standby_retirement_is_attempted_once_for_every_request_that_waits() {
-    for request in [Request::PreviewStart, Request::MicStartupBenchmarkPreClaim] {
-        let standby = Occupancy {
-            standby: true,
-            audio_active: true,
-            ..quiet()
-        };
+fn mic_startup_benchmark_standby_retirement_resumes_after_the_standby_check() {
+    let standby = Occupancy {
+        standby: true,
+        audio_active: true,
+        ..quiet()
+    };
+    let request = Request::MicStartupBenchmarkPreClaim;
+    assert_eq!(
+        admit(request, &standby),
+        Admission::WaitThen(Retry::RetireStandby)
+    );
+    // The retire timed out: the standby is still there. The resume starts at
+    // the first check after `standby` and ends at `audio_active`.
+    let survived = drive(request, &standby, |_| {});
+    assert_eq!(
+        survived.admission,
+        refused(RefusalCode::MicrophoneStillInUse)
+    );
+    assert_eq!(survived.waits, vec![Retry::RetireStandby]);
+    assert_eq!(
+        survived.resumed,
+        vec![vec![
+            "meeting_blocks_asr",
+            "status",
+            "file_transcribing",
+            "corpus_active",
+            "audio_active"
+        ]]
+    );
+    // The checks after the wait read fresh facts: a meeting that started during
+    // the retire refuses at its own check.
+    let meeting = drive(request, &standby, |o| {
+        o.standby = false;
+        o.audio_active = false;
+        o.meeting_active = true;
+    });
+    assert_eq!(meeting.admission, refused(RefusalCode::MicBenchMeeting));
+    assert_eq!(meeting.resumed, vec![vec!["meeting_blocks_asr"]]);
+    // The retire worked: admitted, with the coordinator claim next.
+    let freed = drive(request, &standby, |o| {
+        o.standby = false;
+        o.audio_active = false;
+    });
+    assert_eq!(
+        freed.admission,
+        Admission::Admit(Claims::of(ClaimKind::BenchmarkCoordinator))
+    );
+}
+
+#[test]
+fn resume_evaluates_exactly_the_checks_after_the_wait() {
+    let waits = [
+        (Request::PreviewStart, Retry::RetireStandby),
+        (Request::PreviewStart, Retry::RetireKeyDownCapture),
+        (Request::MicStartupBenchmarkPreClaim, Retry::RetireStandby),
+    ];
+    for (request, retry) in waits {
+        let order = check_order(request);
+        let at = order
+            .iter()
+            .position(|name| *name == retry.check())
+            .expect("wait check exists");
+        // A quiet world after the retire: every later check passes.
+        let result = admit_after(request, retry, &quiet()).expect("has the wait");
         assert_eq!(
-            admit(request, &standby),
-            Admission::WaitThen(Retry::RetireStandby),
-            "{request:?}"
+            result.evaluated,
+            order[at + 1..].to_vec(),
+            "{request:?} {retry:?}"
         );
-        // The retire did not clear it: refuse on `audio_active`, never wait again.
-        let survived = Occupancy {
-            standby_retire_attempted: true,
-            ..standby.clone()
-        };
-        assert_eq!(
-            admit(request, &survived),
-            refused(RefusalCode::MicrophoneStillInUse),
-            "{request:?}"
-        );
-        // The retire cleared it.
-        let cleared = Occupancy {
-            standby_retire_attempted: true,
-            ..quiet()
-        };
-        assert!(
-            matches!(admit(request, &cleared), Admission::Admit(_)),
-            "{request:?}"
-        );
-        assert_eq!(drive(request, standby).1, vec![Retry::RetireStandby]);
+        assert!(matches!(result.admission, Admission::Admit(_)));
+        // Every check up to and including the wait fires in the fresh facts:
+        // none of them is consulted.
+        let mut loud = quiet();
+        loud.preview_start_revoked = true;
+        loud.relaunch_committed = true;
+        loud.keyboard_processing = true;
+        let resumed = admit_after(request, retry, &loud).expect("has the wait");
+        for name in &order[..=at] {
+            assert!(
+                !resumed.evaluated.contains(name),
+                "{request:?} {retry:?} re-ran `{name}`"
+            );
+        }
+    }
+}
+
+#[test]
+fn only_requests_with_a_wait_can_resume() {
+    for request in Request::ALL {
+        let order = check_order(request);
+        for retry in [Retry::RetireStandby, Retry::RetireKeyDownCapture] {
+            assert_eq!(
+                admit_after(request, retry, &quiet()).is_some(),
+                order.contains(&retry.check()),
+                "{request:?} {retry:?}"
+            );
+        }
     }
 }
 
@@ -1518,14 +1658,15 @@ fn no_request_can_wait_more_than_once_per_kind() {
         ..quiet()
     };
     for request in Request::ALL {
-        let (_, waits) = drive(request, worst.clone());
-        let mut seen = waits.clone();
+        let driven = drive(request, &worst, |_| {});
+        let mut seen = driven.waits.clone();
         seen.sort_by_key(|retry| *retry as u8);
         seen.dedup();
         assert_eq!(
             seen.len(),
-            waits.len(),
-            "{request:?} repeats a wait: {waits:?}"
+            driven.waits.len(),
+            "{request:?} repeats a wait: {:?}",
+            driven.waits
         );
     }
 }

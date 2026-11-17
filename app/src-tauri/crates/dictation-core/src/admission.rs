@@ -199,15 +199,6 @@ pub struct Occupancy {
     pub audio_active: bool,
     /// A Standby capture exists *(added: the C6.3 matrix has a standby column)*.
     pub standby: bool,
-    /// `retire_standby()` already ran for this request *(added)*. `admit`
-    /// returns `WaitThen(RetireStandby)` at most once: with this set a still
-    /// present standby falls through to the later `audio_active` check.
-    pub standby_retire_attempted: bool,
-    /// The bounded retirement of an unconfirmed key-down capture already ran
-    /// (it may have timed out) *(added)*. With this set a capture that is
-    /// still `unconfirmed_key_down` is no longer waited on; `audio_active`
-    /// decides, as `preview_audio_blocker` does (`microphone_preview.rs:137-146`).
-    pub key_down_retire_attempted: bool,
     /// Only an unconfirmed Fn key-down capture holds the microphone.
     pub unconfirmed_key_down: bool,
     /// A microphone startup check is running.
@@ -217,7 +208,11 @@ pub struct Occupancy {
     pub preview_stop: Option<Result<(), String>>,
     /// `FileTranscriptionPreClaim`: the value `file_transcribing.swap(true)` returned.
     /// Once the shell has swapped, `file_transcribing` is the shell's own claim:
-    /// it must pass the prior value here (or not call this phase again).
+    /// it must pass the prior value here (or not call this phase again). The
+    /// `file_transcribing` fallback used while this is `None` is acceptable only
+    /// as a **pre-claim view**: production wiring must preserve the atomic swap
+    /// and its returned prior value (`recording.rs:6599-6605`); it cannot
+    /// substitute a flag load for that result.
     pub file_claim_prior: Option<bool>,
     /// `MeetingPostClaim`: `relaunch_committed` re-read after the claim stores.
     pub relaunch_recheck: Option<bool>,
@@ -268,18 +263,35 @@ impl Occupancy {
 }
 
 /// What the shell should do when `admit` neither admits nor refuses outright.
+///
+/// **A retry resumes; it never restarts.** After the shell has done the retire
+/// it calls [`admit_after`] with this value and a fresh `Occupancy`. Evaluation
+/// continues at the check **after** the wait; the checks before it are not run
+/// again (production already passed them, and their facts may have changed
+/// since: Settings closing during a retire revokes the start, but the already
+/// passed revocation check is not re-read, `microphone_preview.rs:137-146`).
+/// Because a resume only moves forward, a wait is returned at most once per
+/// request, even when the retire timed out and the thing is still there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Retry {
-    /// `retire_standby()`, then gather a fresh `Occupancy` with
-    /// `standby_retire_attempted = true` and call `admit` again. Returned at
-    /// most once per request: a standby that survives the retire is not waited
-    /// on again.
+    /// `retire_standby()`, then [`admit_after`] resumes at the check after
+    /// `standby`.
     RetireStandby,
     /// Bounded wait / retire of an unconfirmed key-down capture
-    /// (`preview_audio_blocker`), then a fresh `Occupancy` with
-    /// `key_down_retire_attempted = true` (whether or not the capture is gone,
-    /// including after a timeout) and `admit` again. Returned at most once.
+    /// (`preview_audio_blocker`), then [`admit_after`] resumes at the check
+    /// after `unconfirmed_key_down` (`audio_active`), whether or not the
+    /// capture is gone, including after a timeout.
     RetireKeyDownCapture,
+}
+
+impl Retry {
+    /// The name of the check that returned this wait.
+    const fn check(self) -> &'static str {
+        match self {
+            Self::RetireStandby => "standby",
+            Self::RetireKeyDownCapture => "unconfirmed_key_down",
+        }
+    }
 }
 
 /// The resource claim the shell performs next, under today's lock (C6.4).
@@ -909,7 +921,7 @@ static PREVIEW_START: &[Step] = &[
         // of `refuse_revoked_start`), so the wait comes first.
         name: "standby",
         eval: |o| {
-            if o.standby && !o.standby_retire_attempted {
+            if o.standby {
                 Some(Admission::WaitThen(Retry::RetireStandby))
             } else {
                 None
@@ -950,7 +962,7 @@ static PREVIEW_START: &[Step] = &[
         // is still tearing down.
         name: "unconfirmed_key_down",
         eval: |o| {
-            if o.unconfirmed_key_down && !o.key_down_retire_attempted {
+            if o.unconfirmed_key_down {
                 Some(Admission::WaitThen(Retry::RetireKeyDownCapture))
             } else {
                 None
@@ -978,7 +990,7 @@ static MIC_BENCH_PRE_CLAIM: &[Step] = &[
     Step {
         name: "standby",
         eval: |o| {
-            if o.standby && !o.standby_retire_attempted {
+            if o.standby {
                 Some(Admission::WaitThen(Retry::RetireStandby))
             } else {
                 None
@@ -1246,8 +1258,21 @@ pub fn check_order(request: Request) -> Vec<&'static str> {
 /// [`admit`], also reporting which checks were evaluated (the proof that a
 /// refusal short-circuits: later checks are not evaluated, C6.1a).
 pub fn admit_traced(request: Request, occupancy: &Occupancy) -> Evaluation {
+    run(request, steps(request), occupancy)
+}
+
+/// Resume `request` after a [`Retry`] the shell has performed: evaluate
+/// **only the checks after the wait**, against a fresh `occupancy`. Earlier
+/// checks are neither re-run nor re-read. `None` if `request` has no such wait.
+pub fn admit_after(request: Request, retry: Retry, occupancy: &Occupancy) -> Option<Evaluation> {
+    let all = steps(request);
+    let at = all.iter().position(|step| step.name == retry.check())?;
+    Some(run(request, &all[at + 1..], occupancy))
+}
+
+fn run(request: Request, steps: &[Step], occupancy: &Occupancy) -> Evaluation {
     let mut evaluated = Vec::new();
-    for step in steps(request) {
+    for step in steps {
         evaluated.push(step.name);
         if let Some(admission) = (step.eval)(occupancy) {
             return Evaluation {
