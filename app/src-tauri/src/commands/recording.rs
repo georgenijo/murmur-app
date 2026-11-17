@@ -1220,16 +1220,55 @@ impl<'a> IdleGuard<'a> {
         self.disarmed = true;
     }
 
+    /// Undo [`Self::disarm`] when the hand-off to the pipeline did not happen.
+    fn rearm(&mut self) {
+        self.disarmed = false;
+    }
+
+    /// Site 204a (R204a.1-.6), the guard's own call: a finish reached while this
+    /// thread is inside a core span (a listener of an emit, run with D held) does
+    /// not touch D; it is queued and the outermost core entry runs it after it
+    /// releases D (D-S2-4). Otherwise see [`Self::finish_section`].
+    fn run_finish<'f>(
+        &mut self,
+        origin: murmur_dictation_core::inputs::GuardOrigin,
+        on_idle: Option<stop_ports::OnIdle<'f>>,
+    ) {
+        if crate::dictation_executor::executor::in_core() {
+            if on_idle.is_some() {
+                // The closure borrows the caller's frame and cannot outlive this
+                // call: its `EM(idle)` cannot be deferred, the finish still is.
+                tracing::error!(
+                    target: "pipeline",
+                    recording_id = self.recording_id,
+                    "an idle guard finished re-entrantly: its idle emit is not made"
+                );
+            }
+            defer_finish(self.app_state, self.recording_id, origin, self.owner.take());
+            return;
+        }
+        Self::finish_section(
+            self.app_state,
+            self.recording_id,
+            origin,
+            on_idle,
+            &mut self.owner,
+        );
+        drain_deferred_finishes(self.app_state);
+    }
+
     /// Site 204a (R204a.1-.6): `Pre:CX-` before D, then the guard's D section
     /// through `decide_guard_finish`: compare the id only, write `Idle`, clear the
     /// keyboard gate and, if `on_idle` is present, run it as `EM(idle)` with the
     /// held `DictationState`. The pipeline's own guard validates its operation
     /// before deciding and, once the decision is made and before the `In` effects
-    /// run, retires H1 and H2 (C3.9, C1.4.1).
-    fn run_finish<'f>(
-        &mut self,
+    /// run, retires H1 and H2 (C3.9, C1.4.1). Never entered inside a core span.
+    fn finish_section<'f>(
+        app_state: &AppState,
+        recording_id: u64,
         origin: murmur_dictation_core::inputs::GuardOrigin,
         on_idle: Option<stop_ports::OnIdle<'f>>,
+        owner: &mut Option<PipelineOwner>,
     ) {
         use crate::dictation_executor::executor::core_now;
         use crate::dictation_executor::FieldAdapter;
@@ -1239,30 +1278,38 @@ impl<'a> IdleGuard<'a> {
         use murmur_dictation_core::inputs::GuardFinishInput;
         use murmur_dictation_core::stop as core_stop;
 
-        let rid = RecordingId(self.recording_id);
+        let rid = RecordingId(recording_id);
         let input = GuardFinishInput {
             rid,
             origin,
             closure_emit: on_idle.is_some(),
         };
-        let ports = stop_ports::GuardPorts::new(self.app_state, on_idle);
-        stop_ports::run_phase(
+        let ports = stop_ports::GuardPorts::new(app_state, on_idle);
+        let pre = stop_ports::run_phase(
             &mut stop_ports::executor(
                 &ports,
                 Decision::pre_only(core_stop::guard_finish_pre_effects(rid), RowId("R204a.pre")),
             ),
             Placement::Pre,
             None,
-            self.recording_id,
+            recording_id,
         );
+        // Nothing ran: never carry on with D as if it had (a refused entry here
+        // is a re-entrant one; the finish is queued instead).
+        if let crate::dictation_executor::executor::PhaseReport::Invalid(kind) = pre {
+            if kind == murmur_dictation_core::decision::InvalidKind::Reentrant {
+                defer_finish(app_state, recording_id, origin, owner.take());
+            }
+            return;
+        }
         // Lock first, then check recording_id — prevents TOCTOU where
         // a concurrent start advances the ID between our check and the
         // status write.
-        let mut dictation = self.app_state.dictation.lock_or_recover();
-        let view = FieldAdapter::project_lifecycle_view(self.app_state, &dictation);
+        let mut dictation = app_state.dictation.lock_or_recover();
+        let view = FieldAdapter::project_lifecycle_view(app_state, &dictation);
         let decide =
             || stop_ports::decide(|| core_stop::decide_guard_finish(&view, input, core_now()));
-        let decision = match self.owner.as_mut() {
+        let decision = match owner.as_mut() {
             // `validate`, decide whatever the status, `ret_if_matches` (H1).
             Some(owner) => owner.op.consume(|_status| decide()),
             None => decide(),
@@ -1270,16 +1317,99 @@ impl<'a> IdleGuard<'a> {
         .after_pre();
         // H2 `ret rid`: after the decision, before its `In` effects. A panic in
         // an effect (the `ST` trace) can no longer leave either entry behind.
-        if let Some(owner) = self.owner.as_mut() {
+        if let Some(owner) = owner.as_mut() {
             owner.retire_pipeline();
         }
         stop_ports::run_phase(
             &mut stop_ports::executor(&ports, decision),
             Placement::In,
             Some(&mut dictation),
-            self.recording_id,
+            recording_id,
         );
     }
+}
+
+/// A guard finish reached re-entrantly (D-S2-4): its data, queued until the
+/// outermost core entry has released D. Today's code deadlocks on D here; no
+/// production listener reaches it.
+struct DeferredFinish {
+    /// Identity of the `AppState` (never dereferenced), so an entry is only run
+    /// by an entry of the same state.
+    app_state: usize,
+    recording_id: u64,
+    origin: murmur_dictation_core::inputs::GuardOrigin,
+    owner: Option<PipelineOwner>,
+}
+
+thread_local! {
+    static DEFERRED_FINISHES: std::cell::RefCell<Vec<DeferredFinish>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn defer_finish(
+    app_state: &AppState,
+    recording_id: u64,
+    origin: murmur_dictation_core::inputs::GuardOrigin,
+    owner: Option<PipelineOwner>,
+) {
+    DEFERRED_FINISHES.with(|queue| {
+        queue.borrow_mut().push(DeferredFinish {
+            app_state: std::ptr::from_ref(app_state) as usize,
+            recording_id,
+            origin,
+            owner,
+        });
+    });
+}
+
+/// Run the finishes queued for `app_state`, in queue order. A no-op while this
+/// thread is inside a core span (the outermost entry drains), so callers invoke
+/// it right after they release D.
+fn drain_deferred_finishes(app_state: &AppState) {
+    let me = std::ptr::from_ref(app_state) as usize;
+    while !crate::dictation_executor::executor::in_core() {
+        let next = DEFERRED_FINISHES.with(|queue| {
+            let mut queue = queue.borrow_mut();
+            let at = queue.iter().position(|entry| entry.app_state == me)?;
+            Some(queue.remove(at))
+        });
+        let Some(mut entry) = next else {
+            return;
+        };
+        IdleGuard::finish_section(
+            app_state,
+            entry.recording_id,
+            entry.origin,
+            None,
+            &mut entry.owner,
+        );
+    }
+}
+
+/// Drains the finishes queued while the owning entry held D, when that entry
+/// returns (after every lock it took is released).
+struct DrainDeferredFinishes<'a>(&'a AppState);
+
+impl Drop for DrainDeferredFinishes<'_> {
+    fn drop(&mut self) {
+        drain_deferred_finishes(self.0);
+    }
+}
+
+/// Resolves once this thread is outside every core span. A stop future that a
+/// listener polls inline while an outer entry holds D parks here (its waker is
+/// woken at once) instead of asking for D, and goes on when it is next polled
+/// outside the span: its 204b section runs after that entry released D.
+async fn until_outside_core() {
+    std::future::poll_fn(|cx| {
+        if crate::dictation_executor::executor::in_core() {
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        } else {
+            std::task::Poll::Ready(())
+        }
+    })
+    .await;
 }
 
 impl IdleGuard<'_> {
@@ -1329,6 +1459,12 @@ fn run_pipeline_idle_emit(
     // second D section, where C3.5's interleaving (a newer start) lands.
     #[cfg(test)]
     crate::barrier_hook::at("pipeline_idle_emit");
+    // The callers wait out any core span first (`until_outside_core`): D is taken
+    // only outside one.
+    debug_assert!(
+        !crate::dictation_executor::executor::in_core(),
+        "the 204b section runs outside a core span"
+    );
     let ports = stop_ports::IdleEmitPorts::new(app_state, set_processing, emit_idle);
     let mut dictation = app_state.dictation.lock_or_recover();
     let view = FieldAdapter::project_lifecycle_view(app_state, &dictation);
@@ -1347,6 +1483,8 @@ fn run_pipeline_idle_emit(
         Some(&mut dictation),
         recording_id,
     );
+    drop(dictation);
+    drain_deferred_finishes(app_state);
 }
 
 /// RAII guard that clears `file_transcribing` on drop, so a file transcription
@@ -4115,6 +4253,7 @@ pub async fn process_audio(
     // Hold the dictation lock across the check+emit to prevent a concurrent
     // start from interleaving a "recording" status between our check and emit.
     // Site 204b (R204b.1-.4) through `decide_pipeline_idle_emit`.
+    until_outside_core().await;
     run_pipeline_idle_emit(
         &state.app_state,
         rid,
@@ -5153,6 +5292,12 @@ pub(crate) fn handle_audio_lifecycle(
             // stop, which consumes it at admission. A task that never runs, is
             // cancelled or panics drops it, and `Drop` retires the op.
             tauri::async_runtime::spawn(async move {
+                // D-S2-3: an internal entry checks re-entrancy before its
+                // managed-state lookup (a refusal drops `auto_stop_owner`, which
+                // retires the op).
+                if refuse_reentrant_stop().is_err() {
+                    return;
+                }
                 let state = app_handle.state::<State>();
                 if stop_native_recording_owned(
                     app_handle.clone(),
@@ -5260,6 +5405,9 @@ fn handle_audio_lifecycle_events<R: tauri::Runtime>(
         }
     }
     let state = app_handle.state::<State>();
+    // Finishes queued re-entrantly while this entry held D run once it returns,
+    // after every lock it took is released (D-S2-4).
+    let _drain = DrainDeferredFinishes(&state.app_state);
     let rid = RecordingId(recording_id);
     let now = core_now();
     let ports = lifecycle_ports::LifecyclePorts::new(
@@ -6222,6 +6370,9 @@ async fn stop_native_recording_admitted(
 
     // Also the first statement of the tests' direct entry (`_inner`).
     refuse_reentrant_stop()?;
+    // Finishes queued re-entrantly while this stop held D run when it returns,
+    // after every lock it took is released (D-S2-4).
+    let _drain = DrainDeferredFinishes(&state.app_state);
     // The `releaseToStop` endpoint: entry, before any lock wait (#826).
     let stop_entered_at = std::time::Instant::now();
     let transition = state.app_state.recording_transition.lock().await;
@@ -6631,23 +6782,30 @@ async fn stop_native_recording_admitted(
     let pipeline_op = decision
         .continuation
         .map(|spec| PipelineOwner::register(&state.app_state.core_history, spec));
+    // The pipeline's own guard takes over status management before `PE(Vad)`
+    // (C3.5): a panic in that effect leaves `Processing`, as the original shell did.
+    guard.disarm();
     // `PE(Vad)`, then `PS`: the executor stops at the awaited `PS`. Its cursor is
     // parked across the await with no port or executor held (they are not `Send`).
     let parked = {
         let ports = StopPorts::new(host, state, rid, stop_entered_at);
         ports.set_hooks(StopHooks {
             perf_enter: Some(Box::new(|| {
+                #[cfg(test)]
+                crate::barrier_hook::at("stop.perf_enter_vad");
                 performance_guard.enter(PerformanceStageV1::Vad);
             })),
             ..StopHooks::default()
         });
         let mut exec = executor(&ports, decision);
         let report = run_phase(&mut exec, Placement::PostDT, None, rid);
-        stop_ports::pipeline_start(report)?;
+        if let Err(error) = stop_ports::pipeline_start(report) {
+            // The pipeline never started: the stop's guard resets the status.
+            guard.rearm();
+            return Err(error);
+        }
         exec.suspend()
     };
-    // The pipeline's own guard takes over status management.
-    guard.disarm();
 
     let pipeline_result = host
         .run_transcription_pipeline(
@@ -6690,6 +6848,7 @@ async fn stop_native_recording_admitted(
     // Hold the dictation lock across the check+emit to prevent a concurrent
     // start from interleaving a "recording" status between our check and emit.
     // Site 204b (R204b.1-.4).
+    until_outside_core().await;
     run_pipeline_idle_emit(
         &state.app_state,
         rid,
