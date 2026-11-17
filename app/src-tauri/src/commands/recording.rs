@@ -15,7 +15,8 @@ use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
 use crate::{audio, audio_decode, injector, keyboard, vad};
 use crate::{MutexExt, State};
-use murmur_dictation_core::admission::{Admission, RefusalCode, SmartAutoObservation};
+#[cfg(test)]
+use murmur_dictation_core::admission::Admission;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -174,6 +175,7 @@ mod dictation_host;
 use dictation_host::{DictationHost, TauriHost};
 mod cancel_ports;
 mod lifecycle_ports;
+mod start_ports;
 mod stop_ports;
 
 #[cfg(test)]
@@ -195,6 +197,10 @@ mod stop_tests;
 #[cfg(test)]
 #[path = "recording_cancel_tests.rs"]
 mod cancel_tests;
+
+#[cfg(test)]
+#[path = "recording_start_tests.rs"]
+mod start_tests;
 
 #[cfg(test)]
 #[path = "recording_golden_harness.rs"]
@@ -736,10 +742,12 @@ fn transition_dictation_status(
     crate::dictation_executor::FieldAdapter::set_status(recording_id, dictation, to)
 }
 
-/// Mark an eligible live request at the exact Idle -> Starting boundary.
+/// Mark an eligible live request at the exact Idle -> Starting boundary. Production
+/// is `TRQ` then `ST` through the start ports; this is their pre-extraction oracle.
 /// Capture the performance origin and publish the denominator before the
 /// state-transition trace so diagnostic I/O cannot disappear from measured
 /// request-to-first-PCM latency.
+#[cfg(test)]
 fn accept_live_dictation_request(
     recording_id: u64,
     dictation: &mut crate::state::DictationState,
@@ -5762,6 +5770,8 @@ fn publish_recording_ready_with<R: tauri::Runtime>(
 }
 
 /// A reason the shared dictation start transition refuses a new recording.
+/// Production: `decide_start_request` (R101.3-.11); this is its oracle in tests.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DictationStartBlocker {
     pub kind: &'static str,
@@ -5779,16 +5789,24 @@ pub(crate) struct DictationStartBlocker {
 /// refused here. The predicate is `admit(DictationStart)` over the facts in the
 /// order they were read here before (relaunch, meeting, file, corpus,
 /// benchmark, status); see `dictation_admission`.
+#[cfg(test)]
 pub(crate) fn dictation_start_blocker(
     state: &State,
     status: DictationStatus,
 ) -> Option<DictationStartBlocker> {
     match crate::dictation_admission::dictation_start_admission(state, status) {
-        Admission::RefuseWith(code) => code.reply().map(|(kind, state)| DictationStartBlocker {
-            kind: kind.as_str(),
-            state: state.as_str(),
-        }),
-        _ => None,
+        Admission::RefuseWith(code) => Some(
+            code.reply()
+                .map(|(kind, state)| DictationStartBlocker {
+                    kind: kind.as_str(),
+                    state: state.as_str(),
+                })
+                .unwrap_or_else(|| unreachable!("{code:?} is a typed start refusal")),
+        ),
+        Admission::Admit(_) => None,
+        Admission::Takeover(_) | Admission::WaitThen(_) | Admission::NeedObservation(_) => {
+            unreachable!("the blocker steps of a dictation start only admit or refuse")
+        }
     }
 }
 
@@ -5836,6 +5854,28 @@ pub async fn start_native_recording(
     .await
 }
 
+/// The first statement of the start entry (C4.2, decisions D-S2-2 / D-S2-3): a
+/// start reached while this thread is inside a core span (an inline listener of
+/// an emit, run with D or T held) is refused before any lock, claim or
+/// managed-state lookup. The span is not held across the start's awaits: each
+/// executor phase enters and leaves the core on its own.
+fn refuse_reentrant_start() -> Result<(), String> {
+    match crate::dictation_executor::executor::CoreEntry::enter() {
+        Ok(entry) => {
+            drop(entry);
+            Ok(())
+        }
+        Err(kind) => {
+            tracing::error!(
+                target: "pipeline",
+                refusal = ?kind,
+                "re-entrant start refused before any lock"
+            );
+            Err(start_ports::start_refused(kind))
+        }
+    }
+}
+
 async fn start_native_recording_inner(
     host: &dyn DictationHost,
     state: &State,
@@ -5844,11 +5884,31 @@ async fn start_native_recording_inner(
     origin: Option<String>,
     gesture_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    use crate::dictation_executor::executor::{core_now, AwaitedOutcome, PhaseReport};
+    use crate::dictation_executor::FieldAdapter;
+    use murmur_dictation_core::admission::Occupancy;
+    use murmur_dictation_core::decision::{ObsKind, RowId, Verdict};
+    use murmur_dictation_core::effects::{Effect as CoreEffect, Placement};
+    use murmur_dictation_core::ids::{Handle, RecordingId};
+    use murmur_dictation_core::inputs::{
+        CaptureResult, CaptureResultInput, DeviceSel, GestureObs, Origin, SmartAutoSel,
+        SpeculativeObs, StartInput,
+    };
+    use murmur_dictation_core::replies::Reply as CoreReply;
+    use murmur_dictation_core::start as core_start;
+    use start_ports::{decide, executor, run_phase, StartPlan, StartPorts, StartSlots};
+
+    // C4.1 step 0 / C4.2: the **first** statement, before the claims, T, D or any
+    // managed-state lookup.
+    refuse_reentrant_start()?;
     // Consume only this request's stamp before every await or rejected start.
     let gesture_claim = audio_lifecycle::gesture::claim(gesture_token.as_deref());
     // A Fn/Globe gesture may own a key-down capture. Dropping this claim on any
     // early return discards that audio immediately.
     let speculative = audio_lifecycle::speculative::claim(gesture_token.as_deref());
+    // The claims live in the slots the effects use (`GA`, `SPEC`, `REL`); declared
+    // before the transition guard so a return drops T first, as before.
+    let slots = StartSlots::new(gesture_claim, speculative);
     // This lock covers only the synchronous ownership transition. Core Audio
     // initialization happens on the supervisor and never waits under it.
     // A flowing Settings microphone test is not stopped here: the supervisor
@@ -5864,194 +5924,215 @@ async fn start_native_recording_inner(
         Some("hold") => "hold",
         _ => "toggle",
     };
-    match crate::dictation_admission::dictation_start_pre_admission(
+    let hold = origin == "hold";
+    let now = core_now();
+    let mut input = StartInput {
+        origin: if hold { Origin::Hold } else { Origin::Toggle },
+        device: if smart_auto.is_some() {
+            DeviceSel::SmartAuto
+        } else if device_name.is_some() {
+            DeviceSel::Explicit
+        } else {
+            DeviceSel::SystemDefault
+        },
+        gesture: GestureObs {
+            has_token: gesture_token.is_some(),
+            hold,
+        },
+        speculative: SpeculativeObs {
+            claimed: slots.speculative_claimed(),
+        },
+        kept_preview,
         app_disabled,
-        smart_auto.is_some() && device_name.is_some(),
-    ) {
-        Admission::RefuseWith(RefusalCode::AppDisabled) => {
+        fixed_and_smart: smart_auto.is_some() && device_name.is_some(),
+        occupancy: Occupancy::default(),
+        cleanup_pending: None,
+        smart_auto_result: None,
+    };
+    // Site 101, R101.1-.2 (no D).
+    if let Some(pre) = start_ports::decide_pre(|| core_start::decide_start_request_pre(&input, now))
+        .map_err(start_ports::start_refused)?
+    {
+        if pre.row == RowId("R101.1") {
             tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
-            return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
         }
-        Admission::RefuseWith(code @ RefusalCode::SmartAutoWithFixedDevice) => {
-            return Err(code.text().to_string());
-        }
-        _ => {}
+        drop(_transition);
+        return start_ports::release_and_reply(
+            host,
+            state,
+            &slots,
+            pre,
+            state.app_state.recording_id.load(Ordering::SeqCst),
+        );
     }
     // Check and update status in one lock; assign recording ID in the same
     // critical section so no concurrent cancel/start can slip between them.
-    let (
-        rid,
-        gesture,
-        performance_started_at_ms,
-        smart_enabled,
-        delivery_target,
-        selected_device_name,
-        smart_auto_reason,
-    ) = {
+    // Site 101 (R101.3-.15): `decide_start_request`, inline at today's line.
+    let (rid, smart_enabled, parked, mut capture_guard, smart_auto_reason) = {
+        // Finishes queued re-entrantly while this synchronous section held D run
+        // when it ends (an unwind-safe scope on this thread, after D is released
+        // and before the await below, D-S2-4); the drain obligation is never held
+        // across an await.
+        let _drain = DrainDeferredFinishes(&state.app_state);
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        if let Some(blocker) = dictation_start_blocker(state, dictation.status) {
-            tracing::warn!(target: "pipeline", reason = blocker.kind, "start_native_recording: blocked");
-            return Ok(serde_json::json!({
-                "type": blocker.kind,
-                "state": blocker.state
-            }));
-        }
-        match dictation.status {
-            DictationStatus::Starting
-            | DictationStatus::Recording
-            | DictationStatus::Recovering
-            | DictationStatus::Processing => {
-                // dictation_start_blocker already refused every non-idle
-                // status under this lock.
-                return Err("Dictation is not idle.".to_string());
-            }
-            DictationStatus::Idle => {
-                let cleanup_pending = host.supervisor().is_dictation_cleanup_pending(
-                    state.app_state.recording_id.load(Ordering::SeqCst),
-                );
-                if let Admission::RefuseWith(code) =
-                    crate::dictation_admission::dictation_start_cleanup_admission(cleanup_pending)
-                {
-                    debug_assert!(code.publishes_recovering());
-                    // The result has finished, but its capture owner still
-                    // needs cleanup. Keep that generation for failure guidance
-                    // and let confirmed exit restore Idle independently.
-                    let recording_id = state.app_state.recording_id.load(Ordering::SeqCst);
-                    transition_dictation_status(
-                        recording_id,
-                        &mut dictation,
-                        DictationStatus::Recovering,
-                    );
-                    let _ = host.emit("recording-status-changed", "recovering");
-                    return Ok(code.reply().map_or_else(
-                        || serde_json::json!({ "type": "audio_recovering", "state": "recovering" }),
-                        |(kind, status)| {
-                            serde_json::json!({ "type": kind.as_str(), "state": status.as_str() })
-                        },
-                    ));
+        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let current = view.current_id.0;
+        input.occupancy =
+            crate::dictation_admission::dictation_start_occupancy(state, dictation.status);
+        // The decision asks for the facts today's code reads only after an
+        // earlier check passed (D-S1-2): the retiring capture (status `Idle`, no
+        // blocker), then the Smart Auto selection. At most one round of each.
+        let mut resolved = None;
+        let mut rounds = 0_u8;
+        let decision = loop {
+            let decision = decide(|| core_start::decide_start_request(&view, input.clone(), now));
+            rounds += 1;
+            match decision.verdict {
+                Verdict::NeedObservation(ObsKind::CleanupPending { id }) if rounds == 1 => {
+                    input.cleanup_pending =
+                        Some(host.supervisor().is_dictation_cleanup_pending(id.0));
                 }
-                // This is a cache-only policy read while the capture lifecycle
-                // is Idle. Its stable ID is passed to the supervisor below,
-                // which freezes it for the whole generation.
-                let (selected_device_name, device_selection, smart_auto_reason) =
-                    match smart_auto.as_ref() {
-                        Some(request) => {
-                            // `admit` asks for the Smart Auto resolution
-                            // (`NeedObservation`) after the retiring-capture
-                            // check; a failed resolve refuses with its own text.
-                            let observed =
-                                crate::dictation_admission::dictation_start_smart_auto_admission(
-                                    SmartAutoObservation::Requested(None),
-                                );
-                            debug_assert!(matches!(observed, Admission::NeedObservation(_)));
-                            let resolved = crate::audio_inventory::resolve_smart_auto(request);
-                            if let Admission::RefuseWith(code) =
-                                crate::dictation_admission::dictation_start_smart_auto_admission(
-                                    SmartAutoObservation::Requested(Some(
-                                        resolved.as_ref().map(|_| ()).map_err(Clone::clone),
-                                    )),
-                                )
-                            {
-                                return Err(code.text().to_string());
-                            }
-                            let selection = resolved?;
-                            (
-                                Some(selection.device_id),
-                                "smart_auto",
-                                Some(selection.reason.as_str()),
-                            )
-                        }
-                        None => (
-                            device_name.clone(),
-                            if device_name.is_some() {
-                                "explicit"
-                            } else {
-                                "system_default"
-                            },
-                            None,
-                        ),
-                    };
-                let rid = crate::dictation_executor::FieldAdapter::alloc_id(
-                    &state.app_state,
-                    &mut dictation,
-                );
-                let gesture = gesture_claim.accepted(origin == "hold");
-                crate::audio::prepare::capture_claimed(
-                    crate::audio::prepare::CaptureClaim::Dictation(gesture.timing.map(|g| {
-                        crate::audio::prepare::PrepareIdentity {
-                            token: g.candidate.token,
-                            listener_generation: host.keyboard().listener_generation(),
-                            topology_generation: audio_lifecycle::input_topology_generation(),
-                            configuration_generation:
-                                crate::audio::prepare::configuration_generation(),
-                        }
-                    })),
-                );
-                let performance_started_at_ms =
-                    accept_live_dictation_request(rid, &mut dictation, |status_at_acceptance| {
-                        debug_assert_eq!(status_at_acceptance, DictationStatus::Idle);
-                        tracing::info!(
-                            target: "pipeline",
-                            event_code = "pipeline.dictation_requested",
-                            slo_contract = DICTATION_SLO_CONTRACT,
-                            device_selection,
-                            recording_id = rid,
-                            origin,
-                            "start_native_recording"
-                        );
-                    });
-                // Freeze the native delivery target immediately after the
-                // accepted Idle -> Starting transition, under the same
-                // ownership lock. This startup work is therefore included in
-                // request-to-first-PCM SLO timing.
-                let delivery_target = host.ax().capture_delivery_target_snapshot();
-                (
-                    rid,
-                    gesture,
-                    performance_started_at_ms,
-                    smart_destination_eligible(&dictation),
-                    delivery_target,
-                    selected_device_name,
-                    smart_auto_reason,
-                )
+                Verdict::NeedObservation(ObsKind::SmartAutoSelection) if rounds <= 2 => {
+                    // This is a cache-only policy read while the capture lifecycle
+                    // is Idle. Its stable ID is passed to the supervisor below,
+                    // which freezes it for the whole generation.
+                    let request = smart_auto
+                        .as_ref()
+                        .expect("R101.13 asks only for a Smart Auto request");
+                    let result = host.resolve_smart_auto(request);
+                    input.smart_auto_result = Some(
+                        result
+                            .as_ref()
+                            .map(|_| SmartAutoSel { handle: Handle(0) })
+                            .map_err(Clone::clone),
+                    );
+                    resolved = Some(result);
+                }
+                Verdict::NeedObservation(kind) => {
+                    unreachable!("a start asks once for the cleanup check and the Smart Auto selection, not {kind:?} in round {rounds}")
+                }
+                Verdict::Applied
+                | Verdict::Continue
+                | Verdict::Refused(_)
+                | Verdict::Stale(_)
+                | Verdict::Invalid(_) => break decision,
+            }
+        };
+        match &decision.verdict {
+            Verdict::Invalid(kind) => return Err(start_ports::start_refused(*kind)),
+            Verdict::Refused(_) => {
+                // R101.3-.11 (typed `{"type","state"}` replies) are the blockers
+                // and the status step; R101.14 is the Smart Auto resolve's own
+                // text.
+                if let Some(CoreReply::Typed { ty, .. }) = &decision.reply {
+                    tracing::warn!(target: "pipeline", reason = ty.as_str(), "start_native_recording: blocked");
+                }
+                drop(dictation);
+                drop(_transition);
+                return start_ports::release_and_reply(host, state, &slots, decision, current);
+            }
+            Verdict::Applied => {}
+            Verdict::Continue | Verdict::Stale(_) | Verdict::NeedObservation(_) => {
+                unreachable!("a start request is applied, refused or invalid")
             }
         }
+        if decision.row == RowId("R101.12") {
+            // The result has finished, but its capture owner still needs cleanup.
+            // Keep that generation for failure guidance and let confirmed exit
+            // restore Idle independently: `In:ST→Recovering`, `In:EM(recovering)`.
+            let ports = StartPorts::new(host, state, &slots, Some(current));
+            let mut exec = executor(&ports, decision.clone(), false);
+            let report = run_phase(&mut exec, Placement::In, Some(&mut dictation), current);
+            drop(dictation);
+            drop(_transition);
+            if let PhaseReport::Invalid(kind) = report {
+                return Err(start_ports::start_refused(kind));
+            }
+            run_phase(&mut exec, Placement::PostT, None, current);
+            return start_ports::reply_of(&decision, None);
+        }
+        debug_assert_eq!(decision.row, RowId("R101.15"));
+        let (selected_device_name, device_selection, smart_auto_reason) = match smart_auto.as_ref()
+        {
+            Some(_) => match resolved {
+                Some(Ok(selection)) => (
+                    Some(selection.device_id),
+                    "smart_auto",
+                    Some(selection.reason.as_str()),
+                ),
+                Some(Err(_)) | None => {
+                    unreachable!("R101.15 follows a successful Smart Auto resolve")
+                }
+            },
+            None => (
+                device_name.clone(),
+                if device_name.is_some() {
+                    "explicit"
+                } else {
+                    "system_default"
+                },
+                None,
+            ),
+        };
+        slots.set_plan(StartPlan {
+            origin,
+            hold,
+            device_selection,
+            microphone_selection: if smart_auto.is_some() {
+                crate::performance_metrics::production::MicrophoneSelectionV1::SmartAuto
+            } else if device_name.is_some() {
+                crate::performance_metrics::production::MicrophoneSelectionV1::Explicit
+            } else {
+                crate::performance_metrics::production::MicrophoneSelectionV1::SystemDefault
+            },
+            selected_device_name,
+        });
+        // Registered right after the decide, before any effect (C4.3, C3.9):
+        // R101.15's `K:CaptureStart`, consumed by site 102 below and retired by
+        // `Drop` on every other return path.
+        let spec = decision
+            .continuation
+            .expect("R101.15 returns K:CaptureStart");
+        let capture_guard = ContinuationGuard::register(&state.app_state.core_history, spec);
+        let ports = StartPorts::new(host, state, &slots, None);
+        let mut exec = executor(&ports, decision, kept_preview);
+        // `In:ID+, GA, PCC, TRQ, ST→Starting, AX(a)`, under D.
+        if let PhaseReport::Invalid(kind) =
+            run_phase(&mut exec, Placement::In, Some(&mut dictation), current)
+        {
+            return Err(start_ports::start_refused(kind));
+        }
+        let rid = exec
+            .bound_recording_id()
+            .expect("R101.15's `ID+` allocated the recording id");
+        // Read under the same hold, right after the delivery target was frozen.
+        let smart_enabled = smart_destination_eligible(&dictation);
+        drop(dictation);
+        // `PDT:SPEC, EV(GenStarted), EM(starting)?, PR, CS(rid)`, T held. A
+        // kept-preview `CS` is awaited: the cursor is parked across the await with
+        // no port or executor held (they are not `Send`).
+        let parked = match run_phase(&mut exec, Placement::PostDT, None, rid) {
+            PhaseReport::Done => None,
+            PhaseReport::Awaiting(awaited)
+                if matches!(awaited.effect, CoreEffect::CaptureStart(_)) =>
+            {
+                Some(exec.suspend())
+            }
+            PhaseReport::Awaiting(other) => {
+                unreachable!("R101.15 awaits only its capture start, not {other:?}")
+            }
+            PhaseReport::Invalid(kind) => return Err(start_ports::start_refused(kind)),
+        };
+        (rid, smart_enabled, parked, capture_guard, smart_auto_reason)
     };
-    // A Fn key-down capture that already retains PCM is adopted with no
-    // connecting phase: Recording follows as soon as the context is installed.
-    let speculative_flowing = speculative.is_flowing();
-    let mut gesture = gesture;
-    gesture.speculative_capture = speculative.consume();
-    // Publish Starting before the worker can report Ready. Otherwise a very
-    // fast device open could emit Recording first and this command would then
-    // overwrite the frontend with a stale Starting event.
-    let _ = host.emit(
-        "dictation-generation-started",
-        serde_json::json!({ "recordingId": rid }),
-    );
-    if !speculative_flowing {
-        let _ = host.emit("recording-status-changed", "starting");
-    }
-    // Reserve the generation before the worker is allowed to emit lifecycle
-    // events. Terminal persistence can now wait for the asynchronous begin
-    // without holding capture ownership or the recording transition.
-    host.performance().register_production(
-        rid,
-        if smart_auto.is_some() {
-            crate::performance_metrics::production::MicrophoneSelectionV1::SmartAuto
-        } else if device_name.is_some() {
-            crate::performance_metrics::production::MicrophoneSelectionV1::Explicit
-        } else {
-            crate::performance_metrics::production::MicrophoneSelectionV1::SystemDefault
-        },
-        crate::audio_inventory::production_device_kind(selected_device_name.as_deref()),
-    );
-    host.performance().begin_register(rid);
-    let audio_started = if kept_preview {
+    if let Some(parked) = parked {
         // May wait for the kept test's confirmed exit (see
         // `START_AFTER_PREVIEW_TIMEOUT`), so never on an async worker.
+        let (selected_device_name, origin, gesture) = slots
+            .start_args()
+            .expect("R101.15's gesture and plan were armed before its capture start");
         let start_handle = host.supervisor();
-        tokio::task::spawn_blocking(move || {
+        let result = tokio::task::spawn_blocking(move || {
             start_handle.start_dictation_recording_after_preview(
                 selected_device_name,
                 rid,
@@ -6060,38 +6141,147 @@ async fn start_native_recording_inner(
             )
         })
         .await
-        .unwrap_or(Err(AudioStartError::SupervisorUnavailable))
-    } else {
-        host.supervisor()
-            .start_dictation_recording(selected_device_name, rid, origin, gesture)
-    };
-    if let Err(error) = audio_started {
-        host.performance().begin_abort(rid);
-        tracing::error!(target: "audio", "start_native_recording: audio failed: {}", error);
-        crate::dictation_executor::FieldAdapter::clear_context(&state.app_state, rid);
-        let mut dictation = state.app_state.dictation.lock_or_recover();
-        if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
-            transition_dictation_status(rid, &mut dictation, DictationStatus::Idle);
+        .unwrap_or(Err(AudioStartError::SupervisorUnavailable));
+        let completed = result.is_ok();
+        slots.store_audio_result(result);
+        // A listener that polled this future inline while an outer entry held D
+        // waits out that span before the executor is re-entered (D-S2-4).
+        until_outside_core().await;
+        // Resume the awaited `CS` with what the supervisor actually returned.
+        let ports = StartPorts::new(host, state, &slots, Some(rid));
+        let mut exec = parked.reattach(&ports);
+        let report = exec.resume(if completed {
+            AwaitedOutcome::Completed
+        } else {
+            AwaitedOutcome::Failed
+        });
+        if let PhaseReport::Invalid(kind) = report {
+            // Never discard an `Invalid` report: nothing was recorded.
+            return Err(start_ports::start_refused(kind));
         }
-        let _ = host.emit("recording-status-changed", "idle");
-        emit_dictation_terminal(
-            state,
-            rid,
-            DictationTerminalOutcome::CaptureInitFailure,
-            DictationErrorCode::RuntimeFailure,
-        );
-        return match error {
-            AudioStartError::AlreadyStarting => Ok(serde_json::json!({
-                "type": "already_starting",
-                "state": "idle"
-            })),
-            AudioStartError::AudioRecovering => Ok(serde_json::json!({
-                "type": "audio_recovering",
-                "state": "idle"
-            })),
-            other => Err(other.to_string()),
-        };
+        debug_assert!(exec.is_finished(), "R101.15 ends at its capture start");
+        #[cfg(test)]
+        {
+            start_ports::RESUMED.with(|slot| *slot.borrow_mut() = exec.witness().to_vec());
+        }
     }
+    // The next D section (site 102 on a failure, 103 after it) is also taken only
+    // outside a core span.
+    until_outside_core().await;
+    let performance_started_at_ms = slots
+        .started_at_ms()
+        .expect("R101.15's `TRQ` stamped the request");
+    let delivery_target = slots
+        .take_delivery_target()
+        .expect("R101.15's `AX` froze the delivery target");
+    // Site 102 (R102.1-.6): the supervisor's answer.
+    let audio_started = slots
+        .audio_outcome()
+        .expect("R101.15's capture start ran before site 102");
+    let token = capture_guard.token();
+    match audio_started {
+        Ok(()) => {
+            // R102.1 (D-less): the capture started; the flight goes on.
+            let facts = FieldAdapter::lock_free_facts(&state.app_state);
+            let decision = capture_guard.consume(|op_status| {
+                decide(|| {
+                    core_start::decide_start_capture_result_nolock(
+                        facts,
+                        CaptureResultInput {
+                            token,
+                            op_status,
+                            result: CaptureResult::Ok,
+                        },
+                        now,
+                    )
+                })
+            });
+            match decision.verdict {
+                Verdict::Continue => {}
+                Verdict::Invalid(kind) => return Err(start_ports::start_refused(kind)),
+                Verdict::Applied
+                | Verdict::Refused(_)
+                | Verdict::Stale(_)
+                | Verdict::NeedObservation(_) => {
+                    unreachable!("a successful capture start continues (R102.1)")
+                }
+            }
+            // R102.1's `H1 reg op_ctx`: consumed by site 103 (still inline here).
+            let _context_guard = decision
+                .continuation
+                .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec));
+            start_after_capture(
+                host,
+                state,
+                _transition,
+                rid,
+                smart_enabled,
+                delivery_target,
+                performance_started_at_ms,
+                smart_auto_reason,
+            )
+            .await
+        }
+        Err((error, text)) => {
+            // R102.2-.6: `Pre:PA, Pre:CX-` run before D.
+            let ports = StartPorts::new(host, state, &slots, Some(rid));
+            run_phase(
+                &mut executor(
+                    &ports,
+                    murmur_dictation_core::decision::Decision::pre_only(
+                        core_start::start_capture_failure_pre_effects(RecordingId(rid)),
+                        RowId("R102.pre"),
+                    ),
+                    false,
+                ),
+                Placement::Pre,
+                None,
+                rid,
+            );
+            let _drain = DrainDeferredFinishes(&state.app_state);
+            let mut dictation = state.app_state.dictation.lock_or_recover();
+            let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+            let decision = capture_guard
+                .consume(|op_status| {
+                    decide(|| {
+                        core_start::decide_start_capture_result(
+                            &view,
+                            CaptureResultInput {
+                                token,
+                                op_status,
+                                result: CaptureResult::Err(error),
+                            },
+                            now,
+                        )
+                    })
+                })
+                .after_pre();
+            if let Verdict::Invalid(kind) = decision.verdict {
+                return Err(start_ports::start_refused(kind));
+            }
+            // `In:ST→Idle` (the current id only), `In:EM(idle)` (unconditional,
+            // PD-3) and `In:TERM`, under D and T.
+            let mut exec = executor(&ports, decision.clone(), false);
+            run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
+            drop(dictation);
+            start_ports::reply_of(&decision, Some(text))
+        }
+    }
+}
+
+/// The rest of the start after the supervisor accepted it (sites 103 and 104,
+/// still inline in this PR): T is held and is released here, as before.
+#[allow(clippy::too_many_arguments)]
+async fn start_after_capture(
+    host: &dyn DictationHost,
+    state: &State,
+    _transition: tokio::sync::MutexGuard<'_, ()>,
+    rid: u64,
+    smart_enabled: bool,
+    delivery_target: crate::frontmost::DeliveryTargetSnapshot,
+    performance_started_at_ms: i64,
+    smart_auto_reason: Option<&'static str>,
+) -> Result<serde_json::Value, String> {
     tracing::debug!(
         target: "pipeline",
         smart_auto_reason = smart_auto_reason.unwrap_or("not_used"),

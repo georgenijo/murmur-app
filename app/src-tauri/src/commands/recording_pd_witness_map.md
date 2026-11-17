@@ -47,6 +47,7 @@ Implemented now (`recording_contract_tests.rs`), against today's shell:
 | `perf_ledger_table` (C4.6, every cell) | `perf_ledger_table`, `perf_ledger_early_terminal_is_flushed_or_lost` |
 | `cancel_window_preserved` (M3) | `cancel_window_preserved` (ordering observed at the first port after the tail; the window itself has no port) |
 | `take_attempts_iff_recovering` (C2.2), stop half | `take_attempts_iff_recovering` |
+| `take_attempts_iff_recovering` (C2.2), start half (Stage 2a-4: `resolve_smart_auto` is a host port) | `take_attempts_iff_recovering_start_half` |
 | `continuation_stale_uses_site_rule` | `continuation_stale_uses_site_rule` (start continuation and every supervisor arm; the stop's stale rule is golden 6) |
 
 Implemented by Stage 2a PR 0 (`core_history` / `NEXT_OP`), in `recording_contract_tests.rs::core_history_contract`:
@@ -95,7 +96,6 @@ a PR that creates the subject cannot leave its test owed.
 
 | Gate | C4.9 test | Owner PR | Why it cannot exist yet |
 |---|---|---|---|
-| OWNED | `take_attempts_iff_recovering` (start half) | 2a: the start-family PR, where `resolve_smart_auto` becomes a port | The smart-auto observation is not a port today, so a fake `take` cannot count it. The stop half is implemented above |
 
 ## Discrepancies against C7.1 / C4.9 (recorded as the code does them)
 

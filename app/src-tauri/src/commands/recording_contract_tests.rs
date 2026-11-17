@@ -489,6 +489,73 @@ fn take_attempts_iff_recovering() {
     ));
 }
 
+/// `take_attempts_iff_recovering` (C4.9), the start half (decision D-S1-1): the
+/// start's own destructive-or-costly observation, the Smart Auto resolve (a host
+/// port since Stage 2a-4), is attempted exactly when the decision asks for it:
+/// status `Idle`, no blocker, no retiring capture, no pre-D refusal. Never from
+/// `Starting`, `Recording`, `Recovering` or `Processing`, never when the app is
+/// disabled, never with a fixed microphone, and never for a request that did not
+/// ask for Smart Auto.
+fn smart_auto_start(world: &Arc<World>, device_name: Option<String>) -> usize {
+    let mut start = world.start_smart_auto(device_name);
+    let reply = complete(&mut start);
+    world.reply("start", &reply);
+    world.smart_auto_resolves()
+}
+
+#[test]
+fn take_attempts_iff_recovering_start_half() {
+    for status in [
+        DictationStatus::Starting,
+        DictationStatus::Recording,
+        DictationStatus::Recovering,
+        DictationStatus::Processing,
+    ] {
+        // One sub-run per status: a body is a plain `fn`, so the status is its
+        // setup, and every one of them must never resolve.
+        let sub_run = match status {
+            DictationStatus::Starting => sub_from("start while Starting", status, 1, |world| {
+                assert_eq!(smart_auto_start(world, None), 0);
+            }),
+            DictationStatus::Recording => sub_from("start while Recording", status, 1, |world| {
+                assert_eq!(smart_auto_start(world, None), 0);
+            }),
+            DictationStatus::Recovering => sub_from("start while Recovering", status, 1, |world| {
+                assert_eq!(smart_auto_start(world, None), 0);
+            }),
+            DictationStatus::Processing => sub_from("start while Processing", status, 1, |world| {
+                assert_eq!(smart_auto_start(world, None), 0);
+            }),
+            DictationStatus::Idle => unreachable!("Idle is the resolving case"),
+        };
+        repeat(&sub_run);
+    }
+    repeat(&sub("start while Idle", |world| {
+        world.knobs().smart_auto = Some(Err("no verified microphone".to_string()));
+        assert_eq!(smart_auto_start(world, None), 1);
+        assert!(world
+            .trace()
+            .iter()
+            .any(|line| line == "reply start Err no verified microphone"));
+        assert_eq!(status(world), DictationStatus::Idle);
+    }));
+    repeat(&sub("start with the app disabled", |world| {
+        world.knobs().app_disabled = true;
+        assert_eq!(smart_auto_start(world, None), 0);
+    }));
+    repeat(&sub("start with a fixed microphone", |world| {
+        assert_eq!(smart_auto_start(world, Some("fixed-mic".to_string())), 0);
+        assert!(world
+            .trace()
+            .iter()
+            .any(|line| line.starts_with("reply start Err Smart Auto cannot be combined")));
+    }));
+    repeat(&sub("start without Smart Auto", |world| {
+        started(world);
+        assert_eq!(world.smart_auto_resolves(), 0);
+    }));
+}
+
 // ----------------------------------------------- C4.6 perf begin ledger
 
 fn completion() -> DictationPerformanceCompletion {

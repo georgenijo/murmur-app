@@ -614,6 +614,38 @@ impl World {
         })
     }
 
+    /// A start that asks for Smart Auto (with `device_name` a fixed microphone too,
+    /// which the start refuses before D).
+    pub(super) fn start_smart_auto(
+        self: &Arc<Self>,
+        device_name: Option<String>,
+    ) -> Fut<Result<serde_json::Value, String>> {
+        let world = Arc::clone(self);
+        Box::pin(async move {
+            let host = Host(Arc::clone(&world));
+            let state = world.state();
+            start_native_recording_inner(
+                &host,
+                state.inner(),
+                device_name,
+                Some(SmartAutoRequest {
+                    approved_device_ids: vec!["mic-7".to_string()],
+                    preferred_device_ids: Vec::new(),
+                    allow_continuity: false,
+                    require_recent_signal: false,
+                }),
+                None,
+                None,
+            )
+            .await
+        })
+    }
+
+    /// How many Smart Auto resolves the start asked its host for.
+    pub(super) fn smart_auto_resolves(&self) -> usize {
+        self.smart_auto_resolves.load(Ordering::SeqCst)
+    }
+
     pub(super) fn stop(
         self: &Arc<Self>,
         expected: Option<u64>,

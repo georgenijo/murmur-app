@@ -1,0 +1,226 @@
+//! Shell-level start-family tests (Stage 2a-4a: sites 101 and 102).
+//!
+//! Each scenario drives `start_native_recording_inner` through the Stage 0b golden
+//! harness. The scenarios that compare traces take both sides from the same
+//! shell, so they hold before and after the start family moves behind
+//! `decide_*`; the awaited-effect and history witnesses read the executor's
+//! parked cursor and `core_history`, which only the refactored shell has.
+use super::golden_harness::*;
+use super::golden_tests::{recording, started};
+use super::*;
+use std::task::Poll;
+
+fn trace(setup: Setup, body: fn(&Arc<World>)) -> Vec<String> {
+    run_sub_run(&SubRun {
+        title: "start",
+        setup,
+        body,
+    })
+}
+
+fn history_counts(world: &Arc<World>) -> (usize, usize) {
+    let history = &world.state().app_state.core_history;
+    (history.pipeline_count(), history.outstanding_ops())
+}
+
+fn resumed() -> Vec<crate::dictation_executor::executor::Witness> {
+    start_ports::RESUMED.with(|slot| slot.borrow().clone())
+}
+
+fn last_two(
+    witness: &[crate::dictation_executor::executor::Witness],
+) -> [(&'static str, String); 2] {
+    let tail = &witness[witness.len() - 2..];
+    [
+        (tail[0].code, format!("{:?}", tail[0].outcome)),
+        (tail[1].code, format!("{:?}", tail[1].outcome)),
+    ]
+}
+
+fn keep_a_mic_test(w: &Arc<World>) {
+    w.state()
+        .app_state
+        .microphone_preview
+        .claim(50)
+        .expect("a mic test is kept");
+}
+
+/// The kept-preview start awaits `CS` through the executor and resumes it with the
+/// supervisor's real answer: `Completed` for an acknowledged start.
+#[test]
+fn the_awaited_capture_start_resumes_completed_when_the_supervisor_acknowledges() {
+    run_sub_run(&SubRun {
+        title: "resume success",
+        setup: Setup::idle(),
+        body: |w| {
+            keep_a_mic_test(w);
+            w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+            start_ports::RESUMED.with(|slot| slot.borrow_mut().clear());
+            started(w);
+            assert_eq!(
+                last_two(&resumed()),
+                [
+                    ("CS", "Awaiting".to_string()),
+                    ("CS", "Resumed(Completed)".to_string())
+                ]
+            );
+            assert_eq!(history_counts(w), (0, 0), "every start op is retired");
+        },
+    });
+}
+
+/// A supervisor refusal reaches `resume` as `Failed`, and site 102 then answers
+/// from the same result.
+#[test]
+fn the_awaited_capture_start_resumes_failed_when_the_supervisor_refuses() {
+    run_sub_run(&SubRun {
+        title: "resume failure",
+        setup: Setup::idle(),
+        body: |w| {
+            keep_a_mic_test(w);
+            w.knobs().start_ack = Some(AudioStartError::AudioRecovering);
+            start_ports::RESUMED.with(|slot| slot.borrow_mut().clear());
+            let mut start = w.start();
+            let reply = complete(&mut start);
+            w.reply("start", &reply);
+            assert_eq!(
+                reply.expect("the refusal is a typed reply"),
+                serde_json::json!({ "type": "audio_recovering", "state": "idle" })
+            );
+            assert_eq!(
+                last_two(&resumed()),
+                [
+                    ("CS", "Awaiting".to_string()),
+                    ("CS", "Resumed(Failed)".to_string())
+                ]
+            );
+            assert_eq!(history_counts(w), (0, 0), "every start op is retired");
+        },
+    });
+}
+
+/// `K:CaptureStart` is registered right after the decide and retired by its
+/// consumer (site 102) or by `Drop`, on every path; `K:ResolveContext` follows the
+/// accepted capture start. None outlives the command.
+#[test]
+fn every_start_history_entry_is_retired_when_the_command_returns() {
+    run_sub_run(&SubRun {
+        title: "accepted start",
+        setup: Setup::idle(),
+        body: |w| {
+            recording(w);
+            assert_eq!(history_counts(w), (0, 0));
+        },
+    });
+    run_sub_run(&SubRun {
+        title: "refused start",
+        setup: Setup::idle(),
+        body: |w| {
+            w.knobs().start_ack = Some(AudioStartError::AlreadyStarting);
+            let mut start = w.start();
+            let reply = complete(&mut start);
+            w.reply("start", &reply);
+            assert_eq!(history_counts(w), (0, 0));
+        },
+    });
+    run_sub_run(&SubRun {
+        title: "blocked start",
+        setup: Setup {
+            status: DictationStatus::Processing,
+            recording_id: 4,
+        },
+        body: |w| {
+            let mut start = w.start();
+            let reply = complete(&mut start);
+            w.reply("start", &reply);
+            assert_eq!(history_counts(w), (0, 0));
+        },
+    });
+}
+
+thread_local! {
+    /// What each nested entry returned (on the scenario's own thread).
+    static NESTED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// An inline listener re-enters the start command on the thread of the port call.
+fn nested_start(world: &Arc<World>) {
+    let mut start = world.start();
+    let outcome = match poll_once(&mut start) {
+        Poll::Ready(reply) => format!("{reply:?}"),
+        Poll::Pending => "pending".to_string(),
+    };
+    NESTED.with(|nested| nested.borrow_mut().push(outcome));
+}
+
+fn under_watchdog<T: Send + 'static>(
+    what: &'static str,
+    body: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+        let _ = done.send(outcome);
+    });
+    match finished.recv_timeout(std::time::Duration::from_secs(20)) {
+        Ok(Ok(value)) => value,
+        Ok(Err(panic)) => std::panic::resume_unwind(panic),
+        Err(_) => {
+            eprintln!("DEADLOCK: {what}");
+            std::process::abort();
+        }
+    }
+}
+
+fn run_nested(what: &'static str, body: fn(&Arc<World>)) -> (Vec<String>, Vec<String>) {
+    under_watchdog(what, move || {
+        NESTED.with(|nested| nested.borrow_mut().clear());
+        let lines = trace(Setup::idle(), body);
+        (lines, NESTED.with(|nested| nested.borrow().clone()))
+    })
+}
+
+fn refused(outcome: &str) -> bool {
+    outcome.contains("Err(")
+        && outcome.contains("refused the start")
+        && outcome.contains("Reentrant")
+}
+
+/// C4.2 / decision D-S2-2: the start entry is the first statement, before the
+/// claims, T, D or any managed-state lookup, and `IN_CORE` stays set across
+/// production port calls. An inline listener of the `PDT` emits (T held, D
+/// released) that starts again would park on T; it is refused instead, and the
+/// refused entry changes nothing.
+#[test]
+fn a_start_nested_in_a_port_emit_is_refused_before_any_lock() {
+    fn plain(w: &Arc<World>) {
+        recording(w);
+    }
+    fn nested_in_generation_started(w: &Arc<World>) {
+        w.on_inline("emit:dictation-generation-started", {
+            let world = Arc::clone(w);
+            move || nested_start(&world)
+        });
+        recording(w);
+    }
+    fn nested_in_starting(w: &Arc<World>) {
+        w.on_inline("emit:recording-status-changed", {
+            let world = Arc::clone(w);
+            move || nested_start(&world)
+        });
+        recording(w);
+    }
+    let (baseline, _) = run_nested("baseline", plain);
+    for (what, body) in [
+        (
+            "a start nested in the generation-started emit",
+            nested_in_generation_started as fn(&Arc<World>),
+        ),
+        ("a start nested in the starting emit", nested_in_starting),
+    ] {
+        let (lines, results) = run_nested(what, body);
+        assert_eq!(results.len(), 1, "{what}: the listener ran once");
+        assert!(refused(&results[0]), "{what}: {}", results[0]);
+        assert_eq!(lines, baseline, "{what}: the refused start changed nothing");
+    }
+}

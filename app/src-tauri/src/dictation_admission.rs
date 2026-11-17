@@ -25,9 +25,11 @@
 //! ([`Staged::resuming`]): the retire happens where it did, unconditionally and
 //! before the reads, and evaluation continues at the check after the wait.
 
+#[cfg(test)]
+use murmur_dictation_core::admission::SmartAutoObservation;
 use murmur_dictation_core::admission::{
     admit, admit_after, Admission, KeyDownShellFacts, ModelPrepVariant, Occupancy, RefusalCode,
-    Request, Retry, SmartAutoObservation,
+    Request, Retry,
 };
 use murmur_dictation_core::ids::RecordingId;
 use murmur_dictation_core::status::Status;

@@ -109,11 +109,7 @@ impl Call {
             Call::MicrophoneTransition => {
                 ("DictationHost", "microphone_transition", "mic_transition")
             }
-            Call::ResolveSmartAuto => (
-                "DictationHost",
-                "resolve_smart_auto",
-                "resolve_smart_auto",
-            ),
+            Call::ResolveSmartAuto => ("DictationHost", "resolve_smart_auto", "resolve_smart_auto"),
             Call::RefreshExpiredIdeContext => (
                 "DictationHost",
                 "refresh_expired_ide_context",
@@ -253,6 +249,8 @@ struct Script {
     /// What `is_dictation_cleanup_pending` answers (the owner is still being
     /// cleaned up).
     cleanup_pending: bool,
+    /// What the Smart Auto resolve answers (`None`: not scripted, an error).
+    smart_auto: Option<Result<crate::microphone_auto::SmartAutoSelection, String>>,
     pipeline_error: Option<String>,
     on_emit_smart_destination: Option<Hook>,
     on_supervisor_start: Option<Hook>,
@@ -366,7 +364,10 @@ impl DictationHost for FakeHost {
         _request: &SmartAutoRequest,
     ) -> Result<crate::microphone_auto::SmartAutoSelection, String> {
         self.shared.push(Call::ResolveSmartAuto, "");
-        Err("smart auto is not scripted".to_string())
+        self.script()
+            .smart_auto
+            .clone()
+            .unwrap_or_else(|| Err("smart auto is not scripted".to_string()))
     }
 
     fn refresh_expired_ide_context(&self, _app_state: &AppState, _bundle_id: Option<&str>) {
@@ -688,6 +689,22 @@ fn start(host: &FakeHost, state: &State) -> Result<serde_json::Value, String> {
     ))
 }
 
+fn start_smart_auto(host: &FakeHost, state: &State) -> Result<serde_json::Value, String> {
+    run(start_native_recording_inner(
+        host,
+        state,
+        None,
+        Some(SmartAutoRequest {
+            approved_device_ids: vec!["mic-7".to_string()],
+            preferred_device_ids: Vec::new(),
+            allow_continuity: false,
+            require_recent_signal: false,
+        }),
+        None,
+        None,
+    ))
+}
+
 fn stop(
     host: &FakeHost,
     state: &State,
@@ -798,6 +815,70 @@ fn expected_start_acknowledged() -> Vec<String> {
         "performance.spawn_begin 1",
     ]));
     trace
+}
+
+/// Smart Auto resolves after the retiring-capture read and before any allocation
+/// (R101.13): the resolve is the fourth port call, the reservation names Smart Auto.
+fn scenario_start_smart_auto_resolved() -> Recorded {
+    let (state, host) = fixture(DictationStatus::Idle, 0);
+    host.script().smart_auto = Some(Ok(crate::microphone_auto::SmartAutoSelection {
+        device_id: "mic-7".to_string(),
+        reason: crate::microphone_auto::SmartAutoReason::CurrentVerified,
+    }));
+    let reply = start_smart_auto(&host, &state).expect("start replies");
+    assert_eq!(
+        reply,
+        serde_json::json!({
+            "type": "recording_starting", "state": "starting", "recordingId": 1
+        })
+    );
+    assert_eq!(status(&state), DictationStatus::Starting);
+    host.recorded()
+}
+
+fn expected_start_smart_auto_resolved() -> Vec<String> {
+    let mut trace = strings(&[
+        "mic_transition",
+        "keyboard.is_app_disabled",
+        "supervisor.is_dictation_cleanup_pending 0",
+        "resolve_smart_auto",
+        "ax.capture_delivery_target_snapshot",
+        "emit dictation-generation-started {\"recordingId\":1}",
+    ]);
+    trace.push(status_event("starting"));
+    trace.extend(strings(&[
+        "performance.register_production 1 SmartAuto",
+        "performance.begin_register 1",
+        "supervisor.start 1 toggle status=Starting",
+        "smart_destination.capture enabled=false",
+        "refresh_expired_ide_context",
+        "performance.production_context 1",
+        "publish_recording_ready 1",
+        "spawn_model_preparation 1",
+        "performance.spawn_begin 1",
+    ]));
+    trace
+}
+
+/// A failed Smart Auto resolve refuses with its own text (R101.14) before any id
+/// is burned, any claim is accepted or any status is written.
+fn scenario_start_smart_auto_refused() -> Recorded {
+    let (state, host) = fixture(DictationStatus::Idle, 3);
+    host.script().smart_auto = Some(Err("no verified microphone".to_string()));
+    let refusal = start_smart_auto(&host, &state).expect_err("start refuses");
+    assert_eq!(refusal, "no verified microphone");
+    assert_eq!(status(&state), DictationStatus::Idle);
+    assert_eq!(state.app_state.recording_id.load(Ordering::SeqCst), 3);
+    host.recorded()
+}
+
+fn expected_start_smart_auto_refused() -> Vec<String> {
+    strings(&[
+        "mic_transition",
+        "keyboard.is_app_disabled",
+        "supervisor.is_dictation_cleanup_pending 3",
+        "resolve_smart_auto",
+    ])
 }
 
 fn scenario_start_refused() -> Recorded {
@@ -1319,6 +1400,16 @@ fn scenarios() -> Vec<Scenario> {
             name: "start_acknowledged",
             run: scenario_start_acknowledged,
             expected: expected_start_acknowledged,
+        },
+        Scenario {
+            name: "start_smart_auto_resolved",
+            run: scenario_start_smart_auto_resolved,
+            expected: expected_start_smart_auto_resolved,
+        },
+        Scenario {
+            name: "start_smart_auto_refused",
+            run: scenario_start_smart_auto_refused,
+            expected: expected_start_smart_auto_refused,
         },
         Scenario {
             name: "start_refused",
