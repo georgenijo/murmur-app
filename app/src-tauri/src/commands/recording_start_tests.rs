@@ -757,3 +757,90 @@ fn a_panic_in_the_abort_port_still_drains_the_failure_prefix() {
         });
     });
 }
+
+thread_local! {
+    /// The barrier point the flight-end test stands on (on the scenario's own thread).
+    static FLIGHT_POINT: std::cell::Cell<&'static str> = const { std::cell::Cell::new("") };
+}
+
+/// R104.7 (the flight end): `PDT:PM` runs with T held and `PT:PB`, `PT:REL` after T
+/// is released, all in core spans with no D of their own. A listener that drops a
+/// parked stop at any of them queues its finish; the start drains it before it
+/// replies, so H1 and H2 are retired once and the queue is empty.
+#[test]
+fn the_flight_end_drains_what_each_of_its_phases_defers() {
+    for point in [
+        "start.model_preparation",
+        "start.perf_begin",
+        "start.release_claims",
+    ] {
+        under_watchdog("a stop dropped during the flight end", move || {
+            FLIGHT_POINT.with(|slot| slot.set(point));
+            run_sub_run(&SubRun {
+                title: "flight end drain",
+                setup: Setup::idle(),
+                body: |w| {
+                    let parked = park_a_stop_of_recording_1(w);
+                    let (observer, slot) = (Arc::clone(w), Arc::clone(&parked));
+                    let hook_point = FLIGHT_POINT.with(std::cell::Cell::get);
+                    let _hook = crate::barrier_hook::install(move |point| {
+                        if point == hook_point && slot.lock().expect("slot").is_some() {
+                            drop(slot.lock().expect("slot").take());
+                            assert_eq!(
+                                history_counts(&observer).0,
+                                1,
+                                "nothing retires in the span"
+                            );
+                            assert_eq!(queued_finishes(), 1, "the finish is queued");
+                        }
+                    });
+                    let mut start = w.start();
+                    let reply = complete(&mut start);
+                    assert!(reply.is_ok(), "{reply:?}");
+                    assert!(parked.lock().expect("slot").is_none(), "the listener ran");
+                    assert_eq!(
+                        queued_finishes(),
+                        0,
+                        "the queue is empty when the start returns"
+                    );
+                    assert_eq!(
+                        history_counts(w),
+                        (0, 0),
+                        "the parked stop's H1 and H2 are retired once"
+                    );
+                    w.open_gate("pipeline");
+                },
+            });
+        });
+    }
+}
+
+/// The same flight end, when a port's callback queues a finish and panics: the guard
+/// declared before the first effect drains on the unwind.
+#[test]
+fn a_panic_at_the_flight_end_still_drains_the_queue() {
+    under_watchdog("an unwind from the flight end", || {
+        run_sub_run(&SubRun {
+            title: "flight end unwind",
+            setup: Setup::idle(),
+            body: |w| {
+                let parked = park_a_stop_of_recording_1(w);
+                let slot = Arc::clone(&parked);
+                let _hook = crate::barrier_hook::install(move |point| {
+                    if point == "start.model_preparation" {
+                        drop(slot.lock().expect("slot").take());
+                        panic!("the flight end's callback panics after queueing a finish");
+                    }
+                });
+                let mut start = w.start();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    poll_once(&mut start)
+                }));
+                assert!(outcome.is_err(), "the panic unwinds out of the start");
+                assert_eq!(queued_finishes(), 0, "the unwind drained the queue");
+                assert_eq!(history_counts(w), (0, 0), "no history entry is stranded");
+                w.open_gate("pipeline");
+            },
+        });
+    });
+}

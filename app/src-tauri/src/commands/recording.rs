@@ -6115,7 +6115,7 @@ fn publish_recording_ready_with<R: tauri::Runtime>(
 
     // Finishes queued re-entrantly while D is held run when this synchronous
     // section ends, after D is released (D-S2-4).
-    let _drain = DrainDeferredFinishes(&state.app_state);
+    let _drain = DrainDeferredFinishes::new(&state.app_state);
     let mut dictation = state.app_state.dictation.lock_or_recover();
     let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
     let decision = ready_op.consume(|op_status| {
@@ -6720,7 +6720,7 @@ async fn start_after_capture(
     // Query 402 (`q_capture_current`): a short D read after the capture picks the
     // destination. The emit's own ownership recheck is R103.0, below.
     let capture_is_current = {
-        let _drain = DrainDeferredFinishes(&state.app_state);
+        let _drain = DrainDeferredFinishes::new(&state.app_state);
         let dictation = state.app_state.dictation.lock_or_recover();
         FieldAdapter::project_lifecycle_view(&state.app_state, &dictation)
             .q_capture_current(recording)
@@ -6758,7 +6758,7 @@ async fn start_after_capture(
         // as the helper's own lock did. The drain guard is declared before D so a
         // finish an inline listener queued (a dropped pipeline owner) runs on both
         // the return and an unwind, after D is released (D-S2-4).
-        let _drain = DrainDeferredFinishes(&state.app_state);
+        let _drain = DrainDeferredFinishes::new(&state.app_state);
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
         let decision =
@@ -6774,7 +6774,7 @@ async fn start_after_capture(
     // Site 103 (R103.1-.6): the context install under D and T.
     let context_token = context_guard.token();
     let (context_decision, ready_op) = {
-        let _drain = DrainDeferredFinishes(&state.app_state);
+        let _drain = DrainDeferredFinishes::new(&state.app_state);
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
         let decision = context_guard.consume(|op_status| {
@@ -6867,6 +6867,11 @@ async fn start_after_capture(
     // Recording, stop, and cancel never wait for SQLite) and `PT:REL`.
     let flight_end = decide(|| core_start::decide_start_flight_end(recording, now));
     expect_valid(&flight_end);
+    // D-S2-8: the flight end's `PDT` and `PT` phases run in core spans with no D of
+    // their own. The guard is declared before the first effect (`PM`), so a finish
+    // an inline listener queues there is drained on the return and on an unwind;
+    // nothing was awaited since the span fence, so the guard never crosses an await.
+    let _drain = DrainDeferredFinishes::new(&state.app_state);
     let ports = StartPorts::new(host, state, &slots, Some(rid)).with_tail(&tail);
     let mut exec = executor(&ports, flight_end.clone(), false);
     run_phase(&mut exec, Placement::PostDT, None, rid);

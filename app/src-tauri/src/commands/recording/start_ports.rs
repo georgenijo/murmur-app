@@ -482,6 +482,8 @@ impl Ports for StartPorts<'_> {
             }
             // Diagnostics begin once ownership is fully installed (T released).
             Effect::PerfBegin => {
+                #[cfg(test)]
+                crate::barrier_hook::at("start.perf_begin");
                 let tail = self.tail.ok_or(PortFailure)?;
                 let runtimes = super::runtime_identity(
                     &tail.context.transcription.model_name,
@@ -599,6 +601,8 @@ impl Ports for StartPorts<'_> {
         match effect {
             // R104.7: the model-preparation attempt, self-gating in the host.
             Effect::ModelPreparation => {
+                #[cfg(test)]
+                crate::barrier_hook::at("start.model_preparation");
                 let tail = self.tail.ok_or(PortFailure)?;
                 self.host.spawn_model_preparation(
                     tail.context.transcription.model_name.clone(),
