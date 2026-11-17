@@ -1137,3 +1137,159 @@ mod core_history_contract {
         );
     }
 }
+
+// ------------------ Stage 2a PR 0: field adapter and PersistedCore (C1.4.2)
+//
+// Pre-cutover: the persisted core is written only by the adapter's `ST` and
+// `ID+` commits, M3 and M4 only ever live, and every entry observes them from
+// the live slots exactly as `DictationCore::project` does.
+
+mod field_adapter_contract {
+    use crate::dictation_admission::core_status;
+    use crate::dictation_executor::FieldAdapter;
+    use crate::state::{AppState, DictationState, DictationStatus};
+    use crate::MutexExt;
+    use murmur_dictation_core::ids::RecordingId;
+    use murmur_dictation_core::state::{DictationCore, LiveObs, PersistedCore};
+    use murmur_dictation_core::status::Status;
+    use std::sync::Arc;
+
+    fn snapshot() -> Arc<crate::dictation_context::DictationContextSnapshot> {
+        let settings = DictationState::default();
+        Arc::new(crate::dictation_context::resolve(
+            crate::dictation_context::ResolverInputs {
+                bundle_id: None,
+                global: &settings,
+                prompt: None,
+                correction_matcher: None,
+                ide_context_index: None,
+                vocabulary_version: 0,
+            },
+        ))
+    }
+
+    fn persisted(app: &AppState) -> PersistedCore {
+        app.dictation.lock_or_recover().core
+    }
+
+    /// `persisted_core_has_only_m1_m2`: `PersistedCore` has exactly `status` and
+    /// `current_id`; running `MC` and `CX±` through the adapter leaves
+    /// `DictationState.core` unchanged while the live M3/M4 move; `ST` and `ID+`
+    /// move the persisted copy together with the live field.
+    #[test]
+    fn persisted_core_has_only_m1_m2() {
+        // Shape: two fields, nothing else (the fields are private to the crate).
+        assert_eq!(
+            std::mem::size_of::<PersistedCore>(),
+            std::mem::size_of::<(Status, RecordingId)>()
+        );
+        assert_eq!(
+            format!("{:?}", PersistedCore::default()),
+            "PersistedCore { status: Idle, current_id: RecordingId(0) }"
+        );
+
+        let app = AppState::default();
+        let before = persisted(&app);
+        FieldAdapter::cancel_through(&app, 7);
+        FieldAdapter::set_context(&app, 7, snapshot());
+        assert!(app.active_context(7).is_some(), "live M4 written");
+        assert_eq!(
+            app.cancelled_id.load(std::sync::atomic::Ordering::SeqCst),
+            7,
+            "live M3 written"
+        );
+        assert_eq!(persisted(&app), before, "MC and CX+ never touch the core");
+        assert!(FieldAdapter::clear_context(&app, 7));
+        assert!(!FieldAdapter::clear_context(&app, 7), "stale-safe");
+        assert_eq!(persisted(&app), before, "CX- never touches the core");
+
+        // `ST` and `ID+` commit M1 and M2 with their live fields.
+        let mut dictation = app.dictation.lock_or_recover();
+        let id = FieldAdapter::alloc_id(&app, &mut dictation);
+        assert_eq!(dictation.core.current_id(), RecordingId(id));
+        assert_eq!(dictation.core.status(), Status::Idle, "ID+ commits M2 only");
+        let from = FieldAdapter::set_status(id, &mut dictation, DictationStatus::Starting);
+        assert_eq!(from, DictationStatus::Idle);
+        assert_eq!(dictation.status, DictationStatus::Starting);
+        assert_eq!(dictation.core.status(), Status::Starting);
+        assert_eq!(
+            dictation.core.current_id(),
+            RecordingId(app.recording_id.load(std::sync::atomic::Ordering::SeqCst))
+        );
+    }
+
+    /// `m3_m4_observed_before_and_after_cutover`: at every step the view built
+    /// the legacy way (`project()` from the live M1/M2) and the view built the
+    /// cut-over way (the persisted core) hold the same M3/M4 observations, read
+    /// from the live slots, and the persisted core does not change when they do.
+    /// (The cut-over entry itself arrives with Stage 2c; the persisted-core
+    /// constructor it will use is exercised here.)
+    #[test]
+    fn m3_m4_observed_before_and_after_cutover() {
+        let app = AppState::default();
+        let views = |app: &AppState| {
+            let dictation = app.dictation.lock_or_recover();
+            let obs = FieldAdapter::observe_live(app);
+            let legacy = DictationCore::project(
+                core_status(dictation.status),
+                RecordingId(app.recording_id.load(std::sync::atomic::Ordering::SeqCst)),
+                obs,
+            );
+            (legacy, DictationCore::new(dictation.core, obs), obs)
+        };
+        let (legacy, cut_over, obs) = views(&app);
+        assert_eq!(obs, LiveObs::default());
+        assert_eq!(legacy, cut_over);
+
+        let id = {
+            let mut dictation = app.dictation.lock_or_recover();
+            let id = FieldAdapter::alloc_id(&app, &mut dictation);
+            FieldAdapter::set_status(id, &mut dictation, DictationStatus::Recording);
+            id
+        };
+        let core_before = persisted(&app);
+
+        FieldAdapter::set_context(&app, id, snapshot());
+        let (legacy, cut_over, obs) = views(&app);
+        assert_eq!(obs.context_for, Some(RecordingId(id)), "M4 observed live");
+        assert_eq!(legacy, cut_over);
+
+        FieldAdapter::cancel_through(&app, id);
+        let (legacy, cut_over, obs) = views(&app);
+        assert_eq!(obs.cancelled_through, RecordingId(id), "M3 observed live");
+        assert!(cut_over.is_cancelled(RecordingId(id)));
+        assert_eq!(legacy, cut_over);
+
+        // A stale clear leaves the observation; the owning clear removes it.
+        assert!(!FieldAdapter::clear_context(&app, id + 1));
+        assert_eq!(views(&app).2.context_for, Some(RecordingId(id)));
+        assert!(FieldAdapter::clear_context(&app, id));
+        let (legacy, cut_over, obs) = views(&app);
+        assert_eq!(obs.context_for, None);
+        assert_eq!(legacy, cut_over);
+        assert_eq!(persisted(&app), core_before, "M3/M4 never move the core");
+    }
+
+    /// `seed_core` is the way a core is made equal to live without an effect.
+    #[test]
+    fn seed_core_copies_live_m1_m2() {
+        let app = AppState::default();
+        app.recording_id
+            .store(41, std::sync::atomic::Ordering::SeqCst);
+        let mut dictation = app.dictation.lock_or_recover();
+        dictation.status = DictationStatus::Processing;
+        FieldAdapter::seed_core(&app, &mut dictation);
+        assert_eq!(dictation.core.status(), Status::Processing);
+        assert_eq!(dictation.core.current_id(), RecordingId(41));
+    }
+
+    /// The persisted core is never serialized: settings round trips and the
+    /// frontend payloads are unchanged.
+    #[test]
+    fn persisted_core_is_not_serialized() {
+        let value = serde_json::to_value(DictationState::default()).expect("serialize");
+        assert!(value.get("core").is_none(), "{value}");
+        let round_trip: DictationState = serde_json::from_value(value).expect("deserialize");
+        assert_eq!(round_trip.core, PersistedCore::default());
+    }
+}

@@ -171,6 +171,34 @@ Preconditions the shell must keep (not enforced by the types): a running
 mic-startup check implies `benchmark_running`; a retiring, standby or
 unconfirmed key-down capture implies `audio_active`.
 
+## Per-stage authority matrix (C1.4.3)
+
+Who is authoritative **for decisions** and who writes the field, per stage. The
+matrix is updated by every Stage 2a PR (one row of changes per PR below the
+table). "F" is the family being cut over (lifecycle, stop, cancel, start, in that
+order). **M3 and M4 are never persisted in the core**: in every column the live
+field is authoritative, `MC` and `CX±` write only it, and every entry fills them
+as immutable observations from the live slot.
+
+| Item | 0a / 0b / Stage 1 | 2a, every family PR (decide inline) | 2c cutover of F | cleanup |
+|---|---|---|---|---|
+| M1 `status` | live; sole writer `transition_dictation_status` | live authoritative; `project()` reads live; writes through the adapter `set_status` (`ST` for migrated entries, the legacy call for unmigrated ones) | F's entries read the persisted core; the adapter still writes live | `project()` deleted; the adapter is the sole writer |
+| M2 `current_id` | live `recording_id`; writers `next_recording_id` (start, `process_audio`) | live authoritative; `alloc_id` through the adapter (`ID+` / the legacy call) | as M1 | as M1 |
+| M3 `cancelled_through` | live `cancelled_id`; writer in `cancel_native_recording` | **live only**: adapter `cancel_through` (`MC`); `project()` observes it | unchanged: observed from live at every entry | adapter writes live |
+| M4 `context_for` | live `active_context`; 1 set site, 7 clear sites | **live only**: adapter `set_context` / `clear_context` (`CX±`), each site keeping its placement; observed at entry | unchanged | adapter writes live |
+| H1 `pending_ops` | n/a | `core_history` from the first 2a PR; written only by `reg` / `ret_if_matches` / owner `Drop` | unchanged | unchanged |
+| H2 `pipelines` | n/a | as H1 | unchanged | unchanged |
+| legacy `process_audio` (301 / 302) | inline, unmigrated | its id and status writes go through the adapter from the first 2a PR; `decide_process_audio_*` inline in the stop-family PRs | switches with the stop family | rows deleted only if the command is removed |
+| `IdleGuard` (204a) | inline | writes through the adapter; `decide_guard_finish` inline in the stop-family PR | all three origins switch with the stop family | the guard only calls the executor |
+| queries `q_*` | inline predicates | each reads `project()` (live) | F's M1/M2 from the persisted core, M3/M4 from the live slots | `project()` deleted |
+| shadow | none | none (starts at 2c) | compares F's decisions; then the C8.6 divergence assertion | deleted one release later |
+
+### Matrix updates by PR
+
+| PR | Rows changed |
+|---|---|
+| **2a-0** (core_history, field adapter, executor skeleton) | M1/M2: every production writer already goes through `FieldAdapter` (`set_status`, `alloc_id`), which also commits `DictationState.core` (`PersistedCore`, M1/M2 only; created by this PR and written only by the adapter). M3/M4: `cancel_through` / `set_context` / `clear_context` write the live field only (the core copy does not exist); `observe_live` is the entry read. H1/H2: `core_history` and `NEXT_OP` exist; no production caller yet. `IdleGuard`, `process_audio` and every start/stop/cancel/supervisor write: unchanged inline code calling the adapter (zero behaviour change). The executor `run` exists but no production path calls it. SP5 ratchet starts: 0 direct M-field writes outside the adapter, 15 `transition_dictation_status` call sites and 24 `emit_dictation_terminal*` call sites, only down. `PersistedCore::new` has one caller (the seeding adapter). |
+
 ## Stage 1 exit artifacts
 
 ### C3 completeness, per site and per row
