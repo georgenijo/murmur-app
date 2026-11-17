@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Prepare isolated CI Rust library outputs and dependency-cache identity."""
+"""Stamp the CI dependency-cache identity into a test checkout manifest.
+
+The library crate type is already ["lib"] (desktop builds do not need cdylib or
+staticlib), so this only validates that and adds the cache recipe metadata."""
 
 import argparse
 import hashlib
@@ -33,15 +36,8 @@ def configure(manifest: Path, recipe: str) -> None:
     declarations = re.findall(r"(?m)^[ \t]*crate-type[ \t]*=", library)
     if len(declarations) != 1:
         raise ValueError("expected one library crate-type declaration")
-    canonical = r'(?m)^crate-type = \["lib", "cdylib", "staticlib"\][ \t]*$'
-    test_only = 'crate-type = ["lib"]'
-    is_prepared = re.search(r'(?m)^crate-type = \["lib"\][ \t]*$', library)
-    if not is_prepared and not re.search(canonical, library):
+    if not re.search(r'(?m)^crate-type = \["lib"\][ \t]*$', library):
         raise ValueError("unexpected library crate types; inspect the CI configuration")
-    if has_cache_table and not is_prepared:
-        raise ValueError("CI cache metadata must not be in the canonical release manifest")
-    changed = re.sub(canonical, test_only, library, count=1)
-    base = base[:section.start()] + changed + base[section.end():]
     if not base.endswith("\n"):
         base += "\n"
     # rust-cache hashes package metadata, but Cargo does not use it to select
@@ -59,7 +55,7 @@ def main() -> None:
     root = Path(__file__).resolve().parents[1]
     recipe = recipe_digest(root / ".github/workflows/ci.yml", Path(__file__))
     configure(args.manifest, recipe)
-    print(f"CI test checkout configured for Rust library output; recipe {recipe[:12]}")
+    print(f"CI test checkout configured; recipe {recipe[:12]}")
 
 
 if __name__ == "__main__":
