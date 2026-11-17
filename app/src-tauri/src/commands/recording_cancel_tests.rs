@@ -285,6 +285,183 @@ fn cancel_processing_with_the_matching_expectation() {
     );
 }
 
+// ------------------------------------------- site 206: the capture-cancel result
+
+/// A hook that proves T is free while the capture cancel (`CC`) runs: the cancel
+/// family releases T before `PT:CC` (R205.4 / R201.4), so a supervisor that
+/// blocks for up to 2 s never holds up the next transition.
+pub(super) fn t_is_free_in_cc(world: &Arc<World>) -> impl FnOnce() + Send + 'static {
+    let world = Arc::clone(world);
+    move || {
+        let free = world
+            .state()
+            .app_state
+            .recording_transition
+            .try_lock()
+            .is_ok();
+        world.note(&format!("T free inside CC: {free}"));
+    }
+}
+
+/// A hook for the supervisor's own terminal: it claims `UserCancelledStarting`
+/// for recording 1 while the capture cancel is still in flight (before the
+/// command gives up on the ack), so the ledger winner is the supervisor's.
+pub(super) fn supervisor_claims_first(world: &Arc<World>) -> impl FnOnce() + Send + 'static {
+    let world = Arc::clone(world);
+    move || {
+        let state = world.state();
+        emit_dictation_terminal(
+            state.inner(),
+            1,
+            DictationTerminalOutcome::UserCancelledStarting,
+            DictationErrorCode::CancelledStarting,
+        );
+    }
+}
+
+/// Forget the previous scenario's site 206 witness (the slot is thread-local).
+pub(super) fn forget_206_witness() {
+    cancel_ports::LAST_206_WITNESS.with(|slot| slot.borrow_mut().clear());
+}
+
+/// Site 206's witness as one trace line: `TERM Failed` is the real result of a
+/// lost claim, `TERM Ran` a won one, and `none` a decision with no effect.
+pub(super) fn note_206_witness(world: &Arc<World>) {
+    let witness = cancel_ports::LAST_206_WITNESS.with(|slot| slot.borrow().clone());
+    let text = if witness.is_empty() {
+        "none".to_string()
+    } else {
+        witness
+            .iter()
+            .map(|entry| format!("{} {:?}", entry.code, entry.outcome))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    world.note(&format!("206 witness: {text}"));
+}
+
+/// R205.4 + R206.1: the supervisor answers `Ok(false)` (nothing to cancel), so no
+/// `Recovering` follows; the command answers `Ok` and changes nothing.
+#[test]
+fn cancel_recording_not_accepted() {
+    assert_trace(
+        "recording-not-accepted",
+        Setup::idle(),
+        |w| {
+            recording(w);
+            w.knobs().cancel_result = Ok(false);
+            w.on("supervisor.cancel", t_is_free_in_cc(w));
+            cancel_command(w, None);
+        },
+        &[
+            "supervisor.cancel 1 user",
+            "# T free inside CC: true",
+            "reply cancel Ok",
+            "= final status=Recording processing=false context=1 cancelled_through=0",
+        ],
+    );
+}
+
+/// R205.4 + R206.1 while Starting
+#[test]
+fn cancel_starting_not_accepted() {
+    assert_trace(
+        "starting-not-accepted",
+        Setup::idle(),
+        |w| {
+            w.knobs().cold_start = ColdStart::ReadyAfterContext;
+            started(w);
+            w.knobs().cancel_result = Ok(false);
+            w.on("supervisor.cancel", t_is_free_in_cc(w));
+            cancel_command(w, None);
+            w.release_ready();
+        },
+        &[
+            "supervisor.cancel 1 user",
+            "# T free inside CC: true",
+            "reply cancel Ok",
+            "supervisor.release_ready 1",
+            "supervisor.set_phase Recording",
+            "supervisor.notify 1 Ready",
+            "emit recording-status-changed \"recording\"",
+            "~ status Starting -> Recording",
+            "SD ticker 1 registered=true",
+            "= final status=Recording processing=false context=1 cancelled_through=0",
+        ],
+    );
+}
+
+/// R206.2 over a start that the supervisor cancelled first: the supervisor holds
+/// the ledger (`UserCancelledStarting`), the command's `PipelineFailure` claim
+/// loses (no second terminal), and the error text is unchanged.
+#[test]
+fn cancel_starting_err_after_the_supervisor_claimed_first() {
+    assert_trace(
+        "starting-err-claimed",
+        Setup::idle(),
+        |w| {
+            w.knobs().cold_start = ColdStart::ReadyAfterContext;
+            started(w);
+            w.knobs().cancel_result = Err("boom");
+            w.on("supervisor.cancel", supervisor_claims_first(w));
+            cancel_command(w, None);
+            w.release_ready();
+        },
+        &[
+            "supervisor.cancel 1 user",
+            "~ terminal 1 UserCancelledStarting/CancelledStarting",
+            "reply cancel Err boom",
+            "supervisor.release_ready 1",
+            "supervisor.set_phase Recording",
+            "supervisor.notify 1 Ready",
+            "emit recording-status-changed \"recording\"",
+            "~ status Starting -> Recording",
+            "SD ticker 1 registered=true",
+            "= final status=Recording processing=false context=1 cancelled_through=0",
+        ],
+    );
+}
+
+/// The same scenario with the witness: the lost claim is recorded `Failed`, a
+/// won one `Ran`, a no-effect decision has an empty witness.
+#[test]
+fn cancel_records_the_real_206_claim_result() {
+    let witnessed = |setup: Setup, body: fn(&Arc<World>)| {
+        let lines = from_cancel(trace(setup, body));
+        lines
+            .into_iter()
+            .find(|line| line.starts_with("# 206 witness"))
+            .expect("the scenario notes the witness")
+    };
+    let lost = witnessed(Setup::idle(), |w| {
+        w.knobs().cold_start = ColdStart::ReadyAfterContext;
+        started(w);
+        w.knobs().cancel_result = Err("boom");
+        w.on("supervisor.cancel", supervisor_claims_first(w));
+        forget_206_witness();
+        cancel_command(w, None);
+        note_206_witness(w);
+        w.release_ready();
+    });
+    assert_eq!(lost, "# 206 witness: TERM Failed");
+    let won = witnessed(Setup::idle(), |w| {
+        recording(w);
+        w.knobs().cancel_result = Err("boom");
+        forget_206_witness();
+        cancel_command(w, None);
+        note_206_witness(w);
+    });
+    assert_eq!(won, "# 206 witness: TERM Ran");
+    let none = witnessed(Setup::idle(), |w| {
+        recording(w);
+        w.knobs().cancel_result = Ok(false);
+        forget_206_witness();
+        cancel_command(w, None);
+        note_206_witness(w);
+    });
+    assert_eq!(none, "# 206 witness: none");
+}
+
 // ------------------------------------------------------------ re-entrancy
 
 /// What the nested cancel returned when it was polled once: `None` while it was

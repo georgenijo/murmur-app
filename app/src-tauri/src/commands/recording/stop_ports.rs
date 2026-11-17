@@ -347,17 +347,25 @@ impl Ports for StopPorts<'_> {
         let outcome = terminal_outcome_from_core(terminal.outcome);
         let code = error_code_from_core(terminal.code);
         let hooks = self.hooks.borrow();
-        match hooks.terminal.as_ref() {
-            Some(hook) => hook(outcome, code),
-            None => {
-                emit_dictation_terminal(self.state, self.recording_id.get(), outcome, code);
+        // The default claim reports the ledger's answer: a lost claim (another
+        // sink, e.g. the supervisor's `UserCancelledStarting`, won) is a failure
+        // of this effect, never a constant success.
+        let claimed = match hooks.terminal.as_ref() {
+            Some(hook) => {
+                hook(outcome, code);
+                true
             }
-        }
+            None => emit_dictation_terminal(self.state, self.recording_id.get(), outcome, code),
+        };
         drop(hooks);
         if let Some(log) = self.hooks.borrow_mut().after_terminal.take() {
             log();
         }
-        Ok(())
+        if claimed {
+            Ok(())
+        } else {
+            Err(PortFailure)
+        }
     }
 
     fn perf(&self, effect: &Effect) -> PortResult {

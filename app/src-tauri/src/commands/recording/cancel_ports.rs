@@ -75,6 +75,15 @@ pub(super) fn run_phase(
     }
 }
 
+// Test builds: the witness of the executor that ran site 206's `PT` phase, set by
+// both callers (the cancel command and the stop command's R201.4), so a test
+// sees the real result recorded for every effect the decision placed.
+#[cfg(test)]
+thread_local! {
+    pub(super) static LAST_206_WITNESS: RefCell<Vec<crate::dictation_executor::executor::Witness>> =
+        const { RefCell::new(Vec::new()) };
+}
+
 /// What the capture cancel (`CC`) reported.
 #[derive(Debug)]
 pub(super) enum CaptureCancelOutcome {
