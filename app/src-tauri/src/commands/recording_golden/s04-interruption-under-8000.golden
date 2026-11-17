@@ -1,0 +1,214 @@
+# golden: s04-interruption-under-8000
+# scenario: 4 interruption under 8,000 samples
+# witnesses: PD-1 (4b), PD-15, PD-18 (a) (4d is the golden witness for the family)
+# lines: `~` is shared state seen to change since the previous line; `#` is a
+# scenario step; everything else is a port call, an emit or a reply, in order.
+
+=== 4a plain S12 ===
+mic_transition
+keyboard.is_app_disabled
+supervisor.is_dictation_cleanup_pending 0 -> false
+~ recording_id 0 -> 1
+ax.capture_delivery_target_snapshot
+~ status Idle -> Starting
+emit dictation-generation-started {"recordingId":1}
+emit recording-status-changed "starting"
+performance.register_production 1 SystemDefault
+performance.begin_register 1
+supervisor.start 1 toggle
+supervisor.set_phase Starting
+supervisor.notify 1 Accepted
+supervisor.set_phase Recording
+supervisor.notify 1 Ready
+supervisor.start_ack 1 Ok
+smart_destination.capture enabled=false
+refresh_expired_ide_context
+performance.production_context 1
+publish_recording_ready 1
+supervisor.is_dictation_recording 1 -> true
+emit recording-status-changed "recording"
+SD ticker 1 registered=true
+~ status Starting -> Recording
+publish_recording_ready 1 -> true
+spawn_model_preparation 1
+performance.spawn_begin 1
+reply start Ok {"recordingId":1,"state":"starting","type":"recording_starting"}
+supervisor.set_phase Recovering
+supervisor.notify 1 Recovering(runtime_failure)
+~ status Recording -> Recovering
+emit recording-status-changed "recovering"
+emit audio-recovery-started {"reason":"runtime_failure","recordingId":1}
+supervisor.notify 1 Interrupted(runtime_failure, 6000 samples)
+emit recording-interrupted {"actionCode":"retry","autoTranscribe":false,"deliveredSamples":6000,"durationMs":375,"reason":"runtime_failure","recordingId":1,"statusCode":"microphone_interrupted"}
+~ status Recovering -> Idle
+~ terminal 1 RuntimeInterruption/RuntimeFailure
+~ perf-claim 1 {"status":"failed","stage":"captureFinalization","errorCode":"audioCaptureFailed"}
+emit recording-status-changed "idle"
+supervisor.hold_before_owner_clear 1
+supervisor.clear_owner 1
+supervisor.set_phase Idle
+
+=== 4b S12 with a user stop between the check and the Idle write (PD-1) ===
+mic_transition
+keyboard.is_app_disabled
+supervisor.is_dictation_cleanup_pending 0 -> false
+~ recording_id 0 -> 1
+ax.capture_delivery_target_snapshot
+~ status Idle -> Starting
+emit dictation-generation-started {"recordingId":1}
+emit recording-status-changed "starting"
+performance.register_production 1 SystemDefault
+performance.begin_register 1
+supervisor.start 1 toggle
+supervisor.set_phase Starting
+supervisor.notify 1 Accepted
+supervisor.set_phase Recording
+supervisor.notify 1 Ready
+supervisor.start_ack 1 Ok
+smart_destination.capture enabled=false
+refresh_expired_ide_context
+performance.production_context 1
+publish_recording_ready 1
+supervisor.is_dictation_recording 1 -> true
+emit recording-status-changed "recording"
+SD ticker 1 registered=true
+~ status Starting -> Recording
+publish_recording_ready 1 -> true
+spawn_model_preparation 1
+performance.spawn_begin 1
+reply start Ok {"recordingId":1,"state":"starting","type":"recording_starting"}
+supervisor.set_phase Recovering
+supervisor.notify 1 Recovering(runtime_failure)
+~ status Recording -> Recovering
+emit recording-status-changed "recovering"
+emit audio-recovery-started {"reason":"runtime_failure","recordingId":1}
+supervisor.notify 1 Interrupted(runtime_failure, 6000 samples)
+emit recording-interrupted {"actionCode":"retry","autoTranscribe":false,"deliveredSamples":6000,"durationMs":375,"reason":"runtime_failure","recordingId":1,"statusCode":"microphone_interrupted"}
+supervisor.take_interrupted 1 -> 6000 samples
+claim_preview_hide 1
+ax.capture_delivery_target_snapshot
+~ status Recovering -> Processing
+keyboard.hotkey_release_take_for 1
+keyboard.stop_gesture_take_for 1
+keyboard.set_processing true
+~ processing true
+emit recording-status-changed "processing"
+performance.production_sample_count 1 6000
+pipeline 1 samples=6000
+gate pipeline wait
+~ status Processing -> Idle
+~ processing false
+~ terminal 1 RuntimeInterruption/RuntimeFailure
+~ perf-claim 1 {"status":"failed","stage":"captureFinalization","errorCode":"audioCaptureFailed"}
+emit recording-status-changed "idle"
+supervisor.hold_before_owner_clear 1
+# the bridge has returned; the user stop is still in the pipeline
+gate pipeline opened
+gate pipeline pass
+pipeline 1 returns
+keyboard.set_processing false
+emit recording-status-changed "idle"
+emit transcription-complete {"duration":0,"interrupted":{"deliveredSamples":6000,"durationMs":375,"reason":"stream_invalidated"},"rawText":"scripted transcript","recording":{"modelId":"base.en","profileId":null,"recordingId":1,"stages":[]},"recordingId":1,"text":"scripted transcript"}
+reply user stop Ok {"state":"idle","text":"scripted transcript","type":"transcription"}
+supervisor.clear_owner 1
+supervisor.set_phase Idle
+
+=== 4c plain S12 observed at the supervisor: no Idle follows ===
+mic_transition
+keyboard.is_app_disabled
+supervisor.is_dictation_cleanup_pending 0 -> false
+~ recording_id 0 -> 1
+ax.capture_delivery_target_snapshot
+~ status Idle -> Starting
+emit dictation-generation-started {"recordingId":1}
+emit recording-status-changed "starting"
+performance.register_production 1 SystemDefault
+performance.begin_register 1
+supervisor.start 1 toggle
+supervisor.set_phase Starting
+supervisor.notify 1 Accepted
+supervisor.set_phase Recording
+supervisor.notify 1 Ready
+supervisor.start_ack 1 Ok
+smart_destination.capture enabled=false
+refresh_expired_ide_context
+performance.production_context 1
+publish_recording_ready 1
+supervisor.is_dictation_recording 1 -> true
+emit recording-status-changed "recording"
+SD ticker 1 registered=true
+~ status Starting -> Recording
+publish_recording_ready 1 -> true
+spawn_model_preparation 1
+performance.spawn_begin 1
+reply start Ok {"recordingId":1,"state":"starting","type":"recording_starting"}
+supervisor.set_phase Recovering
+supervisor.notify 1 Recovering(runtime_failure)
+~ status Recording -> Recovering
+emit recording-status-changed "recovering"
+emit audio-recovery-started {"reason":"runtime_failure","recordingId":1}
+supervisor.notify 1 Interrupted(runtime_failure, 6000 samples)
+emit recording-interrupted {"actionCode":"retry","autoTranscribe":false,"deliveredSamples":6000,"durationMs":375,"reason":"runtime_failure","recordingId":1,"statusCode":"microphone_interrupted"}
+~ status Recovering -> Idle
+~ terminal 1 RuntimeInterruption/RuntimeFailure
+~ perf-claim 1 {"status":"failed","stage":"captureFinalization","errorCode":"audioCaptureFailed"}
+emit recording-status-changed "idle"
+supervisor.hold_before_owner_clear 1
+# Interrupted was the last notification; the supervisor now clears its owner
+supervisor.clear_owner 1
+supervisor.set_phase Idle
+
+=== 4d start takes R101.12 before the owner is cleared (PD-18 a) ===
+mic_transition
+keyboard.is_app_disabled
+supervisor.is_dictation_cleanup_pending 0 -> false
+~ recording_id 0 -> 1
+ax.capture_delivery_target_snapshot
+~ status Idle -> Starting
+emit dictation-generation-started {"recordingId":1}
+emit recording-status-changed "starting"
+performance.register_production 1 SystemDefault
+performance.begin_register 1
+supervisor.start 1 toggle
+supervisor.set_phase Starting
+supervisor.notify 1 Accepted
+supervisor.set_phase Recording
+supervisor.notify 1 Ready
+supervisor.start_ack 1 Ok
+smart_destination.capture enabled=false
+refresh_expired_ide_context
+performance.production_context 1
+publish_recording_ready 1
+supervisor.is_dictation_recording 1 -> true
+emit recording-status-changed "recording"
+SD ticker 1 registered=true
+~ status Starting -> Recording
+publish_recording_ready 1 -> true
+spawn_model_preparation 1
+performance.spawn_begin 1
+reply start Ok {"recordingId":1,"state":"starting","type":"recording_starting"}
+supervisor.set_phase Recovering
+supervisor.notify 1 Recovering(runtime_failure)
+~ status Recording -> Recovering
+emit recording-status-changed "recovering"
+emit audio-recovery-started {"reason":"runtime_failure","recordingId":1}
+supervisor.notify 1 Interrupted(runtime_failure, 6000 samples)
+emit recording-interrupted {"actionCode":"retry","autoTranscribe":false,"deliveredSamples":6000,"durationMs":375,"reason":"runtime_failure","recordingId":1,"statusCode":"microphone_interrupted"}
+~ status Recovering -> Idle
+~ terminal 1 RuntimeInterruption/RuntimeFailure
+~ perf-claim 1 {"status":"failed","stage":"captureFinalization","errorCode":"audioCaptureFailed"}
+emit recording-status-changed "idle"
+supervisor.hold_before_owner_clear 1
+# the bridge restored Idle; the supervisor is held before clearing its owner
+mic_transition
+keyboard.is_app_disabled
+supervisor.is_dictation_cleanup_pending 1 -> true
+emit recording-status-changed "recovering"
+~ status Idle -> Recovering
+reply start Ok {"state":"recovering","type":"audio_recovering"}
+supervisor.clear_owner 1
+supervisor.set_phase Idle
+# owner cleared; the supervisor has nothing more to notify
+mic_transition
+keyboard.is_app_disabled
+reply start again Ok {"state":"recovering","type":"audio_recovering"}

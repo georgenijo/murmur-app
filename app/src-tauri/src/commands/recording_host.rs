@@ -128,6 +128,9 @@ pub(super) trait SupervisorPort: Send + Sync + 'static {
         &self,
         recording_id: u64,
     ) -> Option<audio_lifecycle::InterruptedCapture>;
+    /// `audio_lifecycle::is_dictation_cleanup_pending`: the previous owner is
+    /// still tearing down. Read by the start under the dictation lock.
+    fn is_dictation_cleanup_pending(&self, recording_id: u64) -> bool;
 }
 
 /// The keyboard module's state the commands read or push, and the gesture
@@ -361,6 +364,10 @@ impl SupervisorPort for TauriSupervisor {
         recording_id: u64,
     ) -> Option<audio_lifecycle::InterruptedCapture> {
         audio_lifecycle::take_interrupted_dictation(recording_id)
+    }
+
+    fn is_dictation_cleanup_pending(&self, recording_id: u64) -> bool {
+        audio_lifecycle::is_dictation_cleanup_pending(recording_id)
     }
 }
 

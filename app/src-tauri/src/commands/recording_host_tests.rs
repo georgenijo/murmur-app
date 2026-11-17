@@ -472,6 +472,10 @@ impl SupervisorPort for Shared {
         self.push(Call::SupervisorTakeInterrupted, format!("{recording_id}"));
         self.script().interrupted.take()
     }
+
+    fn is_dictation_cleanup_pending(&self, _recording_id: u64) -> bool {
+        false
+    }
 }
 
 impl Shared {
@@ -1336,11 +1340,15 @@ fn every_scenario_follows_the_production_order() {
 // -------------------------------------------------------- port coverage
 
 /// Each `Call` is tied to one trait method, and every trait method (bar the
-/// accessors that only hand out a port) has a `Call`.
+/// accessors that only hand out a port, and the one read-only query the Stage 0b
+/// golden traces log instead) has a `Call`.
 #[test]
 fn call_kinds_match_the_trait_declarations() {
     use std::collections::BTreeSet;
-    const ACCESSORS: [(&str, &str); 5] = [
+    const ACCESSORS: [(&str, &str); 6] = [
+        // A read-only process-state query; the golden traces
+        // (`recording_golden_tests.rs`) log it, these scenarios do not.
+        ("SupervisorPort", "is_dictation_cleanup_pending"),
         ("DictationHost", "supervisor"),
         ("DictationHost", "keyboard"),
         ("DictationHost", "ax"),

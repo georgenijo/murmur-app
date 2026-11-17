@@ -176,6 +176,14 @@ use dictation_host::{DictationHost, TauriHost};
 mod host_tests;
 
 #[cfg(test)]
+#[path = "recording_golden_harness.rs"]
+mod golden_harness;
+
+#[cfg(test)]
+#[path = "recording_golden_tests.rs"]
+mod golden_tests;
+
+#[cfg(test)]
 #[path = "recording_preview_tests.rs"]
 mod preview_tests;
 
@@ -4852,9 +4860,7 @@ pub(crate) fn handle_audio_lifecycle(
     recording_id: u64,
     event: AudioLifecycleEvent,
 ) {
-    let became_ready = event == AudioLifecycleEvent::Ready;
-    let partial_app = app_handle.clone();
-    handle_audio_lifecycle_with(
+    handle_audio_lifecycle_and_ready_tasks(
         app_handle,
         recording_id,
         event,
@@ -4878,15 +4884,37 @@ pub(crate) fn handle_audio_lifecycle(
                 }
             });
         },
+        |app_handle, recording_id, register| {
+            spawn_vad_stream(app_handle.clone(), recording_id);
+            spawn_dictation_partial_ticker(app_handle, recording_id, register);
+        },
     );
+}
+
+/// [`handle_audio_lifecycle`] with its spawns passed in (Stage 0b seam): the
+/// event is handled first, then a `Ready` starts the incremental VAD and the
+/// partial ticker, whose `register` takes the dictation lock itself.
+fn handle_audio_lifecycle_and_ready_tasks<R: tauri::Runtime>(
+    app_handle: tauri::AppHandle<R>,
+    recording_id: u64,
+    event: AudioLifecycleEvent,
+    transcribe_interruption: impl FnOnce(tauri::AppHandle<R>, u64),
+    spawn_ready_tasks: impl FnOnce(tauri::AppHandle<R>, u64, Box<dyn FnOnce() -> bool>),
+) {
+    let became_ready = event == AudioLifecycleEvent::Ready;
+    let partial_app = app_handle.clone();
+    handle_audio_lifecycle_with(app_handle, recording_id, event, transcribe_interruption);
     if became_ready {
         let register_app = partial_app.clone();
-        spawn_vad_stream(partial_app.clone(), recording_id);
-        spawn_dictation_partial_ticker(partial_app, recording_id, move || {
-            let state = register_app.state::<State>();
-            let dictation = state.app_state.dictation.lock_or_recover();
-            register_partial_ticker_locked(&state.app_state, &dictation, recording_id)
-        });
+        spawn_ready_tasks(
+            partial_app,
+            recording_id,
+            Box::new(move || {
+                let state = register_app.state::<State>();
+                let dictation = state.app_state.dictation.lock_or_recover();
+                register_partial_ticker_locked(&state.app_state, &dictation, recording_id)
+            }),
+        );
     }
 }
 
@@ -5311,7 +5339,30 @@ fn publish_recording_ready_if_audio_ready(
     recording_id: u64,
     context_ready_at: std::time::Instant,
 ) -> bool {
-    if !audio_lifecycle::is_dictation_recording(recording_id) {
+    publish_recording_ready_with(
+        app_handle,
+        recording_id,
+        context_ready_at,
+        audio_lifecycle::is_dictation_recording,
+        |app_handle, recording_id, register| {
+            spawn_vad_stream(app_handle.clone(), recording_id);
+            spawn_dictation_partial_ticker(app_handle.clone(), recording_id, register);
+        },
+    )
+}
+
+/// [`publish_recording_ready_if_audio_ready`] with its process-global read and
+/// its spawns (the incremental VAD and the partial ticker, whose `register`
+/// runs under the dictation lock) passed in. Stage 0b seam: the body is the
+/// same statements in the same order.
+fn publish_recording_ready_with<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+    recording_id: u64,
+    context_ready_at: std::time::Instant,
+    is_audio_recording: impl FnOnce(u64) -> bool,
+    spawn_ready_tasks: impl FnOnce(&tauri::AppHandle<R>, u64, Box<dyn FnOnce() -> bool + '_>),
+) -> bool {
+    if !is_audio_recording(recording_id) {
         return false;
     }
 
@@ -5334,10 +5385,11 @@ fn publish_recording_ready_if_audio_ready(
         context_to_status_emit_ms = context_ready_at.elapsed().as_millis() as u64,
         "recording status emitted after context ready"
     );
-    spawn_vad_stream(app_handle.clone(), recording_id);
-    spawn_dictation_partial_ticker(app_handle.clone(), recording_id, || {
-        register_partial_ticker_locked(&state.app_state, &dictation, recording_id)
-    });
+    spawn_ready_tasks(
+        app_handle,
+        recording_id,
+        Box::new(|| register_partial_ticker_locked(&state.app_state, &dictation, recording_id)),
+    );
     true
 }
 
@@ -5544,7 +5596,7 @@ async fn start_native_recording_inner(
                 return Err("Dictation is not idle.".to_string());
             }
             DictationStatus::Idle => {
-                if audio_lifecycle::is_dictation_cleanup_pending(
+                if host.supervisor().is_dictation_cleanup_pending(
                     state.app_state.recording_id.load(Ordering::SeqCst),
                 ) {
                     // The result has finished, but its capture owner still

@@ -99,7 +99,7 @@ fn claim_meeting_ownership(app_state: &AppState, inference: bool) -> Result<(), 
     Ok(())
 }
 
-fn meeting_conflict(state: &State) -> Option<&'static str> {
+pub(crate) fn meeting_conflict(state: &State) -> Option<&'static str> {
     if crate::commands::permissions::relaunch_committed() {
         return Some(MEETING_RESTARTING);
     }

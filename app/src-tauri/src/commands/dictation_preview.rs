@@ -229,6 +229,14 @@ pub(crate) fn note_ticker_started(recording_id: u64) -> bool {
     OWNERSHIP.ticker_started(recording_id)
 }
 
+/// Forget every registration, so a golden scenario starts from the same
+/// process-global hide ownership whatever ran before it.
+#[cfg(test)]
+pub(crate) fn reset_ownership_for_test() {
+    OWNERSHIP.ticker.store(0, Ordering::SeqCst);
+    OWNERSHIP.delivery.store(0, Ordering::SeqCst);
+}
+
 /// The partial ticker's exit: hide unless a stop handed the hide to delivery.
 pub(crate) fn hide_on_ticker_exit(app: &tauri::AppHandle, recording_id: u64) {
     if OWNERSHIP.ticker_should_hide(recording_id) {
