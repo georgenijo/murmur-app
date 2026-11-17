@@ -366,18 +366,18 @@ pub fn decide_start_capture_result(
 
 // ---------------------------------------------------------------------- 103
 
-/// Row R103.0 / R103.0' (query 402 + the destination choice, 5699-5716): after the
-/// smart-destination capture, under a short D read, is the capture still current
-/// (`q_capture_current`: id current, not cancelled, status not `Idle`)?
+/// Row R103.0 / R103.0' (the smart-destination emit's own D section, 2074): under
+/// D, is the capture still current (`q_capture_current`: id current, not cancelled,
+/// status not `Idle`)? The earlier query-402 read that picks the destination is the
+/// shell's separate short D read; this decision is the ownership recheck the emit
+/// always made under its own D hold.
 ///
-/// * R103.0, current: `Continue`; `PDT:SDE` (the `smart-destination-selected` emit,
-///   with T held and D released, as today) only when Smart destination is enabled.
-/// * R103.0', not current: `Stale`; no effect. The shell then forces the
-///   destination to `Unavailable` (enabled) or `Disabled`, so a late result of a
-///   failed or cancelled start never selects a profile.
+/// * R103.0, current: `Continue`; `In:SDE` (the `smart-destination-selected` emit,
+///   under that D hold) only when Smart destination is enabled.
+/// * R103.0', not current: `Stale`; no effect: the gate suppresses the emit before
+///   it is dispatched, so no witness reports a delivery that did not happen.
 ///
-/// The appendix's `In:SDE` is `PDT` here because the emit does not run under D
-/// today (code wins); the registry has one id for both rows (`R103.0`).
+/// The registry has one id for both rows (`R103.0`).
 pub fn decide_start_destination(
     core: &DictationCore,
     rid: RecordingId,
@@ -386,7 +386,7 @@ pub fn decide_start_destination(
 ) -> Decision {
     if core.q_capture_current(rid) {
         let effects = if smart_enabled {
-            vec![placed(At::PostDT, Effect::SmartDestinationEmit)]
+            vec![placed(At::In, Effect::SmartDestinationEmit)]
         } else {
             Vec::new()
         };

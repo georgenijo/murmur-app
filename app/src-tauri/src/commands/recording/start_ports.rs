@@ -124,6 +124,13 @@ pub(super) fn expect_valid(decision: &Decision) {
     }
 }
 
+// Test builds: the witness of the smart-destination section's executor (R103.0).
+#[cfg(test)]
+thread_local! {
+    pub(super) static DESTINATION: RefCell<Vec<crate::dictation_executor::executor::Witness>> =
+        const { RefCell::new(Vec::new()) };
+}
+
 // Test builds: the witness of the start's executor after it resumed the awaited
 // `CS` with the supervisor's actual result.
 #[cfg(test)]
@@ -383,16 +390,13 @@ impl Ports for StartPorts<'_> {
                     serde_json::json!({ "recordingId": self.rid() }),
                 )
                 .map_err(|_| PortFailure),
-            // R103.0: the smart-destination selection, T held and D released.
+            // R103.0: the smart-destination selection, under the shell's D hold.
             Effect::SmartDestinationEmit => {
                 let tail = self.tail.ok_or(PortFailure)?;
-                self.host.emit_smart_destination(
-                    &self.state.app_state,
-                    self.rid(),
-                    &tail.context,
-                    tail.delivery_target,
-                );
-                Ok(())
+                // The real result of the emit, never a constant.
+                self.host
+                    .emit_smart_destination(self.rid(), &tail.context, tail.delivery_target)
+                    .map_err(|_| PortFailure)
             }
             _ => Err(PortFailure),
         }

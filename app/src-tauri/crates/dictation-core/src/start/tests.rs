@@ -861,7 +861,7 @@ fn r103_0_a_current_capture_continues_and_selects_the_smart_destination_when_ena
         assert_valid(&enabled);
         assert_eq!(enabled.row.0, "R103.0", "{status:?}");
         assert_eq!(enabled.verdict, Verdict::Continue, "{status:?}");
-        assert_eq!(tags(&enabled), ["PDT:SDE"], "{status:?}");
+        assert_eq!(tags(&enabled), ["In:SDE"], "{status:?}");
         let disabled = decide_start_destination(&core(status, RID), RID, false, NOW);
         assert_eq!(disabled.verdict, Verdict::Continue, "{status:?}");
         assert!(disabled.effects.is_empty(), "{status:?}");

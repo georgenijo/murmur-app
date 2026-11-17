@@ -2080,6 +2080,18 @@ fn emit_smart_destination(
     ) {
         return;
     }
+    let _ = emit_smart_destination_selected(app, rid, context, accepted_target);
+}
+
+/// The emit of [`emit_smart_destination`] without its D section and ownership
+/// gate: the start's shell owns both (`decide_start_destination`, `In:SDE`) and
+/// calls it with D held. Returns the emit's real result.
+fn emit_smart_destination_selected(
+    app: &tauri::AppHandle,
+    rid: u64,
+    context: &DictationContextSnapshot,
+    accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
+) -> tauri::Result<()> {
     let eligible = context.delivery.auto_paste
         && !context.delivery.save_audio
         && !context.delivery.save_transcript;
@@ -2097,12 +2109,12 @@ fn emit_smart_destination(
     } else {
         destination_application_name(&context.app.delivery_target)
     };
-    let _ = app.emit(
+    app.emit(
         "smart-destination-selected",
         serde_json::json!({
             "recordingId": rid, "status": status, "appName": app_name,
         }),
-    );
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -5794,12 +5806,14 @@ pub(crate) fn complete_dictation_capture_cleanup(
 
 fn publish_recording_ready_if_audio_ready(
     app_handle: &tauri::AppHandle,
+    state: &State,
     recording_id: u64,
     context_ready_at: std::time::Instant,
     ready_op: ContinuationGuard,
 ) -> bool {
     publish_recording_ready_with(
         app_handle,
+        state,
         recording_id,
         context_ready_at,
         ready_op,
@@ -5824,6 +5838,7 @@ fn publish_recording_ready_if_audio_ready(
 /// once by whichever row decides.
 fn publish_recording_ready_with<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
+    state: &State,
     recording_id: u64,
     context_ready_at: std::time::Instant,
     mut ready_op: ContinuationGuard,
@@ -5840,9 +5855,10 @@ fn publish_recording_ready_with<R: tauri::Runtime>(
     use ready_ports::ReadyPorts;
     use start_ports::{decide, executor, expect_valid, run_phase};
 
-    // D-S2-3: an internal entry checks re-entrancy before the managed-state lookup.
-    // The start reaches here right after it waited outside any core span, so a
-    // refusal is a bug, never an input.
+    // D-S2-3: an internal entry checks re-entrancy before any lock. The `State` is
+    // the start's own reference (no managed-state lookup, so the audio-not-ready
+    // path takes no lock the base did not). The start reaches here right after it
+    // waited outside any core span, so a refusal is a bug, never an input.
     drop(CoreEntry::enter().unwrap_or_else(|kind| {
         unreachable!("the ready publish was entered inside a core span: {kind:?}")
     }));
@@ -5858,7 +5874,6 @@ fn publish_recording_ready_with<R: tauri::Runtime>(
         context_ready_at: now,
     };
 
-    let state = app_handle.state::<State>();
     if !input.audio_ready {
         // R104.1 (D-less): the supervisor said no before D; D is not taken.
         let facts = FieldAdapter::lock_free_facts(&state.app_state);
@@ -5907,7 +5922,7 @@ fn publish_recording_ready_with<R: tauri::Runtime>(
     if published {
         let ports = ReadyPorts::new(
             app_handle,
-            state.inner(),
+            state,
             recording_id,
             context_ready_at,
             Box::new(spawn_ready_tasks),
@@ -6443,7 +6458,6 @@ async fn start_after_capture(
 ) -> Result<serde_json::Value, String> {
     use crate::dictation_executor::executor::core_now;
     use crate::dictation_executor::FieldAdapter;
-    use murmur_dictation_core::decision::Verdict;
     use murmur_dictation_core::effects::Placement;
     use murmur_dictation_core::ids::RecordingId;
     use murmur_dictation_core::inputs::StartContextInput;
@@ -6469,23 +6483,13 @@ async fn start_after_capture(
     // A listener that polled this future inline while an outer entry held D waits
     // out that span before the next D section (D-S2-3, D-S2-4).
     until_outside_core().await;
-    // Row R103.0 / R103.0' (query 402): a short D read after the capture.
-    let destination_decision = {
+    // Query 402 (`q_capture_current`): a short D read after the capture picks the
+    // destination. The emit's own ownership recheck is R103.0, below.
+    let capture_is_current = {
         let _drain = DrainDeferredFinishes(&state.app_state);
         let dictation = state.app_state.dictation.lock_or_recover();
-        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
-        decide(|| core_start::decide_start_destination(&view, recording, smart_enabled, now))
-    };
-    expect_valid(&destination_decision);
-    let capture_is_current = match destination_decision.verdict {
-        Verdict::Continue => true,
-        Verdict::Stale(_) => false,
-        Verdict::Applied
-        | Verdict::Refused(_)
-        | Verdict::Invalid(_)
-        | Verdict::NeedObservation(_) => {
-            unreachable!("the destination decision continues or is stale (R103.0)")
-        }
+        FieldAdapter::project_lifecycle_view(&state.app_state, &dictation)
+            .q_capture_current(recording)
     };
     let smart_destination = if capture_is_current {
         captured_smart_destination
@@ -6514,16 +6518,23 @@ async fn start_after_capture(
         context: Arc::clone(&context),
         performance_started_at_ms,
     };
-    {
-        // `PDT:SDE` (R103.0, only when Smart destination is enabled and the capture
-        // is current): T held, D released, as before.
+    if smart_enabled && capture_is_current {
+        // The emit's own D section, owned by the shell (R103.0): D is taken, the
+        // generation ownership is rechecked there and `In:SDE` runs under that hold,
+        // as the helper's own lock did. The drain guard is declared before D so a
+        // finish an inline listener queued (a dropped pipeline owner) runs on both
+        // the return and an unwind, after D is released (D-S2-4).
+        let _drain = DrainDeferredFinishes(&state.app_state);
+        let mut dictation = state.app_state.dictation.lock_or_recover();
+        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let decision =
+            decide(|| core_start::decide_start_destination(&view, recording, smart_enabled, now));
+        expect_valid(&decision);
         let ports = StartPorts::new(host, state, &slots, Some(rid)).with_tail(&tail);
-        run_phase(
-            &mut executor(&ports, destination_decision.clone(), false),
-            Placement::PostDT,
-            None,
-            rid,
-        );
+        let mut exec = executor(&ports, decision, false);
+        run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
+        #[cfg(test)]
+        start_ports::DESTINATION.with(|slot| *slot.borrow_mut() = exec.witness().to_vec());
     }
     host.performance().production_context(rid, &context);
     // Site 103 (R103.1-.6): the context install under D and T.
@@ -6616,7 +6627,7 @@ async fn start_after_capture(
         engine.prewarm();
     }
     // Site 104 (R104.1-.6); the publish's own decision consumes `K:ReadyPublish`.
-    host.publish_recording_ready_if_audio_ready(rid, context_ready_at, ready_op);
+    host.publish_recording_ready_if_audio_ready(state, rid, context_ready_at, ready_op);
     // R104.7, whatever the publish decided: `PDT:PM`, then T is released, then
     // `PT:PB` (ownership is fully installed before diagnostics begin, so
     // Recording, stop, and cancel never wait for SQLite) and `PT:REL`.

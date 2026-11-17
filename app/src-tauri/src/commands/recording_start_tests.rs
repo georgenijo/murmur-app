@@ -458,3 +458,135 @@ fn dropping_a_pipeline_owner_from_the_smart_auto_routing_notification_defers_its
         });
     });
 }
+
+// ------------------------------------------- the smart-destination emit's D section
+
+fn destination_witness() -> Vec<(&'static str, String)> {
+    start_ports::DESTINATION.with(|slot| {
+        slot.borrow()
+            .iter()
+            .map(|w| (w.code, format!("{:?}", w.outcome)))
+            .collect()
+    })
+}
+
+/// R103.0 (decision D-S2-4): the shell owns the emit's D section and runs `In:SDE`
+/// under it. An inline listener of the emit that drops a parked pipeline owner and
+/// then panics queues the owner's finish (D is held and not reentrant); the unwind
+/// drains it on that thread, after D is released, and H1 and H2 are retired
+/// instead of waiting for an owner that never reaches the next drain guard.
+#[test]
+fn a_listener_that_drops_a_pipeline_owner_and_panics_in_the_destination_emit_drains_on_the_unwind()
+{
+    under_watchdog("a panic in the smart-destination emit", || {
+        run_sub_run(&SubRun {
+            title: "unwind drains the destination section",
+            setup: Setup::idle(),
+            body: |w| {
+                recording(w);
+                w.knobs().stop_result = Ok(16_000);
+                w.close_gate("pipeline");
+                let mut stop = w.stop(None);
+                assert!(poll_once(&mut stop).is_pending());
+                cancelled(w, "cancel");
+                w.finish_sealed_stop(1);
+                assert_eq!(history_counts(w), (1, 1), "the parked stop's pipeline");
+                enable_smart_destination(w);
+                w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+                let parked = Arc::new(std::sync::Mutex::new(Some(stop)));
+                let slot = Arc::clone(&parked);
+                w.on_inline("smart_destination.emit", move || {
+                    drop(slot.lock().expect("slot").take());
+                    panic!("the listener panics under D");
+                });
+                let d_free_during_finish = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let (observer, seen) = (Arc::clone(w), Arc::clone(&d_free_during_finish));
+                let _barrier = crate::barrier_hook::install(move |point| {
+                    if point == "guard_finish" {
+                        let state = observer.state();
+                        // A panic under D poisons it; `try_lock_or_recover` sees through that.
+                        let free = state.app_state.dictation.try_lock_or_recover().is_some();
+                        seen.lock().expect("seen").push(free);
+                    }
+                });
+                let mut start = w.start();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    poll_once(&mut start)
+                }));
+                assert!(outcome.is_err(), "the listener's panic propagated");
+                assert!(
+                    DEFERRED_FINISHES.with(|queue| queue.borrow().is_empty()),
+                    "the unwind drained the queued finish"
+                );
+                assert_eq!(
+                    *d_free_during_finish.lock().expect("seen"),
+                    vec![true],
+                    "the finish ran once, with D already released"
+                );
+                drop(start);
+                assert_eq!(history_counts(w), (0, 0), "H1 and H2 are retired");
+                w.open_gate("pipeline");
+            },
+        });
+    });
+}
+
+/// A generation that ends between query 402's read and the emit's own D section is
+/// stopped by the ownership gate **before dispatch**: no event is delivered and the
+/// executor has no `SDE` entry to report as `Ran`.
+#[test]
+fn the_destination_gate_suppresses_the_emit_before_dispatch() {
+    start_ports::DESTINATION.with(|slot| slot.borrow_mut().clear());
+    let lines = run_sub_run(&SubRun {
+        title: "cancelled between the query and the emit",
+        setup: Setup::idle(),
+        body: |w| {
+            enable_smart_destination(w);
+            w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+            w.on("refresh_expired_ide_context", {
+                let world = Arc::clone(w);
+                move || world.state().app_state.cancel_recording(1)
+            });
+            let mut start = w.start();
+            let reply = complete(&mut start);
+            w.reply("start", &reply);
+        },
+    });
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.starts_with("emit_smart_destination")),
+        "no event is delivered: {lines:#?}"
+    );
+    assert_eq!(destination_witness(), vec![], "nothing was dispatched");
+}
+
+/// When the emit runs, its witness is the emit's real result: delivered is `Ran`,
+/// a rejected emit is `Failed`.
+#[test]
+fn the_destination_witness_reports_the_real_emit_result() {
+    for (fails, expected) in [(false, "Ran"), (true, "Failed")] {
+        start_ports::DESTINATION.with(|slot| slot.borrow_mut().clear());
+        run_sub_run(&SubRun {
+            title: "emit result",
+            setup: Setup::idle(),
+            body: if fails {
+                |w| {
+                    w.knobs().smart_destination_emit_error = true;
+                    enable_smart_destination(w);
+                    recording(w);
+                }
+            } else {
+                |w| {
+                    enable_smart_destination(w);
+                    recording(w);
+                }
+            },
+        });
+        assert_eq!(
+            destination_witness(),
+            vec![("SDE", expected.to_string())],
+            "emit fails: {fails}"
+        );
+    }
+}

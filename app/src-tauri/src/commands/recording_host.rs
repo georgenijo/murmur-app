@@ -60,18 +60,20 @@ pub(super) trait DictationHost: Send + Sync + 'static {
     ) -> Result<crate::microphone_auto::SmartAutoSelection, String>;
     /// `refresh_expired_ide_context`.
     fn refresh_expired_ide_context(&self, app_state: &AppState, bundle_id: Option<&str>);
-    /// `emit_smart_destination`.
+    /// The `smart-destination-selected` emit. The start calls it **under D** (the
+    /// shell owns that section and has already rechecked that the capture is
+    /// current), so it takes no lock and reports the emit's real result.
     fn emit_smart_destination(
         &self,
-        app_state: &AppState,
         recording_id: u64,
         context: &DictationContextSnapshot,
         accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
-    );
+    ) -> Result<(), String>;
     /// `publish_recording_ready_if_audio_ready`. `ready_op` is the flight's
     /// `K:ReadyPublish` (R103.1), consumed by the publish's own decision.
     fn publish_recording_ready_if_audio_ready(
         &self,
+        state: &State,
         recording_id: u64,
         context_ready_at: std::time::Instant,
         ready_op: crate::core_history::ContinuationGuard,
@@ -278,21 +280,28 @@ impl DictationHost for TauriHost {
 
     fn emit_smart_destination(
         &self,
-        app_state: &AppState,
         recording_id: u64,
         context: &DictationContextSnapshot,
         accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
-    ) {
-        emit_smart_destination(&self.app, app_state, recording_id, context, accepted_target)
+    ) -> Result<(), String> {
+        emit_smart_destination_selected(&self.app, recording_id, context, accepted_target)
+            .map_err(|error| error.to_string())
     }
 
     fn publish_recording_ready_if_audio_ready(
         &self,
+        state: &State,
         recording_id: u64,
         context_ready_at: std::time::Instant,
         ready_op: crate::core_history::ContinuationGuard,
     ) -> bool {
-        publish_recording_ready_if_audio_ready(&self.app, recording_id, context_ready_at, ready_op)
+        publish_recording_ready_if_audio_ready(
+            &self.app,
+            state,
+            recording_id,
+            context_ready_at,
+            ready_op,
+        )
     }
 
     fn spawn_model_preparation(&self, model_name: String, recording_id: u64) {
