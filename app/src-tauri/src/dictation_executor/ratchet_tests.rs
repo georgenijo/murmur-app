@@ -456,39 +456,66 @@ fn status_write_and_terminal_call_sites_only_go_down() {
     }
 }
 
+/// The one function allowed to call `PersistedCore::new` (decision D-S1-5 a).
+const SEEDING_FILE: &str = "dictation_executor/adapter.rs";
+const SEEDING_FN: &str = "seed_core";
+
+/// Every `PersistedCore::new` in `sources` (comments and literals already
+/// blanked) as `(file, line, enclosing fn)`.
+fn persisted_core_new_callers(sources: &[(String, String)]) -> Vec<(String, usize, String)> {
+    let needle = Regex::new(r"\bPersistedCore\s*::\s*new\b").expect("regex");
+    let function = Regex::new(r"\bfn\s+(\w+)").expect("regex");
+    let mut callers = Vec::new();
+    for (file, code) in sources {
+        for m in needle.find_iter(code) {
+            let enclosing = function
+                .captures_iter(&code[..m.start()])
+                .last()
+                .map(|found| found[1].to_string())
+                .unwrap_or_default();
+            callers.push((file.clone(), line_of(code, m.start()), enclosing));
+        }
+    }
+    callers
+}
+
+/// `Ok` iff there is exactly one caller and it is `SEEDING_FN` in `SEEDING_FILE`.
+fn check_single_seeder(callers: &[(String, usize, String)]) -> Result<(), String> {
+    match callers {
+        [(file, _, function)] if file == SEEDING_FILE && function == SEEDING_FN => Ok(()),
+        _ => Err(format!(
+            "PersistedCore::new must have exactly one caller, `{SEEDING_FN}` in {SEEDING_FILE} \
+             (it replaces the whole persisted value without an effect commit); found: {callers:?}"
+        )),
+    }
+}
+
 /// Decision D-S1-5 (a): `PersistedCore::new` replaces the whole persisted value
-/// without a commit. Only the seeding adapter may call it (the core crate itself
-/// is outside `src/`). Test code is scanned too: a test that needs a core equal
-/// to live uses `FieldAdapter::seed_core`.
+/// without a commit. Exactly one call exists in `src/` (the core crate itself is
+/// outside it): `FieldAdapter::seed_core`. Any other adapter method that needs
+/// the persisted core re-synced calls `seed_core`; it never builds one. Test
+/// code is scanned too: a test that needs a core equal to live uses `seed_core`.
 #[test]
 fn persisted_core_new_has_one_caller() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut paths = Vec::new();
     rust_files(&src, &mut paths);
-    let needle = Regex::new(r"\bPersistedCore\s*::\s*new\b").expect("regex");
-    let mut callers = Vec::new();
-    for path in paths {
-        let code = blank_comments_and_literals(&std::fs::read_to_string(&path).expect("read"));
-        let relative = path
-            .strip_prefix(&src)
-            .expect("under src")
-            .to_string_lossy()
-            .replace('\\', "/");
-        for m in needle.find_iter(&code) {
-            callers.push(format!("{relative}:{}", line_of(&code, m.start())));
-        }
+    paths.sort();
+    let sources: Vec<(String, String)> = paths
+        .iter()
+        .map(|path| {
+            let code = blank_comments_and_literals(&std::fs::read_to_string(path).expect("read"));
+            let relative = path
+                .strip_prefix(&src)
+                .expect("under src")
+                .to_string_lossy()
+                .replace('\\', "/");
+            (relative, code)
+        })
+        .collect();
+    if let Err(message) = check_single_seeder(&persisted_core_new_callers(&sources)) {
+        panic!("{message}");
     }
-    assert!(
-        callers
-            .iter()
-            .all(|caller| caller.starts_with("dictation_executor/adapter.rs:")),
-        "PersistedCore::new may only be called from the seeding adapter \
-         (dictation_executor/adapter.rs); found: {callers:?}"
-    );
-    assert!(
-        !callers.is_empty(),
-        "the seeding adapter no longer calls PersistedCore::new; update this test"
-    );
 }
 
 // ------------------------------------------------------------- scanner checks
@@ -567,4 +594,38 @@ fn test_only_module_files_are_skipped() {
     }
     assert!(names.contains(&"commands/recording.rs"));
     assert!(names.contains(&"dictation_executor/adapter.rs"));
+}
+
+/// The D-S1-5 (a) gate fails on a second caller anywhere: in another file, in
+/// another adapter method, or twice inside the seeder.
+#[test]
+fn scanner_flags_an_extra_persisted_core_new_inside_the_adapter() {
+    let adapter = |code: &str| vec![(SEEDING_FILE.to_string(), production_code(code))];
+    let check =
+        |sources: &[(String, String)]| check_single_seeder(&persisted_core_new_callers(sources));
+    let seeder = "fn seed_core(a: &A) { d.core = PersistedCore::new(s, i); }";
+    assert_eq!(check(&adapter(seeder)), Ok(()));
+    // The shape that used to pass: a second constructor call in another method.
+    let in_other_method = format!(
+        "{seeder} fn alloc_id(a: &A) {{ d.core = PersistedCore::new(s, RecordingId(id)); }}"
+    );
+    assert!(check(&adapter(&in_other_method)).is_err());
+    // The only call in the wrong method.
+    assert!(check(&adapter("fn alloc_id() { PersistedCore::new(s, i); }")).is_err());
+    // Two calls inside the seeder itself.
+    let twice = "fn seed_core() { PersistedCore::new(a, b); PersistedCore::new(c, d); }";
+    assert!(check(&adapter(twice)).is_err());
+    // Another file.
+    let mut elsewhere = adapter(seeder);
+    elsewhere.push(("commands/recording.rs".into(), production_code(seeder)));
+    assert!(check(&elsewhere).is_err());
+    // No caller at all.
+    assert!(check(&adapter("fn seed_core() {}")).is_err());
+    // A comment or a string mentioning it is not a caller.
+    assert_eq!(
+        check(&adapter(&format!(
+            "{seeder} // PersistedCore::new(x)\nfn f() {{ let t = \"PersistedCore::new(\"; }}"
+        ))),
+        Ok(())
+    );
 }

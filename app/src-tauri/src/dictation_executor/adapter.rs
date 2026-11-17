@@ -20,8 +20,10 @@
 //!
 //! **Seeding.** [`FieldAdapter::seed_core`] is the only place outside the core
 //! crate that builds a `PersistedCore` from values (`PersistedCore::new`): a
-//! caller cannot replace the whole persisted value without an effect commit.
-//! `persisted_core_new_has_one_caller` (SP5 style) fails on any other caller.
+//! caller cannot replace the whole persisted value without an effect commit, and
+//! a re-sync from another adapter method calls `seed_core`.
+//! `persisted_core_new_has_one_caller` (SP5 style) fails unless exactly one call
+//! exists and it is in `seed_core`.
 
 use crate::dictation_admission::core_status;
 use crate::state::{AppState, DictationState, DictationStatus};
@@ -82,7 +84,8 @@ impl FieldAdapter {
         let predicted = dictation.core.alloc_id();
         if predicted != RecordingId(id) {
             CORE_DIVERGENCES.fetch_add(1, Ordering::SeqCst);
-            dictation.core = PersistedCore::new(dictation.core.status(), RecordingId(id));
+            // Re-sync through the one seeder: no other method builds a core.
+            Self::seed_core(app, dictation);
         }
         id
     }
