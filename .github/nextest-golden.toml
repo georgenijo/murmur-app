@@ -1,0 +1,7 @@
+# Used only by the "Run golden dictation scenarios 100 times" CI step (passed
+# with --config-file). A golden scenario never waits on a clock, so a run that
+# is still going after this budget is a missing wake or a deadlock: nextest
+# kills the test and the step fails instead of hanging the job.
+[profile.default]
+fail-fast = false
+slow-timeout = { period = "20s", terminate-after = 3 }

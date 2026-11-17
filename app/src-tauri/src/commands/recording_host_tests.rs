@@ -722,11 +722,11 @@ fn check(scenario: &Scenario) {
 // ------------------------------------------------------------------ start
 
 /// Start up to and including the begin reservation, as the accepted start
-/// reaches it: transition (5503), app-disabled read (5507), the cleanup-pending
-/// read of the current id under the dictation lock (5599), the listener
-/// generation only for a stamped hold (5650), the AX sample (5617), the
-/// generation-started and `starting` emits (5638, 5643), the production
-/// reservation (5648) and begin (5659).
+/// reaches it, in program order: transition (5560), app-disabled read (5564),
+/// the cleanup-pending read of the current id under the dictation lock (5604),
+/// the listener generation only for a stamped hold (5650), the AX sample
+/// (5674), the generation-started and `starting` emits (5696 and the status
+/// emit after it), the production reservation (5705) and begin (5716).
 fn start_through_begin_register(hold: bool) -> Vec<String> {
     let mut trace = strings(&[
         "mic_transition",

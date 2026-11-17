@@ -63,7 +63,7 @@ thread_local! {
     static S12_TAIL: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
 }
 
-/// Called by `handle_audio_lifecycle_and_ready_tasks` (test builds only) after
+/// Called by `handle_audio_lifecycle_with` (test builds only) after
 /// S12 released the dictation lock and before its unscoped keyboard/emit tail.
 pub(super) fn run_s12_tail_hook() {
     let hook = S12_TAIL.with(|slot| slot.borrow_mut().take());
@@ -651,6 +651,7 @@ impl World {
             "supervisor.notify {recording_id} {}",
             event_name(&event)
         ));
+        let ends_the_attempt = matches!(event, AudioLifecycleEvent::Idle);
         handle_audio_lifecycle_and_ready_tasks(
             self.app.clone(),
             recording_id,
@@ -677,6 +678,25 @@ impl World {
                 self.push(format!("SD ticker {recording_id} registered={registered}"));
             },
         );
+        // `finish_attempt` sends `Idle` only when no sealed recording was
+        // delivered, and then clears the owner without a `CleanupFinished`. A
+        // scenario that sends `Idle` for an attempt whose stop already returned
+        // samples (PD-7, PD-2) therefore ends that attempt here instead of
+        // leaving a sealed tail the supervisor could never also run.
+        let sealed = {
+            let mut supervisor = locked(&self.supervisor);
+            if ends_the_attempt && supervisor.sealed_pending == Some(recording_id) {
+                supervisor.sealed_pending = None;
+                true
+            } else {
+                false
+            }
+        };
+        if sealed {
+            self.set_owner(None);
+            self.push(format!("supervisor.clear_owner {recording_id}"));
+            self.set_phase(Phase::Idle);
+        }
     }
 
     /// Cold start: the supervisor accepts the attempt and brings the worker up
@@ -795,8 +815,9 @@ impl World {
     /// The pipeline's delivery step: a thread takes D through the production
     /// `with_current_delivery_owner` (the helper that makes cancellation atomic
     /// with the clipboard write and paste) and parks inside it until
-    /// [`World::finish_delivery`]. Returns once D is held.
-    fn begin_delivery(self: &Arc<Self>, recording_id: u64) {
+    /// [`World::finish_delivery`]. Returns once D is held (`true`), or `false`
+    /// when the owner check refused and the operation never ran.
+    fn begin_delivery(self: &Arc<Self>, recording_id: u64) -> bool {
         let (entered, entered_rx) = std::sync::mpsc::channel::<()>();
         let (release, release_rx) = std::sync::mpsc::channel::<()>();
         let world = Arc::clone(self);
@@ -817,9 +838,10 @@ impl World {
             // The owner check refused: the operation never ran.
             let _ = thread.join();
             self.push(format!("delivery {recording_id}: refused, not the owner"));
-            return;
+            return false;
         }
         *locked(&self.delivery) = Some(Delivery { release, thread });
+        true
     }
 
     /// Let the parked delivery operation return and release D, then wait for
@@ -1309,29 +1331,48 @@ impl DictationHost for Host {
             let mut guard = IdleGuard::new(app_state, recording_id);
             world.fire("pipeline");
             let hold_delivery = world.knobs().hold_delivery;
-            if hold_delivery {
-                world.begin_delivery(recording_id);
-            }
-            world.pass_gate("pipeline").await;
-            world.push(format!("pipeline {recording_id} returns"));
-            // The checkpoint production's pipeline reads: `cancelled_id`.
-            let cancelled = app_state.is_cancelled(recording_id);
-            let result = if cancelled {
-                PipelineResult {
-                    text: String::new(),
-                    timings: PipelineTimings::default(),
-                    terminal: PipelineTerminal::Cancelled(PerformanceStageV1::InferenceDecode),
-                    history: None,
+            let cancelled = |stage| PipelineResult {
+                text: String::new(),
+                timings: PipelineTimings::default(),
+                terminal: PipelineTerminal::Cancelled(stage),
+                history: None,
+            };
+            let succeeded = || PipelineResult {
+                text: "scripted transcript".to_string(),
+                timings: PipelineTimings::default(),
+                terminal: PipelineTerminal::Success,
+                history: Some(PipelineHistory {
+                    raw_text: "scripted transcript".to_string(),
+                    stages: Vec::new(),
+                }),
+            };
+            // Production reads `cancelled_id` only before delivery (the
+            // checkpoints at `recording.rs` 2923, 3029 and 3185, the last one
+            // just before injection) and again when the delivery owner check
+            // refuses (3557, `Cancelled(ClipboardPaste)`). Once a delivery ran
+            // under D the pipeline returns Success whatever happened to the
+            // cancellation meanwhile (3666-3680).
+            let result = if hold_delivery {
+                if app_state.is_cancelled(recording_id) {
+                    world.push(format!("pipeline {recording_id} cancelled before delivery"));
+                    cancelled(PerformanceStageV1::ClipboardPaste)
+                } else if world.begin_delivery(recording_id) {
+                    // Parked on the delivery's reply.
+                    world.pass_gate("pipeline").await;
+                    world.push(format!("pipeline {recording_id} returns"));
+                    succeeded()
+                } else {
+                    world.push(format!("pipeline {recording_id} returns"));
+                    cancelled(PerformanceStageV1::ClipboardPaste)
                 }
             } else {
-                PipelineResult {
-                    text: "scripted transcript".to_string(),
-                    timings: PipelineTimings::default(),
-                    terminal: PipelineTerminal::Success,
-                    history: Some(PipelineHistory {
-                        raw_text: "scripted transcript".to_string(),
-                        stages: Vec::new(),
-                    }),
+                // Parked in VAD or decode; the next checkpoint is 3185.
+                world.pass_gate("pipeline").await;
+                world.push(format!("pipeline {recording_id} returns"));
+                if app_state.is_cancelled(recording_id) {
+                    cancelled(PerformanceStageV1::ClipboardPaste)
+                } else {
+                    succeeded()
                 }
             };
             // The guard's drop is `finish`: it clears the context, then writes

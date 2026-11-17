@@ -166,7 +166,8 @@ pipeline 1 returns
 pipeline 1 idle_guard wrote_idle=true
 keyboard.set_processing false
 emit recording-status-changed "idle"
-reply stop Ok {"state":"idle","text":"","type":"transcription"}
+emit transcription-complete {"duration":1,"interrupted":null,"rawText":"scripted transcript","recording":{"modelId":"base.en","profileId":null,"recordingId":1,"stages":[]},"recordingId":1,"text":"scripted transcript"}
+reply stop Ok {"state":"idle","text":"scripted transcript","type":"transcription"}
 # end of run: the supervisor finishes the sealed stop
 supervisor.clear_owner 1
 supervisor.set_phase Idle

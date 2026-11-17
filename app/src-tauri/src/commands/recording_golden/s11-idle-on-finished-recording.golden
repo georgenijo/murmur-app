@@ -76,12 +76,8 @@ emit recording-status-changed "idle"
 ~ perf-claim 1 {"status":"noSpeech"}
 reply stop Ok {"state":"idle","text":"","type":"transcription"}
 supervisor.notify 1 Idle
-# end of run: the supervisor finishes the sealed stop
 supervisor.clear_owner 1
 supervisor.set_phase Idle
-supervisor.notify 1 CleanupFinished
-emit recording-cleanup-finished {"recordingId":1}
-emit recording-status-changed "idle"
 = final status=Idle processing=false context=none cancelled_through=0
 
 === 11c with no earlier terminal ===

@@ -56,6 +56,8 @@ supervisor.notify 1 Idle
 ~ perf-claim 1 {"status":"failed","stage":"captureFinalization","errorCode":"audioCaptureFailed"}
 emit recording-status-changed "idle"
 ~ status Processing -> Idle
+supervisor.clear_owner 1
+supervisor.set_phase Idle
 # the pipeline now finishes: its IdleGuard writes Idle for the same id again
 gate pipeline opened
 gate pipeline pass
@@ -65,10 +67,4 @@ keyboard.set_processing false
 emit recording-status-changed "idle"
 emit transcription-complete {"duration":1,"interrupted":null,"rawText":"scripted transcript","recording":{"modelId":"base.en","profileId":null,"recordingId":1,"stages":[]},"recordingId":1,"text":"scripted transcript"}
 reply stop Ok {"state":"idle","text":"scripted transcript","type":"transcription"}
-# end of run: the supervisor finishes the sealed stop
-supervisor.clear_owner 1
-supervisor.set_phase Idle
-supervisor.notify 1 CleanupFinished
-emit recording-cleanup-finished {"recordingId":1}
-emit recording-status-changed "idle"
 = final status=Idle processing=false context=none cancelled_through=0

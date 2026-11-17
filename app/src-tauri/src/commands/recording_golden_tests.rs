@@ -553,7 +553,15 @@ fn verify_s02(text: &str) {
     let released = at_after(fence, blocked, "delivery 1: operation done");
     let status = at_after(fence, released, "~ status Processing -> Idle");
     let cancelled = at_after(fence, status, "emit recording-cancelled");
-    at_after(fence, cancelled, "reply cancel Ok");
+    let replied = at_after(fence, cancelled, "reply cancel Ok");
+    // A delivery that ran under D returns Success whatever the cancel did:
+    // the stop still emits `transcription-complete` and replies with the text.
+    let complete = at_after(fence, replied, "emit transcription-complete");
+    at_after(
+        fence,
+        complete,
+        "reply stop Ok {\"state\":\"idle\",\"text\":\"scripted transcript\"",
+    );
     assert!(
         !fence[..released].contains("keyboard.set_processing false"),
         "2c: nothing of the cancel runs while delivery holds D"
@@ -604,11 +612,18 @@ fn verify_s04(text: &str) {
         2,
         "4d: the start is refused audio_recovering and so is every later start"
     );
-    let recovering = at(section, "emit recording-status-changed \"recovering\"");
-    let last_idle = section.rfind(IDLE_EMIT).expect("4d publishes idle");
-    assert!(
-        recovering < last_idle,
-        "4d: S12's trailing idle follows the start's recovering"
+    // The start's refusal, not the runtime failure's earlier recovering emit.
+    let pending = at(section, "supervisor.is_dictation_cleanup_pending 1 -> true");
+    let recovering = at_after(
+        section,
+        pending,
+        "emit recording-status-changed \"recovering\"",
+    );
+    let trailing_idle = at_after(section, recovering, IDLE_EMIT);
+    at_after(
+        section,
+        trailing_idle,
+        "supervisor.hold_before_owner_clear 1",
     );
     assert!(
         section.contains("= final status=Recovering"),
