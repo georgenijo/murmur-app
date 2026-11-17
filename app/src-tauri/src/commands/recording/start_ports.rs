@@ -469,6 +469,8 @@ impl Ports for StartPorts<'_> {
                 Ok(())
             }
             Effect::PerfAbort => {
+                #[cfg(test)]
+                crate::barrier_hook::at("start.perf_abort");
                 let rid = self.rid();
                 self.host.performance().begin_abort(rid);
                 // The supervisor's own text, logged where it always was: right
@@ -480,6 +482,8 @@ impl Ports for StartPorts<'_> {
             }
             // Diagnostics begin once ownership is fully installed (T released).
             Effect::PerfBegin => {
+                #[cfg(test)]
+                crate::barrier_hook::at("start.perf_begin");
                 let tail = self.tail.ok_or(PortFailure)?;
                 let runtimes = super::runtime_identity(
                     &tail.context.transcription.model_name,
@@ -554,6 +558,8 @@ impl Ports for StartPorts<'_> {
             // The command's return: the speculative claim, then the gesture claim
             // (today's reverse-declaration drop order), after T was released.
             Effect::ReleaseClaims => {
+                #[cfg(test)]
+                crate::barrier_hook::at("start.release_claims");
                 drop(self.slots.speculative.borrow_mut().take());
                 // The gesture claim is a plain stamp: taking it is its release.
                 self.slots.gesture_claim.borrow_mut().take();
@@ -595,6 +601,8 @@ impl Ports for StartPorts<'_> {
         match effect {
             // R104.7: the model-preparation attempt, self-gating in the host.
             Effect::ModelPreparation => {
+                #[cfg(test)]
+                crate::barrier_hook::at("start.model_preparation");
                 let tail = self.tail.ok_or(PortFailure)?;
                 self.host.spawn_model_preparation(
                     tail.context.transcription.model_name.clone(),

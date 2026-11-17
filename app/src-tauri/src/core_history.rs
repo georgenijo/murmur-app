@@ -438,14 +438,20 @@ impl ContinuationGuard {
         self.token
     }
 
+    /// Identity of the history this guard retires on (see
+    /// [`CoreHistoryLock::identity`]).
+    pub(crate) fn history_identity(&self) -> usize {
+        self.history.identity()
+    }
+
     /// Whether dropping this guard still has an op to retire.
     pub(crate) fn is_armed(&self) -> bool {
         !self.consumed
     }
 
-    /// Move the retirement duty into a new guard and leave this one inert: the
-    /// owner of a dropped flight hands it to the deferred queue (D-S2-4) instead
-    /// of retiring on the spot.
+    /// Move the retirement duty into a new guard and leave this one inert: an owner
+    /// dropped inside a core span hands it to the deferred queue (D-S2-4, D-S2-6)
+    /// instead of retiring on the spot.
     pub(crate) fn detach(&mut self) -> Self {
         let moved = Self {
             history: self.history.clone(),
@@ -470,9 +476,18 @@ impl ContinuationGuard {
 
 impl Drop for ContinuationGuard {
     fn drop(&mut self) {
-        if !self.consumed {
-            self.history.ret_if_matches(self.token);
+        if self.consumed {
+            return;
         }
+        // D-S2-6: dropped inside a core span (a listener drops the flight that
+        // holds it), the retirement joins the deferred FIFO behind any finish queued
+        // earlier and runs when the outermost entry drains, after D is released.
+        // Outside a span it retires at once.
+        if crate::dictation_executor::executor::in_core() {
+            crate::commands::recording::defer_op_retirement(self.detach());
+            return;
+        }
+        self.history.ret_if_matches(self.token);
     }
 }
 

@@ -531,6 +531,71 @@ fn a_listener_that_drops_a_pipeline_owner_and_panics_in_the_destination_emit_dra
     });
 }
 
+// ------------------------------------------- D-S2-8 / D-S2-10(b): the start's drain guards
+
+type ParkedStop = Arc<std::sync::Mutex<Option<Fut<Result<serde_json::Value, String>>>>>;
+
+/// Recording 1's stop parked mid-pipeline (its H1 and H2 registered) after the
+/// recording was cancelled and its capture finished: the owner a listener drops.
+fn park_a_stop_of_recording_1(w: &Arc<World>) -> ParkedStop {
+    recording(w);
+    w.knobs().stop_result = Ok(16_000);
+    w.close_gate("pipeline");
+    let mut stop = w.stop(None);
+    assert!(poll_once(&mut stop).is_pending());
+    cancelled(w, "cancel");
+    w.finish_sealed_stop(1);
+    assert_eq!(history_counts(w), (1, 1), "the parked stop's pipeline");
+    Arc::new(std::sync::Mutex::new(Some(stop)))
+}
+
+fn queued_finishes() -> usize {
+    DEFERRED_FINISHES.with(|queue| queue.borrow().len())
+}
+
+/// R101.1 (the pre-D refusal): its `PT:REL` runs in a core span. A listener that
+/// drops a parked stop there queues its finish; the start drains it before it
+/// returns, so H1 and H2 are retired once and the queue is empty.
+#[test]
+fn the_pre_d_refusal_drains_what_its_release_defers() {
+    under_watchdog("a stop dropped during the pre-D refusal's release", || {
+        run_sub_run(&SubRun {
+            title: "pre-D refusal drain",
+            setup: Setup::idle(),
+            body: |w| {
+                let parked = park_a_stop_of_recording_1(w);
+                w.knobs().app_disabled = true;
+                let (observer, slot) = (Arc::clone(w), Arc::clone(&parked));
+                let _hook = crate::barrier_hook::install(move |point| {
+                    if point == "start.release_claims" {
+                        drop(slot.lock().expect("slot").take());
+                        assert_eq!(
+                            history_counts(&observer),
+                            (1, 1),
+                            "nothing retires in the span"
+                        );
+                        assert_eq!(queued_finishes(), 1, "the finish is queued");
+                    }
+                });
+                let mut start = w.start();
+                let reply = complete(&mut start);
+                assert!(
+                    matches!(&reply, Ok(value) if value["type"] == "app_disabled"),
+                    "{reply:?}"
+                );
+                assert!(parked.lock().expect("slot").is_none(), "the listener ran");
+                assert_eq!(
+                    queued_finishes(),
+                    0,
+                    "the queue is empty when the start returns"
+                );
+                assert_eq!(history_counts(w), (0, 0), "H1 and H2 are retired once");
+                w.open_gate("pipeline");
+            },
+        });
+    });
+}
+
 /// A generation that ends between query 402's read and the emit's own D section is
 /// stopped by the ownership gate **before dispatch**: no event is delivered and the
 /// executor has no `SDE` entry to report as `Ran`.
@@ -628,4 +693,154 @@ fn the_audio_not_ready_publish_looks_up_no_managed_state() {
         0,
         "the flight's op is retired by R104.1"
     );
+}
+
+/// R102's failure prefix (`Pre:PA, Pre:CX-`) runs before D, in a core span: a
+/// listener of the abort port that drops a parked stop queues its finish, and the
+/// start drains it after releasing D (a finish that ran under D would deadlock).
+#[test]
+fn the_capture_failure_prefix_drains_what_the_abort_port_defers() {
+    under_watchdog("a stop dropped during the failure prefix", || {
+        run_sub_run(&SubRun {
+            title: "failure prefix drain",
+            setup: Setup::idle(),
+            body: |w| {
+                let parked = park_a_stop_of_recording_1(w);
+                w.knobs().start_ack = Some(AudioStartError::AlreadyStarting);
+                let slot = Arc::clone(&parked);
+                let _hook = crate::barrier_hook::install(move |point| {
+                    if point == "start.perf_abort" {
+                        drop(slot.lock().expect("slot").take());
+                        assert_eq!(queued_finishes(), 1, "the finish is queued");
+                    }
+                });
+                let mut start = w.start();
+                let reply = complete(&mut start);
+                w.reply("start", &reply);
+                assert!(parked.lock().expect("slot").is_none(), "the listener ran");
+                assert_eq!(queued_finishes(), 0);
+                assert_eq!(history_counts(w), (0, 0), "H1 and H2 are retired once");
+                w.open_gate("pipeline");
+            },
+        });
+    });
+}
+
+/// The same prefix, when the abort port's callback queues a finish and then
+/// panics: the guard, declared before the first effect, drains during the unwind,
+/// so nothing stays queued on the thread and no history entry is stranded.
+#[test]
+fn a_panic_in_the_abort_port_still_drains_the_failure_prefix() {
+    under_watchdog("an unwind from the abort port", || {
+        run_sub_run(&SubRun {
+            title: "failure prefix unwind",
+            setup: Setup::idle(),
+            body: |w| {
+                let parked = park_a_stop_of_recording_1(w);
+                w.knobs().start_ack = Some(AudioStartError::AlreadyStarting);
+                let slot = Arc::clone(&parked);
+                let _hook = crate::barrier_hook::install(move |point| {
+                    if point == "start.perf_abort" {
+                        drop(slot.lock().expect("slot").take());
+                        panic!("the abort port's callback panics after queueing a finish");
+                    }
+                });
+                let mut start = w.start();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    poll_once(&mut start)
+                }));
+                assert!(outcome.is_err(), "the panic unwinds out of the start");
+                assert_eq!(queued_finishes(), 0, "the unwind drained the queue");
+                assert_eq!(history_counts(w), (0, 0), "no history entry is stranded");
+                w.open_gate("pipeline");
+            },
+        });
+    });
+}
+
+thread_local! {
+    /// The barrier point the flight-end test stands on (on the scenario's own thread).
+    static FLIGHT_POINT: std::cell::Cell<&'static str> = const { std::cell::Cell::new("") };
+}
+
+/// R104.7 (the flight end): `PDT:PM` runs with T held and `PT:PB`, `PT:REL` after T
+/// is released, all in core spans with no D of their own. A listener that drops a
+/// parked stop at any of them queues its finish; the start drains it before it
+/// replies, so H1 and H2 are retired once and the queue is empty.
+#[test]
+fn the_flight_end_drains_what_each_of_its_phases_defers() {
+    for point in [
+        "start.model_preparation",
+        "start.perf_begin",
+        "start.release_claims",
+    ] {
+        under_watchdog("a stop dropped during the flight end", move || {
+            FLIGHT_POINT.with(|slot| slot.set(point));
+            run_sub_run(&SubRun {
+                title: "flight end drain",
+                setup: Setup::idle(),
+                body: |w| {
+                    let parked = park_a_stop_of_recording_1(w);
+                    let (observer, slot) = (Arc::clone(w), Arc::clone(&parked));
+                    let hook_point = FLIGHT_POINT.with(std::cell::Cell::get);
+                    let _hook = crate::barrier_hook::install(move |point| {
+                        if point == hook_point && slot.lock().expect("slot").is_some() {
+                            drop(slot.lock().expect("slot").take());
+                            assert_eq!(
+                                history_counts(&observer).0,
+                                1,
+                                "nothing retires in the span"
+                            );
+                            assert_eq!(queued_finishes(), 1, "the finish is queued");
+                        }
+                    });
+                    let mut start = w.start();
+                    let reply = complete(&mut start);
+                    assert!(reply.is_ok(), "{reply:?}");
+                    assert!(parked.lock().expect("slot").is_none(), "the listener ran");
+                    assert_eq!(
+                        queued_finishes(),
+                        0,
+                        "the queue is empty when the start returns"
+                    );
+                    assert_eq!(
+                        history_counts(w),
+                        (0, 0),
+                        "the parked stop's H1 and H2 are retired once"
+                    );
+                    w.open_gate("pipeline");
+                },
+            });
+        });
+    }
+}
+
+/// The same flight end, when a port's callback queues a finish and panics: the guard
+/// declared before the first effect drains on the unwind.
+#[test]
+fn a_panic_at_the_flight_end_still_drains_the_queue() {
+    under_watchdog("an unwind from the flight end", || {
+        run_sub_run(&SubRun {
+            title: "flight end unwind",
+            setup: Setup::idle(),
+            body: |w| {
+                let parked = park_a_stop_of_recording_1(w);
+                let slot = Arc::clone(&parked);
+                let _hook = crate::barrier_hook::install(move |point| {
+                    if point == "start.model_preparation" {
+                        drop(slot.lock().expect("slot").take());
+                        panic!("the flight end's callback panics after queueing a finish");
+                    }
+                });
+                let mut start = w.start();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    poll_once(&mut start)
+                }));
+                assert!(outcome.is_err(), "the panic unwinds out of the start");
+                assert_eq!(queued_finishes(), 0, "the unwind drained the queue");
+                assert_eq!(history_counts(w), (0, 0), "no history entry is stranded");
+                w.open_gate("pipeline");
+            },
+        });
+    });
 }

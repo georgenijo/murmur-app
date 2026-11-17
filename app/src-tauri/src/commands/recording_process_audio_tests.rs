@@ -40,7 +40,7 @@ enum Pipeline {
 }
 
 struct FakeHost {
-    log: StdMutex<Vec<String>>,
+    log: Arc<StdMutex<Vec<String>>>,
     pipeline: StdMutex<Pipeline>,
     /// Runs inside the smart-destination capture await (a cancel or a newer
     /// start landing while the destination is captured).
@@ -66,7 +66,7 @@ impl FakeHost {
     fn new(state: &Arc<State>) -> Self {
         Self {
             state: Arc::downgrade(state),
-            log: StdMutex::new(Vec::new()),
+            log: Arc::new(StdMutex::new(Vec::new())),
             pipeline: StdMutex::new(Pipeline::Succeed),
             during_capture: StdMutex::new(None),
             after_accept: StdMutex::new(None),
@@ -112,6 +112,15 @@ impl ImportedAudioHost for FakeHost {
             }
         }
         Ok(())
+    }
+
+    fn idle_emitter(&self) -> super::process_audio_ports::OwnedJsonEmit {
+        let (log, history) = (Arc::clone(&self.log), self.history.clone());
+        Box::new(move |event, payload| {
+            let (h2, h1) = (history.pipeline_count(), history.outstanding_ops());
+            locked(&log).push(format!("emit {event} {payload} h2={h2} h1={h1}"));
+            Ok(())
+        })
     }
 
     fn transition<'a>(

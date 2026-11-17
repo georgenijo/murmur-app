@@ -16,10 +16,18 @@ use crate::state::AppState;
 use std::sync::Arc;
 use tauri::Emitter;
 
+/// An owned `emit_json` (see [`ImportedAudioHost::idle_emitter`]).
+pub(super) type OwnedJsonEmit =
+    Box<dyn Fn(&str, serde_json::Value) -> Result<(), HostEmitError> + Send + 'static>;
+
 /// What the legacy `process_audio` needs from the application handle.
 pub(super) trait ImportedAudioHost: Send + Sync + 'static {
     /// `AppHandle::emit` for an already serialized payload.
     fn emit_json(&self, event: &str, payload: serde_json::Value) -> Result<(), HostEmitError>;
+    /// An [`Self::emit_json`] that owns what it needs (an `AppHandle` clone), for the
+    /// idle emit of a parse-failure finish: a finish deferred inside a core span
+    /// carries its emit as data and makes it at the drain (D-S2-7).
+    fn idle_emitter(&self) -> OwnedJsonEmit;
     /// `microphone_preview::transition_after_stopping_preview`.
     fn transition<'a>(
         &'a self,
@@ -71,6 +79,14 @@ impl ImportedAudioHost for TauriImportHost {
         self.app
             .emit(event, payload)
             .map_err(|e| HostEmitError(e.to_string()))
+    }
+
+    fn idle_emitter(&self) -> OwnedJsonEmit {
+        let app = self.app.clone();
+        Box::new(move |event, payload| {
+            app.emit(event, payload)
+                .map_err(|e| HostEmitError(e.to_string()))
+        })
     }
 
     fn transition<'a>(
