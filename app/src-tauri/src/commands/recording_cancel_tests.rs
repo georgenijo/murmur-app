@@ -291,7 +291,7 @@ fn cancel_processing_with_the_matching_expectation() {
 /// still pending (parked on T or D), `Some(result)` once it completed.
 static NESTED: StdMutex<Option<Option<Result<(), String>>>> = StdMutex::new(None);
 
-/// A hook that enters the cancel command again, on the thread that is inside the
+/// A hook (registered with `on_inline`) that enters the cancel command again, on the thread inside the
 /// outer cancel's executor span.
 fn nested_cancel(world: &Arc<World>) -> impl FnOnce() + Send + 'static {
     let world = Arc::clone(world);
@@ -330,7 +330,7 @@ fn a_cancel_nested_in_a_port_call_is_refused_before_any_lock() {
     let scenarios: [Scenario; 2] = [
         ("capture cancel (PT:CC)", Setup::idle(), |w| {
             recording(w);
-            w.on("supervisor.cancel", nested_cancel(w));
+            w.on_inline("supervisor.cancel", nested_cancel(w));
             cancel_command(w, None);
             w.release_cancel_finish();
         }),
@@ -342,7 +342,7 @@ fn a_cancel_nested_in_a_port_call_is_refused_before_any_lock() {
             },
             |w| {
                 w.install_context(3);
-                w.on("keyboard.set_processing:false", nested_cancel(w));
+                w.on_inline("keyboard.set_processing:false", nested_cancel(w));
                 cancel_command(w, None);
             },
         ),

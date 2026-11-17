@@ -6690,7 +6690,12 @@ async fn stop_native_recording_admitted(
             if cancelling_start {
                 drop(transition);
                 // `PT:CC` (R201.4), after T is released.
-                run_phase(&mut exec, Placement::PostT, None, rid);
+                let cancelled = run_phase(&mut exec, Placement::PostT, None, rid);
+                if !matches!(cancelled, PhaseReport::Done) {
+                    return Err(format!(
+                        "The dictation core did not run the capture cancel: {cancelled:?}"
+                    ));
+                }
                 // Site 206 (D-less), shared with the cancel command's R205.4:
                 // the result of the capture cancel `PT:CC` just ran.
                 let slots = ports.take_slots();
@@ -6721,12 +6726,17 @@ async fn stop_native_recording_admitted(
                 });
                 // R206.2 `PT:TERM(PipelineFailure/RuntimeFailure)`; R206.1 has no
                 // effect.
-                run_phase(
+                let finished = run_phase(
                     &mut executor(&ports, cancel_decision.clone()),
                     Placement::PostT,
                     None,
                     rid,
                 );
+                if !matches!(finished, PhaseReport::Done) {
+                    return Err(format!(
+                        "The dictation core did not run the capture-cancel result: {finished:?}"
+                    ));
+                }
                 return reply_of(&cancel_decision, slots.cancel_error, "");
             }
             ports.take_slots()
