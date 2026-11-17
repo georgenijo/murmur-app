@@ -55,6 +55,9 @@ struct FakeHost {
     status_at_pipeline: StdMutex<Option<DictationStatus>>,
     /// While set, the destination capture is pending (an import suspended there).
     hold_capture: std::sync::atomic::AtomicBool,
+    /// While set, the transition is pending *before* it asks for T (an import
+    /// parked ahead of the lock, with no queued waiter on T).
+    hold_transition: std::sync::atomic::AtomicBool,
     panic_in_capture: StdMutex<bool>,
     /// Runs inline in the `dictation-generation-started` emit (a listener).
     on_generation_started: StdMutex<Option<Listener>>,
@@ -64,8 +67,16 @@ struct FakeHost {
 
 impl FakeHost {
     fn new(state: &Arc<State>) -> Self {
+        Self::with_history(Arc::downgrade(state), state.app_state.core_history.clone())
+    }
+
+    /// For a state the test does not own as an `Arc` (the golden harness's app).
+    fn with_history(
+        state: std::sync::Weak<State>,
+        history: crate::core_history::CoreHistoryLock,
+    ) -> Self {
         Self {
-            state: Arc::downgrade(state),
+            state,
             log: Arc::new(StdMutex::new(Vec::new())),
             pipeline: StdMutex::new(Pipeline::Succeed),
             during_capture: StdMutex::new(None),
@@ -75,7 +86,8 @@ impl FakeHost {
             hold_capture: std::sync::atomic::AtomicBool::new(false),
             panic_in_capture: StdMutex::new(false),
             on_generation_started: StdMutex::new(None),
-            history: state.app_state.core_history.clone(),
+            hold_transition: std::sync::atomic::AtomicBool::new(false),
+            history,
         }
     }
 
@@ -128,7 +140,18 @@ impl ImportedAudioHost for FakeHost {
         state: &'a State,
     ) -> super::dictation_host::HostFuture<'a, Result<tokio::sync::MutexGuard<'a, ()>, String>>
     {
-        Box::pin(async move { Ok(state.app_state.recording_transition.lock().await) })
+        Box::pin(async move {
+            std::future::poll_fn(|cx| {
+                if self.hold_transition.load(Ordering::SeqCst) {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            })
+            .await;
+            Ok(state.app_state.recording_transition.lock().await)
+        })
     }
 
     fn capture_delivery_target_snapshot(&self) -> crate::frontmost::DeliveryTargetSnapshot {
@@ -803,15 +826,11 @@ fn a_resumed_import_polled_inside_a_core_span_parks_instead_of_taking_t_and_d() 
     run(|run| {
         let audio = wav_base64(8_000);
         let mut import = Box::pin(process_audio_inner(&run.host, &run.state, &audio));
-        // Park on T.
-        let t = run
-            .state
-            .app_state
-            .recording_transition
-            .try_lock()
-            .expect("T is free");
-        assert!(poll_once(&mut import).is_pending(), "parked on T");
-        drop(t);
+        // Park ahead of T: the fake's transition is pending before it asks for the
+        // lock, so no waiter is queued on T and its release leaves T free.
+        run.host.hold_transition.store(true, Ordering::SeqCst);
+        assert!(poll_once(&mut import).is_pending(), "parked ahead of T");
+        run.host.hold_transition.store(false, Ordering::SeqCst);
         // The callback: this thread holds D. The poller is the listener's thread
         // inside a core span; it polls the import that T's release just made ready.
         let dictation = run.state.app_state.dictation.lock_or_recover();
@@ -832,6 +851,15 @@ fn a_resumed_import_polled_inside_a_core_span_parks_instead_of_taking_t_and_d() 
             outcome,
             Ok(true),
             "the poll inside the span must park, not deadlock on D"
+        );
+        // T was not acquired inside the span: a poll that took T and then parked at
+        // `until_outside_core` before D would hold it here, with the import parked.
+        drop(
+            run.state
+                .app_state
+                .recording_transition
+                .try_lock()
+                .expect("the parked poll did not take T"),
         );
         assert_eq!(run.history(), (0, 0), "nothing was registered or written");
         assert_eq!(run.id(), 0);
@@ -873,6 +901,8 @@ fn dropping_a_suspended_import_in_a_core_span_queues_its_retirement_fifo() {
         );
         assert_eq!(run.history(), (2, 2));
         let counters = app_state.core_history.counters();
+        // What an entry's guard does: declared before the span, it drains after.
+        let drain = DrainDeferredFinishes::new(app_state);
         {
             let span = crate::dictation_executor::executor::CoreEntry::enter()
                 .expect("the test thread is outside any span");
@@ -889,7 +919,7 @@ fn dropping_a_suspended_import_in_a_core_span_queues_its_retirement_fifo() {
             assert_eq!(queued, [(9, false), (1, true)], "FIFO: the finish first");
             drop(span);
         }
-        drain_deferred_finishes(app_state);
+        drop(drain);
         assert_eq!(run.history(), (0, 0), "both pairs retired after the drain");
         assert_eq!(
             app_state.core_history.counters(),
@@ -904,6 +934,91 @@ fn dropping_a_suspended_import_in_a_core_span_queues_its_retirement_fifo() {
         );
         assert_eq!(run.status(), DictationStatus::Processing, "status as today");
     });
+}
+
+type Import = super::golden_harness::Fut<Result<serde_json::Value, String>>;
+
+/// The slot the inline listener empties: the suspended import.
+static SUSPENDED_IMPORT: StdMutex<Option<Import>> = StdMutex::new(None);
+
+/// The body of the cancel scenario below: an accepted import suspended at the
+/// destination capture, then the real cancel command, whose R205.5 `idle` emit runs
+/// a synchronous listener that drops the import (`IN_CORE` set, T held).
+fn cancel_drops_a_suspended_import(world: &Arc<super::golden_harness::World>) {
+    let history = world.state().app_state.core_history.clone();
+    let host = Arc::new(FakeHost::with_history(
+        std::sync::Weak::new(),
+        history.clone(),
+    ));
+    host.hold_capture.store(true, Ordering::SeqCst);
+    let audio = wav_base64(8_000);
+    let import: Import = Box::pin({
+        let world = Arc::clone(world);
+        let host = Arc::clone(&host);
+        async move {
+            let state = world.state();
+            process_audio_inner(&*host, state.inner(), &audio).await
+        }
+    });
+    let mut import = import;
+    assert!(
+        poll_once(&mut import).is_pending(),
+        "suspended at the capture"
+    );
+    *locked(&SUSPENDED_IMPORT) = Some(import);
+    assert_eq!(
+        (history.pipeline_count(), history.outstanding_ops()),
+        (1, 1),
+        "the accepted import is registered"
+    );
+    assert_eq!(
+        world.state().app_state.dictation.lock_or_recover().status,
+        DictationStatus::Processing
+    );
+    let lines_before = host.lines();
+    let counters = history.counters();
+    world.on_inline("emit:recording-status-changed", || {
+        let import = locked(&SUSPENDED_IMPORT).take();
+        assert!(import.is_some(), "the listener found the suspended import");
+        drop(import);
+        // Inside the span: nothing retired on the spot, the work is queued.
+        assert!(
+            DEFERRED_FINISHES.with(|queue| !queue.borrow().is_empty()),
+            "the listener's drop queued the retirement"
+        );
+    });
+    let mut cancel = world.cancel(None);
+    super::golden_harness::complete(&mut cancel).expect("the cancel replies Ok");
+    // After the cancel returned, with no later drain on this thread: both entries
+    // are retired and nothing is left queued.
+    assert_eq!(
+        (history.pipeline_count(), history.outstanding_ops()),
+        (0, 0),
+        "H2 and H1 retired by the cancel's own drain"
+    );
+    assert!(DEFERRED_FINISHES.with(|queue| queue.borrow().is_empty()));
+    assert_eq!(history.counters(), counters, "each op retired exactly once");
+    assert_eq!(
+        host.lines(),
+        lines_before,
+        "no import effect after the drop"
+    );
+}
+
+/// Finding 1 of the re-check: cancel drains work a listener queued. The listener
+/// drops the suspended import from the cancel's synchronous idle emit; the cancel
+/// entry's drain guard retires both history entries before it returns.
+#[test]
+fn a_cancel_drains_the_retirement_queued_for_an_import_dropped_by_its_idle_emit() {
+    use super::golden_harness::{run_sub_run, Setup, SubRun};
+    let _serial = locked(&LOCK);
+    keyboard::set_processing(false);
+    run_sub_run(&SubRun {
+        title: "cancel drops a suspended import",
+        setup: Setup::idle(),
+        body: cancel_drops_a_suspended_import,
+    });
+    keyboard::set_processing(false);
 }
 
 /// (a) from the lead: the synchronous Smart Destination emit runs with `IN_CORE` set.
