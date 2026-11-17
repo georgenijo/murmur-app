@@ -6364,6 +6364,7 @@ async fn stop_native_recording_admitted(
         PipelineTerminal as CorePipelineTerminal, PostKind, StopCaptureResult,
         StopCaptureResultInput, StopContextInput, StopInput,
     };
+    use murmur_dictation_core::state::LockFreeFacts;
     use murmur_dictation_core::status::StopTrigger;
     use murmur_dictation_core::stop as core_stop;
     use stop_ports::{executor, reply_of, run_phase, StopHooks, StopPorts};
@@ -6500,11 +6501,13 @@ async fn stop_native_recording_admitted(
                     .take()
                     .expect("R201.4 registered `K:CaptureCancel`");
                 let token = guard.token();
-                let facts = FieldAdapter::lock_free_facts(&state.app_state);
+                // Site 206 is D-less and reads nothing live (C2.3): T is released, so
+                // a newer generation may already be starting; the token and the
+                // capture result are the original ones.
                 let cancel_decision = guard.consume(|op_status| {
                     stop_ports::decide(|| {
                         core_cancel::decide_cancel_capture_result_nolock(
-                            facts,
+                            LockFreeFacts::default(),
                             CancelCaptureResultInput {
                                 token,
                                 op_status,
@@ -6518,12 +6521,11 @@ async fn stop_native_recording_admitted(
                 });
                 // R206.2 `PT:TERM(PipelineFailure/RuntimeFailure)`; R206.1 has no
                 // effect.
-                let finished = run_phase(
-                    &mut executor(&ports, cancel_decision.clone()),
-                    Placement::PostT,
-                    None,
-                    rid,
-                );
+                let mut finish_exec = executor(&ports, cancel_decision.clone());
+                let finished = run_phase(&mut finish_exec, Placement::PostT, None, rid);
+                #[cfg(test)]
+                cancel_ports::LAST_206_WITNESS
+                    .with(|slot| *slot.borrow_mut() = finish_exec.witness().to_vec());
                 if !matches!(finished, PhaseReport::Done) {
                     return Err(format!(
                         "The dictation core did not run the capture-cancel result: {finished:?}"
@@ -7134,6 +7136,7 @@ async fn cancel_native_recording_inner(
     use murmur_dictation_core::effects::Placement;
     use murmur_dictation_core::ids::RecordingId;
     use murmur_dictation_core::inputs::{CancelCaptureResultInput, CancelInput, CancelOrigin};
+    use murmur_dictation_core::state::LockFreeFacts;
 
     // C4.1 step 0 / C4.2: the **first** statement, before T, D or `core_history`.
     // A callback that a port or an emit runs inline on this thread can re-enter
@@ -7208,12 +7211,14 @@ async fn cancel_native_recording_inner(
         None => unreachable!("R205.4's capture cancel ran in its `PT` phase"),
     };
     let token = op_guard.token();
-    let facts = FieldAdapter::lock_free_facts(&state.app_state);
     let failure = result.as_ref().err().cloned();
+    // Site 206 is D-less and reads nothing live (C2.3): T is released, so a newer
+    // generation may already be starting; the token and the capture result are the
+    // original ones.
     let decision = op_guard.consume(|op_status| {
         cancel_ports::decide(|| {
             core_cancel::decide_cancel_capture_result_nolock(
-                facts,
+                LockFreeFacts::default(),
                 CancelCaptureResultInput {
                     token,
                     op_status,
@@ -7226,13 +7231,11 @@ async fn cancel_native_recording_inner(
         })
     });
     // R206.2 `PT:TERM(PipelineFailure/RuntimeFailure)`; R206.1 has no effect.
-    run_phase(
-        &mut executor(&ports, decision.clone()),
-        Placement::PostT,
-        None,
-        rid,
-    )
-    .map_err(cancel_refused)?;
+    let mut finish_exec = executor(&ports, decision.clone());
+    let finished = run_phase(&mut finish_exec, Placement::PostT, None, rid);
+    #[cfg(test)]
+    cancel_ports::LAST_206_WITNESS.with(|slot| *slot.borrow_mut() = finish_exec.witness().to_vec());
+    finished.map_err(cancel_refused)?;
     match decision.verdict {
         Verdict::Continue => Ok(()),
         Verdict::Applied => Err(failure.expect("R206.2 is the capture cancel's failure")),

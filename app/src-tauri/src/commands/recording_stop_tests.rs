@@ -285,6 +285,152 @@ fn stop_starting() {
     );
 }
 
+/// R201.4 + R206.1: the capture cancel answers `Ok(false)`: no `Recovering`
+/// follows; the stop still replies `recording_cancelled` / `recovering`.
+#[test]
+fn stop_starting_cancel_not_accepted() {
+    assert_trace(
+        "starting-not-accepted",
+        Setup::idle(),
+        |w| {
+            w.knobs().cold_start = ColdStart::ReadyAfterContext;
+            started(w);
+            w.knobs().cancel_result = Ok(false);
+            w.on("supervisor.cancel", cancel_tests::t_is_free_in_cc(w));
+            stopped(w, "stop", None);
+            w.release_ready();
+        },
+        &[
+            "keyboard.hotkey_release_take_for 1",
+            "keyboard.stop_gesture_take_for 1",
+            "supervisor.cancel 1 user",
+            "# T free inside CC: true",
+            "reply stop Ok {\"state\":\"recovering\",\"type\":\"recording_cancelled\"}",
+            "supervisor.release_ready 1",
+            "supervisor.set_phase Recording",
+            "supervisor.notify 1 Ready",
+            "emit recording-status-changed \"recording\"",
+            "~ status Starting -> Recording",
+            "SD ticker 1 registered=true",
+            "= final status=Recording processing=false context=1 cancelled_through=0",
+        ],
+    );
+}
+
+/// R201.4 + R206.2: the capture cancel fails: `PipelineFailure` terminal and the
+/// failed call's text as the stop's error.
+#[test]
+fn stop_starting_cancel_error() {
+    assert_trace(
+        "starting-err",
+        Setup::idle(),
+        |w| {
+            w.knobs().cold_start = ColdStart::ReadyAfterContext;
+            started(w);
+            w.knobs().cancel_result = Err("boom");
+            w.on("supervisor.cancel", cancel_tests::t_is_free_in_cc(w));
+            stopped(w, "stop", None);
+            w.release_ready();
+        },
+        &[
+            "keyboard.hotkey_release_take_for 1",
+            "keyboard.stop_gesture_take_for 1",
+            "supervisor.cancel 1 user",
+            "# T free inside CC: true",
+            "~ terminal 1 PipelineFailure/RuntimeFailure",
+            "reply stop Err boom",
+            "supervisor.release_ready 1",
+            "supervisor.set_phase Recording",
+            "supervisor.notify 1 Ready",
+            "emit recording-status-changed \"recording\"",
+            "~ status Starting -> Recording",
+            "SD ticker 1 registered=true",
+            "= final status=Recording processing=false context=1 cancelled_through=0",
+        ],
+    );
+}
+
+/// R206.2 when the supervisor claimed `UserCancelledStarting` first: the stop's
+/// own claim loses, nothing is emitted twice, the error is unchanged.
+#[test]
+fn stop_starting_cancel_error_after_the_supervisor_claimed_first() {
+    assert_trace(
+        "starting-err-claimed",
+        Setup::idle(),
+        |w| {
+            w.knobs().cold_start = ColdStart::ReadyAfterContext;
+            started(w);
+            w.knobs().cancel_result = Err("boom");
+            w.on(
+                "supervisor.cancel",
+                cancel_tests::supervisor_claims_first(w),
+            );
+            stopped(w, "stop", None);
+            w.release_ready();
+        },
+        &[
+            "keyboard.hotkey_release_take_for 1",
+            "keyboard.stop_gesture_take_for 1",
+            "supervisor.cancel 1 user",
+            "~ terminal 1 UserCancelledStarting/CancelledStarting",
+            "reply stop Err boom",
+            "supervisor.release_ready 1",
+            "supervisor.set_phase Recording",
+            "supervisor.notify 1 Ready",
+            "emit recording-status-changed \"recording\"",
+            "~ status Starting -> Recording",
+            "SD ticker 1 registered=true",
+            "= final status=Recording processing=false context=1 cancelled_through=0",
+        ],
+    );
+}
+
+/// The stop command's site 206 records the real claim result, as the cancel
+/// command's does.
+#[test]
+fn stop_records_the_real_206_claim_result() {
+    let witnessed = |body: fn(&Arc<World>)| {
+        from_stop(trace(Setup::idle(), body))
+            .into_iter()
+            .find(|line| line.starts_with("# 206 witness"))
+            .expect("the scenario notes the witness")
+    };
+    let lost = witnessed(|w| {
+        w.knobs().cold_start = ColdStart::ReadyAfterContext;
+        started(w);
+        w.knobs().cancel_result = Err("boom");
+        w.on(
+            "supervisor.cancel",
+            cancel_tests::supervisor_claims_first(w),
+        );
+        cancel_tests::forget_206_witness();
+        stopped(w, "stop", None);
+        cancel_tests::note_206_witness(w);
+        w.release_ready();
+    });
+    assert_eq!(lost, "# 206 witness: TERM Failed");
+    let won = witnessed(|w| {
+        w.knobs().cold_start = ColdStart::ReadyAfterContext;
+        started(w);
+        w.knobs().cancel_result = Err("boom");
+        cancel_tests::forget_206_witness();
+        stopped(w, "stop", None);
+        cancel_tests::note_206_witness(w);
+        w.release_ready();
+    });
+    assert_eq!(won, "# 206 witness: TERM Ran");
+    let none = witnessed(|w| {
+        w.knobs().cold_start = ColdStart::ReadyAfterContext;
+        started(w);
+        w.knobs().cancel_result = Ok(false);
+        cancel_tests::forget_206_witness();
+        stopped(w, "stop", None);
+        cancel_tests::note_206_witness(w);
+        w.release_ready();
+    });
+    assert_eq!(none, "# 206 witness: none");
+}
+
 /// R202 missing context
 #[test]
 fn stop_nocontext() {
