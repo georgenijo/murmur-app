@@ -312,6 +312,8 @@ struct AppState {
 }
 ```
 
+Lock order and every wait under `recording_transition` or `dictation`: [Dictation lock order](architecture/dictation-lock-order.md).
+
 Two patterns do most of the concurrency work:
 
 - **Generation counters.** recording generation IDs are monotonic. Every async continuation re-checks whether it still owns the current generation before mutating shared state, so a delayed handler can never cancel or overwrite the pass that replaced it.
