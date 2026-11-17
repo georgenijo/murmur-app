@@ -6214,9 +6214,9 @@ fn publish_recording_ready_with<R: tauri::Runtime>(
         return false;
     }
 
-    // Finishes queued re-entrantly while D is held run when this synchronous
-    // section ends, after D is released (D-S2-4).
-    let _drain = DrainDeferredFinishes::new(&state.app_state);
+    // No drain guard here: the start flight holds T around this call and opens a
+    // stretch of its own (D-S2-13), which hands the finishes this section's span
+    // queues up to the flight's drain, run after T is released.
     let mut dictation = state.app_state.dictation.lock_or_recover();
     let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
     let decision = ready_op.consume(|op_status| {
@@ -6731,6 +6731,7 @@ async fn start_native_recording_inner(
                 smart_auto_reason,
                 slots,
                 context_guard,
+                &mut flight,
             )
             .await
         }
@@ -6797,6 +6798,7 @@ async fn start_after_capture(
     smart_auto_reason: Option<&'static str>,
     slots: start_ports::StartSlots,
     mut context_guard: ContinuationGuard,
+    flight: &mut FlightDrain<'_>,
 ) -> Result<serde_json::Value, String> {
     use crate::dictation_executor::executor::core_now;
     use crate::dictation_executor::FieldAdapter;
@@ -6828,7 +6830,7 @@ async fn start_after_capture(
     // Query 402 (`q_capture_current`): a short D read after the capture picks the
     // destination. The emit's own ownership recheck is R103.0, below.
     let capture_is_current = {
-        let _drain = DrainDeferredFinishes::new(&state.app_state);
+        let _stretch = flight.stretch();
         let dictation = state.app_state.dictation.lock_or_recover();
         FieldAdapter::project_lifecycle_view(&state.app_state, &dictation)
             .q_capture_current(recording)
@@ -6863,10 +6865,10 @@ async fn start_after_capture(
     if smart_enabled && capture_is_current {
         // The emit's own D section, owned by the shell (R103.0): D is taken, the
         // generation ownership is rechecked there and `In:SDE` runs under that hold,
-        // as the helper's own lock did. The drain guard is declared before D so a
-        // finish an inline listener queued (a dropped pipeline owner) runs on both
-        // the return and an unwind, after D is released (D-S2-4).
-        let _drain = DrainDeferredFinishes::new(&state.app_state);
+        // as the helper's own lock did. A finish an inline listener queued (a dropped
+        // pipeline owner) is handed up to the flight's drain on both the return and
+        // an unwind, and runs after D and T are released (D-S2-4, D-S2-13).
+        let _stretch = flight.stretch();
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
         let decision =
@@ -6882,7 +6884,7 @@ async fn start_after_capture(
     // Site 103 (R103.1-.6): the context install under D and T.
     let context_token = context_guard.token();
     let (context_decision, ready_op) = {
-        let _drain = DrainDeferredFinishes::new(&state.app_state);
+        let _stretch = flight.stretch();
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
         let decision = context_guard.consume(|op_status| {
@@ -6969,17 +6971,24 @@ async fn start_after_capture(
         engine.prewarm();
     }
     // Site 104 (R104.1-.6); the publish's own decision consumes `K:ReadyPublish`.
-    host.publish_recording_ready_if_audio_ready(state, rid, context_ready_at, ready_op);
+    {
+        // The publish's own D section (R104.2's `In` effects emit inline): a stretch,
+        // so what it queues drains after T is released (D-S2-13).
+        let _stretch = flight.stretch();
+        host.publish_recording_ready_if_audio_ready(state, rid, context_ready_at, ready_op);
+    }
     // R104.7, whatever the publish decided: `PDT:PM`, then T is released, then
     // `PT:PB` (ownership is fully installed before diagnostics begin, so
     // Recording, stop, and cancel never wait for SQLite) and `PT:REL`.
     let flight_end = decide(|| core_start::decide_start_flight_end(recording, now));
     expect_valid(&flight_end);
     // D-S2-8: the flight end's `PDT` and `PT` phases run in core spans with no D of
-    // their own. The guard is declared before the first effect (`PM`), so a finish
-    // an inline listener queues there is drained on the return and on an unwind;
-    // nothing was awaited since the span fence, so the guard never crosses an await.
-    let _drain = DrainDeferredFinishes::new(&state.app_state);
+    // their own. The stretch is opened before the first effect (`PM`), so a finish
+    // an inline listener queues there is handed up on the return and on an unwind
+    // (a panic in `PM` skips the explicit release below, and the unwind drops `transition`
+    // before the caller's flight drains): the flight's drain always runs after T is
+    // released (D-S2-13).
+    let _stretch = flight.stretch();
     let ports = StartPorts::new(host, state, &slots, Some(rid)).with_tail(&tail);
     let mut exec = executor(&ports, flight_end.clone(), false);
     run_phase(&mut exec, Placement::PostDT, None, rid);

@@ -511,11 +511,13 @@ fn a_listener_that_drops_a_pipeline_owner_and_panics_in_the_destination_emit_dra
                         seen.lock().expect("seen").push(free);
                     }
                 });
+                take_t_free_at_drain();
                 let mut start = w.start();
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     poll_once(&mut start)
                 }));
                 assert!(outcome.is_err(), "the listener's panic propagated");
+                assert_drained_with_t_free("the unwind from the destination emit");
                 assert!(
                     DEFERRED_FINISHES.with(|queue| queue.borrow().is_empty()),
                     "the unwind drained the queued finish"
@@ -854,6 +856,7 @@ fn the_flight_end_drains_what_each_of_its_phases_defers() {
                     let parked = park_a_stop_of_recording_1(w);
                     let (observer, slot) = (Arc::clone(w), Arc::clone(&parked));
                     let hook_point = FLIGHT_POINT.with(std::cell::Cell::get);
+                    take_t_free_at_drain();
                     let _hook = crate::barrier_hook::install(move |point| {
                         if point == hook_point && slot.lock().expect("slot").is_some() {
                             drop(slot.lock().expect("slot").take());
@@ -879,6 +882,7 @@ fn the_flight_end_drains_what_each_of_its_phases_defers() {
                         (0, 0),
                         "the parked stop's H1 and H2 are retired once"
                     );
+                    assert_drained_with_t_free("the flight end");
                     w.open_gate("pipeline");
                 },
             });
@@ -897,6 +901,7 @@ fn a_panic_at_the_flight_end_still_drains_the_queue() {
             body: |w| {
                 let parked = park_a_stop_of_recording_1(w);
                 let slot = Arc::clone(&parked);
+                take_t_free_at_drain();
                 let _hook = crate::barrier_hook::install(move |point| {
                     if point == "start.model_preparation" {
                         drop(slot.lock().expect("slot").take());
@@ -910,8 +915,61 @@ fn a_panic_at_the_flight_end_still_drains_the_queue() {
                 assert!(outcome.is_err(), "the panic unwinds out of the start");
                 assert_eq!(queued_finishes(), 0, "the unwind drained the queue");
                 assert_eq!(history_counts(w), (0, 0), "no history entry is stranded");
+                assert_drained_with_t_free("the unwind from the flight end's PM");
                 w.open_gate("pipeline");
             },
         });
     });
+}
+
+thread_local! {
+    /// Which `recording-status-changed` emit of the start the next test drops a stop at.
+    static STATUS_EMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A listener drops a parked stop inside the `nth` (0-based) `recording-status-changed`
+/// emit of a start: the `starting` emit (the site-101 block's `PDT`, T held) or the
+/// `recording` emit (the ready publish's own D section). The finish it queues drains
+/// only after the flight released T (D-S2-13), and H1 and H2 are retired once.
+fn drop_a_stop_at_status_emit(nth: usize) {
+    under_watchdog("a stop dropped inside a start's status emit", move || {
+        STATUS_EMIT.with(|slot| slot.set(nth));
+        run_sub_run(&SubRun {
+            title: "status emit drain",
+            setup: Setup::idle(),
+            body: |w| {
+                let parked = park_a_stop_of_recording_1(w);
+                w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+                let nth = STATUS_EMIT.with(std::cell::Cell::get);
+                for at in 0..=nth {
+                    let slot = Arc::clone(&parked);
+                    w.on_inline("emit:recording-status-changed", move || {
+                        if at == nth {
+                            drop(slot.lock().expect("slot").take());
+                            assert_eq!(queued_finishes(), 1, "the finish is queued");
+                        }
+                    });
+                }
+                take_t_free_at_drain();
+                let mut start = w.start();
+                let reply = complete(&mut start);
+                assert!(reply.is_ok(), "{reply:?}");
+                assert!(parked.lock().expect("slot").is_none(), "the listener ran");
+                assert_eq!(queued_finishes(), 0);
+                assert_eq!(history_counts(w), (0, 0), "H1 and H2 are retired once");
+                assert_drained_with_t_free("the status emit");
+                w.open_gate("pipeline");
+            },
+        });
+    });
+}
+
+#[test]
+fn a_finish_queued_in_the_starting_emit_drains_after_t() {
+    drop_a_stop_at_status_emit(0);
+}
+
+#[test]
+fn a_finish_queued_in_the_ready_publishs_emit_drains_after_t() {
+    drop_a_stop_at_status_emit(1);
 }
