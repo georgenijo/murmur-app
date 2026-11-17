@@ -48,6 +48,7 @@ fn tag(placed: &Placed) -> String {
         Effect::AxSnapshot(mode) => format!("AX({mode:?})"),
         Effect::PreviewHideClaim => "PH".into(),
         Effect::TakeStopStamps => "TS".into(),
+        Effect::CaptureStop(id) => format!("CP({})", id.0),
         Effect::TakeInterrupted { id, mode } => format!("TI({mode:?},{})", id.0),
         Effect::CaptureCancel { id, reason } => format!("CC({},{reason:?})", id.0),
         other => panic!("not a stop-family effect: {other:?}"),
@@ -302,7 +303,10 @@ fn r202_1_and_r202_2_context_present_is_d_less_and_reads_no_status() {
             decide_stop_context_nolock(facts(current), ctx_input(true, OpStatus::Outstanding), NOW);
         assert_eq!(decided.verdict, Verdict::Applied);
         assert_eq!(decided.row, RowId("R202.1"));
-        assert_eq!(tags(&decided), ["PDT:KB(true)", "PDT:EM(processing)"]);
+        assert_eq!(
+            tags(&decided),
+            ["PDT:KB(true)", "PDT:EM(processing)", "PT:CP(7)"]
+        );
         assert_eq!(decided.transition, None);
         assert_eq!(
             decided.continuation,
@@ -396,7 +400,10 @@ fn r202_5_other_statuses_take_the_missing_context_path_or_the_present_one() {
             NOW,
         );
         assert_eq!(present.row, RowId("R202.5"));
-        assert_eq!(tags(&present), ["PDT:KB(true)", "PDT:EM(processing)"]);
+        assert_eq!(
+            tags(&present),
+            ["PDT:KB(true)", "PDT:EM(processing)", "PT:CP(7)"]
+        );
         assert_eq!(
             present.continuation.map(|c| c.kind),
             Some(ContKind::CaptureStop)
