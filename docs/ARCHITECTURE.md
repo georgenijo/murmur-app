@@ -290,6 +290,8 @@ stay local and never reach logs or telemetry. See
 
 Commands and command-side window transports live under `commands/`: `benchmark`, `corpus`, `dictation_diagnostics`, `dictation_preview`, `export`, `integrations`, `keyboard`, `logging`, `meeting`, `microphone_preview`, `microphone_startup_benchmark`, `models`, `native_window`, `overlay`, `performance`, `permissions`, `recording`, `settings_store`, `theme`, `tray`, and `updater`. Theme resolution remains frontend-only. `commands/theme.rs` is a main-window-gated UTF-8 file transport with 256 KiB regular-file reads and 64 KiB atomic sibling-temp exports. `commands/settings_store.rs` provides the independent main-only 1 MiB `theme-library.json` blob boundary.
 
+**Dictation host seam (`commands/recording_host.rs`).** `start_native_recording`, `stop_native_recording` and `cancel_native_recording` keep their `#[tauri::command]` wrappers, which build a `TauriHost` and call an inner function that takes `&dyn DictationHost`. The host exposes the calls the inner bodies make that need a concrete `AppHandle` or a process-global singleton: `emit`, the supervisor start/stop/cancel/take-interrupted calls, the keyboard reads and gesture stamps, the Accessibility target snapshot, smart-destination capture, the performance ledger entry points, the mic-test transition, IDE-context refresh, model preparation, preview-hide claim and the transcription pipeline. `TauriHost` is the only implementation outside tests and forwards to the existing functions unchanged; `FakeHost` in `recording_host_tests.rs` records the order in which the ports are reached. The seam is mechanical: it adds no statement, lock, await, spawn or emit to the command bodies.
+
 ### `state.rs` — Shared State
 
 ```rust
