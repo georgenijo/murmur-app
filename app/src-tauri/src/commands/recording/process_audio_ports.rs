@@ -43,14 +43,15 @@ pub(super) trait ImportedAudioHost: Send + Sync + 'static {
         expected: &'a crate::frontmost::DeliveryTargetSnapshot,
         enabled: bool,
     ) -> HostFuture<'a, crate::smart_destination::Snapshot>;
-    /// `emit_smart_destination`.
+    /// The `smart-destination-selected` emit. The shell calls it **under D** (it owns
+    /// that section and has already rechecked that the capture is current), so it
+    /// takes no lock and reports the emit's real result.
     fn emit_smart_destination(
         &self,
-        app_state: &AppState,
         recording_id: u64,
         context: &DictationContextSnapshot,
         accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
-    );
+    ) -> Result<(), String>;
     /// `run_transcription_pipeline`.
     fn run_transcription_pipeline<'a>(
         &'a self,
@@ -120,12 +121,12 @@ impl ImportedAudioHost for TauriImportHost {
 
     fn emit_smart_destination(
         &self,
-        app_state: &AppState,
         recording_id: u64,
         context: &DictationContextSnapshot,
         accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
-    ) {
-        super::emit_smart_destination(&self.app, app_state, recording_id, context, accepted_target)
+    ) -> Result<(), String> {
+        super::emit_smart_destination_selected(&self.app, recording_id, context, accepted_target)
+            .map_err(|error| error.to_string())
     }
 
     fn run_transcription_pipeline<'a>(
@@ -160,6 +161,21 @@ use murmur_dictation_core::decision::Decision;
 use murmur_dictation_core::effects::{Effect, EventKind, Placement};
 use murmur_dictation_core::ids::RecordingId;
 use std::cell::{Cell, RefCell};
+
+// Test builds: the witness of the smart-destination section's executor (R103.0 for
+// the import). Empty when the ownership gate stopped the emit before dispatch.
+#[cfg(test)]
+thread_local! {
+    pub(super) static DESTINATION: RefCell<Vec<crate::dictation_executor::executor::Witness>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// What the smart-destination emit reads: the resolved context and the frozen
+/// delivery target.
+pub(super) struct DestinationFacts<'a> {
+    pub(super) context: Arc<ContextSnapshot>,
+    pub(super) delivery_target: &'a crate::frontmost::DeliveryTargetSnapshot,
+}
 
 /// Wrap a decision in an executor. The 301 decision has no awaited effect and the
 /// crate tests validate every row, so a failure here is a programming error.
@@ -198,16 +214,6 @@ pub(super) fn run_phase(
             phase.label()
         );
     }
-}
-
-/// Keep `IN_CORE` set around a synchronous host call that can emit inline (a
-/// resolver or helper outside the executor): a listener it invokes that re-enters
-/// the core is refused instead of asking for a lock the caller may hold. The shell
-/// is outside any core span here (it waited with `until_outside_core`); if it were
-/// not, the flag is already set and stays so.
-pub(super) fn in_core_span<R>(call: impl FnOnce() -> R) -> R {
-    let _entry = crate::dictation_executor::executor::CoreEntry::enter().ok();
-    call()
 }
 
 /// C4.1 step 0 / C4.2: the **first** statement of the command's entry, before any
@@ -264,6 +270,7 @@ pub(super) struct ProcessAudioPorts<'a> {
     app_state: &'a AppState,
     recording_id: Cell<u64>,
     delivery_target: RefCell<Option<crate::frontmost::DeliveryTargetSnapshot>>,
+    destination: Option<&'a DestinationFacts<'a>>,
 }
 
 impl<'a> ProcessAudioPorts<'a> {
@@ -273,7 +280,14 @@ impl<'a> ProcessAudioPorts<'a> {
             app_state,
             recording_id: Cell::new(0),
             delivery_target: RefCell::new(None),
+            destination: None,
         }
+    }
+
+    /// The ports of the smart-destination section.
+    pub(super) fn with_destination(mut self, destination: &'a DestinationFacts<'a>) -> Self {
+        self.destination = Some(destination);
+        self
     }
 
     /// The id `ID+` allocated, for the `dictation-generation-started` payload.
@@ -316,6 +330,18 @@ impl Ports for ProcessAudioPorts<'_> {
                     serde_json::json!(status.as_str()),
                 )
                 .map_err(|_| PortFailure),
+            // The smart-destination selection, under the shell's D hold.
+            Effect::SmartDestinationEmit => {
+                let destination = self.destination.ok_or(PortFailure)?;
+                // The real result of the emit, never a constant.
+                self.host
+                    .emit_smart_destination(
+                        self.recording_id.get(),
+                        &destination.context,
+                        destination.delivery_target,
+                    )
+                    .map_err(|_| PortFailure)
+            }
             _ => Err(PortFailure),
         }
     }

@@ -302,10 +302,10 @@ fn register_partial_ticker_locked(
     dictation: &crate::state::DictationState,
     recording_id: u64,
 ) -> bool {
-    recording_id > 0
-        && app_state.recording_id.load(Ordering::SeqCst) == recording_id
-        && dictation.status == DictationStatus::Recording
-        && !app_state.is_cancelled(recording_id)
+    // Query 401 (`q_is_recording_current`: id > 0, current, `Recording`, not
+    // cancelled), then the ticker claim, in today's short-circuit order.
+    crate::dictation_executor::FieldAdapter::project_lifecycle_view(app_state, dictation)
+        .q_is_recording_current(murmur_dictation_core::ids::RecordingId(recording_id))
         && crate::commands::dictation_preview::note_ticker_started(recording_id)
 }
 
@@ -2277,6 +2277,10 @@ fn release_to_paste_stage(
     matches!(outcome, RunOutcomeV1::Success).then(|| release.release_to_paste(delivered_at))
 }
 
+/// The pre-extraction delivery ownership check; the production check is query 403
+/// (`DictationCore::q_owns_delivery`, through [`owns_delivery`]). Kept as the oracle of
+/// its parity test.
+#[cfg(test)]
 fn delivery_event_recording_id(
     recording_id: u64,
     current_recording_id: u64,
@@ -2290,6 +2294,9 @@ fn delivery_event_recording_id(
     }
 }
 
+/// The pre-extraction capture check; the production check is query 402
+/// (`DictationCore::q_capture_current`). Kept as the oracle of its parity test.
+#[cfg(test)]
 fn recording_capture_is_current(
     recording_id: u64,
     current_recording_id: u64,
@@ -2344,28 +2351,11 @@ fn smart_destination_status(
 
 /// Presentation uses only the accepted delivery policy and an application name,
 /// never a document title, input value, or selected text.
-fn emit_smart_destination(
-    app: &tauri::AppHandle,
-    app_state: &AppState,
-    rid: u64,
-    context: &DictationContextSnapshot,
-    accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
-) {
-    let dictation = app_state.dictation.lock_or_recover();
-    if !recording_capture_is_current(
-        rid,
-        app_state.recording_id.load(Ordering::SeqCst),
-        app_state.is_cancelled(rid),
-        dictation.status,
-    ) {
-        return;
-    }
-    let _ = emit_smart_destination_selected(app, rid, context, accepted_target);
-}
-
-/// The emit of [`emit_smart_destination`] without its D section and ownership
-/// gate: the start's shell owns both (`decide_start_destination`, `In:SDE`) and
-/// calls it with D held. Returns the emit's real result.
+///
+/// The `smart-destination-selected` emit, without a D section or ownership gate of
+/// its own: the shell of the start and of the import owns both
+/// (`decide_start_destination`, `In:SDE`) and calls it with D held. Returns the
+/// emit's real result.
 fn emit_smart_destination_selected(
     app: &tauri::AppHandle,
     rid: u64,
@@ -2425,6 +2415,18 @@ fn destination_application_name(
     None
 }
 
+/// Whether `recording_id` still owns the delivery: query 403
+/// (`q_owns_delivery`: current, not cancelled, `Processing`). The caller holds the
+/// dictation lock (`dictation` is its contents) for as long as it acts on the answer.
+fn owns_delivery(
+    app_state: &AppState,
+    dictation: &crate::state::DictationState,
+    recording_id: u64,
+) -> bool {
+    crate::dictation_executor::FieldAdapter::project_lifecycle_view(app_state, dictation)
+        .q_owns_delivery(murmur_dictation_core::ids::RecordingId(recording_id))
+}
+
 /// Run a delivery side effect only while this recording still owns the
 /// Processing state. The dictation lock stays held through `operation`, making
 /// cancellation/supersession atomic with the clipboard write and optional
@@ -2435,12 +2437,9 @@ fn with_current_delivery_owner<T>(
     operation: impl FnOnce() -> T,
 ) -> Option<T> {
     let dictation = app_state.dictation.lock_or_recover();
-    delivery_event_recording_id(
-        recording_id,
-        app_state.recording_id.load(Ordering::SeqCst),
-        app_state.is_cancelled(recording_id),
-        dictation.status,
-    )?;
+    if !owns_delivery(app_state, &dictation, recording_id) {
+        return None;
+    }
     Some(operation())
 }
 
@@ -2457,12 +2456,9 @@ fn with_current_delivery_owner_timed<T>(
     });
     let dictation = app_state.dictation.lock_or_recover();
     drop(wait);
-    delivery_event_recording_id(
-        recording_id,
-        app_state.recording_id.load(Ordering::SeqCst),
-        app_state.is_cancelled(recording_id),
-        dictation.status,
-    )?;
+    if !owns_delivery(app_state, &dictation, recording_id) {
+        return None;
+    }
     Some(operation())
 }
 
@@ -2612,6 +2608,60 @@ mod clipboard_delivery_tests {
             delivery_event_recording_id(12, 12, false, DictationStatus::Processing),
             Some(12)
         );
+    }
+
+    /// The shell's queries 401-403 are the pre-extraction checks, for every id,
+    /// cancellation and status (the oracles kept above).
+    #[test]
+    fn the_shared_queries_match_the_pre_extraction_checks() {
+        use murmur_dictation_core::ids::RecordingId;
+        let statuses = [
+            DictationStatus::Idle,
+            DictationStatus::Starting,
+            DictationStatus::Recording,
+            DictationStatus::Recovering,
+            DictationStatus::Processing,
+        ];
+        for status in statuses {
+            for (id, current, cancelled_through) in [
+                (12, 12, 0),
+                (12, 12, 11),
+                (12, 12, 12),
+                (12, 13, 0),
+                (12, 11, 0),
+                (0, 0, 0),
+            ] {
+                let app_state = AppState::default();
+                app_state.recording_id.store(current, Ordering::SeqCst);
+                app_state
+                    .cancelled_id
+                    .store(cancelled_through, Ordering::SeqCst);
+                let mut dictation = app_state.dictation.lock_or_recover();
+                dictation.status = status;
+                let cancelled = app_state.is_cancelled(id);
+                let view = crate::dictation_executor::FieldAdapter::project_lifecycle_view(
+                    &app_state, &dictation,
+                );
+                let at =
+                    format!("{status:?} id={id} current={current} cancelled={cancelled_through}");
+                assert_eq!(
+                    view.q_capture_current(RecordingId(id)),
+                    recording_capture_is_current(id, current, cancelled, status),
+                    "402 {at}"
+                );
+                assert_eq!(
+                    owns_delivery(&app_state, &dictation, id),
+                    delivery_event_recording_id(id, current, cancelled, status).is_some(),
+                    "403 {at}"
+                );
+                // 401 (the ticker gate's first four conjuncts, today's order).
+                assert_eq!(
+                    view.q_is_recording_current(RecordingId(id)),
+                    id > 0 && current == id && status == DictationStatus::Recording && !cancelled,
+                    "401 {at}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -4413,16 +4463,11 @@ async fn run_transcription_pipeline(
         // advances the ID under it, so neither can interleave a stale outcome.
         {
             let dictation = app_state.dictation.lock_or_recover();
-            if let Some(owner_recording_id) = delivery_event_recording_id(
-                recording_id,
-                app_state.recording_id.load(Ordering::SeqCst),
-                app_state.is_cancelled(recording_id),
-                dictation.status,
-            ) {
+            if owns_delivery(app_state, &dictation, recording_id) {
                 let _ = app_handle.emit(
                     "dictation-delivery-outcome",
                     serde_json::json!({
-                        "recordingId": owner_recording_id,
+                        "recordingId": recording_id,
                         "outcome": delivery_outcome.as_event_value(),
                     }),
                 );
@@ -4532,11 +4577,12 @@ async fn process_audio_inner(
     use murmur_dictation_core::admission::Occupancy;
     use murmur_dictation_core::decision::{ObsKind, Refusal, Verdict};
     use murmur_dictation_core::effects::Placement;
+    use murmur_dictation_core::ids::RecordingId;
     use murmur_dictation_core::inputs::ProcessAudioStartInput;
     use murmur_dictation_core::process_audio as core_pa;
     use process_audio_ports::{
-        decide, executor, expect_valid, in_core_span, refuse_reentrant, run_phase,
-        transition_outside_core, ProcessAudioPorts,
+        decide, executor, expect_valid, refuse_reentrant, run_phase, transition_outside_core,
+        DestinationFacts, ProcessAudioPorts,
     };
 
     // C4.1 step 0 / C4.2: the first statement, before the transition await, T, D or
@@ -4642,14 +4688,12 @@ async fn process_audio_inner(
         .await;
     // D-S2-3: the next D section is entered only outside a core span.
     until_outside_core().await;
+    // Query 402 (`q_capture_current`): a short D read after the capture picks the
+    // destination. The emit's own ownership recheck is the section below.
     let capture_is_current = {
         let dictation = state.app_state.dictation.lock_or_recover();
-        recording_capture_is_current(
-            rid,
-            state.app_state.recording_id.load(Ordering::SeqCst),
-            state.app_state.is_cancelled(rid),
-            dictation.status,
-        )
+        FieldAdapter::project_lifecycle_view(&state.app_state, &dictation)
+            .q_capture_current(RecordingId(rid))
     };
     if !capture_is_current {
         tracing::info!(
@@ -4666,16 +4710,42 @@ async fn process_audio_inner(
     let destination = select_recording_destination(&delivery_target, smart_destination);
     let context = resolve_recording_context(&state.app_state, destination);
     if smart_enabled {
-        // The destination helper keeps its own D section (no 30x row decides it;
-        // the start's shell-owned section is 2a-4b). Its emit can run an inline
-        // listener, so `IN_CORE` stays set around the call, and a finish that
-        // listener queued runs when the call returns or unwinds, after the
-        // helper's D is released (D-S2-4); declared before the helper's D.
+        // The emit's own D section, owned by the shell (as the start's, R103.0): D is
+        // taken, the generation ownership is rechecked there and `In:SDE` runs under
+        // that hold, with the emit's real result as its witness and the ownership
+        // gate suppressing the effect before dispatch (it is then absent from the
+        // decision). The drain guard is declared before D so a finish an inline
+        // listener queued (a dropped owner) runs on both the return and an unwind,
+        // after D is released (D-S2-4). The executor's span keeps `IN_CORE` set
+        // around the emit.
+        let facts = DestinationFacts {
+            context: Arc::clone(&context),
+            delivery_target: &delivery_target,
+        };
         let _drain = DrainDeferredFinishes::new(&state.app_state);
-        in_core_span(|| {
-            host.emit_smart_destination(&state.app_state, rid, &context, &delivery_target)
+        let mut dictation = state.app_state.dictation.lock_or_recover();
+        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let now = core_now();
+        let decision = decide(|| {
+            murmur_dictation_core::start::decide_start_destination(
+                &view,
+                RecordingId(rid),
+                smart_enabled,
+                now,
+            )
         });
+        expect_valid(&decision);
+        let ports = ProcessAudioPorts::new(host, app_state).with_destination(&facts);
+        ports.bind_recording_id(rid);
+        let mut exec = executor(&ports, decision);
+        run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
+        #[cfg(test)]
+        process_audio_ports::DESTINATION.with(|slot| *slot.borrow_mut() = exec.witness().to_vec());
     }
+    // Test builds: where a newer start can land, after the destination section
+    // released D and before the parse guard exists.
+    #[cfg(test)]
+    crate::barrier_hook::at("process_audio.accepted");
     if let Err(error) = state.performance.begin_dictation_diagnosed(
         rid,
         runtime_identity(&context.transcription.model_name, ModelWarmStateV1::Unknown),

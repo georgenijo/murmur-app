@@ -14,8 +14,19 @@
 //! * [`decide_process_audio_finish`] (302, rows R302.1-R302.2): **exactly** the 204a
 //!   rows with `origin = LegacyParse` (the parse failure) and the 204b rows with
 //!   `kind = LegacyPost` (the tail after the pipeline), by C3.7. They are
-//!   delegations: the returned [`Decision`] carries the R204a / R204b row id, so a
-//!   fix to the shared guard rows reaches `process_audio` automatically.
+//!   delegations, so a fix to the shared guard rows reaches `process_audio`
+//!   automatically, but the returned [`Decision`] carries site 302's **own** row id
+//!   (`R302.1` for the parse failure, `R302.2` for the tail), never the 204 row it
+//!   delegated to: a decision's row must belong to the site that produced it
+//!   (`rows::site_of_row`, the shadow summary's check). The delegated row's effects,
+//!   verdict, transition and continuation are carried over unchanged; the tests
+//!   compare them with the 204 decisions row by row.
+//!
+//! The reply of R302.2 is the *success* reply. A pipeline that returned `Err` gets
+//! no decision of its own: after the 204b section ran (the idle gate, which does
+//! not depend on the pipeline's outcome) the shell returns the pipeline's error text
+//! as a **separate shell tail**, outside the row (`pipeline_result?`). The shadow
+//! contract therefore covers R302.2's reply only for a pipeline that succeeded.
 //!
 //! Code wins over the appendix in three places (listed in the README):
 //! the meeting check (R301.1) is a pure function of the input and runs with no D
@@ -25,7 +36,7 @@
 //! file check passed (D-S1-2); and `process_audio`'s success reply has no `state`
 //! key, which the shell keeps.
 
-use crate::decision::{ContKind, ContinuationSpec, Decision, ObsKind, Refusal, Verdict};
+use crate::decision::{ContKind, ContinuationSpec, Decision, ObsKind, Refusal, RowId, Verdict};
 use crate::effects::{AxMode, EventKind, Placement as At};
 use crate::ids::Now;
 use crate::inputs::{
@@ -127,6 +138,9 @@ pub fn decide_process_audio_start(
 
 /// Site 302, `decide_process_audio_finish` (R302.1-R302.2).
 ///
+/// The returned decision's row is `R302.1` / `R302.2` (see the module docs); the
+/// delegated 204 row is named below only to say which rows it equals.
+///
 /// * [`ProcessAudioFinishKind::ParseFailed`] (R302.1, 3780 / 3786): **exactly** the
 ///   204a rows with `origin = LegacyParse` (R204a.1 Processing, .2 Idle, .3
 ///   Recovering, .5a-e a newer id), `closure_emit` as the guard has it. The reply is
@@ -154,6 +168,7 @@ pub fn decide_process_audio_finish(
                 now,
             );
             decided.reply = Some(Reply::Err(ErrText::Shell));
+            decided.row = RowId("R302.1");
             decided
         }
         ProcessAudioFinishKind::PipelineDone => {
@@ -172,6 +187,7 @@ pub fn decide_process_audio_finish(
                 text: TranscriptText::FromPipeline,
                 state: Status::Idle,
             });
+            decided.row = RowId("R302.2");
             decided
         }
     }

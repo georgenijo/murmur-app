@@ -10,6 +10,10 @@
 //!   direct writer), and a count **below** it fails too, so a PR that removes
 //!   call sites must lower the constant and the ratchet cannot be loosened by
 //!   accident.
+//! * `terminal_emit_callers_are_exactly_the_allowlisted_functions`: the terminal
+//!   emits that remain are pinned **per enclosing function**, like the
+//!   `PersistedCore::new` check, so swapping a `TERM` call for an inline emit in
+//!   another function fails even though the total count is unchanged.
 //! * `persisted_core_new_has_one_caller`: `PersistedCore::new` replaces the whole
 //!   persisted value without an effect commit, so only the seeding adapter may
 //!   call it (decision D-S1-5 a).
@@ -35,6 +39,22 @@ const STATUS_WRITE_SITES_BASELINE: usize = 0;
 /// the plan's 23 does not count: 24). Lowered by each family PR that moves its
 /// sites behind `TERM`.
 const TERMINAL_EMIT_SITES_BASELINE: usize = 6;
+
+/// The functions that may still call `emit_dictation_terminal*(`, with the number
+/// of calls each makes: `(file relative to src, enclosing fn, calls)`. The sum is
+/// [`TERMINAL_EMIT_SITES_BASELINE`]. Moving a site behind `TERM` lowers its entry;
+/// a call in any other function, or more calls in one, fails.
+const TERMINAL_EMIT_ALLOWLIST: [(&str, &str, usize); 6] = [
+    // The forward inside the helper itself (the plan's 23 does not count it).
+    ("commands/recording.rs", "emit_dictation_terminal", 1),
+    // The stop's own inline terminal: not yet behind `TERM`.
+    ("commands/recording.rs", "stop_native_recording_admitted", 1),
+    // The four families' `TERM` ports: the executor's terminal effect.
+    ("commands/recording/cancel_ports.rs", "terminal", 1),
+    ("commands/recording/lifecycle_ports.rs", "terminal", 1),
+    ("commands/recording/start_ports.rs", "terminal", 1),
+    ("commands/recording/stop_ports.rs", "terminal", 1),
+];
 
 // ------------------------------------------------------------------ scanner
 
@@ -456,6 +476,69 @@ fn status_write_and_terminal_call_sites_only_go_down() {
     }
 }
 
+/// `(file, enclosing fn, calls)` of every `emit_dictation_terminal*(` call in
+/// `sources` (the definitions are not calls), sorted.
+fn terminal_emit_callers(sources: &[(String, String)]) -> Vec<(String, String, usize)> {
+    let call = Regex::new(r"\bemit_dictation_terminal\w*\s*\(").expect("regex");
+    let function = Regex::new(r"\bfn\s+(\w+)").expect("regex");
+    let mut counts: std::collections::BTreeMap<(String, String), usize> =
+        std::collections::BTreeMap::new();
+    for (file, code) in sources {
+        for m in call.find_iter(code) {
+            if code[..m.start()].trim_end().ends_with("fn") {
+                continue; // the definition
+            }
+            let enclosing = function
+                .captures_iter(&code[..m.start()])
+                .last()
+                .map(|found| found[1].to_string())
+                .unwrap_or_default();
+            *counts.entry((file.clone(), enclosing)).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .map(|((file, function), calls)| (file, function, calls))
+        .collect()
+}
+
+/// `Ok` iff the callers are exactly `allowed`.
+fn check_terminal_emit_callers(
+    callers: &[(String, String, usize)],
+    allowed: &[(&str, &str, usize)],
+) -> Result<(), String> {
+    let mut want: Vec<(String, String, usize)> = allowed
+        .iter()
+        .map(|(file, function, calls)| (file.to_string(), function.to_string(), *calls))
+        .collect();
+    want.sort();
+    if callers == want.as_slice() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the terminal emit call sites changed.\n  found:   {callers:?}\n  allowed: {want:?}\n\
+             A new caller must go through the executor's `TERM` effect; moving a site behind \
+             `TERM` lowers its entry in TERMINAL_EMIT_ALLOWLIST (and the baseline sum)."
+        ))
+    }
+}
+
+/// The terminal emits that remain are pinned per enclosing function: the count
+/// alone would let a `TERM` call be swapped for an inline emit elsewhere.
+#[test]
+fn terminal_emit_callers_are_exactly_the_allowlisted_functions() {
+    let sources = production_sources();
+    let callers = terminal_emit_callers(&sources);
+    if let Err(message) = check_terminal_emit_callers(&callers, &TERMINAL_EMIT_ALLOWLIST) {
+        panic!("{message}");
+    }
+    assert_eq!(
+        callers.iter().map(|(_, _, calls)| calls).sum::<usize>(),
+        TERMINAL_EMIT_SITES_BASELINE,
+        "the allowlist and the baseline constant agree"
+    );
+}
+
 /// The one function allowed to call `PersistedCore::new` (decision D-S1-5 a).
 const SEEDING_FILE: &str = "dictation_executor/adapter.rs";
 const SEEDING_FN: &str = "seed_core";
@@ -628,4 +711,57 @@ fn scanner_flags_an_extra_persisted_core_new_inside_the_adapter() {
         ))),
         Ok(())
     );
+}
+
+/// The terminal-emit gate fails when a `TERM` call is swapped for an inline emit in
+/// another function (the count stays the same), when a site is added, and when one
+/// is removed without lowering its entry.
+#[test]
+fn scanner_flags_a_swapped_terminal_emit() {
+    let allowed = [
+        ("commands/a.rs", "terminal", 1),
+        ("commands/b.rs", "run", 1),
+    ];
+    let sources = |a: &str, b: &str| {
+        vec![
+            ("commands/a.rs".to_string(), production_code(a)),
+            ("commands/b.rs".to_string(), production_code(b)),
+        ]
+    };
+    let check = |sources: &[(String, String)]| {
+        check_terminal_emit_callers(&terminal_emit_callers(sources), &allowed)
+    };
+    let ok = sources(
+        "fn terminal() { emit_dictation_terminal(a); }",
+        "fn run() { emit_dictation_terminal_x(b); }",
+    );
+    assert_eq!(check(&ok), Ok(()));
+    // Same total: the port's call became an inline emit in another function.
+    let swapped = sources(
+        "fn terminal() {} fn other() { emit_dictation_terminal(a); }",
+        "fn run() { emit_dictation_terminal_x(b); }",
+    );
+    assert!(check(&swapped).is_err());
+    // One more call in an allowed function, one fewer, and a definition (ignored).
+    assert!(check(&sources(
+        "fn terminal() { emit_dictation_terminal(a); emit_dictation_terminal(b); }",
+        "fn run() { emit_dictation_terminal_x(b); }"
+    ))
+    .is_err());
+    assert!(check(&sources(
+        "fn terminal() {}",
+        "fn run() { emit_dictation_terminal_x(b); }"
+    ))
+    .is_err());
+    let with_definition = sources(
+        "fn terminal() { emit_dictation_terminal(a); } fn emit_dictation_terminal(x: u8) {}",
+        "fn run() { emit_dictation_terminal_x(b); }",
+    );
+    assert_eq!(check(&with_definition), Ok(()));
+    // Comments and strings are not calls.
+    let quiet = sources(
+        "fn terminal() { emit_dictation_terminal(a); // emit_dictation_terminal(z)\n let s = \"emit_dictation_terminal(\"; }",
+        "fn run() { emit_dictation_terminal_x(b); }",
+    );
+    assert_eq!(check(&quiet), Ok(()));
 }

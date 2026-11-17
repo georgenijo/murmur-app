@@ -37,6 +37,8 @@ enum Pipeline {
     Cancelled,
     /// The pipeline panics after taking its guard.
     Panic,
+    /// The pipeline's guard finishes and it returns `Err`.
+    Fail,
 }
 
 struct FakeHost {
@@ -47,7 +49,7 @@ struct FakeHost {
     during_capture: StdMutex<Option<Hook>>,
     /// Runs in the Smart Destination emit: after the stale check, before the
     /// parse guard exists (a newer start landing in that window).
-    after_accept: StdMutex<Option<Hook>>,
+    after_accept: Arc<StdMutex<Option<Hook>>>,
     /// Runs inline in the Smart Destination emit, as a listener would (`IN_CORE`
     /// set, the helper's D section held in production).
     in_destination_emit: StdMutex<Option<Hook>>,
@@ -55,6 +57,8 @@ struct FakeHost {
     status_at_pipeline: StdMutex<Option<DictationStatus>>,
     /// While set, the destination capture is pending (an import suspended there).
     hold_capture: std::sync::atomic::AtomicBool,
+    /// While set, the Smart Destination emit reports a failure.
+    destination_emit_fails: std::sync::atomic::AtomicBool,
     /// While set, the transition is pending *before* it asks for T (an import
     /// parked ahead of the lock, with no queued waiter on T).
     hold_transition: std::sync::atomic::AtomicBool,
@@ -80,13 +84,14 @@ impl FakeHost {
             log: Arc::new(StdMutex::new(Vec::new())),
             pipeline: StdMutex::new(Pipeline::Succeed),
             during_capture: StdMutex::new(None),
-            after_accept: StdMutex::new(None),
+            after_accept: Arc::new(StdMutex::new(None)),
             in_destination_emit: StdMutex::new(None),
             status_at_pipeline: StdMutex::new(None),
             hold_capture: std::sync::atomic::AtomicBool::new(false),
             panic_in_capture: StdMutex::new(false),
             on_generation_started: StdMutex::new(None),
             hold_transition: std::sync::atomic::AtomicBool::new(false),
+            destination_emit_fails: std::sync::atomic::AtomicBool::new(false),
             history,
         }
     }
@@ -198,11 +203,10 @@ impl ImportedAudioHost for FakeHost {
 
     fn emit_smart_destination(
         &self,
-        _app_state: &AppState,
         recording_id: u64,
         _context: &DictationContextSnapshot,
         _accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
-    ) {
+    ) -> Result<(), String> {
         self.push(format!(
             "emit_smart_destination {recording_id} in_core={}",
             crate::dictation_executor::executor::in_core()
@@ -211,9 +215,10 @@ impl ImportedAudioHost for FakeHost {
         if let (Some(listener), Some(state)) = (listener, self.state.upgrade()) {
             listener(&state.app_state);
         }
-        let hook = locked(&self.after_accept).take();
-        if let (Some(hook), Some(state)) = (hook, self.state.upgrade()) {
-            hook(&state.app_state);
+        if self.destination_emit_fails.load(Ordering::SeqCst) {
+            Err("the emit failed".to_string())
+        } else {
+            Ok(())
         }
     }
 
@@ -274,6 +279,10 @@ impl ImportedAudioHost for FakeHost {
                 Pipeline::Panic => {
                     let _guard = guard;
                     panic!("the pipeline panics");
+                }
+                Pipeline::Fail => {
+                    guard.finish(|_| {});
+                    Err("the scripted pipeline failed".to_string())
                 }
             }
         })
@@ -341,6 +350,21 @@ fn run(body: impl FnOnce(&Run)) {
 
 impl Run {
     fn process(&self, audio: &str) -> Result<serde_json::Value, String> {
+        // `after_accept` lands where the destination section has released D and the
+        // parse guard does not exist yet (the shell owns the emit's D section, so
+        // the hook cannot run inside the emit).
+        let (hook, state) = (Arc::clone(&self.host.after_accept), Arc::clone(&self.state));
+        // Installed only when a hook is set, so a test's own barrier is not replaced.
+        let _barrier = locked(&hook).is_some().then(|| {
+            let hook = Arc::clone(&hook);
+            crate::barrier_hook::install(move |point| {
+                if point == "process_audio.accepted" {
+                    if let Some(hook) = locked(&hook).take() {
+                        hook(&state.app_state);
+                    }
+                }
+            })
+        });
         poll_to_end(process_audio_inner(&self.host, &self.state, audio))
     }
 
@@ -1055,9 +1079,11 @@ fn a_finish_queued_inside_the_destination_emit_drains_when_it_returns() {
             let rid = app_state.recording_id.load(Ordering::SeqCst);
             // Dropped without finishing, inside a core span: queued, not run.
             drop(IdleGuard::new(app_state, rid));
+            // The shell holds D here (it owns the emit's section), so the listener
+            // cannot read the status; it sees the finish queued, not run.
             assert_eq!(
-                app_state.dictation.lock_or_recover().status,
-                DictationStatus::Processing,
+                DEFERRED_FINISHES.with(|queue| queue.borrow().len()),
+                1,
                 "the finish is deferred while the emit runs"
             );
         }));
@@ -1068,5 +1094,97 @@ fn a_finish_queued_inside_the_destination_emit_drains_when_it_returns() {
             "the queued finish ran before the pipeline: {:?}",
             run.host.lines()
         );
+    });
+}
+
+// ------------------------------------------- D-S2-11: the destination section and the error tail
+
+fn destination_witness() -> Vec<(&'static str, String)> {
+    super::process_audio_ports::DESTINATION.with(|slot| {
+        slot.borrow()
+            .iter()
+            .map(|w| (w.code, format!("{:?}", w.outcome)))
+            .collect()
+    })
+}
+
+fn enable_destination(run: &Run) {
+    let mut dictation = run.state.app_state.dictation.lock_or_recover();
+    dictation.smart_destination_enabled = true;
+    dictation.auto_paste = true;
+}
+
+/// The import's emit is `In:SDE` under the shell's own D section, and its witness is
+/// the emit's real result: a delivered emit is `Ran`, a rejected one `Failed`. With
+/// Smart destination off there is no section and no witness.
+#[test]
+fn the_import_destination_witness_reports_the_real_emit_result() {
+    for (fails, expected) in [(false, "Ran"), (true, "Failed")] {
+        super::process_audio_ports::DESTINATION.with(|slot| slot.borrow_mut().clear());
+        run(|run| {
+            enable_destination(run);
+            run.host
+                .destination_emit_fails
+                .store(fails, Ordering::SeqCst);
+            run.process(&wav_base64(8_000))
+                .expect("a failed emit does not fail the import");
+        });
+        assert_eq!(
+            destination_witness(),
+            vec![("SDE", expected.to_string())],
+            "emit fails: {fails}"
+        );
+    }
+    super::process_audio_ports::DESTINATION.with(|slot| slot.borrow_mut().clear());
+    run(|run| {
+        run.process(&wav_base64(8_000)).expect("success");
+        assert!(!run
+            .host
+            .lines()
+            .iter()
+            .any(|line| line.starts_with("emit_smart_destination")));
+    });
+    assert_eq!(
+        destination_witness(),
+        vec![],
+        "no section without Smart destination"
+    );
+}
+
+/// The destination emit holds D (the shell owns the section): a probe from inside the
+/// emit finds D taken, and the pipeline still starts after it released it.
+#[test]
+fn the_destination_emit_runs_under_the_shells_d_hold() {
+    run(|run| {
+        enable_destination(run);
+        let held = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (probe, state) = (Arc::clone(&held), Arc::clone(&run.state));
+        *locked(&run.host.in_destination_emit) = Some(Box::new(move |_| {
+            probe.store(
+                state.app_state.dictation.try_lock().is_err(),
+                Ordering::SeqCst,
+            );
+        }));
+        run.process(&wav_base64(8_000)).expect("success");
+        assert!(held.load(Ordering::SeqCst), "D is held across the emit");
+        assert!(run.state.app_state.dictation.try_lock().is_ok());
+    });
+}
+
+/// A pipeline that returns `Err` still runs the 204b section (the idle gate does not
+/// depend on the outcome) and then the shell returns the pipeline's own error text:
+/// that reply is a separate shell tail, not part of R302.2.
+#[test]
+fn a_pipeline_error_runs_the_idle_gate_and_returns_its_text_as_a_shell_tail() {
+    run(|run| {
+        *locked(&run.host.pipeline) = Pipeline::Fail;
+        let error = run
+            .process(&wav_base64(8_000))
+            .expect_err("the pipeline failed");
+        assert_eq!(error, "the scripted pipeline failed");
+        assert_eq!(idle_emits(run), 1, "the 204b section emitted idle once");
+        assert_eq!(run.status(), DictationStatus::Idle);
+        assert_eq!(run.history(), (0, 0));
+        assert!(!keyboard::is_processing());
     });
 }

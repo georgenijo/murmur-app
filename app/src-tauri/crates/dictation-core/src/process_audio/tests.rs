@@ -262,6 +262,43 @@ fn finish(
     )
 }
 
+/// The 204 row a site-302 decision delegates to, found by deciding the delegate
+/// directly: `origin` selects the 204a parse rows (`LegacyParse`) or, for any other
+/// value, the 204b legacy-post rows.
+fn delegate_204_row(status: Status, current: RecordingId, origin: GuardOrigin) -> &'static str {
+    let core = core(status, current);
+    match origin {
+        GuardOrigin::LegacyParse => {
+            decide_guard_finish(
+                &core,
+                GuardFinishInput {
+                    rid: RID,
+                    origin,
+                    closure_emit: true,
+                },
+                NOW,
+            )
+            .row
+            .0
+        }
+        _ => {
+            decide_pipeline_idle_emit(
+                &core,
+                PipelineIdleEmitInput {
+                    rid: RID,
+                    kind: PostKind::LegacyPost,
+                    result: None,
+                    interrupted: None,
+                    char_count: 0,
+                },
+                NOW,
+            )
+            .row
+            .0
+        }
+    }
+}
+
 #[test]
 fn r302_1_a_parse_failure_is_exactly_the_204a_legacy_parse_rows() {
     // (status, row) for the guard's own id, then for a newer id.
@@ -272,7 +309,12 @@ fn r302_1_a_parse_failure_is_exactly_the_204a_legacy_parse_rows() {
     ];
     for (status, row) in current {
         let decided = finish(status, RID, ProcessAudioFinishKind::ParseFailed, true);
-        assert_eq!(decided.row, RowId(row), "{status:?}");
+        assert_eq!(
+            decided.row,
+            RowId("R302.1"),
+            "{status:?}: site 302's own row"
+        );
+        assert_eq!(delegate_204_row(status, RID, GuardOrigin::LegacyParse), row);
         assert_eq!(decided.verdict, Verdict::Applied);
         assert_eq!(decided.transition, Some((status, Status::Idle)));
         assert_eq!(
@@ -292,7 +334,15 @@ fn r302_1_a_parse_failure_is_exactly_the_204a_legacy_parse_rows() {
     ];
     for (status, row) in newer {
         let decided = finish(status, NEWER, ProcessAudioFinishKind::ParseFailed, true);
-        assert_eq!(decided.row, RowId(row), "{status:?}");
+        assert_eq!(
+            decided.row,
+            RowId("R302.1"),
+            "{status:?}: site 302's own row"
+        );
+        assert_eq!(
+            delegate_204_row(status, NEWER, GuardOrigin::LegacyParse),
+            row
+        );
         assert_eq!(
             decided.verdict,
             Verdict::Stale(crate::decision::StaleKind::StaleRecording)
@@ -334,6 +384,9 @@ fn r302_1_equals_the_guard_decision_with_a_reply() {
             );
             let mut legacy = finish(status, current, ProcessAudioFinishKind::ParseFailed, true);
             assert_eq!(legacy.reply.take(), Some(Reply::Err(ErrText::Shell)));
+            assert_eq!(legacy.row, RowId("R302.1"));
+            // Everything but the row and the reply is the delegate's.
+            legacy.row = guard.row;
             assert_eq!(legacy, guard, "{status:?} {current:?}");
         }
     }
@@ -344,7 +397,12 @@ fn r302_2_the_tail_after_the_pipeline_is_exactly_the_204b_legacy_post_rows() {
     let current = [(Status::Idle, "R204b.1"), (Status::Recovering, "R204b.2")];
     for (status, row) in current {
         let decided = finish(status, RID, ProcessAudioFinishKind::PipelineDone, true);
-        assert_eq!(decided.row, RowId(row), "{status:?}");
+        assert_eq!(
+            decided.row,
+            RowId("R302.2"),
+            "{status:?}: site 302's own row"
+        );
+        assert_eq!(delegate_204_row(status, RID, GuardOrigin::Dropped), row);
         assert_eq!(decided.verdict, Verdict::Applied);
         assert_eq!(decided.transition, None, "204b never writes status");
         assert_eq!(tags(&decided), ["In:KB(false)", "In:EM(idle)"]);
@@ -365,7 +423,12 @@ fn r302_2_the_tail_after_the_pipeline_is_exactly_the_204b_legacy_post_rows() {
     ];
     for (status, row) in newer {
         let decided = finish(status, NEWER, ProcessAudioFinishKind::PipelineDone, true);
-        assert_eq!(decided.row, RowId(row), "{status:?}");
+        assert_eq!(
+            decided.row,
+            RowId("R302.2"),
+            "{status:?}: site 302's own row"
+        );
+        assert_eq!(delegate_204_row(status, NEWER, GuardOrigin::Dropped), row);
         assert_eq!(decided.transition, None);
         assert!(
             decided.effects.is_empty(),
@@ -406,6 +469,9 @@ fn r302_2_equals_the_stop_tail_decision_with_a_reply() {
             );
             let mut legacy = finish(status, current, ProcessAudioFinishKind::PipelineDone, true);
             assert!(legacy.reply.take().is_some());
+            assert_eq!(legacy.row, RowId("R302.2"));
+            // Everything but the row and the reply is the delegate's.
+            legacy.row = tail.row;
             assert_eq!(legacy, tail, "{status:?} {current:?}");
         }
     }
@@ -422,13 +488,35 @@ fn every_c3_7_row_is_covered_by_a_test_here_and_registered() {
         c37,
         ["R301.1", "R301.2", "R301.3", "R301.4", "R301.5", "R302.1", "R302.2"]
     );
-    // R301.1-.5 are decided by name above; R302.1 / R302.2 are the 204a / 204b
-    // rows listed in C3.7, which must exist in the registry.
+    // R301.1-.5 are decided by name above; R302.1 / R302.2 delegate to the 204a /
+    // 204b rows listed in C3.7, which must exist in the registry.
     for row in [
         "R204a.1", "R204a.2", "R204a.3", "R204a.5a", "R204a.5b", "R204a.5c", "R204a.5d",
         "R204a.5e", "R204b.1", "R204b.2", "R204b.4a", "R204b.4b", "R204b.4c", "R204b.4d",
         "R204b.4e",
     ] {
         assert!(C3_ROWS.iter().any(|(id, _)| *id == row), "{row}");
+    }
+}
+
+/// Every decision site 302 returns carries a row id that the registry assigns to
+/// site 302 (`site_of_row`), never a 204 id, for every status and generation.
+#[test]
+fn site_302_decisions_carry_rows_of_their_own_site() {
+    for kind in [
+        ProcessAudioFinishKind::ParseFailed,
+        ProcessAudioFinishKind::PipelineDone,
+    ] {
+        for status in Status::ALL {
+            for current in [RID, NEWER] {
+                let decided = finish(status, current, kind, true);
+                assert_eq!(
+                    crate::rows::site_of_row(decided.row.0),
+                    Some(SiteId::ProcessAudioFinish),
+                    "{kind:?} {status:?} {current:?}: {:?}",
+                    decided.row
+                );
+            }
+        }
     }
 }
