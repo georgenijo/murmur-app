@@ -166,6 +166,56 @@ fn every_owner_dropped_in_a_span_retires_in_fifo_order_at_the_drain() {
     assert!(queued().is_empty());
 }
 
+/// A finish the drain itself runs makes its idle emit inside a core span, and a
+/// listener there may drop another owner: that retirement is queued behind the
+/// finish and the same drain loop applies it (the drain runs after T is released
+/// and queues nothing it does not also run).
+#[test]
+fn a_finish_run_by_the_drain_drains_what_its_own_emit_queues() {
+    let app_state = AppState::default();
+    let history = app_state.core_history.clone();
+    let finishing = PipelineOwner::register(&history, spec(2, ContKind::Pipeline));
+    let mut finisher = IdleGuard::for_pipeline(&app_state, 2, Some(finishing));
+    let later = PipelineOwner::register(&history, spec(3, ContKind::Pipeline));
+    assert_eq!(
+        (history.pipeline_count(), history.outstanding_ops()),
+        (2, 2)
+    );
+    let counters = history.counters();
+    app_state.recording_id.store(2, Ordering::SeqCst);
+    app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+    let slot = Arc::new(std::sync::Mutex::new(Some(later)));
+    let listener_ran = Arc::new(AtomicBool::new(false));
+    let drain = DrainDeferredFinishes::new(&app_state);
+    {
+        let span = CoreEntry::enter().expect("outside any span");
+        let (slot, ran) = (Arc::clone(&slot), Arc::clone(&listener_ran));
+        finisher.finish_owned(move |_| {
+            // The drain runs this under D, in a span of its own: a listener drops
+            // another owner, which can only queue.
+            drop(slot.lock().expect("slot").take());
+            ran.store(true, Ordering::SeqCst);
+            true
+        });
+        assert_eq!(queued(), [(2, false)]);
+        drop(span);
+    }
+    drop(drain);
+    assert!(
+        listener_ran.load(Ordering::SeqCst),
+        "the emit ran at the drain"
+    );
+    assert!(
+        queued().is_empty(),
+        "the same drain applied the queued retirement"
+    );
+    assert_eq!(
+        (history.pipeline_count(), history.outstanding_ops()),
+        (0, 0)
+    );
+    assert_eq!(history.counters(), counters, "each op retired exactly once");
+}
+
 /// Outside a span every owner still retires at once (the base behaviour).
 #[test]
 fn outside_a_span_owners_retire_immediately() {

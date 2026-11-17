@@ -494,7 +494,7 @@ fn enclosing_function(code: &str, at: usize) -> String {
             (whole.start(), whole.end(), found[1].to_string())
         })
         .peekable();
-    let bytes = code[..at].as_bytes();
+    let bytes = &code.as_bytes()[..at];
     let mut blocks: Vec<Option<String>> = Vec::new();
     let mut pending: Option<String> = None;
     let mut open_signature = 0_i32;
