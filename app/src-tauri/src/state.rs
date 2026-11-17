@@ -363,8 +363,12 @@ impl Default for ModelIdlePolicy {
 pub struct AppState {
     pub dictation: Mutex<DictationState>,
     /// Serializes recorder start/stop/cancel command transitions. Microphone
-    /// initialization itself is asynchronous and owned by `audio_lifecycle`;
-    /// this lock is never held while waiting for Core Audio or a channel.
+    /// initialization itself is asynchronous and owned by `audio_lifecycle`,
+    /// but a start does hold this lock across a blocking wait on the
+    /// supervisor's start acknowledgement: up to 2 s, or up to 17 s through
+    /// `spawn_blocking` when a kept microphone test must exit first. Stop and
+    /// cancel release it before their supervisor waits. See
+    /// `docs/architecture/dictation-lock-order.md`.
     pub recording_transition: tokio::sync::Mutex<()>,
     pub model_runtime: ModelRuntimeManager,
     pub last_transcription_at: Mutex<Option<Instant>>,
