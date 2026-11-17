@@ -24,7 +24,7 @@ use crate::audio_lifecycle::AudioCancelReason;
 use crate::dictation_context::DictationContextSnapshot;
 use crate::dictation_executor::convert::{error_code_from_core, terminal_outcome_from_core};
 use crate::dictation_executor::executor::{
-    outside_core, Executor, OutsideCore, PhaseCtx, PhaseReport, PortFailure, PortResult, Ports,
+    Executor, PhaseCtx, PhaseReport, PortFailure, PortResult, Ports,
 };
 use crate::dictation_telemetry::{DictationErrorCode, DictationTerminalOutcome};
 use crate::performance_metrics::{PerformanceStageV1, RunOutcomeV1, StableRunErrorV1};
@@ -46,10 +46,10 @@ pub(super) fn executor<'a>(ports: &'a dyn Ports, decision: Decision) -> Executor
         .expect("a stop decision is structurally valid (crate row tests)")
 }
 
-/// Run a (pure) stop decide function as a top-level entry (see [`outside_core`]),
-/// refusing a nested one as `decide_guarded` does.
+/// Run a (pure) stop decide function under the re-entrancy guard: a nested call
+/// is refused as `Invalid(Reentrant)` without calling `decide` (C4.2).
 pub(super) fn decide(decide: impl FnOnce() -> Decision) -> Decision {
-    outside_core(|| crate::dictation_executor::executor::decide_guarded(decide))
+    crate::dictation_executor::executor::decide_guarded(decide)
 }
 
 /// Run one placement. `dictation` is `Some` only for `In`: the D guard's
@@ -66,9 +66,7 @@ pub(super) fn run_phase(
         dictation,
         recording_id,
     };
-    // The stop command is a top-level entry: a harness may poll it inline from
-    // inside another family's span.
-    let report = outside_core(|| executor.run(phase, &mut ctx));
+    let report = executor.run(phase, &mut ctx);
     if let PhaseReport::Invalid(_) = report {
         tracing::error!(
             target: "pipeline",
@@ -78,6 +76,32 @@ pub(super) fn run_phase(
         );
     }
     report
+}
+
+/// The awaited `PS` of an accepted pipeline start (R203.9/.10), or the refusal
+/// text the stop returns when the executor did not reach it.
+pub(super) fn pipeline_start(report: PhaseReport) -> Result<(), String> {
+    match report {
+        PhaseReport::Awaiting(awaited) if matches!(awaited.effect, Effect::PipelineSpawn(_)) => {
+            Ok(())
+        }
+        other => {
+            tracing::error!(
+                target: "pipeline",
+                report = ?other,
+                "the stop's effects did not reach the awaited pipeline start"
+            );
+            Err("The dictation core did not start the pipeline".to_string())
+        }
+    }
+}
+
+// Test builds: the witness of the stop's executor after it resumed the awaited
+// `PS` with the pipeline's actual result.
+#[cfg(test)]
+thread_local! {
+    pub(super) static RESUMED: RefCell<Vec<crate::dictation_executor::executor::Witness>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 /// The JSON of a stop reply, with the shell-owned slots filled in: `shell_error`
@@ -160,15 +184,19 @@ pub(super) struct StopHooks<'a> {
     /// `TERM` in the tail: `emit_dictation_terminal_with_capture`, then the
     /// metrics and stage-gap trace lines that followed it.
     pub(super) terminal: Option<Box<dyn Fn(DictationTerminalOutcome, DictationErrorCode) + 'a>>,
+    /// The log line that followed the capture-result `TERM` claim (R203): run
+    /// right after the default terminal emit, before `CX-`.
+    pub(super) after_terminal: Option<Box<dyn FnOnce() + 'a>>,
     /// `PE`: `performance_guard.enter(Vad)`.
     pub(super) perf_enter: Option<Box<dyn FnOnce() + 'a>>,
     /// `PGF`: `performance_guard.finish(..)`.
     pub(super) perf_finish: Option<Box<dyn FnOnce() + 'a>>,
     /// `EV(TranscriptionComplete)`: the `transcription-complete` broadcast.
-    pub(super) event: Option<Box<dyn FnOnce() + 'a>>,
+    /// Returns whether the broadcast was delivered, which the witness reports.
+    pub(super) event: Option<Box<dyn FnOnce() -> bool + 'a>>,
 }
 
-pub(super) struct StopPortsInner<'a> {
+pub(super) struct StopPorts<'a> {
     host: &'a dyn DictationHost,
     state: &'a State,
     recording_id: Cell<u64>,
@@ -181,10 +209,18 @@ pub(super) struct StopPortsInner<'a> {
     /// R202.3 releases T inside D, between `EM(idle)` and `PC` (B0 E1): the shell
     /// hands the guard over and the `PC` port drops it first.
     transition: RefCell<Option<tokio::sync::MutexGuard<'a, ()>>>,
+    /// `CP`: how the capture stop is driven, and what it returned.
+    capture: RefCell<Option<CaptureStop>>,
 }
 
-/// The ports of the StopPorts effects; every port call leaves the core span.
-pub(super) type StopPorts<'a> = OutsideCore<StopPortsInner<'a>>;
+/// The shell values `CP` (R202.1, `PT`) needs and produces (X4). An interrupted
+/// capture's samples bypass the supervisor: the supervisor already preserved them.
+pub(super) struct CaptureStop {
+    trigger: crate::audio_lifecycle::DictationStopTrigger,
+    tail_anchor: Option<std::time::Instant>,
+    interrupted: Option<Vec<f32>>,
+    result: Option<Result<Vec<f32>, String>>,
+}
 
 impl<'a> StopPorts<'a> {
     pub(super) fn new(
@@ -193,7 +229,7 @@ impl<'a> StopPorts<'a> {
         recording_id: u64,
         stop_entered_at: std::time::Instant,
     ) -> Self {
-        OutsideCore(StopPortsInner {
+        StopPorts {
             host,
             state,
             recording_id: Cell::new(recording_id),
@@ -202,7 +238,8 @@ impl<'a> StopPorts<'a> {
             slots: RefCell::default(),
             hooks: RefCell::default(),
             transition: RefCell::new(None),
-        })
+            capture: RefCell::new(None),
+        }
     }
 
     /// Route `KB` through the keyboard module, as the `IdleGuard` does.
@@ -212,6 +249,31 @@ impl<'a> StopPorts<'a> {
 
     pub(super) fn set_hooks(&self, hooks: StopHooks<'a>) {
         *self.hooks.borrow_mut() = hooks;
+    }
+
+    /// Arm `CP`: the resolved trigger, the tail anchor and, for an interrupted
+    /// capture, the preserved samples.
+    pub(super) fn arm_capture_stop(
+        &self,
+        trigger: crate::audio_lifecycle::DictationStopTrigger,
+        tail_anchor: Option<std::time::Instant>,
+        interrupted: Option<Vec<f32>>,
+    ) {
+        *self.capture.borrow_mut() = Some(CaptureStop {
+            trigger,
+            tail_anchor,
+            interrupted,
+            result: None,
+        });
+    }
+
+    /// What `CP` returned: the samples, or the supervisor's error. `None` if the
+    /// capture stop never ran.
+    pub(super) fn take_capture_result(&self) -> Option<Result<Vec<f32>, String>> {
+        self.capture
+            .borrow_mut()
+            .as_mut()
+            .and_then(|capture| capture.result.take())
     }
 
     pub(super) fn hold_transition(&self, guard: tokio::sync::MutexGuard<'a, ()>) {
@@ -224,7 +286,7 @@ impl<'a> StopPorts<'a> {
     }
 }
 
-impl Ports for StopPortsInner<'_> {
+impl Ports for StopPorts<'_> {
     fn app_state(&self) -> &AppState {
         &self.state.app_state
     }
@@ -245,8 +307,7 @@ impl Ports for StopPortsInner<'_> {
                 .map_err(|_| PortFailure),
             Effect::EmitEvent(EventKind::TranscriptionComplete) => {
                 let hook = self.hooks.borrow_mut().event.take().ok_or(PortFailure)?;
-                hook();
-                Ok(())
+                hook().then_some(()).ok_or(PortFailure)
             }
             _ => Err(PortFailure),
         }
@@ -268,6 +329,10 @@ impl Ports for StopPortsInner<'_> {
             None => {
                 emit_dictation_terminal(self.state, self.recording_id.get(), outcome, code);
             }
+        }
+        drop(hooks);
+        if let Some(log) = self.hooks.borrow_mut().after_terminal.take() {
+            log();
         }
         Ok(())
     }
@@ -382,6 +447,35 @@ impl Ports for StopPortsInner<'_> {
                     Some(self.host.ax().capture_delivery_target_snapshot());
                 Ok(())
             }
+            Effect::CaptureStop(id) => {
+                let (trigger, tail_anchor, interrupted) = {
+                    let mut capture = self.capture.borrow_mut();
+                    let capture = capture.as_mut().ok_or(PortFailure)?;
+                    (
+                        capture.trigger,
+                        capture.tail_anchor,
+                        capture.interrupted.take(),
+                    )
+                };
+                let result = match interrupted {
+                    // An interrupted capture already holds its samples.
+                    Some(samples) => Ok(samples),
+                    None => {
+                        self.host
+                            .supervisor()
+                            .stop_dictation_recording(id.0, trigger, tail_anchor)
+                    }
+                };
+                let outcome = if result.is_ok() {
+                    Ok(())
+                } else {
+                    Err(PortFailure)
+                };
+                if let Some(capture) = self.capture.borrow_mut().as_mut() {
+                    capture.result = Some(result);
+                }
+                outcome
+            }
             Effect::CaptureCancel { id, .. } => {
                 // Cancel the exact owner even if readiness races with this
                 // command after the status snapshot. A starting-only cancellation
@@ -410,29 +504,51 @@ impl Ports for StopPortsInner<'_> {
 
 // -------------------------------------------------------------- 204a: IdleGuard
 
-/// The guard's `on_idle` closure: it runs as `EM(idle)` with D's contents.
-pub(super) type OnIdle<'a> = Box<dyn FnOnce(&DictationState) + 'a>;
+/// The guard's `on_idle` closure: it runs as `EM(idle)` with D's contents and
+/// reports whether the emit it made was delivered.
+pub(super) type OnIdle<'a> = Box<dyn FnOnce(&DictationState) -> bool + 'a>;
+
+/// What an emit statement reports to the executor's witness: the closure bodies
+/// that predate the executor return `()` (nothing to report) or a `Result`.
+pub(super) trait EmitOutcome {
+    fn delivered(&self) -> bool;
+}
+
+impl EmitOutcome for () {
+    fn delivered(&self) -> bool {
+        true
+    }
+}
+
+impl EmitOutcome for bool {
+    fn delivered(&self) -> bool {
+        *self
+    }
+}
+
+impl<T, E> EmitOutcome for Result<T, E> {
+    fn delivered(&self) -> bool {
+        self.is_ok()
+    }
+}
 
 /// The ports of `IdleGuard::finish` / `Drop`. `EM(idle)` runs the guard's
 /// `on_idle` closure with the held `DictationState`.
-pub(super) struct GuardPortsInner<'a> {
+pub(super) struct GuardPorts<'a> {
     app_state: &'a AppState,
     on_idle: RefCell<Option<OnIdle<'a>>>,
 }
 
-/// The ports of the GuardPorts effects; every port call leaves the core span.
-pub(super) type GuardPorts<'a> = OutsideCore<GuardPortsInner<'a>>;
-
 impl<'a> GuardPorts<'a> {
     pub(super) fn new(app_state: &'a AppState, on_idle: Option<OnIdle<'a>>) -> Self {
-        OutsideCore(GuardPortsInner {
+        GuardPorts {
             app_state,
             on_idle: RefCell::new(on_idle),
-        })
+        }
     }
 }
 
-impl Ports for GuardPortsInner<'_> {
+impl Ports for GuardPorts<'_> {
     fn app_state(&self) -> &AppState {
         self.app_state
     }
@@ -455,8 +571,7 @@ impl Ports for GuardPortsInner<'_> {
             return Err(PortFailure);
         };
         let on_idle = self.on_idle.borrow_mut().take().ok_or(PortFailure)?;
-        on_idle(dictation);
-        Ok(())
+        on_idle(dictation).then_some(()).ok_or(PortFailure)
     }
 
     fn trace(&self, _effect: &Effect) -> PortResult {
@@ -498,30 +613,27 @@ impl Ports for GuardPortsInner<'_> {
 /// callers differ only in how they reach the keyboard gate and the webview (the
 /// stop command through its host, the legacy `process_audio` directly), so both
 /// are closures.
-pub(super) struct IdleEmitPortsInner<'a> {
+pub(super) struct IdleEmitPorts<'a> {
     app_state: &'a AppState,
     set_processing: &'a dyn Fn(bool),
-    emit_idle: &'a dyn Fn(),
+    emit_idle: &'a dyn Fn() -> bool,
 }
-
-/// The ports of the IdleEmitPorts effects; every port call leaves the core span.
-pub(super) type IdleEmitPorts<'a> = OutsideCore<IdleEmitPortsInner<'a>>;
 
 impl<'a> IdleEmitPorts<'a> {
     pub(super) fn new(
         app_state: &'a AppState,
         set_processing: &'a dyn Fn(bool),
-        emit_idle: &'a dyn Fn(),
+        emit_idle: &'a dyn Fn() -> bool,
     ) -> Self {
-        OutsideCore(IdleEmitPortsInner {
+        IdleEmitPorts {
             app_state,
             set_processing,
             emit_idle,
-        })
+        }
     }
 }
 
-impl Ports for IdleEmitPortsInner<'_> {
+impl Ports for IdleEmitPorts<'_> {
     fn app_state(&self) -> &AppState {
         self.app_state
     }
@@ -538,8 +650,7 @@ impl Ports for IdleEmitPortsInner<'_> {
         let Effect::EmitStatus { .. } = effect else {
             return Err(PortFailure);
         };
-        (self.emit_idle)();
-        Ok(())
+        (self.emit_idle)().then_some(()).ok_or(PortFailure)
     }
 
     fn trace(&self, _effect: &Effect) -> PortResult {
@@ -572,5 +683,50 @@ impl Ports for IdleEmitPortsInner<'_> {
 
     fn detached(&self, _effect: &Effect) -> PortResult {
         Err(PortFailure)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use murmur_dictation_core::effects::Cond;
+    use murmur_dictation_core::status::Status;
+
+    fn idle_emit() -> Effect {
+        Effect::EmitStatus {
+            status: Status::Idle,
+            cond: Cond::Always,
+        }
+    }
+
+    /// The witness reports the emit the statement made, not a constant `Ok`: a
+    /// failed `idle` emit through the guard's closure, the shared 204b port or the
+    /// `transcription-complete` hook is a failed port call (the command's reply is
+    /// unchanged by it).
+    #[test]
+    fn the_guard_and_the_idle_emit_ports_report_the_real_emit_result() {
+        let app_state = AppState::default();
+        for delivered in [true, false] {
+            let guard_ports = GuardPorts::new(&app_state, Some(Box::new(move |_| delivered)));
+            let dictation = app_state.dictation.lock().unwrap();
+            assert_eq!(
+                guard_ports.emit_under_d(&idle_emit(), &dictation).is_ok(),
+                delivered
+            );
+            drop(dictation);
+            let set_processing = |_: bool| {};
+            let emit_idle = move || delivered;
+            let idle_ports = IdleEmitPorts::new(&app_state, &set_processing, &emit_idle);
+            assert_eq!(idle_ports.emit(&idle_emit()).is_ok(), delivered);
+        }
+    }
+
+    #[test]
+    fn emit_outcomes_of_the_closure_bodies_that_predate_the_executor() {
+        assert!(().delivered());
+        assert!(true.delivered());
+        assert!(!false.delivered());
+        assert!(Ok::<(), ()>(()).delivered());
+        assert!(!Err::<(), _>("failed").delivered());
     }
 }
