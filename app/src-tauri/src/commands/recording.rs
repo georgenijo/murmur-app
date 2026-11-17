@@ -1242,6 +1242,9 @@ impl<'a> IdleGuard<'a> {
             defer_finish(self.app_state, self.recording_id, origin, self.owner.take());
             return;
         }
+        // Declared first, so it runs last, after D is released, on a return and
+        // on an unwind (a listener that queued a finish and then panicked).
+        let _drain = DrainDeferredFinishes(self.app_state);
         Self::finish_section(
             self.app_state,
             self.recording_id,
@@ -1249,7 +1252,6 @@ impl<'a> IdleGuard<'a> {
             on_idle,
             &mut self.owner,
         );
-        drain_deferred_finishes(self.app_state);
     }
 
     /// Site 204a (R204a.1-.6): `Pre:CX-` before D, then the guard's D section
@@ -1280,7 +1282,7 @@ impl<'a> IdleGuard<'a> {
             closure_emit: on_idle.is_some(),
         };
         let ports = stop_ports::GuardPorts::new(app_state, on_idle);
-        let pre = stop_ports::run_phase(
+        let pre = stop_ports::try_run_phase(
             &mut stop_ports::executor(
                 &ports,
                 Decision::pre_only(core_stop::guard_finish_pre_effects(rid), RowId("R204a.pre")),
@@ -1310,6 +1312,7 @@ impl<'a> IdleGuard<'a> {
             None => decide(),
         }
         .after_pre();
+        stop_ports::expect_valid(&decision);
         // H2 `ret rid`: after the decision, before its `In` effects. A panic in
         // an effect (the `ST` trace) can no longer leave either entry behind.
         if let Some(owner) = owner.as_mut() {
@@ -1387,7 +1390,14 @@ struct DrainDeferredFinishes<'a>(&'a AppState);
 
 impl Drop for DrainDeferredFinishes<'_> {
     fn drop(&mut self) {
-        drain_deferred_finishes(self.0);
+        if std::thread::panicking() {
+            // A second panic during an unwind would abort the process.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                drain_deferred_finishes(self.0);
+            }));
+        } else {
+            drain_deferred_finishes(self.0);
+        }
     }
 }
 
@@ -1460,6 +1470,8 @@ fn run_pipeline_idle_emit(
         !crate::dictation_executor::executor::in_core(),
         "the 204b section runs outside a core span"
     );
+    // Declared before D: it runs after D is released, on a return and on an unwind.
+    let _drain = DrainDeferredFinishes(app_state);
     let ports = stop_ports::IdleEmitPorts::new(app_state, set_processing, emit_idle);
     let mut dictation = app_state.dictation.lock_or_recover();
     let view = FieldAdapter::project_lifecycle_view(app_state, &dictation);
@@ -1472,14 +1484,13 @@ fn run_pipeline_idle_emit(
     };
     let decision =
         stop_ports::decide(|| core_stop::decide_pipeline_idle_emit(&view, input, core_now()));
+    stop_ports::expect_valid(&decision);
     stop_ports::run_phase(
         &mut stop_ports::executor(&ports, decision),
         Placement::In,
         Some(&mut dictation),
         recording_id,
     );
-    drop(dictation);
-    drain_deferred_finishes(app_state);
 }
 
 /// RAII guard that clears `file_transcribing` on drop, so a file transcription
@@ -6360,12 +6371,17 @@ async fn stop_native_recording_admitted(
 
     // Also the first statement of the tests' direct entry (`_inner`).
     refuse_reentrant_stop()?;
-    // Finishes queued re-entrantly while this stop held D run when it returns,
-    // after every lock it took is released (D-S2-4).
-    let _drain = DrainDeferredFinishes(&state.app_state);
     // The `releaseToStop` endpoint: entry, before any lock wait (#826).
     let stop_entered_at = std::time::Instant::now();
     let transition = state.app_state.recording_transition.lock().await;
+    // A stop that parked on T and is polled again inside a core span (a listener)
+    // waits the span out before it asks for D: ready on the first poll.
+    until_outside_core().await;
+    // Finishes queued re-entrantly while this stop held D run when this
+    // synchronous stretch ends, on this thread, after every lock it took is
+    // released (D-S2-4). The obligation is never held across an await: it ends
+    // right before the pipeline await and starts again after it.
+    let drain = DrainDeferredFinishes(&state.app_state);
     // Stop admission (T held): the `AutoStop` op the interruption registered is
     // consumed here (C1.4.1 rule 4). Its status does not branch anything; the stale
     // rule below runs whatever it was. Until here the op stayed outstanding, so a
@@ -6751,7 +6767,7 @@ async fn stop_native_recording_admitted(
             ..StopHooks::default()
         });
         let mut exec = executor(&ports, decision);
-        let report = run_phase(&mut exec, Placement::PostDT, None, rid);
+        let report = stop_ports::try_run_phase(&mut exec, Placement::PostDT, None, rid);
         if let Err(error) = stop_ports::pipeline_start(report) {
             // The pipeline never started: the stop's guard resets the status.
             guard.rearm();
@@ -6760,6 +6776,7 @@ async fn stop_native_recording_admitted(
         exec.suspend()
     };
 
+    drop(drain);
     let pipeline_result = host
         .run_transcription_pipeline(
             &samples,
@@ -6774,6 +6791,10 @@ async fn stop_native_recording_admitted(
             },
         )
         .await;
+    // A stop that a listener polls inline under D parks here until the span ends:
+    // the resume and the 204b section both run outside any core span.
+    until_outside_core().await;
+    let _drain = DrainDeferredFinishes(&state.app_state);
     // Resume the awaited `PS` with what the pipeline actually returned.
     {
         let ports = StopPorts::new(host, state, rid, stop_entered_at);
@@ -6783,14 +6804,11 @@ async fn stop_native_recording_admitted(
         } else {
             AwaitedOutcome::Failed
         });
-        if report != PhaseReport::Done || !exec.is_finished() {
-            tracing::error!(
-                target: "pipeline",
-                recording_id = rid,
-                report = ?report,
-                "the stop's pipeline start did not resume cleanly"
-            );
-        }
+        // Outside any core span and in order: nothing else can happen here.
+        assert!(
+            report == PhaseReport::Done && exec.is_finished(),
+            "the stop's pipeline start resumes outside any core span, in order: {report:?}"
+        );
         #[cfg(test)]
         {
             stop_ports::RESUMED.with(|slot| *slot.borrow_mut() = exec.witness().to_vec());
@@ -6801,7 +6819,6 @@ async fn stop_native_recording_admitted(
     // Hold the dictation lock across the check+emit to prevent a concurrent
     // start from interleaving a "recording" status between our check and emit.
     // Site 204b (R204b.1-.4).
-    until_outside_core().await;
     run_pipeline_idle_emit(
         &state.app_state,
         rid,
@@ -6827,6 +6844,7 @@ async fn stop_native_recording_admitted(
                     now,
                 )
             });
+            stop_ports::expect_valid(&tail);
             {
                 let ports = StopPorts::new(host, state, rid, stop_entered_at);
                 run_phase(&mut executor(&ports, tail), Placement::PostDT, None, rid);
