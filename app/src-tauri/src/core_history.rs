@@ -434,10 +434,13 @@ impl ContinuationGuard {
 
     /// Consume the continuation (the shell protocol of
     /// [`CoreHistoryLock::consume`]); the guard's `Drop` then has nothing to
-    /// retire.
+    /// retire. The guard is disarmed only **after** consumption and retirement
+    /// returned: if `decide` panics, the owner's `Drop` still retires the op
+    /// (nothing is evicted, so a skipped retirement would leak it forever).
     pub(crate) fn consume<R>(&mut self, decide: impl FnOnce(OpStatus) -> R) -> R {
+        let outcome = self.history.consume(self.token, decide);
         self.consumed = true;
-        self.history.consume(self.token, decide)
+        outcome
     }
 }
 

@@ -1041,6 +1041,40 @@ mod core_history_contract {
         assert_eq!(history.outstanding_ops(), 0);
         drop(guard);
         assert_eq!(history.counters().duplicate_op, duplicates);
+
+        // (5) A panic inside the consuming decide: the guard is not disarmed
+        // until consumption and retirement returned, so the owner's `Drop`
+        // still retires the op (no eviction means it would leak forever).
+        // (5a) the owner outlives the panic.
+        let mut guard = ContinuationGuard::register(&history, spec(5, ContKind::CaptureStop));
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            guard.consume(|_| -> () { panic!("decide panicked") })
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(
+            history.outstanding_ops(),
+            1,
+            "not retired by the panicking consume"
+        );
+        drop(guard);
+        assert_eq!(
+            history.outstanding_ops(),
+            0,
+            "panic in decide, owner dropped"
+        );
+        // (5b) the owner is unwound with the panic.
+        let mut guard = ContinuationGuard::register(&history, spec(6, ContKind::ResolveContext));
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            guard.consume(|_| -> () { panic!("decide panicked") })
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(
+            history.outstanding_ops(),
+            0,
+            "panic in decide, owner unwound"
+        );
+        // The successful consumption above still retires exactly once.
+        assert_eq!(history.counters().duplicate_op, duplicates);
     }
 
     /// `history_lock_is_leaf`: the lock is only ever taken inside one short
