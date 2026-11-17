@@ -218,6 +218,9 @@ pub(super) struct Knobs {
     /// The pipeline guard's `finish` closure (the `In` effect `EM(idle)`, run under
     /// D) panics.
     pub(super) pipeline_finish_panics: bool,
+    /// What the Smart Auto resolve port answers (`None`: an error, the scenario did
+    /// not script it).
+    pub(super) smart_auto: Option<Result<crate::microphone_auto::SmartAutoSelection, String>>,
 }
 
 impl Default for Knobs {
@@ -234,6 +237,7 @@ impl Default for Knobs {
             hold_delivery: false,
             pipeline_error: None,
             pipeline_finish_panics: false,
+            smart_auto: None,
         }
     }
 }
@@ -320,6 +324,8 @@ pub(super) struct World {
     supervisor: StdMutex<Supervisor>,
     auto_stops: StdMutex<Vec<u64>>,
     delivery: StdMutex<Option<Delivery>>,
+    /// Smart Auto resolves the start asked its host for.
+    smart_auto_resolves: std::sync::atomic::AtomicUsize,
 }
 
 /// A delivery operation parked inside the production ownership fence.
@@ -346,6 +352,7 @@ impl World {
             supervisor: StdMutex::new(Supervisor::default()),
             auto_stops: StdMutex::new(Vec::new()),
             delivery: StdMutex::new(None),
+            smart_auto_resolves: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -1343,6 +1350,19 @@ impl DictationHost for Host {
     ) -> HostFuture<'a, Result<tokio::sync::MutexGuard<'a, ()>, String>> {
         self.0.push("mic_transition");
         Box::pin(async move { Ok(state.app_state.recording_transition.lock().await) })
+    }
+
+    fn resolve_smart_auto(
+        &self,
+        _request: &SmartAutoRequest,
+    ) -> Result<crate::microphone_auto::SmartAutoSelection, String> {
+        // Counted outside the trace so no golden line changes: no scenario asks for
+        // Smart Auto, and only the contract tests read the count.
+        self.0.smart_auto_resolves.fetch_add(1, Ordering::SeqCst);
+        locked(&self.0.knobs)
+            .smart_auto
+            .clone()
+            .unwrap_or_else(|| Err("smart auto is not scripted".to_string()))
     }
 
     fn refresh_expired_ide_context(&self, _app_state: &AppState, _bundle_id: Option<&str>) {

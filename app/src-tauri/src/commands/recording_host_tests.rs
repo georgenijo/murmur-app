@@ -36,6 +36,7 @@ type Hook = Box<dyn Fn(&State) + Send>;
 enum Call {
     EmitJson,
     MicrophoneTransition,
+    ResolveSmartAuto,
     RefreshExpiredIdeContext,
     EmitSmartDestination,
     PublishRecordingReady,
@@ -68,9 +69,10 @@ impl Call {
     /// Adding a variant without listing it here fails to compile, and a
     /// variant missing from this list fails
     /// `call_kinds_match_the_trait_declarations`.
-    const ALL: [Call; 28] = [
+    const ALL: [Call; 29] = [
         Call::EmitJson,
         Call::MicrophoneTransition,
+        Call::ResolveSmartAuto,
         Call::RefreshExpiredIdeContext,
         Call::EmitSmartDestination,
         Call::PublishRecordingReady,
@@ -107,6 +109,11 @@ impl Call {
             Call::MicrophoneTransition => {
                 ("DictationHost", "microphone_transition", "mic_transition")
             }
+            Call::ResolveSmartAuto => (
+                "DictationHost",
+                "resolve_smart_auto",
+                "resolve_smart_auto",
+            ),
             Call::RefreshExpiredIdeContext => (
                 "DictationHost",
                 "refresh_expired_ide_context",
@@ -352,6 +359,14 @@ impl DictationHost for FakeHost {
     ) -> HostFuture<'a, Result<tokio::sync::MutexGuard<'a, ()>, String>> {
         self.shared.push(Call::MicrophoneTransition, "");
         Box::pin(async move { Ok(state.app_state.recording_transition.lock().await) })
+    }
+
+    fn resolve_smart_auto(
+        &self,
+        _request: &SmartAutoRequest,
+    ) -> Result<crate::microphone_auto::SmartAutoSelection, String> {
+        self.shared.push(Call::ResolveSmartAuto, "");
+        Err("smart auto is not scripted".to_string())
     }
 
     fn refresh_expired_ide_context(&self, _app_state: &AppState, _bundle_id: Option<&str>) {
