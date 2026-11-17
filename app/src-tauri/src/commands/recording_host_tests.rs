@@ -2,16 +2,21 @@
 //!
 //! A `FakeHost` stands in for `TauriHost`, logs every port call in the order
 //! the command reaches it, and returns scripted results. Each scenario asserts
-//! the exact log, which is the order the production code reaches those ports
-//! (read from the command bodies, not from this fake). A scenario is
+//! its complete log, which is the order the production code reaches those ports
+//! (read from the command bodies, not from this fake; every `expected_*`
+//! function cites the `recording.rs` lines it was read from). A scenario is
 //! single-task: the order is the program order of the awaits, and the one
 //! scenario that hops threads (the kept-preview start) is ordered by awaiting
 //! the `spawn_blocking` join. A scripted hook runs inside a port at the point
 //! production reaches it, so a test can change shared state "between" two ports
 //! with no timing dependence.
 //!
-//! `every_port_is_reached_in_two_scenarios` fails when a port is added to the
-//! trait but only one scenario (or none) reaches it.
+//! Every log entry is recorded under a [`Call`] kind, and the coverage is
+//! enumerated from `Call::ALL`, whose members are tied to the trait
+//! declarations by an exhaustive `match` (a new `Call` variant must be named)
+//! and by `call_kinds_match_the_trait_declarations` (a trait method with no
+//! `Call` fails). `every_port_is_reached_in_two_scenarios` then asserts the
+//! full ordered trace of every scenario and that each `Call` is reached by two.
 
 use super::dictation_host::{
     HostEmitError, HostFuture, KeyboardPort, PerformancePort, SmartDestinationPort, SupervisorPort,
@@ -22,6 +27,207 @@ use super::*;
 use std::sync::Mutex as StdMutex;
 
 type Hook = Box<dyn Fn(&State) + Send>;
+
+/// One variant per port method the commands can call (the accessors
+/// `supervisor`, `keyboard`, `ax`, `smart_destination` and `performance` only
+/// hand out a port and are not calls). `emit` on `dyn DictationHost` reaches
+/// the trait's `emit_json`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Call {
+    EmitJson,
+    MicrophoneTransition,
+    RefreshExpiredIdeContext,
+    EmitSmartDestination,
+    PublishRecordingReady,
+    SpawnModelPreparation,
+    ClaimPreviewHide,
+    RunTranscriptionPipeline,
+    SupervisorStart,
+    SupervisorStartAfterPreview,
+    SupervisorStop,
+    SupervisorCancel,
+    SupervisorTakeInterrupted,
+    KeyboardIsAppDisabled,
+    KeyboardListenerGeneration,
+    KeyboardSetProcessing,
+    KeyboardHotkeyReleaseTakeFor,
+    KeyboardStopGestureTakeFor,
+    AxCaptureDeliveryTargetSnapshot,
+    SmartDestinationCapture,
+    PerformanceRegisterProduction,
+    PerformanceProductionContext,
+    PerformanceProductionSampleCount,
+    PerformanceBeginRegister,
+    PerformanceBeginAbort,
+    PerformanceSpawnBegin,
+    PerformanceComplete,
+}
+
+impl Call {
+    /// Adding a variant without listing it here fails to compile, and a
+    /// variant missing from this list fails
+    /// `call_kinds_match_the_trait_declarations`.
+    const ALL: [Call; 27] = [
+        Call::EmitJson,
+        Call::MicrophoneTransition,
+        Call::RefreshExpiredIdeContext,
+        Call::EmitSmartDestination,
+        Call::PublishRecordingReady,
+        Call::SpawnModelPreparation,
+        Call::ClaimPreviewHide,
+        Call::RunTranscriptionPipeline,
+        Call::SupervisorStart,
+        Call::SupervisorStartAfterPreview,
+        Call::SupervisorStop,
+        Call::SupervisorCancel,
+        Call::SupervisorTakeInterrupted,
+        Call::KeyboardIsAppDisabled,
+        Call::KeyboardListenerGeneration,
+        Call::KeyboardSetProcessing,
+        Call::KeyboardHotkeyReleaseTakeFor,
+        Call::KeyboardStopGestureTakeFor,
+        Call::AxCaptureDeliveryTargetSnapshot,
+        Call::SmartDestinationCapture,
+        Call::PerformanceRegisterProduction,
+        Call::PerformanceProductionContext,
+        Call::PerformanceProductionSampleCount,
+        Call::PerformanceBeginRegister,
+        Call::PerformanceBeginAbort,
+        Call::PerformanceSpawnBegin,
+        Call::PerformanceComplete,
+    ];
+
+    /// `(trait, method)` the variant stands for, and the log label. No
+    /// wildcard arm: the match is the exhaustiveness check.
+    fn spec(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Call::EmitJson => ("DictationHost", "emit_json", "emit"),
+            Call::MicrophoneTransition => {
+                ("DictationHost", "microphone_transition", "mic_transition")
+            }
+            Call::RefreshExpiredIdeContext => (
+                "DictationHost",
+                "refresh_expired_ide_context",
+                "refresh_expired_ide_context",
+            ),
+            Call::EmitSmartDestination => (
+                "DictationHost",
+                "emit_smart_destination",
+                "emit_smart_destination",
+            ),
+            Call::PublishRecordingReady => (
+                "DictationHost",
+                "publish_recording_ready_if_audio_ready",
+                "publish_recording_ready",
+            ),
+            Call::SpawnModelPreparation => (
+                "DictationHost",
+                "spawn_model_preparation",
+                "spawn_model_preparation",
+            ),
+            Call::ClaimPreviewHide => ("DictationHost", "claim_preview_hide", "claim_preview_hide"),
+            Call::RunTranscriptionPipeline => {
+                ("DictationHost", "run_transcription_pipeline", "pipeline")
+            }
+            Call::SupervisorStart => (
+                "SupervisorPort",
+                "start_dictation_recording",
+                "supervisor.start",
+            ),
+            Call::SupervisorStartAfterPreview => (
+                "SupervisorPort",
+                "start_dictation_recording_after_preview",
+                "supervisor.start_after_preview",
+            ),
+            Call::SupervisorStop => (
+                "SupervisorPort",
+                "stop_dictation_recording",
+                "supervisor.stop",
+            ),
+            Call::SupervisorCancel => (
+                "SupervisorPort",
+                "cancel_dictation_capture",
+                "supervisor.cancel",
+            ),
+            Call::SupervisorTakeInterrupted => (
+                "SupervisorPort",
+                "take_interrupted_dictation",
+                "supervisor.take_interrupted",
+            ),
+            Call::KeyboardIsAppDisabled => (
+                "KeyboardPort",
+                "is_app_disabled",
+                "keyboard.is_app_disabled",
+            ),
+            Call::KeyboardListenerGeneration => (
+                "KeyboardPort",
+                "listener_generation",
+                "keyboard.listener_generation",
+            ),
+            Call::KeyboardSetProcessing => {
+                ("KeyboardPort", "set_processing", "keyboard.set_processing")
+            }
+            Call::KeyboardHotkeyReleaseTakeFor => (
+                "KeyboardPort",
+                "hotkey_release_take_for",
+                "keyboard.hotkey_release_take_for",
+            ),
+            Call::KeyboardStopGestureTakeFor => (
+                "KeyboardPort",
+                "stop_gesture_take_for",
+                "keyboard.stop_gesture_take_for",
+            ),
+            Call::AxCaptureDeliveryTargetSnapshot => (
+                "TargetSnapshotPort",
+                "capture_delivery_target_snapshot",
+                "ax.capture_delivery_target_snapshot",
+            ),
+            Call::SmartDestinationCapture => (
+                "SmartDestinationPort",
+                "capture",
+                "smart_destination.capture",
+            ),
+            Call::PerformanceRegisterProduction => (
+                "PerformancePort",
+                "register_production",
+                "performance.register_production",
+            ),
+            Call::PerformanceProductionContext => (
+                "PerformancePort",
+                "production_context",
+                "performance.production_context",
+            ),
+            Call::PerformanceProductionSampleCount => (
+                "PerformancePort",
+                "production_sample_count",
+                "performance.production_sample_count",
+            ),
+            Call::PerformanceBeginRegister => (
+                "PerformancePort",
+                "begin_register",
+                "performance.begin_register",
+            ),
+            Call::PerformanceBeginAbort => {
+                ("PerformancePort", "begin_abort", "performance.begin_abort")
+            }
+            Call::PerformanceSpawnBegin => {
+                ("PerformancePort", "spawn_begin", "performance.spawn_begin")
+            }
+            Call::PerformanceComplete => ("PerformancePort", "complete", "performance.complete"),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        self.spec().2
+    }
+}
+
+/// Everything a scenario's host recorded: the rendered log and, in the same
+/// order, the kind of every entry.
+struct Recorded {
+    log: Vec<String>,
+    kinds: Vec<Call>,
+}
 
 #[derive(Default)]
 struct Script {
@@ -36,17 +242,25 @@ struct Script {
 }
 
 struct Shared {
-    log: StdMutex<Vec<String>>,
+    log: StdMutex<Vec<(Call, String)>>,
     state: Arc<State>,
     script: StdMutex<Script>,
 }
 
 impl Shared {
-    fn push(&self, entry: impl Into<String>) {
+    /// The entry is the call's label, then its arguments, so a call cannot be
+    /// logged under another call's kind.
+    fn push(&self, call: Call, detail: impl AsRef<str>) {
+        let detail = detail.as_ref();
+        let entry = if detail.is_empty() {
+            call.label().to_string()
+        } else {
+            format!("{} {detail}", call.label())
+        };
         self.log
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(entry.into());
+            .push((call, entry));
     }
 
     fn script(&self) -> std::sync::MutexGuard<'_, Script> {
@@ -75,18 +289,28 @@ impl FakeHost {
         self.shared.script()
     }
 
-    fn log(&self) -> Vec<String> {
-        self.shared
+    fn recorded(&self) -> Recorded {
+        let entries = self
+            .shared
             .log
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone()
+            .clone();
+        Recorded {
+            kinds: entries.iter().map(|(call, _)| *call).collect(),
+            log: entries.into_iter().map(|(_, entry)| entry).collect(),
+        }
+    }
+
+    fn log(&self) -> Vec<String> {
+        self.recorded().log
     }
 }
 
 impl DictationHost for FakeHost {
     fn emit_json(&self, event: &str, payload: serde_json::Value) -> Result<(), HostEmitError> {
-        self.shared.push(format!("emit {event} {payload}"));
+        self.shared
+            .push(Call::EmitJson, format!("{event} {payload}"));
         Ok(())
     }
 
@@ -114,12 +338,12 @@ impl DictationHost for FakeHost {
         &'a self,
         state: &'a State,
     ) -> HostFuture<'a, Result<tokio::sync::MutexGuard<'a, ()>, String>> {
-        self.shared.push("mic_transition");
+        self.shared.push(Call::MicrophoneTransition, "");
         Box::pin(async move { Ok(state.app_state.recording_transition.lock().await) })
     }
 
     fn refresh_expired_ide_context(&self, _app_state: &AppState, _bundle_id: Option<&str>) {
-        self.shared.push("refresh_expired_ide_context");
+        self.shared.push(Call::RefreshExpiredIdeContext, "");
     }
 
     fn emit_smart_destination(
@@ -130,7 +354,7 @@ impl DictationHost for FakeHost {
         _accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
     ) {
         self.shared
-            .push(format!("emit_smart_destination {recording_id}"));
+            .push(Call::EmitSmartDestination, format!("{recording_id}"));
         if let Some(hook) = self.shared.script().on_emit_smart_destination.as_ref() {
             hook(&self.shared.state);
         }
@@ -142,13 +366,13 @@ impl DictationHost for FakeHost {
         _context_ready_at: std::time::Instant,
     ) -> bool {
         self.shared
-            .push(format!("publish_recording_ready {recording_id}"));
+            .push(Call::PublishRecordingReady, format!("{recording_id}"));
         false
     }
 
     fn spawn_model_preparation(&self, _model_name: String, recording_id: u64) {
         self.shared
-            .push(format!("spawn_model_preparation {recording_id}"));
+            .push(Call::SpawnModelPreparation, format!("{recording_id}"));
     }
 
     fn claim_preview_hide(
@@ -156,7 +380,7 @@ impl DictationHost for FakeHost {
         recording_id: u64,
     ) -> Option<crate::commands::dictation_preview::PreviewHideOwner> {
         self.shared
-            .push(format!("claim_preview_hide {recording_id}"));
+            .push(Call::ClaimPreviewHide, format!("{recording_id}"));
         None
     }
 
@@ -169,8 +393,10 @@ impl DictationHost for FakeHost {
         _context: Arc<DictationContextSnapshot>,
         stop: PipelineStopContext,
     ) -> HostFuture<'a, Result<PipelineResult, String>> {
-        self.shared
-            .push(format!("pipeline {recording_id} samples={}", samples.len()));
+        self.shared.push(
+            Call::RunTranscriptionPipeline,
+            format!("{recording_id} samples={}", samples.len()),
+        );
         let error = self
             .shared
             .script()
@@ -193,9 +419,10 @@ impl SupervisorPort for Shared {
         _gesture: audio_lifecycle::gesture::StartGesture,
     ) -> Result<(), AudioStartError> {
         let status = self.state.app_state.dictation.lock_or_recover().status;
-        self.push(format!(
-            "supervisor.start {recording_id} {origin} status={status:?}"
-        ));
+        self.push(
+            Call::SupervisorStart,
+            format!("{recording_id} {origin} status={status:?}"),
+        );
         self.scripted_start_ack()
     }
 
@@ -206,9 +433,10 @@ impl SupervisorPort for Shared {
         origin: &str,
         _gesture: audio_lifecycle::gesture::StartGesture,
     ) -> Result<(), AudioStartError> {
-        self.push(format!(
-            "supervisor.start_after_preview {recording_id} {origin}"
-        ));
+        self.push(
+            Call::SupervisorStartAfterPreview,
+            format!("{recording_id} {origin}"),
+        );
         self.scripted_start_ack()
     }
 
@@ -218,7 +446,7 @@ impl SupervisorPort for Shared {
         trigger: audio_lifecycle::DictationStopTrigger,
         _released_at: Option<std::time::Instant>,
     ) -> Result<Vec<f32>, String> {
-        self.push(format!("supervisor.stop {recording_id} {trigger:?}"));
+        self.push(Call::SupervisorStop, format!("{recording_id} {trigger:?}"));
         self.script()
             .stop_result
             .take()
@@ -230,7 +458,7 @@ impl SupervisorPort for Shared {
         recording_id: u64,
         reason: AudioCancelReason,
     ) -> Result<bool, String> {
-        self.push(format!("supervisor.cancel {recording_id} {reason:?}"));
+        self.push(Call::SupervisorCancel, format!("{recording_id} {reason:?}"));
         self.script()
             .cancel_result
             .take()
@@ -241,7 +469,7 @@ impl SupervisorPort for Shared {
         &self,
         recording_id: u64,
     ) -> Option<audio_lifecycle::InterruptedCapture> {
-        self.push(format!("supervisor.take_interrupted {recording_id}"));
+        self.push(Call::SupervisorTakeInterrupted, format!("{recording_id}"));
         self.script().interrupted.take()
     }
 }
@@ -260,17 +488,17 @@ impl Shared {
 
 impl KeyboardPort for Shared {
     fn is_app_disabled(&self) -> bool {
-        self.push("keyboard.is_app_disabled");
+        self.push(Call::KeyboardIsAppDisabled, "");
         self.script().app_disabled
     }
 
     fn listener_generation(&self) -> u64 {
-        self.push("keyboard.listener_generation");
+        self.push(Call::KeyboardListenerGeneration, "");
         0
     }
 
     fn set_processing(&self, processing: bool) {
-        self.push(format!("keyboard.set_processing {processing}"));
+        self.push(Call::KeyboardSetProcessing, format!("{processing}"));
     }
 
     fn hotkey_release_take_for(
@@ -278,7 +506,10 @@ impl KeyboardPort for Shared {
         recording_id: u64,
         _stop_entered_at: std::time::Instant,
     ) -> Option<crate::hotkey_release::HotkeyRelease> {
-        self.push(format!("keyboard.hotkey_release_take_for {recording_id}"));
+        self.push(
+            Call::KeyboardHotkeyReleaseTakeFor,
+            format!("{recording_id}"),
+        );
         None
     }
 
@@ -287,14 +518,14 @@ impl KeyboardPort for Shared {
         recording_id: u64,
         _entered: std::time::Instant,
     ) -> Option<crate::stop_gesture::StopStamp> {
-        self.push(format!("keyboard.stop_gesture_take_for {recording_id}"));
+        self.push(Call::KeyboardStopGestureTakeFor, format!("{recording_id}"));
         None
     }
 }
 
 impl TargetSnapshotPort for Shared {
     fn capture_delivery_target_snapshot(&self) -> crate::frontmost::DeliveryTargetSnapshot {
-        self.push("ax.capture_delivery_target_snapshot");
+        self.push(Call::AxCaptureDeliveryTargetSnapshot, "");
         crate::frontmost::DeliveryTargetSnapshot::Incomplete
     }
 }
@@ -305,7 +536,7 @@ impl SmartDestinationPort for Shared {
         _expected: &'a crate::frontmost::DeliveryTargetSnapshot,
         enabled: bool,
     ) -> HostFuture<'a, crate::smart_destination::Snapshot> {
-        self.push(format!("smart_destination.capture enabled={enabled}"));
+        self.push(Call::SmartDestinationCapture, format!("enabled={enabled}"));
         let snapshot = if enabled {
             crate::smart_destination::Snapshot::Unavailable
         } else {
@@ -322,27 +553,32 @@ impl PerformancePort for Shared {
         selection: crate::performance_metrics::production::MicrophoneSelectionV1,
         _kind: Option<crate::performance_metrics::production::MicrophoneKindV1>,
     ) {
-        self.push(format!(
-            "performance.register_production {recording_id} {selection:?}"
-        ));
+        self.push(
+            Call::PerformanceRegisterProduction,
+            format!("{recording_id} {selection:?}"),
+        );
     }
 
     fn production_context(&self, recording_id: u64, _context: &DictationContextSnapshot) {
-        self.push(format!("performance.production_context {recording_id}"));
+        self.push(
+            Call::PerformanceProductionContext,
+            format!("{recording_id}"),
+        );
     }
 
     fn production_sample_count(&self, recording_id: u64, count: usize) {
-        self.push(format!(
-            "performance.production_sample_count {recording_id} {count}"
-        ));
+        self.push(
+            Call::PerformanceProductionSampleCount,
+            format!("{recording_id} {count}"),
+        );
     }
 
     fn begin_register(&self, recording_id: u64) {
-        self.push(format!("performance.begin_register {recording_id}"));
+        self.push(Call::PerformanceBeginRegister, format!("{recording_id}"));
     }
 
     fn begin_abort(&self, recording_id: u64) {
-        self.push(format!("performance.begin_abort {recording_id}"));
+        self.push(Call::PerformanceBeginAbort, format!("{recording_id}"));
     }
 
     fn spawn_begin(
@@ -351,7 +587,7 @@ impl PerformancePort for Shared {
         _runtimes: Vec<RuntimeIdentityV1>,
         _started_at_ms: i64,
     ) {
-        self.push(format!("performance.spawn_begin {recording_id}"));
+        self.push(Call::PerformanceSpawnBegin, format!("{recording_id}"));
     }
 
     fn complete(
@@ -362,10 +598,13 @@ impl PerformancePort for Shared {
         _input: Option<ContentFreeInputSummaryV1>,
         _runtimes: Option<Vec<RuntimeIdentityV1>>,
     ) {
-        self.push(format!(
-            "performance.complete {recording_id} {}",
-            serde_json::to_string(&outcome).expect("outcome serializes")
-        ));
+        self.push(
+            Call::PerformanceComplete,
+            format!(
+                "{recording_id} {}",
+                serde_json::to_string(&outcome).expect("outcome serializes")
+            ),
+        );
     }
 }
 
@@ -434,95 +673,134 @@ fn strings(entries: &[&str]) -> Vec<String> {
 
 const STATUS_EVENT: &str = "recording-status-changed";
 
-// ------------------------------------------------------------------ start
-
-/// The start reaches the supervisor (CS) with Starting committed, gets the
-/// scripted ack, and finishes the context install: every start-side port, in
-/// the order of `start_native_recording_inner`.
-fn scenario_start_acknowledged() -> (Vec<String>, serde_json::Value, DictationStatus) {
-    let (state, host) = fixture(DictationStatus::Idle, 0);
-    let reply = start(&host, &state).expect("start replies");
-    (host.log(), reply, status(&state))
+fn status_event(status: &str) -> String {
+    format!("emit {STATUS_EVENT} \"{status}\"")
 }
 
-#[test]
-fn start_reaches_the_supervisor_then_installs_context_in_production_order() {
-    let (log, reply, status) = scenario_start_acknowledged();
+/// A run of one command against a fresh `FakeHost`, and the complete port-call
+/// trace production must produce for it. The run asserts the reply and final
+/// status; `check` and the coverage test compare the trace.
+struct Scenario {
+    name: &'static str,
+    run: fn() -> Recorded,
+    expected: fn() -> Vec<String>,
+}
+
+fn check(scenario: &Scenario) {
+    let recorded = (scenario.run)();
     assert_eq!(
-        log,
-        strings(&[
-            "mic_transition",
-            "keyboard.is_app_disabled",
-            "ax.capture_delivery_target_snapshot",
-            "emit dictation-generation-started {\"recordingId\":1}",
-            &format!("emit {STATUS_EVENT} \"starting\""),
-            "performance.register_production 1 SystemDefault",
-            "performance.begin_register 1",
-            "supervisor.start 1 toggle status=Starting",
-            "smart_destination.capture enabled=false",
-            "refresh_expired_ide_context",
-            "performance.production_context 1",
-            "publish_recording_ready 1",
-            "spawn_model_preparation 1",
-            "performance.spawn_begin 1",
-        ])
+        recorded.log,
+        (scenario.expected)(),
+        "scenario `{}` left production order",
+        scenario.name
     );
+    assert_eq!(recorded.kinds.len(), recorded.log.len());
+}
+
+// Line numbers below are in `recording.rs` (`start_native_recording_inner`
+// ~5486, `stop_native_recording_inner` ~5898, `cancel_native_recording_inner`
+// ~6394): the program order of the port calls in those bodies.
+
+// ------------------------------------------------------------------ start
+
+/// Start up to and including the begin reservation, as the accepted start
+/// reaches it: transition (5503), app-disabled read (5507), the listener
+/// generation only for a stamped hold (5593), the AX sample (5617), the
+/// generation-started and `starting` emits (5638, 5643), the production
+/// reservation (5648) and begin (5659).
+fn start_through_begin_register(hold: bool) -> Vec<String> {
+    let mut trace = strings(&["mic_transition", "keyboard.is_app_disabled"]);
+    if hold {
+        trace.push("keyboard.listener_generation".to_string());
+    }
+    trace.extend(strings(&[
+        "ax.capture_delivery_target_snapshot",
+        "emit dictation-generation-started {\"recordingId\":1}",
+    ]));
+    trace.push(status_event("starting"));
+    trace.extend(strings(&[
+        "performance.register_production 1 SystemDefault",
+        "performance.begin_register 1",
+    ]));
+    trace
+}
+
+/// The supervisor entry (5663-5677) takes the scripted ack.
+fn scenario_start_acknowledged() -> Recorded {
+    let (state, host) = fixture(DictationStatus::Idle, 0);
+    let reply = start(&host, &state).expect("start replies");
     assert_eq!(
         reply,
         serde_json::json!({
             "type": "recording_starting", "state": "starting", "recordingId": 1
         })
     );
-    assert_eq!(status, DictationStatus::Starting);
+    assert_eq!(status(&state), DictationStatus::Starting);
+    host.recorded()
 }
 
-#[test]
-fn start_refused_by_the_supervisor_aborts_the_begin_and_restores_idle() {
+/// After the supervisor (5675): the smart capture (5715), the IDE refresh
+/// (5739), no destination emit while Smart Destination is off (5750), the
+/// context (5753), then ready (5846), model preparation (5847) and the
+/// diagnostics begin (5852).
+fn expected_start_acknowledged() -> Vec<String> {
+    let mut trace = start_through_begin_register(false);
+    trace.extend(strings(&[
+        "supervisor.start 1 toggle status=Starting",
+        "smart_destination.capture enabled=false",
+        "refresh_expired_ide_context",
+        "performance.production_context 1",
+        "publish_recording_ready 1",
+        "spawn_model_preparation 1",
+        "performance.spawn_begin 1",
+    ]));
+    trace
+}
+
+fn scenario_start_refused() -> Recorded {
     let (state, host) = fixture(DictationStatus::Idle, 0);
     host.script().start_ack = Some(AudioStartError::AlreadyStarting);
     let reply = start(&host, &state).expect("start replies");
-    assert_eq!(
-        host.log(),
-        strings(&[
-            "mic_transition",
-            "keyboard.is_app_disabled",
-            "ax.capture_delivery_target_snapshot",
-            "emit dictation-generation-started {\"recordingId\":1}",
-            &format!("emit {STATUS_EVENT} \"starting\""),
-            "performance.register_production 1 SystemDefault",
-            "performance.begin_register 1",
-            "supervisor.start 1 toggle status=Starting",
-            "performance.begin_abort 1",
-            &format!("emit {STATUS_EVENT} \"idle\""),
-        ])
-    );
     assert_eq!(
         reply,
         serde_json::json!({ "type": "already_starting", "state": "idle" })
     );
     assert_eq!(status(&state), DictationStatus::Idle);
+    host.recorded()
 }
 
-#[test]
-fn start_while_the_app_is_disabled_stops_after_the_transition_and_keyboard_read() {
+/// A refused start aborts the begin (5679) and emits `idle` (5686) before any
+/// context work.
+fn expected_start_refused() -> Vec<String> {
+    let mut trace = start_through_begin_register(false);
+    trace.extend(strings(&[
+        "supervisor.start 1 toggle status=Starting",
+        "performance.begin_abort 1",
+    ]));
+    trace.push(status_event("idle"));
+    trace
+}
+
+fn scenario_start_app_disabled() -> Recorded {
     let (state, host) = fixture(DictationStatus::Idle, 0);
     host.script().app_disabled = true;
     let reply = start(&host, &state).expect("start replies");
     assert_eq!(
-        host.log(),
-        strings(&["mic_transition", "keyboard.is_app_disabled"])
-    );
-    assert_eq!(
         reply,
         serde_json::json!({ "type": "app_disabled", "state": "idle" })
     );
+    host.recorded()
+}
+
+/// Returns right after the app-disabled read (5507-5510).
+fn expected_start_app_disabled() -> Vec<String> {
+    strings(&["mic_transition", "keyboard.is_app_disabled"])
 }
 
 /// A kept Settings mic test sends the start through the supervisor's
-/// after-preview entry on a blocking thread. The join is the causal barrier:
-/// everything after it is ordered behind the supervisor call.
-#[test]
-fn start_with_a_kept_preview_uses_the_after_preview_supervisor_entry() {
+/// after-preview entry on a blocking thread (5663-5671). The join is the causal
+/// barrier: everything after it is ordered behind the supervisor call.
+fn scenario_start_kept_preview() -> Recorded {
     let (state, host) = fixture(DictationStatus::Idle, 0);
     state
         .app_state
@@ -532,125 +810,135 @@ fn start_with_a_kept_preview_uses_the_after_preview_supervisor_entry() {
     host.script().start_ack = Some(AudioStartError::AudioRecovering);
     let reply = start(&host, &state).expect("start replies");
     assert_eq!(
-        host.log(),
-        strings(&[
-            "mic_transition",
-            "keyboard.is_app_disabled",
-            "ax.capture_delivery_target_snapshot",
-            "emit dictation-generation-started {\"recordingId\":1}",
-            &format!("emit {STATUS_EVENT} \"starting\""),
-            "performance.register_production 1 SystemDefault",
-            "performance.begin_register 1",
-            "supervisor.start_after_preview 1 toggle",
-            "performance.begin_abort 1",
-            &format!("emit {STATUS_EVENT} \"idle\""),
-        ])
-    );
-    assert_eq!(
         reply,
         serde_json::json!({ "type": "audio_recovering", "state": "idle" })
     );
+    host.recorded()
+}
+
+/// The after-preview entry replaces `supervisor.start` (5663-5671); the refusal
+/// then aborts (5679) and emits `idle` (5686).
+fn expected_start_kept_preview() -> Vec<String> {
+    let mut trace = start_through_begin_register(false);
+    trace.push("supervisor.start_after_preview 1 toggle".to_string());
+    trace.push("performance.begin_abort 1".to_string());
+    trace.push(status_event("idle"));
+    trace
+}
+
+/// A second kept-preview scenario with a different refusal, so the
+/// after-preview entry and the abort are ordered by two traces.
+fn scenario_start_kept_preview_again() -> Recorded {
+    let (state, host) = fixture(DictationStatus::Idle, 0);
+    state
+        .app_state
+        .microphone_preview
+        .claim(51)
+        .expect("a mic test is kept");
+    host.script().start_ack = Some(AudioStartError::AlreadyStarting);
+    let reply = start(&host, &state).expect("start replies");
+    assert_eq!(
+        reply,
+        serde_json::json!({ "type": "already_starting", "state": "idle" })
+    );
+    host.recorded()
+}
+
+/// Same path as `expected_start_kept_preview` (5663-5686).
+fn expected_start_kept_preview_again() -> Vec<String> {
+    expected_start_kept_preview()
 }
 
 /// With Smart Destination on, the capture is asked for with `enabled=true`
-/// and the selection is emitted before the context is recorded.
-#[test]
-fn start_with_smart_destination_captures_and_emits_the_selection() {
+/// (5715) and the selection is emitted (5751) after the IDE refresh (5739) and
+/// before the context is recorded (5753).
+fn scenario_start_smart_destination() -> Recorded {
     let (state, host) = fixture(DictationStatus::Idle, 0);
     enable_smart_destination(&state);
-    start(&host, &state).expect("start replies");
-    let log = host.log();
-    let tail: Vec<&str> = log
-        .iter()
-        .skip_while(|entry| !entry.starts_with("supervisor.start "))
-        .map(String::as_str)
-        .collect();
-    assert_eq!(
-        tail,
-        vec![
-            "supervisor.start 1 toggle status=Starting",
-            "smart_destination.capture enabled=true",
-            "refresh_expired_ide_context",
-            "emit_smart_destination 1",
-            "performance.production_context 1",
-            "publish_recording_ready 1",
-            "spawn_model_preparation 1",
-            "performance.spawn_begin 1",
-        ]
-    );
+    let reply = start(&host, &state).expect("start replies");
+    assert_eq!(reply["type"], "recording_starting");
+    host.recorded()
 }
 
-/// The supervisor's own `Idle` can land while the context resolves. The start
-/// then flushes the reserved diagnostics instead of publishing Recording, so
-/// the model is never prepared and no ready is published.
-#[test]
-fn start_whose_capture_ended_during_context_flushes_diagnostics_only() {
+fn expected_start_smart_destination() -> Vec<String> {
+    let mut trace = start_through_begin_register(false);
+    trace.extend(strings(&[
+        "supervisor.start 1 toggle status=Starting",
+        "smart_destination.capture enabled=true",
+        "refresh_expired_ide_context",
+        "emit_smart_destination 1",
+        "performance.production_context 1",
+        "publish_recording_ready 1",
+        "spawn_model_preparation 1",
+        "performance.spawn_begin 1",
+    ]));
+    trace
+}
+
+/// The supervisor's own `Idle` can land while the context resolves (the hook
+/// runs inside the destination emit, 5751). The start then flushes the reserved
+/// diagnostics (5785) instead of publishing Recording, so the model is never
+/// prepared and no ready is published.
+fn scenario_start_capture_ended_during_context() -> Recorded {
     let (state, host) = fixture(DictationStatus::Idle, 0);
     enable_smart_destination(&state);
     host.script().on_emit_smart_destination = Some(Box::new(|state| {
         state.app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
     }));
     let reply = start(&host, &state).expect("start replies");
-    let log = host.log();
-    let tail: Vec<&str> = log
-        .iter()
-        .skip_while(|entry| !entry.starts_with("emit_smart_destination"))
-        .map(String::as_str)
-        .collect();
-    assert_eq!(
-        tail,
-        vec![
-            "emit_smart_destination 1",
-            "performance.production_context 1",
-            "performance.spawn_begin 1",
-        ]
-    );
     assert_eq!(
         reply,
         serde_json::json!({ "type": "audio_recovering", "state": "idle" })
     );
+    host.recorded()
 }
 
-/// A newer generation can take over while the context resolves: the start
-/// aborts its begin and publishes nothing further.
-#[test]
-fn start_superseded_during_context_aborts_the_begin() {
+fn expected_start_capture_ended_during_context() -> Vec<String> {
+    let mut trace = start_through_begin_register(false);
+    trace.extend(strings(&[
+        "supervisor.start 1 toggle status=Starting",
+        "smart_destination.capture enabled=true",
+        "refresh_expired_ide_context",
+        "emit_smart_destination 1",
+        "performance.production_context 1",
+        "performance.spawn_begin 1",
+    ]));
+    trace
+}
+
+/// A newer generation can take over while the context resolves (the hook runs
+/// inside the supervisor start, 5675): the start aborts its begin (5797) and
+/// publishes nothing further.
+fn scenario_start_superseded_during_context() -> Recorded {
     let (state, host) = fixture(DictationStatus::Idle, 0);
     host.script().on_supervisor_start = Some(Box::new(|state| {
         state.app_state.recording_id.store(9, Ordering::SeqCst);
     }));
     let reply = start(&host, &state).expect("start replies");
-    let log = host.log();
-    let tail: Vec<&str> = log
-        .iter()
-        .skip_while(|entry| !entry.starts_with("supervisor.start "))
-        .map(String::as_str)
-        .collect();
-    assert_eq!(
-        tail,
-        vec![
-            "supervisor.start 1 toggle status=Starting",
-            "smart_destination.capture enabled=false",
-            "refresh_expired_ide_context",
-            "performance.production_context 1",
-            "performance.begin_abort 1",
-        ]
-    );
     assert_eq!(
         reply,
         serde_json::json!({ "type": "audio_recovering", "state": "starting" })
     );
+    host.recorded()
 }
 
-/// A stamped hold gesture reads the keyboard listener generation while the
-/// start is accepted, before the delivery target is sampled.
-#[test]
-fn start_from_a_stamped_hold_reads_the_listener_generation_before_the_ax_sample() {
-    let (state, host) = fixture(DictationStatus::Idle, 0);
+fn expected_start_superseded_during_context() -> Vec<String> {
+    let mut trace = start_through_begin_register(false);
+    trace.extend(strings(&[
+        "supervisor.start 1 toggle status=Starting",
+        "smart_destination.capture enabled=false",
+        "refresh_expired_ide_context",
+        "performance.production_context 1",
+        "performance.begin_abort 1",
+    ]));
+    trace
+}
+
+fn start_stamped_hold(host: &FakeHost, state: &State) -> serde_json::Value {
     let token = audio_lifecycle::gesture::emit(audio_lifecycle::gesture::Candidate::new(), true);
     let reply = run(start_native_recording_inner(
-        &host,
-        &state,
+        host,
+        state,
         None,
         None,
         Some("hold".to_string()),
@@ -658,47 +946,84 @@ fn start_from_a_stamped_hold_reads_the_listener_generation_before_the_ax_sample(
     ))
     .expect("start replies");
     audio_lifecycle::gesture::clear_pending();
-    let log = host.log();
-    assert_eq!(
-        &log[..4],
-        &strings(&[
-            "mic_transition",
-            "keyboard.is_app_disabled",
-            "keyboard.listener_generation",
-            "ax.capture_delivery_target_snapshot",
-        ])[..]
-    );
-    assert!(log.contains(&"supervisor.start 1 hold status=Starting".to_string()));
+    reply
+}
+
+/// A stamped hold gesture reads the keyboard listener generation (5593) while
+/// the start is accepted, before the delivery target is sampled (5617).
+fn scenario_start_stamped_hold() -> Recorded {
+    let (state, host) = fixture(DictationStatus::Idle, 0);
+    let reply = start_stamped_hold(&host, &state);
     assert_eq!(reply["type"], "recording_starting");
+    host.recorded()
+}
+
+fn expected_start_stamped_hold() -> Vec<String> {
+    let mut trace = start_through_begin_register(true);
+    trace.extend(strings(&[
+        "supervisor.start 1 hold status=Starting",
+        "smart_destination.capture enabled=false",
+        "refresh_expired_ide_context",
+        "performance.production_context 1",
+        "publish_recording_ready 1",
+        "spawn_model_preparation 1",
+        "performance.spawn_begin 1",
+    ]));
+    trace
+}
+
+/// The same stamped hold with a refused start: the listener generation is read
+/// before the AX sample (5593 before 5617) and the abort follows the
+/// supervisor (5679, 5686).
+fn scenario_start_stamped_hold_refused() -> Recorded {
+    let (state, host) = fixture(DictationStatus::Idle, 0);
+    host.script().start_ack = Some(AudioStartError::AlreadyStarting);
+    let reply = start_stamped_hold(&host, &state);
+    assert_eq!(
+        reply,
+        serde_json::json!({ "type": "already_starting", "state": "idle" })
+    );
+    host.recorded()
+}
+
+fn expected_start_stamped_hold_refused() -> Vec<String> {
+    let mut trace = start_through_begin_register(true);
+    trace.push("supervisor.start 1 hold status=Starting".to_string());
+    trace.push("performance.begin_abort 1".to_string());
+    trace.push(status_event("idle"));
+    trace
 }
 
 // ------------------------------------------------------------------- stop
 
-fn scenario_stop_missing_context() -> Vec<String> {
+fn scenario_stop_missing_context() -> Recorded {
     let (state, host) = fixture(DictationStatus::Recording, 7);
     let error = stop(&host, &state, None).expect_err("no context installed");
     assert_eq!(error, "Missing dictation context for recording 7");
     assert_eq!(status(&state), DictationStatus::Idle);
-    host.log()
+    host.recorded()
 }
 
-#[test]
-fn stop_without_a_context_claims_the_hide_then_unwinds_in_order() {
-    assert_eq!(
-        scenario_stop_missing_context(),
-        strings(&[
-            "claim_preview_hide 7",
-            "ax.capture_delivery_target_snapshot",
-            "keyboard.hotkey_release_take_for 7",
-            "keyboard.stop_gesture_take_for 7",
-            "keyboard.set_processing false",
-            &format!("emit {STATUS_EVENT} \"idle\""),
-            "performance.complete 7 {\"status\":\"failed\",\"stage\":\"captureFinalization\",\"errorCode\":\"internalEarlyExit\"}",
-        ])
+/// Recording: the preview hide (5971), the stop AX sample (5980), the release
+/// and stop-gesture claims (5987, 5990), then the missing-context unwind
+/// (6034, 6035, 6037).
+fn expected_stop_missing_context() -> Vec<String> {
+    let mut trace = strings(&[
+        "claim_preview_hide 7",
+        "ax.capture_delivery_target_snapshot",
+        "keyboard.hotkey_release_take_for 7",
+        "keyboard.stop_gesture_take_for 7",
+        "keyboard.set_processing false",
+    ]);
+    trace.push(status_event("idle"));
+    trace.push(
+        "performance.complete 7 {\"status\":\"failed\",\"stage\":\"captureFinalization\",\"errorCode\":\"internalEarlyExit\"}"
+            .to_string(),
     );
+    trace
 }
 
-fn scenario_stop_empty_audio() -> Vec<String> {
+fn scenario_stop_empty_audio() -> Recorded {
     let (state, host) = fixture(DictationStatus::Recording, 7);
     install_context(&state, 7);
     host.script().stop_result = Some(Ok(Vec::new()));
@@ -707,28 +1032,29 @@ fn scenario_stop_empty_audio() -> Vec<String> {
         reply,
         serde_json::json!({ "type": "transcription", "text": "", "state": "idle" })
     );
-    host.log()
+    host.recorded()
 }
 
-#[test]
-fn stop_with_no_audio_stops_the_supervisor_then_returns_to_idle() {
-    assert_eq!(
-        scenario_stop_empty_audio(),
-        strings(&[
-            "claim_preview_hide 7",
-            "ax.capture_delivery_target_snapshot",
-            "keyboard.hotkey_release_take_for 7",
-            "keyboard.stop_gesture_take_for 7",
-            "keyboard.set_processing true",
-            &format!("emit {STATUS_EVENT} \"processing\""),
-            "supervisor.stop 7 Other",
-            "performance.production_sample_count 7 0",
-            &format!("emit {STATUS_EVENT} \"idle\""),
-        ])
-    );
+/// Claims (5971-5990), processing (6050, 6052), the supervisor stop (6076), the
+/// sample count (6100), then the no-audio `idle` (6142).
+fn expected_stop_empty_audio() -> Vec<String> {
+    let mut trace = strings(&[
+        "claim_preview_hide 7",
+        "ax.capture_delivery_target_snapshot",
+        "keyboard.hotkey_release_take_for 7",
+        "keyboard.stop_gesture_take_for 7",
+        "keyboard.set_processing true",
+    ]);
+    trace.push(status_event("processing"));
+    trace.extend(strings(&[
+        "supervisor.stop 7 Other",
+        "performance.production_sample_count 7 0",
+    ]));
+    trace.push(status_event("idle"));
+    trace
 }
 
-fn scenario_stop_pipeline_error() -> Vec<String> {
+fn scenario_stop_pipeline_error() -> Recorded {
     let (state, host) = fixture(DictationStatus::Recording, 7);
     install_context(&state, 7);
     {
@@ -738,30 +1064,31 @@ fn scenario_stop_pipeline_error() -> Vec<String> {
     }
     let error = stop(&host, &state, None).expect_err("the pipeline fails");
     assert_eq!(error, "scripted pipeline failure");
-    host.log()
+    host.recorded()
 }
 
-#[test]
-fn stop_hands_enough_audio_to_the_pipeline_and_resets_after_it_returns() {
-    assert_eq!(
-        scenario_stop_pipeline_error(),
-        strings(&[
-            "claim_preview_hide 7",
-            "ax.capture_delivery_target_snapshot",
-            "keyboard.hotkey_release_take_for 7",
-            "keyboard.stop_gesture_take_for 7",
-            "keyboard.set_processing true",
-            &format!("emit {STATUS_EVENT} \"processing\""),
-            "supervisor.stop 7 Other",
-            "performance.production_sample_count 7 5000",
-            "pipeline 7 samples=5000",
-            "keyboard.set_processing false",
-            &format!("emit {STATUS_EVENT} \"idle\""),
-        ])
-    );
+/// As the empty-audio stop up to the sample count (6100), then the pipeline
+/// (6198) and the reset after it returns (6218, 6219).
+fn expected_stop_pipeline_error() -> Vec<String> {
+    let mut trace = strings(&[
+        "claim_preview_hide 7",
+        "ax.capture_delivery_target_snapshot",
+        "keyboard.hotkey_release_take_for 7",
+        "keyboard.stop_gesture_take_for 7",
+        "keyboard.set_processing true",
+    ]);
+    trace.push(status_event("processing"));
+    trace.extend(strings(&[
+        "supervisor.stop 7 Other",
+        "performance.production_sample_count 7 5000",
+        "pipeline 7 samples=5000",
+        "keyboard.set_processing false",
+    ]));
+    trace.push(status_event("idle"));
+    trace
 }
 
-fn scenario_stop_stale_expectation() -> Vec<String> {
+fn scenario_stop_stale_expectation() -> Recorded {
     let (state, host) = fixture(DictationStatus::Recording, 7);
     let reply = stop(&host, &state, Some(6)).expect("stop replies");
     assert_eq!(
@@ -769,18 +1096,15 @@ fn scenario_stop_stale_expectation() -> Vec<String> {
         serde_json::json!({ "type": "recording_superseded", "state": "idle" })
     );
     assert_eq!(status(&state), DictationStatus::Recording);
-    host.log()
+    host.recorded()
 }
 
-#[test]
-fn stop_for_a_stale_generation_drops_its_interrupted_capture_and_nothing_else() {
-    assert_eq!(
-        scenario_stop_stale_expectation(),
-        strings(&["supervisor.take_interrupted 6"])
-    );
+/// Only the stale generation's interrupted capture is dropped (5910-5912).
+fn expected_stop_stale_expectation() -> Vec<String> {
+    strings(&["supervisor.take_interrupted 6"])
 }
 
-fn scenario_stop_recovering_with_interrupted_capture() -> Vec<String> {
+fn scenario_stop_recovering_with_interrupted_capture() -> Recorded {
     let (state, host) = fixture(DictationStatus::Recovering, 7);
     install_context(&state, 7);
     {
@@ -793,30 +1117,33 @@ fn scenario_stop_recovering_with_interrupted_capture() -> Vec<String> {
         script.pipeline_error = Some("scripted pipeline failure".to_string());
     }
     stop(&host, &state, None).expect_err("the pipeline fails");
-    host.log()
+    host.recorded()
 }
 
-#[test]
-fn stop_of_an_interrupted_capture_skips_the_supervisor_stop() {
-    assert_eq!(
-        scenario_stop_recovering_with_interrupted_capture(),
-        strings(&[
-            "supervisor.take_interrupted 7",
-            "claim_preview_hide 7",
-            "ax.capture_delivery_target_snapshot",
-            "keyboard.hotkey_release_take_for 7",
-            "keyboard.stop_gesture_take_for 7",
-            "keyboard.set_processing true",
-            &format!("emit {STATUS_EVENT} \"processing\""),
-            "performance.production_sample_count 7 6000",
-            "pipeline 7 samples=6000",
-            "keyboard.set_processing false",
-            &format!("emit {STATUS_EVENT} \"idle\""),
-        ])
-    );
+/// Recovering takes the interrupted capture first (5949), claims the hide
+/// (5950) and samples AX (5959), then the claims (5987, 5990), processing
+/// (6050, 6052), the sample count (6100) and the pipeline (6198, 6218, 6219);
+/// the supervisor stop (6076) is skipped.
+fn expected_stop_recovering_with_interrupted_capture() -> Vec<String> {
+    let mut trace = strings(&[
+        "supervisor.take_interrupted 7",
+        "claim_preview_hide 7",
+        "ax.capture_delivery_target_snapshot",
+        "keyboard.hotkey_release_take_for 7",
+        "keyboard.stop_gesture_take_for 7",
+        "keyboard.set_processing true",
+    ]);
+    trace.push(status_event("processing"));
+    trace.extend(strings(&[
+        "performance.production_sample_count 7 6000",
+        "pipeline 7 samples=6000",
+        "keyboard.set_processing false",
+    ]));
+    trace.push(status_event("idle"));
+    trace
 }
 
-fn scenario_stop_during_starting() -> Vec<String> {
+fn scenario_stop_during_starting() -> Recorded {
     let (state, host) = fixture(DictationStatus::Starting, 7);
     host.script().cancel_result = Some(Ok(true));
     let reply = stop(&host, &state, None).expect("stop replies");
@@ -824,73 +1151,64 @@ fn scenario_stop_during_starting() -> Vec<String> {
         reply,
         serde_json::json!({ "type": "recording_cancelled", "state": "recovering" })
     );
-    host.log()
+    host.recorded()
 }
 
-#[test]
-fn stop_during_starting_cancels_the_exact_owner_after_claiming_the_release() {
-    assert_eq!(
-        scenario_stop_during_starting(),
-        strings(&[
-            "keyboard.hotkey_release_take_for 7",
-            "keyboard.stop_gesture_take_for 7",
-            "supervisor.cancel 7 User",
-        ])
-    );
+/// Starting claims the release (5987, 5990) and cancels the exact owner (6004);
+/// it samples no AX and claims no hide.
+fn expected_stop_during_starting() -> Vec<String> {
+    strings(&[
+        "keyboard.hotkey_release_take_for 7",
+        "keyboard.stop_gesture_take_for 7",
+        "supervisor.cancel 7 User",
+    ])
 }
 
 // ----------------------------------------------------------------- cancel
 
-fn scenario_cancel_starting() -> Vec<String> {
+fn scenario_cancel_starting() -> Recorded {
     let (state, host) = fixture(DictationStatus::Starting, 7);
     host.script().cancel_result = Some(Ok(true));
     cancel(&host, &state, None).expect("cancel succeeds");
-    host.log()
+    host.recorded()
 }
 
-#[test]
-fn cancel_while_starting_cancels_the_capture_and_nothing_else() {
-    assert_eq!(
-        scenario_cancel_starting(),
-        strings(&["supervisor.cancel 7 User"])
-    );
+/// Starting or Recording cancels only the capture (6424).
+fn expected_cancel_starting() -> Vec<String> {
+    strings(&["supervisor.cancel 7 User"])
 }
 
-fn scenario_cancel_failure_reports_a_terminal() -> Vec<String> {
+fn scenario_cancel_refused() -> Recorded {
     let (state, host) = fixture(DictationStatus::Recording, 7);
     host.script().cancel_result = Some(Err("supervisor gone".to_string()));
     let error = cancel(&host, &state, None).expect_err("cancel fails");
     assert_eq!(error, "supervisor gone");
-    host.log()
+    host.recorded()
 }
 
-#[test]
-fn cancel_that_the_supervisor_refuses_returns_the_error() {
-    assert_eq!(
-        scenario_cancel_failure_reports_a_terminal(),
-        strings(&["supervisor.cancel 7 User"])
-    );
+/// The refusal returns the error right after the cancel (6424-6436).
+fn expected_cancel_refused() -> Vec<String> {
+    strings(&["supervisor.cancel 7 User"])
 }
 
-fn scenario_cancel_processing() -> Vec<String> {
+fn scenario_cancel_processing() -> Recorded {
     let (state, host) = fixture(DictationStatus::Processing, 7);
     cancel(&host, &state, None).expect("cancel succeeds");
     assert_eq!(status(&state), DictationStatus::Idle);
     assert!(state.app_state.is_cancelled(7));
-    host.log()
+    host.recorded()
 }
 
-#[test]
-fn cancel_while_processing_resets_the_ui_then_completes_the_ledger() {
-    assert_eq!(
-        scenario_cancel_processing(),
-        strings(&[
-            "keyboard.set_processing false",
-            &format!("emit {STATUS_EVENT} \"idle\""),
-            "emit recording-cancelled {\"recordingId\":7}",
-            "performance.complete 7 {\"status\":\"cancelled\",\"stage\":\"inferenceDecode\"}",
-        ])
-    );
+/// Processing resets the UI (6459, 6460, 6461) and only then completes the
+/// ledger (6471).
+fn expected_cancel_processing() -> Vec<String> {
+    let mut trace = strings(&["keyboard.set_processing false"]);
+    trace.push(status_event("idle"));
+    trace.extend(strings(&[
+        "emit recording-cancelled {\"recordingId\":7}",
+        "performance.complete 7 {\"status\":\"cancelled\",\"stage\":\"inferenceDecode\"}",
+    ]));
+    trace
 }
 
 #[test]
@@ -903,145 +1221,196 @@ fn cancel_for_another_generation_or_while_idle_reaches_no_port() {
     assert_eq!(idle_host.log(), Vec::<String>::new());
 }
 
+// -------------------------------------------------------------- scenarios
+
+fn scenarios() -> Vec<Scenario> {
+    vec![
+        Scenario {
+            name: "start_acknowledged",
+            run: scenario_start_acknowledged,
+            expected: expected_start_acknowledged,
+        },
+        Scenario {
+            name: "start_refused",
+            run: scenario_start_refused,
+            expected: expected_start_refused,
+        },
+        Scenario {
+            name: "start_app_disabled",
+            run: scenario_start_app_disabled,
+            expected: expected_start_app_disabled,
+        },
+        Scenario {
+            name: "start_kept_preview",
+            run: scenario_start_kept_preview,
+            expected: expected_start_kept_preview,
+        },
+        Scenario {
+            name: "start_kept_preview_again",
+            run: scenario_start_kept_preview_again,
+            expected: expected_start_kept_preview_again,
+        },
+        Scenario {
+            name: "start_smart_destination",
+            run: scenario_start_smart_destination,
+            expected: expected_start_smart_destination,
+        },
+        Scenario {
+            name: "start_capture_ended_during_context",
+            run: scenario_start_capture_ended_during_context,
+            expected: expected_start_capture_ended_during_context,
+        },
+        Scenario {
+            name: "start_superseded_during_context",
+            run: scenario_start_superseded_during_context,
+            expected: expected_start_superseded_during_context,
+        },
+        Scenario {
+            name: "start_stamped_hold",
+            run: scenario_start_stamped_hold,
+            expected: expected_start_stamped_hold,
+        },
+        Scenario {
+            name: "start_stamped_hold_refused",
+            run: scenario_start_stamped_hold_refused,
+            expected: expected_start_stamped_hold_refused,
+        },
+        Scenario {
+            name: "stop_missing_context",
+            run: scenario_stop_missing_context,
+            expected: expected_stop_missing_context,
+        },
+        Scenario {
+            name: "stop_empty_audio",
+            run: scenario_stop_empty_audio,
+            expected: expected_stop_empty_audio,
+        },
+        Scenario {
+            name: "stop_pipeline_error",
+            run: scenario_stop_pipeline_error,
+            expected: expected_stop_pipeline_error,
+        },
+        Scenario {
+            name: "stop_stale_expectation",
+            run: scenario_stop_stale_expectation,
+            expected: expected_stop_stale_expectation,
+        },
+        Scenario {
+            name: "stop_recovering_with_interrupted_capture",
+            run: scenario_stop_recovering_with_interrupted_capture,
+            expected: expected_stop_recovering_with_interrupted_capture,
+        },
+        Scenario {
+            name: "stop_during_starting",
+            run: scenario_stop_during_starting,
+            expected: expected_stop_during_starting,
+        },
+        Scenario {
+            name: "cancel_starting",
+            run: scenario_cancel_starting,
+            expected: expected_cancel_starting,
+        },
+        Scenario {
+            name: "cancel_refused",
+            run: scenario_cancel_refused,
+            expected: expected_cancel_refused,
+        },
+        Scenario {
+            name: "cancel_processing",
+            run: scenario_cancel_processing,
+            expected: expected_cancel_processing,
+        },
+    ]
+}
+
+/// Every scenario's complete port-call trace equals the production order.
+/// One test per scenario would only repeat `check`; a single pass names the
+/// scenario that drifted.
+#[test]
+fn every_scenario_follows_the_production_order() {
+    for scenario in scenarios() {
+        check(&scenario);
+    }
+}
+
 // -------------------------------------------------------- port coverage
 
-/// Every port method is reached by at least two scenarios, so a regression in
-/// one scenario cannot silently drop the only check on a port.
+/// Each `Call` is tied to one trait method, and every trait method (bar the
+/// accessors that only hand out a port) has a `Call`.
+#[test]
+fn call_kinds_match_the_trait_declarations() {
+    use std::collections::BTreeSet;
+    const ACCESSORS: [(&str, &str); 5] = [
+        ("DictationHost", "supervisor"),
+        ("DictationHost", "keyboard"),
+        ("DictationHost", "ax"),
+        ("DictationHost", "smart_destination"),
+        ("DictationHost", "performance"),
+    ];
+    let mut declared: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut current: Option<String> = None;
+    for line in include_str!("recording_host.rs").lines() {
+        if let Some(rest) = line.strip_prefix("pub(super) trait ") {
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            current = Some(name);
+        } else if line == "}" {
+            current = None;
+        } else if let (Some(trait_name), Some(rest)) = (&current, line.strip_prefix("    fn ")) {
+            let method: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            declared.insert((trait_name.clone(), method));
+        }
+    }
+    for (trait_name, method) in ACCESSORS {
+        assert!(
+            declared.remove(&(trait_name.to_string(), method.to_string())),
+            "accessor {trait_name}::{method} is not declared"
+        );
+    }
+    let covered: BTreeSet<(String, String)> = Call::ALL
+        .iter()
+        .map(|call| {
+            let (trait_name, method, _) = call.spec();
+            (trait_name.to_string(), method.to_string())
+        })
+        .collect();
+    assert_eq!(
+        covered.len(),
+        Call::ALL.len(),
+        "two `Call`s stand for one method"
+    );
+    assert_eq!(
+        covered, declared,
+        "a port method has no `Call` (or a `Call` names no method)"
+    );
+    let labels: BTreeSet<&str> = Call::ALL.iter().map(|call| call.label()).collect();
+    assert_eq!(labels.len(), Call::ALL.len(), "log labels are unique");
+}
+
+/// Every port method is reached by at least two scenarios, each of which also
+/// asserts its complete production-order trace, so a regression in one scenario
+/// cannot silently drop the only check on a port.
 #[test]
 fn every_port_is_reached_in_two_scenarios() {
-    let start_ok = scenario_start_acknowledged().0;
-    let start_refused = {
-        let (state, host) = fixture(DictationStatus::Idle, 0);
-        host.script().start_ack = Some(AudioStartError::AlreadyStarting);
-        start(&host, &state).expect("start replies");
-        host.log()
-    };
-    let start_smart = {
-        let (state, host) = fixture(DictationStatus::Idle, 0);
-        enable_smart_destination(&state);
-        start(&host, &state).expect("start replies");
-        host.log()
-    };
-    let start_flushed = {
-        let (state, host) = fixture(DictationStatus::Idle, 0);
-        enable_smart_destination(&state);
-        host.script().on_emit_smart_destination = Some(Box::new(|state| {
-            state.app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
-        }));
-        start(&host, &state).expect("start replies");
-        host.log()
-    };
-    let start_hold = {
-        let (state, host) = fixture(DictationStatus::Idle, 0);
-        let token =
-            audio_lifecycle::gesture::emit(audio_lifecycle::gesture::Candidate::new(), true);
-        run(start_native_recording_inner(
-            &host,
-            &state,
-            None,
-            None,
-            Some("hold".to_string()),
-            Some(token),
-        ))
-        .expect("start replies");
-        audio_lifecycle::gesture::clear_pending();
-        host.log()
-    };
-    let start_hold_refused = {
-        let (state, host) = fixture(DictationStatus::Idle, 0);
-        let token =
-            audio_lifecycle::gesture::emit(audio_lifecycle::gesture::Candidate::new(), true);
-        host.script().start_ack = Some(AudioStartError::AlreadyStarting);
-        run(start_native_recording_inner(
-            &host,
-            &state,
-            None,
-            None,
-            Some("hold".to_string()),
-            Some(token),
-        ))
-        .expect("start replies");
-        audio_lifecycle::gesture::clear_pending();
-        host.log()
-    };
-    let start_kept_preview = {
-        let (state, host) = fixture(DictationStatus::Idle, 0);
-        state
-            .app_state
-            .microphone_preview
-            .claim(50)
-            .expect("a mic test is kept");
-        host.script().start_ack = Some(AudioStartError::AudioRecovering);
-        start(&host, &state).expect("start replies");
-        host.log()
-    };
-    let start_kept_preview_again = {
-        let (state, host) = fixture(DictationStatus::Idle, 0);
-        state
-            .app_state
-            .microphone_preview
-            .claim(51)
-            .expect("a mic test is kept");
-        host.script().start_ack = Some(AudioStartError::AlreadyStarting);
-        start(&host, &state).expect("start replies");
-        host.log()
-    };
-    let scenarios: Vec<Vec<String>> = vec![
-        start_ok,
-        start_refused,
-        start_smart,
-        start_flushed,
-        start_hold,
-        start_hold_refused,
-        start_kept_preview,
-        start_kept_preview_again,
-        scenario_stop_missing_context(),
-        scenario_stop_empty_audio(),
-        scenario_stop_pipeline_error(),
-        scenario_stop_stale_expectation(),
-        scenario_stop_recovering_with_interrupted_capture(),
-        scenario_stop_during_starting(),
-        scenario_cancel_starting(),
-        scenario_cancel_failure_reports_a_terminal(),
-        scenario_cancel_processing(),
-    ];
-    let ports = [
-        "emit ",
-        "mic_transition",
-        "keyboard.is_app_disabled",
-        "keyboard.listener_generation",
-        "keyboard.set_processing",
-        "keyboard.hotkey_release_take_for",
-        "keyboard.stop_gesture_take_for",
-        "ax.capture_delivery_target_snapshot",
-        "smart_destination.capture",
-        "performance.register_production",
-        "performance.production_context",
-        "performance.production_sample_count",
-        "performance.begin_register",
-        "performance.begin_abort",
-        "performance.spawn_begin",
-        "performance.complete",
-        "supervisor.start ",
-        "supervisor.start_after_preview",
-        "supervisor.stop ",
-        "supervisor.cancel",
-        "supervisor.take_interrupted",
-        "refresh_expired_ide_context",
-        "emit_smart_destination",
-        "publish_recording_ready",
-        "spawn_model_preparation",
-        "claim_preview_hide",
-        "pipeline ",
-    ];
-    for port in ports {
-        let reached = scenarios
-            .iter()
-            .filter(|log| log.iter().any(|entry| entry.starts_with(port)))
-            .count();
+    let mut reached: std::collections::HashMap<Call, usize> = std::collections::HashMap::new();
+    for scenario in scenarios() {
+        check(&scenario);
+        let recorded = (scenario.run)();
+        let distinct: std::collections::HashSet<Call> = recorded.kinds.iter().copied().collect();
+        for call in distinct {
+            *reached.entry(call).or_default() += 1;
+        }
+    }
+    for call in Call::ALL {
+        let count = reached.get(&call).copied().unwrap_or(0);
         assert!(
-            reached >= 2,
-            "port `{port}` is reached by {reached} scenario(s); two are required"
+            count >= 2,
+            "port `{call:?}` is reached by {count} scenario(s); two are required"
         );
     }
 }
