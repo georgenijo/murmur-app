@@ -1349,21 +1349,36 @@ fn call_kinds_match_the_trait_declarations() {
     ];
     let mut declared: BTreeSet<(String, String)> = BTreeSet::new();
     let mut current: Option<String> = None;
+    let ident = |rest: &str| -> String {
+        rest.chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect()
+    };
     for line in include_str!("recording_host.rs").lines() {
-        if let Some(rest) = line.strip_prefix("pub(super) trait ") {
-            let name: String = rest
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_')
-                .collect();
-            current = Some(name);
+        let top_level = !line.starts_with(char::is_whitespace);
+        let words: Vec<&str> = line.split_whitespace().collect();
+        if top_level && !line.starts_with("//") && words.contains(&"trait") {
+            // Any trait header, whatever its visibility or qualifiers.
+            let rest = line.split("trait ").nth(1).unwrap_or_default();
+            current = Some(ident(rest));
         } else if line == "}" {
             current = None;
-        } else if let (Some(trait_name), Some(rest)) = (&current, line.strip_prefix("    fn ")) {
-            let method: String = rest
-                .chars()
-                .take_while(|c| c.is_alphanumeric() || *c == '_')
-                .collect();
-            declared.insert((trait_name.clone(), method));
+        } else if let Some(trait_name) = &current {
+            let item = line.strip_prefix("    ").filter(|r| !r.starts_with(' '));
+            let Some(item) = item else { continue };
+            if item.starts_with("//") || item.starts_with("#[") {
+                continue;
+            }
+            if let Some(rest) = item.strip_prefix("fn ") {
+                declared.insert((trait_name.clone(), ident(rest)));
+            } else if item
+                .split_whitespace()
+                .any(|w| w == "fn" || w.starts_with("fn("))
+            {
+                // `unsafe fn`, `async fn`, `const fn`, `extern "C" fn`, ...:
+                // refuse rather than silently skip a method.
+                panic!("unsupported trait method syntax in {trait_name}: {line:?}");
+            }
         }
     }
     for (trait_name, method) in ACCESSORS {
