@@ -1338,12 +1338,17 @@ impl<'a> IdleGuard<'a> {
             None,
             recording_id,
         );
-        // Nothing ran: never carry on with D as if it had (a refused entry here
-        // is a re-entrant one; the finish is queued instead).
+        // Nothing ran: never carry on with D as if it had. A refusal as re-entrant
+        // is unreachable: both callers of this section check `in_core()` first
+        // (`run_finish` queues the finish, the drain runs only outside a span), so
+        // the Pre phase is never entered inside one. Queueing it here would also
+        // lose the idle emit, which has already moved into `ports` (D-S2-7).
         if let crate::dictation_executor::executor::PhaseReport::Invalid(kind) = pre {
-            if kind == murmur_dictation_core::decision::InvalidKind::Reentrant {
-                defer_finish(app_state, recording_id, origin, owner.take(), None);
-            }
+            assert!(
+                kind != murmur_dictation_core::decision::InvalidKind::Reentrant,
+                "a guard finish's Pre phase was refused as re-entrant: `run_finish` and \
+                 the drain check `in_core()` before they call this section"
+            );
             return;
         }
         // Lock first, then check recording_id — prevents TOCTOU where
@@ -1476,6 +1481,14 @@ fn drain_deferred_finishes(app_state: &AppState) {
         let Some(mut entry) = next else {
             break;
         };
+        // Test builds: whether T was acquirable when the drain ran this entry. A
+        // drain never runs while the T of the entry that queued the work is held
+        // (D-S2-13); tests read the log with `take_t_free_at_drain`.
+        #[cfg(test)]
+        T_FREE_AT_DRAIN.with(|log| {
+            log.borrow_mut()
+                .push(app_state.recording_transition.try_lock().is_ok());
+        });
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if entry.retire_only {
                 // Outside any core span here: the owner retires H2 then H1.
@@ -1524,6 +1537,19 @@ fn drain_deferred_finishes(app_state: &AppState) {
             std::panic::resume_unwind(panic);
         }
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static T_FREE_AT_DRAIN: std::cell::RefCell<Vec<bool>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Test builds: the T-acquirable observations of every entry the drains on this
+/// thread ran since the last call (see `drain_deferred_finishes`).
+#[cfg(test)]
+pub(crate) fn take_t_free_at_drain() -> Vec<bool> {
+    T_FREE_AT_DRAIN.with(|log| std::mem::take(&mut *log.borrow_mut()))
 }
 
 /// Stable, content-free name of a finish origin for the event registry.
@@ -1629,6 +1655,12 @@ impl DrainAlive {
     fn new() -> Self {
         Self
     }
+}
+
+/// Test builds: the drain guards alive on this thread.
+#[cfg(test)]
+pub(crate) fn drains_alive_on_this_thread() -> usize {
+    DRAINS_ALIVE.with(std::cell::Cell::get)
 }
 
 /// Test-build safety net, run when the outermost core entry on a thread ends
@@ -6878,18 +6910,22 @@ async fn stop_native_recording_admitted(
     refuse_reentrant_stop()?;
     // Finishes queued re-entrantly while this stop held D run when its first
     // synchronous stretch ends (on a return or an unwind), on this thread, after
-    // every lock it took, T included, is released (D-S2-4): declared before T so
-    // it drops after it. It owes nothing across the two awaits that follow (this
-    // stop has run nothing yet) and ends right before the pipeline await; a new
-    // one covers the stretch after that await, so no obligation is held across
-    // an await that has queued work behind it.
-    let drain = DrainDeferredFinishes::new(&state.app_state);
+    // every lock it took, T included, is released (D-S2-4): the binding is declared
+    // before T so it drops after it. It is created only after the awaits that
+    // follow (T, then the span fence): the test-build count of live guards is
+    // thread-local, and a future that waited on T may resume on another worker, so
+    // the guard registers on the worker that runs the synchronous stretch. It ends
+    // right before the pipeline await; a new one covers the stretch after that
+    // await, so no obligation is held across an await that has queued work behind
+    // it.
+    let drain;
     // The `releaseToStop` endpoint: entry, before any lock wait (#826).
     let stop_entered_at = std::time::Instant::now();
     let transition = state.app_state.recording_transition.lock().await;
     // A stop that parked on T and is polled again inside a core span (a listener)
     // waits the span out before it asks for D: ready on the first poll.
     until_outside_core().await;
+    drain = DrainDeferredFinishes::new(&state.app_state);
     // Stop admission (T held): the `AutoStop` op the interruption registered is
     // consumed here (C1.4.1 rule 4). Its status does not branch anything; the stale
     // rule below runs whatever it was. Until here the op stayed outstanding, so a
@@ -7662,18 +7698,22 @@ async fn cancel_native_recording_inner(
             return Err(cancel_refused(kind));
         }
     }
-    // D-S2-8: drained after T and D are released (declared before both, so it drops
-    // after them on every return and on an unwind). R205.5's `idle` emit runs
-    // listeners inline, and a listener may drop a parked stop or import future
-    // there; its owner's finish and history retirement queue behind this entry's
-    // span and are applied here, in FIFO order, before the cancel returns. Site
-    // 206's `PT:TERM` and the early returns below are covered by the same guard.
-    let _drain = DrainDeferredFinishes::new(&state.app_state);
+    // D-S2-8: drained after T and D are released (the binding is declared before
+    // both, so it drops after them on every return and on an unwind). R205.5's
+    // `idle` emit runs listeners inline, and a listener may drop a parked stop or
+    // import future there; its owner's finish and history retirement queue behind
+    // this entry's span and are applied here, in FIFO order, before the cancel
+    // returns. Site 206's `PT:TERM` and the early returns below are covered by the
+    // same guard. The guard itself is created only after the awaits below: the
+    // test-build count of live guards is thread-local, and a cancel that waited on
+    // T may resume on another worker (D-S2-13).
+    let _drain;
     let transition = state.app_state.recording_transition.lock().await;
     // A cancel that waited on T and was woken by a listener polling it inline
     // inside another entry's span parks here (self-waking) until that span ends,
     // so its D section never runs inside a span (D-S2-5, defence in depth).
     until_outside_core().await;
+    _drain = DrainDeferredFinishes::new(&state.app_state);
     let now = core_now();
     // Site 205 (T held, D section): `decide_cancel_request`, inline at today's
     // line. The view is built from the live fields under the D hold the section
