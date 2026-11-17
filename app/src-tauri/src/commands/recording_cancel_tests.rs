@@ -305,9 +305,12 @@ pub(super) fn t_is_free_in_cc(world: &Arc<World>) -> impl FnOnce() + Send + 'sta
 
 /// A hook for the supervisor's own terminal: it claims `UserCancelledStarting`
 /// for recording 1 while the capture cancel is still in flight (before the
-/// command gives up on the ack), so the ledger winner is the supervisor's.
+/// command gives up on the ack), so the ledger winner is the supervisor's. It
+/// also proves T is free inside `CC`, as [`t_is_free_in_cc`] does, so the trace
+/// fails if the command held T across the capture cancel.
 pub(super) fn supervisor_claims_first(world: &Arc<World>) -> impl FnOnce() + Send + 'static {
     let world = Arc::clone(world);
+    let probe = t_is_free_in_cc(&world);
     move || {
         let state = world.state();
         emit_dictation_terminal(
@@ -316,6 +319,7 @@ pub(super) fn supervisor_claims_first(world: &Arc<World>) -> impl FnOnce() + Sen
             DictationTerminalOutcome::UserCancelledStarting,
             DictationErrorCode::CancelledStarting,
         );
+        probe();
     }
 }
 
@@ -410,6 +414,7 @@ fn cancel_starting_err_after_the_supervisor_claimed_first() {
         &[
             "supervisor.cancel 1 user",
             "~ terminal 1 UserCancelledStarting/CancelledStarting",
+            "# T free inside CC: true",
             "reply cancel Err boom",
             "supervisor.release_ready 1",
             "supervisor.set_phase Recording",

@@ -373,6 +373,7 @@ fn stop_starting_cancel_error_after_the_supervisor_claimed_first() {
             "keyboard.stop_gesture_take_for 1",
             "supervisor.cancel 1 user",
             "~ terminal 1 UserCancelledStarting/CancelledStarting",
+            "# T free inside CC: true",
             "reply stop Err boom",
             "supervisor.release_ready 1",
             "supervisor.set_phase Recording",
