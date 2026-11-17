@@ -3,8 +3,9 @@
 //!
 //! Stage 1a of the recording refactor (plan §6, appendix C). The crate holds
 //! ids, typed inputs, effects with their placement classes, replies,
-//! [`admission::Occupancy`] and [`admission::admit`]. It has **no dependency**
-//! on tauri or any app crate, performs **no I/O**, takes **no locks** and reads
+//! [`admission::Occupancy`], [`admission::admit`] and the C1 state vocabulary
+//! ([`state::PersistedCore`], [`state::DictationCore`], [`state::LockFreeFacts`]).
+//! It has **no dependency** on tauri or any app crate, performs **no I/O**, takes **no locks** and reads
 //! **no clock**: time enters as [`ids::Now`] values and every fact enters as a
 //! plain field. The shell (`ui_lib`) owns the locks, the executor and the
 //! production wiring; none of that is here yet (Stage 1b, 2a).
@@ -20,4 +21,5 @@ pub mod effects;
 pub mod ids;
 pub mod inputs;
 pub mod replies;
+pub mod state;
 pub mod status;

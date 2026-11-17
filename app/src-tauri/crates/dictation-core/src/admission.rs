@@ -42,7 +42,7 @@
 //! reads `audio_active`, standby or `unconfirmed_key_down` (matrix cells `S`).
 
 use crate::decision::ObsKind;
-use crate::ids::PreviewId;
+use crate::ids::{PreviewId, RecordingId};
 use crate::replies::ReplyType;
 use crate::status::Status;
 
@@ -67,8 +67,13 @@ pub enum Request {
     MeetingPreClaim,
     /// Meeting start: the `relaunch_committed` re-read after the claim stores.
     MeetingPostClaim,
-    /// Microphone preview start (+ the `is_connecting` recheck).
+    /// Microphone preview start, **before** `preview.claim()` (C6.2 #7).
     PreviewStart,
+    /// The `is_connecting(id)` recheck after the claim, in the spawned task
+    /// (`microphone_preview.rs:270`). A separate phase: it repeats none of the
+    /// `PreviewStart` checks (the claim made `preview_active` true) and claims
+    /// nothing.
+    PreviewStartRecheck,
     /// Microphone startup benchmark up to `benchmark.try_start()`.
     MicStartupBenchmarkPreClaim,
     /// Microphone startup benchmark: the second claim under T only.
@@ -87,7 +92,7 @@ pub enum Request {
 
 impl Request {
     /// Every request, in C6.1 order.
-    pub const ALL: [Request; 16] = [
+    pub const ALL: [Request; 17] = [
         Self::DictationStart,
         Self::DictationPrepare,
         Self::KeyDownCapture,
@@ -97,6 +102,7 @@ impl Request {
         Self::MeetingPreClaim,
         Self::MeetingPostClaim,
         Self::PreviewStart,
+        Self::PreviewStartRecheck,
         Self::MicStartupBenchmarkPreClaim,
         Self::MicStartupBenchmarkPostClaim,
         Self::Benchmark,
@@ -193,6 +199,15 @@ pub struct Occupancy {
     pub audio_active: bool,
     /// A Standby capture exists *(added: the C6.3 matrix has a standby column)*.
     pub standby: bool,
+    /// `retire_standby()` already ran for this request *(added)*. `admit`
+    /// returns `WaitThen(RetireStandby)` at most once: with this set a still
+    /// present standby falls through to the later `audio_active` check.
+    pub standby_retire_attempted: bool,
+    /// The bounded retirement of an unconfirmed key-down capture already ran
+    /// (it may have timed out) *(added)*. With this set a capture that is
+    /// still `unconfirmed_key_down` is no longer waited on; `audio_active`
+    /// decides, as `preview_audio_blocker` does (`microphone_preview.rs:137-146`).
+    pub key_down_retire_attempted: bool,
     /// Only an unconfirmed Fn key-down capture holds the microphone.
     pub unconfirmed_key_down: bool,
     /// A microphone startup check is running.
@@ -201,12 +216,15 @@ pub struct Occupancy {
     /// `FileTranscriptionPreClaim`: outcome of the pre-admission preview stop.
     pub preview_stop: Option<Result<(), String>>,
     /// `FileTranscriptionPreClaim`: the value `file_transcribing.swap(true)` returned.
+    /// Once the shell has swapped, `file_transcribing` is the shell's own claim:
+    /// it must pass the prior value here (or not call this phase again).
     pub file_claim_prior: Option<bool>,
     /// `MeetingPostClaim`: `relaunch_committed` re-read after the claim stores.
     pub relaunch_recheck: Option<bool>,
     /// `MicStartupBenchmarkPostClaim`: `Some(false)` if the second claim failed.
     pub second_claim: Option<bool>,
-    /// `PreviewStart` recheck (270): `Some(false)` if the preview is no longer connecting.
+    /// `PreviewStartRecheck` (`microphone_preview.rs:270`): `is_connecting(id)`.
+    /// `Some(false)` refuses (the task clears the preview and returns silently).
     pub preview_still_connecting: Option<bool>,
     /// The coordinator mutex's own answer for a claim (`Some(false)` = not Idle).
     pub coordinator_idle: Option<bool>,
@@ -232,6 +250,12 @@ pub struct Occupancy {
     pub dictation_lock_busy: bool,
     /// The frozen context's model equals the one being prepared *(added)*.
     pub model_matches: bool,
+    /// The current recording id (`AppState.recording_id`) *(added)*.
+    pub recording_id: RecordingId,
+    /// The recording id the preparation worker was spawned for *(added)*.
+    /// `RecordingStart` preparation is only eligible while it equals
+    /// `recording_id` (`recording.rs:1153`, `:1168`); `None` never matches.
+    pub expected_recording_id: Option<RecordingId>,
     /// Which `ModelPreparation` eligibility is asked *(added)*.
     pub model_prep_variant: ModelPrepVariant,
 }
@@ -246,10 +270,15 @@ impl Occupancy {
 /// What the shell should do when `admit` neither admits nor refuses outright.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Retry {
-    /// `retire_standby()`, then gather a fresh `Occupancy` and call `admit` again.
+    /// `retire_standby()`, then gather a fresh `Occupancy` with
+    /// `standby_retire_attempted = true` and call `admit` again. Returned at
+    /// most once per request: a standby that survives the retire is not waited
+    /// on again.
     RetireStandby,
-    /// Bounded wait / `retire_standby` for an unconfirmed key-down capture
-    /// (`preview_audio_blocker`), then call `admit` again.
+    /// Bounded wait / retire of an unconfirmed key-down capture
+    /// (`preview_audio_blocker`), then a fresh `Occupancy` with
+    /// `key_down_retire_attempted = true` (whether or not the capture is gone,
+    /// including after a timeout) and `admit` again. Returned at most once.
     RetireKeyDownCapture,
 }
 
@@ -880,7 +909,7 @@ static PREVIEW_START: &[Step] = &[
         // of `refuse_revoked_start`), so the wait comes first.
         name: "standby",
         eval: |o| {
-            if o.standby {
+            if o.standby && !o.standby_retire_attempted {
                 Some(Admission::WaitThen(Retry::RetireStandby))
             } else {
                 None
@@ -917,10 +946,11 @@ static PREVIEW_START: &[Step] = &[
     },
     Step {
         // `preview_audio_blocker`: an unconfirmed key-down capture is retired
-        // (bounded wait) and the check repeats.
+        // once (bounded wait); then `audio_active` decides, even if the capture
+        // is still tearing down.
         name: "unconfirmed_key_down",
         eval: |o| {
-            if o.unconfirmed_key_down {
+            if o.unconfirmed_key_down && !o.key_down_retire_attempted {
                 Some(Admission::WaitThen(Retry::RetireKeyDownCapture))
             } else {
                 None
@@ -931,22 +961,24 @@ static PREVIEW_START: &[Step] = &[
         name: "audio_active",
         eval: |o| refuse_if(o.audio_active, RefusalCode::MicrophoneStillInUse),
     },
-    Step {
-        name: "preview_still_connecting",
-        eval: |o| {
-            refuse_if(
-                o.preview_still_connecting == Some(false),
-                RefusalCode::PreviewNoLongerConnecting,
-            )
-        },
-    },
 ];
+
+/// The post-claim recheck: only `is_connecting(id)` (`microphone_preview.rs:270`).
+static PREVIEW_START_RECHECK: &[Step] = &[Step {
+    name: "preview_still_connecting",
+    eval: |o| {
+        refuse_if(
+            o.preview_still_connecting == Some(false),
+            RefusalCode::PreviewNoLongerConnecting,
+        )
+    },
+}];
 
 static MIC_BENCH_PRE_CLAIM: &[Step] = &[
     Step {
         name: "standby",
         eval: |o| {
-            if o.standby {
+            if o.standby && !o.standby_retire_attempted {
                 Some(Admission::WaitThen(Retry::RetireStandby))
             } else {
                 None
@@ -1061,21 +1093,36 @@ static SHARED_BACKEND_CHANGE: &[Step] = &[Step {
     },
 }];
 
-static MODEL_PREPARATION: &[Step] = &[Step {
-    name: "eligible",
-    eval: |o| {
-        let status_ok = match o.model_prep_variant {
-            ModelPrepVariant::RecordingStart => {
-                matches!(o.status, Status::Starting | Status::Recording)
-            }
-            ModelPrepVariant::IdleWarm => o.status == Status::Idle,
-        };
-        refuse_if(
-            !(status_ok && o.model_matches),
-            RefusalCode::ModelPreparationNotEligible,
-        )
+static MODEL_PREPARATION: &[Step] = &[
+    Step {
+        // `recording_id.load() == recording_id` comes first in both reads
+        // (`recording.rs:1153`, `:1168`): a stale worker is never eligible.
+        // The idle warm-up has no generation (`recording.rs:1240`, `:1248`).
+        name: "generation",
+        eval: |o| match o.model_prep_variant {
+            ModelPrepVariant::RecordingStart => refuse_if(
+                o.expected_recording_id != Some(o.recording_id),
+                RefusalCode::ModelPreparationNotEligible,
+            ),
+            ModelPrepVariant::IdleWarm => None,
+        },
     },
-}];
+    Step {
+        name: "eligible",
+        eval: |o| {
+            let status_ok = match o.model_prep_variant {
+                ModelPrepVariant::RecordingStart => {
+                    matches!(o.status, Status::Starting | Status::Recording)
+                }
+                ModelPrepVariant::IdleWarm => o.status == Status::Idle,
+            };
+            refuse_if(
+                !(status_ok && o.model_matches),
+                RefusalCode::ModelPreparationNotEligible,
+            )
+        },
+    },
+];
 
 static MODEL_REMOVAL: &[Step] = &[
     Step {
@@ -1130,6 +1177,7 @@ fn steps(request: Request) -> &'static [Step] {
         Request::MeetingPreClaim => MEETING_PRE_CLAIM,
         Request::MeetingPostClaim => MEETING_POST_CLAIM,
         Request::PreviewStart => PREVIEW_START,
+        Request::PreviewStartRecheck => PREVIEW_START_RECHECK,
         Request::MicStartupBenchmarkPreClaim => MIC_BENCH_PRE_CLAIM,
         Request::MicStartupBenchmarkPostClaim => MIC_BENCH_POST_CLAIM,
         Request::Benchmark => BENCHMARK,
@@ -1173,6 +1221,7 @@ fn admitted(request: Request, o: &Occupancy) -> Admission {
         | Request::RelaunchGate
         | Request::FileTranscriptionPostClaim
         | Request::MeetingPostClaim
+        | Request::PreviewStartRecheck
         | Request::MicStartupBenchmarkPostClaim
         | Request::ModelPreparation => Claims::of(ClaimKind::None),
     };

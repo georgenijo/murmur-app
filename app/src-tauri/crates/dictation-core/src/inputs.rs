@@ -364,7 +364,9 @@ pub enum SupervisorEvent {
         /// Recording id.
         rid: RecordingId,
     },
-    /// Sites 215 / 216.
+    /// Site 215: the D-less half of `Interrupted` (`is_current()` read without
+    /// D, 5159): the stale and auto-transcribe arms, and the first half of the
+    /// short-capture arm.
     Interrupted {
         /// Recording id.
         rid: RecordingId,
@@ -374,6 +376,14 @@ pub enum SupervisorEvent {
         duration_ms: u64,
         /// Reason.
         reason: AudioCancelReason,
+    },
+    /// Site 216: the second half of a short `Interrupted` (`< 8000` samples),
+    /// a separate D section (5228-5230) with **no id or status guard**. The
+    /// status it acts on is read from the core under that D hold (R216.1-.5),
+    /// so the input carries only the recording id (C2.3 row 216).
+    InterruptedShortIdle {
+        /// Recording id.
+        rid: RecordingId,
     },
 }
 
@@ -425,8 +435,9 @@ pub enum Input {
 impl Input {
     /// The shadow `site_id` this input enters through. Where one input maps to
     /// two sites the choice follows C2.3: `StopContext` is 202 without a context
-    /// (D) and 202n with one (no D); `Interrupted` is 215 (the D-less half; the
-    /// short-idle second half 216 is reached from it).
+    /// (D) and 202n with one (no D); `Interrupted` is 215 (the D-less half) and
+    /// `InterruptedShortIdle` is 216 (the later D section). Every [`SiteId`] is
+    /// reachable from some input (test `every_decision_site_has_an_input`).
     pub fn site(&self) -> SiteId {
         match self {
             Self::StartRequest(_) => SiteId::StartRequest,
@@ -451,6 +462,7 @@ impl Input {
                 SupervisorEvent::InitializationFailed { .. } => SiteId::SupInitFailed,
                 SupervisorEvent::RecoveryStalled { .. } => SiteId::SupStalled,
                 SupervisorEvent::Interrupted { .. } => SiteId::SupInterrupted,
+                SupervisorEvent::InterruptedShortIdle { .. } => SiteId::SupInterruptedShortIdle,
             },
             Self::ProcessAudioStart(_) => SiteId::ProcessAudioStart,
             Self::ProcessAudioFinish(_) => SiteId::ProcessAudioFinish,
@@ -527,5 +539,137 @@ mod tests {
         for (event, code) in cases {
             assert_eq!(Input::Supervisor(event).site().code(), code);
         }
+    }
+
+    fn every_input() -> Vec<Input> {
+        let rid = RecordingId(1);
+        let token = Continuation {
+            recording_id: rid,
+            op: crate::ids::OperationId(1),
+            kind: crate::decision::ContKind::CaptureStart,
+        };
+        let op_status = OpStatus::Outstanding;
+        let stop_context = |context_present| {
+            Input::StopContext(StopContextInput {
+                token,
+                op_status,
+                rid,
+                context_present,
+                interrupted_error: None,
+            })
+        };
+        vec![
+            Input::StartRequest(start()),
+            Input::StartCaptureResult(CaptureResultInput {
+                token,
+                op_status,
+                result: CaptureResult::Ok,
+            }),
+            Input::StartContext(StartContextInput {
+                token,
+                op_status,
+                speculative_none: true,
+                capture_is_current: true,
+            }),
+            Input::ReadyPublish(ReadyPublishInput {
+                token,
+                op_status,
+                rid,
+                audio_ready: true,
+                context_present: true,
+                context_ready_at: Now(0),
+            }),
+            Input::StopRequest(StopInput {
+                expected: None,
+                trigger: StopTrigger::User,
+                observed_current_id: rid,
+                interrupted: None,
+                entered: Now(0),
+            }),
+            stop_context(false),
+            stop_context(true),
+            Input::StopCaptureResult(StopCaptureResultInput {
+                token,
+                op_status,
+                rid,
+                result: StopCaptureResult::Err,
+            }),
+            Input::GuardFinish(GuardFinishInput {
+                rid,
+                origin: GuardOrigin::StopCapture,
+                closure_emit: true,
+            }),
+            Input::PipelineIdleEmit(PipelineIdleEmitInput {
+                rid,
+                kind: PostKind::StopPost,
+                result: None,
+                interrupted: None,
+                char_count: 0,
+            }),
+            Input::CancelRequest(CancelInput { expected: None }),
+            Input::CancelCaptureResult(CancelCaptureResultInput {
+                token,
+                op_status,
+                rid,
+                result: Ok(true),
+            }),
+            Input::Supervisor(SupervisorEvent::Ready {
+                rid,
+                context_present: true,
+                ready_received: Now(0),
+            }),
+            Input::Supervisor(SupervisorEvent::StillConnecting { rid }),
+            Input::Supervisor(SupervisorEvent::Recovering {
+                rid,
+                reason: AudioCancelReason::User,
+            }),
+            Input::Supervisor(SupervisorEvent::CleanupFinished { rid }),
+            Input::Supervisor(SupervisorEvent::Idle { rid }),
+            Input::Supervisor(SupervisorEvent::Accepted { rid }),
+            Input::Supervisor(SupervisorEvent::InitializationFailed {
+                rid,
+                kind: Handle(0),
+                recovery_reason: None,
+            }),
+            Input::Supervisor(SupervisorEvent::RecoveryStalled { rid }),
+            Input::Supervisor(SupervisorEvent::Interrupted {
+                rid,
+                delivered_samples: 0,
+                duration_ms: 0,
+                reason: AudioCancelReason::RuntimeFailure,
+            }),
+            Input::Supervisor(SupervisorEvent::InterruptedShortIdle { rid }),
+            Input::ProcessAudioStart(ProcessAudioStartInput {
+                occupancy: Occupancy::default(),
+            }),
+            Input::ProcessAudioFinish(ProcessAudioFinishInput {
+                rid,
+                kind: ProcessAudioFinishKind::ParseFailed,
+            }),
+        ]
+    }
+
+    #[test]
+    fn every_decision_site_has_an_input() {
+        let mut sites: Vec<u16> = every_input().iter().map(|i| i.site().code()).collect();
+        sites.sort_unstable();
+        let mut expected: Vec<u16> = SiteId::ALL.iter().map(|s| s.code()).collect();
+        expected.sort_unstable();
+        assert_eq!(sites, expected, "each site is reached by exactly one input");
+    }
+
+    #[test]
+    fn short_interrupted_second_half_is_site_216() {
+        let rid = RecordingId(9);
+        let first = Input::Supervisor(SupervisorEvent::Interrupted {
+            rid,
+            delivered_samples: 100,
+            duration_ms: 10,
+            reason: AudioCancelReason::RuntimeFailure,
+        });
+        let second = Input::Supervisor(SupervisorEvent::InterruptedShortIdle { rid });
+        assert_eq!(first.site(), SiteId::SupInterrupted);
+        assert_eq!(second.site(), SiteId::SupInterruptedShortIdle);
+        assert_eq!(second.site().code(), 216);
     }
 }

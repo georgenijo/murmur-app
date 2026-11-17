@@ -588,12 +588,20 @@ fn preview_start_order() {
                 |o| o.audio_active = true,
                 refused(RefusalCode::MicrophoneStillInUse),
             ),
-            case(
-                "preview_still_connecting",
-                |o| o.preview_still_connecting = Some(false),
-                refused(RefusalCode::PreviewNoLongerConnecting),
-            ),
         ],
+    );
+}
+
+#[test]
+fn preview_start_recheck_order() {
+    assert_order(
+        Request::PreviewStartRecheck,
+        quiet,
+        vec![case(
+            "preview_still_connecting",
+            |o| o.preview_still_connecting = Some(false),
+            refused(RefusalCode::PreviewNoLongerConnecting),
+        )],
     );
 }
 
@@ -813,17 +821,26 @@ fn model_preparation_order() {
         Occupancy {
             status: Status::Recording,
             model_matches: true,
+            recording_id: RecordingId(3),
+            expected_recording_id: Some(RecordingId(3)),
             ..Occupancy::default()
         }
     }
     assert_order(
         Request::ModelPreparation,
         eligible,
-        vec![case(
-            "eligible",
-            |o| o.model_matches = false,
-            refused(RefusalCode::ModelPreparationNotEligible),
-        )],
+        vec![
+            case(
+                "generation",
+                |o| o.expected_recording_id = Some(RecordingId(2)),
+                refused(RefusalCode::ModelPreparationNotEligible),
+            ),
+            case(
+                "eligible",
+                |o| o.model_matches = false,
+                refused(RefusalCode::ModelPreparationNotEligible),
+            ),
+        ],
     );
     // Recording-start variant: Starting and Recording only.
     for (status, ok) in [
@@ -1265,6 +1282,7 @@ fn draining_pipeline_never_blocks_any_request() {
             Occupancy {
                 status: Status::Recording,
                 model_matches: true,
+                expected_recording_id: Some(RecordingId(0)),
                 ..draining.clone()
             }
         } else {
@@ -1339,4 +1357,364 @@ fn start_refusals_map_to_their_reply_literals() {
         assert_eq!(code.text(), ty);
     }
     assert_eq!(RefusalCode::DictationBusy.reply(), None);
+}
+
+// ---------------------------------------------------------------------------
+// Phase sequences: a recheck or retry after a claim or a wait must not
+// re-enter the wrong phase (review round 1, findings 1-3 and the sweep).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn preview_recheck_spans_the_claim() {
+    // Before the claim: admitted, and the shell claims a generation.
+    assert_eq!(
+        admit(Request::PreviewStart, &quiet()),
+        Admission::Admit(Claims::of(ClaimKind::PreviewGeneration))
+    );
+    // After `preview.claim()` the preview is active (and Starting/connecting).
+    let after_claim = Occupancy {
+        preview_active: true,
+        preview_still_connecting: Some(true),
+        ..quiet()
+    };
+    // Re-running the pre-claim phase would refuse the preview's own generation:
+    // that is exactly why the recheck is a separate phase.
+    assert_eq!(
+        admit(Request::PreviewStart, &after_claim),
+        refused(RefusalCode::PreviewAlreadyActive)
+    );
+    // The recheck repeats no admission check and requests no claim.
+    let recheck = admit_traced(Request::PreviewStartRecheck, &after_claim);
+    assert_eq!(
+        recheck.admission,
+        Admission::Admit(Claims::of(ClaimKind::None))
+    );
+    assert_eq!(recheck.evaluated, vec!["preview_still_connecting"]);
+    // Whatever else changed meanwhile is not this phase's business
+    // (`microphone_preview.rs:270` reads only `is_connecting(id)`).
+    let busy_elsewhere = Occupancy {
+        status: Status::Recording,
+        meeting_active: true,
+        audio_active: true,
+        app_disabled: true,
+        ..after_claim.clone()
+    };
+    assert!(matches!(
+        admit(Request::PreviewStartRecheck, &busy_elsewhere),
+        Admission::Admit(_)
+    ));
+    // The preview left the connecting phase (stopped, or revoked): refuse.
+    let gone = Occupancy {
+        preview_still_connecting: Some(false),
+        ..after_claim
+    };
+    assert_eq!(
+        admit(Request::PreviewStartRecheck, &gone),
+        refused(RefusalCode::PreviewNoLongerConnecting)
+    );
+}
+
+/// Follow `WaitThen` the way the shell does: run the retire, mark it attempted
+/// (the retire may leave the facts unchanged, e.g. on a timeout) and ask again.
+fn drive(request: Request, mut o: Occupancy) -> (Admission, Vec<Retry>) {
+    let mut waits = Vec::new();
+    loop {
+        match admit(request, &o) {
+            Admission::WaitThen(retry) => {
+                assert!(waits.len() < 4, "{request:?}: waits must terminate");
+                waits.push(retry);
+                match retry {
+                    Retry::RetireStandby => o.standby_retire_attempted = true,
+                    Retry::RetireKeyDownCapture => o.key_down_retire_attempted = true,
+                }
+            }
+            other => return (other, waits),
+        }
+    }
+}
+
+#[test]
+fn key_down_retirement_timeout_refuses_instead_of_waiting_again() {
+    let holding = Occupancy {
+        unconfirmed_key_down: true,
+        audio_active: true,
+        ..quiet()
+    };
+    assert_eq!(
+        admit(Request::PreviewStart, &holding),
+        Admission::WaitThen(Retry::RetireKeyDownCapture)
+    );
+    // The bounded wait timed out: both flags are still true. The retry
+    // reaches `audio_active` (`preview_audio_blocker`) and refuses.
+    let timed_out = Occupancy {
+        key_down_retire_attempted: true,
+        ..holding.clone()
+    };
+    let result = admit_traced(Request::PreviewStart, &timed_out);
+    assert_eq!(result.admission, refused(RefusalCode::MicrophoneStillInUse));
+    assert_eq!(result.evaluated.last(), Some(&"audio_active"));
+    // The retire worked: the microphone is free, the retry admits.
+    let retired = Occupancy {
+        key_down_retire_attempted: true,
+        ..quiet()
+    };
+    assert_eq!(
+        admit(Request::PreviewStart, &retired),
+        Admission::Admit(Claims::of(ClaimKind::PreviewGeneration))
+    );
+    // Driven end to end: exactly one wait, then the refusal.
+    assert_eq!(
+        drive(Request::PreviewStart, holding),
+        (
+            refused(RefusalCode::MicrophoneStillInUse),
+            vec![Retry::RetireKeyDownCapture]
+        )
+    );
+}
+
+#[test]
+fn standby_retirement_is_attempted_once_for_every_request_that_waits() {
+    for request in [Request::PreviewStart, Request::MicStartupBenchmarkPreClaim] {
+        let standby = Occupancy {
+            standby: true,
+            audio_active: true,
+            ..quiet()
+        };
+        assert_eq!(
+            admit(request, &standby),
+            Admission::WaitThen(Retry::RetireStandby),
+            "{request:?}"
+        );
+        // The retire did not clear it: refuse on `audio_active`, never wait again.
+        let survived = Occupancy {
+            standby_retire_attempted: true,
+            ..standby.clone()
+        };
+        assert_eq!(
+            admit(request, &survived),
+            refused(RefusalCode::MicrophoneStillInUse),
+            "{request:?}"
+        );
+        // The retire cleared it.
+        let cleared = Occupancy {
+            standby_retire_attempted: true,
+            ..quiet()
+        };
+        assert!(
+            matches!(admit(request, &cleared), Admission::Admit(_)),
+            "{request:?}"
+        );
+        assert_eq!(drive(request, standby).1, vec![Retry::RetireStandby]);
+    }
+}
+
+#[test]
+fn no_request_can_wait_more_than_once_per_kind() {
+    // Worst case: every retirable thing is present and never goes away.
+    let worst = Occupancy {
+        standby: true,
+        unconfirmed_key_down: true,
+        audio_active: true,
+        ..quiet()
+    };
+    for request in Request::ALL {
+        let (_, waits) = drive(request, worst.clone());
+        let mut seen = waits.clone();
+        seen.sort_by_key(|retry| *retry as u8);
+        seen.dedup();
+        assert_eq!(
+            seen.len(),
+            waits.len(),
+            "{request:?} repeats a wait: {waits:?}"
+        );
+    }
+}
+
+#[test]
+fn model_preparation_generation_guard() {
+    let current = Occupancy {
+        status: Status::Recording,
+        model_matches: true,
+        recording_id: RecordingId(5),
+        expected_recording_id: Some(RecordingId(5)),
+        ..quiet()
+    };
+    assert!(matches!(
+        admit(Request::ModelPreparation, &current),
+        Admission::Admit(_)
+    ));
+    // A stale worker (a newer recording is current) is rejected first, even
+    // though status and model look eligible for the new recording.
+    let stale = Occupancy {
+        recording_id: RecordingId(6),
+        ..current.clone()
+    };
+    let result = admit_traced(Request::ModelPreparation, &stale);
+    assert_eq!(
+        result.admission,
+        refused(RefusalCode::ModelPreparationNotEligible)
+    );
+    assert_eq!(
+        result.evaluated,
+        vec!["generation"],
+        "evaluated before status/model"
+    );
+    // No expected generation never matches (fail closed).
+    let unknown = Occupancy {
+        expected_recording_id: None,
+        ..current.clone()
+    };
+    assert_eq!(
+        admit(Request::ModelPreparation, &unknown),
+        refused(RefusalCode::ModelPreparationNotEligible)
+    );
+    // The check repeats after the backend wait (`recording.rs:1153`, `:1168`):
+    // the first read passes, the generation advances during the wait, the
+    // second read refuses.
+    assert!(matches!(
+        admit(Request::ModelPreparation, &current),
+        Admission::Admit(_)
+    ));
+    assert_eq!(
+        admit(Request::ModelPreparation, &stale),
+        refused(RefusalCode::ModelPreparationNotEligible)
+    );
+    // The idle warm-up has no generation guard (`recording.rs:1240`, `:1248`).
+    let idle_warm = Occupancy {
+        status: Status::Idle,
+        model_prep_variant: ModelPrepVariant::IdleWarm,
+        model_matches: true,
+        recording_id: RecordingId(9),
+        expected_recording_id: None,
+        ..quiet()
+    };
+    assert!(matches!(
+        admit(Request::ModelPreparation, &idle_warm),
+        Admission::Admit(_)
+    ));
+}
+
+#[test]
+fn model_preparation_spans_the_shared_backend_claim() {
+    // The shell claims the shared backend change, then prepares under it: the
+    // eligibility read must not see its own claim as a conflict.
+    assert_eq!(
+        admit(Request::SharedBackendChange, &quiet()),
+        Admission::Admit(Claims::of(ClaimKind::SharedBackendChange))
+    );
+    let under_claim = Occupancy {
+        shared_backend_change: true,
+        status: Status::Idle,
+        model_prep_variant: ModelPrepVariant::IdleWarm,
+        model_matches: true,
+        ..quiet()
+    };
+    assert!(matches!(
+        admit(Request::ModelPreparation, &under_claim),
+        Admission::Admit(_)
+    ));
+    // ...while a second claim is refused.
+    assert_eq!(
+        admit(Request::SharedBackendChange, &under_claim),
+        refused(RefusalCode::SharedBackendBusy)
+    );
+}
+
+#[test]
+fn post_claim_phases_do_not_read_their_own_claim() {
+    // File transcription: after `swap(true)` the flag is set.
+    assert!(matches!(
+        admit(Request::FileTranscriptionPreClaim, &quiet()),
+        Admission::Admit(Claims {
+            claim: ClaimKind::FileTranscription,
+            ..
+        })
+    ));
+    let file_claimed = Occupancy {
+        file_transcribing: true,
+        file_claim_prior: Some(false),
+        ..quiet()
+    };
+    assert!(matches!(
+        admit(Request::FileTranscriptionPreClaim, &file_claimed),
+        Admission::Admit(_)
+    ));
+    assert_eq!(
+        admit(Request::FileTranscriptionPostClaim, &file_claimed),
+        Admission::Admit(Claims::of(ClaimKind::None))
+    );
+    // Meeting: after the claim stores both flags.
+    assert!(matches!(
+        admit(Request::MeetingPreClaim, &quiet()),
+        Admission::Admit(_)
+    ));
+    let meeting_claimed = Occupancy {
+        meeting_active: true,
+        meeting_inference_active: true,
+        relaunch_recheck: Some(false),
+        ..quiet()
+    };
+    assert_eq!(
+        admit(Request::MeetingPostClaim, &meeting_claimed),
+        Admission::Admit(Claims::of(ClaimKind::None))
+    );
+    // Mic startup benchmark: after `try_start()` the coordinator runs Benchmark.
+    assert!(matches!(
+        admit(Request::MicStartupBenchmarkPreClaim, &quiet()),
+        Admission::Admit(_)
+    ));
+    let bench_claimed = Occupancy {
+        benchmark_running: true,
+        second_claim: Some(true),
+        ..quiet()
+    };
+    assert_eq!(
+        admit(Request::MicStartupBenchmarkPostClaim, &bench_claimed),
+        Admission::Admit(Claims::of(ClaimKind::None))
+    );
+    // Relaunch: the gate's own commitment is excluded from activity.
+    let committed = Occupancy {
+        relaunch_committed: true,
+        ..quiet()
+    };
+    assert!(matches!(
+        admit(Request::RelaunchGate, &committed),
+        Admission::Admit(_)
+    ));
+}
+
+#[test]
+fn single_phase_claims_are_terminal_and_must_not_be_readmitted() {
+    // Benchmark, Corpus, SharedBackendChange, ModelRemoval and DictationStart
+    // have no post-claim phase. After their claim a second `admit` of the same
+    // request conflicts with the claim itself, so the shell must never recheck
+    // through `admit` (the recheck points are C6.4's own).
+    let cases: [(Request, Mutate, RefusalCode); 4] = [
+        (
+            Request::Benchmark,
+            |o| o.benchmark_running = true,
+            RefusalCode::BenchAlreadyRunning,
+        ),
+        (
+            Request::Corpus,
+            |o| o.corpus_active = true,
+            RefusalCode::CorpusAlreadyActive,
+        ),
+        (
+            Request::SharedBackendChange,
+            |o| o.shared_backend_change = true,
+            RefusalCode::SharedBackendBusy,
+        ),
+        (
+            Request::DictationStart,
+            |o| o.status = Status::Starting,
+            RefusalCode::AlreadyStarting,
+        ),
+    ];
+    for (request, claimed, code) in cases {
+        assert!(matches!(admit(request, &quiet()), Admission::Admit(_)));
+        let mut after = quiet();
+        claimed(&mut after);
+        assert_eq!(admit(request, &after), refused(code), "{request:?}");
+    }
 }

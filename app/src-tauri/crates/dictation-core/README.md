@@ -24,11 +24,12 @@ CI runs them with the rest of the workspace libraries (`cargo nextest run -E
 |---|---|---|
 | `ids` | `RecordingId`, `OperationId`, `PreviewId`, `Now`, `Handle`. The `NEXT_OP` counter and the id allocation stay in the shell; only the newtypes live here. | C2.1, C1.4.1 |
 | `status` | `Status` (M1), the `ErrCode` / `TerminalOutcome` mirrors of `dictation_telemetry.rs`, `AudioCancelReason`, `StopTrigger`. | C1.2, C2.1, C3 |
+| `state` | The C1 state vocabulary: `PersistedCore` (**only** M1 `status` and M2 `current_id`, committed at their effect through `set_status` / `alloc_id`), `LiveObs` and `DictationCore` (the immutable decision view: M3 `cancelled_through` and M4 `context_for` are observations, never stored), `LockFreeFacts` (M2, M3 for D-less entries), and the pure C3.8 queries 401/402/403/406/407. H1/H2 stay in the shell's `core_history`. Query 404 (ticker registration) reads atomics and stays in the shell. | C1.2, C1.4, C2.3, C3.8 |
 | `effects` | `Placement` (`Pre`/`In`/`PostDT`/`PostT`), `Placed`, the `Effect` enum (one variant per legend code), `Cond`, and `validate_effects` (placements non-decreasing, `ST` only `In`, `EmitOk` pairs an earlier emit). `HIST` is deliberately not an effect. | C0.1, C0.2 |
 | `decision` | `Decision`, `Verdict`, `Refusal`, `StaleKind`, `InvalidKind`, `ObsKind` (`NeedObservation`), `ContKind`, `ContinuationSpec` / `Continuation`, `OpStatus`, `RowId`, `SiteId` with the shadow `site_id` encoding (202n = 2021, 204a = 2041, 204b = 2042), and `Decision::validate`. | C2.1, C2.2, C0.3, C1.4.1 |
-| `inputs` | One input struct per decide function (C2.3 table, C2.4 sketches), the `Input` enum (one variant per site) and `StartInput::pre_verdict`. | C2.3, C2.4, C3 |
+| `inputs` | One input struct per decide function (C2.3 table, C2.4 sketches), the `Input` enum (every one of the 24 sites is reachable, incl. 216 via `SupervisorEvent::InterruptedShortIdle`) and `StartInput::pre_verdict`. | C2.3, C2.4, C3 |
 | `replies` | `Reply`, `ReplyType` (the literal `type` strings), `ErrText`, `ProcessAudioRefusal`. No serde: the shell maps replies to JSON. | C2.1, C3 "Reply" columns |
-| `admission` | `Request` (16 per-phase variants), `Occupancy`, `Admission`, `RefusalCode` (today's literals), `admit()`, and `admit_traced()` / `check_order()` which expose the evaluated checks. | C6.1, C6.1a, C6.2, C6.3, C6.4 |
+| `admission` | `Request` (17 per-phase variants), `Occupancy`, `Admission`, `RefusalCode` (today's literals), `admit()`, and `admit_traced()` / `check_order()` which expose the evaluated checks. | C6.1, C6.1a, C6.2, C6.3, C6.4 |
 
 ## Admission
 
@@ -75,6 +76,29 @@ Any change to a claim protocol (for example making `Meeting` re-read dictation
 status after its claim, or giving `Meeting` a preview check) is a separate,
 separately-approved fix.
 
+### Phase sequences
+
+A request that claims or waits is split into phases, and a recheck or retry
+must call the **next** phase, never the one before the claim or the wait:
+
+| Sequence | Phases | Rule |
+|---|---|---|
+| Preview start | `PreviewStart` (before `preview.claim()`) → `PreviewStartRecheck` (`microphone_preview.rs:270`, `is_connecting(id)` only) | After the claim `preview_active` is true, so re-running `PreviewStart` would refuse the preview's own generation. The recheck repeats no admission check and claims nothing. |
+| Standby / key-down retirement (`PreviewStart`, `MicStartupBenchmarkPreClaim`) | `WaitThen(RetireStandby)` / `WaitThen(RetireKeyDownCapture)` → the same request with `standby_retire_attempted` / `key_down_retire_attempted` set | Each wait is returned **at most once**. If the retire timed out or left the capture present, the retry falls through to `audio_active` and refuses (`preview_audio_blocker`, `microphone_preview.rs:137-146`) instead of waiting again. |
+| File transcription | `PreClaim` → claim → `PostClaim` | `PostClaim` does not read `file_transcribing` (its own claim). The shell passes `file_claim_prior` once it has swapped. |
+| Meeting | `PreClaim` → claim → `PostClaim` | `PostClaim` reads only the re-read `relaunch_committed`. |
+| Mic startup benchmark | `PreClaim` → `try_start()` → `PostClaim` | `PostClaim` reads only `second_claim`. |
+| Model preparation | `ModelPreparation` (twice around the backend wait, `recording.rs:1153`, `:1168`) | The recording id the worker was spawned for must equal the current id, evaluated first; a stale worker is never eligible. The idle warm-up has no generation guard (`recording.rs:1240`, `:1248`), and its read under its own `SharedBackendChange` claim does not see that claim. |
+| Relaunch gate | gate reads activity with the relaunch's own commitment excluded | `RelaunchGate` ignores `relaunch_committed`. |
+| Single-phase claims (`DictationStart`, `Benchmark`, `Corpus`, `SharedBackendChange`, `ModelRemoval`) | one `admit`, then the claim | After the claim a second `admit` conflicts with the claim itself; the shell must not recheck through `admit` (C6.4's own recheck points apply). |
+
+`tests.rs` spans every row of this table (`preview_recheck_spans_the_claim`,
+`key_down_retirement_timeout_refuses_instead_of_waiting_again`,
+`standby_retirement_is_attempted_once_for_every_request_that_waits`,
+`no_request_can_wait_more_than_once_per_kind`, `model_preparation_*`,
+`post_claim_phases_do_not_read_their_own_claim`,
+`single_phase_claims_are_terminal_and_must_not_be_readmitted`).
+
 ## Deviations from the appendix, and where the code wins
 
 The appendix is normative except where it contradicts the code at the base
@@ -117,7 +141,12 @@ omits)
   listener / gesture / permission checks that sit between `processing` and
   `disabled` in `fn_capture.rs` `admission_refusal`), `preview_start_revoked`,
   `transition_lock_busy`, `dictation_lock_busy` (`ModelRemoval`'s two
-  `try_lock`s), `model_matches` and `model_prep_variant`.
+  `try_lock`s), `model_matches`, `model_prep_variant`, `recording_id` /
+  `expected_recording_id` (the model-preparation generation guard),
+  `standby_retire_attempted` and `key_down_retire_attempted` (a wait is
+  returned once).
+- `Request::PreviewStartRecheck`: a 17th request. C6.1 lists the recheck as part
+  of `PreviewStart`; the code runs it after the claim, in another task.
 - `Admission::NeedObservation`: C6.2 #1 routes the smart-auto resolve "through
   `NeedObservation`"; `admit` returns it before any later check.
 - `PreviewStart` puts the `standby` wait first, because the code retires Standby
