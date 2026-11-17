@@ -513,3 +513,326 @@ fn a_panic_in_the_abort_port_still_drains_the_failure_prefix() {
         });
     });
 }
+
+// ------------------------------- D-S2-13 / D-S2-15: the flight's carried work
+
+use crate::core_history::ContinuationGuard;
+use crate::dictation_executor::executor::CoreEntry;
+use murmur_dictation_core::decision::{ContKind, ContinuationSpec};
+use murmur_dictation_core::ids::RecordingId;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+fn cont_spec(rid: u64, kind: ContKind) -> ContinuationSpec {
+    ContinuationSpec {
+        recording_id: RecordingId(rid),
+        kind,
+    }
+}
+
+/// The scenario's parameters and result: the body is a plain `fn` that runs on the
+/// watchdog's thread, so they live in a process-wide cell, and one scenario runs at
+/// a time.
+struct Scenario {
+    r_first: bool,
+    extra_owner: bool,
+    end_state: Option<String>,
+}
+
+static SCENARIO: std::sync::Mutex<Scenario> = std::sync::Mutex::new(Scenario {
+    r_first: false,
+    extra_owner: false,
+    end_state: None,
+});
+static SCENARIO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// What the scenario of [`finish_f_and_retirement_r`] ends in: status, generation,
+/// history counts and counters, and how many times F's idle emit ran.
+fn end_state(w: &Arc<World>, idle: &AtomicUsize) -> String {
+    let app = &w.state().app_state;
+    format!(
+        "status={:?} id={} history={:?} counters={:?} idle_emits={}",
+        app.dictation.lock_or_recover().status,
+        app.recording_id.load(Ordering::SeqCst),
+        history_counts(w),
+        app.core_history.counters(),
+        idle.load(AtomicOrdering::SeqCst),
+    )
+}
+
+/// An independent entry on this thread (it holds no T): it drops an op inside a core
+/// span and drains it, as the end of any entry does.
+fn an_independent_entry_retires(app: &AppState, op: ContinuationGuard) {
+    let drain = DrainDeferredFinishes::new(app);
+    let span = CoreEntry::enter().expect("outside any span");
+    drop(op);
+    assert_eq!(queued_finishes(), 1, "R is queued in the span");
+    drop(span);
+    drop(drain);
+}
+
+/// A start carries finish F (queued by a listener of the `starting` emit: the
+/// current recording's, with its own pipeline owner and an owned idle emit) and
+/// suspends in the destination capture, holding T. An independent entry queues and
+/// drains retirement R (an unrelated op) either while the start is suspended (R
+/// first) or after the start returned (F first). Returns the end state.
+fn finish_f_and_retirement_r(r_first: bool, extra_owner: bool) -> String {
+    let _one_at_a_time = SCENARIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    *SCENARIO.lock().unwrap_or_else(|e| e.into_inner()) = Scenario {
+        r_first,
+        extra_owner,
+        end_state: None,
+    };
+    under_watchdog("a suspended start carrying a finish", || {
+        run_sub_run(&SubRun {
+            title: "carried finish F against retirement R",
+            setup: Setup::idle(),
+            body: |w| {
+                let (r_first, extra) = {
+                    let scenario = SCENARIO.lock().unwrap_or_else(|e| e.into_inner());
+                    (scenario.r_first, scenario.extra_owner)
+                };
+                w.close_gate("smart_capture");
+                w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+                let app = &w.state().app_state;
+                let idle = Arc::new(AtomicUsize::new(0));
+                // Another owner F's own idle emit drops (its retirement is queued in
+                // the emit's span, behind F).
+                let extra_owner = Arc::new(std::sync::Mutex::new(extra.then(|| {
+                    PipelineOwner::register(&app.core_history, cont_spec(8, ContKind::Pipeline))
+                })));
+                let (world, counted, slot) =
+                    (Arc::clone(w), Arc::clone(&idle), Arc::clone(&extra_owner));
+                w.on_inline("emit:recording-status-changed", move || {
+                    let app = &world.state().app_state;
+                    let rid = app.recording_id.load(Ordering::SeqCst);
+                    let owner = PipelineOwner::register(
+                        &app.core_history,
+                        cont_spec(rid, ContKind::Pipeline),
+                    );
+                    let mut finisher = IdleGuard::for_pipeline(app, rid, Some(owner));
+                    finisher.finish_owned(move |_| {
+                        counted.fetch_add(1, AtomicOrdering::SeqCst);
+                        drop(slot.lock().expect("slot").take());
+                        true
+                    });
+                    assert_eq!(queued_finishes(), 1, "F is queued in the span");
+                });
+                let r_op = ContinuationGuard::register(
+                    &app.core_history,
+                    cont_spec(9, ContKind::ResolveContext),
+                );
+                let mut start = w.start();
+                assert!(
+                    poll_once(&mut start).is_pending(),
+                    "the start suspends in the destination capture"
+                );
+                assert_eq!(queued_finishes(), 0, "F is carried by the flight");
+                assert_eq!(idle.load(AtomicOrdering::SeqCst), 0, "F has not run");
+                assert!(
+                    app.recording_transition.try_lock().is_err(),
+                    "the suspended start holds T"
+                );
+                let mut r_op = Some(r_op);
+                if r_first {
+                    let ops_before = history_counts(w).1;
+                    an_independent_entry_retires(app, r_op.take().expect("R"));
+                    assert_eq!(queued_finishes(), 0);
+                    assert_eq!(idle.load(AtomicOrdering::SeqCst), 0, "F is still carried");
+                    assert_eq!(history_counts(w).1, ops_before - 1, "R's op is retired");
+                }
+                w.open_gate("smart_capture");
+                let reply = complete(&mut start);
+                assert!(reply.is_ok(), "{reply:?}");
+                if let Some(op) = r_op.take() {
+                    an_independent_entry_retires(app, op);
+                }
+                assert_eq!(queued_finishes(), 0);
+                SCENARIO.lock().unwrap_or_else(|e| e.into_inner()).end_state =
+                    Some(end_state(w, &idle));
+            },
+        });
+    });
+    let end_state = SCENARIO
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .end_state
+        .take();
+    end_state.expect("the scenario ran")
+}
+
+/// D-S2-15: deferred work is ordered per owner. Work carried by a suspended flight
+/// does not block an independent entry's drain, and the end state is the same as
+/// when F drains first: F's idle emit happens exactly once, the history is empty
+/// and the status and generation agree.
+#[test]
+fn a_retirement_drained_while_a_start_carries_a_finish_ends_in_the_same_state() {
+    let f_then_r = finish_f_and_retirement_r(false, false);
+    let r_then_f = finish_f_and_retirement_r(true, false);
+    assert_eq!(r_then_f, f_then_r);
+    assert!(f_then_r.contains("idle_emits=1"), "{f_then_r}");
+    assert!(f_then_r.contains("history=(0, 0)"), "{f_then_r}");
+}
+
+/// A carried finish's idle listener may drop another owner: its retirement is
+/// queued in the span of the flight's own drain, and the drain's count of live
+/// guards must cover it (D-S2-13), on the thread that drains.
+#[test]
+fn a_carried_finishes_idle_listener_can_queue_a_retirement_in_the_flights_drain() {
+    let state = finish_f_and_retirement_r(false, true);
+    assert!(state.contains("idle_emits=1"), "{state}");
+    assert!(state.contains("history=(0, 0)"), "{state}");
+}
+
+/// Nothing is left on the thread, with T free, when a start future is dropped
+/// while suspended with carried work: the flight's drain runs (T first released by
+/// the future's own drop order), the queue ends empty and H1/H2 retire exactly once.
+#[test]
+fn a_start_dropped_while_suspended_with_carried_work_drains_after_t() {
+    under_watchdog("a suspended start dropped", || {
+        run_sub_run(&SubRun {
+            title: "dropped suspended start",
+            setup: Setup::idle(),
+            body: |w| {
+                let parked = park_a_stop_of_recording_1(w);
+                w.close_gate("smart_capture");
+                w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+                let slot = Arc::clone(&parked);
+                w.on_inline("emit:recording-status-changed", move || {
+                    drop(slot.lock().expect("slot").take());
+                });
+                let counters = w.state().app_state.core_history.counters();
+                take_t_free_at_drain();
+                let mut start = w.start();
+                assert!(
+                    poll_once(&mut start).is_pending(),
+                    "suspended in the capture"
+                );
+                assert!(parked.lock().expect("slot").is_none(), "the listener ran");
+                assert_eq!(queued_finishes(), 0, "carried by the flight");
+                assert!(
+                    w.state().app_state.recording_transition.try_lock().is_err(),
+                    "the suspended start holds T"
+                );
+                drop(start);
+                assert_drained_with_t_free("a dropped suspended start");
+                assert_eq!(queued_finishes(), 0, "the queue ends empty");
+                assert_eq!(history_counts(w), (0, 0), "H1 and H2 are retired");
+                assert!(
+                    w.state().app_state.recording_transition.try_lock().is_ok(),
+                    "T is free"
+                );
+                let after = w.state().app_state.core_history.counters();
+                assert_eq!(
+                    format!("{after:?}").len(),
+                    format!("{counters:?}").len(),
+                    "counters keep their shape"
+                );
+                w.open_gate("smart_capture");
+                // The dropped start left Starting behind; put the end state in order.
+                w.state().app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
+            },
+        });
+    });
+}
+
+/// The flight takes only what its own stretches queued: an entry queued by an
+/// independent entry before the flight's stretch stays queued through the flight's
+/// stretch and drain, and runs at that entry's own drain.
+#[test]
+fn a_flight_never_takes_another_entrys_work() {
+    let app = AppState::default();
+    let history = app.core_history.clone();
+    let x = PipelineOwner::register(&history, cont_spec(5, ContKind::Pipeline));
+    let y = ContinuationGuard::register(&history, cont_spec(6, ContKind::ResolveContext));
+    assert_eq!(
+        (history.pipeline_count(), history.outstanding_ops()),
+        (1, 2)
+    );
+    let independent = DrainDeferredFinishes::new(&app);
+    {
+        let span = CoreEntry::enter().expect("outside any span");
+        drop(x);
+        drop(span);
+    }
+    assert_eq!(queued_finishes(), 1, "X waits for its own entry's drain");
+    let mut flight = FlightDrain::new(&app);
+    {
+        let _stretch = flight.stretch();
+        let span = CoreEntry::enter().expect("outside any span");
+        drop(y);
+        drop(span);
+    }
+    assert_eq!(queued_finishes(), 1, "the stretch took Y and left X");
+    drop(flight);
+    assert_eq!(
+        (history.pipeline_count(), history.outstanding_ops()),
+        (1, 1),
+        "the flight's drain retired Y only; X is still registered"
+    );
+    assert_eq!(queued_finishes(), 1);
+    drop(independent);
+    assert_eq!(
+        (history.pipeline_count(), history.outstanding_ops()),
+        (0, 0)
+    );
+    assert_eq!(queued_finishes(), 0);
+}
+
+/// A suspended start dropped inside another state's core span: the carried finish
+/// and the retirement of the future's own continuation go to the queue with their
+/// state, and the entry that owns that span runs them once it exits (it belongs to
+/// a different state, and filtering by its own would strand them).
+#[test]
+fn a_flight_dropped_inside_another_states_span_is_drained_by_that_spans_entry() {
+    let app_a = AppState::default();
+    let app_b = AppState::default();
+    let history_a = app_a.core_history.clone();
+    let rid = app_a.next_recording_id();
+    app_a.dictation.lock_or_recover().status = DictationStatus::Processing;
+    let owner = PipelineOwner::register(&history_a, cont_spec(rid, ContKind::Pipeline));
+    let mut finisher = IdleGuard::for_pipeline(&app_a, rid, Some(owner));
+    let idle = Arc::new(AtomicUsize::new(0));
+    let mut flight = FlightDrain::new(&app_a);
+    {
+        let _stretch = flight.stretch();
+        let span = CoreEntry::enter().expect("outside any span");
+        let counted = Arc::clone(&idle);
+        finisher.finish_owned(move |_| {
+            counted.fetch_add(1, AtomicOrdering::SeqCst);
+            true
+        });
+        drop(span);
+    }
+    let own_op =
+        ContinuationGuard::register(&history_a, cont_spec(rid + 1, ContKind::ResolveContext));
+    assert_eq!(
+        (history_a.pipeline_count(), history_a.outstanding_ops()),
+        (1, 2)
+    );
+    let entry_of_b = DrainDeferredFinishes::new(&app_b);
+    {
+        let span_of_b = CoreEntry::enter().expect("outside any span");
+        // The future's fields drop in the span (its continuation defers), then the
+        // flight: nothing can run now.
+        drop(own_op);
+        drop(flight);
+        assert_eq!(queued_finishes(), 2, "both wait for the span to exit");
+        assert_eq!(idle.load(AtomicOrdering::SeqCst), 0);
+        drop(span_of_b);
+    }
+    drop(entry_of_b);
+    assert_eq!(queued_finishes(), 0, "nothing is stranded");
+    assert_eq!(
+        idle.load(AtomicOrdering::SeqCst),
+        1,
+        "F's idle emit ran once"
+    );
+    assert_eq!(
+        app_a.dictation.lock_or_recover().status,
+        DictationStatus::Idle
+    );
+    assert_eq!(
+        (history_a.pipeline_count(), history_a.outstanding_ops()),
+        (0, 0)
+    );
+}
