@@ -72,8 +72,10 @@ pub struct StartInput {
     pub fixed_and_smart: bool,
     /// Read under D+T exactly where 5347-5393 read it.
     pub occupancy: Occupancy,
-    /// `is_dictation_cleanup_pending(current_id)` (`[in]`, 5523).
-    pub cleanup_pending: bool,
+    /// `is_dictation_cleanup_pending(current_id)` (`[in]`, 5523). `None` until the
+    /// shell answers `NeedObservation(CleanupPending)` (D-S1-2: read only after
+    /// the blockers and status step passed).
+    pub cleanup_pending: Option<bool>,
     /// Answer to `NeedObservation(SmartAutoSelection)`.
     pub smart_auto_result: Option<Result<SmartAutoSel, String>>,
 }
@@ -510,7 +512,7 @@ mod tests {
             app_disabled: false,
             fixed_and_smart: false,
             occupancy: Occupancy::default(),
-            cleanup_pending: false,
+            cleanup_pending: None,
             smart_auto_result: None,
         }
     }

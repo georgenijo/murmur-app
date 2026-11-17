@@ -115,6 +115,14 @@ pub enum ObsKind {
         /// Recording whose preserved capture is taken.
         id: RecordingId,
     },
+    /// `is_dictation_cleanup_pending(current_id)` (5523): read by the start only
+    /// after the blockers and the status step passed and status is `Idle`
+    /// (decision D-S1-2: the supervisor read is not free, so the decide function
+    /// asks for it instead of the shell reading it eagerly).
+    CleanupPending {
+        /// The current recording whose retiring capture is looked up.
+        id: RecordingId,
+    },
     /// `active_context(rid).is_some()` (4947), a leaf-mutex read today's `Ready`
     /// arm performs only after the stale check passed (decision D-S1-2: the
     /// decide function asks for it instead of the shell reading it eagerly).
