@@ -173,8 +173,10 @@ fn emit_preview_vad_disagreement(app_state: &AppState, recording_id: u64, sample
 #[path = "recording_host.rs"]
 mod dictation_host;
 use dictation_host::{DictationHost, TauriHost};
+use process_audio_ports::ImportedAudioHost;
 mod cancel_ports;
 mod lifecycle_ports;
+mod process_audio_ports;
 mod ready_ports;
 mod start_ports;
 mod stop_ports;
@@ -202,6 +204,10 @@ mod cancel_tests;
 #[cfg(test)]
 #[path = "recording_start_tests.rs"]
 mod start_tests;
+
+#[cfg(test)]
+#[path = "recording_process_audio_tests.rs"]
+mod process_audio_tests;
 
 #[cfg(test)]
 #[path = "recording_golden_harness.rs"]
@@ -4211,11 +4217,18 @@ pub async fn process_audio(
     audio_data: String,
     state: tauri::State<'_, State>,
 ) -> Result<serde_json::Value, String> {
-    let transition = crate::commands::microphone_preview::transition_after_stopping_preview(
-        &app_handle,
-        state.inner(),
-    )
-    .await?;
+    let host = process_audio_ports::TauriImportHost::new(app_handle);
+    process_audio_inner(&host, state.inner(), &audio_data).await
+}
+
+/// The body of the legacy `process_audio`, over a host (the seam of
+/// `process_audio_ports`). The state is the command's own `&State`; no lookup.
+async fn process_audio_inner(
+    host: &dyn ImportedAudioHost,
+    state: &State,
+    audio_data: &str,
+) -> Result<serde_json::Value, String> {
+    let transition = host.transition(state).await?;
     if state.app_state.meeting_blocks_asr() {
         return Err("Cannot process audio while a meeting transcript is active.".to_string());
     }
@@ -4241,7 +4254,7 @@ pub async fn process_audio(
         let recording_id =
             crate::dictation_executor::FieldAdapter::alloc_id(&state.app_state, &mut dictation);
         transition_dictation_status(recording_id, &mut dictation, DictationStatus::Processing);
-        let delivery_target = crate::frontmost::capture_delivery_target_snapshot();
+        let delivery_target = host.capture_delivery_target_snapshot();
         (
             recording_id,
             delivery_target,
@@ -4249,17 +4262,18 @@ pub async fn process_audio(
         )
     };
     drop(transition);
-    keyboard::set_processing(true);
-    let _ = app_handle.emit(
+    host.set_processing(true);
+    let _ = host.emit_json(
         "dictation-generation-started",
         serde_json::json!({ "recordingId": rid }),
     );
-    let _ = app_handle.emit("recording-status-changed", "processing");
+    let _ = host.emit_json("recording-status-changed", serde_json::json!("processing"));
     // Legacy process_audio has a single API acceptance boundary: audio has
     // already been recorded by its caller. Freeze its destination here, when
     // processing is accepted; the native recording path freezes at start.
-    let smart_destination =
-        crate::smart_destination::capture(&app_handle, &delivery_target, smart_enabled).await;
+    let smart_destination = host
+        .capture_smart_destination(&delivery_target, smart_enabled)
+        .await;
     let capture_is_current = {
         let dictation = state.app_state.dictation.lock_or_recover();
         recording_capture_is_current(
@@ -4284,13 +4298,7 @@ pub async fn process_audio(
     let destination = select_recording_destination(&delivery_target, smart_destination);
     let context = resolve_recording_context(&state.app_state, destination);
     if smart_enabled {
-        emit_smart_destination(
-            &app_handle,
-            &state.app_state,
-            rid,
-            &context,
-            &delivery_target,
-        );
+        host.emit_smart_destination(&state.app_state, rid, &context, &delivery_target);
     }
     if let Err(error) = state.performance.begin_dictation_diagnosed(
         rid,
@@ -4308,13 +4316,13 @@ pub async fn process_audio(
 
     // Phase: Audio parse (base64 decode + WAV to samples)
     let t_parse = std::time::Instant::now();
-    let wav_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &audio_data)
+    let wav_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, audio_data)
         .map_err(|e| {
-            guard.finish(|_| app_handle.emit("recording-status-changed", "idle"));
+            guard.finish(|_| host.emit_json("recording-status-changed", serde_json::json!("idle")));
             format!("Failed to decode base64: {}", e)
         })?;
     let samples = transcriber::parse_wav_to_samples(&wav_bytes).inspect_err(|_e| {
-        guard.finish(|_| app_handle.emit("recording-status-changed", "idle"));
+        guard.finish(|_| host.emit_json("recording-status-changed", serde_json::json!("idle")));
     })?;
     tracing::info!(target: "pipeline", "audio parse (base64 + WAV): {:?}", t_parse.elapsed());
     performance_guard.record(StageTimingV1::measured(
@@ -4327,18 +4335,18 @@ pub async fn process_audio(
     guard.disarm();
 
     let t_total = std::time::Instant::now();
-    let pipeline_result = run_transcription_pipeline(
-        &samples,
-        &app_handle,
-        &state.app_state,
-        rid,
-        &mut performance_guard,
-        Arc::clone(&context),
-        // Imported audio has no live stop transition: its snapshot is already
-        // taken at the accepted Idle -> Processing transition.
-        PipelineStopContext::default(),
-    )
-    .await;
+    let pipeline_result = host
+        .run_transcription_pipeline(
+            &samples,
+            &state.app_state,
+            rid,
+            &mut performance_guard,
+            Arc::clone(&context),
+            // Imported audio has no live stop transition: its snapshot is already
+            // taken at the accepted Idle -> Processing transition.
+            PipelineStopContext::default(),
+        )
+        .await;
     // Only emit idle if this recording wasn't cancelled/superseded.
     // Hold the dictation lock across the check+emit to prevent a concurrent
     // start from interleaving a "recording" status between our check and emit.
@@ -4348,8 +4356,11 @@ pub async fn process_audio(
         &state.app_state,
         rid,
         murmur_dictation_core::inputs::PostKind::LegacyPost,
-        &keyboard::set_processing,
-        &|| app_handle.emit("recording-status-changed", "idle").is_ok(),
+        &|processing| host.set_processing(processing),
+        &|| {
+            host.emit_json("recording-status-changed", serde_json::json!("idle"))
+                .is_ok()
+        },
     );
     let pipeline = pipeline_result?;
     let text = pipeline.text;
