@@ -1,0 +1,9 @@
+# Passed with --config-file to both CI nextest steps that run the golden
+# dictation scenarios ("Run tests" and "Run golden dictation scenarios 100
+# times"). A golden scenario never waits on a clock, so one still running after
+# this budget is a missing wake or a deadlock: nextest kills it and the step
+# fails instead of hanging the job. Only the goldens get this budget; every
+# other test keeps nextest's defaults.
+[[profile.default.overrides]]
+filter = 'test(/golden_tests::golden_/)'
+slow-timeout = { period = "20s", terminate-after = 3 }

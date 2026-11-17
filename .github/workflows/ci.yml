@@ -328,11 +328,33 @@ jobs:
         # is bin-only, so its tests stay in the following dedicated step.
         # nextest gives every test its own process, so tests that share process
         # state stay as isolated as `cargo test -- --test-threads=1` kept them,
-        # while the suite uses every core.
+        # while the suite uses every core. The golden scenarios get a per-test
+        # kill budget from .github/nextest-golden.toml so a missing wake fails
+        # here instead of hanging the job before the bounded repeat step.
         run: >-
           cd app/src-tauri &&
           cargo nextest run --cargo-metadata target/ci-cargo-metadata.json
           --binaries-metadata target/ci-test-binaries.json -E 'kind(lib)'
+          --config-file ../../.github/nextest-golden.toml
+
+      - name: Run golden dictation scenarios 100 times
+        if: needs.changes.outputs.verified != 'true'
+        # Stage 0b gates G1, G4 and G5: every golden scenario runs 100 times in
+        # one process and each run must equal its checked-in trace (about 1 s).
+        # The single pass above is the ordinary check; this one is the flake
+        # budget. Reuses the prebuild like the steps around it. A scenario
+        # never waits on a clock, so a hang is a missing wake: the nextest
+        # profile in .github/nextest-golden.toml kills a test after 60 s and
+        # the step's own timeout is a backstop, so neither can hang the job.
+        timeout-minutes: 5
+        env:
+          MURMUR_GOLDEN_REPEAT: "100"
+        run: >-
+          cd app/src-tauri &&
+          cargo nextest run --cargo-metadata target/ci-cargo-metadata.json
+          --binaries-metadata target/ci-test-binaries.json
+          --config-file ../../.github/nextest-golden.toml
+          -E 'kind(lib) & test(/golden_tests::golden_/)'
 
       - name: Run capture worker unit tests
         if: needs.changes.outputs.verified != 'true'

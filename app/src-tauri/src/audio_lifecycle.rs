@@ -2717,6 +2717,20 @@ pub(crate) fn take_interrupted_dictation(recording_id: u64) -> Option<Interrupte
         .remove(&AudioOwner::Dictation(recording_id))
 }
 
+/// What `finish_attempt` does before it notifies `Interrupted`: park the
+/// captured audio where `take_interrupted_dictation` finds it. The Stage 0b
+/// golden scenarios use it from their fake supervisor.
+#[cfg(test)]
+pub(crate) fn insert_interrupted_dictation_for_test(
+    recording_id: u64,
+    capture: InterruptedCapture,
+) {
+    interrupted_captures()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(AudioOwner::Dictation(recording_id), capture);
+}
+
 fn report_failure_once(attempt: &mut Attempt, sink: &dyn LifecycleSink, failure: AudioFailure) {
     if attempt.failure_reported {
         return;

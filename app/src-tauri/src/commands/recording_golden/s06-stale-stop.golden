@@ -1,0 +1,100 @@
+# golden: s06-stale-stop
+# scenario: 6 stale stop
+# witnesses: PD-12
+# lines: `~` is shared state seen to change since the previous line; `#` is a
+# scenario step; everything else is a port call, an emit or a reply, in order.
+
+=== 6a stale stop for id-1 after a newer start ===
+mic_transition
+keyboard.is_app_disabled
+supervisor.is_dictation_cleanup_pending 0 -> false
+~ recording_id 0 -> 1
+ax.capture_delivery_target_snapshot
+~ status Idle -> Starting
+emit dictation-generation-started {"recordingId":1}
+emit recording-status-changed "starting"
+performance.register_production 1 SystemDefault
+performance.begin_register 1
+supervisor.start 1 toggle
+supervisor.set_phase Starting
+supervisor.notify 1 Accepted
+supervisor.set_phase Recording
+supervisor.notify 1 Ready
+supervisor.start_ack 1 Ok
+smart_destination.capture enabled=false
+refresh_expired_ide_context
+performance.production_context 1
+~ context 1 installed
+publish_recording_ready 1
+supervisor.is_dictation_recording 1 -> true
+emit recording-status-changed "recording"
+SD ticker 1 registered=true
+~ status Starting -> Recording
+publish_recording_ready 1 -> true
+spawn_model_preparation 1
+performance.spawn_begin 1
+reply start Ok {"recordingId":1,"state":"starting","type":"recording_starting"}
+claim_preview_hide 1
+ax.capture_delivery_target_snapshot
+~ status Recording -> Processing
+keyboard.hotkey_release_take_for 1
+keyboard.stop_gesture_take_for 1
+keyboard.set_processing true
+~ processing true
+emit recording-status-changed "processing"
+supervisor.stop 1 Other
+supervisor.set_phase Stopping
+supervisor.sealed_delivery 1 samples=0
+performance.production_sample_count 1 0
+~ processing false
+~ context 1 cleared
+~ terminal 1 NoSpeech/EmptyAudio
+emit recording-status-changed "idle"
+~ status Processing -> Idle
+~ perf-claim 1 {"status":"noSpeech"}
+reply stop Ok {"state":"idle","text":"","type":"transcription"}
+# the supervisor finishes the sealed stop before the newer start
+supervisor.clear_owner 1
+supervisor.set_phase Idle
+supervisor.notify 1 CleanupFinished
+emit recording-cleanup-finished {"recordingId":1}
+emit recording-status-changed "idle"
+mic_transition
+keyboard.is_app_disabled
+supervisor.is_dictation_cleanup_pending 1 -> false
+~ recording_id 1 -> 2
+ax.capture_delivery_target_snapshot
+~ status Idle -> Starting
+emit dictation-generation-started {"recordingId":2}
+emit recording-status-changed "starting"
+performance.register_production 2 SystemDefault
+performance.begin_register 2
+supervisor.start 2 toggle
+supervisor.set_phase Starting
+supervisor.notify 2 Accepted
+supervisor.set_phase Recording
+supervisor.notify 2 Ready
+supervisor.start_ack 2 Ok
+smart_destination.capture enabled=false
+refresh_expired_ide_context
+performance.production_context 2
+~ context 2 installed
+publish_recording_ready 2
+supervisor.is_dictation_recording 2 -> true
+emit recording-status-changed "recording"
+SD ticker 2 registered=true
+~ status Starting -> Recording
+publish_recording_ready 2 -> true
+spawn_model_preparation 2
+performance.spawn_begin 2
+reply start Ok {"recordingId":2,"state":"starting","type":"recording_starting"}
+supervisor.take_interrupted 1 -> none
+reply stale stop(expected=1) Ok {"state":"idle","type":"recording_superseded"}
+= final status=Recording processing=false context=2 cancelled_through=0
+
+=== 6b stale stop for an unterminated id ===
+~ context 2 installed
+supervisor.take_interrupted 1 -> none
+~ terminal 1 Superseded/StaleOwner
+reply stale stop(expected=1) Ok {"state":"idle","type":"recording_superseded"}
+= final status=Recording processing=false context=2 cancelled_through=0
