@@ -405,30 +405,17 @@ pub async fn remove_model(
     model_runtime::model_definition(&model_name)?;
     // Same admission lock as live capture, files, and meetings. Hold selection
     // and runtime ownership until disk removal and the snapshot are committed.
-    let _transition = state
-        .app_state
-        .recording_transition
-        .try_lock()
-        .map_err(|_| "Wait for the current recording transition to finish")?;
-    let dictation = state
-        .app_state
-        .dictation
-        .try_lock_or_recover()
-        .ok_or("Wait for the current dictation operation to finish")?;
-    if dictation.status != crate::state::DictationStatus::Idle
-        || state.app_state.file_transcribing.load(Ordering::SeqCst)
-        || state.app_state.meeting_blocks_asr()
-        || crate::audio_lifecycle::is_audio_active()
-    {
-        return Err(
-            "Stop recording and wait for transcription to finish before removing a model"
-                .to_string(),
-        );
-    }
+    // `ModelRemoval`: both locks are `try_lock`ed in this order and held to the
+    // end; each `try_lock` outcome is the admission fact for its check.
+    let _transition = crate::dictation_admission::model_removal_transition_lock(
+        state.app_state.recording_transition.try_lock(),
+    )?;
+    let dictation = crate::dictation_admission::model_removal_dictation_lock(
+        state.app_state.dictation.try_lock_or_recover(),
+    )?;
+    crate::dictation_admission::model_removal_occupancy_check(&state.app_state, dictation.status)?;
     if !state.benchmark.try_start_shared_backend_change() {
-        return Err(
-            "Wait for the current model operation to finish before removing a model".to_string(),
-        );
+        return Err(crate::dictation_admission::model_removal_claim_failed());
     }
     struct ChangeGuard<'a>(&'a crate::benchmark::BenchmarkCoordinator);
     impl Drop for ChangeGuard<'_> {

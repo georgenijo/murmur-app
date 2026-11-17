@@ -2,7 +2,6 @@ use crate::audio::{
     AudioBackendOrderSource, AudioFailureKind, AudioInitPhase, AudioStartupDiagnostic,
 };
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent};
-use crate::state::DictationStatus;
 use crate::{MutexExt, State};
 use murmur_capture_helper_protocol::{
     CaptureBackend, CaptureSetupStep, SetupTransition as ProtocolSetupTransition,
@@ -382,6 +381,9 @@ fn require_main_window(window: &tauri::WebviewWindow) -> Result<(), String> {
     }
 }
 
+/// The pre-`admit` app-enabled check, kept as the oracle the tests compare the
+/// `app_disabled` step of `admit(MicStartupBenchmarkPreClaim)` against.
+#[cfg(test)]
 fn require_app_enabled(disabled: bool) -> Result<(), String> {
     if disabled {
         Err("Enable Murmur before testing the microphone".to_string())
@@ -1046,39 +1048,21 @@ pub async fn run_microphone_startup_benchmark(
     let coordinator = state.benchmark.clone();
     {
         let dictation = state.app_state.dictation.lock_or_recover();
-        if state.app_state.meeting_blocks_asr() {
-            return Err(
-                "Wait for the meeting transcript to finish before testing the microphone"
-                    .to_string(),
-            );
-        }
-
-        if dictation.status != DictationStatus::Idle {
-            return Err("Stop recording before testing the microphone".to_string());
-        }
-        if state.app_state.file_transcribing.load(Ordering::SeqCst) {
-            return Err("Wait for the file transcription to finish".to_string());
-        }
-        #[cfg(feature = "internal-benchmark")]
-        if state.corpus.is_active() {
-            return Err("Finish the corpus recording before testing the microphone".to_string());
-        }
-        if audio_lifecycle::is_audio_active() {
-            return Err(
-                "The microphone is still in use or recovering. Wait for Murmur to become ready."
-                    .to_string(),
-            );
-        }
-        require_app_enabled(crate::keyboard::is_app_disabled())?;
+        // `MicStartupBenchmarkPreClaim` under the dictation lock, resumed after
+        // the standby retire above: meeting, status, file, corpus,
+        // `audio_active`, `app_disabled`; then the claim is the coordinator's
+        // own `try_start()`.
+        crate::dictation_admission::microphone_benchmark_pre_claim(&state, dictation.status)?;
         if !coordinator.try_start() {
-            return Err(if coordinator.is_running() {
-                "A microphone startup benchmark is already running".to_string()
-            } else {
-                "Wait for model preparation to finish before testing the microphone".to_string()
-            });
+            return Err(
+                crate::dictation_admission::microphone_benchmark_claim_failed(&coordinator),
+            );
         }
     }
-    let benchmark_run_id = match state.microphone_startup_benchmark.claim(run_id.clone()) {
+    // `MicStartupBenchmarkPostClaim`: the second claim, under the transition only.
+    let benchmark_run_id = match crate::dictation_admission::microphone_benchmark_second_claim(
+        state.microphone_startup_benchmark.claim(run_id.clone()),
+    ) {
         Ok(id) => id,
         Err(error) => {
             coordinator.finish();

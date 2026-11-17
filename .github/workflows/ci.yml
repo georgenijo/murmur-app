@@ -356,6 +356,17 @@ jobs:
           --config-file ../../.github/nextest-golden.toml
           -E 'kind(lib) & test(/golden_tests::golden_/)'
 
+      - name: Run admission tests with internal-benchmark
+        if: needs.changes.outputs.verified != 'true'
+        # The corpus and benchmark admission sites, and half of the admission
+        # differential test, compile only with this feature, which no other
+        # step enables. Rebuilds only this crate's lib with the feature.
+        timeout-minutes: 15
+        run: >-
+          cd app/src-tauri &&
+          cargo nextest run --lib --features internal-benchmark
+          -E 'test(/dictation_admission::/) | test(/corpus::/)'
+
       - name: Run capture worker unit tests
         if: needs.changes.outputs.verified != 'true'
         # Reuse both the helper's bin tests and topology_watch from the prebuild.

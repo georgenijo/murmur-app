@@ -6201,6 +6201,7 @@ dependencies = [
  "libc",
  "memory-stats",
  "murmur-capture-helper-protocol",
+ "murmur-dictation-core",
  "objc2",
  "objc2-app-kit",
  "objc2-core-audio",
