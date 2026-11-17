@@ -1030,6 +1030,86 @@ fn a_finish_queued_in_one_stops_emit_is_applied_before_that_stop_awaits() {
     });
 }
 
+/// D-S2-13 / the counted guard follows the thread that runs the synchronous stretch.
+/// A stop that waits on T on worker A and resumes on worker B queues a finish from
+/// an inline listener on B: B has a drain guard alive (it registered there, after
+/// the post-T fence), the finish drains on B before the pipeline await, with T
+/// acquirable, and worker A is left with no stale count that could hide a missing
+/// guard in a later test.
+#[test]
+fn a_stop_that_resumes_on_another_worker_registers_its_drain_there() {
+    under_watchdog("a stop resumed on another worker", || {
+        run_sub_run(&SubRun {
+            title: "stop resumed on another thread",
+            setup: Setup::idle(),
+            body: |w| {
+                recording(w);
+                w.knobs().stop_result = Ok(16_000);
+                w.close_gate("pipeline");
+                let mut first = w.stop(None);
+                assert!(poll_once(&mut first).is_pending());
+                cancelled(w, "cancel");
+                w.finish_sealed_stop(1);
+                recording(w);
+                w.knobs().stop_result = Ok(16_000);
+                let parked = Arc::new(StdMutex::new(Some(first)));
+                let slot = Arc::clone(&parked);
+                w.on_inline("emit:recording-status-changed", move || {
+                    drop(slot.lock().expect("slot").take());
+                });
+                let alive_before = super::drains_alive_on_this_thread();
+                // Someone holds T: the second stop parks on it, on this thread.
+                let state = w.state();
+                let holder = state.app_state.recording_transition.try_lock().expect("T");
+                let mut second = w.stop(None);
+                assert!(poll_once(&mut second).is_pending(), "parked on T");
+                assert_eq!(
+                    super::drains_alive_on_this_thread(),
+                    alive_before,
+                    "a stop parked on T holds no drain registration on this thread"
+                );
+                drop(holder);
+                super::take_t_free_at_drain();
+                // Resumed on another worker: the listener queues a finish there.
+                let pending = std::thread::scope(|scope| {
+                    scope
+                        .spawn(|| {
+                            let pending = poll_once(&mut second).is_pending();
+                            (pending, super::take_t_free_at_drain())
+                        })
+                        .join()
+                        .expect("the second worker (no `no drain guard alive` panic)")
+                });
+                assert!(pending.0, "recording 2 awaits its pipeline");
+                assert_eq!(pending.1, [true], "the finish drained, with T acquirable");
+                assert!(
+                    parked.lock().expect("slot").is_none(),
+                    "the listener dropped recording 1"
+                );
+                assert_eq!(
+                    history_counts(w),
+                    (1, 1),
+                    "only recording 2's pipeline is left"
+                );
+                assert_eq!(
+                    super::drains_alive_on_this_thread(),
+                    alive_before,
+                    "no stale count is left on the first worker"
+                );
+                w.open_gate("pipeline");
+                let reply = std::thread::scope(|scope| {
+                    scope
+                        .spawn(|| complete(&mut second))
+                        .join()
+                        .expect("the third poll")
+                });
+                w.reply("stop", &reply);
+                assert_history_empty(w, "after recording 2's stop");
+            },
+        })
+    });
+}
+
 /// A listener that queues a finish inside the 204b emit and then panics: the
 /// drain still runs, during the unwind, after D is released.
 #[test]
