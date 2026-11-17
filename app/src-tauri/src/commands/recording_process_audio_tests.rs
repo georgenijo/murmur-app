@@ -53,6 +53,8 @@ struct FakeHost {
     in_destination_emit: StdMutex<Option<Hook>>,
     /// The dictation status when the pipeline was entered.
     status_at_pipeline: StdMutex<Option<DictationStatus>>,
+    /// While set, the destination capture is pending (an import suspended there).
+    hold_capture: std::sync::atomic::AtomicBool,
     panic_in_capture: StdMutex<bool>,
     /// Runs inline in the `dictation-generation-started` emit (a listener).
     on_generation_started: StdMutex<Option<Listener>>,
@@ -70,6 +72,7 @@ impl FakeHost {
             after_accept: StdMutex::new(None),
             in_destination_emit: StdMutex::new(None),
             status_at_pipeline: StdMutex::new(None),
+            hold_capture: std::sync::atomic::AtomicBool::new(false),
             panic_in_capture: StdMutex::new(false),
             on_generation_started: StdMutex::new(None),
             history: state.app_state.core_history.clone(),
@@ -137,6 +140,15 @@ impl ImportedAudioHost for FakeHost {
         let (h2, h1) = self.counts();
         self.push(format!("capture_destination h2={h2} h1={h1}"));
         Box::pin(async move {
+            std::future::poll_fn(|cx| {
+                if self.hold_capture.load(Ordering::SeqCst) {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            })
+            .await;
             let hook = locked(&self.during_capture).take();
             if let (Some(hook), Some(state)) = (hook, self.state.upgrade()) {
                 hook(&state.app_state);
@@ -270,6 +282,14 @@ fn poll_to_end<T>(future: impl std::future::Future<Output = T>) -> T {
         Poll::Ready(value) => value,
         Poll::Pending => panic!("process_audio parked on a barrier nobody opens"),
     }
+}
+
+fn poll_once<F: std::future::Future + ?Sized>(
+    future: &mut std::pin::Pin<Box<F>>,
+) -> Poll<F::Output> {
+    future
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
 }
 
 struct Run {
@@ -563,17 +583,45 @@ fn line_with<'a>(lines: &'a [String], prefix: &str) -> &'a String {
         .unwrap_or_else(|| panic!("no line starts with {prefix:?}: {lines:?}"))
 }
 
+/// `(effect point, H2 count, H1 count)` at each `ID+` / `ST` effect of a run, read
+/// at the effect itself (before its write), so a registration or a retirement that
+/// moves across an `In` effect shows at that boundary.
+type Boundaries = std::rc::Rc<std::cell::RefCell<Vec<(&'static str, usize, usize)>>>;
+
+fn observe_effect_boundaries(run: &Run) -> (Boundaries, crate::barrier_hook::Installed) {
+    let seen = Boundaries::default();
+    let log = std::rc::Rc::clone(&seen);
+    let history = run.state.app_state.core_history.clone();
+    let installed = crate::barrier_hook::install(move |point| {
+        if point.starts_with("effect.") {
+            log.borrow_mut()
+                .push((point, history.pipeline_count(), history.outstanding_ops()));
+        }
+    });
+    (seen, installed)
+}
+
 /// R301.5: `H2 reg rid` and `H1 reg op_pl` are registered right after the
 /// decision, before any effect, and are still there while the pipeline runs.
 #[test]
 fn history_is_registered_before_the_effects_and_while_the_pipeline_runs() {
     run(|run| {
         assert_eq!(run.history(), (0, 0));
+        let (seen, _installed) = observe_effect_boundaries(run);
         run.process(&wav_base64(8_000)).expect("success");
         let lines = run.host.lines();
-        // Before any effect: the first line is `AX` (an `In` effect), which already
-        // sees both entries.
-        assert_eq!(line_with(&lines, "ax"), "ax", "{lines:?}");
+        // Before any effect: the first `In` effect (`ID+`) already sees both
+        // entries, and so does `ST→Processing`. The pipeline's guard writes `Idle`
+        // after retiring them (C3.9).
+        assert_eq!(
+            *seen.borrow(),
+            [
+                ("effect.alloc_id", 1, 1),
+                ("effect.set_status", 1, 1),
+                ("effect.set_status", 0, 0)
+            ],
+            "{lines:?}"
+        );
         assert!(
             line_with(&lines, "emit recording-status-changed \"processing\"")
                 .ends_with("h2=1 h1=1"),
@@ -594,7 +642,18 @@ fn history_is_retired_before_the_in_effects_of_a_parse_failure() {
         base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"junk")
     }] {
         run(|run| {
+            let (seen, _installed) = observe_effect_boundaries(run);
             run.process(&audio).expect_err("parse failure");
+            // The guard's first `In` effect (`ST→Idle`) already sees neither entry
+            // (the import's own `ID+` / `ST→Processing` saw both).
+            assert_eq!(
+                *seen.borrow(),
+                [
+                    ("effect.alloc_id", 1, 1),
+                    ("effect.set_status", 1, 1),
+                    ("effect.set_status", 0, 0)
+                ]
+            );
             let lines = run.host.lines();
             let idle = lines
                 .iter()
@@ -720,6 +779,121 @@ fn a_nested_process_audio_is_refused_before_any_lock() {
         );
         assert_eq!(run.id(), 1, "the refused entry burned no id");
         assert_eq!(run.history(), (0, 0));
+    });
+}
+
+/// D-S2-2/3, T before D: an import that parked on T and is polled again by an
+/// inline callback that holds D must park again (take neither T nor D) and carry
+/// on when it is next polled outside the span. Run on a poller thread under a
+/// watchdog: a poll that went on to take D would block on the held D until the
+/// watchdog fires.
+#[test]
+fn a_resumed_import_polled_inside_a_core_span_parks_instead_of_taking_t_and_d() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+    run(|run| {
+        let audio = wav_base64(8_000);
+        let mut import = Box::pin(process_audio_inner(&run.host, &run.state, &audio));
+        // Park on T.
+        let t = run
+            .state
+            .app_state
+            .recording_transition
+            .try_lock()
+            .expect("T is free");
+        assert!(poll_once(&mut import).is_pending(), "parked on T");
+        drop(t);
+        // The callback: this thread holds D. The poller is the listener's thread
+        // inside a core span; it polls the import that T's release just made ready.
+        let dictation = run.state.app_state.dictation.lock_or_recover();
+        let (sent, parked) = mpsc::channel();
+        let outcome = std::thread::scope(|scope| {
+            let poller = scope.spawn(|| {
+                let _span = crate::dictation_executor::executor::CoreEntry::enter()
+                    .expect("a fresh thread is outside any span");
+                sent.send(poll_once(&mut import).is_pending()).ok();
+            });
+            let outcome = parked.recv_timeout(Duration::from_secs(5));
+            // Always release D, so a regressed poll can finish and be joined.
+            drop(dictation);
+            let _ = poller.join();
+            outcome
+        });
+        assert_eq!(
+            outcome,
+            Ok(true),
+            "the poll inside the span must park, not deadlock on D"
+        );
+        assert_eq!(run.history(), (0, 0), "nothing was registered or written");
+        assert_eq!(run.id(), 0);
+        // Polled outside the span, the same import carries on and completes.
+        let reply = poll_to_end(import).expect("the import completes");
+        assert_eq!(reply["type"], "transcription");
+        assert_eq!(run.id(), 1);
+        assert_eq!(run.history(), (0, 0));
+    });
+}
+
+/// D-S2-4: an inline callback drops an import suspended at the destination
+/// capture. Its owner's history retirement is queued behind a finish queued
+/// earlier (FIFO) and runs once, on the drain, after the span; nothing retires
+/// inside the span. The abandoned capture keeps today's status and events.
+#[test]
+fn dropping_a_suspended_import_in_a_core_span_queues_its_retirement_fifo() {
+    use murmur_dictation_core::decision::{ContKind, ContinuationSpec};
+    use murmur_dictation_core::ids::RecordingId;
+    run(|run| {
+        let app_state = &run.state.app_state;
+        run.host.hold_capture.store(true, Ordering::SeqCst);
+        let audio = wav_base64(8_000);
+        let mut import = Box::pin(process_audio_inner(&run.host, &run.state, &audio));
+        assert!(
+            poll_once(&mut import).is_pending(),
+            "suspended at the capture"
+        );
+        assert_eq!(run.history(), (1, 1));
+        assert_eq!(run.status(), DictationStatus::Processing);
+        let lines_before = run.host.lines();
+        // An earlier finish, queued inside the span: another pipeline's guard.
+        let earlier = PipelineOwner::register(
+            &app_state.core_history,
+            ContinuationSpec {
+                recording_id: RecordingId(9),
+                kind: ContKind::Pipeline,
+            },
+        );
+        assert_eq!(run.history(), (2, 2));
+        let counters = app_state.core_history.counters();
+        {
+            let span = crate::dictation_executor::executor::CoreEntry::enter()
+                .expect("the test thread is outside any span");
+            drop(IdleGuard::for_pipeline(app_state, 9, Some(earlier)));
+            drop(import);
+            assert_eq!(run.history(), (2, 2), "nothing retires inside the span");
+            let queued: Vec<(u64, bool)> = DEFERRED_FINISHES.with(|queue| {
+                queue
+                    .borrow()
+                    .iter()
+                    .map(|entry| (entry.recording_id, entry.retire_only))
+                    .collect()
+            });
+            assert_eq!(queued, [(9, false), (1, true)], "FIFO: the finish first");
+            drop(span);
+        }
+        drain_deferred_finishes(app_state);
+        assert_eq!(run.history(), (0, 0), "both pairs retired after the drain");
+        assert_eq!(
+            app_state.core_history.counters(),
+            counters,
+            "each H1 retired exactly once"
+        );
+        assert!(DEFERRED_FINISHES.with(|queue| queue.borrow().is_empty()));
+        assert_eq!(
+            run.host.lines(),
+            lines_before,
+            "the abandoned capture emits nothing"
+        );
+        assert_eq!(run.status(), DictationStatus::Processing, "status as today");
     });
 }
 

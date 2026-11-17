@@ -216,6 +216,30 @@ pub(super) fn refuse_reentrant() -> Result<(), String> {
     }
 }
 
+/// Take T, never inside a core span (D-S2-2/3, T before D). An import that parked
+/// on T and is polled again by a listener that holds D parks on every such poll
+/// (its waker is woken at once) instead of taking T, and goes on when it is next
+/// polled outside the span. After T it waits the span out once more before the
+/// caller asks for D, as the stop family does after its T acquisition. Ready on
+/// the first poll outside a span.
+pub(super) async fn transition_outside_core<'a>(
+    host: &'a dyn ImportedAudioHost,
+    state: &'a State,
+) -> Result<tokio::sync::MutexGuard<'a, ()>, String> {
+    use std::task::Poll;
+    let mut transition = host.transition(state);
+    let held = std::future::poll_fn(|cx| {
+        if crate::dictation_executor::executor::in_core() {
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
+        }
+        transition.as_mut().poll(cx)
+    })
+    .await?;
+    super::until_outside_core().await;
+    Ok(held)
+}
+
 /// The ports of R301.5: `AX` (blocking) freezes the delivery target, `KB` and the
 /// two emits run after D and T are released. The recording id is a shell local the
 /// `ID+` effect produced (X4); the shell hands it over before `PostT`.

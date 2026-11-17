@@ -332,6 +332,12 @@ impl CoreHistoryLock {
         self.critical(|history| history.register_pipeline(id));
     }
 
+    /// Identity of this history (never dereferenced): the key under which a
+    /// deferred item is run by an entry of the same state.
+    pub(crate) fn identity(&self) -> usize {
+        Arc::as_ptr(&self.inner) as usize
+    }
+
     /// `H2 ret` (R204a `PipelineExit` / `Dropped`, R302.1): `true` if it was
     /// registered.
     pub(crate) fn ret_pipeline(&self, id: RecordingId) -> bool {
@@ -430,6 +436,24 @@ impl ContinuationGuard {
     /// The shell-held token.
     pub(crate) fn token(&self) -> Continuation {
         self.token
+    }
+
+    /// Whether dropping this guard still has an op to retire.
+    pub(crate) fn is_armed(&self) -> bool {
+        !self.consumed
+    }
+
+    /// Move the retirement duty into a new guard and leave this one inert: the
+    /// owner of a dropped flight hands it to the deferred queue (D-S2-4) instead
+    /// of retiring on the spot.
+    pub(crate) fn detach(&mut self) -> Self {
+        let moved = Self {
+            history: self.history.clone(),
+            token: self.token,
+            consumed: self.consumed,
+        };
+        self.consumed = true;
+        moved
     }
 
     /// Consume the continuation (the shell protocol of

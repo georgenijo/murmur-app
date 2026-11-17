@@ -1151,6 +1151,20 @@ impl PipelineOwner {
 
 impl Drop for PipelineOwner {
     fn drop(&mut self) {
+        // D-S2-4: an owner dropped inside a core span (a listener drops the flight
+        // that holds it) does not retire on the spot: a finish queued earlier must
+        // run first. Its duty moves, as one item, to the deferred queue and runs
+        // when the outermost entry drains, after D is released.
+        if crate::dictation_executor::executor::in_core() && (self.registered || self.op.is_armed())
+        {
+            defer_retirement(PipelineOwner {
+                history: self.history.clone(),
+                rid: self.rid,
+                op: self.op.detach(),
+                registered: std::mem::take(&mut self.registered),
+            });
+            return;
+        }
         self.retire_pipeline();
         // `op` retires H1 through its own `Drop` unless it was consumed.
     }
@@ -1387,12 +1401,15 @@ impl<'a> IdleGuard<'a> {
 /// outermost core entry has released D. Today's code deadlocks on D here; no
 /// production listener reaches it.
 struct DeferredFinish {
-    /// Identity of the `AppState` (never dereferenced), so an entry is only run
-    /// by an entry of the same state.
-    app_state: usize,
+    /// Identity of the state's `core_history` (never dereferenced), so an entry
+    /// is only run by an entry of the same state.
+    key: usize,
     recording_id: u64,
     origin: murmur_dictation_core::inputs::GuardOrigin,
     owner: Option<PipelineOwner>,
+    /// A history-only retirement (a dropped flight's owner): no finish section,
+    /// no status or event; dropping the owner retires H2 and H1.
+    retire_only: bool,
 }
 
 thread_local! {
@@ -1408,10 +1425,26 @@ fn defer_finish(
 ) {
     DEFERRED_FINISHES.with(|queue| {
         queue.borrow_mut().push(DeferredFinish {
-            app_state: std::ptr::from_ref(app_state) as usize,
+            key: app_state.core_history.identity(),
             recording_id,
             origin,
             owner,
+            retire_only: false,
+        });
+    });
+}
+
+/// Queue a dropped owner's history retirement behind every finish queued before
+/// it (D-S2-4, FIFO). The owner is inert-armed: dropping it outside a core span
+/// retires H2 and H1 once.
+fn defer_retirement(owner: PipelineOwner) {
+    DEFERRED_FINISHES.with(|queue| {
+        queue.borrow_mut().push(DeferredFinish {
+            key: owner.history.identity(),
+            recording_id: owner.rid.0,
+            origin: murmur_dictation_core::inputs::GuardOrigin::Dropped,
+            owner: Some(owner),
+            retire_only: true,
         });
     });
 }
@@ -1430,26 +1463,31 @@ fn defer_finish(
 /// already unwinding (a second panic during an unwind would abort the process,
 /// and a foreign payload's destructor may panic).
 fn drain_deferred_finishes(app_state: &AppState) {
-    let me = std::ptr::from_ref(app_state) as usize;
+    let me = app_state.core_history.identity();
     let mut first_panic: Option<Box<dyn std::any::Any + Send>> = None;
     let mut panicked: Vec<(u64, murmur_dictation_core::inputs::GuardOrigin)> = Vec::new();
     while !crate::dictation_executor::executor::in_core() {
         let next = DEFERRED_FINISHES.with(|queue| {
             let mut queue = queue.borrow_mut();
-            let at = queue.iter().position(|entry| entry.app_state == me)?;
+            let at = queue.iter().position(|entry| entry.key == me)?;
             Some(queue.remove(at))
         });
         let Some(mut entry) = next else {
             break;
         };
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            IdleGuard::finish_section(
-                app_state,
-                entry.recording_id,
-                entry.origin,
-                None,
-                &mut entry.owner,
-            );
+            if entry.retire_only {
+                // Outside any core span here: the owner retires H2 then H1.
+                drop(entry.owner.take());
+            } else {
+                IdleGuard::finish_section(
+                    app_state,
+                    entry.recording_id,
+                    entry.origin,
+                    None,
+                    &mut entry.owner,
+                );
+            }
         }));
         if let Err(panic) = outcome {
             panicked.push((entry.recording_id, entry.origin));
@@ -4310,13 +4348,15 @@ async fn process_audio_inner(
     use murmur_dictation_core::process_audio as core_pa;
     use process_audio_ports::{
         decide, executor, expect_valid, in_core_span, refuse_reentrant, run_phase,
-        ProcessAudioPorts,
+        transition_outside_core, ProcessAudioPorts,
     };
 
     // C4.1 step 0 / C4.2: the first statement, before the transition await, T, D or
     // `core_history`.
     refuse_reentrant()?;
-    let held_transition = host.transition(state).await?;
+    // T is taken, and D is asked for, only outside a core span: an import that
+    // parked on T and is polled by a listener that holds D parks instead.
+    let held_transition = transition_outside_core(host, state).await?;
     let app_state = &state.app_state;
     // Site 301 (R301.1-R301.5). The section holds no await. Finishes queued
     // re-entrantly while it held D run when it ends, after D and T are released
