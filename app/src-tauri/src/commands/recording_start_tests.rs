@@ -315,3 +315,60 @@ fn an_undisturbed_ready_publish_writes_recording_emits_and_starts_the_side_tasks
         "{lines:#?}"
     );
 }
+
+// ---------------------------------------------------------------- site 103
+
+fn enable_smart_destination(w: &Arc<World>) {
+    let state = w.state();
+    let mut dictation = state.app_state.dictation.lock_or_recover();
+    dictation.smart_destination_enabled = true;
+    dictation.auto_paste = true;
+    dictation.save_audio = false;
+    dictation.save_transcript = false;
+}
+
+/// R103.0: a current capture with Smart destination enabled selects the
+/// destination (`PDT:SDE`); a capture cancelled while the smart-destination
+/// capture was in flight (R103.0') does not, and its late result is discarded.
+#[test]
+fn the_smart_destination_is_selected_only_for_a_current_capture() {
+    let current = run_sub_run(&SubRun {
+        title: "current capture",
+        setup: Setup::idle(),
+        body: |w| {
+            enable_smart_destination(w);
+            recording(w);
+        },
+    });
+    assert!(
+        current.iter().any(|l| l == "emit_smart_destination 1"),
+        "{current:#?}"
+    );
+    let stale = run_sub_run(&SubRun {
+        title: "cancelled during the capture",
+        setup: Setup::idle(),
+        body: |w| {
+            enable_smart_destination(w);
+            w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+            w.close_gate("smart_capture");
+            let mut start = w.start();
+            assert!(poll_once(&mut start).is_pending());
+            w.state().app_state.cancel_recording(1);
+            w.open_gate("smart_capture");
+            let reply = complete(&mut start);
+            w.reply("start", &reply);
+        },
+    });
+    assert!(
+        stale
+            .iter()
+            .any(|l| l == "smart_destination.capture enabled=true"),
+        "{stale:#?}"
+    );
+    assert!(
+        !stale
+            .iter()
+            .any(|l| l.starts_with("emit_smart_destination")),
+        "a stale capture selects no destination: {stale:#?}"
+    );
+}
