@@ -84,6 +84,33 @@ impl Drop for CoreEntry {
     }
 }
 
+/// Run `f` with this thread outside any core span, then restore the flag
+/// (including on unwind).
+///
+/// Two callers, both meaning "this is not a nested entry of the same thread's span":
+///
+/// * a **port** that calls out of the core (the supervisor, the webview, the
+///   keyboard, the telemetry ledger). Production's inline callbacks (the
+///   supervisor publishes `Recovering` to the lifecycle bridge on the calling
+///   thread, 2a-2 `CC`) and the Stage 0b hooks (another thread's event landing
+///   exactly at that port) enter the bridge from there, and must not be
+///   refused by the span that is *calling out*;
+/// * a **top-level async entry** (the stop command) that a harness polls inline
+///   from inside another family's emit.
+///
+/// The span of the executor's own `run` still covers everything between those
+/// calls, so a nested entry into the core's own code is refused as before.
+pub(crate) fn outside_core<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            IN_CORE.with(|flag| flag.set(self.0));
+        }
+    }
+    let _restore = Restore(IN_CORE.with(|flag| flag.replace(false)));
+    f()
+}
+
 /// The decision a refused entry returns: `Invalid`, no effects, no mutation.
 pub(crate) fn refused(kind: InvalidKind) -> Decision {
     Decision {
@@ -191,6 +218,13 @@ pub(crate) trait Ports {
     fn context_snapshot(&self, id: RecordingId) -> Option<Arc<DictationContextSnapshot>>;
     /// `EM`, `EV`, `SDE` (Sync). The result gates a paired `PRES`.
     fn emit(&self, effect: &Effect) -> PortResult;
+    /// An `EM` that runs in `In`, with the D guard's contents in hand: today's
+    /// `IdleGuard::finish` hands its `on_idle` closure the held `DictationState`
+    /// (Stage 2a-2, site 204a). Defaults to [`Ports::emit`], so only a port that
+    /// needs D's contents overrides it.
+    fn emit_under_d(&self, effect: &Effect, _dictation: &DictationState) -> PortResult {
+        self.emit(effect)
+    }
     /// `PRES`, `TRQ` (Sync traces).
     fn trace(&self, effect: &Effect) -> PortResult;
     /// `TERM` (Sync claim; the persist is a Detached sub-step).
@@ -205,6 +239,59 @@ pub(crate) trait Ports {
     fn blocking(&self, effect: &Effect) -> PortResult;
     /// `SD`, `PM`, `RS` (Detached).
     fn detached(&self, effect: &Effect) -> PortResult;
+}
+
+/// Ports whose every call out of the core runs [`outside_core`] (Stage 2a-2): the
+/// stop family's ports call the supervisor, the webview and the keyboard, whose
+/// callbacks (and the Stage 0b hooks that stand for another thread's event) enter
+/// the lifecycle bridge from inside the call.
+pub(crate) struct OutsideCore<P>(pub(crate) P);
+
+impl<P> std::ops::Deref for OutsideCore<P> {
+    type Target = P;
+
+    fn deref(&self) -> &P {
+        &self.0
+    }
+}
+
+impl<P: Ports> Ports for OutsideCore<P> {
+    fn app_state(&self) -> &AppState {
+        self.0.app_state()
+    }
+    fn speculative_flowing(&self) -> bool {
+        self.0.speculative_flowing()
+    }
+    fn context_snapshot(&self, id: RecordingId) -> Option<Arc<DictationContextSnapshot>> {
+        self.0.context_snapshot(id)
+    }
+    fn emit(&self, effect: &Effect) -> PortResult {
+        outside_core(|| self.0.emit(effect))
+    }
+    fn emit_under_d(&self, effect: &Effect, dictation: &DictationState) -> PortResult {
+        outside_core(|| self.0.emit_under_d(effect, dictation))
+    }
+    fn trace(&self, effect: &Effect) -> PortResult {
+        outside_core(|| self.0.trace(effect))
+    }
+    fn terminal(&self, effect: &Effect) -> PortResult {
+        outside_core(|| self.0.terminal(effect))
+    }
+    fn perf(&self, effect: &Effect) -> PortResult {
+        outside_core(|| self.0.perf(effect))
+    }
+    fn keyboard(&self, effect: &Effect) -> PortResult {
+        outside_core(|| self.0.keyboard(effect))
+    }
+    fn claims(&self, effect: &Effect) -> PortResult {
+        outside_core(|| self.0.claims(effect))
+    }
+    fn blocking(&self, effect: &Effect) -> PortResult {
+        outside_core(|| self.0.blocking(effect))
+    }
+    fn detached(&self, effect: &Effect) -> PortResult {
+        outside_core(|| self.0.detached(effect))
+    }
 }
 
 // -------------------------------------------------------------------- report
@@ -493,7 +580,10 @@ impl<'a> Executor<'a> {
                 if *cond == Cond::UnlessSpeculativeFlowing && ports.speculative_flowing() {
                     self.record(index, effect, WitnessOutcome::Skipped);
                 } else {
-                    let result = ports.emit(effect);
+                    let result = match ctx.dictation.as_deref() {
+                        Some(dictation) => ports.emit_under_d(effect, dictation),
+                        None => ports.emit(effect),
+                    };
                     self.emit_ok[index] = Some(result.is_ok());
                     self.record_port(index, effect, result);
                 }
