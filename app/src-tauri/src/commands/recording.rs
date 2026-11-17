@@ -1339,12 +1339,15 @@ impl<'a> IdleGuard<'a> {
             recording_id,
         );
         // Nothing ran: never carry on with D as if it had. A refusal as re-entrant
-        // is unreachable: both callers of this section check `in_core()` first
-        // (`run_finish` queues the finish, the drain runs only outside a span), so
-        // the Pre phase is never entered inside one. Queueing it here would also
-        // lose the idle emit, which has already moved into `ports` (D-S2-7).
+        // is not expected here: `run_finish` queues the finish when it is reached
+        // inside a span, and the drain runs only outside one, so the Pre phase is
+        // never entered inside one. It is nevertheless reachable through
+        // `IdleGuard::drop`, which may run while this thread unwinds, so it must not
+        // abort: test builds fail loudly, release builds return without finishing
+        // (queueing here would lose the idle emit, which has already moved into
+        // `ports`, D-S2-7).
         if let crate::dictation_executor::executor::PhaseReport::Invalid(kind) = pre {
-            assert!(
+            debug_assert!(
                 kind != murmur_dictation_core::decision::InvalidKind::Reentrant,
                 "a guard finish's Pre phase was refused as re-entrant: `run_finish` and \
                  the drain check `in_core()` before they call this section"
