@@ -1280,6 +1280,9 @@ impl<'a> IdleGuard<'a> {
         use murmur_dictation_core::inputs::GuardFinishInput;
         use murmur_dictation_core::stop as core_stop;
 
+        // Test builds: a point where a test observes locks (T) or fails a finish.
+        #[cfg(test)]
+        crate::barrier_hook::at("guard_finish");
         let rid = RecordingId(recording_id);
         let input = GuardFinishInput {
             rid,
@@ -1368,8 +1371,15 @@ fn defer_finish(
 /// Run the finishes queued for `app_state`, in queue order. A no-op while this
 /// thread is inside a core span (the outermost entry drains), so callers invoke
 /// it right after they release D.
+///
+/// Each finish runs under its own `catch_unwind`: a panic in one (C4.1 allows the
+/// failed finish to be partly applied; its owner's `Drop` retires H1 and H2)
+/// never abandons the later ones. The first panic is re-raised once the queue is
+/// empty, or logged when this thread is already unwinding (a second panic during
+/// an unwind would abort the process).
 fn drain_deferred_finishes(app_state: &AppState) {
     let me = std::ptr::from_ref(app_state) as usize;
+    let mut first_panic: Option<Box<dyn std::any::Any + Send>> = None;
     while !crate::dictation_executor::executor::in_core() {
         let next = DEFERRED_FINISHES.with(|queue| {
             let mut queue = queue.borrow_mut();
@@ -1377,15 +1387,30 @@ fn drain_deferred_finishes(app_state: &AppState) {
             Some(queue.remove(at))
         });
         let Some(mut entry) = next else {
-            return;
+            break;
         };
-        IdleGuard::finish_section(
-            app_state,
-            entry.recording_id,
-            entry.origin,
-            None,
-            &mut entry.owner,
-        );
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            IdleGuard::finish_section(
+                app_state,
+                entry.recording_id,
+                entry.origin,
+                None,
+                &mut entry.owner,
+            );
+        }));
+        if let Err(panic) = outcome {
+            tracing::error!(
+                target: "pipeline",
+                recording_id = entry.recording_id,
+                "a deferred idle-guard finish panicked; the remaining ones still run"
+            );
+            first_panic.get_or_insert(panic);
+        }
+    }
+    if let Some(panic) = first_panic {
+        if !std::thread::panicking() {
+            std::panic::resume_unwind(panic);
+        }
     }
 }
 
@@ -1395,14 +1420,7 @@ struct DrainDeferredFinishes<'a>(&'a AppState);
 
 impl Drop for DrainDeferredFinishes<'_> {
     fn drop(&mut self) {
-        if std::thread::panicking() {
-            // A second panic during an unwind would abort the process.
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                drain_deferred_finishes(self.0);
-            }));
-        } else {
-            drain_deferred_finishes(self.0);
-        }
+        drain_deferred_finishes(self.0);
     }
 }
 
@@ -6382,17 +6400,20 @@ async fn stop_native_recording_admitted(
 
     // Also the first statement of the tests' direct entry (`_inner`).
     refuse_reentrant_stop()?;
+    // Finishes queued re-entrantly while this stop held D run when its first
+    // synchronous stretch ends (on a return or an unwind), on this thread, after
+    // every lock it took, T included, is released (D-S2-4): declared before T so
+    // it drops after it. It owes nothing across the two awaits that follow (this
+    // stop has run nothing yet) and ends right before the pipeline await; a new
+    // one covers the stretch after that await, so no obligation is held across
+    // an await that has queued work behind it.
+    let drain = DrainDeferredFinishes(&state.app_state);
     // The `releaseToStop` endpoint: entry, before any lock wait (#826).
     let stop_entered_at = std::time::Instant::now();
     let transition = state.app_state.recording_transition.lock().await;
     // A stop that parked on T and is polled again inside a core span (a listener)
     // waits the span out before it asks for D: ready on the first poll.
     until_outside_core().await;
-    // Finishes queued re-entrantly while this stop held D run when this
-    // synchronous stretch ends, on this thread, after every lock it took is
-    // released (D-S2-4). The obligation is never held across an await: it ends
-    // right before the pipeline await and starts again after it.
-    let drain = DrainDeferredFinishes(&state.app_state);
     // Stop admission (T held): the `AutoStop` op the interruption registered is
     // consumed here (C1.4.1 rule 4). Its status does not branch anything; the stale
     // rule below runs whatever it was. Until here the op stayed outstanding, so a
@@ -6967,7 +6988,7 @@ async fn stop_native_recording_admitted(
                         model_id: &model_name,
                         total_ms,
                     });
-                emit_dictation_terminal_with_capture(
+                let claimed = emit_dictation_terminal_with_capture(
                     state,
                     rid,
                     terminal_outcome,
@@ -6999,6 +7020,8 @@ async fn stop_native_recording_admitted(
                         delivered_at,
                     },
                 );
+                // The ledger's answer, for the witness; the reply is unchanged.
+                claimed
             })),
             // `PGF`.
             perf_finish: Some(Box::new(|| {
@@ -7039,12 +7062,10 @@ async fn stop_native_recording_admitted(
             })),
             ..StopHooks::default()
         });
-        run_phase(
-            &mut executor(&ports, tail.clone()),
-            Placement::PostDT,
-            None,
-            rid,
-        );
+        let mut exec = executor(&ports, tail.clone());
+        run_phase(&mut exec, Placement::PostDT, None, rid);
+        #[cfg(test)]
+        stop_ports::TAIL.with(|slot| *slot.borrow_mut() = exec.witness().to_vec());
     }
 
     reply_of(&tail, None, &text)

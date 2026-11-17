@@ -117,6 +117,13 @@ pub(super) fn pipeline_start(report: PhaseReport) -> Result<(), String> {
     }
 }
 
+// Test builds: the witness of the stop's tail executor (R204b.5/.6).
+#[cfg(test)]
+thread_local! {
+    pub(super) static TAIL: RefCell<Vec<crate::dictation_executor::executor::Witness>> =
+        const { RefCell::new(Vec::new()) };
+}
+
 // Test builds: the witness of the stop's executor after it resumed the awaited
 // `PS` with the pipeline's actual result.
 #[cfg(test)]
@@ -205,8 +212,11 @@ pub(super) struct StopSlots {
 #[derive(Default)]
 pub(super) struct StopHooks<'a> {
     /// `TERM` in the tail: `emit_dictation_terminal_with_capture`, then the
-    /// metrics and stage-gap trace lines that followed it.
-    pub(super) terminal: Option<Box<dyn Fn(DictationTerminalOutcome, DictationErrorCode) + 'a>>,
+    /// metrics and stage-gap trace lines that followed it. Returns the ledger's
+    /// answer (`false` when another sink claimed the terminal first), which the
+    /// witness reports.
+    pub(super) terminal:
+        Option<Box<dyn Fn(DictationTerminalOutcome, DictationErrorCode) -> bool + 'a>>,
     /// The log line that followed the capture-result `TERM` claim (R203): run
     /// right after the default terminal emit, before `CX-`.
     pub(super) after_terminal: Option<Box<dyn FnOnce() + 'a>>,
@@ -347,14 +357,11 @@ impl Ports for StopPorts<'_> {
         let outcome = terminal_outcome_from_core(terminal.outcome);
         let code = error_code_from_core(terminal.code);
         let hooks = self.hooks.borrow();
-        // The default claim reports the ledger's answer: a lost claim (another
-        // sink, e.g. the supervisor's `UserCancelledStarting`, won) is a failure
-        // of this effect, never a constant success.
+        // The claim reports the ledger's answer: a lost claim (another sink, e.g.
+        // the supervisor's `UserCancelledStarting`, won) is a failure of this
+        // effect, never a constant success.
         let claimed = match hooks.terminal.as_ref() {
-            Some(hook) => {
-                hook(outcome, code);
-                true
-            }
+            Some(hook) => hook(outcome, code),
             None => emit_dictation_terminal(self.state, self.recording_id.get(), outcome, code),
         };
         drop(hooks);
