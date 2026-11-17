@@ -2955,6 +2955,9 @@ trait DictationPerformanceStageRecorder {
     fn enter(&mut self, stage: PerformanceStageV1);
 }
 
+/// Production: `DictationCore::q_start_context_action` (R103.1-.6); this is its
+/// oracle in tests.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeStartContextAction {
     Activate,
@@ -2962,6 +2965,7 @@ enum NativeStartContextAction {
     Superseded,
 }
 
+#[cfg(test)]
 fn native_start_context_action(
     is_current_generation: bool,
     status: DictationStatus,
@@ -5829,6 +5833,7 @@ fn publish_recording_ready_with<R: tauri::Runtime>(
     use crate::dictation_executor::executor::{core_now, CoreEntry};
     use crate::dictation_executor::FieldAdapter;
     use murmur_dictation_core::decision::{ObsKind, Verdict};
+    use murmur_dictation_core::effects::Placement;
     use murmur_dictation_core::ids::RecordingId;
     use murmur_dictation_core::inputs::ReadyPublishInput;
     use murmur_dictation_core::start as core_start;
@@ -5893,7 +5898,10 @@ fn publish_recording_ready_with<R: tauri::Runtime>(
         | Verdict::Refused(_)
         | Verdict::Stale(_)
         | Verdict::NeedObservation(_) => {
-            unreachable!("a ready publish applies or continues: {:?}", decision.verdict)
+            unreachable!(
+                "a ready publish applies or continues: {:?}",
+                decision.verdict
+            )
         }
     };
     if published {
@@ -6353,10 +6361,11 @@ async fn start_native_recording_inner(
                     unreachable!("a successful capture start continues (R102.1)")
                 }
             }
-            // R102.1's `H1 reg op_ctx`: consumed by site 103 (still inline here).
-            let _context_guard = decision
+            // R102.1's `H1 reg op_ctx`: consumed by site 103.
+            let context_guard = decision
                 .continuation
-                .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec));
+                .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec))
+                .expect("R102.1 returns `K:ResolveContext`");
             start_after_capture(
                 host,
                 state,
@@ -6366,6 +6375,8 @@ async fn start_native_recording_inner(
                 delivery_target,
                 performance_started_at_ms,
                 smart_auto_reason,
+                slots,
+                context_guard,
             )
             .await
         }
@@ -6427,11 +6438,14 @@ async fn start_after_capture(
     delivery_target: crate::frontmost::DeliveryTargetSnapshot,
     performance_started_at_ms: i64,
     smart_auto_reason: Option<&'static str>,
-    slots: &start_ports::StartSlots,
+    slots: start_ports::StartSlots,
     mut context_guard: ContinuationGuard,
 ) -> Result<serde_json::Value, String> {
     use crate::dictation_executor::executor::core_now;
+    use crate::dictation_executor::FieldAdapter;
     use murmur_dictation_core::decision::Verdict;
+    use murmur_dictation_core::effects::Placement;
+    use murmur_dictation_core::ids::RecordingId;
     use murmur_dictation_core::inputs::StartContextInput;
     use murmur_dictation_core::start as core_start;
     use start_ports::{decide, executor, expect_valid, reply_of, run_phase, StartPorts, TailFacts};
@@ -6503,7 +6517,7 @@ async fn start_after_capture(
     {
         // `PDT:SDE` (R103.0, only when Smart destination is enabled and the capture
         // is current): T held, D released, as before.
-        let ports = StartPorts::new(host, state, slots, Some(rid)).with_tail(&tail);
+        let ports = StartPorts::new(host, state, &slots, Some(rid)).with_tail(&tail);
         run_phase(
             &mut executor(&ports, destination_decision.clone(), false),
             Placement::PostDT,
@@ -6536,7 +6550,7 @@ async fn start_after_capture(
             .continuation
             .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec));
         // `In:CX+` (R103.1, R103.2): the live context slot only, under D.
-        let ports = StartPorts::new(host, state, slots, Some(rid)).with_tail(&tail);
+        let ports = StartPorts::new(host, state, &slots, Some(rid)).with_tail(&tail);
         let mut exec = executor(&ports, decision.clone(), false);
         run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
         let status = view.status;
@@ -6608,7 +6622,7 @@ async fn start_after_capture(
     // Recording, stop, and cancel never wait for SQLite) and `PT:REL`.
     let flight_end = decide(|| core_start::decide_start_flight_end(recording, now));
     expect_valid(&flight_end);
-    let ports = StartPorts::new(host, state, slots, Some(rid)).with_tail(&tail);
+    let ports = StartPorts::new(host, state, &slots, Some(rid)).with_tail(&tail);
     let mut exec = executor(&ports, flight_end.clone(), false);
     run_phase(&mut exec, Placement::PostDT, None, rid);
     drop(transition);

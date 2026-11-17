@@ -220,6 +220,9 @@ pub(super) struct StartSlots {
     speculative_flowing: Cell<bool>,
     /// `CS`: the supervisor's answer.
     audio_result: RefCell<Option<Result<(), AudioStartError>>>,
+    /// The log line that followed the superseded start's `TERM` claim (R103.4-.6):
+    /// run by the terminal port right after the claim.
+    after_terminal: RefCell<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl StartSlots {
@@ -233,7 +236,13 @@ impl StartSlots {
             started_at_ms: Cell::new(None),
             speculative_flowing: Cell::new(false),
             audio_result: RefCell::new(None),
+            after_terminal: RefCell::new(None),
         }
+    }
+
+    /// Arm the log line that follows the next `TERM` claim.
+    pub(super) fn after_terminal(&self, log: Box<dyn FnOnce() + Send>) {
+        *self.after_terminal.borrow_mut() = Some(log);
     }
 
     /// Whether the request carried a speculative capture (an observation only).
@@ -284,10 +293,20 @@ impl StartSlots {
     }
 }
 
+/// What the effects of sites 103 and 104 read (stage 2a-4b): the frozen delivery
+/// target, the resolved context (the payload of `CX+`, the model of `PM` and the
+/// runtime identity of `PB`) and the request's origin stamp.
+pub(super) struct TailFacts<'a> {
+    pub(super) delivery_target: &'a crate::frontmost::DeliveryTargetSnapshot,
+    pub(super) context: Arc<DictationContextSnapshot>,
+    pub(super) performance_started_at_ms: i64,
+}
+
 pub(super) struct StartPorts<'a> {
     host: &'a dyn DictationHost,
     state: &'a State,
     slots: &'a StartSlots,
+    tail: Option<&'a TailFacts<'a>>,
     /// The flight's recording id once known; before `ID+` the live id is read.
     recording_id: Cell<Option<u64>>,
 }
@@ -303,8 +322,15 @@ impl<'a> StartPorts<'a> {
             host,
             state,
             slots,
+            tail: None,
             recording_id: Cell::new(recording_id),
         }
+    }
+
+    /// The ports of sites 103 and 104.
+    pub(super) fn with_tail(mut self, tail: &'a TailFacts<'a>) -> Self {
+        self.tail = Some(tail);
+        self
     }
 
     /// The recording this start flight owns. In the `In` phase of R101.15 the id
@@ -326,7 +352,7 @@ impl Ports for StartPorts<'_> {
     }
 
     fn context_snapshot(&self, _id: RecordingId) -> Option<Arc<DictationContextSnapshot>> {
-        None
+        self.tail.map(|tail| Arc::clone(&tail.context))
     }
 
     fn emit(&self, effect: &Effect) -> PortResult {
@@ -345,6 +371,17 @@ impl Ports for StartPorts<'_> {
                     serde_json::json!({ "recordingId": self.rid() }),
                 )
                 .map_err(|_| PortFailure),
+            // R103.0: the smart-destination selection, T held and D released.
+            Effect::SmartDestinationEmit => {
+                let tail = self.tail.ok_or(PortFailure)?;
+                self.host.emit_smart_destination(
+                    &self.state.app_state,
+                    self.rid(),
+                    &tail.context,
+                    tail.delivery_target,
+                );
+                Ok(())
+            }
             _ => Err(PortFailure),
         }
     }
@@ -382,6 +419,10 @@ impl Ports for StartPorts<'_> {
             terminal_outcome_from_core(terminal.outcome),
             error_code_from_core(terminal.code),
         );
+        // The log line that followed the claim stays right after it.
+        if let Some(log) = self.slots.after_terminal.borrow_mut().take() {
+            log();
+        }
         // The ledger's answer is the witness: `Lost` (another sink won, or the
         // flight was never accepted: PD-10) is a failure of this claim.
         if claimed {
@@ -419,6 +460,20 @@ impl Ports for StartPorts<'_> {
                 if let Some(Err(error)) = self.slots.audio_result.borrow().as_ref() {
                     tracing::error!(target: "audio", "start_native_recording: audio failed: {}", error);
                 }
+                Ok(())
+            }
+            // Diagnostics begin once ownership is fully installed (T released).
+            Effect::PerfBegin => {
+                let tail = self.tail.ok_or(PortFailure)?;
+                let runtimes = super::runtime_identity(
+                    &tail.context.transcription.model_name,
+                    crate::performance_metrics::ModelWarmStateV1::Unknown,
+                );
+                self.host.performance().spawn_begin(
+                    self.rid(),
+                    runtimes,
+                    tail.performance_started_at_ms,
+                );
                 Ok(())
             }
             _ => Err(PortFailure),
@@ -520,8 +575,19 @@ impl Ports for StartPorts<'_> {
         }
     }
 
-    fn detached(&self, _effect: &Effect) -> PortResult {
-        Err(PortFailure)
+    fn detached(&self, effect: &Effect) -> PortResult {
+        match effect {
+            // R104.7: the model-preparation attempt, self-gating in the host.
+            Effect::ModelPreparation => {
+                let tail = self.tail.ok_or(PortFailure)?;
+                self.host.spawn_model_preparation(
+                    tail.context.transcription.model_name.clone(),
+                    self.rid(),
+                );
+                Ok(())
+            }
+            _ => Err(PortFailure),
+        }
     }
 }
 

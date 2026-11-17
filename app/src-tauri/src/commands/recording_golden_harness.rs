@@ -326,6 +326,9 @@ pub(super) struct World {
     delivery: StdMutex<Option<Delivery>>,
     /// Smart Auto resolves the start asked its host for.
     smart_auto_resolves: std::sync::atomic::AtomicUsize,
+    /// How many times the publish asked for its side tasks (`SD`): a counter, not
+    /// a trace line, so no recorded golden changes.
+    side_task_spawns: std::sync::atomic::AtomicUsize,
 }
 
 /// A delivery operation parked inside the production ownership fence.
@@ -353,6 +356,7 @@ impl World {
             auto_stops: StdMutex::new(Vec::new()),
             delivery: StdMutex::new(None),
             smart_auto_resolves: std::sync::atomic::AtomicUsize::new(0),
+            side_task_spawns: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -642,6 +646,11 @@ impl World {
     }
 
     /// How many Smart Auto resolves the start asked its host for.
+    /// How many times the ready publish started its side tasks (`SD`).
+    pub(super) fn side_task_spawns(&self) -> usize {
+        self.side_task_spawns.load(Ordering::SeqCst)
+    }
+
     pub(super) fn smart_auto_resolves(&self) -> usize {
         self.smart_auto_resolves.load(Ordering::SeqCst)
     }
@@ -1177,6 +1186,9 @@ impl World {
         self.push(format!(
             "supervisor.is_dictation_recording {recording_id} -> {recording}"
         ));
+        // A point where a scenario lands an event after the read and before D
+        // (R104.5's mutation witness).
+        self.fire("supervisor.is_dictation_recording");
         recording
     }
 }
@@ -1427,6 +1439,7 @@ impl DictationHost for Host {
             ready_op,
             |recording_id| world.is_dictation_recording(recording_id),
             |app, recording_id, register| {
+                world.side_task_spawns.fetch_add(1, Ordering::SeqCst);
                 let state = app.state::<State>();
                 let Some(context) = state.app_state.active_context(recording_id) else {
                     return;

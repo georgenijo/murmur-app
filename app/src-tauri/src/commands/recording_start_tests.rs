@@ -228,3 +228,90 @@ fn a_start_nested_in_a_port_emit_is_refused_before_any_lock() {
         assert_eq!(lines, baseline, "{what}: the refused start changed nothing");
     }
 }
+
+// ---------------------------------------------------------------- site 104
+
+/// R104.5 / #216 mutation witness (appendix C13.3): the start reads
+/// `is_dictation_recording(rid) == true` and, before it takes D, a runtime failure
+/// for the current id lands (`Recovering{RuntimeFailure}` writes `Recovering` and
+/// preserves the installed context). The publish then runs with a stale audio
+/// read and must publish nothing: no `recording` emit, no status write, no `SD`.
+///
+/// Dropping R104.5's `status == Starting` guard makes it publish `Recording` over
+/// `Recovering`: this test fails (the mutation check in the PR).
+#[test]
+fn a_late_ready_publish_after_a_runtime_failure_publishes_nothing() {
+    let lines = run_sub_run(&SubRun {
+        title: "late publish",
+        setup: Setup::idle(),
+        body: |w| {
+            w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+            w.on("supervisor.is_dictation_recording", {
+                let world = Arc::clone(w);
+                move || world.runtime_failure(1)
+            });
+            let mut start = w.start();
+            let reply = complete(&mut start);
+            w.reply("start", &reply);
+            assert_eq!(
+                reply.expect("the start flight ends with its own reply"),
+                serde_json::json!({ "type": "recording_starting", "state": "starting", "recordingId": 1 })
+            );
+            assert_eq!(
+                w.side_task_spawns(),
+                0,
+                "no side task starts for a publish that did not happen"
+            );
+            let state = w.state();
+            assert_eq!(
+                state.app_state.dictation.lock_or_recover().status,
+                DictationStatus::Recovering,
+                "Recovering is not overwritten with Recording"
+            );
+        },
+    });
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "publish_recording_ready 1 -> false"),
+        "{lines:#?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("recording-status-changed \"recording\"")),
+        "no `recording` emit: {lines:#?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("-> Recording")),
+        "no status write to Recording: {lines:#?}"
+    );
+}
+
+/// The same publish with nothing in the window is R104.2: `Starting→Recording`,
+/// the `recording` emit and exactly one `SD`.
+#[test]
+fn an_undisturbed_ready_publish_writes_recording_emits_and_starts_the_side_tasks() {
+    let lines = run_sub_run(&SubRun {
+        title: "publish",
+        setup: Setup::idle(),
+        body: |w| {
+            w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+            let mut start = w.start();
+            let reply = complete(&mut start);
+            w.reply("start", &reply);
+            assert!(reply.is_ok(), "{reply:?}");
+            assert_eq!(w.side_task_spawns(), 1);
+        },
+    });
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "publish_recording_ready 1 -> true"),
+        "{lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("-> Recording")),
+        "{lines:#?}"
+    );
+}

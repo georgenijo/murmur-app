@@ -14,10 +14,10 @@
 //! that followed the emit stays right after it, before `SD`.
 
 use super::{register_partial_ticker_locked, State};
-use crate::MutexExt;
 use crate::dictation_context::DictationContextSnapshot;
 use crate::dictation_executor::executor::{PortFailure, PortResult, Ports};
 use crate::state::{AppState, DictationState};
+use crate::MutexExt;
 use murmur_dictation_core::effects::Effect;
 use murmur_dictation_core::ids::RecordingId;
 use std::cell::RefCell;
@@ -104,11 +104,8 @@ impl<R: tauri::Runtime> Ports for ReadyPorts<'_, R> {
     fn claims(&self, effect: &Effect) -> PortResult {
         match effect {
             Effect::TouchLastTranscription => {
-                *self
-                    .state
-                    .app_state
-                    .last_transcription_at
-                    .lock_or_recover() = Some(std::time::Instant::now());
+                *self.state.app_state.last_transcription_at.lock_or_recover() =
+                    Some(std::time::Instant::now());
                 Ok(())
             }
             _ => Err(PortFailure),
