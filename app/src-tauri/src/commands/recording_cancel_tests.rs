@@ -556,3 +556,147 @@ fn a_cancel_nested_in_a_port_call_is_refused_before_any_lock() {
         assert_eq!(count("reply cancel Ok"), 1, "{name}\n{}", lines.join("\n"));
     }
 }
+
+// ----------------------------------------------- D-S2-8: the cancel's drain guard
+
+fn history_counts(world: &Arc<World>) -> (usize, usize) {
+    let history = &world.state().app_state.core_history;
+    (history.pipeline_count(), history.outstanding_ops())
+}
+
+fn run_under_watchdog<T: Send + 'static>(
+    what: &'static str,
+    body: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+        let _ = done.send(outcome);
+    });
+    match finished.recv_timeout(std::time::Duration::from_secs(20)) {
+        Ok(Ok(value)) => value,
+        Ok(Err(panic)) => std::panic::resume_unwind(panic),
+        Err(_) => {
+            eprintln!("DEADLOCK: {what}");
+            std::process::abort();
+        }
+    }
+}
+
+/// R205.5's `idle` emit runs listeners inline, under the cancel's span with T held.
+/// A listener drops a stop that is parked mid-pipeline: its idle guard's finish
+/// (the 204a section) and the pipeline's history entries H1 and H2 are deferred, in
+/// FIFO order. The cancel command drains them before it returns: nothing is applied
+/// while it still holds T, the finish and both retirements are applied once, and
+/// the queue is empty. Without the cancel's drain guard they would stay queued on
+/// this thread (and the test-build safety net fails the command).
+#[test]
+fn a_cancel_drains_what_its_idle_listener_defers_before_it_returns() {
+    let lines = run_under_watchdog("cancel with a listener that drops a stop", || {
+        from_cancel(trace(Setup::idle(), |w| {
+            recording(w);
+            w.knobs().stop_result = Ok(16_000);
+            w.close_gate("pipeline");
+            let mut stop = w.stop(None);
+            assert!(poll_once(&mut stop).is_pending());
+            assert_eq!(history_counts(w), (1, 1), "the parked stop's pipeline");
+            let counters = w.state().app_state.core_history.counters();
+            let parked = Arc::new(StdMutex::new(Some(stop)));
+            let (observer, slot) = (Arc::clone(w), Arc::clone(&parked));
+            w.on_inline("emit:recording-status-changed", move || {
+                observer.note("listener: dropping the parked stop under the cancel's span");
+                drop(slot.lock().expect("slot").take());
+                assert_eq!(
+                    history_counts(&observer),
+                    (1, 1),
+                    "nothing retires while the cancel's span is open"
+                );
+                assert_eq!(
+                    super::DEFERRED_FINISHES.with(|queue| queue.borrow().len()),
+                    1,
+                    "the dropped stop's finish is queued"
+                );
+                observer.note("listener: dropped");
+            });
+            cancel_command(w, None);
+            assert!(parked.lock().expect("slot").is_none(), "the listener ran");
+            assert_eq!(
+                history_counts(w),
+                (0, 0),
+                "the cancel drained H1 and H2 before it returned"
+            );
+            assert_eq!(
+                w.state().app_state.core_history.counters(),
+                counters,
+                "each entry retired exactly once"
+            );
+            assert!(
+                super::DEFERRED_FINISHES.with(|queue| queue.borrow().is_empty()),
+                "the queue is empty when the cancel returns"
+            );
+            w.open_gate("pipeline");
+        }))
+    });
+    let listener = lines
+        .iter()
+        .position(|line| line == "# listener: dropped")
+        .unwrap_or_else(|| panic!("the listener ran:\n{}", lines.join("\n")));
+    let reply = lines
+        .iter()
+        .position(|line| line == "reply cancel Ok")
+        .unwrap_or_else(|| panic!("the cancel replied:\n{}", lines.join("\n")));
+    assert!(
+        listener < reply,
+        "the drain ran inside the cancel, before its reply:\n{}",
+        lines.join("\n")
+    );
+}
+
+/// A cancel that waits on T and is woken by a listener that polls it inline, inside
+/// another entry's span, runs on to its D section there only after the span ended:
+/// it parks (holding T, self-waking) instead of asking for D inside the span, and
+/// finishes when it is next polled outside it. A watchdog fails a deadlock.
+#[test]
+fn a_cancel_waiting_on_t_and_polled_inside_a_span_parks_without_deadlock() {
+    use crate::dictation_executor::executor::CoreEntry;
+    run_under_watchdog("a cancel polled inside a span after waiting on T", || {
+        trace(
+            Setup {
+                status: DictationStatus::Processing,
+                recording_id: 3,
+            },
+            |w| {
+                w.install_context(3);
+                let state = w.state();
+                // Someone else holds T, so the cancel parks on it.
+                let holder = state.app_state.recording_transition.try_lock().expect("T");
+                let mut cancel = w.cancel(None);
+                assert!(poll_once(&mut cancel).is_pending(), "parked on T");
+                drop(holder);
+                // Polled inside a span: T is acquired, then the fence parks it.
+                let span = CoreEntry::enter().expect("outside any span");
+                assert!(
+                    poll_once(&mut cancel).is_pending(),
+                    "inside a span the cancel parks before its D section"
+                );
+                assert!(
+                    state.app_state.dictation.try_lock().is_ok(),
+                    "the parked cancel never asked for D inside the span"
+                );
+                assert_eq!(
+                    state.app_state.dictation.lock_or_recover().status,
+                    DictationStatus::Processing,
+                    "nothing ran inside the span"
+                );
+                drop(span);
+                let reply = complete(&mut cancel);
+                assert_eq!(reply, Ok(()), "outside the span the cancel finishes");
+                assert_eq!(
+                    state.app_state.dictation.lock_or_recover().status,
+                    DictationStatus::Idle
+                );
+                assert!(state.app_state.recording_transition.try_lock().is_ok());
+            },
+        )
+    });
+}

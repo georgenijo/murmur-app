@@ -81,6 +81,10 @@ impl CoreEntry {
 impl Drop for CoreEntry {
     fn drop(&mut self) {
         IN_CORE.with(|flag| flag.set(false));
+        // Test builds: the outermost entry ends here; work it deferred must have a
+        // drain guard around it (D-S2-4, D-S2-8).
+        #[cfg(test)]
+        crate::commands::recording::assert_deferred_work_has_a_drain();
     }
 }
 

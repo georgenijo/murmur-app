@@ -119,6 +119,15 @@ pub(super) fn executor<'a>(ports: &'a dyn Ports, decision: Decision) -> Executor
         .expect("a lifecycle decision is structurally valid (crate row tests)")
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test builds: the executor's witness (legend code, outcome), appended after
+    /// every phase run on this thread (a test clears it first).
+    pub(super) static LAST_WITNESS: std::cell::RefCell<
+        Vec<(&'static str, crate::dictation_executor::executor::WitnessOutcome)>,
+    > = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// Run one placement. `dictation` is `Some` only for `In`: the D guard's contents
 /// the shell holds. A refused or out-of-order run does nothing and is logged;
 /// today's code has no such path.
@@ -132,7 +141,17 @@ pub(super) fn run_phase(
         dictation,
         recording_id,
     };
-    match executor.run(phase, &mut ctx) {
+    let report = executor.run(phase, &mut ctx);
+    #[cfg(test)]
+    LAST_WITNESS.with(|slot| {
+        slot.borrow_mut().extend(
+            executor
+                .witness()
+                .iter()
+                .map(|witness| (witness.code, witness.outcome)),
+        );
+    });
+    match report {
         PhaseReport::Done => {}
         PhaseReport::Awaiting(_) | PhaseReport::Invalid(_) => {
             tracing::error!(
@@ -252,13 +271,20 @@ impl<R: tauri::Runtime> Ports for LifecyclePorts<'_, R> {
         let Effect::Terminal(terminal) = effect else {
             return Err(PortFailure);
         };
-        emit_dictation_terminal(
+        let claimed = emit_dictation_terminal(
             self.state,
             self.recording_id,
             terminal_outcome_from_core(terminal.outcome),
             error_code_from_core(terminal.code),
         );
-        Ok(())
+        // D-S2-9: the ledger's answer is the witness, as in the cancel family. A
+        // claim another sink already won (`Lost`) is recorded as failed, never as a
+        // constant success.
+        if claimed {
+            Ok(())
+        } else {
+            Err(PortFailure)
+        }
     }
 
     fn perf(&self, effect: &Effect) -> PortResult {
