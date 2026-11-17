@@ -212,6 +212,12 @@ pub(super) struct Knobs {
     /// production `with_current_delivery_owner` and holds it until the
     /// scenario calls [`World::finish_delivery`] (C9.4 scenario 2).
     pub(super) hold_delivery: bool,
+    /// The pipeline fails: it returns early, so its guard's drop (not a `finish`)
+    /// leaves, and its caller gets this error (Stage 2a-2 review).
+    pub(super) pipeline_error: Option<&'static str>,
+    /// The pipeline guard's `finish` closure (the `In` effect `EM(idle)`, run under
+    /// D) panics.
+    pub(super) pipeline_finish_panics: bool,
 }
 
 impl Default for Knobs {
@@ -226,6 +232,8 @@ impl Default for Knobs {
             stop_unsealed: false,
             cancel_result: Ok(true),
             hold_delivery: false,
+            pipeline_error: None,
+            pipeline_finish_panics: false,
         }
     }
 }
@@ -499,16 +507,58 @@ impl World {
             .push(Box::new(hook));
     }
 
+    /// Run `hook` once, the next time a port reaches `label`, **on the thread of
+    /// the port call**, even inside a core span: an inline listener of the emit.
+    /// The core must refuse whatever re-enters it from there (C4.2).
+    pub(super) fn on_inline(&self, label: &str, hook: impl FnOnce() + Send + 'static) {
+        self.on(&format!("inline:{label}"), hook);
+    }
+
+    /// Deliver a supervisor notification through the real bridge on the calling
+    /// thread, whatever that thread is inside: what a listener that an emit
+    /// invokes inline does.
+    pub(super) fn bridge_inline(&self, recording_id: u64, event: AudioLifecycleEvent) {
+        handle_audio_lifecycle_and_ready_tasks(
+            self.app.clone(),
+            recording_id,
+            event,
+            |_, _| {},
+            |_, _, _| {},
+        );
+    }
+
     fn fire(&self, label: &str) {
-        let hook = {
+        let (inline, hook) = {
             let mut hooks = locked(&self.hooks);
-            hooks
-                .get_mut(label)
-                .filter(|queue| !queue.is_empty())
-                .map(|queue| queue.remove(0))
+            let mut take = |key: &str| {
+                hooks
+                    .get_mut(key)
+                    .filter(|queue| !queue.is_empty())
+                    .map(|queue| queue.remove(0))
+            };
+            match take(&format!("inline:{label}")) {
+                Some(hook) => (true, Some(hook)),
+                None => (false, take(label)),
+            }
         };
-        if let Some(hook) = hook {
+        let Some(hook) = hook else {
+            return;
+        };
+        if inline || !crate::dictation_executor::executor::in_core() {
             hook();
+        } else {
+            // A hook stands for another thread's event landing exactly at this
+            // port (PD-1's user stop, a supervisor notification). Fired from
+            // inside a core span it is an *independent* input (D-S2-2): it runs
+            // on its own thread, joined at once so the causal order is the one the
+            // traces record, exactly as `notify` does, and the production
+            // re-entrancy check stays unrelaxed.
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(hook)
+                    .join()
+                    .expect("the hook's thread panicked");
+            });
         }
     }
 
@@ -1368,12 +1418,13 @@ impl DictationHost for Host {
         let world = &self.0;
         world.push(format!("pipeline {recording_id} samples={}", samples.len()));
         Box::pin(async move {
-            drop(stop);
+            let PipelineStopContext { pipeline_op, .. } = stop;
             // `run_transcription_pipeline` builds its `IdleGuard` first and
             // drops it on return (`recording.rs`, the `_guard` at the pipeline's
-            // entry): the real guard, so what a return does to status and
-            // context is production's.
-            let mut guard = IdleGuard::new(app_state, recording_id);
+            // entry): the real pipeline guard, with the pipeline's history
+            // entries, so what a return does to status, context and history is
+            // production's.
+            let mut guard = IdleGuard::for_pipeline(app_state, recording_id, pipeline_op);
             world.fire("pipeline");
             let hold_delivery = world.knobs().hold_delivery;
             let cancelled = |stage| PipelineResult {
@@ -1428,10 +1479,23 @@ impl DictationHost for Host {
                     succeeded()
                 }
             };
+            let (error, finish_panics) = {
+                let knobs = world.knobs();
+                (knobs.pipeline_error, knobs.pipeline_finish_panics)
+            };
+            if let Some(error) = error {
+                // An early return: the guard's drop leaves, as on a `?`.
+                drop(guard);
+                world.push(format!("pipeline {recording_id} failed"));
+                return Err(error.to_string());
+            }
             // The guard's drop is `finish`: it clears the context, then writes
             // Idle on an id match alone, whatever the status (PD-6).
             let mut wrote_idle = false;
-            guard.finish(|_| wrote_idle = true);
+            guard.finish(|_| {
+                assert!(!finish_panics, "the pipeline's idle closure panics");
+                wrote_idle = true;
+            });
             world.push(format!(
                 "pipeline {recording_id} idle_guard wrote_idle={wrote_idle}"
             ));

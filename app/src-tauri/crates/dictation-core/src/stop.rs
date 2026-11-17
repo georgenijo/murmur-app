@@ -187,12 +187,15 @@ pub fn decide_stop_request(core: &DictationCore, input: StopInput, now: Now) -> 
 
 // ---------------------------------------------------------------------- 202
 
-/// The continuation-registering effects of a context-present stop (R202.1/.2):
-/// `PDT:KB(true), EM(processing)`.
-fn context_present_effects() -> Vec<Placed> {
+/// The effects of a context-present stop (R202.1/.2): `PDT:KB(true),
+/// EM(processing)`, then, with T released (6053), `PT:CP(rid)`: the capture stop.
+/// A capture the supervisor already preserved (an interrupted one) bypasses the
+/// supervisor in the shell's `CP` port and goes straight to R203.
+fn context_present_effects(rid: RecordingId) -> Vec<Placed> {
     vec![
         placed(At::PostDT, Effect::KeyboardProcessing(true)),
         emit_status(At::PostDT, Status::Processing),
+        placed(At::PostT, Effect::CaptureStop(rid)),
     ]
 }
 
@@ -200,14 +203,19 @@ fn context_present_effects() -> Vec<Placed> {
 /// present. Status is not read, so the schedule where a supervisor `Idle`
 /// landed first (R202.2, **PD-7**) takes the same decision as R202.1: the
 /// `processing` emit follows the supervisor's `idle` (window W-stop-1).
-/// `PDT:KB(true), EM(processing)`; `K:CaptureStop`.
+/// `PDT:KB(true), EM(processing)`, `PT:CP`; `K:CaptureStop`.
 pub fn decide_stop_context_nolock(
     _facts: LockFreeFacts,
     input: StopContextInput,
     _now: Now,
 ) -> Decision {
     with_continuation(
-        decision(Verdict::Applied, None, context_present_effects(), "R202.1"),
+        decision(
+            Verdict::Applied,
+            None,
+            context_present_effects(input.rid),
+            "R202.1",
+        ),
         input.rid,
         ContKind::CaptureStop,
     )
@@ -279,18 +287,6 @@ pub fn guard_finish_pre_effects(rid: RecordingId) -> Vec<Placed> {
     vec![clear_context(At::Pre, rid)]
 }
 
-/// The status-dependent suffix `a-e` of a stale row (the status of the newer
-/// recording that made `rid != current_id`; none is read).
-fn stale_suffix(status: Status) -> char {
-    match status {
-        Status::Idle => 'a',
-        Status::Starting => 'b',
-        Status::Recording => 'c',
-        Status::Recovering => 'd',
-        Status::Processing => 'e',
-    }
-}
-
 fn row_204a(core: &DictationCore, input: &GuardFinishInput) -> &'static str {
     if input.origin == GuardOrigin::Dropped {
         return "R204a.6";
@@ -303,13 +299,12 @@ fn row_204a(core: &DictationCore, input: &GuardFinishInput) -> &'static str {
             Status::Starting | Status::Recording => "R204a.4",
         }
     } else {
-        match stale_suffix(core.status) {
-            'a' => "R204a.5a",
-            'b' => "R204a.5b",
-            'c' => "R204a.5c",
-            'd' => "R204a.5d",
-            'e' => "R204a.5e",
-            _ => unreachable!("stale_suffix returns a-e"),
+        match core.status {
+            Status::Idle => "R204a.5a",
+            Status::Starting => "R204a.5b",
+            Status::Recording => "R204a.5c",
+            Status::Recovering => "R204a.5d",
+            Status::Processing => "R204a.5e",
         }
     }
 }
@@ -406,29 +401,30 @@ fn row_203(kind: Capture, core: &DictationCore, rid: RecordingId) -> &'static st
         return match (kind, core.status) {
             (Capture::Failed, Status::Idle) => "R203.2",
             (Capture::Failed, Status::Recovering) => "R203.2r",
-            (Capture::Failed, _) => "R203.1",
+            (Capture::Failed, Status::Processing | Status::Starting | Status::Recording) => {
+                "R203.1"
+            }
             (Capture::Empty, Status::Idle) => "R203.5",
             (Capture::Empty, Status::Recovering) => "R203.5r",
-            (Capture::Empty, _) => "R203.4",
+            (Capture::Empty, Status::Processing | Status::Starting | Status::Recording) => "R203.4",
             (Capture::Short, Status::Idle) => "R203.7",
             (Capture::Short, Status::Recovering) => "R203.7r",
-            (Capture::Short, _) => "R203.6",
+            (Capture::Short, Status::Processing | Status::Starting | Status::Recording) => "R203.6",
             (Capture::Long, _) => unreachable!("a long capture takes the D-less entry"),
         };
     }
-    match (kind, stale_suffix(core.status)) {
-        (Capture::Failed, 'a') => "R203.3a",
-        (Capture::Failed, 'b') => "R203.3b",
-        (Capture::Failed, 'c') => "R203.3c",
-        (Capture::Failed, 'd') => "R203.3d",
-        (Capture::Failed, 'e') => "R203.3e",
-        (Capture::Empty | Capture::Short, 'a') => "R203.8a",
-        (Capture::Empty | Capture::Short, 'b') => "R203.8b",
-        (Capture::Empty | Capture::Short, 'c') => "R203.8c",
-        (Capture::Empty | Capture::Short, 'd') => "R203.8d",
-        (Capture::Empty | Capture::Short, 'e') => "R203.8e",
+    match (kind, core.status) {
+        (Capture::Failed, Status::Idle) => "R203.3a",
+        (Capture::Failed, Status::Starting) => "R203.3b",
+        (Capture::Failed, Status::Recording) => "R203.3c",
+        (Capture::Failed, Status::Recovering) => "R203.3d",
+        (Capture::Failed, Status::Processing) => "R203.3e",
+        (Capture::Empty | Capture::Short, Status::Idle) => "R203.8a",
+        (Capture::Empty | Capture::Short, Status::Starting) => "R203.8b",
+        (Capture::Empty | Capture::Short, Status::Recording) => "R203.8c",
+        (Capture::Empty | Capture::Short, Status::Recovering) => "R203.8d",
+        (Capture::Empty | Capture::Short, Status::Processing) => "R203.8e",
         (Capture::Long, _) => unreachable!("a long capture takes the D-less entry"),
-        _ => unreachable!("stale_suffix returns a-e"),
     }
 }
 
@@ -539,13 +535,12 @@ fn row_204b(core: &DictationCore, rid: RecordingId) -> &'static str {
             Status::Processing | Status::Starting | Status::Recording => "R204b.3",
         };
     }
-    match stale_suffix(core.status) {
-        'a' => "R204b.4a",
-        'b' => "R204b.4b",
-        'c' => "R204b.4c",
-        'd' => "R204b.4d",
-        'e' => "R204b.4e",
-        _ => unreachable!("stale_suffix returns a-e"),
+    match core.status {
+        Status::Idle => "R204b.4a",
+        Status::Starting => "R204b.4b",
+        Status::Recording => "R204b.4c",
+        Status::Recovering => "R204b.4d",
+        Status::Processing => "R204b.4e",
     }
 }
 

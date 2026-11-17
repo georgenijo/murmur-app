@@ -1095,6 +1095,49 @@ pub(crate) fn rebuild_correction_matcher(
     *app_state.correction_matcher.lock_or_recover() = Some(std::sync::Arc::new(matcher));
 }
 
+/// The pipeline's history ownership (C1.4.1, C3.9): its `K:Pipeline` operation
+/// (H1) and its registration (H2). The pipeline's [`IdleGuard`] owns it, so a
+/// pipeline that finishes, is cancelled mid-flight, panics or exits stale leaves
+/// neither entry behind: `Drop` retires whatever the guard did not.
+struct PipelineOwner {
+    history: crate::core_history::CoreHistoryLock,
+    rid: murmur_dictation_core::ids::RecordingId,
+    op: ContinuationGuard,
+    registered: bool,
+}
+
+impl PipelineOwner {
+    /// R203.9: register `K:Pipeline` (H1) and the pipeline (H2) together.
+    fn register(
+        history: &crate::core_history::CoreHistoryLock,
+        spec: murmur_dictation_core::decision::ContinuationSpec,
+    ) -> Self {
+        let rid = spec.recording_id;
+        let op = ContinuationGuard::register(history, spec);
+        history.reg_pipeline(rid);
+        Self {
+            history: history.clone(),
+            rid,
+            op,
+            registered: true,
+        }
+    }
+
+    /// `H2 ret rid` (idempotent).
+    fn retire_pipeline(&mut self) {
+        if std::mem::take(&mut self.registered) {
+            self.history.ret_pipeline(self.rid);
+        }
+    }
+}
+
+impl Drop for PipelineOwner {
+    fn drop(&mut self) {
+        self.retire_pipeline();
+        // `op` retires H1 through its own `Drop` unless it was consumed.
+    }
+}
+
 /// RAII guard that resets dictation status to Idle on drop,
 /// ensuring status is restored on any early return or error path.
 ///
@@ -1109,38 +1152,68 @@ struct IdleGuard<'a> {
     finish_origin: murmur_dictation_core::inputs::GuardOrigin,
     /// Who a `Drop` of the armed guard is.
     drop_origin: murmur_dictation_core::inputs::GuardOrigin,
+    /// The pipeline's H1/H2 entries, for the pipeline's own guard only.
+    owner: Option<PipelineOwner>,
 }
 
 impl<'a> IdleGuard<'a> {
-    /// The stop command's guard (and the test harness's pipeline stand-in).
-    fn new(app_state: &'a AppState, recording_id: u64) -> Self {
-        use murmur_dictation_core::inputs::GuardOrigin;
+    fn with_origins(
+        app_state: &'a AppState,
+        recording_id: u64,
+        finish_origin: murmur_dictation_core::inputs::GuardOrigin,
+        drop_origin: murmur_dictation_core::inputs::GuardOrigin,
+        owner: Option<PipelineOwner>,
+    ) -> Self {
         Self {
             app_state,
             recording_id,
             disarmed: false,
-            finish_origin: GuardOrigin::StopCapture,
-            drop_origin: GuardOrigin::Dropped,
+            finish_origin,
+            drop_origin,
+            owner,
         }
     }
 
-    /// The pipeline's own guard: it leaves the pipeline's registration (H2).
-    fn for_pipeline(app_state: &'a AppState, recording_id: u64) -> Self {
+    /// The stop command's guard.
+    fn new(app_state: &'a AppState, recording_id: u64) -> Self {
         use murmur_dictation_core::inputs::GuardOrigin;
-        Self {
-            finish_origin: GuardOrigin::PipelineExit,
-            drop_origin: GuardOrigin::PipelineExit,
-            ..Self::new(app_state, recording_id)
-        }
+        Self::with_origins(
+            app_state,
+            recording_id,
+            GuardOrigin::StopCapture,
+            GuardOrigin::Dropped,
+            None,
+        )
+    }
+
+    /// The pipeline's own guard: it owns the pipeline's history entries (H1 and
+    /// H2), validates the operation before deciding and retires both after the
+    /// decision.
+    fn for_pipeline(
+        app_state: &'a AppState,
+        recording_id: u64,
+        owner: Option<PipelineOwner>,
+    ) -> Self {
+        use murmur_dictation_core::inputs::GuardOrigin;
+        Self::with_origins(
+            app_state,
+            recording_id,
+            GuardOrigin::PipelineExit,
+            GuardOrigin::PipelineExit,
+            owner,
+        )
     }
 
     /// The legacy `process_audio` guard: a parse failure finishes it.
     fn for_legacy_parse(app_state: &'a AppState, recording_id: u64) -> Self {
         use murmur_dictation_core::inputs::GuardOrigin;
-        Self {
-            finish_origin: GuardOrigin::LegacyParse,
-            ..Self::new(app_state, recording_id)
-        }
+        Self::with_origins(
+            app_state,
+            recording_id,
+            GuardOrigin::LegacyParse,
+            GuardOrigin::Dropped,
+            None,
+        )
     }
 
     fn disarm(&mut self) {
@@ -1150,10 +1223,11 @@ impl<'a> IdleGuard<'a> {
     /// Site 204a (R204a.1-.6): `Pre:CX-` before D, then the guard's D section
     /// through `decide_guard_finish`: compare the id only, write `Idle`, clear the
     /// keyboard gate and, if `on_idle` is present, run it as `EM(idle)` with the
-    /// held `DictationState`. A pipeline exit or a drop then leaves the pipeline's
-    /// registration (H2 `ret rid`).
+    /// held `DictationState`. The pipeline's own guard validates its operation
+    /// before deciding and, once the decision is made and before the `In` effects
+    /// run, retires H1 and H2 (C3.9, C1.4.1).
     fn run_finish<'f>(
-        &self,
+        &mut self,
         origin: murmur_dictation_core::inputs::GuardOrigin,
         on_idle: Option<stop_ports::OnIdle<'f>>,
     ) {
@@ -1162,7 +1236,7 @@ impl<'a> IdleGuard<'a> {
         use murmur_dictation_core::decision::{Decision, RowId};
         use murmur_dictation_core::effects::Placement;
         use murmur_dictation_core::ids::RecordingId;
-        use murmur_dictation_core::inputs::{GuardFinishInput, GuardOrigin};
+        use murmur_dictation_core::inputs::GuardFinishInput;
         use murmur_dictation_core::stop as core_stop;
 
         let rid = RecordingId(self.recording_id);
@@ -1184,30 +1258,41 @@ impl<'a> IdleGuard<'a> {
         // Lock first, then check recording_id — prevents TOCTOU where
         // a concurrent start advances the ID between our check and the
         // status write.
-        {
-            let mut dictation = self.app_state.dictation.lock_or_recover();
-            let view = FieldAdapter::project_lifecycle_view(self.app_state, &dictation);
-            let decision =
-                stop_ports::decide(|| core_stop::decide_guard_finish(&view, input, core_now()))
-                    .after_pre();
-            stop_ports::run_phase(
-                &mut stop_ports::executor(&ports, decision),
-                Placement::In,
-                Some(&mut dictation),
-                self.recording_id,
-            );
+        let mut dictation = self.app_state.dictation.lock_or_recover();
+        let view = FieldAdapter::project_lifecycle_view(self.app_state, &dictation);
+        let decide =
+            || stop_ports::decide(|| core_stop::decide_guard_finish(&view, input, core_now()));
+        let decision = match self.owner.as_mut() {
+            // `validate`, decide whatever the status, `ret_if_matches` (H1).
+            Some(owner) => owner.op.consume(|_status| decide()),
+            None => decide(),
         }
-        if matches!(origin, GuardOrigin::PipelineExit | GuardOrigin::Dropped) {
-            self.app_state.core_history.ret_pipeline(rid);
+        .after_pre();
+        // H2 `ret rid`: after the decision, before its `In` effects. A panic in
+        // an effect (the `ST` trace) can no longer leave either entry behind.
+        if let Some(owner) = self.owner.as_mut() {
+            owner.retire_pipeline();
         }
+        stop_ports::run_phase(
+            &mut stop_ports::executor(&ports, decision),
+            Placement::In,
+            Some(&mut dictation),
+            self.recording_id,
+        );
     }
 }
 
 impl IdleGuard<'_> {
-    fn finish(&mut self, on_idle: impl FnOnce(&crate::state::DictationState)) {
+    fn finish<R: stop_ports::EmitOutcome>(
+        &mut self,
+        on_idle: impl FnOnce(&crate::state::DictationState) -> R,
+    ) {
         if !self.disarmed {
             self.disarmed = true;
-            self.run_finish(self.finish_origin, Some(Box::new(on_idle)));
+            self.run_finish(
+                self.finish_origin,
+                Some(Box::new(move |dictation| on_idle(dictation).delivered())),
+            );
         }
     }
 }
@@ -1231,7 +1316,7 @@ fn run_pipeline_idle_emit(
     recording_id: u64,
     kind: murmur_dictation_core::inputs::PostKind,
     set_processing: &dyn Fn(bool),
-    emit_idle: &dyn Fn(),
+    emit_idle: &dyn Fn() -> bool,
 ) {
     use crate::dictation_executor::executor::core_now;
     use crate::dictation_executor::FieldAdapter;
@@ -1240,6 +1325,10 @@ fn run_pipeline_idle_emit(
     use murmur_dictation_core::inputs::PipelineIdleEmitInput;
     use murmur_dictation_core::stop as core_stop;
 
+    // Test builds: a barrier between the pipeline guard's finish (204a) and this
+    // second D section, where C3.5's interleaving (a newer start) lands.
+    #[cfg(test)]
+    crate::barrier_hook::at("pipeline_idle_emit");
     let ports = stop_ports::IdleEmitPorts::new(app_state, set_processing, emit_idle);
     let mut dictation = app_state.dictation.lock_or_recover();
     let view = FieldAdapter::project_lifecycle_view(app_state, &dictation);
@@ -3066,6 +3155,9 @@ struct PipelineStopContext {
     delivery_target: Option<crate::frontmost::DeliveryTargetSnapshot>,
     /// The live preview's hide, owned by delivery from the accepted stop.
     preview_hide: Option<crate::commands::dictation_preview::PreviewHideOwner>,
+    /// The pipeline's history entries (H1 `K:Pipeline`, H2): the pipeline's own
+    /// `IdleGuard` takes them over (R203.9, 204a).
+    pipeline_op: Option<PipelineOwner>,
 }
 
 /// Shared transcription pipeline: model init -> transcribe -> inject text -> set idle.
@@ -3083,6 +3175,7 @@ async fn run_transcription_pipeline(
     let PipelineStopContext {
         delivery_target: stop_delivery_target,
         preview_hide,
+        pipeline_op,
     } = stop;
     // Dropped on every return without a delivery job, which hides at once.
     let mut preview_hide = preview_hide;
@@ -3093,7 +3186,7 @@ async fn run_transcription_pipeline(
     };
     // Guard resets status to Idle on any return path (error or success),
     // but only if this recording is still the active one
-    let mut _guard = IdleGuard::for_pipeline(app_state, recording_id);
+    let mut _guard = IdleGuard::for_pipeline(app_state, recording_id, pipeline_op);
 
     let transcription = &context.transcription;
     let transformations = &context.transformations;
@@ -3989,15 +4082,11 @@ pub async fn process_audio(
     let t_parse = std::time::Instant::now();
     let wav_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &audio_data)
         .map_err(|e| {
-            guard.finish(|_| {
-                let _ = app_handle.emit("recording-status-changed", "idle");
-            });
+            guard.finish(|_| app_handle.emit("recording-status-changed", "idle"));
             format!("Failed to decode base64: {}", e)
         })?;
     let samples = transcriber::parse_wav_to_samples(&wav_bytes).inspect_err(|_e| {
-        guard.finish(|_| {
-            let _ = app_handle.emit("recording-status-changed", "idle");
-        });
+        guard.finish(|_| app_handle.emit("recording-status-changed", "idle"));
     })?;
     tracing::info!(target: "pipeline", "audio parse (base64 + WAV): {:?}", t_parse.elapsed());
     performance_guard.record(StageTimingV1::measured(
@@ -4031,9 +4120,7 @@ pub async fn process_audio(
         rid,
         murmur_dictation_core::inputs::PostKind::LegacyPost,
         &keyboard::set_processing,
-        &|| {
-            let _ = app_handle.emit("recording-status-changed", "idle");
-        },
+        &|| app_handle.emit("recording-status-changed", "idle").is_ok(),
     );
     let pipeline = pipeline_result?;
     let text = pipeline.text;
@@ -6063,6 +6150,7 @@ async fn stop_native_recording_owned(
     stop_trigger: audio_lifecycle::DictationStopTrigger,
     auto_stop_owner: Option<ContinuationGuard>,
 ) -> Result<serde_json::Value, String> {
+    refuse_reentrant_stop()?;
     let host = TauriHost::new(app_handle, state.performance.clone());
     stop_native_recording_admitted(
         &host,
@@ -6084,6 +6172,29 @@ async fn stop_native_recording_inner(
     stop_native_recording_admitted(host, state, expected_recording_id, stop_trigger, None).await
 }
 
+/// C4.1 step 0 / C4.2: the **first** statement of the stop family's entry, before
+/// the managed-state lookup and before T or D. An inline listener that an
+/// `In`-phase emit invokes (here or in the lifecycle bridge) can reach this entry
+/// on the same thread while D is held; D is not reentrant, so the nested entry is
+/// refused before it can ask for a lock. The span is not held across the stop's
+/// awaits: each executor phase enters and leaves the core on its own.
+fn refuse_reentrant_stop() -> Result<(), String> {
+    match crate::dictation_executor::executor::CoreEntry::enter() {
+        Ok(entry) => {
+            drop(entry);
+            Ok(())
+        }
+        Err(kind) => {
+            tracing::error!(
+                target: "pipeline",
+                refusal = ?kind,
+                "re-entrant stop refused before any lock"
+            );
+            Err(format!("The dictation core refused the stop: {kind:?}"))
+        }
+    }
+}
+
 async fn stop_native_recording_admitted(
     host: &dyn DictationHost,
     state: &State,
@@ -6093,6 +6204,7 @@ async fn stop_native_recording_admitted(
 ) -> Result<serde_json::Value, String> {
     use crate::dictation_executor::convert::error_code_to_core;
     use crate::dictation_executor::executor::core_now;
+    use crate::dictation_executor::executor::{AwaitedOutcome, PhaseReport};
     use crate::dictation_executor::FieldAdapter;
     use murmur_dictation_core::cancel as core_cancel;
     use murmur_dictation_core::decision::{ContKind, Decision, ObsKind, RowId, Verdict};
@@ -6108,6 +6220,8 @@ async fn stop_native_recording_admitted(
     use murmur_dictation_core::stop as core_stop;
     use stop_ports::{executor, reply_of, run_phase, StopHooks, StopPorts};
 
+    // Also the first statement of the tests' direct entry (`_inner`).
+    refuse_reentrant_stop()?;
     // The `releaseToStop` endpoint: entry, before any lock wait (#826).
     let stop_entered_at = std::time::Instant::now();
     let transition = state.app_state.recording_transition.lock().await;
@@ -6344,43 +6458,45 @@ async fn stop_native_recording_admitted(
         .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec))
         .expect("a context-present stop registered `K:CaptureStop`");
     tracing::debug!(target: "pipeline", "stop_native_recording: stopping");
-    {
-        let ports = StopPorts::new(host, state, rid, stop_entered_at);
-        run_phase(
-            &mut executor(&ports, decision),
-            Placement::PostDT,
-            None,
-            rid,
-        );
-    }
-
     // Guard resets status to Idle if stop_recording fails or samples are empty;
     // disarmed before handing off to run_transcription_pipeline (which has its own guard)
-    let mut guard = IdleGuard::new(&state.app_state, rid);
+    let mut guard;
+    let t_total;
+    let interruption;
+    let stop_result = {
+        let ports = StopPorts::new(host, state, rid, stop_entered_at);
+        let mut exec = executor(&ports, decision);
+        run_phase(&mut exec, Placement::PostDT, None, rid);
+        guard = IdleGuard::new(&state.app_state, rid);
 
-    // Phase: Audio teardown + 16kHz resample
-    let t_total = std::time::Instant::now();
-    // Processing is already committed, so concurrent calls cannot claim the
-    // microphone. Release the transition guard before the supervisor wait.
-    drop(transition);
-    let interruption = interrupted_capture.as_ref().map(|capture| {
-        serde_json::json!({
-            "reason": capture.reason.clone(),
-            "deliveredSamples": capture.samples.len(),
-            "durationMs": capture.duration_ms,
-        })
-    });
-    let stop_result = if let Some(capture) = interrupted_capture {
-        Ok(capture.samples)
-    } else {
-        host.supervisor()
-            .stop_dictation_recording(rid, stop_trigger, tail_anchor)
+        // Phase: Audio teardown + 16kHz resample
+        t_total = std::time::Instant::now();
+        // Processing is already committed, so concurrent calls cannot claim the
+        // microphone. Release the transition guard before the supervisor wait.
+        drop(transition);
+        interruption = interrupted_capture.as_ref().map(|capture| {
+            serde_json::json!({
+                "reason": capture.reason.clone(),
+                "deliveredSamples": capture.samples.len(),
+                "durationMs": capture.duration_ms,
+            })
+        });
+        // `PT:CP` (R202.1), T released: the supervisor's capture stop, except
+        // that an interrupted capture's preserved samples bypass it.
+        ports.arm_capture_stop(
+            stop_trigger,
+            tail_anchor,
+            interrupted_capture.map(|capture| capture.samples),
+        );
+        run_phase(&mut exec, Placement::PostT, None, rid);
+        ports
+            .take_capture_result()
+            .unwrap_or_else(|| Err("The dictation core did not stop the capture".to_string()))
     };
     let samples = match stop_result {
         Ok(samples) => samples,
         Err(e) => {
             // Site 203, R203.1-.3.
-            tracing::error!(target: "audio", "stop_native_recording: stop_recording failed: {}", e);
             let probe = StopCaptureResultInput {
                 token: stop_guard.token(),
                 op_status: murmur_dictation_core::decision::OpStatus::Outstanding,
@@ -6394,7 +6510,12 @@ async fn stop_native_recording_admitted(
                 &mut stop_guard,
                 probe,
                 stop_entered_at,
-                None,
+                StopHooks {
+                    after_terminal: Some(Box::new(|| {
+                        tracing::error!(target: "audio", "stop_native_recording: stop_recording failed: {}", e);
+                    })),
+                    ..StopHooks::default()
+                },
             );
             return reply_of(&decision, Some(e), "");
         }
@@ -6443,12 +6564,6 @@ async fn stop_native_recording_admitted(
         // Site 203, R203.4-.8: no audio (`samples.is_empty()`) or a recording
         // shorter than 0.3 s, discarded as a phantom trigger (e.g. from residual
         // key presses).
-        if samples.is_empty() {
-            tracing::info!(target: "pipeline", "stop_native_recording: no audio captured");
-        } else {
-            tracing::info!(target: "pipeline", "stop_native_recording: recording too short ({}ms), discarding",
-                samples.len() / 16); // samples / 16_000 * 1000
-        }
         let audio_ms = samples.len() as u64 / 16;
         let decision = {
             run_stop_capture_rows(
@@ -6458,17 +6573,29 @@ async fn stop_native_recording_admitted(
                 &mut stop_guard,
                 probe,
                 stop_entered_at,
-                Some(Box::new(|| {
-                    performance_guard.finish(
-                        RunOutcomeV1::NoSpeech,
-                        vec![StageTimingV1::measured(
-                            PerformanceStageV1::TotalProcessing,
-                            t_total.elapsed().as_millis() as u64,
-                        )],
-                        Some(ContentFreeInputSummaryV1::audio(audio_ms)),
-                        None,
-                    );
-                })),
+                StopHooks {
+                    // The line that followed the terminal claim, before `CX-`.
+                    after_terminal: Some(Box::new(|| {
+                        if samples.is_empty() {
+                            tracing::info!(target: "pipeline", "stop_native_recording: no audio captured");
+                        } else {
+                            tracing::info!(target: "pipeline", "stop_native_recording: recording too short ({}ms), discarding",
+                                samples.len() / 16); // samples / 16_000 * 1000
+                        }
+                    })),
+                    perf_finish: Some(Box::new(|| {
+                        performance_guard.finish(
+                            RunOutcomeV1::NoSpeech,
+                            vec![StageTimingV1::measured(
+                                PerformanceStageV1::TotalProcessing,
+                                t_total.elapsed().as_millis() as u64,
+                            )],
+                            Some(ContentFreeInputSummaryV1::audio(audio_ms)),
+                            None,
+                        );
+                    })),
+                    ..StopHooks::default()
+                },
             )
         };
         return reply_of(&decision, None, "");
@@ -6489,12 +6616,14 @@ async fn stop_native_recording_admitted(
     if let Verdict::Invalid(_) = decision.verdict {
         return reply_of(&decision, None, "");
     }
+    // The pipeline's history entries (H1 `K:Pipeline`, H2): its own `IdleGuard`
+    // takes them over and retires both at its finish (204a, C3.9).
     let pipeline_op = decision
         .continuation
-        .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec));
-    state.app_state.core_history.reg_pipeline(RecordingId(rid));
-    guard.disarm();
-    {
+        .map(|spec| PipelineOwner::register(&state.app_state.core_history, spec));
+    // `PE(Vad)`, then `PS`: the executor stops at the awaited `PS`. Its cursor is
+    // parked across the await with no port or executor held (they are not `Send`).
+    let parked = {
         let ports = StopPorts::new(host, state, rid, stop_entered_at);
         ports.set_hooks(StopHooks {
             perf_enter: Some(Box::new(|| {
@@ -6502,11 +6631,13 @@ async fn stop_native_recording_admitted(
             })),
             ..StopHooks::default()
         });
-        // `PE(Vad)`, then `PS`: the executor stops at the awaited `PS`, which this
-        // shell drives below with no port or executor held across the await.
         let mut exec = executor(&ports, decision);
-        run_phase(&mut exec, Placement::PostDT, None, rid);
-    }
+        let report = run_phase(&mut exec, Placement::PostDT, None, rid);
+        stop_ports::pipeline_start(report)?;
+        exec.suspend()
+    };
+    // The pipeline's own guard takes over status management.
+    guard.disarm();
 
     let pipeline_result = host
         .run_transcription_pipeline(
@@ -6518,10 +6649,32 @@ async fn stop_native_recording_admitted(
             PipelineStopContext {
                 delivery_target: stop_delivery_target,
                 preview_hide: preview_hide.take(),
+                pipeline_op,
             },
         )
         .await;
-    drop(pipeline_op);
+    // Resume the awaited `PS` with what the pipeline actually returned.
+    {
+        let ports = StopPorts::new(host, state, rid, stop_entered_at);
+        let mut exec = parked.reattach(&ports);
+        let report = exec.resume(if pipeline_result.is_ok() {
+            AwaitedOutcome::Completed
+        } else {
+            AwaitedOutcome::Failed
+        });
+        if report != PhaseReport::Done || !exec.is_finished() {
+            tracing::error!(
+                target: "pipeline",
+                recording_id = rid,
+                report = ?report,
+                "the stop's pipeline start did not resume cleanly"
+            );
+        }
+        #[cfg(test)]
+        {
+            stop_ports::RESUMED.with(|slot| *slot.borrow_mut() = exec.witness().to_vec());
+        }
+    }
     let pipeline_returned_at = std::time::Instant::now();
     // Only emit idle if this recording wasn't cancelled/superseded by a new one.
     // Hold the dictation lock across the check+emit to prevent a concurrent
@@ -6532,9 +6685,7 @@ async fn stop_native_recording_admitted(
         rid,
         PostKind::StopPost,
         &|processing| host.keyboard().set_processing(processing),
-        &|| {
-            let _ = host.emit("recording-status-changed", "idle");
-        },
+        &|| host.emit("recording-status-changed", "idle").is_ok(),
     );
     let idle_block_ended_at = std::time::Instant::now();
     let idle_status_emit_us = micros_between(pipeline_returned_at, idle_block_ended_at);
@@ -6688,7 +6839,7 @@ async fn stop_native_recording_admitted(
                 let history = history
                     .as_ref()
                     .expect("non-empty completed transcription has history metadata");
-                let _ = host.emit(
+                host.emit(
                     "transcription-complete",
                     serde_json::json!({
                         "recordingId": rid,
@@ -6703,7 +6854,8 @@ async fn stop_native_recording_admitted(
                             "stages": history.stages,
                         }
                     }),
-                );
+                )
+                .is_ok()
             })),
             ..StopHooks::default()
         });
@@ -6730,7 +6882,7 @@ fn run_stop_capture_rows<'a>(
     capture_stop: &mut ContinuationGuard,
     probe: murmur_dictation_core::inputs::StopCaptureResultInput,
     stop_entered_at: std::time::Instant,
-    perf_finish: Option<Box<dyn FnOnce() + 'a>>,
+    hooks: stop_ports::StopHooks<'a>,
 ) -> murmur_dictation_core::decision::Decision {
     use crate::dictation_executor::executor::core_now;
     use crate::dictation_executor::FieldAdapter;
@@ -6738,15 +6890,12 @@ fn run_stop_capture_rows<'a>(
     use murmur_dictation_core::effects::Placement;
     use murmur_dictation_core::inputs::StopCaptureResultInput;
     use murmur_dictation_core::stop as core_stop;
-    use stop_ports::{executor, run_phase, StopHooks, StopPorts};
+    use stop_ports::{executor, run_phase, StopPorts};
 
     let rid = probe.rid.0;
     let ports = StopPorts::new(host, state, rid, stop_entered_at);
     ports.use_guard_keyboard();
-    ports.set_hooks(StopHooks {
-        perf_finish,
-        ..StopHooks::default()
-    });
+    ports.set_hooks(hooks);
     run_phase(
         &mut executor(
             &ports,
@@ -9039,7 +9188,7 @@ pub(crate) mod tests {
         );
 
         let mut stale = IdleGuard::new(&app_state, rid);
-        stale.finish(|_| panic!("superseded recording must not publish idle"));
+        stale.finish(|_| -> bool { panic!("superseded recording must not publish idle") });
         assert_eq!(
             app_state.dictation.lock_or_recover().status,
             DictationStatus::Recording
