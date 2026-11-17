@@ -16,7 +16,22 @@ resolver = "2"
 
 [lib]
 name = "ui_lib"
-crate-type = ["lib", "cdylib", "staticlib"]
+# Desktop-only app: cdylib/staticlib are mobile outputs and each extra link
+# writes hundreds of MB on every build.
+crate-type = ["lib"]
+
+# Local dev builds: line tables keep panic backtraces with file:line for Murmur
+# code (the same setting CI uses); dependencies carry no debuginfo, which cuts
+# compile, link, and target-directory cost. Release builds are unaffected.
+[profile.dev]
+debug = "line-tables-only"
+
+# strip = "none" is required: without it rustc strips debuginfo at link time and
+# on current macOS the stripped proc-macro dylibs fail to load (dlopen: "mis-aligned
+# LINKEDIT string pool"), breaking serde_derive and friends.
+[profile.dev.package."*"]
+debug = false
+strip = "none"
 
 [features]
 # Test-only capture helper executable injection.

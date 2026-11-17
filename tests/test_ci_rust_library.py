@@ -11,18 +11,17 @@ RECIPE = "a" * 64
 
 
 class CiRustLibraryTests(unittest.TestCase):
-    def test_only_test_outputs_and_cache_identity_change(self) -> None:
+    def test_only_cache_identity_changes(self) -> None:
         canonical = (ROOT / "app/src-tauri/Cargo.toml").read_text()
         before = tomllib.loads(canonical)
-        self.assertEqual(before["lib"]["crate-type"], ["lib", "cdylib", "staticlib"])
+        self.assertEqual(before["lib"]["crate-type"], ["lib"])
         self.assertNotIn("murmur-ci-cache", before["package"].get("metadata", {}))
         with tempfile.TemporaryDirectory() as directory:
             manifest = Path(directory) / "Cargo.toml"
             manifest.write_text(canonical)
             configure(manifest, RECIPE)
             after = tomllib.loads(manifest.read_text())
-            self.assertEqual(after["lib"].pop("crate-type"), ["lib"])
-            before["lib"].pop("crate-type")
+            self.assertEqual(after["lib"]["crate-type"], ["lib"])
             metadata = after["package"]["metadata"]
             self.assertEqual(metadata.pop("murmur-ci-cache"), {"recipe": RECIPE})
             if not metadata and "metadata" not in before["package"]:

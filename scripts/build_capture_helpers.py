@@ -21,6 +21,7 @@ CAPTURE_HELPER_NAME = "murmur-capture-helper"
 CAPTURE_AGENT_NAME = "murmur-capture-agent"
 CAPTURE_WORKER_NAME = "murmur-capture-worker"
 TARGET = "aarch64-apple-darwin"
+EMPTY_PKG_CONFIG_DIR = "/var/empty"
 ALLOWED_DYLIB_PREFIXES = (
     "/System/Library/",
     "/usr/lib/",
@@ -141,10 +142,11 @@ def main() -> int:
     if args.release:
         capture_command.append("--release")
     capture_env = env.copy()
-    empty_pkg_config = TAURI_ROOT / "target" / "capture-empty-pkgconfig"
-    empty_pkg_config.mkdir(parents=True, exist_ok=True)
     capture_env.pop("PKG_CONFIG_PATH", None)
-    capture_env["PKG_CONFIG_LIBDIR"] = str(empty_pkg_config)
+    # A fixed, always-empty directory keeps system pkg-config out of the build.
+    # Cargo tracks this variable, so a checkout-relative path would rerun every
+    # native build script whenever the target directory is copied or relocated.
+    capture_env["PKG_CONFIG_LIBDIR"] = EMPTY_PKG_CONFIG_DIR
     subprocess.run(capture_command, cwd=TAURI_ROOT, env=capture_env, check=True)
     worker_target = TAURI_ROOT / "target" / "capture-worker-build"
     worker_env = capture_env.copy()
