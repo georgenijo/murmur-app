@@ -1264,3 +1264,206 @@ fn the_204b_section_drains_a_queued_finish_when_its_listener_panics() {
         })
     });
 }
+
+// ------------------------------------------- the drain's own failure and lock scope
+
+/// Recording 1's stop is parked at the pipeline gate and recording 2 is live
+/// (`Recording`, id 2, its context installed).
+fn park_stop_of_recording_1_then_start_recording_2(
+    w: &Arc<World>,
+) -> Fut<Result<serde_json::Value, String>> {
+    recording(w);
+    w.knobs().stop_result = Ok(16_000);
+    w.close_gate("pipeline");
+    let mut first = w.stop(None);
+    assert!(poll_once(&mut first).is_pending());
+    cancelled(w, "cancel");
+    w.finish_sealed_stop(1);
+    recording(w);
+    w.knobs().stop_result = Ok(16_000);
+    first
+}
+
+/// Two finishes are queued and the first panics while it runs during the unwind
+/// of a 204b listener's panic. The first panic still propagates, and the second
+/// finish is still applied: its status written and its H1 and H2 retired.
+#[test]
+fn a_panic_in_one_deferred_finish_does_not_strand_the_next() {
+    under_watchdog("a second panic during the drain", || {
+        run_sub_run(&SubRun {
+            title: "second panic",
+            setup: Setup::idle(),
+            body: |w| {
+                let first = park_stop_of_recording_1_then_start_recording_2(w);
+                let mut second = w.stop(None);
+                assert!(poll_once(&mut second).is_pending());
+                assert_eq!(history_counts(w), (2, 2), "both pipelines are registered");
+                // The first deferred finish panics (a failing status-transition
+                // trace); the barrier hook is taken out while it runs, so only
+                // the first finish panics.
+                let _barrier = crate::barrier_hook::install(|point| {
+                    assert_ne!(point, "guard_finish", "the first deferred finish panics");
+                });
+                let parked = Arc::new(StdMutex::new(Some((first, second))));
+                let state = w.state();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    super::run_pipeline_idle_emit(
+                        &state.app_state,
+                        2,
+                        murmur_dictation_core::inputs::PostKind::StopPost,
+                        &|_| {},
+                        &|| {
+                            // Queues two finishes (recording 1's, then 2's), then
+                            // the listener panics.
+                            let (first, second) = parked.lock().expect("slot").take().expect("two");
+                            drop(first);
+                            drop(second);
+                            panic!("the listener's own panic");
+                        },
+                    );
+                }));
+                let panic = outcome.expect_err("the listener's panic propagated");
+                let message = panic
+                    .downcast_ref::<&str>()
+                    .map(|text| (*text).to_string())
+                    .or_else(|| panic.downcast_ref::<String>().cloned())
+                    .unwrap_or_default();
+                assert!(
+                    message.contains("the listener's own panic"),
+                    "the original panic wins: {message}"
+                );
+                assert!(
+                    super::DEFERRED_FINISHES.with(|queue| queue.borrow().is_empty()),
+                    "the later finish was not abandoned"
+                );
+                assert_history_empty(w, "both finishes' H1 and H2 are retired");
+                assert_eq!(
+                    w.state().app_state.dictation.lock_or_recover().status,
+                    DictationStatus::Idle,
+                    "recording 2's deferred 204a wrote Idle"
+                );
+                w.open_gate("pipeline");
+            },
+        })
+    });
+}
+
+/// Recording 2's `processing` listener drops recording 1's parked pipeline (a
+/// queued finish) and panics while T is held. The deferred 204a must run after T is
+/// released, as it does on the success path.
+#[test]
+fn an_early_stop_unwind_drains_after_it_releases_t() {
+    under_watchdog("an early unwind drains with T held", || {
+        run_sub_run(&SubRun {
+            title: "unwind drains after T",
+            setup: Setup::idle(),
+            body: |w| {
+                let first = park_stop_of_recording_1_then_start_recording_2(w);
+                let parked = Arc::new(StdMutex::new(Some(first)));
+                let slot = Arc::clone(&parked);
+                w.on_inline("emit:recording-status-changed", move || {
+                    drop(slot.lock().expect("slot").take());
+                    panic!("the listener panics while the stop holds T");
+                });
+                let t_free_during_finish = Arc::new(StdMutex::new(Vec::new()));
+                let (observer, seen) = (Arc::clone(w), Arc::clone(&t_free_during_finish));
+                let _barrier = crate::barrier_hook::install(move |point| {
+                    if point == "guard_finish" {
+                        let state = observer.state();
+                        let free = state.app_state.recording_transition.try_lock().is_ok();
+                        seen.lock().expect("seen").push(free);
+                    }
+                });
+                let mut second = w.stop(None);
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    poll_once(&mut second)
+                }));
+                assert!(outcome.is_err(), "the listener's panic propagated");
+                drop(second);
+                assert_eq!(
+                    *t_free_during_finish.lock().expect("seen"),
+                    [true],
+                    "the deferred 204a ran once, with T released"
+                );
+                assert!(
+                    super::DEFERRED_FINISHES.with(|queue| queue.borrow().is_empty()),
+                    "the unwind drained the queue"
+                );
+                assert_history_empty(w, "after the unwind");
+                w.open_gate("pipeline");
+            },
+        })
+    });
+}
+
+// ------------------------------------------------ the success terminal's witness
+
+fn term_witness() -> crate::dictation_executor::executor::Witness {
+    stop_ports::TAIL.with(|slot| {
+        slot.borrow()
+            .iter()
+            .copied()
+            .find(|witness| witness.code == "TERM")
+            .expect("the tail ran a TERM")
+    })
+}
+
+/// The tail's `TERM` hook returns the ledger's answer, so the witness records a
+/// claim another sink won (the supervisor's own terminal landed first) as a failed
+/// effect. The command's reply is the same either way.
+#[test]
+fn the_success_terminal_witness_records_a_claim_the_supervisor_won() {
+    use crate::dictation_executor::executor::WitnessOutcome;
+    run_sub_run(&SubRun {
+        title: "terminal claimed",
+        setup: Setup::idle(),
+        body: |w| {
+            recording(w);
+            w.knobs().stop_result = Ok(10_000);
+            stop_ports::TAIL.with(|slot| slot.borrow_mut().clear());
+            stopped(w, "stop", None);
+            assert_eq!(
+                term_witness().outcome,
+                WitnessOutcome::Ran,
+                "the stop's claim won"
+            );
+        },
+    });
+    run_sub_run(&SubRun {
+        title: "terminal lost",
+        setup: Setup::idle(),
+        body: |w| {
+            recording(w);
+            w.knobs().stop_result = Ok(10_000);
+            w.close_gate("pipeline");
+            let mut stop = w.stop(None);
+            assert!(poll_once(&mut stop).is_pending());
+            // The supervisor's terminal for recording 1 lands first.
+            assert!(
+                w.state()
+                    .app_state
+                    .dictation_telemetry
+                    .emit_terminal_with_output(
+                        1,
+                        DictationTerminalOutcome::Superseded,
+                        DictationErrorCode::StaleOwner,
+                        0
+                    ),
+                "the supervisor claimed the terminal"
+            );
+            stop_ports::TAIL.with(|slot| slot.borrow_mut().clear());
+            w.open_gate("pipeline");
+            let reply = complete(&mut stop);
+            w.reply("stop", &reply);
+            assert_eq!(
+                reply.expect("the reply is unchanged by a lost claim")["type"],
+                "transcription"
+            );
+            assert_eq!(
+                term_witness().outcome,
+                WitnessOutcome::Failed,
+                "the witness records the lost claim"
+            );
+        },
+    });
+}
