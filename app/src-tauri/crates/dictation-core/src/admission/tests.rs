@@ -1859,3 +1859,27 @@ fn single_phase_claims_are_terminal_and_must_not_be_readmitted() {
         assert_eq!(admit(request, &after), refused(code), "{request:?}");
     }
 }
+
+#[test]
+fn static_text_is_the_literal_for_every_variant_without_a_payload() {
+    // Only the two variants that carry shell text have no `'static` literal.
+    let payload = [
+        RefusalCode::SmartAutoFailed("no suitable microphone".to_string()),
+        RefusalCode::Text("Could not stop the test".to_string()),
+    ];
+    for code in &payload {
+        let text = code.text();
+        assert_eq!(code.static_text(), Err(text));
+    }
+    for code in [
+        RefusalCode::AppDisabled,
+        RefusalCode::AudioRecoveringCleanupPending,
+        RefusalCode::DictationBusy,
+        RefusalCode::KeyDownPermissionNotGranted,
+        RefusalCode::MeetingRestarting,
+        RefusalCode::MicrophoneStillInUse,
+        RefusalCode::ModelPreparationNotEligible,
+    ] {
+        assert_eq!(code.static_text(), Ok(code.text()), "{code:?}");
+    }
+}

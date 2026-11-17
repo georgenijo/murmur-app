@@ -457,11 +457,14 @@ pub enum RefusalCode {
 }
 
 impl RefusalCode {
-    /// The literal string/tag/`type` of today's refusal. For
-    /// [`RefusalCode::ModelPreparationNotEligible`] (a silent return today) it
-    /// is a stable diagnostic tag.
-    pub fn text(&self) -> &str {
-        match self {
+    /// The literal string/tag/`type` of today's refusal as a `&'static str`,
+    /// or the shell-supplied payload for the two variants that carry text
+    /// ([`RefusalCode::SmartAutoFailed`], [`RefusalCode::Text`]). The match is
+    /// exhaustive: a new variant does not compile until it has its text. For
+    /// [`RefusalCode::ModelPreparationNotEligible`] (a silent return today) the
+    /// literal is a stable diagnostic tag.
+    pub fn static_text(&self) -> Result<&'static str, &str> {
+        Ok(match self {
             Self::AppDisabled => "app_disabled",
             Self::BusyRestarting => "busy_restarting",
             Self::BusyMeeting => "busy_meeting",
@@ -475,7 +478,7 @@ impl RefusalCode {
             Self::SmartAutoWithFixedDevice => {
                 "Smart Auto cannot be combined with a fixed microphone."
             }
-            Self::SmartAutoFailed(text) | Self::Text(text) => text,
+            Self::SmartAutoFailed(text) | Self::Text(text) => return Err(text),
             Self::DictationBusy => "dictation_busy",
             Self::PreviewActive => "preview_active",
             Self::MicrophoneBusy => "microphone_busy",
@@ -566,6 +569,14 @@ impl RefusalCode {
                 "Wait for the current model operation to finish before removing a model"
             }
             Self::ModelPreparationNotEligible => "model_preparation_not_eligible",
+        })
+    }
+
+    /// The literal text of the refusal, whichever variant it is.
+    pub fn text(&self) -> &str {
+        match self.static_text() {
+            Ok(literal) => literal,
+            Err(payload) => payload,
         }
     }
 
