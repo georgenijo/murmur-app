@@ -83,7 +83,10 @@ pub fn decide_start_request_pre(input: &StartInput, _now: Now) -> Option<Decisio
         Refusal::Admission(other) => {
             unreachable!("pre_verdict returns only the two pre-D refusals, got {other:?}")
         }
-        Refusal::NotRecording | Refusal::AlreadyProcessing | Refusal::AudioRecovering => {
+        Refusal::NotRecording
+        | Refusal::AlreadyProcessing
+        | Refusal::AudioRecovering
+        | Refusal::ProcessAudio(_) => {
             unreachable!("pre_verdict returns an admission refusal, got {refusal:?}")
         }
     };
