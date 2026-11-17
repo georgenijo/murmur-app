@@ -354,8 +354,13 @@ pub enum SupervisorEvent {
     InitializationFailed {
         /// Recording id.
         rid: RecordingId,
-        /// Opaque failure kind (`from_audio_failure`).
+        /// Opaque failure kind (`from_audio_failure`), for effects that carry it.
         kind: Handle,
+        /// The terminal error code the shell computed with
+        /// `from_audio_failure(kind)` **before** the decision (decision
+        /// D-S1-4), so R213.2's terminal code is a pure function of the input
+        /// and the core never needs the opaque kind.
+        error_code: ErrCode,
         /// Recovery reason, if the failure was a recovery.
         recovery_reason: Option<AudioCancelReason>,
     },
@@ -629,6 +634,7 @@ mod tests {
             Input::Supervisor(SupervisorEvent::InitializationFailed {
                 rid,
                 kind: Handle(0),
+                error_code: ErrCode::InitializationTimeout,
                 recovery_reason: None,
             }),
             Input::Supervisor(SupervisorEvent::RecoveryStalled { rid }),
@@ -656,6 +662,43 @@ mod tests {
         let mut expected: Vec<u16> = SiteId::ALL.iter().map(|s| s.code()).collect();
         expected.sort_unstable();
         assert_eq!(sites, expected, "each site is reached by exactly one input");
+    }
+
+    #[test]
+    fn initialization_failed_carries_the_observed_error_code() {
+        // R213.2's terminal code comes from the input, not from the opaque kind:
+        // the same kind with a different observed code is a different input,
+        // and every code is carried verbatim.
+        let rid = RecordingId(4);
+        let event = |error_code| {
+            Input::Supervisor(SupervisorEvent::InitializationFailed {
+                rid,
+                kind: Handle(7),
+                error_code,
+                recovery_reason: None,
+            })
+        };
+        for code in [
+            ErrCode::InitializationTimeout,
+            ErrCode::PermissionDenied,
+            ErrCode::DeviceUnavailable,
+            ErrCode::FirstBufferTimeout,
+        ] {
+            let Input::Supervisor(SupervisorEvent::InitializationFailed {
+                error_code, kind, ..
+            }) = event(code)
+            else {
+                unreachable!("built as InitializationFailed");
+            };
+            assert_eq!(error_code, code);
+            assert_eq!(kind, Handle(7));
+            assert_eq!(event(code).site(), SiteId::SupInitFailed);
+            assert_eq!(event(code).site().code(), 213);
+        }
+        assert_ne!(
+            event(ErrCode::PermissionDenied),
+            event(ErrCode::DeviceUnavailable)
+        );
     }
 
     #[test]

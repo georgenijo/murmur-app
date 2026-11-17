@@ -24,11 +24,12 @@ CI runs them with the rest of the workspace libraries (`cargo nextest run -E
 |---|---|---|
 | `ids` | `RecordingId`, `OperationId`, `PreviewId`, `Now`, `Handle`. The `NEXT_OP` counter and the id allocation stay in the shell; only the newtypes live here. | C2.1, C1.4.1 |
 | `status` | `Status` (M1), the `ErrCode` / `TerminalOutcome` mirrors of `dictation_telemetry.rs`, `AudioCancelReason`, `StopTrigger`. | C1.2, C2.1, C3 |
-| `state` | The C1 state vocabulary: `PersistedCore` (**only** M1 `status` and M2 `current_id`, committed at their effect through `set_status` / `alloc_id`), `LiveObs` and `DictationCore` (the immutable decision view: M3 `cancelled_through` and M4 `context_for` are observations, never stored), `LockFreeFacts` (M2, M3 for D-less entries), and the pure C3.8 queries 401/402/403/406/407. H1/H2 stay in the shell's `core_history`. Query 404 (ticker registration) reads atomics and stays in the shell. | C1.2, C1.4, C2.3, C3.8 |
+| `state` | The C1 state vocabulary: `PersistedCore` (**only** M1 `status` and M2 `current_id`; the fields are private, read through `status()` / `current_id()` and written only by their effect commits `set_status` / `alloc_id`, decision D-S1-4), `LiveObs` and `DictationCore` (the immutable decision view: M3 `cancelled_through` and M4 `context_for` are observations, never stored), `LockFreeFacts` (M2, M3 for D-less entries), and the pure C3.8 queries 401/402/403/406/407. H1/H2 stay in the shell's `core_history`. Query 404 (ticker registration) reads atomics and stays in the shell. | C1.2, C1.4, C2.3, C3.8 |
 | `effects` | `Placement` (`Pre`/`In`/`PostDT`/`PostT`), `Placed`, the `Effect` enum (one variant per legend code), `Cond`, and `validate_effects` (placements non-decreasing, `ST` only `In`, `EmitOk` pairs an earlier emit). `HIST` is deliberately not an effect. | C0.1, C0.2 |
 | `decision` | `Decision`, `Verdict`, `Refusal`, `StaleKind`, `InvalidKind`, `ObsKind` (`NeedObservation`), `ContKind`, `ContinuationSpec` / `Continuation`, `OpStatus`, `RowId`, `SiteId` with the shadow `site_id` encoding (202n = 2021, 204a = 2041, 204b = 2042), and `Decision::validate`. | C2.1, C2.2, C0.3, C1.4.1 |
 | `inputs` | One input struct per decide function (C2.3 table, C2.4 sketches), the `Input` enum (every one of the 24 sites is reachable, incl. 216 via `SupervisorEvent::InterruptedShortIdle`) and `StartInput::pre_verdict`. | C2.3, C2.4, C3 |
 | `replies` | `Reply`, `ReplyType` (the literal `type` strings), `ErrText`, `ProcessAudioRefusal`. No serde: the shell maps replies to JSON. | C2.1, C3 "Reply" columns |
+| `rows` | `C3_ROWS`: all 140 C3 row ids with their owning site (`site_of_row`, `rows_of_site`); the row-level half of the Stage 1 "C3 complete" exit. | C3.1-C3.7 |
 | `admission` | `Request` (17 per-phase variants), `Occupancy`, `Admission`, `RefusalCode` (today's literals), `admit()`, and `admit_traced()` / `check_order()` which expose the evaluated checks. | C6.1, C6.1a, C6.2, C6.3, C6.4 |
 
 ## Admission
@@ -168,3 +169,68 @@ omits)
 Preconditions the shell must keep (not enforced by the types): a running
 mic-startup check implies `benchmark_running`; a retiring, standby or
 unconfirmed key-down capture implies `audio_active`.
+
+## Stage 1 exit artifacts
+
+### C3 completeness, per site and per row
+
+"C3 complete for every site" (plan §6 Stage 1) is checked by two crate tests that
+meet at the site id:
+
+- `inputs::tests::every_decision_site_has_an_input`: each of the 24 `SiteId`s is
+  reached by exactly one `Input` variant (`inputs::every_input()` builds one of each).
+- `rows::tests`: `C3_ROWS` holds the 140 row ids of the C3 tables (C3.1-C3.7) in
+  appendix order; ids are unique, each id's `R<site>.<n>` prefix is its site's
+  code (202 is split: R202.1-.2 are `StopContextNoLock`, R202.3-.5 `StopContext`),
+  every site owns at least one row, and the per-site counts equal the counts in
+  the appendix tables (`ROWS_PER_SITE`).
+
+Rows per site: 101: 15, 102: 6, 103: 7, 104: 7, 201: 8, 202: 3, 202n: 2, 203: 21,
+204a: 10, 204b: 10, 205: 5, 206: 2, 207: 5, 208: 2, 209: 7, 210: 4, 211: 6, 212: 1,
+213: 2, 214: 2, 215: 3, 216: 5, 301: 5, 302: 2 (total 140). What the tests do **not**
+prove is each row's behaviour; the per-row unit tests are due at the Stage 2a PR
+that extracts the row (C7.0). If the appendix gains or loses a row, `rows.rs` and
+`ROWS_PER_SITE` change with it and the tests fail until they do.
+
+### Stage 1b placement re-check (A vs B2)
+
+Stage 1b (#1141) routes the admission *predicates* through `admit()`; it moves no
+B2-placed effect. Re-checked against the diff, site by site:
+
+| Site (B2) | Effect statements next to the changed predicate | Same place, same order? |
+|---|---|---|
+| Start, pre-D (R101.1-.2) | `PT:REL` is the early `return Ok(app_disabled)` / `Err(..)` | yes: still returned from the same statement position, with its `tracing::info!` first |
+| Start, cleanup arm (R101.12) | `ST` (`transition_dictation_status(Recovering)`) then `EM` (`recording-status-changed`) then the reply | yes: the supervisor read, then ST, EM, reply, all under the same D hold |
+| Start, Smart Auto (R101.14) | none (refusal returns before the id bump) | yes: resolve still after the cleanup check, before `next_recording_id` |
+| Stop/cancel/lifecycle sites | not touched | n/a |
+| `transcribe_file` | claim swap under T, `drop(T)`, then the `file-transcription-status-changed` emit, then the D recheck | yes: the swap runs inside the pre-claim call before T drops; emit position unchanged |
+| Meeting claim | stores, `relaunch_committed` re-read, undo stores | yes (Dekker order) |
+| Mic-startup benchmark | `try_start()` under D, second claim under T, `coordinator.finish()` on failure | yes |
+| Benchmark, corpus, model removal, model preparation | claims/guards only (`try_start`, `corpus.claim`, `try_start_shared_backend_change`, `ChangeGuard`) | yes: claim stays where it was |
+
+No `ST`, `EM`, `TERM`, `KB`, `PERF` or `REL` effect other than the start's own
+`PT:REL` returns and the cleanup arm's `ST`/`EM` sits inside the changed regions,
+and those keep their placement (`Pre`, `In`).
+
+## Rules for Stage 2a (decision D-S1-2): staged fact reads
+
+Stage 1b reads admission facts **lazily, in today's order**, through the shell's
+`Staged` (`dictation_admission.rs`): one fact group at a time, `admit` (or
+`admit_after`) evaluated after each group, the first non-`Admit` ends the call, and
+a fact today's code reads only after an earlier check passed is never read before
+that check. Reads that are not free (the supervisor's `is_audio_active`, which
+builds the global supervisor on first use; the Stage 0a supervisor ports; a mutex
+taken under D) are exactly the ones that must stay lazy.
+
+Stage 2a decide functions keep that rule:
+
+1. **No decide function builds a fully-populated `Occupancy` up front.** It must
+   not force an eager read of a fact today's code reads only after an earlier check
+   passed (for example `is_dictation_cleanup_pending`).
+2. Where a decision needs such a fact, either the decide function returns
+   `NeedObservation` for it (the shell reads it in the same D hold and calls the
+   function again), or the shell calls the staged admit in place and passes the
+   verdict in.
+3. A partial `Occupancy` is valid input: unread facts are `Default` (quiet), which
+   no check treats as a refusal, so evaluating after each group is equivalent to
+   the old lazy chain.

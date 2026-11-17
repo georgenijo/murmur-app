@@ -18,15 +18,51 @@ use crate::ids::RecordingId;
 use crate::status::Status;
 
 /// `DictationState.core`, inside D: **only** M1 and M2 (decision D5).
+///
+/// The fields are private (decision D-S1-4): a caller reads them through
+/// [`PersistedCore::status`] / [`PersistedCore::current_id`] and writes them
+/// only through the effect commits [`PersistedCore::set_status`] (`ST`) and
+/// [`PersistedCore::alloc_id`] (`ID+`), so no code path can move M1 or M2
+/// without going through the effect that owns the write.
+///
+/// ```compile_fail
+/// use murmur_dictation_core::state::PersistedCore;
+/// use murmur_dictation_core::status::Status;
+/// let mut core = PersistedCore::default();
+/// core.status = Status::Recording; // private: use `set_status`
+/// ```
+///
+/// ```compile_fail
+/// use murmur_dictation_core::ids::RecordingId;
+/// use murmur_dictation_core::state::PersistedCore;
+/// let mut core = PersistedCore::default();
+/// core.current_id = RecordingId(9); // private: use `alloc_id`
+/// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PersistedCore {
     /// M1: `DictationState.status` (`state.rs:191`).
-    pub status: Status,
+    status: Status,
     /// M2: `AppState.recording_id` (`state.rs:373`); `0` = none yet.
-    pub current_id: RecordingId,
+    current_id: RecordingId,
 }
 
 impl PersistedCore {
+    /// A persisted core at the given values: how the shell seeds it from the
+    /// live fields (and how tests build a starting point). Not a commit.
+    pub const fn new(status: Status, current_id: RecordingId) -> Self {
+        Self { status, current_id }
+    }
+
+    /// M1.
+    pub const fn status(&self) -> Status {
+        self.status
+    }
+
+    /// M2.
+    pub const fn current_id(&self) -> RecordingId {
+        self.current_id
+    }
+
     /// Commit of the `ST` effect (C1.4.2): the same adapter call that writes the
     /// live `status`.
     pub fn set_status(&mut self, to: Status) {
@@ -97,8 +133,8 @@ impl DictationCore {
     /// Assemble a view from the persisted core and the live observations.
     pub const fn new(persisted: PersistedCore, obs: LiveObs) -> Self {
         Self {
-            status: persisted.status,
-            current_id: persisted.current_id,
+            status: persisted.status(),
+            current_id: persisted.current_id(),
             cancelled_through: obs.cancelled_through,
             context_for: obs.context_for,
         }
@@ -108,15 +144,12 @@ impl DictationCore {
     /// Identical in shape to [`DictationCore::new`]; the *source* of
     /// `status`/`current_id` is what differs, and that is the shell's concern.
     pub const fn project(status: Status, current_id: RecordingId, obs: LiveObs) -> Self {
-        Self::new(PersistedCore { status, current_id }, obs)
+        Self::new(PersistedCore::new(status, current_id), obs)
     }
 
     /// The persisted half (M1, M2).
     pub const fn persisted(&self) -> PersistedCore {
-        PersistedCore {
-            status: self.status,
-            current_id: self.current_id,
-        }
+        PersistedCore::new(self.status, self.current_id)
     }
 
     /// The facts a D-less entry may read (M2, M3).
@@ -197,10 +230,7 @@ mod tests {
 
     fn view(status: Status, current: u64, cancelled: u64) -> DictationCore {
         DictationCore::new(
-            PersistedCore {
-                status,
-                current_id: RecordingId(current),
-            },
+            PersistedCore::new(status, RecordingId(current)),
             LiveObs {
                 cancelled_through: RecordingId(cancelled),
                 context_for: None,
@@ -213,6 +243,11 @@ mod tests {
         // The persisted struct has exactly two fields; M3/M4 live in `LiveObs`.
         let PersistedCore { status, current_id } = PersistedCore::default();
         assert_eq!((status, current_id), (Status::Idle, RecordingId::NONE));
+        let persisted = PersistedCore::new(Status::Recovering, RecordingId(3));
+        assert_eq!(
+            (persisted.status(), persisted.current_id()),
+            (Status::Recovering, RecordingId(3))
+        );
         let LiveObs {
             cancelled_through,
             context_for,
@@ -222,10 +257,7 @@ mod tests {
 
     #[test]
     fn view_round_trips_through_its_parts() {
-        let persisted = PersistedCore {
-            status: Status::Recording,
-            current_id: RecordingId(7),
-        };
+        let persisted = PersistedCore::new(Status::Recording, RecordingId(7));
         let obs = LiveObs {
             cancelled_through: RecordingId(5),
             context_for: Some(RecordingId(7)),
@@ -261,6 +293,11 @@ mod tests {
         let after = DictationCore::new(persisted, LiveObs::default());
         assert_eq!(
             (after.status, after.current_id),
+            (Status::Starting, predicted)
+        );
+        // The getters read exactly what the commits wrote.
+        assert_eq!(
+            (persisted.status(), persisted.current_id()),
             (Status::Starting, predicted)
         );
     }

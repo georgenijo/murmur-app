@@ -21,5 +21,6 @@ pub mod effects;
 pub mod ids;
 pub mod inputs;
 pub mod replies;
+pub mod rows;
 pub mod state;
 pub mod status;
