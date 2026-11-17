@@ -604,7 +604,7 @@ fn the_audio_not_ready_publish_looks_up_no_managed_state() {
     let app = tauri::test::mock_builder()
         .build(tauri::test::mock_context(tauri::test::noop_assets()))
         .expect("build a mock app that manages no State");
-    let state = test_state(AppState::default());
+    let state = crate::commands::recording::tests::test_state(AppState::default());
     let guard = crate::core_history::ContinuationGuard::register(
         &state.app_state.core_history,
         ContinuationSpec {
