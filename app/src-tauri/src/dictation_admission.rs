@@ -47,17 +47,37 @@ pub(crate) fn core_status(status: DictationStatus) -> Status {
     }
 }
 
-/// `admit`, or `admit_after` when `resume` names the wait the shell just did.
-fn evaluate(request: Request, resume: Option<Retry>, occupancy: &Occupancy) -> Admission {
-    match resume {
-        None => admit(request, occupancy),
-        Some(retry) => match admit_after(request, retry, occupancy) {
-            Some(evaluation) => evaluation.admission,
-            None => {
-                debug_assert!(false, "{request:?} has no {retry:?} wait to resume after");
-                admit(request, occupancy)
+/// A point where the shell has already done a wait/retire and evaluation
+/// resumes after it (`admit_after`). The set is closed: each variant names the
+/// request and the wait it resumes after, and
+/// `every_resume_point_is_a_wait_of_its_request` proves `admit_after` accepts
+/// each pair, so no pairing can be invalid at run time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Resume {
+    /// `PreviewStart` after the unconditional `retire_standby()`.
+    PreviewAfterStandby,
+    /// `PreviewStart` after the bounded retire of an unconfirmed key-down capture.
+    PreviewAfterKeyDownRetire,
+    /// `MicStartupBenchmarkPreClaim` after the unconditional `retire_standby()`.
+    MicBenchmarkAfterStandby,
+}
+
+impl Resume {
+    #[cfg(test)]
+    const ALL: [Resume; 3] = [
+        Self::PreviewAfterStandby,
+        Self::PreviewAfterKeyDownRetire,
+        Self::MicBenchmarkAfterStandby,
+    ];
+
+    const fn point(self) -> (Request, Retry) {
+        match self {
+            Self::PreviewAfterStandby => (Request::PreviewStart, Retry::RetireStandby),
+            Self::PreviewAfterKeyDownRetire => (Request::PreviewStart, Retry::RetireKeyDownCapture),
+            Self::MicBenchmarkAfterStandby => {
+                (Request::MicStartupBenchmarkPreClaim, Retry::RetireStandby)
             }
-        },
+        }
     }
 }
 
@@ -77,12 +97,27 @@ impl Staged {
         }
     }
 
-    /// Evaluate `request` only from the check after `retry`'s wait: the shell
-    /// has already done the retire (`admit_after`).
-    pub(crate) fn resuming(request: Request, retry: Retry) -> Self {
+    /// Evaluate only the checks after the wait at `point`: the shell has
+    /// already done the retire (`admit_after`).
+    pub(crate) fn resuming(point: Resume) -> Self {
+        let (request, retry) = point.point();
         Self {
+            request,
             resume: Some(retry),
-            ..Self::new(request)
+            occupancy: Occupancy::default(),
+        }
+    }
+
+    fn evaluate(&self) -> Admission {
+        match self.resume {
+            None => admit(self.request, &self.occupancy),
+            Some(retry) => {
+                admit_after(self.request, retry, &self.occupancy)
+                    .unwrap_or_else(|| {
+                        unreachable!("{:?} has no {retry:?} wait to resume after", self.request)
+                    })
+                    .admission
+            }
         }
     }
 
@@ -91,7 +126,7 @@ impl Staged {
     /// returns it without reading anything further.
     pub(crate) fn read(&mut self, gather: impl FnOnce(&mut Occupancy)) -> Result<(), Admission> {
         gather(&mut self.occupancy);
-        match evaluate(self.request, self.resume, &self.occupancy) {
+        match self.evaluate() {
             Admission::Admit(_) => Ok(()),
             other => Err(other),
         }
@@ -99,7 +134,7 @@ impl Staged {
 
     /// The result once every group has been read.
     pub(crate) fn finish(self) -> Admission {
-        evaluate(self.request, self.resume, &self.occupancy)
+        self.evaluate()
     }
 }
 
@@ -115,69 +150,43 @@ pub(crate) fn staged(
     }
 }
 
-/// The refusal's text. Every caller of this function owns a request whose only
-/// non-admitting result is `RefuseWith`.
+/// The refusal's text. Every caller owns a request and an occupancy for which
+/// a refusal is the only possible result (a failed claim's own answer, or a
+/// read that already refused); anything else is a wiring bug, not a reply.
 pub(crate) fn refusal_text(admission: Admission) -> String {
     match admission {
         Admission::RefuseWith(code) => code.text().to_string(),
-        other => {
-            debug_assert!(false, "expected a refusal, got {other:?}");
-            format!("{other:?}")
+        Admission::Admit(_)
+        | Admission::Takeover(_)
+        | Admission::WaitThen(_)
+        | Admission::NeedObservation(_) => {
+            unreachable!("a refusal was required, got {admission:?}")
         }
     }
 }
 
-/// `Ok` when admitted, the refusal's text otherwise.
+/// `Ok` when admitted, the refusal's text otherwise. The requests that use
+/// this are evaluated past every wait, and none can take over a preview or
+/// need an observation.
 fn text_if_refused(admission: Admission) -> Result<(), String> {
     match admission {
+        Admission::Admit(_) => Ok(()),
         Admission::RefuseWith(code) => Err(code.text().to_string()),
-        _ => Ok(()),
+        Admission::Takeover(_) | Admission::WaitThen(_) | Admission::NeedObservation(_) => {
+            unreachable!("this request cannot return {admission:?}")
+        }
     }
 }
 
-/// The `&'static str` of a refusal whose callers return a static tag or message.
-///
-/// `RefusalCode::text` borrows from the code; these variants carry no payload,
-/// so each text is a literal that a promoted constant keeps for `'static`.
+/// The `&'static str` of a refusal whose callers return a static tag or
+/// message. Only the two variants that carry shell text (`SmartAutoFailed`,
+/// `Text`) have none; no request that reaches this function evaluates the checks
+/// that produce them (`static_callers_never_see_a_payload_refusal`).
 pub(crate) fn static_text(code: &RefusalCode) -> &'static str {
-    macro_rules! literal {
-        ($($variant:ident),* $(,)?) => {
-            match code {
-                $(RefusalCode::$variant => {
-                    const CODE: &RefusalCode = &RefusalCode::$variant;
-                    CODE.text()
-                })*
-                other => {
-                    debug_assert!(false, "no static text for {other:?}");
-                    "admission_refused"
-                }
-            }
-        };
+    match code.static_text() {
+        Ok(literal) => literal,
+        Err(_) => unreachable!("{code:?} carries shell text and has no static literal"),
     }
-    literal!(
-        // dictation prepare / key-down / relaunch tags
-        DictationBusy,
-        PreviewActive,
-        MicrophoneBusy,
-        CleanupPending,
-        KeyDownListenerChanged,
-        KeyDownProcessingSkipped,
-        KeyDownDisabled,
-        KeyDownGestureEnded,
-        KeyDownPermissionNotGranted,
-        // microphone test
-        MicrophoneStillInUse,
-        // meeting
-        MeetingRestarting,
-        MeetingMicStartupCheck,
-        MeetingFinishCorpus,
-        MeetingAlreadyActive,
-        MeetingRecovering,
-        MeetingStopMicrophone,
-        MeetingWaitForFile,
-        MeetingWaitForBenchmark,
-        MeetingWaitForDictation,
-    )
 }
 
 // ---------------------------------------------------------------------------
@@ -346,10 +355,16 @@ fn dictation_gate(state: &State, request: Request) -> Admission {
     }
 }
 
+/// The static tag of a gate's result: `None` when admitted. A gate never waits,
+/// takes over (the key-down caller handles `Takeover` before this) or needs an
+/// observation.
 fn tag_of(admission: &Admission) -> Option<&'static str> {
     match admission {
+        Admission::Admit(_) => None,
         Admission::RefuseWith(code) => Some(static_text(code)),
-        _ => None,
+        Admission::Takeover(_) | Admission::WaitThen(_) | Admission::NeedObservation(_) => {
+            unreachable!("a gate cannot return {admission:?} here")
+        }
     }
 }
 
@@ -376,7 +391,10 @@ pub(crate) fn key_down_capture_admission(state: &State) -> Result<Option<u64>, &
     match dictation_gate(state, Request::KeyDownCapture) {
         Admission::Takeover(preview) => Ok(Some(preview.0)),
         Admission::RefuseWith(code) => Err(static_text(&code)),
-        _ => Ok(None),
+        Admission::Admit(_) => Ok(None),
+        Admission::WaitThen(_) | Admission::NeedObservation(_) => {
+            unreachable!("key-down admission neither waits nor needs an observation")
+        }
     }
 }
 
@@ -489,7 +507,10 @@ pub(crate) fn meeting_post_claim(relaunch_committed: bool) -> Result<(), &'stati
         },
     ) {
         Admission::RefuseWith(code) => Err(static_text(&code)),
-        _ => Ok(()),
+        Admission::Admit(_) => Ok(()),
+        Admission::Takeover(_) | Admission::WaitThen(_) | Admission::NeedObservation(_) => {
+            unreachable!("the post-claim recheck returns only Admit or a refusal")
+        }
     }
 }
 
@@ -503,10 +524,9 @@ pub(crate) fn preview_start_revoked_refusal(
     preview: &crate::microphone_preview::MicrophonePreviewState,
     start_generation: u64,
 ) -> Result<(), String> {
-    text_if_refused(staged(
-        Staged::resuming(Request::PreviewStart, Retry::RetireStandby),
-        |s| s.read(|o| o.preview_start_revoked = preview.start_revoked(start_generation)),
-    ))
+    text_if_refused(staged(Staged::resuming(Resume::PreviewAfterStandby), |s| {
+        s.read(|o| o.preview_start_revoked = preview.start_revoked(start_generation))
+    }))
 }
 
 /// The preview start's reads under the dictation lock the caller holds:
@@ -516,17 +536,14 @@ pub(crate) fn preview_start_admission(
     state: &State,
     status: DictationStatus,
 ) -> Result<(), String> {
-    text_if_refused(staged(
-        Staged::resuming(Request::PreviewStart, Retry::RetireStandby),
-        |s| {
-            s.read(|o| facts::status(status, o))?;
-            s.read(|o| facts::meeting(&state.app_state, o))?;
-            s.read(|o| facts::benchmark(state, o))?;
-            s.read(|o| facts::corpus(state, o))?;
-            s.read(facts::app_disabled)?;
-            s.read(|o| o.preview_active = state.app_state.microphone_preview.is_active())
-        },
-    ))
+    text_if_refused(staged(Staged::resuming(Resume::PreviewAfterStandby), |s| {
+        s.read(|o| facts::status(status, o))?;
+        s.read(|o| facts::meeting(&state.app_state, o))?;
+        s.read(|o| facts::benchmark(state, o))?;
+        s.read(|o| facts::corpus(state, o))?;
+        s.read(facts::app_disabled)?;
+        s.read(|o| o.preview_active = state.app_state.microphone_preview.is_active())
+    }))
 }
 
 /// `preview_audio_blocker`: an unconfirmed Fn key-down capture is retired once
@@ -537,21 +554,26 @@ pub(crate) fn preview_audio_admission(
     retire_key_down: impl FnOnce(),
     audio_active: impl Fn() -> bool,
 ) -> Option<&'static str> {
-    let mut session = Staged::resuming(Request::PreviewStart, Retry::RetireStandby);
-    let stop = match session.read(|o| o.unconfirmed_key_down = unconfirmed_key_down()) {
+    let mut session = Staged::resuming(Resume::PreviewAfterStandby);
+    match session.read(|o| o.unconfirmed_key_down = unconfirmed_key_down()) {
         Err(Admission::WaitThen(Retry::RetireKeyDownCapture)) => {
             retire_key_down();
-            let after = Occupancy {
-                audio_active: audio_active(),
-                ..Occupancy::default()
-            };
-            admit_after(Request::PreviewStart, Retry::RetireKeyDownCapture, &after)
-                .map(|evaluation| evaluation.admission)
+            // Resume after the wait: only `audio_active` remains, read fresh,
+            // whether or not the capture is gone.
+            let mut after = Staged::resuming(Resume::PreviewAfterKeyDownRetire);
+            after
+                .read(|o| o.audio_active = audio_active())
+                .err()
+                .as_ref()
+                .and_then(tag_of)
         }
-        Err(other) => Some(other),
-        Ok(()) => session.read(|o| o.audio_active = audio_active()).err(),
-    };
-    stop.as_ref().and_then(tag_of)
+        Err(other) => tag_of(&other),
+        Ok(()) => session
+            .read(|o| o.audio_active = audio_active())
+            .err()
+            .as_ref()
+            .and_then(tag_of),
+    }
 }
 
 /// `PreviewStartRecheck`: `is_connecting(id)` after the claim, in the spawned
@@ -586,7 +608,7 @@ pub(crate) fn microphone_benchmark_pre_claim(
     status: DictationStatus,
 ) -> Result<(), String> {
     text_if_refused(staged(
-        Staged::resuming(Request::MicStartupBenchmarkPreClaim, Retry::RetireStandby),
+        Staged::resuming(Resume::MicBenchmarkAfterStandby),
         |s| {
             s.read(|o| facts::meeting(&state.app_state, o))?;
             s.read(|o| facts::status(status, o))?;
@@ -821,6 +843,7 @@ pub(crate) fn model_preparation_eligible(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio_lifecycle::{set_public_for_test, PublicForTest};
     use crate::commands::permissions::CommittedRelaunchForTest;
     use crate::commands::recording::{dictation_start_blocker, DictationStartBlocker};
     use crate::microphone_preview::PreviewPhase;
@@ -833,21 +856,42 @@ mod tests {
         Some(DictationStartBlocker { kind, state })
     }
 
-    // -- the old predicates, verbatim, as oracles ---------------------------
+    // -- the old predicates: literal copies from origin/main ------------------
+    //
+    // `dictation_start_blocker`, `dictation_activity_blocker` and
+    // `dictation_refusal` exactly as `commands/recording.rs` had them before
+    // Stage 1b. Only the names carry a `legacy_` prefix (the copies sit beside
+    // the new functions); no body line was edited, merged or simplified.
 
-    /// `dictation_activity_blocker` / `dictation_start_blocker` (pre-Stage-1b).
-    fn legacy_blocker(
+    fn legacy_dictation_start_blocker(
         state: &State,
         status: DictationStatus,
-        honor_committed_relaunch: bool,
+    ) -> Option<DictationStartBlocker> {
+        // A permission relaunch that has committed to exiting refuses new work. The
+        // callers hold the dictation lock, and the relaunch re-reads the activity
+        // gate after it commits, so a start is either seen by that re-read or
+        // refused here.
+        if crate::commands::permissions::relaunch_committed() {
+            return Some(DictationStartBlocker {
+                kind: "busy_restarting",
+                state: "idle",
+            });
+        }
+        legacy_dictation_activity_blocker(state, status)
+    }
+
+    /// What currently occupies dictation, ignoring a committed relaunch. The
+    /// relaunch itself asks this, so its own commitment cannot read as activity.
+    fn legacy_dictation_activity_blocker(
+        state: &State,
+        status: DictationStatus,
     ) -> Option<DictationStartBlocker> {
         let blocked = |kind, state| Some(DictationStartBlocker { kind, state });
-        if honor_committed_relaunch && crate::commands::permissions::relaunch_committed() {
-            return blocked("busy_restarting", "idle");
-        }
         if state.app_state.meeting_blocks_asr() {
             return blocked("busy_meeting", "idle");
         }
+        // Refuse if a file transcription holds the shared Whisper backend.
+        // `transcribe_file` takes the dictation lock only after claiming the flag.
         if state.app_state.file_transcribing.load(Ordering::SeqCst) {
             return blocked("busy_transcribing_file", "idle");
         }
@@ -858,6 +902,7 @@ mod tests {
         if state.benchmark.is_running() {
             return blocked("busy_benchmarking", "idle");
         }
+
         match status {
             DictationStatus::Starting => blocked("already_starting", "starting"),
             DictationStatus::Recording => blocked("already_recording", "recording"),
@@ -867,13 +912,17 @@ mod tests {
         }
     }
 
-    /// `dictation_refusal` (pre-Stage-1b).
     fn legacy_dictation_refusal(
         state: &State,
         honor_committed_relaunch: bool,
     ) -> Option<&'static str> {
         let dictation = state.app_state.dictation.lock_or_recover();
-        if legacy_blocker(state, dictation.status, honor_committed_relaunch).is_some() {
+        let blocker = if honor_committed_relaunch {
+            legacy_dictation_start_blocker(state, dictation.status)
+        } else {
+            legacy_dictation_activity_blocker(state, dictation.status)
+        };
+        if blocker.is_some() {
             Some("dictation_busy")
         } else if state.app_state.microphone_preview.is_active() {
             Some("preview_active")
@@ -1041,84 +1090,119 @@ mod tests {
 
     // -- prepare / key-down / relaunch gate ------------------------------------
 
-    #[test]
-    fn gates_match_the_old_predicate_over_the_whole_fact_space() {
+    /// Every fact the old gates read, varied together: relaunch, meeting,
+    /// meeting inference, file transcription, corpus (feature), benchmark,
+    /// dictation status, preview (none / connecting / active) and the audio
+    /// supervisor's public state (idle / owner-less capture / this recording
+    /// retiring / another dictation retiring). The oracles are the literal old
+    /// functions. Returns `(combinations, comparisons)`.
+    fn compare_gates_with_the_old_predicate() -> (usize, usize) {
         let state = State::for_test();
         let preview = &state.app_state.microphone_preview;
-        let mut cases = 0;
+        let recording_id = state.app_state.recording_id.load(Ordering::SeqCst);
+        #[cfg(feature = "internal-benchmark")]
+        let corpus_states = [false, true];
+        #[cfg(not(feature = "internal-benchmark"))]
+        let corpus_states = [false];
+        let (mut combinations, mut comparisons) = (0, 0);
         for relaunch in [false, true] {
             let committed = relaunch.then(CommittedRelaunchForTest::raise);
             for meeting in [false, true] {
                 for inference in [false, true] {
                     for file in [false, true] {
-                        for benchmark in [false, true] {
-                            for status in [
-                                DictationStatus::Idle,
-                                DictationStatus::Starting,
-                                DictationStatus::Recording,
-                                DictationStatus::Recovering,
-                                DictationStatus::Processing,
-                            ] {
-                                // none / connecting / active (a handoff candidate)
-                                for preview_kind in 0..3 {
-                                    state
-                                        .app_state
-                                        .meeting_active
-                                        .store(meeting, Ordering::SeqCst);
-                                    state
-                                        .app_state
-                                        .meeting_inference_active
-                                        .store(inference, Ordering::SeqCst);
-                                    state
-                                        .app_state
-                                        .file_transcribing
-                                        .store(file, Ordering::SeqCst);
-                                    if benchmark {
-                                        assert!(state.benchmark.try_start());
-                                    }
-                                    set_status(&state, status);
-                                    let id = (preview_kind > 0).then(|| preview.claim(50).unwrap());
-                                    if let (2, Some(id)) = (preview_kind, id) {
-                                        preview.set_phase_if(id, PreviewPhase::Active);
-                                    }
+                        for corpus in corpus_states {
+                            for benchmark in [false, true] {
+                                for status in [
+                                    DictationStatus::Idle,
+                                    DictationStatus::Starting,
+                                    DictationStatus::Recording,
+                                    DictationStatus::Recovering,
+                                    DictationStatus::Processing,
+                                ] {
+                                    // none / connecting / active (a handoff candidate)
+                                    for preview_kind in 0..3 {
+                                        for audio in [
+                                            PublicForTest::Idle,
+                                            PublicForTest::Active,
+                                            PublicForTest::CleanupPending(recording_id),
+                                            PublicForTest::CleanupPending(recording_id + 1),
+                                        ] {
+                                            state
+                                                .app_state
+                                                .meeting_active
+                                                .store(meeting, Ordering::SeqCst);
+                                            state
+                                                .app_state
+                                                .meeting_inference_active
+                                                .store(inference, Ordering::SeqCst);
+                                            state
+                                                .app_state
+                                                .file_transcribing
+                                                .store(file, Ordering::SeqCst);
+                                            #[cfg(feature = "internal-benchmark")]
+                                            state.corpus.set_active_for_test(corpus);
+                                            #[cfg(not(feature = "internal-benchmark"))]
+                                            let _ = corpus;
+                                            if benchmark {
+                                                assert!(state.benchmark.try_start());
+                                            }
+                                            set_status(&state, status);
+                                            let id = (preview_kind > 0)
+                                                .then(|| preview.claim(50).unwrap());
+                                            if let (2, Some(id)) = (preview_kind, id) {
+                                                preview.set_phase_if(id, PreviewPhase::Active);
+                                            }
+                                            let _audio = set_public_for_test(audio);
 
-                                    assert_eq!(
-                                        dictation_prepare_refusal(&state),
-                                        legacy_dictation_refusal(&state, true),
-                                        "prepare: relaunch={relaunch} meeting={meeting} \
-                                         inference={inference} file={file} benchmark={benchmark} \
-                                         {status:?} preview={preview_kind}"
-                                    );
-                                    assert_eq!(
-                                        dictation_relaunch_busy(&state),
-                                        legacy_dictation_refusal(&state, false),
-                                        "relaunch gate: relaunch={relaunch} meeting={meeting} \
-                                         inference={inference} file={file} benchmark={benchmark} \
-                                         {status:?} preview={preview_kind}"
-                                    );
-                                    let legacy_key_down =
-                                        match legacy_dictation_refusal(&state, true) {
-                                            None => Ok(None),
-                                            Some("preview_active") => preview
-                                                .handoff_candidate()
-                                                .map(Some)
-                                                .ok_or("preview_active"),
-                                            Some(reason) => Err(reason),
-                                        };
-                                    assert_eq!(
-                                        key_down_capture_admission(&state),
-                                        legacy_key_down,
-                                        "key-down: relaunch={relaunch} meeting={meeting} \
-                                         inference={inference} file={file} benchmark={benchmark} \
-                                         {status:?} preview={preview_kind}"
-                                    );
-                                    cases += 3;
+                                            let facts = format!(
+                                                "relaunch={relaunch} meeting={meeting} \
+                                                 inference={inference} file={file} \
+                                                 corpus={corpus} benchmark={benchmark} \
+                                                 {status:?} preview={preview_kind} \
+                                                 audio={audio:?}"
+                                            );
+                                            assert_eq!(
+                                                dictation_prepare_refusal(&state),
+                                                legacy_dictation_refusal(&state, true),
+                                                "prepare: {facts}"
+                                            );
+                                            assert_eq!(
+                                                dictation_relaunch_busy(&state),
+                                                legacy_dictation_refusal(&state, false),
+                                                "relaunch gate: {facts}"
+                                            );
+                                            let legacy_key_down =
+                                                match legacy_dictation_refusal(&state, true) {
+                                                    None => Ok(None),
+                                                    Some("preview_active") => preview
+                                                        .handoff_candidate()
+                                                        .map(Some)
+                                                        .ok_or("preview_active"),
+                                                    Some(reason) => Err(reason),
+                                                };
+                                            assert_eq!(
+                                                key_down_capture_admission(&state),
+                                                legacy_key_down,
+                                                "key-down: {facts}"
+                                            );
+                                            // The start path's blocker (the D read of
+                                            // `start_native_recording_inner`).
+                                            assert_eq!(
+                                                dictation_start_blocker(&state, status),
+                                                legacy_dictation_start_blocker(&state, status),
+                                                "start blocker: {facts}"
+                                            );
+                                            combinations += 1;
+                                            comparisons += 4;
 
-                                    if let Some(id) = id {
-                                        preview.clear_if(id);
-                                    }
-                                    if benchmark {
-                                        state.benchmark.finish();
+                                            drop(_audio);
+                                            if let Some(id) = id {
+                                                preview.clear_if(id);
+                                            }
+                                            if benchmark {
+                                                state.benchmark.finish();
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1140,8 +1224,228 @@ mod tests {
             .app_state
             .file_transcribing
             .store(false, Ordering::SeqCst);
+        #[cfg(feature = "internal-benchmark")]
+        state.corpus.set_active_for_test(false);
         set_status(&state, DictationStatus::Idle);
-        assert_eq!(cases, 2 * 2 * 2 * 2 * 2 * 5 * 3 * 3);
+        (combinations, comparisons)
+    }
+
+    #[test]
+    fn gates_match_the_old_predicate_over_the_whole_fact_space() {
+        let (combinations, comparisons) = compare_gates_with_the_old_predicate();
+        let corpus_states = if cfg!(feature = "internal-benchmark") {
+            2
+        } else {
+            1
+        };
+        // relaunch, meeting, inference, file, corpus, benchmark, status,
+        // preview, audio
+        assert_eq!(combinations, 2 * 2 * 2 * 2 * corpus_states * 2 * 5 * 3 * 4);
+        assert_eq!(comparisons, 4 * combinations);
+    }
+
+    // -- no silent fallbacks -------------------------------------------------
+
+    /// Every combination of the boolean facts the shell's readers can set (plus
+    /// every status and a handoff candidate), as occupancies.
+    fn fact_space() -> Vec<Occupancy> {
+        const BITS: u32 = 18;
+        let statuses = [
+            Status::Idle,
+            Status::Starting,
+            Status::Recording,
+            Status::Recovering,
+            Status::Processing,
+        ];
+        let mut out = Vec::new();
+        // Every combination of up to four facts, plus every seventh of the
+        // rest: each refusal and each pair of facts is reached.
+        for bits in 0..(1u32 << BITS) {
+            if bits.count_ones() > 4 && bits % 7 != 0 {
+                continue;
+            }
+            let on = |i: u32| bits & (1 << i) != 0;
+            for status in statuses {
+                out.push(Occupancy {
+                    status,
+                    relaunch_committed: on(0),
+                    meeting_active: on(1),
+                    meeting_inference_active: on(2),
+                    file_transcribing: on(3),
+                    benchmark_running: on(4),
+                    corpus_active: on(5),
+                    preview_active: on(6),
+                    handoff_candidate: on(7).then_some(1),
+                    audio_active: on(8),
+                    cleanup_pending: on(9),
+                    app_disabled: on(10),
+                    shared_backend_change: on(11),
+                    standby: on(12),
+                    unconfirmed_key_down: on(13),
+                    mic_startup_benchmark_active: on(14),
+                    keyboard_processing: on(15),
+                    key_down: KeyDownShellFacts {
+                        listener_matches: on(16),
+                        gesture_active: on(17),
+                        microphone_granted: on(0) ^ on(17),
+                    },
+                    ..Occupancy::default()
+                });
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn every_resume_point_is_a_wait_of_its_request() {
+        for point in Resume::ALL {
+            let (request, retry) = point.point();
+            assert!(
+                admit_after(request, retry, &Occupancy::default()).is_some(),
+                "{point:?}: {request:?} has no {retry:?} wait"
+            );
+            // And the wait is the one `admit` returns for the fact the shell
+            // retires: the pairing is not just accepted, it is reachable.
+            let waiting = match retry {
+                Retry::RetireStandby => Occupancy {
+                    standby: true,
+                    ..Occupancy::default()
+                },
+                Retry::RetireKeyDownCapture => Occupancy {
+                    unconfirmed_key_down: true,
+                    ..Occupancy::default()
+                },
+            };
+            let first = if matches!(point, Resume::PreviewAfterKeyDownRetire) {
+                // `admit` reaches the key-down wait after the standby wait.
+                admit_after(request, Retry::RetireStandby, &waiting)
+                    .expect("PreviewStart waits for standby")
+                    .admission
+            } else {
+                admit(request, &waiting)
+            };
+            assert_eq!(first, Admission::WaitThen(retry), "{point:?}");
+        }
+    }
+
+    /// The callers that turn a refusal into a `&'static str` (`tag_of`,
+    /// `key_down_capture_admission`, `meeting_post_claim`) can receive a
+    /// refusal carrying shell text (`SmartAutoFailed`, `Text`) from no fact
+    /// combination: `static_text` has no fallback to hide one.
+    #[test]
+    fn static_callers_never_see_a_payload_refusal() {
+        let requests = [
+            Request::DictationPrepare,
+            Request::KeyDownCapture,
+            Request::RelaunchGate,
+            Request::MeetingPreClaim,
+            Request::MeetingPostClaim,
+        ];
+        let mut refusals = std::collections::BTreeSet::new();
+        for occupancy in fact_space() {
+            for request in requests {
+                match admit(request, &occupancy) {
+                    Admission::RefuseWith(code) => {
+                        assert!(
+                            code.static_text().is_ok(),
+                            "{request:?} refused with {code:?}, which has no static literal"
+                        );
+                        assert_eq!(static_text(&code), code.text());
+                        refusals.insert(format!("{request:?}/{code:?}"));
+                    }
+                    // `tag_of` callers: gates never wait or observe; key-down
+                    // takes over a preview.
+                    Admission::WaitThen(_) | Admission::NeedObservation(_) => {
+                        panic!(
+                            "{request:?} returned {:?} for {occupancy:?}",
+                            admit(request, &occupancy)
+                        )
+                    }
+                    Admission::Takeover(_) => assert_eq!(request, Request::KeyDownCapture),
+                    Admission::Admit(_) => {}
+                }
+            }
+        }
+        for relaunch in [false, true] {
+            if let Admission::RefuseWith(code) = admit(
+                Request::MeetingPostClaim,
+                &Occupancy {
+                    relaunch_recheck: Some(relaunch),
+                    ..Occupancy::default()
+                },
+            ) {
+                assert!(code.static_text().is_ok(), "{code:?}");
+            }
+        }
+        assert!(
+            refusals.len() > 10,
+            "the fact space exercised too few refusals: {refusals:?}"
+        );
+    }
+
+    /// The callers that return the refusal's text (`text_if_refused`,
+    /// `refusal_text`) get only `Admit` or a refusal from the request and the
+    /// resume point they use, so their unreachable arms stay unreachable.
+    #[test]
+    fn text_callers_only_see_admit_or_a_refusal() {
+        let evaluate = |request: Request, resume: Option<Retry>, occupancy: &Occupancy| match resume
+        {
+            None => admit(request, occupancy),
+            Some(retry) => {
+                admit_after(request, retry, occupancy)
+                    .expect("resume point")
+                    .admission
+            }
+        };
+        let mut calls: Vec<(Request, Option<Retry>)> = vec![
+            (Request::FileTranscriptionPostClaim, None),
+            (Request::Benchmark, None),
+            (Request::ModelRemoval, None),
+            (Request::Corpus, None),
+        ];
+        calls.extend(
+            Resume::ALL
+                .iter()
+                .map(|point| (point.point().0, Some(point.point().1))),
+        );
+        for occupancy in fact_space() {
+            for (request, resume) in &calls {
+                // `unconfirmed_key_down` is read only by `preview_audio_admission`,
+                // which handles its `WaitThen` itself; no `text_if_refused`
+                // caller of the preview start sets it.
+                let occupancy = Occupancy {
+                    unconfirmed_key_down: false,
+                    ..occupancy.clone()
+                };
+                let admission = evaluate(*request, *resume, &occupancy);
+                assert!(
+                    matches!(admission, Admission::Admit(_) | Admission::RefuseWith(_)),
+                    "{request:?} after {resume:?} returned {admission:?} for {occupancy:?}"
+                );
+            }
+        }
+        // The failed-claim mappings (`refusal_text` callers) always refuse.
+        for request in [
+            Request::MicStartupBenchmarkPreClaim,
+            Request::Benchmark,
+            Request::SharedBackendChange,
+            Request::ModelRemoval,
+        ] {
+            for benchmark_running in [false, true] {
+                let admission = admit(
+                    request,
+                    &Occupancy {
+                        coordinator_idle: Some(false),
+                        benchmark_running,
+                        ..Occupancy::default()
+                    },
+                );
+                assert!(
+                    matches!(admission, Admission::RefuseWith(_)),
+                    "{request:?} benchmark_running={benchmark_running}: {admission:?}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -75,6 +75,23 @@ impl CorpusRecorderState {
         Ok(capture_id)
     }
 
+    /// Make `is_active()` report `active` without the command's request.
+    #[cfg(all(test, feature = "internal-benchmark"))]
+    pub(crate) fn set_active_for_test(&self, active: bool) {
+        *self.active.lock_or_recover() = active.then(|| ActiveCapture {
+            capture_id: 0,
+            request: CorpusStartRequest {
+                prompt_index: 0,
+                prompt_id: String::new(),
+                label: String::new(),
+                reference: String::new(),
+                device_id: None,
+                device_label: String::new(),
+            },
+            phase: CapturePhase::Starting,
+        });
+    }
+
     fn current(&self) -> Option<ActiveCapture> {
         self.active.lock_or_recover().clone()
     }
