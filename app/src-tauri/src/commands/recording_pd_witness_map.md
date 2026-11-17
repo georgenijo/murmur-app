@@ -70,6 +70,20 @@ Implemented by Stage 2a PR 0 (field adapter, `PersistedCore` commit), in `record
 
 The SP5 ratchet and the `PersistedCore::new` caller test are in `dictation_executor/ratchet_tests.rs`.
 
+Implemented by Stage 2a PR 0 (the executor skeleton, driven by fake ports), in `recording_contract_tests.rs::executor_contract`:
+
+| C4.9 test | Test function |
+|---|---|
+| `executor_phase_order` | `executor_phase_order` |
+| `awaited_effect_is_last_in_phase` | `awaited_effect_is_last_in_phase` |
+| `awaited_effect_resumes_as_continuation` | `awaited_effect_resumes_as_continuation` |
+| `executor_never_locks` | `executor_never_locks` (a port probes D, T and `core_history` at every effect, plus a grep of `executor.rs`) |
+| `reentrancy_refused` | `reentrancy_refused` (a listener under an `In` emit re-enters) |
+| `reentrancy_refused_before_lock` | `reentrancy_refused_before_lock` (the shell holds D on the same thread; `core_history` acquisitions do not move; the check is the first statement) |
+| `panic_partial_application` | `panic_partial_application` |
+| `panic_before_st_leaves_core_equal_live` | `panic_before_st_leaves_core_equal_live` |
+| `emit_result_gates_pres` | `emit_result_gates_pres` (the executor introduces `PRES` as an effect with its `Cond::EmitOk` gate, so this PR owns it) |
+
 Every other C4.9 test needs something Stage 2a creates (the executor, op ids, `core_history`,
 `PersistedCore`, the `PRES` effect, a `resolve_smart_auto` port). Decision D-S1-1 re-allocates each to
 the first Stage 2 PR that creates what it tests; that PR cannot merge without the test (a named gate).
@@ -81,9 +95,6 @@ a PR that creates the subject cannot leave its test owed.
 
 | Gate | C4.9 test | Owner PR | Why it cannot exist yet |
 |---|---|---|---|
-| OWNED | `executor_phase_order`, `awaited_effect_is_last_in_phase`, `awaited_effect_resumes_as_continuation`, `executor_never_locks`, `reentrancy_refused`, `reentrancy_refused_before_lock`, `panic_partial_application` | 2a: the PR that introduces the executor (first family: lifecycle events) | They assert the executor's `run` placement, awaited-effect continuations, locking and re-entry guard, and its effect-by-effect commit; today's shell has no executor |
-| OWNED | `panic_before_st_leaves_core_equal_live` | 2a: the executor PR of the 2a-0 stack (the third PR) | It injects a panic in `GA`/`PCC`/`TRQ` before `ST` of an R101.15-shaped list and in the `EM` after it, which needs the executor's `run`; the adapter it checks landed one PR earlier |
-| OWNED | `emit_result_gates_pres` | 2a: the PR that introduces `PRES` as an effect | `PRES` is not a distinct host effect paired with a failing `emit`; the bridge calls `AppHandle::emit` directly |
 | OWNED | `take_attempts_iff_recovering` (start half) | 2a: the start-family PR, where `resolve_smart_auto` becomes a port | The smart-auto observation is not a port today, so a fake `take` cannot count it. The stop half is implemented above |
 
 ## Discrepancies against C7.1 / C4.9 (recorded as the code does them)

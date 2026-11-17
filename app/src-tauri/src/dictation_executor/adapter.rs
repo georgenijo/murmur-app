@@ -43,6 +43,19 @@ pub(crate) fn core_divergences() -> u64 {
     CORE_DIVERGENCES.load(Ordering::SeqCst)
 }
 
+/// The app's status for a core status (the inverse of [`core_status`]): how the
+/// executor's `ST` effect names the live write.
+pub(crate) fn dictation_status(status: murmur_dictation_core::status::Status) -> DictationStatus {
+    use murmur_dictation_core::status::Status;
+    match status {
+        Status::Idle => DictationStatus::Idle,
+        Status::Starting => DictationStatus::Starting,
+        Status::Recording => DictationStatus::Recording,
+        Status::Recovering => DictationStatus::Recovering,
+        Status::Processing => DictationStatus::Processing,
+    }
+}
+
 /// Zero-sized namespace for the field writes. Each method names the state it
 /// writes; none takes a lock of its own.
 pub(crate) struct FieldAdapter;
