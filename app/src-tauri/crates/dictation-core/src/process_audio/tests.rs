@@ -416,7 +416,6 @@ fn r302_2_equals_the_stop_tail_decision_with_a_reply() {
 #[test]
 fn every_c3_7_row_is_covered_by_a_test_here_and_registered() {
     let c37: Vec<&str> = rows_of_site(SiteId::ProcessAudioStart)
-        .into_iter()
         .chain(rows_of_site(SiteId::ProcessAudioFinish))
         .collect();
     assert_eq!(

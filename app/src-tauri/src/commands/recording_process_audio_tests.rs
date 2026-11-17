@@ -24,6 +24,7 @@ fn locked<T>(mutex: &StdMutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 type Hook = Box<dyn FnOnce(&AppState) + Send>;
+type Listener = Box<dyn FnOnce(&FakeHost, &State) + Send>;
 
 /// What the fake pipeline does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,9 +48,14 @@ struct FakeHost {
     /// Runs in the Smart Destination emit: after the stale check, before the
     /// parse guard exists (a newer start landing in that window).
     after_accept: StdMutex<Option<Hook>>,
+    /// Runs inline in the Smart Destination emit, as a listener would (`IN_CORE`
+    /// set, the helper's D section held in production).
+    in_destination_emit: StdMutex<Option<Hook>>,
+    /// The dictation status when the pipeline was entered.
+    status_at_pipeline: StdMutex<Option<DictationStatus>>,
     panic_in_capture: StdMutex<bool>,
     /// Runs inline in the `dictation-generation-started` emit (a listener).
-    on_generation_started: StdMutex<Option<Box<dyn FnOnce(&FakeHost, &State) + Send>>>,
+    on_generation_started: StdMutex<Option<Listener>>,
     history: crate::core_history::CoreHistoryLock,
     state: std::sync::Weak<State>,
 }
@@ -62,6 +68,8 @@ impl FakeHost {
             pipeline: StdMutex::new(Pipeline::Succeed),
             during_capture: StdMutex::new(None),
             after_accept: StdMutex::new(None),
+            in_destination_emit: StdMutex::new(None),
+            status_at_pipeline: StdMutex::new(None),
             panic_in_capture: StdMutex::new(false),
             on_generation_started: StdMutex::new(None),
             history: state.app_state.core_history.clone(),
@@ -155,6 +163,10 @@ impl ImportedAudioHost for FakeHost {
             "emit_smart_destination {recording_id} in_core={}",
             crate::dictation_executor::executor::in_core()
         ));
+        let listener = locked(&self.in_destination_emit).take();
+        if let (Some(listener), Some(state)) = (listener, self.state.upgrade()) {
+            listener(&state.app_state);
+        }
         let hook = locked(&self.after_accept).take();
         if let (Some(hook), Some(state)) = (hook, self.state.upgrade()) {
             hook(&state.app_state);
@@ -175,6 +187,7 @@ impl ImportedAudioHost for FakeHost {
             "pipeline {recording_id} samples={} h2={h2} h1={h1}",
             samples.len()
         ));
+        *locked(&self.status_at_pipeline) = Some(app_state.dictation.lock_or_recover().status);
         Box::pin(async move {
             // The real pipeline builds its guard first and drops it on return.
             let mut guard = IdleGuard::for_pipeline(app_state, recording_id, stop.pipeline_op);
@@ -726,5 +739,36 @@ fn the_smart_destination_emit_keeps_in_core_set() {
             "emit_smart_destination 1 in_core=true"
         );
         assert!(!crate::dictation_executor::executor::in_core());
+    });
+}
+
+/// (b) from the lead: a finish an inline listener queued while the destination
+/// helper held its own D (an `IdleGuard` dropped inside the emit) runs when the
+/// call returns, before the pipeline starts, not later.
+#[test]
+fn a_finish_queued_inside_the_destination_emit_drains_when_it_returns() {
+    run(|run| {
+        {
+            let mut dictation = run.state.app_state.dictation.lock_or_recover();
+            dictation.smart_destination_enabled = true;
+            dictation.auto_paste = true;
+        }
+        *locked(&run.host.in_destination_emit) = Some(Box::new(|app_state| {
+            let rid = app_state.recording_id.load(Ordering::SeqCst);
+            // Dropped without finishing, inside a core span: queued, not run.
+            drop(IdleGuard::new(app_state, rid));
+            assert_eq!(
+                app_state.dictation.lock_or_recover().status,
+                DictationStatus::Processing,
+                "the finish is deferred while the emit runs"
+            );
+        }));
+        let _ = run.process(&wav_base64(8_000));
+        assert_eq!(
+            *locked(&run.host.status_at_pipeline),
+            Some(DictationStatus::Idle),
+            "the queued finish ran before the pipeline: {:?}",
+            run.host.lines()
+        );
     });
 }

@@ -4438,8 +4438,12 @@ async fn process_audio_inner(
     let destination = select_recording_destination(&delivery_target, smart_destination);
     let context = resolve_recording_context(&state.app_state, destination);
     if smart_enabled {
-        // A synchronous host call that can emit inline: `IN_CORE` stays set
-        // around it.
+        // The destination helper keeps its own D section (no 30x row decides it;
+        // the start's shell-owned section is 2a-4b). Its emit can run an inline
+        // listener, so `IN_CORE` stays set around the call, and a finish that
+        // listener queued runs when the call returns or unwinds, after the
+        // helper's D is released (D-S2-4); declared before the helper's D.
+        let _drain = DrainDeferredFinishes(&state.app_state);
         in_core_span(|| {
             host.emit_smart_destination(&state.app_state, rid, &context, &delivery_target)
         });

@@ -1042,7 +1042,10 @@ fn expected_start_smart_destination() -> Vec<String> {
 }
 
 /// The supervisor's own `Idle` can land while the context resolves (the hook
-/// runs inside the destination emit, 5751). The start then flushes the reserved
+/// runs at `production_context`, after the destination emit and before the
+/// context install, 5751; it cannot run inside the emit, because the emit now
+/// runs under the shell's D hold and re-taking D there would deadlock the
+/// fixture). The start then flushes the reserved
 /// diagnostics (5785) instead of publishing Recording, so the model is never
 /// prepared and no ready is published.
 fn scenario_start_capture_ended_during_context() -> Recorded {
