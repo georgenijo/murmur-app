@@ -657,32 +657,51 @@ impl World {
             event_name(&event)
         ));
         let ends_the_attempt = matches!(event, AudioLifecycleEvent::Idle);
-        handle_audio_lifecycle_and_ready_tasks(
-            self.app.clone(),
-            recording_id,
-            event,
-            |_, recording_id| {
-                self.push(format!("bridge.auto_stop_scheduled {recording_id}"));
-                locked(&self.auto_stops).push(recording_id);
-            },
-            |app, recording_id, register| {
-                // The two spawns `handle_audio_lifecycle` makes for a `Ready`.
-                // The ticker's own preconditions are production's: a recorded
-                // context and a model that supports a live preview.
-                let state = app.state::<State>();
-                let Some(context) = state.app_state.active_context(recording_id) else {
-                    return;
-                };
-                let model = &context.transcription.model_name;
-                if !transcriber::whisper::supports_live_preview(model)
-                    && !transcriber::is_coreml_model(model)
-                {
-                    return;
-                }
-                let registered = register();
-                self.push(format!("SD ticker {recording_id} registered={registered}"));
-            },
-        );
+        let deliver = move || {
+            handle_audio_lifecycle_and_ready_tasks(
+                self.app.clone(),
+                recording_id,
+                event,
+                |_, recording_id| {
+                    self.push(format!("bridge.auto_stop_scheduled {recording_id}"));
+                    locked(&self.auto_stops).push(recording_id);
+                },
+                |app, recording_id, register| {
+                    // The two spawns `handle_audio_lifecycle` makes for a `Ready`.
+                    // The ticker's own preconditions are production's: a recorded
+                    // context and a model that supports a live preview.
+                    let state = app.state::<State>();
+                    let Some(context) = state.app_state.active_context(recording_id) else {
+                        return;
+                    };
+                    let model = &context.transcription.model_name;
+                    if !transcriber::whisper::supports_live_preview(model)
+                        && !transcriber::is_coreml_model(model)
+                    {
+                        return;
+                    }
+                    let registered = register();
+                    self.push(format!("SD ticker {recording_id} registered={registered}"));
+                },
+            );
+        };
+        if crate::dictation_executor::executor::in_core() {
+            // The fake supervisor calls the bridge from inside a family's port
+            // call, on the thread that is running the family's executor. In
+            // production the supervisor's own thread delivers its events, so this
+            // is an *independent* input (decision D-S2-2): it runs on its own
+            // thread, joined at once so the causal order is the one the golden
+            // traces record, and the production re-entrancy check stays
+            // unrelaxed (the same thread's nested entry is still refused).
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(deliver)
+                    .join()
+                    .expect("the supervisor's delivery thread panicked");
+            });
+        } else {
+            deliver();
+        }
         // `finish_attempt` sends `Idle` only when no sealed recording was
         // delivered, and then clears the owner without a `CleanupFinished`. A
         // scenario that sends `Idle` for an attempt whose stop already returned

@@ -172,6 +172,7 @@ fn emit_preview_vad_disagreement(app_state: &AppState, recording_id: u64, sample
 #[path = "recording_host.rs"]
 mod dictation_host;
 use dictation_host::{DictationHost, TauriHost};
+mod cancel_ports;
 mod lifecycle_ports;
 mod stop_ports;
 
@@ -190,6 +191,10 @@ mod lifecycle_barrier_tests;
 #[cfg(test)]
 #[path = "recording_stop_tests.rs"]
 mod stop_tests;
+
+#[cfg(test)]
+#[path = "recording_cancel_tests.rs"]
+mod cancel_tests;
 
 #[cfg(test)]
 #[path = "recording_golden_harness.rs"]
@@ -6020,6 +6025,9 @@ pub async fn stop_native_recording(
     stop_native_recording_for(app_handle, state, None, stop_trigger.unwrap_or_default()).await
 }
 
+/// The pre-extraction owner check of the cancel command; the production check is
+/// now `decide_cancel_request`'s R205.1. Kept as the oracle of its existing test.
+#[cfg(test)]
 fn stop_owner_matches(current_recording_id: u64, expected_recording_id: Option<u64>) -> bool {
     expected_recording_id.is_none_or(|expected| expected == current_recording_id)
 }
@@ -6086,9 +6094,11 @@ async fn stop_native_recording_admitted(
     use crate::dictation_executor::convert::error_code_to_core;
     use crate::dictation_executor::executor::core_now;
     use crate::dictation_executor::FieldAdapter;
+    use murmur_dictation_core::cancel as core_cancel;
     use murmur_dictation_core::decision::{ContKind, Decision, ObsKind, RowId, Verdict};
     use murmur_dictation_core::effects::Placement;
     use murmur_dictation_core::ids::RecordingId;
+    use murmur_dictation_core::inputs::{CancelCaptureResultInput, CancelOrigin};
     use murmur_dictation_core::inputs::{
         InterruptedMeta, PipelineIdleEmitInput, PipelineResult as CorePipelineResult,
         PipelineTerminal as CorePipelineTerminal, PostKind, StopCaptureResult,
@@ -6193,7 +6203,7 @@ async fn stop_native_recording_admitted(
             .is_some_and(|spec| spec.kind == ContKind::CaptureCancel);
         // Registered right after the decide, before any effect (C4.3). Retired by
         // `Drop` on every return path: R201.4's capture cancel (R206) stays inline.
-        let op_guard = decision
+        let mut op_guard = decision
             .continuation
             .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec));
         let slots = {
@@ -6208,16 +6218,43 @@ async fn stop_native_recording_admitted(
                 drop(transition);
                 // `PT:CC` (R201.4), after T is released.
                 run_phase(&mut exec, Placement::PostT, None, rid);
-                if let Some(error) = ports.take_slots().cancel_error {
-                    emit_dictation_terminal(
-                        state,
-                        rid,
-                        DictationTerminalOutcome::PipelineFailure,
-                        DictationErrorCode::RuntimeFailure,
-                    );
-                    return Err(error);
-                }
-                return reply_of(&decision, None, "");
+                // Site 206 (D-less), shared with the cancel command's R205.4:
+                // the result of the capture cancel `PT:CC` just ran.
+                let slots = ports.take_slots();
+                let result = match (slots.cancel_error.as_ref(), slots.cancel_accepted) {
+                    (Some(_), _) => Err(()),
+                    (None, Some(accepted)) => Ok(accepted),
+                    (None, None) => unreachable!("R201.4's capture cancel ran in its `PT` phase"),
+                };
+                let mut guard = op_guard
+                    .take()
+                    .expect("R201.4 registered `K:CaptureCancel`");
+                let token = guard.token();
+                let facts = FieldAdapter::lock_free_facts(&state.app_state);
+                let cancel_decision = guard.consume(|op_status| {
+                    stop_ports::decide(|| {
+                        core_cancel::decide_cancel_capture_result_nolock(
+                            facts,
+                            CancelCaptureResultInput {
+                                token,
+                                op_status,
+                                rid: RecordingId(rid),
+                                result,
+                                origin: CancelOrigin::Stop,
+                            },
+                            now,
+                        )
+                    })
+                });
+                // R206.2 `PT:TERM(PipelineFailure/RuntimeFailure)`; R206.1 has no
+                // effect.
+                run_phase(
+                    &mut executor(&ports, cancel_decision.clone()),
+                    Placement::PostT,
+                    None,
+                    rid,
+                );
+                return reply_of(&cancel_decision, slots.cancel_error, "");
             }
             ports.take_slots()
         };
@@ -6770,89 +6807,126 @@ async fn cancel_native_recording_inner(
     state: &State,
     expected_recording_id: Option<u64>,
 ) -> Result<(), String> {
+    use crate::core_history::ContinuationGuard;
+    use crate::dictation_executor::executor::{core_now, CoreEntry};
+    use crate::dictation_executor::FieldAdapter;
+    use cancel_ports::{executor, run_phase, CancelPorts, CaptureCancelOutcome};
+    use murmur_dictation_core::cancel as core_cancel;
+    use murmur_dictation_core::decision::Verdict;
+    use murmur_dictation_core::effects::Placement;
+    use murmur_dictation_core::ids::RecordingId;
+    use murmur_dictation_core::inputs::{CancelCaptureResultInput, CancelInput, CancelOrigin};
+
+    // C4.1 step 0 / C4.2: the **first** statement, before T, D or `core_history`.
+    // A callback that a port or an emit runs inline on this thread can re-enter
+    // this entry while D or T is held; neither is reentrant, so the nested entry
+    // is refused here, before it can ask for either. The flag is cleared at once
+    // (it is never held across the `await` below, C4.2).
+    match CoreEntry::enter() {
+        Ok(entry) => drop(entry),
+        Err(kind) => {
+            tracing::error!(
+                target: "pipeline",
+                refusal = ?kind,
+                "re-entrant cancel refused before any lock"
+            );
+            return Err(cancel_refused(kind));
+        }
+    }
     let transition = state.app_state.recording_transition.lock().await;
-    let (prev_status, rid) = {
-        let mut dictation = state.app_state.dictation.lock_or_recover();
-        let prev = dictation.status;
-        let rid = state.app_state.recording_id.load(Ordering::SeqCst);
-        // A deferred hold release cancels only the recording its own start
-        // created, never a newer one.
-        if !stop_owner_matches(rid, expected_recording_id) {
-            return Ok(());
+    let now = core_now();
+    // Site 205 (T held, D section): `decide_cancel_request`, inline at today's
+    // line. The view is built from the live fields under the D hold the section
+    // already takes.
+    let mut dictation = state.app_state.dictation.lock_or_recover();
+    let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+    let rid = view.current_id.0;
+    let decision = cancel_ports::decide(|| {
+        core_cancel::decide_cancel_request(
+            &view,
+            CancelInput {
+                expected: expected_recording_id.map(RecordingId),
+            },
+            now,
+        )
+    });
+    match &decision.verdict {
+        Verdict::Applied => {}
+        // R205.1-.3: nothing to do; D and T are released by the returns.
+        Verdict::Stale(_) | Verdict::Continue => return Ok(()),
+        Verdict::Invalid(kind) => return Err(cancel_refused(*kind)),
+        Verdict::Refused(_) | Verdict::NeedObservation(_) => {
+            unreachable!("a cancel request is applied, stale or a no-op")
         }
-        match prev {
-            DictationStatus::Idle => return Ok(()),
-            DictationStatus::Starting | DictationStatus::Recording => {}
-            DictationStatus::Recovering => return Ok(()),
-            DictationStatus::Processing => {
-                transition_dictation_status(rid, &mut dictation, DictationStatus::Idle);
-            }
-        }
-        (prev, rid)
-    };
-    if matches!(
-        prev_status,
-        DictationStatus::Starting | DictationStatus::Recording
-    ) {
-        drop(transition);
-        if let Err(error) = host
-            .supervisor()
-            .cancel_dictation_capture(rid, AudioCancelReason::User)
-        {
-            emit_dictation_terminal(
-                state,
-                rid,
-                DictationTerminalOutcome::PipelineFailure,
-                DictationErrorCode::RuntimeFailure,
-            );
-            return Err(error.to_string());
-        }
-        return Ok(());
     }
-    crate::dictation_executor::FieldAdapter::clear_context(&state.app_state, rid);
-
-    match prev_status {
-        DictationStatus::Processing => {
-            // Mark current recording as cancelled — pipeline will check at next checkpoint.
-            crate::dictation_executor::FieldAdapter::cancel_through(&state.app_state, rid);
-            emit_dictation_terminal(
-                state,
-                rid,
-                DictationTerminalOutcome::UserCancelledProcessing,
-                DictationErrorCode::CancelledProcessing,
-            );
-            tracing::info!(target: "pipeline", "cancel_native_recording: processing cancelled (recording_id={})", rid);
-        }
-        DictationStatus::Idle
-        | DictationStatus::Starting
-        | DictationStatus::Recording
-        | DictationStatus::Recovering => unreachable!(),
-    }
-
-    // Always emit feedback so the UI resets, even if stop_recording failed
-    host.keyboard().set_processing(false);
-    let _ = host.emit("recording-status-changed", "idle");
-    let _ = host.emit(
-        "recording-cancelled",
-        serde_json::json!({ "recordingId": rid }),
-    );
-
-    // Keep the transition fence through the old generation's unscoped UI
-    // events so a newer start cannot publish `starting` and then be reset by
-    // this cancellation's trailing `idle`. Diagnostics completion is already
-    // asynchronous, so releasing immediately before it never waits on SQLite.
+    // Registered right after the decide, before any effect (C4.3, C3.9): R205.4's
+    // `K:CaptureCancel`. It is consumed by site 206 below, or retired by `Drop` on
+    // every other return path.
+    let mut op_guard = decision
+        .continuation
+        .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec));
+    let ports = CancelPorts::new(host, state, rid);
+    let mut exec = executor(&ports, decision.clone());
+    // R205.5 `In:ST→Idle` under D; R205.4 has no `In` effect.
+    run_phase(&mut exec, Placement::In, Some(&mut dictation), rid).map_err(cancel_refused)?;
+    drop(dictation);
+    // R205.5 `PDT:CX-, MC, TERM, KB, EM, EV` with T still held: keep the
+    // transition fence through the old generation's unscoped UI events so a newer
+    // start cannot publish `starting` and then be reset by this cancellation's
+    // trailing `idle`.
+    run_phase(&mut exec, Placement::PostDT, None, rid).map_err(cancel_refused)?;
+    // Diagnostics completion is already asynchronous, so releasing immediately
+    // before `PT:PC` never waits on SQLite; R205.4's `PT:CC` is blocking (<= 2 s).
     drop(transition);
-    host.performance().complete(
+    run_phase(&mut exec, Placement::PostT, None, rid).map_err(cancel_refused)?;
+    let Some(mut op_guard) = op_guard.take() else {
+        // R205.5: the whole decision ran.
+        return Ok(());
+    };
+    // Site 206 (D-less): the result of the capture cancel `PT:CC` just ran.
+    let result = match ports.take_capture_cancel() {
+        Some(CaptureCancelOutcome::Done(accepted)) => Ok(accepted),
+        Some(CaptureCancelOutcome::Failed(error)) => Err(error),
+        None => unreachable!("R205.4's capture cancel ran in its `PT` phase"),
+    };
+    let token = op_guard.token();
+    let facts = FieldAdapter::lock_free_facts(&state.app_state);
+    let failure = result.as_ref().err().cloned();
+    let decision = op_guard.consume(|op_status| {
+        cancel_ports::decide(|| {
+            core_cancel::decide_cancel_capture_result_nolock(
+                facts,
+                CancelCaptureResultInput {
+                    token,
+                    op_status,
+                    rid: RecordingId(rid),
+                    result: result.as_ref().map(|accepted| *accepted).map_err(|_| ()),
+                    origin: CancelOrigin::Cancel,
+                },
+                now,
+            )
+        })
+    });
+    // R206.2 `PT:TERM(PipelineFailure/RuntimeFailure)`; R206.1 has no effect.
+    run_phase(
+        &mut executor(&ports, decision.clone()),
+        Placement::PostT,
+        None,
         rid,
-        RunOutcomeV1::Cancelled {
-            stage: PerformanceStageV1::InferenceDecode,
-        },
-        Vec::new(),
-        None,
-        None,
-    );
+    )
+    .map_err(cancel_refused)?;
+    match decision.verdict {
+        Verdict::Continue => Ok(()),
+        Verdict::Applied => Err(failure.expect("R206.2 is the capture cancel's failure")),
+        Verdict::Stale(_) | Verdict::Refused(_) | Verdict::NeedObservation(_) => {
+            unreachable!("site 206 continues or applies")
+        }
+        Verdict::Invalid(kind) => Err(cancel_refused(kind)),
+    }
+}
 
-    Ok(())
+fn cancel_refused(kind: murmur_dictation_core::decision::InvalidKind) -> String {
+    format!("The dictation core refused the cancel: {kind:?}")
 }
 
 /// Cancel only an in-flight microphone initialization after an environment

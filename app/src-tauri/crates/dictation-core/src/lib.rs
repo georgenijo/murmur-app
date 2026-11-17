@@ -16,6 +16,7 @@
 #![forbid(unsafe_code)]
 
 pub mod admission;
+pub mod cancel;
 pub mod decision;
 pub mod effects;
 pub mod ids;

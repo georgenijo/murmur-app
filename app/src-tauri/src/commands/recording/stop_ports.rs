@@ -143,8 +143,10 @@ pub(super) fn reply_of(
 pub(super) struct StopSlots {
     /// `PH`: the live preview's hide claim.
     pub(super) preview_hide: Option<crate::commands::dictation_preview::PreviewHideOwner>,
-    /// `CC`: the capture-cancel error (R206 is still inline in the shell).
+    /// `CC`: the capture-cancel error, the input of site 206 (R206.2).
     pub(super) cancel_error: Option<String>,
+    /// `CC`: the capture-cancel acceptance, the input of site 206 (R206.1).
+    pub(super) cancel_accepted: Option<bool>,
     /// `AX`: the delivery target frozen at the accepted stop.
     pub(super) delivery_target: Option<crate::frontmost::DeliveryTargetSnapshot>,
     /// `TS`: the matching rdev release.
@@ -392,7 +394,10 @@ impl Ports for StopPortsInner<'_> {
                     .supervisor()
                     .cancel_dictation_capture(id.0, AudioCancelReason::User)
                 {
-                    Ok(_) => Ok(()),
+                    Ok(accepted) => {
+                        self.slots.borrow_mut().cancel_accepted = Some(accepted);
+                        Ok(())
+                    }
                     Err(error) => {
                         self.slots.borrow_mut().cancel_error = Some(error.to_string());
                         Err(PortFailure)

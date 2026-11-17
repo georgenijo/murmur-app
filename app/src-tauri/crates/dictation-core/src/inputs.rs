@@ -306,6 +306,16 @@ pub struct CancelInput {
     pub expected: Option<RecordingId>,
 }
 
+/// Which command asked for the capture cancel whose result site 206 decides
+/// (R201.4 through the stop command, R205.4 through the cancel command).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancelOrigin {
+    /// The stop command's `Starting` arm (R201.4).
+    Stop,
+    /// The cancel command's `Starting` / `Recording` arm (R205.4).
+    Cancel,
+}
+
 /// Site 206.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CancelCaptureResultInput {
@@ -317,6 +327,9 @@ pub struct CancelCaptureResultInput {
     pub rid: RecordingId,
     /// `Ok(bool)` or `Err`.
     pub result: Result<bool, ()>,
+    /// The caller: only the success reply differs (stop replies
+    /// `recording_cancelled`, cancel replies `Ok(())`).
+    pub origin: CancelOrigin,
 }
 
 /// Supervisor-thread events (C3.6; never under T).
@@ -625,6 +638,7 @@ mod tests {
                 op_status,
                 rid,
                 result: Ok(true),
+                origin: CancelOrigin::Cancel,
             }),
             Input::Supervisor(SupervisorEvent::Ready {
                 rid,
