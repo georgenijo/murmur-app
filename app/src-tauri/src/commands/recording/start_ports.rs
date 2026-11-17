@@ -64,6 +64,18 @@ pub(super) fn decide_pre<T>(decide: impl FnOnce() -> T) -> Result<T, InvalidKind
     Ok(decide())
 }
 
+/// Run a synchronous host read that runs under D and T (the Smart Auto resolver,
+/// whose success emits `smart-auto-microphone-changed` inline) with the core span
+/// set: a Rust listener of that notification that re-enters the start, stop or
+/// cancel is refused before any lock, and an `IdleGuard` it drops queues its
+/// finish instead of asking for D again (D-S2-2, D-S2-4). The lock placement of the
+/// read is unchanged. Never held across an await.
+pub(super) fn observe_in_core<T>(read: impl FnOnce() -> T) -> T {
+    let _entry = crate::dictation_executor::executor::CoreEntry::enter()
+        .unwrap_or_else(|kind| unreachable!("a start observation outside any core span: {kind:?}"));
+    read()
+}
+
 /// Run one placement and return the executor's report. `dictation` is `Some` only
 /// for `In`: the D guard's contents the shell holds. The caller handles the
 /// report: `Awaiting` for the kept-preview `CS`; `Invalid` (nothing ran) is logged.
@@ -110,6 +122,13 @@ pub(super) fn expect_valid(decision: &Decision) {
     if let murmur_dictation_core::decision::Verdict::Invalid(kind) = &decision.verdict {
         unreachable!("a start decision outside any core span was refused: {kind:?}");
     }
+}
+
+// Test builds: the witness of the smart-destination section's executor (R103.0).
+#[cfg(test)]
+thread_local! {
+    pub(super) static DESTINATION: RefCell<Vec<crate::dictation_executor::executor::Witness>> =
+        const { RefCell::new(Vec::new()) };
 }
 
 // Test builds: the witness of the start's executor after it resumed the awaited
@@ -371,16 +390,13 @@ impl Ports for StartPorts<'_> {
                     serde_json::json!({ "recordingId": self.rid() }),
                 )
                 .map_err(|_| PortFailure),
-            // R103.0: the smart-destination selection, T held and D released.
+            // R103.0: the smart-destination selection, under the shell's D hold.
             Effect::SmartDestinationEmit => {
                 let tail = self.tail.ok_or(PortFailure)?;
-                self.host.emit_smart_destination(
-                    &self.state.app_state,
-                    self.rid(),
-                    &tail.context,
-                    tail.delivery_target,
-                );
-                Ok(())
+                // The real result of the emit, never a constant.
+                self.host
+                    .emit_smart_destination(self.rid(), &tail.context, tail.delivery_target)
+                    .map_err(|_| PortFailure)
             }
             _ => Err(PortFailure),
         }

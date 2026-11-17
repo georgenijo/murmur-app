@@ -221,6 +221,8 @@ pub(super) struct Knobs {
     /// What the Smart Auto resolve port answers (`None`: an error, the scenario did
     /// not script it).
     pub(super) smart_auto: Option<Result<crate::microphone_auto::SmartAutoSelection, String>>,
+    /// The `smart-destination-selected` emit fails.
+    pub(super) smart_destination_emit_error: bool,
 }
 
 impl Default for Knobs {
@@ -238,6 +240,7 @@ impl Default for Knobs {
             pipeline_error: None,
             pipeline_finish_panics: false,
             smart_auto: None,
+            smart_destination_emit_error: false,
         }
     }
 }
@@ -1403,29 +1406,44 @@ impl DictationHost for Host {
         // Counted outside the trace so no golden line changes: no scenario asks for
         // Smart Auto, and only the contract tests read the count.
         self.0.smart_auto_resolves.fetch_add(1, Ordering::SeqCst);
-        locked(&self.0.knobs)
+        let result = locked(&self.0.knobs)
             .smart_auto
             .clone()
-            .unwrap_or_else(|| Err("smart auto is not scripted".to_string()))
+            .unwrap_or_else(|| Err("smart auto is not scripted".to_string()));
+        if result.is_ok() {
+            // Production's success emits `smart-auto-microphone-changed` inline,
+            // on this thread, after the commit.
+            self.0.fire("smart_auto.routing_changed");
+        }
+        result
     }
 
     fn refresh_expired_ide_context(&self, _app_state: &AppState, _bundle_id: Option<&str>) {
         self.0.push("refresh_expired_ide_context");
+        // A point between query 402's read and the emit's own D section.
+        self.0.fire("refresh_expired_ide_context");
     }
 
     fn emit_smart_destination(
         &self,
-        _app_state: &AppState,
         recording_id: u64,
         _context: &DictationContextSnapshot,
         _accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
-    ) {
+    ) -> Result<(), String> {
         self.0
             .push(format!("emit_smart_destination {recording_id}"));
+        // An inline listener of the emit (on this thread, under the shell's D hold).
+        self.0.fire("smart_destination.emit");
+        if locked(&self.0.knobs).smart_destination_emit_error {
+            Err("the emit failed".to_string())
+        } else {
+            Ok(())
+        }
     }
 
     fn publish_recording_ready_if_audio_ready(
         &self,
+        state: &State,
         recording_id: u64,
         context_ready_at: std::time::Instant,
         ready_op: crate::core_history::ContinuationGuard,
@@ -1434,6 +1452,7 @@ impl DictationHost for Host {
         world.push(format!("publish_recording_ready {recording_id}"));
         let published = publish_recording_ready_with(
             &world.app,
+            state,
             recording_id,
             context_ready_at,
             ready_op,
