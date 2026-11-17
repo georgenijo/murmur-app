@@ -125,6 +125,12 @@ vocabularies while dropping arbitrary string values. See
 [Transcription Pipeline](../features/transcription.md#per-recording-lifecycle-telemetry)
 for stage denominators and terminal semantics.
 
+`pipeline.dictation_deferred_finish_panicked` (always on, `error`) reports that
+a queued idle-guard finish panicked while the outermost core entry drained the
+deferred finishes. It carries only the positive `recording_id` and an `origin`
+from the fixed set `stop_capture`, `pipeline_exit`, `legacy_parse`, `dropped`;
+the panic payload is never logged.
+
 Fn / Globe key-down capture uses its own content-free codes on the `audio`
 stream: `audio.speculative_capture_refused`, `audio.speculative_capture_flowing`,
 `audio.speculative_capture_adopted`, `audio.speculative_capture_discarded`, and
