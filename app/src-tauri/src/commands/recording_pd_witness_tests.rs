@@ -835,6 +835,97 @@ const C4_9_TESTS: [&str; 26] = [
 /// owner table with the Stage 2 PR that cannot merge without it and the reason
 /// it cannot exist yet. The only name in both is the split
 /// `take_attempts_iff_recovering` (stop half implemented, start half owned).
+///
+/// The gate is also **enforced from the code side** (decision D-S1-5 b): each
+/// OWNED test has marker symbols of its subject, `(path under src/, text)`. If
+/// a marker exists while the row is still OWNED, the subject has landed and the
+/// owner PR is shipping without its test, so the test fails. Moving a row out of
+/// OWNED means implementing the tests in `recording_contract_tests.rs`. A new
+/// OWNED name must register its markers here.
+const OWNED_SUBJECT_MARKERS: &[(&str, &[(&str, &str)])] = &[
+    // The executor (`Executor::run`, `PhaseReport`, `IN_CORE`).
+    (
+        "executor_phase_order",
+        &[("dictation_executor/executor.rs", "struct Executor")],
+    ),
+    (
+        "awaited_effect_is_last_in_phase",
+        &[("dictation_executor/executor.rs", "struct Executor")],
+    ),
+    (
+        "awaited_effect_resumes_as_continuation",
+        &[("dictation_executor/executor.rs", "fn resume(")],
+    ),
+    (
+        "executor_never_locks",
+        &[("dictation_executor/executor.rs", "fn run(")],
+    ),
+    (
+        "reentrancy_refused",
+        &[("dictation_executor/executor.rs", "IN_CORE")],
+    ),
+    (
+        "reentrancy_refused_before_lock",
+        &[("dictation_executor/executor.rs", "IN_CORE")],
+    ),
+    (
+        "panic_partial_application",
+        &[("dictation_executor/executor.rs", "fn run(")],
+    ),
+    // `core_history` / `NEXT_OP`.
+    (
+        "continuation_unknown_forged_kind_takes_site_rule",
+        &[("core_history.rs", "struct CoreHistory")],
+    ),
+    (
+        "unknown_op_runs_site_stale_rule",
+        &[("core_history.rs", "fn ret_if_matches")],
+    ),
+    (
+        "wrong_kind_token_does_not_retire_legit_op",
+        &[("core_history.rs", "fn ret_if_matches")],
+    ),
+    (
+        "ret_if_matches_is_one_lock",
+        &[("core_history.rs", "fn ret_if_matches")],
+    ),
+    (
+        "outstanding_op_never_evicted",
+        &[("core_history.rs", "static NEXT_OP")],
+    ),
+    (
+        "owner_drop_retires_op",
+        &[("core_history.rs", "struct ContinuationGuard")],
+    ),
+    (
+        "history_lock_is_leaf",
+        &[("core_history.rs", "struct CoreHistoryLock")],
+    ),
+    // The common field adapter and the `PersistedCore` commit.
+    (
+        "panic_before_st_leaves_core_equal_live",
+        &[("dictation_executor/adapter.rs", "struct FieldAdapter")],
+    ),
+    (
+        "persisted_core_has_only_m1_m2",
+        &[("dictation_executor/adapter.rs", "struct FieldAdapter")],
+    ),
+    (
+        "m3_m4_observed_before_and_after_cutover",
+        &[("dictation_executor/adapter.rs", "fn observe_live")],
+    ),
+    // `PRES` as an effect: the executor runs it behind its paired emit.
+    (
+        "emit_result_gates_pres",
+        &[("dictation_executor/executor.rs", "Cond::EmitOk")],
+    ),
+    // The start family's smart-auto port (`resolve_smart_auto` on the host).
+    (
+        "take_attempts_iff_recovering",
+        &[("commands/recording_host.rs", "fn resolve_smart_auto")],
+    ),
+];
+
 #[test]
 fn c4_9_every_contract_test_is_implemented_or_owned() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands");
@@ -857,6 +948,24 @@ fn c4_9_every_contract_test_is_implemented_or_owned() {
             assert!(
                 owned.insert(name.to_string(), owner.to_string()).is_none(),
                 "`{name}` is owned twice"
+            );
+        }
+    }
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for name in owned.keys() {
+        let markers = OWNED_SUBJECT_MARKERS
+            .iter()
+            .find(|(owned_name, _)| owned_name == name)
+            .unwrap_or_else(|| panic!("OWNED `{name}` has no entry in OWNED_SUBJECT_MARKERS"))
+            .1;
+        for (path, symbol) in markers {
+            let landed = std::fs::read_to_string(src.join(path))
+                .map(|text| text.contains(symbol))
+                .unwrap_or(false);
+            assert!(
+                !landed,
+                "`{symbol}` exists in src/{path}, so the subject of OWNED `{name}` has landed: \
+                 implement the test in recording_contract_tests.rs and drop its OWNED row"
             );
         }
     }

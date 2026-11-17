@@ -49,16 +49,30 @@ Implemented now (`recording_contract_tests.rs`), against today's shell:
 | `take_attempts_iff_recovering` (C2.2), stop half | `take_attempts_iff_recovering` |
 | `continuation_stale_uses_site_rule` | `continuation_stale_uses_site_rule` (start continuation and every supervisor arm; the stop's stale rule is golden 6) |
 
+Implemented by Stage 2a PR 0 (`core_history` / `NEXT_OP`), in `recording_contract_tests.rs::core_history_contract`:
+
+| C4.9 test | Test function |
+|---|---|
+| `continuation_unknown_forged_kind_takes_site_rule` | `continuation_unknown_forged_kind_takes_site_rule` (the shell protocol `CoreHistoryLock::consume` with a stand-in site rule that ignores the op status) |
+| `unknown_op_runs_site_stale_rule` | `unknown_op_runs_site_stale_rule` (protocol half, every `ContKind`; the per-row half, "every consuming row yields identical effects for `Outstanding` and `Unknown`", is part of each family PR's row tests, C7.0) |
+| `wrong_kind_token_does_not_retire_legit_op` | `wrong_kind_token_does_not_retire_legit_op` |
+| `ret_if_matches_is_one_lock` | `ret_if_matches_is_one_lock` (lock-count assertion plus a grep of the source) |
+| `outstanding_op_never_evicted` | `outstanding_op_never_evicted` |
+| `owner_drop_retires_op` | `owner_drop_retires_op` (dropped future, panic unwind, spawned task that never runs, consumed guard) |
+| `history_lock_is_leaf` | `history_lock_is_leaf` (grep plus the `D -> core_history` order and the held-flag assertion) |
+
 Every other C4.9 test needs something Stage 2a creates (the executor, op ids, `core_history`,
 `PersistedCore`, the `PRES` effect, a `resolve_smart_auto` port). Decision D-S1-1 re-allocates each to
 the first Stage 2 PR that creates what it tests; that PR cannot merge without the test (a named gate).
 `c4_9_every_contract_test_is_implemented_or_owned` (in `recording_pd_witness_tests.rs`) checks that each
 of the 26 C4.9 names is implemented above or has an `OWNED` row below with a `2a` owner PR and a reason.
+It also fails when a marker symbol of an OWNED test's subject (`OWNED_SUBJECT_MARKERS`, for example
+`struct CoreHistory` or `fn run(`) exists in `src/` while the row is still OWNED (decision D-S1-5 b), so
+a PR that creates the subject cannot leave its test owed.
 
 | Gate | C4.9 test | Owner PR | Why it cannot exist yet |
 |---|---|---|---|
 | OWNED | `executor_phase_order`, `awaited_effect_is_last_in_phase`, `awaited_effect_resumes_as_continuation`, `executor_never_locks`, `reentrancy_refused`, `reentrancy_refused_before_lock`, `panic_partial_application` | 2a: the PR that introduces the executor (first family: lifecycle events) | They assert the executor's `run` placement, awaited-effect continuations, locking and re-entry guard, and its effect-by-effect commit; today's shell has no executor |
-| OWNED | `continuation_unknown_forged_kind_takes_site_rule`, `unknown_op_runs_site_stale_rule`, `wrong_kind_token_does_not_retire_legit_op`, `ret_if_matches_is_one_lock`, `outstanding_op_never_evicted`, `owner_drop_retires_op`, `history_lock_is_leaf` | 2a: the PR that introduces `core_history` / `NEXT_OP` (the first 2a PR) | There is no `OpId`, `pending_ops`, `ret_if_matches` or `core_history` lock to forge, retire, evict or assert about. The shell-level stale rules that exist today are pinned by `continuation_stale_uses_site_rule` |
 | OWNED | `panic_before_st_leaves_core_equal_live`, `persisted_core_has_only_m1_m2`, `m3_m4_observed_before_and_after_cutover` | 2a: the PR that introduces the common field adapter and the `PersistedCore` commit (the first 2a PR) | There is no `DictationCore`, `PersistedCore` or decision view to compare with the live fields |
 | OWNED | `emit_result_gates_pres` | 2a: the PR that introduces `PRES` as an effect | `PRES` is not a distinct host effect paired with a failing `emit`; the bridge calls `AppHandle::emit` directly |
 | OWNED | `take_attempts_iff_recovering` (start half) | 2a: the start-family PR, where `resolve_smart_auto` becomes a port | The smart-auto observation is not a port today, so a fake `take` cannot count it. The stop half is implemented above |

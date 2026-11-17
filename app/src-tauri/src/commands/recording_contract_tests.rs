@@ -725,3 +725,415 @@ fn perf_ledger_early_terminal_is_flushed_or_lost() {
         assert!(!coordinator.begin_is_pending(1), "the completion is lost");
     }
 }
+
+// ------------------------------- Stage 2a PR 0: core_history (C1.4.1, C4.3)
+//
+// These pin the operation history before any decide function uses it. The
+// per-row halves ("every consuming row yields identical effects for
+// `Outstanding` and `Unknown`") are asserted by each family PR's row tests; here
+// the shell protocol that makes that possible is pinned with a stand-in site
+// rule that, like every real stale rule, ignores the op status.
+
+mod core_history_contract {
+    use crate::core_history::{
+        assert_not_held, is_held_on_this_thread, ContinuationGuard, CoreHistoryLock, Retired,
+    };
+    use murmur_dictation_core::decision::{ContKind, Continuation, ContinuationSpec, OpStatus};
+    use murmur_dictation_core::ids::{OperationId, RecordingId};
+    use murmur_dictation_core::state::DictationCore;
+    use std::cell::Cell;
+
+    const ALL_KINDS: [ContKind; 8] = [
+        ContKind::CaptureStart,
+        ContKind::ResolveContext,
+        ContKind::ReadyPublish,
+        ContKind::CaptureCancel,
+        ContKind::StopContext,
+        ContKind::CaptureStop,
+        ContKind::Pipeline,
+        ContKind::AutoStop,
+    ];
+
+    fn spec(recording: u64, kind: ContKind) -> ContinuationSpec {
+        ContinuationSpec {
+            recording_id: RecordingId(recording),
+            kind,
+        }
+    }
+
+    /// A stand-in for a site's stale rule: the effects it returns do not depend
+    /// on the op status (C1.4.1 rule 3).
+    fn site_rule(_status: OpStatus) -> Vec<&'static str> {
+        vec!["TERM", "PC"]
+    }
+
+    /// The production half of `core_history.rs` (before its test module).
+    fn production_source() -> &'static str {
+        let source = include_str!("../core_history.rs");
+        source
+            .split("#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("core_history.rs has a production half")
+    }
+
+    fn forged_tokens(legit: Continuation) -> [(&'static str, Continuation); 4] {
+        let other_kind = if legit.kind == ContKind::CaptureStop {
+            ContKind::CaptureStart
+        } else {
+            ContKind::CaptureStop
+        };
+        [
+            (
+                "wrong kind",
+                Continuation {
+                    kind: other_kind,
+                    ..legit
+                },
+            ),
+            (
+                "wrong recording",
+                Continuation {
+                    recording_id: RecordingId(legit.recording_id.0 + 1),
+                    ..legit
+                },
+            ),
+            (
+                "forged op id",
+                Continuation {
+                    op: OperationId(u64::MAX),
+                    ..legit
+                },
+            ),
+            (
+                "retired op",
+                Continuation {
+                    op: OperationId(u64::MAX - 1),
+                    ..legit
+                },
+            ),
+        ]
+    }
+
+    /// `continuation_unknown_forged_kind_takes_site_rule`: a retired, forged,
+    /// wrong-kind or wrong-recording token still runs the site's rule with the
+    /// same effects as an outstanding one, is counted, and retires nothing else.
+    #[test]
+    fn continuation_unknown_forged_kind_takes_site_rule() {
+        let history = CoreHistoryLock::default();
+        let legit = history.reg(spec(4, ContKind::CaptureStart));
+        let outstanding_effects =
+            history.consume(history.reg(spec(4, ContKind::CaptureStart)), site_rule);
+        for (what, token) in forged_tokens(legit) {
+            let ran = Cell::new(0);
+            let counted_before = history.counters().unknown_op;
+            let effects = history.consume(token, |status| {
+                ran.set(ran.get() + 1);
+                assert_eq!(status, OpStatus::Unknown, "{what}");
+                site_rule(status)
+            });
+            assert_eq!(ran.get(), 1, "{what}: the site's rule runs exactly once");
+            assert_eq!(effects, outstanding_effects, "{what}: same effects");
+            assert!(history.counters().unknown_op > counted_before, "{what}");
+            assert!(
+                history.is_outstanding(legit),
+                "{what} must not retire another op"
+            );
+        }
+        // An already-retired token behaves the same way.
+        let retired = history.reg(spec(5, ContKind::Pipeline));
+        assert_eq!(history.ret_if_matches(retired), Retired::Removed);
+        let effects = history.consume(retired, |status| {
+            assert_eq!(status, OpStatus::Unknown);
+            site_rule(status)
+        });
+        assert_eq!(effects, outstanding_effects);
+    }
+
+    /// `unknown_op_runs_site_stale_rule`: for every continuation kind the shell
+    /// protocol runs the site's decide exactly once whatever the status, with no
+    /// history lock held, and retires the op afterwards. (The per-row half lives
+    /// in each family PR's row tests.)
+    #[test]
+    fn unknown_op_runs_site_stale_rule() {
+        let history = CoreHistoryLock::default();
+        for kind in ALL_KINDS {
+            let outstanding = history.reg(spec(7, kind));
+            let unknown = Continuation {
+                op: OperationId(u64::MAX),
+                ..outstanding
+            };
+            let mut results = Vec::new();
+            for token in [outstanding, unknown] {
+                let ran = Cell::new(0);
+                let effects = history.consume(token, |status| {
+                    ran.set(ran.get() + 1);
+                    assert!(
+                        !is_held_on_this_thread(),
+                        "{kind:?}: decide runs with no core_history lock held"
+                    );
+                    (status, site_rule(status))
+                });
+                assert_eq!(ran.get(), 1, "{kind:?}: the rule is never skipped");
+                results.push(effects);
+            }
+            assert_eq!(results[0].0, OpStatus::Outstanding, "{kind:?}");
+            assert_eq!(results[1].0, OpStatus::Unknown, "{kind:?}");
+            assert_eq!(results[0].1, results[1].1, "{kind:?}: identical effects");
+            assert!(!history.is_outstanding(outstanding), "{kind:?}: consumed");
+        }
+        assert_eq!(history.outstanding_ops(), 0);
+    }
+
+    /// `wrong_kind_token_does_not_retire_legit_op`: right op id and recording id,
+    /// wrong kind. The site's rule runs as for `Outstanding`, `unknown_op`
+    /// increments, the entry stays, and the legitimate completion that follows
+    /// consumes it normally.
+    #[test]
+    fn wrong_kind_token_does_not_retire_legit_op() {
+        let history = CoreHistoryLock::default();
+        let legit = history.reg(spec(9, ContKind::CaptureStart));
+        let wrong = Continuation {
+            kind: ContKind::CaptureStop,
+            ..legit
+        };
+        let before = history.counters().unknown_op;
+        let effects = history.consume(wrong, |status| {
+            assert_eq!(status, OpStatus::Unknown);
+            site_rule(status)
+        });
+        assert_eq!(effects, site_rule(OpStatus::Outstanding));
+        // `validate` counted the observation and `ret_if_matches` the mismatch.
+        assert_eq!(history.counters().unknown_op, before + 2);
+        assert!(history.is_outstanding(legit), "the entry stays");
+        assert_eq!(history.ret_if_matches(wrong), Retired::Mismatch);
+        assert_eq!(history.outstanding_ops(), 1);
+        let effects = history.consume(legit, |status| {
+            assert_eq!(status, OpStatus::Outstanding);
+            site_rule(status)
+        });
+        assert_eq!(effects, site_rule(OpStatus::Outstanding));
+        assert_eq!(history.outstanding_ops(), 0, "the legitimate op completed");
+    }
+
+    /// `ret_if_matches_is_one_lock`: op id, recording id and kind are compared
+    /// inside one `core_history` critical section (a lock-count assertion plus
+    /// a grep of the source).
+    #[test]
+    fn ret_if_matches_is_one_lock() {
+        let history = CoreHistoryLock::default();
+        let token = history.reg(spec(2, ContKind::CaptureStop));
+        let wrong_kind = Continuation {
+            kind: ContKind::CaptureStart,
+            ..token
+        };
+        let wrong_recording = Continuation {
+            recording_id: RecordingId(3),
+            ..token
+        };
+        for (probe, expected) in [
+            (wrong_kind, Retired::Mismatch),
+            (wrong_recording, Retired::Mismatch),
+            (token, Retired::Removed),
+            (token, Retired::Absent),
+        ] {
+            let before = history.acquisitions();
+            assert_eq!(history.ret_if_matches(probe), expected);
+            assert_eq!(history.acquisitions() - before, 1, "{expected:?}: one lock");
+        }
+        let source = production_source();
+        let start = source
+            .find("pub(crate) fn ret_if_matches(&self")
+            .expect("the locked entry point");
+        let body = &source[start..];
+        let body = &body[..body.find("\n    }\n").expect("end of fn")];
+        assert_eq!(body.matches("critical(").count(), 1, "{body}");
+    }
+
+    /// `outstanding_op_never_evicted`: advancing `current_id` past 100 outstanding
+    /// ops evicts none; each leaves only by consumption or its owner's drop. The
+    /// thresholds are diagnostic: they count and never change a decision.
+    #[test]
+    fn outstanding_op_never_evicted() {
+        let history = CoreHistoryLock::default();
+        history.allow_over_threshold_for_test();
+        let tokens: Vec<Continuation> = (1..=100)
+            .map(|recording| history.reg(spec(recording, ContKind::AutoStop)))
+            .collect();
+        for current in 1..=120 {
+            let core = DictationCore {
+                current_id: RecordingId(current),
+                ..DictationCore::default()
+            };
+            let _ = history.snapshot_for_occupancy(&core);
+            assert_eq!(history.outstanding_ops(), 100, "current_id = {current}");
+        }
+        assert_eq!(history.high_water().ops_total, 100);
+        assert!(history.counters().over_threshold > 0);
+        for token in &tokens[..50] {
+            history.consume(*token, site_rule);
+        }
+        assert_eq!(history.outstanding_ops(), 50);
+        assert!(tokens[50..]
+            .iter()
+            .all(|token| history.is_outstanding(*token)));
+        let guards: Vec<ContinuationGuard> = tokens[50..]
+            .iter()
+            .map(|token| {
+                ContinuationGuard::register(&history, spec(token.recording_id.0, token.kind))
+            })
+            .collect();
+        assert_eq!(history.outstanding_ops(), 100);
+        drop(guards);
+        assert_eq!(
+            history.outstanding_ops(),
+            50,
+            "owner drop retires its own ops only"
+        );
+    }
+
+    /// `owner_drop_retires_op`: a dropped future, a panic unwind and a spawned
+    /// task that never runs each retire the op through the owner's `Drop`; a
+    /// consumed guard leaves nothing to retire.
+    #[test]
+    fn owner_drop_retires_op() {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+
+        // (1) A future dropped mid-flight.
+        let history = CoreHistoryLock::default();
+        let guard = ContinuationGuard::register(&history, spec(1, ContKind::CaptureStart));
+        let mut flight = Box::pin(async move {
+            let _guard = guard;
+            std::future::pending::<()>().await;
+        });
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(flight.as_mut().poll(&mut cx), Poll::Pending));
+        assert_eq!(history.outstanding_ops(), 1, "outstanding while in flight");
+        drop(flight);
+        assert_eq!(history.outstanding_ops(), 0, "dropped future");
+
+        // (2) A panic unwind.
+        let guard = ContinuationGuard::register(&history, spec(2, ContKind::CaptureStop));
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = guard;
+            panic!("effect panicked");
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(history.outstanding_ops(), 0, "panic unwind");
+
+        // (3) A spawned task that never runs (`RS`): the runtime is dropped first.
+        let guard = ContinuationGuard::register(&history, spec(3, ContKind::AutoStop));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        let task = runtime.spawn(async move {
+            let _guard = guard;
+        });
+        assert_eq!(history.outstanding_ops(), 1, "the task never ran");
+        drop(task);
+        drop(runtime);
+        assert_eq!(history.outstanding_ops(), 0, "spawned task never run");
+
+        // (4) A consumed guard retires once, at consumption; its drop is silent.
+        let mut guard = ContinuationGuard::register(&history, spec(4, ContKind::Pipeline));
+        let duplicates = history.counters().duplicate_op;
+        guard.consume(site_rule);
+        assert_eq!(history.outstanding_ops(), 0);
+        drop(guard);
+        assert_eq!(history.counters().duplicate_op, duplicates);
+
+        // (5) A panic inside the consuming decide: the guard is not disarmed
+        // until consumption and retirement returned, so the owner's `Drop`
+        // still retires the op (no eviction means it would leak forever).
+        // (5a) the owner outlives the panic.
+        let mut guard = ContinuationGuard::register(&history, spec(5, ContKind::CaptureStop));
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            guard.consume(|_| -> () { panic!("decide panicked") })
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(
+            history.outstanding_ops(),
+            1,
+            "not retired by the panicking consume"
+        );
+        drop(guard);
+        assert_eq!(
+            history.outstanding_ops(),
+            0,
+            "panic in decide, owner dropped"
+        );
+        // (5b) the owner is unwound with the panic.
+        let mut guard = ContinuationGuard::register(&history, spec(6, ContKind::ResolveContext));
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            guard.consume(|_| -> () { panic!("decide panicked") })
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(
+            history.outstanding_ops(),
+            0,
+            "panic in decide, owner unwound"
+        );
+        // The successful consumption above still retires exactly once.
+        assert_eq!(history.counters().duplicate_op, duplicates);
+    }
+
+    /// `history_lock_is_leaf`: the lock is only ever taken inside one short
+    /// critical section that runs nothing of the caller's; it is taken after D
+    /// and never held across another lock, an await or an effect.
+    #[test]
+    fn history_lock_is_leaf() {
+        // Grep: one lock site, no async fn, no other lock, no guard escaping.
+        let code: String = production_source()
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let source = code.as_str();
+        assert_eq!(
+            source.matches(".lock_or_recover()").count() + source.matches(".lock()").count(),
+            1,
+            "only `critical` locks the mutex"
+        );
+        assert!(!source.contains("async fn"), "no method awaits");
+        assert!(!source.contains(".await"));
+        for forbidden in ["MutexGuard", "recording_transition", "dictation.lock"] {
+            assert!(
+                !source.contains(forbidden),
+                "core_history.rs must not mention `{forbidden}`"
+            );
+        }
+        // The order D -> core_history works on one thread.
+        let history = CoreHistoryLock::default();
+        let dictation = std::sync::Mutex::new(());
+        {
+            let _d = dictation.lock().unwrap();
+            let token = history.reg(spec(1, ContKind::CaptureStart));
+            assert_eq!(history.validate(token), OpStatus::Outstanding);
+            assert_eq!(history.ret_if_matches(token), Retired::Removed);
+            assert!(
+                !is_held_on_this_thread(),
+                "released before the next statement"
+            );
+        }
+        // Lock-order assertion: code that must not run under the leaf lock
+        // refuses to, and a nested history entry is refused rather than deadlocking.
+        assert_not_held();
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            history.hold_for_test(assert_not_held);
+        }));
+        assert!(refused.is_err(), "an effect under core_history is refused");
+        let nested = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            history.hold_for_test(|| history.outstanding_ops());
+        }));
+        assert!(nested.is_err(), "the lock is not re-entrant");
+        assert!(
+            !is_held_on_this_thread(),
+            "the flag is cleared by the unwind"
+        );
+        assert_eq!(
+            history.outstanding_ops(),
+            0,
+            "the lock is usable afterwards"
+        );
+    }
+}

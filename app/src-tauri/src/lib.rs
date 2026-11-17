@@ -19,6 +19,10 @@ mod cleanup;
 mod cli_command;
 mod code_signing;
 mod commands;
+// Stage 2a PR 0 infrastructure: the decide functions that register and consume
+// operations arrive with the family PRs, so nothing outside tests calls it yet.
+#[allow(dead_code)]
+mod core_history;
 pub mod coreml_installer;
 mod correction;
 mod delivery_recovery;
