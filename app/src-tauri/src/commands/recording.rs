@@ -1559,8 +1559,36 @@ impl<'a> DrainDeferredFinishes<'a> {
 impl Drop for DrainDeferredFinishes<'_> {
     fn drop(&mut self) {
         drain_deferred_finishes(self.0);
+        // D-S2-10(c), test builds: at the outer shell boundary (this guard drops after
+        // T and D are released) nothing queued for this app may remain.
+        #[cfg(test)]
+        assert_queue_empty_at_the_shell_boundary(self.0);
         // `DrainAlive` ends after this body, also when the drain re-raises.
     }
+}
+
+/// The queue-empty assertion of [`DrainDeferredFinishes::drop`]. Skipped while this
+/// thread unwinds (a second panic would abort) or is still inside a core span (a
+/// nested guard: the outermost one drains).
+#[cfg(test)]
+fn assert_queue_empty_at_the_shell_boundary(app_state: &AppState) {
+    if std::thread::panicking() || crate::dictation_executor::executor::in_core() {
+        return;
+    }
+    let me = app_state.core_history.identity();
+    let left: Vec<(u64, bool)> = DEFERRED_FINISHES.with(|queue| {
+        queue
+            .borrow()
+            .iter()
+            .filter(|entry| entry.key == me)
+            .map(|entry| (entry.recording_id, entry.retire_only))
+            .collect()
+    });
+    assert!(
+        left.is_empty(),
+        "an entry returned with deferred work still queued after its drain \
+         (recording id, retire-only): {left:?}"
+    );
 }
 
 /// Test builds count the drain guards alive on this thread, so the outermost core
@@ -7434,7 +7462,18 @@ async fn cancel_native_recording_inner(
             return Err(cancel_refused(kind));
         }
     }
+    // D-S2-8: drained after T and D are released (declared before both, so it drops
+    // after them on every return and on an unwind). R205.5's `idle` emit runs
+    // listeners inline, and a listener may drop a parked stop or import future
+    // there; its owner's finish and history retirement queue behind this entry's
+    // span and are applied here, in FIFO order, before the cancel returns. Site
+    // 206's `PT:TERM` and the early returns below are covered by the same guard.
+    let _drain = DrainDeferredFinishes::new(&state.app_state);
     let transition = state.app_state.recording_transition.lock().await;
+    // A cancel that waited on T and was woken by a listener polling it inline
+    // inside another entry's span parks here (self-waking) until that span ends,
+    // so its D section never runs inside a span (D-S2-5, defence in depth).
+    until_outside_core().await;
     let now = core_now();
     // Site 205 (T held, D section): `decide_cancel_request`, inline at today's
     // line. The view is built from the live fields under the D hold the section
