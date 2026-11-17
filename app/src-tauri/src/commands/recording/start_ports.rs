@@ -424,6 +424,8 @@ impl Ports for StartPorts<'_> {
                 Ok(())
             }
             Effect::PerfAbort => {
+                #[cfg(test)]
+                crate::barrier_hook::at("start.perf_abort");
                 let rid = self.rid();
                 self.host.performance().begin_abort(rid);
                 // The supervisor's own text, logged where it always was: right
@@ -495,6 +497,8 @@ impl Ports for StartPorts<'_> {
             // The command's return: the speculative claim, then the gesture claim
             // (today's reverse-declaration drop order), after T was released.
             Effect::ReleaseClaims => {
+                #[cfg(test)]
+                crate::barrier_hook::at("start.release_claims");
                 drop(self.slots.speculative.borrow_mut().take());
                 // The gesture claim is a plain stamp: taking it is its release.
                 self.slots.gesture_claim.borrow_mut().take();

@@ -6267,6 +6267,9 @@ async fn start_native_recording_inner(
         if pre.row == RowId("R101.1") {
             tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
         }
+        // D-S2-8: the refusal's `PT:REL` runs in a core span; finishes it queues are
+        // drained when this scope returns (no await since the fence above).
+        let _drain = DrainDeferredFinishes::new(&state.app_state);
         drop(_transition);
         return start_ports::release_and_reply(
             host,
@@ -6286,7 +6289,7 @@ async fn start_native_recording_inner(
         // across an await. The start holds T across its awaits (today's design), so
         // unlike the stop it cannot declare the guard before T; a finish takes only
         // D and `core_history`, never T, so running it under T cannot deadlock.
-        let _drain = DrainDeferredFinishes(&state.app_state);
+        let _drain = DrainDeferredFinishes::new(&state.app_state);
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
         let current = view.current_id.0;
@@ -6534,7 +6537,11 @@ async fn start_native_recording_inner(
             .await
         }
         Err((error, text)) => {
-            // R102.2-.6: `Pre:PA, Pre:CX-` run before D.
+            // R102.2-.6: `Pre:PA, Pre:CX-` run before D. The drain guard is declared
+            // before the first effect (D-S2-10(b)): a synchronous callback of the
+            // abort port that queues a finish and unwinds still drains it, and the
+            // D section below never runs a finish under D.
+            let _drain = DrainDeferredFinishes::new(&state.app_state);
             let ports = StartPorts::new(host, state, &slots, Some(rid));
             run_phase(
                 &mut executor(
@@ -6549,7 +6556,6 @@ async fn start_native_recording_inner(
                 None,
                 rid,
             );
-            let _drain = DrainDeferredFinishes(&state.app_state);
             let mut dictation = state.app_state.dictation.lock_or_recover();
             let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
             let decision = capture_guard
