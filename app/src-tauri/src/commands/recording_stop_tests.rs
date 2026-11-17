@@ -8,6 +8,7 @@
 use super::golden_harness::*;
 use super::golden_tests::{cancelled, recording, started, stopped};
 use super::*;
+use std::sync::Mutex as StdMutex;
 use std::task::Poll;
 
 fn trace(setup: Setup, body: fn(&Arc<World>)) -> Vec<String> {
@@ -774,6 +775,12 @@ fn a_panic_in_the_guards_in_effects_leaves_no_history_entry() {
             let outcome =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| complete(&mut stop)));
             assert!(outcome.is_err(), "the closure's panic propagated");
+            assert!(
+                w.trace()
+                    .contains(&"pipeline 1 history before In: h2=0 h1=0".to_string()),
+                "both entries were retired before the `In` effects ran:\n{}",
+                w.trace().join("\n")
+            );
             drop(stop);
             assert!(!crate::dictation_executor::executor::in_core());
             assert_history_empty(w, "after a panic in the guard's In effects");
@@ -811,6 +818,141 @@ fn a_stale_pipeline_exit_retires_both_history_entries() {
                 0,
                 "recording 1's `K:Pipeline` is gone"
             );
+        },
+    });
+}
+
+// ----------------------------------- D-S2-3 / D-S2-4 and the disarm order (re-check)
+
+/// A stop parked at the pipeline gate is dropped by an inline listener of a
+/// lifecycle `In` emit, while the bridge holds D. Its pipeline guard (a
+/// `PipelineExit` drop) reaches `IdleGuard::run_finish` inside the core span: it
+/// does not ask for D (it would deadlock on the non-reentrant D); the finish is
+/// queued and the bridge runs it after it releases D. Both history entries are
+/// retired exactly once, by that deferred finish.
+#[test]
+fn dropping_a_parked_stop_from_an_inline_listener_defers_the_finish_until_d_is_released() {
+    let lines = under_watchdog("a stop dropped from a listener under D", || {
+        from_stop(trace(Setup::idle(), |w| {
+            recording(w);
+            w.knobs().stop_result = Ok(16_000);
+            w.close_gate("pipeline");
+            let mut stop = w.stop(None);
+            assert!(poll_once(&mut stop).is_pending());
+            assert_eq!(
+                history_counts(w),
+                (1, 1),
+                "the parked stop's pipeline is registered"
+            );
+            let parked = Arc::new(StdMutex::new(Some(stop)));
+            let (observer, slot) = (Arc::clone(w), Arc::clone(&parked));
+            w.on_inline("emit:recording-cleanup-finished", move || {
+                observer.note("listener: dropping the parked stop while D is held");
+                drop(slot.lock().expect("slot").take());
+                // The finish is queued, not run: D is held and not reentrant.
+                assert_eq!(
+                    history_counts(&observer),
+                    (1, 1),
+                    "nothing is retired while the bridge still holds D"
+                );
+                observer.note("listener: dropped");
+            });
+            w.finish_sealed_stop(1);
+            assert!(parked.lock().expect("slot").is_none(), "the listener ran");
+            assert_history_empty(w, "after the deferred finish");
+            assert!(
+                super::DEFERRED_FINISHES.with(|queue| queue.borrow().is_empty()),
+                "the queue was drained"
+            );
+            w.open_gate("pipeline");
+        }))
+    });
+    let dropped_at = lines
+        .iter()
+        .position(|line| line.contains("listener: dropped"))
+        .expect("the listener ran");
+    assert!(
+        lines[dropped_at..]
+            .iter()
+            .any(|line| line.contains("context 1 cleared")),
+        "the deferred finish ran after the listener returned:\n{}",
+        lines.join("\n")
+    );
+}
+
+/// A stop parked at the pipeline gate and resumed (polled) inline by a listener
+/// of a lifecycle `In` emit reaches its 204b section inside the core span: it
+/// parks there instead of asking for D, and finishes when it is next polled
+/// outside the span.
+#[test]
+fn a_stop_resumed_inline_under_d_waits_out_the_core_span_before_its_204b_section() {
+    under_watchdog("a stop resumed from a listener under D", || {
+        trace(Setup::idle(), |w| {
+            recording(w);
+            w.knobs().stop_result = Ok(16_000);
+            w.close_gate("pipeline");
+            let mut stop = w.stop(None);
+            assert!(poll_once(&mut stop).is_pending());
+            let parked = Arc::new(StdMutex::new(Some(stop)));
+            let (observer, slot) = (Arc::clone(w), Arc::clone(&parked));
+            w.on_inline("emit:recording-cleanup-finished", move || {
+                observer.open_gate("pipeline");
+                let mut stop = slot.lock().expect("slot").take().expect("parked");
+                // D is held by the bridge: the stop runs on to its 204b section
+                // and must park there rather than take D.
+                for _ in 0..5 {
+                    assert!(poll_once(&mut stop).is_pending(), "the stop parked");
+                }
+                assert!(
+                    observer.trace().contains(&"pipeline 1 returns".to_string()),
+                    "the stop got past the pipeline"
+                );
+                *slot.lock().expect("slot") = Some(stop);
+            });
+            w.finish_sealed_stop(1);
+            let mut stop = parked.lock().expect("slot").take().expect("parked");
+            let reply = complete(&mut stop);
+            w.reply("stop", &reply);
+            assert!(reply.is_ok());
+            assert_history_empty(w, "after the resumed stop");
+        })
+    });
+}
+
+/// C3.5: the capture guard hands over to the pipeline's own guard **before**
+/// `PE(Vad)`. A panic in that effect therefore leaves the status `Processing`, as
+/// the original shell did, and the stop guard does not run 204a.
+#[test]
+fn a_panic_in_pe_vad_leaves_processing_because_the_guard_was_disarmed_first() {
+    run_sub_run(&SubRun {
+        title: "panic in PE(Vad)",
+        setup: Setup::idle(),
+        body: |w| {
+            recording(w);
+            w.knobs().stop_result = Ok(10_000);
+            let _barrier = crate::barrier_hook::install(|point| {
+                assert_ne!(point, "stop.perf_enter_vad", "PE(Vad) panics");
+            });
+            let mut stop = w.stop(None);
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| complete(&mut stop)));
+            assert!(outcome.is_err(), "the effect's panic propagated");
+            drop(stop);
+            assert!(!crate::dictation_executor::executor::in_core());
+            let status = w.state().app_state.dictation.lock_or_recover().status;
+            assert_eq!(
+                status,
+                DictationStatus::Processing,
+                "the guard did not run 204a"
+            );
+            assert!(
+                w.state().app_state.active_context(1).is_some(),
+                "the context was not cleared"
+            );
+            assert_history_empty(w, "after a panic in PE(Vad)");
+            // Put the scenario's end state in order for the golden runner.
+            w.state().app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
+            crate::dictation_executor::FieldAdapter::clear_context(&w.state().app_state, 1);
         },
     });
 }
