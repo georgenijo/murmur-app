@@ -6569,7 +6569,7 @@ async fn stop_native_recording_admitted(
     };
     use murmur_dictation_core::status::StopTrigger;
     use murmur_dictation_core::stop as core_stop;
-    use stop_ports::{executor, reply_of, run_phase, StopHooks, StopPorts};
+    use stop_ports::{executor, reply_of, run_phase, try_run_phase, StopHooks, StopPorts};
 
     // Also the first statement of the tests' direct entry (`_inner`).
     refuse_reentrant_stop()?;
@@ -6690,7 +6690,7 @@ async fn stop_native_recording_admitted(
             if cancelling_start {
                 drop(transition);
                 // `PT:CC` (R201.4), after T is released.
-                let cancelled = run_phase(&mut exec, Placement::PostT, None, rid);
+                let cancelled = try_run_phase(&mut exec, Placement::PostT, None, rid);
                 if !matches!(cancelled, PhaseReport::Done) {
                     return Err(format!(
                         "The dictation core did not run the capture cancel: {cancelled:?}"
@@ -6726,7 +6726,7 @@ async fn stop_native_recording_admitted(
                 });
                 // R206.2 `PT:TERM(PipelineFailure/RuntimeFailure)`; R206.1 has no
                 // effect.
-                let finished = run_phase(
+                let finished = try_run_phase(
                     &mut executor(&ports, cancel_decision.clone()),
                     Placement::PostT,
                     None,
