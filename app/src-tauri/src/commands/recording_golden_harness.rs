@@ -1355,6 +1355,9 @@ impl DictationHost for Host {
             let result = if hold_delivery {
                 if app_state.is_cancelled(recording_id) {
                     world.push(format!("pipeline {recording_id} cancelled before delivery"));
+                    // Pass the gate anyway so a scenario that opens it cannot
+                    // wait on a pipeline that already returned.
+                    world.pass_gate("pipeline").await;
                     cancelled(PerformanceStageV1::ClipboardPaste)
                 } else if world.begin_delivery(recording_id) {
                     // Parked on the delivery's reply.
@@ -1362,11 +1365,16 @@ impl DictationHost for Host {
                     world.push(format!("pipeline {recording_id} returns"));
                     succeeded()
                 } else {
+                    // Refused by the owner check (3557); same gate rule.
+                    world.pass_gate("pipeline").await;
                     world.push(format!("pipeline {recording_id} returns"));
                     cancelled(PerformanceStageV1::ClipboardPaste)
                 }
             } else {
-                // Parked in VAD or decode; the next checkpoint is 3185.
+                // Modelled as parked in decode, so the next checkpoint is 3185
+                // (`ClipboardPaste`). A park in VAD would instead meet 3029 and
+                // return `Cancelled(InferenceDecode)`; no scenario traces the
+                // pipeline's own cancel stage, so the difference is not shown.
                 world.pass_gate("pipeline").await;
                 world.push(format!("pipeline {recording_id} returns"));
                 if app_state.is_cancelled(recording_id) {
