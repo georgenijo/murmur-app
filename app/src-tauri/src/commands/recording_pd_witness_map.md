@@ -61,6 +61,15 @@ Implemented by Stage 2a PR 0 (`core_history` / `NEXT_OP`), in `recording_contrac
 | `owner_drop_retires_op` | `owner_drop_retires_op` (dropped future, panic unwind, spawned task that never runs, consumed guard) |
 | `history_lock_is_leaf` | `history_lock_is_leaf` (grep plus the `D -> core_history` order and the held-flag assertion) |
 
+Implemented by Stage 2a PR 0 (field adapter, `PersistedCore` commit), in `recording_contract_tests.rs::field_adapter_contract`:
+
+| C4.9 test | Test function |
+|---|---|
+| `persisted_core_has_only_m1_m2` | `persisted_core_has_only_m1_m2` (shape, `MC`/`CX±` leave the core unchanged, `ST`/`ID+` move it with live) |
+| `m3_m4_observed_before_and_after_cutover` | `m3_m4_observed_before_and_after_cutover` (the `project()` view and the persisted-core view hold the same live observations; the cut-over entry itself arrives with Stage 2c) |
+
+The SP5 ratchet and the `PersistedCore::new` caller test are in `dictation_executor/ratchet_tests.rs`.
+
 Every other C4.9 test needs something Stage 2a creates (the executor, op ids, `core_history`,
 `PersistedCore`, the `PRES` effect, a `resolve_smart_auto` port). Decision D-S1-1 re-allocates each to
 the first Stage 2 PR that creates what it tests; that PR cannot merge without the test (a named gate).
@@ -73,7 +82,7 @@ a PR that creates the subject cannot leave its test owed.
 | Gate | C4.9 test | Owner PR | Why it cannot exist yet |
 |---|---|---|---|
 | OWNED | `executor_phase_order`, `awaited_effect_is_last_in_phase`, `awaited_effect_resumes_as_continuation`, `executor_never_locks`, `reentrancy_refused`, `reentrancy_refused_before_lock`, `panic_partial_application` | 2a: the PR that introduces the executor (first family: lifecycle events) | They assert the executor's `run` placement, awaited-effect continuations, locking and re-entry guard, and its effect-by-effect commit; today's shell has no executor |
-| OWNED | `panic_before_st_leaves_core_equal_live`, `persisted_core_has_only_m1_m2`, `m3_m4_observed_before_and_after_cutover` | 2a: the PR that introduces the common field adapter and the `PersistedCore` commit (the first 2a PR) | There is no `DictationCore`, `PersistedCore` or decision view to compare with the live fields |
+| OWNED | `panic_before_st_leaves_core_equal_live` | 2a: the executor PR of the 2a-0 stack (the third PR) | It injects a panic in `GA`/`PCC`/`TRQ` before `ST` of an R101.15-shaped list and in the `EM` after it, which needs the executor's `run`; the adapter it checks landed one PR earlier |
 | OWNED | `emit_result_gates_pres` | 2a: the PR that introduces `PRES` as an effect | `PRES` is not a distinct host effect paired with a failing `emit`; the bridge calls `AppHandle::emit` directly |
 | OWNED | `take_attempts_iff_recovering` (start half) | 2a: the start-family PR, where `resolve_smart_auto` becomes a port | The smart-auto observation is not a port today, so a fake `take` cannot count it. The stop half is implemented above |
 

@@ -685,7 +685,11 @@ fn dictation_status_code(status: DictationStatus) -> &'static str {
     }
 }
 
-fn emit_dictation_state_changed(recording_id: u64, from: DictationStatus, to: DictationStatus) {
+pub(crate) fn emit_dictation_state_changed(
+    recording_id: u64,
+    from: DictationStatus,
+    to: DictationStatus,
+) {
     if recording_id == 0 || from == to {
         return;
     }
@@ -707,17 +711,9 @@ fn transition_dictation_status(
     dictation: &mut crate::state::DictationState,
     to: DictationStatus,
 ) -> DictationStatus {
-    let from = dictation.status;
-    dictation.status = to;
-    emit_dictation_state_changed(recording_id, from, to);
-    // Sends one message to the output-quieting worker; never waits on it.
-    crate::output_quieting::observe_transition(
-        recording_id,
-        from,
-        to,
-        dictation.mute_speakers_while_dictating,
-    );
-    from
+    // The write, the trace and `output_quieting::observe_transition` (the `ST`
+    // effect, appendix C0.2) live in the field adapter with the persisted M1 copy.
+    crate::dictation_executor::FieldAdapter::set_status(recording_id, dictation, to)
 }
 
 /// Mark an eligible live request at the exact Idle -> Starting boundary.
@@ -1109,7 +1105,10 @@ impl IdleGuard<'_> {
     fn finish(&mut self, on_idle: impl FnOnce(&crate::state::DictationState)) {
         if !self.disarmed {
             self.disarmed = true;
-            self.app_state.clear_active_context(self.recording_id);
+            crate::dictation_executor::FieldAdapter::clear_context(
+                self.app_state,
+                self.recording_id,
+            );
             // Lock first, then check recording_id — prevents TOCTOU where
             // a concurrent start advances the ID between our check and the
             // status write.
@@ -3788,7 +3787,8 @@ pub async fn process_audio(
         if dictation.status != DictationStatus::Idle {
             return Err("Cannot process audio while live dictation is active.".to_string());
         }
-        let recording_id = state.app_state.next_recording_id();
+        let recording_id =
+            crate::dictation_executor::FieldAdapter::alloc_id(&state.app_state, &mut dictation);
         transition_dictation_status(recording_id, &mut dictation, DictationStatus::Processing);
         let delivery_target = crate::frontmost::capture_delivery_target_snapshot();
         (
@@ -5102,7 +5102,10 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 );
             }
             if reason != AudioCancelReason::RuntimeFailure {
-                state.app_state.clear_active_context(recording_id);
+                crate::dictation_executor::FieldAdapter::clear_context(
+                    &state.app_state,
+                    recording_id,
+                );
             }
             if app_handle
                 .emit("recording-status-changed", "recovering")
@@ -5191,7 +5194,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 outcome,
                 DictationErrorCode::from_audio_failure(kind),
             );
-            state.app_state.clear_active_context(recording_id);
+            crate::dictation_executor::FieldAdapter::clear_context(&state.app_state, recording_id);
             complete_dictation_performance(
                 &state.performance,
                 recording_id,
@@ -5313,7 +5316,10 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                     DictationTerminalOutcome::RuntimeInterruption,
                     DictationErrorCode::RuntimeFailure,
                 );
-                state.app_state.clear_active_context(recording_id);
+                crate::dictation_executor::FieldAdapter::clear_context(
+                    &state.app_state,
+                    recording_id,
+                );
                 complete_dictation_performance(
                     &state.performance,
                     recording_id,
@@ -5374,7 +5380,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 None,
             );
             transition_dictation_status(recording_id, &mut dictation, DictationStatus::Idle);
-            state.app_state.clear_active_context(recording_id);
+            crate::dictation_executor::FieldAdapter::clear_context(&state.app_state, recording_id);
             keyboard::set_processing(false);
             let _ = app_handle.emit("recording-status-changed", "idle");
         }
@@ -5672,7 +5678,10 @@ async fn start_native_recording_inner(
                             None,
                         ),
                     };
-                let rid = state.app_state.next_recording_id();
+                let rid = crate::dictation_executor::FieldAdapter::alloc_id(
+                    &state.app_state,
+                    &mut dictation,
+                );
                 let gesture = gesture_claim.accepted(origin == "hold");
                 crate::audio::prepare::capture_claimed(
                     crate::audio::prepare::CaptureClaim::Dictation(gesture.timing.map(|g| {
@@ -5766,7 +5775,7 @@ async fn start_native_recording_inner(
     if let Err(error) = audio_started {
         host.performance().begin_abort(rid);
         tracing::error!(target: "audio", "start_native_recording: audio failed: {}", error);
-        state.app_state.clear_active_context(rid);
+        crate::dictation_executor::FieldAdapter::clear_context(&state.app_state, rid);
         let mut dictation = state.app_state.dictation.lock_or_recover();
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
             transition_dictation_status(rid, &mut dictation, DictationStatus::Idle);
@@ -5852,9 +5861,11 @@ async fn start_native_recording_inner(
                     install_context: true
                 }
         ) {
-            state
-                .app_state
-                .set_active_context(rid, Arc::clone(&context));
+            crate::dictation_executor::FieldAdapter::set_context(
+                &state.app_state,
+                rid,
+                Arc::clone(&context),
+            );
         }
         (action, dictation.status)
     };
@@ -6523,12 +6534,12 @@ async fn cancel_native_recording_inner(
         }
         return Ok(());
     }
-    state.app_state.clear_active_context(rid);
+    crate::dictation_executor::FieldAdapter::clear_context(&state.app_state, rid);
 
     match prev_status {
         DictationStatus::Processing => {
             // Mark current recording as cancelled — pipeline will check at next checkpoint.
-            state.app_state.cancel_recording(rid);
+            crate::dictation_executor::FieldAdapter::cancel_through(&state.app_state, rid);
             emit_dictation_terminal(
                 state,
                 rid,

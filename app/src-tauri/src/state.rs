@@ -189,6 +189,12 @@ fn default_true() -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DictationState {
     pub status: DictationStatus,
+    /// The persisted dictation core (appendix C1.2): **only** M1 `status` and M2
+    /// `current_id`, committed at their effect through
+    /// `dictation_executor::FieldAdapter` together with the live field. Never
+    /// serialized; M3 and M4 are never stored here.
+    #[serde(skip)]
+    pub core: murmur_dictation_core::state::PersistedCore,
     pub model_name: String,
     pub language: String,
     pub auto_paste: bool,
@@ -267,6 +273,7 @@ impl Default for DictationState {
     fn default() -> Self {
         Self {
             status: DictationStatus::Idle,
+            core: murmur_dictation_core::state::PersistedCore::default(),
             model_name: "base.en".to_string(),
             // "auto" => whisper auto-detect (None lang param). Non-Whisper
             // backends ignore this. The frontend persists/overrides it via
@@ -473,6 +480,15 @@ impl AppState {
             recording_id,
             snapshot,
         });
+    }
+
+    /// The recording id the installed context belongs to, if one is installed
+    /// (the M4 observation, appendix C1.2). One leaf-mutex read.
+    pub(crate) fn active_context_id(&self) -> Option<u64> {
+        self.active_context
+            .lock_or_recover()
+            .as_ref()
+            .map(|active| active.recording_id)
     }
 
     pub fn active_context(

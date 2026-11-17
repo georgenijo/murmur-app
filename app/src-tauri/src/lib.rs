@@ -34,8 +34,11 @@ mod dictation_context;
 #[cfg(test)]
 mod dictation_context_equivalence_tests;
 mod dictation_diagnostics;
+// Stage 2a PR 0: the adapter is live; the executor has no production caller yet.
 #[cfg(test)]
 mod dictation_diagnostics_contract;
+#[allow(dead_code)]
+mod dictation_executor;
 mod dictation_telemetry;
 mod dock_watch;
 pub mod evaluation;

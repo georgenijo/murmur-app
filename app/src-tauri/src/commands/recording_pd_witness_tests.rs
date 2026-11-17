@@ -901,18 +901,10 @@ const OWNED_SUBJECT_MARKERS: &[(&str, &[(&str, &str)])] = &[
         "history_lock_is_leaf",
         &[("core_history.rs", "struct CoreHistoryLock")],
     ),
-    // The common field adapter and the `PersistedCore` commit.
+    // The common field adapter landed with the first 2a-0 PR; this test needs the executor's `run`.
     (
         "panic_before_st_leaves_core_equal_live",
-        &[("dictation_executor/adapter.rs", "struct FieldAdapter")],
-    ),
-    (
-        "persisted_core_has_only_m1_m2",
-        &[("dictation_executor/adapter.rs", "struct FieldAdapter")],
-    ),
-    (
-        "m3_m4_observed_before_and_after_cutover",
-        &[("dictation_executor/adapter.rs", "fn observe_live")],
+        &[("dictation_executor/executor.rs", "struct Executor")],
     ),
     // `PRES` as an effect: the executor runs it behind its paired emit.
     (
