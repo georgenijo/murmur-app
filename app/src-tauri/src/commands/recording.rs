@@ -167,6 +167,14 @@ fn emit_preview_vad_disagreement(app_state: &AppState, recording_id: u64, sample
     }
 }
 
+#[path = "recording_host.rs"]
+mod dictation_host;
+use dictation_host::{DictationHost, TauriHost};
+
+#[cfg(test)]
+#[path = "recording_host_tests.rs"]
+mod host_tests;
+
 #[cfg(test)]
 #[path = "recording_preview_tests.rs"]
 mod preview_tests;
@@ -5463,6 +5471,26 @@ pub async fn start_native_recording(
     origin: Option<String>,
     gesture_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    let host = TauriHost::new(app_handle);
+    start_native_recording_inner(
+        &host,
+        state.inner(),
+        device_name,
+        smart_auto,
+        origin,
+        gesture_token,
+    )
+    .await
+}
+
+async fn start_native_recording_inner(
+    host: &dyn DictationHost,
+    state: &State,
+    device_name: Option<String>,
+    smart_auto: Option<SmartAutoRequest>,
+    origin: Option<String>,
+    gesture_token: Option<String>,
+) -> Result<serde_json::Value, String> {
     // Consume only this request's stamp before every await or rejected start.
     let gesture_claim = audio_lifecycle::gesture::claim(gesture_token.as_deref());
     // A Fn/Globe gesture may own a key-down capture. Dropping this claim on any
@@ -5472,15 +5500,11 @@ pub async fn start_native_recording(
     // initialization happens on the supervisor and never waits under it.
     // A flowing Settings microphone test is not stopped here: the supervisor
     // hands its open device to this dictation (see `hand_preview_to`).
-    let _transition = crate::commands::microphone_preview::transition_for_dictation_start(
-        &app_handle,
-        state.inner(),
-    )
-    .await?;
+    let _transition = host.microphone_transition(state).await?;
     // Under the transition, a current mic test is one this start kept for the
     // supervisor; if it cannot be taken over, the start queues behind its exit.
     let kept_preview = state.app_state.microphone_preview.is_active();
-    if keyboard::is_app_disabled() {
+    if host.keyboard().is_app_disabled() {
         tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
         return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
     }
@@ -5503,7 +5527,7 @@ pub async fn start_native_recording(
         smart_auto_reason,
     ) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
-        if let Some(blocker) = dictation_start_blocker(state.inner(), dictation.status) {
+        if let Some(blocker) = dictation_start_blocker(state, dictation.status) {
             tracing::warn!(target: "pipeline", reason = blocker.kind, "start_native_recording: blocked");
             return Ok(serde_json::json!({
                 "type": blocker.kind,
@@ -5532,7 +5556,7 @@ pub async fn start_native_recording(
                         &mut dictation,
                         DictationStatus::Recovering,
                     );
-                    let _ = app_handle.emit("recording-status-changed", "recovering");
+                    let _ = host.emit("recording-status-changed", "recovering");
                     return Ok(
                         serde_json::json!({ "type": "audio_recovering", "state": "recovering" }),
                     );
@@ -5566,7 +5590,7 @@ pub async fn start_native_recording(
                     crate::audio::prepare::CaptureClaim::Dictation(gesture.timing.map(|g| {
                         crate::audio::prepare::PrepareIdentity {
                             token: g.candidate.token,
-                            listener_generation: keyboard::listener_generation(),
+                            listener_generation: host.keyboard().listener_generation(),
                             topology_generation: audio_lifecycle::input_topology_generation(),
                             configuration_generation:
                                 crate::audio::prepare::configuration_generation(),
@@ -5590,7 +5614,7 @@ pub async fn start_native_recording(
                 // accepted Idle -> Starting transition, under the same
                 // ownership lock. This startup work is therefore included in
                 // request-to-first-PCM SLO timing.
-                let delivery_target = crate::frontmost::capture_delivery_target_snapshot();
+                let delivery_target = host.ax().capture_delivery_target_snapshot();
                 (
                     rid,
                     gesture,
@@ -5611,17 +5635,17 @@ pub async fn start_native_recording(
     // Publish Starting before the worker can report Ready. Otherwise a very
     // fast device open could emit Recording first and this command would then
     // overwrite the frontend with a stale Starting event.
-    let _ = app_handle.emit(
+    let _ = host.emit(
         "dictation-generation-started",
         serde_json::json!({ "recordingId": rid }),
     );
     if !speculative_flowing {
-        let _ = app_handle.emit("recording-status-changed", "starting");
+        let _ = host.emit("recording-status-changed", "starting");
     }
     // Reserve the generation before the worker is allowed to emit lifecycle
     // events. Terminal persistence can now wait for the asynchronous begin
     // without holding capture ownership or the recording transition.
-    state.performance.register_production(
+    host.performance().register_production(
         rid,
         if smart_auto.is_some() {
             crate::performance_metrics::production::MicrophoneSelectionV1::SmartAuto
@@ -5632,14 +5656,13 @@ pub async fn start_native_recording(
         },
         crate::audio_inventory::production_device_kind(selected_device_name.as_deref()),
     );
-    dictation_performance_begins().register(rid);
+    host.performance().begin_register(rid);
     let audio_started = if kept_preview {
         // May wait for the kept test's confirmed exit (see
         // `START_AFTER_PREVIEW_TIMEOUT`), so never on an async worker.
-        let start_handle = app_handle.clone();
+        let start_handle = host.supervisor();
         tokio::task::spawn_blocking(move || {
-            audio_lifecycle::start_dictation_recording_after_preview(
-                start_handle,
+            start_handle.start_dictation_recording_after_preview(
                 selected_device_name,
                 rid,
                 origin,
@@ -5649,25 +5672,20 @@ pub async fn start_native_recording(
         .await
         .unwrap_or(Err(AudioStartError::SupervisorUnavailable))
     } else {
-        audio_lifecycle::start_dictation_recording(
-            app_handle.clone(),
-            selected_device_name,
-            rid,
-            origin,
-            gesture,
-        )
+        host.supervisor()
+            .start_dictation_recording(selected_device_name, rid, origin, gesture)
     };
     if let Err(error) = audio_started {
-        dictation_performance_begins().abort(rid);
+        host.performance().begin_abort(rid);
         tracing::error!(target: "audio", "start_native_recording: audio failed: {}", error);
         state.app_state.clear_active_context(rid);
         let mut dictation = state.app_state.dictation.lock_or_recover();
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
             transition_dictation_status(rid, &mut dictation, DictationStatus::Idle);
         }
-        let _ = app_handle.emit("recording-status-changed", "idle");
+        let _ = host.emit("recording-status-changed", "idle");
         emit_dictation_terminal(
-            &state,
+            state,
             rid,
             DictationTerminalOutcome::CaptureInitFailure,
             DictationErrorCode::RuntimeFailure,
@@ -5694,8 +5712,10 @@ pub async fn start_native_recording(
     // acceptance. A later focus change cannot splice another application's
     // context into the recording while retaining the original paste target.
     let context_resolution_started = std::time::Instant::now();
-    let captured_smart_destination =
-        crate::smart_destination::capture(&app_handle, &delivery_target, smart_enabled).await;
+    let captured_smart_destination = host
+        .smart_destination()
+        .capture(&delivery_target, smart_enabled)
+        .await;
     let capture_is_current = {
         let dictation = state.app_state.dictation.lock_or_recover();
         recording_capture_is_current(
@@ -5716,11 +5736,7 @@ pub async fn start_native_recording(
     };
     let destination = select_recording_destination(&delivery_target, smart_destination);
     let app_identity = crate::frontmost::profile_identity_from_delivery_target(&destination.target);
-    refresh_expired_ide_context(
-        &app_handle,
-        &state.app_state,
-        app_identity.bundle_id.as_deref(),
-    );
+    host.refresh_expired_ide_context(&state.app_state, app_identity.bundle_id.as_deref());
     let mut context = resolve_recording_context(&state.app_state, destination);
     // Install the resource in the immutable recording snapshot before publishing
     // it. The live-dictation engine currently refuses generation and preparation
@@ -5732,15 +5748,9 @@ pub async fn start_native_recording(
             Some(crate::homophone_context::system_engine());
     }
     if smart_enabled && capture_is_current {
-        emit_smart_destination(
-            &app_handle,
-            &state.app_state,
-            rid,
-            &context,
-            &delivery_target,
-        );
+        host.emit_smart_destination(&state.app_state, rid, &context, &delivery_target);
     }
-    state.performance.production_context(rid, &context);
+    host.performance().production_context(rid, &context);
     let context_action = {
         let dictation = state.app_state.dictation.lock_or_recover();
         let action = native_start_context_action(
@@ -5772,12 +5782,8 @@ pub async fn start_native_recording(
                 "flushing reserved diagnostics after audio lifecycle terminal"
             );
             drop(_transition);
-            spawn_native_dictation_performance_begin(
-                state.performance.clone(),
-                rid,
-                runtimes,
-                performance_started_at_ms,
-            );
+            host.performance()
+                .spawn_begin(rid, runtimes, performance_started_at_ms);
             return Ok(serde_json::json!({
                 "type": "audio_recovering",
                 "state": match status {
@@ -5788,9 +5794,9 @@ pub async fn start_native_recording(
             }));
         }
         (NativeStartContextAction::Superseded, status) => {
-            dictation_performance_begins().abort(rid);
+            host.performance().begin_abort(rid);
             emit_dictation_terminal(
-                &state,
+                state,
                 rid,
                 DictationTerminalOutcome::Superseded,
                 DictationErrorCode::StaleOwner,
@@ -5837,22 +5843,14 @@ pub async fn start_native_recording(
         // this context's disposable owner, never app-wide recording state.
         engine.prewarm();
     }
-    publish_recording_ready_if_audio_ready(&app_handle, rid, context_ready_at);
-    spawn_model_preparation(
-        app_handle.clone(),
-        context.transcription.model_name.clone(),
-        rid,
-    );
+    host.publish_recording_ready_if_audio_ready(rid, context_ready_at);
+    host.spawn_model_preparation(context.transcription.model_name.clone(), rid);
     let runtimes = runtime_identity(&context.transcription.model_name, ModelWarmStateV1::Unknown);
     // Ownership is fully installed before diagnostics begin. Release the
     // transition first so Recording, stop, and cancel never wait for SQLite.
     drop(_transition);
-    spawn_native_dictation_performance_begin(
-        state.performance.clone(),
-        rid,
-        runtimes,
-        performance_started_at_ms,
-    );
+    host.performance()
+        .spawn_begin(rid, runtimes, performance_started_at_ms);
 
     Ok(serde_json::json!({
         "type": "recording_starting",
@@ -5893,15 +5891,27 @@ async fn stop_native_recording_for(
     expected_recording_id: Option<u64>,
     stop_trigger: audio_lifecycle::DictationStopTrigger,
 ) -> Result<serde_json::Value, String> {
+    let host = TauriHost::new(app_handle);
+    stop_native_recording_inner(&host, state.inner(), expected_recording_id, stop_trigger).await
+}
+
+async fn stop_native_recording_inner(
+    host: &dyn DictationHost,
+    state: &State,
+    expected_recording_id: Option<u64>,
+    stop_trigger: audio_lifecycle::DictationStopTrigger,
+) -> Result<serde_json::Value, String> {
     // The `releaseToStop` endpoint: entry, before any lock wait (#826).
     let stop_entered_at = std::time::Instant::now();
     let transition = state.app_state.recording_transition.lock().await;
     let current_recording_id = state.app_state.recording_id.load(Ordering::SeqCst);
     if !stop_owner_matches(current_recording_id, expected_recording_id) {
         let stale_recording_id = expected_recording_id.expect("mismatch requires an expectation");
-        let _ = audio_lifecycle::take_interrupted_dictation(stale_recording_id);
+        let _ = host
+            .supervisor()
+            .take_interrupted_dictation(stale_recording_id);
         emit_dictation_terminal(
-            &state,
+            state,
             stale_recording_id,
             DictationTerminalOutcome::Superseded,
             DictationErrorCode::StaleOwner,
@@ -5936,11 +5946,8 @@ async fn stop_native_recording_for(
             // A cancelled start never delivers, so it needs no stop anchor.
             DictationStatus::Starting => (DictationStatus::Starting, rid, None, None),
             DictationStatus::Recovering => {
-                if let Some(capture) = audio_lifecycle::take_interrupted_dictation(rid) {
-                    preview_hide = crate::commands::dictation_preview::PreviewHideOwner::claim(
-                        &app_handle,
-                        rid,
-                    );
+                if let Some(capture) = host.supervisor().take_interrupted_dictation(rid) {
+                    preview_hide = host.claim_preview_hide(rid);
                     transition_dictation_status(rid, &mut dictation, DictationStatus::Processing);
                     // Freeze the native delivery target at the accepted stop
                     // transition, under the same ownership lock that commits
@@ -5949,7 +5956,7 @@ async fn stop_native_recording_for(
                         DictationStatus::Processing,
                         rid,
                         Some(capture),
-                        Some(crate::frontmost::capture_delivery_target_snapshot()),
+                        Some(host.ax().capture_delivery_target_snapshot()),
                     )
                 } else {
                     return Ok(serde_json::json!({
@@ -5961,8 +5968,7 @@ async fn stop_native_recording_for(
             DictationStatus::Recording => {
                 // Before status leaves Recording: the ticker then sees this
                 // claim whenever it sees the stop, and leaves the hide to it.
-                preview_hide =
-                    crate::commands::dictation_preview::PreviewHideOwner::claim(&app_handle, rid);
+                preview_hide = host.claim_preview_hide(rid);
                 transition_dictation_status(rid, &mut dictation, DictationStatus::Processing);
                 // Freeze the native delivery target at the accepted stop
                 // transition, under the same ownership lock that commits
@@ -5971,15 +5977,17 @@ async fn stop_native_recording_for(
                     DictationStatus::Recording,
                     rid,
                     None,
-                    Some(crate::frontmost::capture_delivery_target_snapshot()),
+                    Some(host.ax().capture_delivery_target_snapshot()),
                 )
             }
         }
     };
     // Claim the release at the accepted transition, before teardown, so a
     // later release queued behind this stop cannot replace it.
-    let hotkey_release = crate::hotkey_release::take_for(rid, stop_entered_at);
-    let stop_stamp = crate::stop_gesture::take_for(rid, stop_entered_at);
+    let hotkey_release = host
+        .keyboard()
+        .hotkey_release_take_for(rid, stop_entered_at);
+    let stop_stamp = host.keyboard().stop_gesture_take_for(rid, stop_entered_at);
     // A matching rdev release takes precedence even if another stop arrived
     // through the webview at the same time. Unknown sources retain speech.
     // Taken from the trigger as requested: `resolve` turns any stamped stop into
@@ -5993,10 +6001,12 @@ async fn stop_native_recording_for(
         // after the status snapshot. A starting-only cancellation could
         // otherwise no-op while the command falsely reports cancellation and
         // leaves a newly live stream running.
-        if let Err(error) = audio_lifecycle::cancel_dictation_capture(rid, AudioCancelReason::User)
+        if let Err(error) = host
+            .supervisor()
+            .cancel_dictation_capture(rid, AudioCancelReason::User)
         {
             emit_dictation_terminal(
-                &state,
+                state,
                 rid,
                 DictationTerminalOutcome::PipelineFailure,
                 DictationErrorCode::RuntimeFailure,
@@ -6012,7 +6022,7 @@ async fn stop_native_recording_for(
         Some(context) => context,
         None => {
             emit_dictation_terminal(
-                &state,
+                state,
                 rid,
                 DictationTerminalOutcome::PipelineFailure,
                 DictationErrorCode::MissingContext,
@@ -6021,11 +6031,10 @@ async fn stop_native_recording_for(
             if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
                 transition_dictation_status(rid, &mut dictation, DictationStatus::Idle);
             }
-            keyboard::set_processing(false);
-            let _ = app_handle.emit("recording-status-changed", "idle");
+            host.keyboard().set_processing(false);
+            let _ = host.emit("recording-status-changed", "idle");
             drop(transition);
-            complete_dictation_performance(
-                &state.performance,
+            host.performance().complete(
                 rid,
                 RunOutcomeV1::Failed {
                     stage: PerformanceStageV1::CaptureFinalization,
@@ -6038,9 +6047,9 @@ async fn stop_native_recording_for(
             return Err(format!("Missing dictation context for recording {rid}"));
         }
     };
-    keyboard::set_processing(true);
+    host.keyboard().set_processing(true);
     tracing::debug!(target: "pipeline", "stop_native_recording: stopping");
-    let _ = app_handle.emit("recording-status-changed", "processing");
+    let _ = host.emit("recording-status-changed", "processing");
 
     // Guard resets status to Idle if stop_recording fails or samples are empty;
     // disarmed before handing off to run_transcription_pipeline (which has its own guard)
@@ -6064,19 +6073,18 @@ async fn stop_native_recording_for(
     let samples = if let Some(capture) = interrupted_capture {
         capture.samples
     } else {
-        audio_lifecycle::stop_dictation_recording(rid, stop_trigger, tail_anchor).map_err(|e| {
+        host.supervisor().stop_dictation_recording(rid, stop_trigger, tail_anchor).map_err(|e| {
             emit_dictation_terminal(
-                &state,
+                state,
                 rid,
                 DictationTerminalOutcome::StopFailure,
                 DictationErrorCode::StopFinalizationFailed,
             );
             tracing::error!(target: "audio", "stop_native_recording: stop_recording failed: {}", e);
             guard.finish(|_| {
-                let _ = app_handle.emit("recording-status-changed", "idle");
+                let _ = host.emit("recording-status-changed", "idle");
             });
-            complete_dictation_performance(
-                &state.performance,
+            host.performance().complete(
                 rid,
                 RunOutcomeV1::Failed {
                     stage: PerformanceStageV1::CaptureFinalization,
@@ -6089,8 +6097,7 @@ async fn stop_native_recording_for(
             e
         })?
     };
-    state
-        .performance
+    host.performance()
         .production_sample_count(rid, samples.len());
     let mut performance_guard = NativeDictationPerformanceGuard::new(
         state.performance.clone(),
@@ -6123,7 +6130,7 @@ async fn stop_native_recording_for(
 
     if samples.is_empty() {
         emit_dictation_terminal(
-            &state,
+            state,
             rid,
             interruption_error
                 .map(|_| DictationTerminalOutcome::RuntimeInterruption)
@@ -6132,7 +6139,7 @@ async fn stop_native_recording_for(
         );
         tracing::info!(target: "pipeline", "stop_native_recording: no audio captured");
         guard.finish(|_| {
-            let _ = app_handle.emit("recording-status-changed", "idle");
+            let _ = host.emit("recording-status-changed", "idle");
         });
         performance_guard.finish(
             RunOutcomeV1::NoSpeech,
@@ -6156,7 +6163,7 @@ async fn stop_native_recording_for(
 
     if samples.len() < MIN_RECORDING_SAMPLES {
         emit_dictation_terminal(
-            &state,
+            state,
             rid,
             interruption_error
                 .map(|_| DictationTerminalOutcome::RuntimeInterruption)
@@ -6166,7 +6173,7 @@ async fn stop_native_recording_for(
         tracing::info!(target: "pipeline", "stop_native_recording: recording too short ({}ms), discarding",
             samples.len() / 16); // samples / 16_000 * 1000
         guard.finish(|_| {
-            let _ = app_handle.emit("recording-status-changed", "idle");
+            let _ = host.emit("recording-status-changed", "idle");
         });
         performance_guard.finish(
             RunOutcomeV1::NoSpeech,
@@ -6188,19 +6195,19 @@ async fn stop_native_recording_for(
     guard.disarm();
     performance_guard.enter(PerformanceStageV1::Vad);
 
-    let pipeline_result = run_transcription_pipeline(
-        &samples,
-        &app_handle,
-        &state.app_state,
-        rid,
-        &mut performance_guard,
-        Arc::clone(&context),
-        PipelineStopContext {
-            delivery_target: stop_delivery_target,
-            preview_hide: preview_hide.take(),
-        },
-    )
-    .await;
+    let pipeline_result = host
+        .run_transcription_pipeline(
+            &samples,
+            &state.app_state,
+            rid,
+            &mut performance_guard,
+            Arc::clone(&context),
+            PipelineStopContext {
+                delivery_target: stop_delivery_target,
+                preview_hide: preview_hide.take(),
+            },
+        )
+        .await;
     let pipeline_returned_at = std::time::Instant::now();
     // Only emit idle if this recording wasn't cancelled/superseded by a new one.
     // Hold the dictation lock across the check+emit to prevent a concurrent
@@ -6208,8 +6215,8 @@ async fn stop_native_recording_for(
     {
         let _dictation = state.app_state.dictation.lock_or_recover();
         if state.app_state.recording_id.load(Ordering::SeqCst) == rid {
-            keyboard::set_processing(false);
-            let _ = app_handle.emit("recording-status-changed", "idle");
+            host.keyboard().set_processing(false);
+            let _ = host.emit("recording-status-changed", "idle");
         }
     }
     let idle_block_ended_at = std::time::Instant::now();
@@ -6218,7 +6225,7 @@ async fn stop_native_recording_for(
         Ok(result) => result,
         Err(error) => {
             emit_dictation_terminal(
-                &state,
+                state,
                 rid,
                 interruption_error
                     .map(|_| DictationTerminalOutcome::RuntimeInterruption)
@@ -6275,7 +6282,7 @@ async fn stop_native_recording_for(
         total_ms,
     });
     emit_dictation_terminal_with_capture(
-        &state,
+        state,
         rid,
         terminal_outcome,
         terminal_error,
@@ -6336,7 +6343,7 @@ async fn stop_native_recording_for(
     // its history even when recording was initiated from the overlay).
     if !text.is_empty() {
         let history = history.expect("non-empty completed transcription has history metadata");
-        let _ = app_handle.emit(
+        let _ = host.emit(
             "transcription-complete",
             serde_json::json!({
                 "recordingId": rid,
@@ -6380,6 +6387,15 @@ pub async fn cancel_native_recording(
     state: tauri::State<'_, State>,
     expected_recording_id: Option<u64>,
 ) -> Result<(), String> {
+    let host = TauriHost::new(app_handle);
+    cancel_native_recording_inner(&host, state.inner(), expected_recording_id).await
+}
+
+async fn cancel_native_recording_inner(
+    host: &dyn DictationHost,
+    state: &State,
+    expected_recording_id: Option<u64>,
+) -> Result<(), String> {
     let transition = state.app_state.recording_transition.lock().await;
     let (prev_status, rid) = {
         let mut dictation = state.app_state.dictation.lock_or_recover();
@@ -6405,10 +6421,12 @@ pub async fn cancel_native_recording(
         DictationStatus::Starting | DictationStatus::Recording
     ) {
         drop(transition);
-        if let Err(error) = audio_lifecycle::cancel_dictation_capture(rid, AudioCancelReason::User)
+        if let Err(error) = host
+            .supervisor()
+            .cancel_dictation_capture(rid, AudioCancelReason::User)
         {
             emit_dictation_terminal(
-                &state,
+                state,
                 rid,
                 DictationTerminalOutcome::PipelineFailure,
                 DictationErrorCode::RuntimeFailure,
@@ -6424,7 +6442,7 @@ pub async fn cancel_native_recording(
             // Mark current recording as cancelled — pipeline will check at next checkpoint.
             state.app_state.cancel_recording(rid);
             emit_dictation_terminal(
-                &state,
+                state,
                 rid,
                 DictationTerminalOutcome::UserCancelledProcessing,
                 DictationErrorCode::CancelledProcessing,
@@ -6438,9 +6456,9 @@ pub async fn cancel_native_recording(
     }
 
     // Always emit feedback so the UI resets, even if stop_recording failed
-    keyboard::set_processing(false);
-    let _ = app_handle.emit("recording-status-changed", "idle");
-    let _ = app_handle.emit(
+    host.keyboard().set_processing(false);
+    let _ = host.emit("recording-status-changed", "idle");
+    let _ = host.emit(
         "recording-cancelled",
         serde_json::json!({ "recordingId": rid }),
     );
@@ -6450,8 +6468,7 @@ pub async fn cancel_native_recording(
     // this cancellation's trailing `idle`. Diagnostics completion is already
     // asynchronous, so releasing immediately before it never waits on SQLite.
     drop(transition);
-    complete_dictation_performance(
-        &state.performance,
+    host.performance().complete(
         rid,
         RunOutcomeV1::Cancelled {
             stage: PerformanceStageV1::InferenceDecode,
@@ -6989,6 +7006,33 @@ pub(crate) mod tests {
         assert!(!try_begin_dictation_partial(&app_state, recording_id));
     }
 
+    /// A full `State` around `app_state`, with every other component default.
+    pub(crate) fn test_state(app_state: AppState) -> State {
+        State {
+            app_state,
+            benchmark: Arc::new(crate::benchmark::BenchmarkCoordinator::new()),
+            microphone_startup_benchmark: crate::commands::microphone_startup_benchmark::MicrophoneStartupBenchmarkState::default(),
+            #[cfg(feature = "internal-benchmark")]
+            corpus: crate::commands::corpus::CorpusRecorderState::default(),
+            meeting_store: crate::meeting_store::MeetingStore::default(),
+            meetings: crate::meeting_capture::MeetingCoordinator::default(),
+            meeting_suggestions: crate::meeting_suggestions::MeetingSuggestions::default(),
+            delivery_recovery: crate::delivery_recovery::DeliveryRecoveryState::default(),
+            capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
+            performance: crate::performance_metrics::PerformanceMetrics::default(),
+
+            dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(
+            ),
+            notch_info: std::sync::Mutex::new(None),
+            display_snapshot: std::sync::Mutex::new(None),
+            overlay_calibration: std::sync::Mutex::new(
+                crate::commands::overlay::OverlayCalibrationState::default(),
+            ),
+            overlay_frame: std::sync::Mutex::new(None),
+            overlay_layout: std::sync::Mutex::new(crate::commands::overlay::OverlayLayout::default()),
+        }
+    }
+
     pub(crate) fn partial_lease_fixture() -> (tauri::App<tauri::test::MockRuntime>, impl Send) {
         let recording_id = 41;
         let app_state = AppState::default();
@@ -6996,30 +7040,7 @@ pub(crate) mod tests {
         app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
         assert!(try_begin_dictation_partial(&app_state, recording_id));
         let app = tauri::test::mock_builder()
-            .manage(State {
-                app_state,
-                benchmark: Arc::new(crate::benchmark::BenchmarkCoordinator::new()),
-                microphone_startup_benchmark: crate::commands::microphone_startup_benchmark::MicrophoneStartupBenchmarkState::default(),
-                #[cfg(feature = "internal-benchmark")]
-                corpus: crate::commands::corpus::CorpusRecorderState::default(),
-                meeting_store: crate::meeting_store::MeetingStore::default(),
-                meetings: crate::meeting_capture::MeetingCoordinator::default(),
-                meeting_suggestions: crate::meeting_suggestions::MeetingSuggestions::default(),
-                delivery_recovery: crate::delivery_recovery::DeliveryRecoveryState::default(),
-                capture_health: crate::capture_health::CaptureHealthDiagnostics::default(),
-                performance: crate::performance_metrics::PerformanceMetrics::default(),
-
-                dictation_diagnostics: crate::dictation_diagnostics::DictationDiagnostics::default(
-                ),
-                notch_info: std::sync::Mutex::new(None),
-                display_snapshot: std::sync::Mutex::new(None),
-                overlay_calibration: std::sync::Mutex::new(
-                    crate::commands::overlay::OverlayCalibrationState::default(),
-                ),
-                overlay_frame: std::sync::Mutex::new(None),
-                overlay_layout: std::sync::Mutex::new(crate::commands::overlay::OverlayLayout::default()),
-
-            })
+            .manage(test_state(app_state))
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .expect("build mock Tauri app");
         let lease = DictationPartialLease {
