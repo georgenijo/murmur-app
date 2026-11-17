@@ -192,6 +192,10 @@ mod lifecycle_barrier_tests;
 mod stop_tests;
 
 #[cfg(test)]
+#[path = "recording_deferral_tests.rs"]
+mod deferral_tests;
+
+#[cfg(test)]
 #[path = "recording_golden_harness.rs"]
 mod golden_harness;
 
@@ -1128,6 +1132,20 @@ impl PipelineOwner {
 
 impl Drop for PipelineOwner {
     fn drop(&mut self) {
+        // D-S2-4, D-S2-6: an owner dropped inside a core span (a listener drops the
+        // flight that holds it) does not retire on the spot: a finish queued
+        // earlier must run first. Its duty moves, as one item, to the deferred
+        // queue and runs when the outermost entry drains, after D is released.
+        if crate::dictation_executor::executor::in_core() && (self.registered || self.op.is_armed())
+        {
+            defer_retirement(PipelineOwner {
+                history: self.history.clone(),
+                rid: self.rid,
+                op: self.op.detach(),
+                registered: std::mem::take(&mut self.registered),
+            });
+            return;
+        }
         self.retire_pipeline();
         // `op` retires H1 through its own `Drop` unless it was consumed.
     }
@@ -1227,29 +1245,42 @@ impl<'a> IdleGuard<'a> {
     fn run_finish<'f>(
         &mut self,
         origin: murmur_dictation_core::inputs::GuardOrigin,
-        on_idle: Option<stop_ports::OnIdle<'f>>,
+        on_idle: Option<IdleEmit<'f>>,
     ) {
         if crate::dictation_executor::executor::in_core() {
-            if on_idle.is_some() {
-                // The closure borrows the caller's frame and cannot outlive this
-                // call: its `EM(idle)` cannot be deferred, the finish still is.
-                tracing::error!(
-                    target: "pipeline",
-                    recording_id = self.recording_id,
-                    "an idle guard finished re-entrantly: its idle emit is not made"
-                );
-            }
-            defer_finish(self.app_state, self.recording_id, origin, self.owner.take());
+            // D-S2-7: an owned idle emit is carried as data and runs at the drain,
+            // after D is released. A borrowed closure cannot outlive this call: its
+            // `EM(idle)` cannot be deferred (the finish still is). Production
+            // callers pass owned emits.
+            let idle = match on_idle {
+                None => None,
+                Some(IdleEmit::Owned(emit)) => Some(emit),
+                Some(IdleEmit::Borrowed(_)) => {
+                    tracing::error!(
+                        target: "pipeline",
+                        recording_id = self.recording_id,
+                        "an idle guard finished re-entrantly with a borrowed idle emit: not made"
+                    );
+                    None
+                }
+            };
+            defer_finish(
+                self.app_state,
+                self.recording_id,
+                origin,
+                self.owner.take(),
+                idle,
+            );
             return;
         }
         // Declared first, so it runs last, after D is released, on a return and
         // on an unwind (a listener that queued a finish and then panicked).
-        let _drain = DrainDeferredFinishes(self.app_state);
+        let _drain = DrainDeferredFinishes::new(self.app_state);
         Self::finish_section(
             self.app_state,
             self.recording_id,
             origin,
-            on_idle,
+            on_idle.map(IdleEmit::into_on_idle),
             &mut self.owner,
         );
     }
@@ -1298,7 +1329,7 @@ impl<'a> IdleGuard<'a> {
         // is a re-entrant one; the finish is queued instead).
         if let crate::dictation_executor::executor::PhaseReport::Invalid(kind) = pre {
             if kind == murmur_dictation_core::decision::InvalidKind::Reentrant {
-                defer_finish(app_state, recording_id, origin, owner.take());
+                defer_finish(app_state, recording_id, origin, owner.take(), None);
             }
             return;
         }
@@ -1334,12 +1365,19 @@ impl<'a> IdleGuard<'a> {
 /// outermost core entry has released D. Today's code deadlocks on D here; no
 /// production listener reaches it.
 struct DeferredFinish {
-    /// Identity of the `AppState` (never dereferenced), so an entry is only run
-    /// by an entry of the same state.
-    app_state: usize,
+    /// Identity of the state's `core_history` (never dereferenced), so an entry is
+    /// only run by an entry of the same state.
+    key: usize,
     recording_id: u64,
     origin: murmur_dictation_core::inputs::GuardOrigin,
     owner: Option<PipelineOwner>,
+    /// The explicit finish's idle emit, carried as data (D-S2-7).
+    idle: Option<OwnedIdle>,
+    /// A dropped flight's operation (a bare `ContinuationGuard`, D-S2-6).
+    op: Option<ContinuationGuard>,
+    /// A history-only retirement (a dropped owner): no finish section, no status or
+    /// event; dropping `owner` / `op` retires them.
+    retire_only: bool,
 }
 
 thread_local! {
@@ -1352,13 +1390,49 @@ fn defer_finish(
     recording_id: u64,
     origin: murmur_dictation_core::inputs::GuardOrigin,
     owner: Option<PipelineOwner>,
+    idle: Option<OwnedIdle>,
 ) {
     DEFERRED_FINISHES.with(|queue| {
         queue.borrow_mut().push(DeferredFinish {
-            app_state: std::ptr::from_ref(app_state) as usize,
+            key: app_state.core_history.identity(),
             recording_id,
             origin,
             owner,
+            idle,
+            op: None,
+            retire_only: false,
+        });
+    });
+}
+
+/// Queue a dropped owner's history retirement behind every finish queued before it
+/// (D-S2-4, FIFO). The owner is armed: dropping it outside a core span retires H2
+/// and H1 once.
+fn defer_retirement(owner: PipelineOwner) {
+    DEFERRED_FINISHES.with(|queue| {
+        queue.borrow_mut().push(DeferredFinish {
+            key: owner.history.identity(),
+            recording_id: owner.rid.0,
+            origin: murmur_dictation_core::inputs::GuardOrigin::Dropped,
+            owner: Some(owner),
+            idle: None,
+            op: None,
+            retire_only: true,
+        });
+    });
+}
+
+/// Queue a dropped continuation guard's retirement (D-S2-6), as one FIFO item.
+pub(crate) fn defer_op_retirement(op: ContinuationGuard) {
+    DEFERRED_FINISHES.with(|queue| {
+        queue.borrow_mut().push(DeferredFinish {
+            key: op.history_identity(),
+            recording_id: op.token().recording_id.0,
+            origin: murmur_dictation_core::inputs::GuardOrigin::Dropped,
+            owner: None,
+            idle: None,
+            op: Some(op),
+            retire_only: true,
         });
     });
 }
@@ -1377,26 +1451,35 @@ fn defer_finish(
 /// already unwinding (a second panic during an unwind would abort the process,
 /// and a foreign payload's destructor may panic).
 fn drain_deferred_finishes(app_state: &AppState) {
-    let me = std::ptr::from_ref(app_state) as usize;
+    let me = app_state.core_history.identity();
     let mut first_panic: Option<Box<dyn std::any::Any + Send>> = None;
     let mut panicked: Vec<(u64, murmur_dictation_core::inputs::GuardOrigin)> = Vec::new();
     while !crate::dictation_executor::executor::in_core() {
         let next = DEFERRED_FINISHES.with(|queue| {
             let mut queue = queue.borrow_mut();
-            let at = queue.iter().position(|entry| entry.app_state == me)?;
+            let at = queue.iter().position(|entry| entry.key == me)?;
             Some(queue.remove(at))
         });
         let Some(mut entry) = next else {
             break;
         };
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            IdleGuard::finish_section(
-                app_state,
-                entry.recording_id,
-                entry.origin,
-                None,
-                &mut entry.owner,
-            );
+            if entry.retire_only {
+                // Outside any core span here: the owner retires H2 then H1.
+                drop(entry.owner.take());
+                drop(entry.op.take());
+            } else {
+                IdleGuard::finish_section(
+                    app_state,
+                    entry.recording_id,
+                    entry.origin,
+                    entry
+                        .idle
+                        .take()
+                        .map(|emit| -> stop_ports::OnIdle<'_> { emit }),
+                    &mut entry.owner,
+                );
+            }
         }));
         if let Err(panic) = outcome {
             panicked.push((entry.recording_id, entry.origin));
@@ -1458,13 +1541,78 @@ fn discard_panic_payload(payload: Box<dyn std::any::Any + Send>) {
 }
 
 /// Drains the finishes queued while the owning entry held D, when that entry
-/// returns (after every lock it took is released).
-struct DrainDeferredFinishes<'a>(&'a AppState);
+/// returns (after every lock it took is released). Declare it before T and D, so
+/// it drops after both, on a return and on an unwind (D-S2-4).
+struct DrainDeferredFinishes<'a>(&'a AppState, DrainAlive);
+
+impl<'a> DrainDeferredFinishes<'a> {
+    fn new(app_state: &'a AppState) -> Self {
+        Self(app_state, DrainAlive::new())
+    }
+}
 
 impl Drop for DrainDeferredFinishes<'_> {
     fn drop(&mut self) {
         drain_deferred_finishes(self.0);
+        // `DrainAlive` ends after this body, also when the drain re-raises.
     }
+}
+
+/// Test builds count the drain guards alive on this thread, so the outermost core
+/// entry can tell that a drain is declared around it (see
+/// [`assert_deferred_work_has_a_drain`]). Zero-sized elsewhere.
+struct DrainAlive;
+
+#[cfg(test)]
+thread_local! {
+    static DRAINS_ALIVE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+impl DrainAlive {
+    fn new() -> Self {
+        DRAINS_ALIVE.with(|alive| alive.set(alive.get() + 1));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for DrainAlive {
+    fn drop(&mut self) {
+        DRAINS_ALIVE.with(|alive| alive.set(alive.get().saturating_sub(1)));
+    }
+}
+
+#[cfg(not(test))]
+impl DrainAlive {
+    fn new() -> Self {
+        Self
+    }
+}
+
+/// Test-build safety net, run when the outermost core entry on a thread ends
+/// (D-S2-8): work deferred inside the span (a queued finish or a dropped owner's
+/// retirement) must have a drain guard alive on this thread, declared before the
+/// entry's locks, or it would stay queued until some later drain that may never
+/// come. An entry that lacks the guard fails here, in whichever test queues work
+/// through it.
+#[cfg(test)]
+pub(crate) fn assert_deferred_work_has_a_drain() {
+    if std::thread::panicking() || DRAINS_ALIVE.with(std::cell::Cell::get) > 0 {
+        return;
+    }
+    let queued: Vec<(u64, bool)> = DEFERRED_FINISHES.with(|queue| {
+        queue
+            .borrow()
+            .iter()
+            .map(|entry| (entry.recording_id, entry.retire_only))
+            .collect()
+    });
+    assert!(
+        queued.is_empty(),
+        "an outermost core entry ended with deferred work and no drain guard alive \
+         (recording id, retire-only): {queued:?}"
+    );
 }
 
 /// Resolves once this thread is outside every core span. A stop future that a
@@ -1483,7 +1631,32 @@ async fn until_outside_core() {
     .await;
 }
 
+/// The idle emit of an explicit `finish`.
+enum IdleEmit<'f> {
+    /// Borrows the caller's frame: run now, never deferred (test closures only).
+    #[cfg_attr(not(test), allow(dead_code))]
+    Borrowed(stop_ports::OnIdle<'f>),
+    /// Owns what it needs (an `AppHandle` clone): carried as data when the finish
+    /// is deferred (D-S2-7).
+    Owned(OwnedIdle),
+}
+
+impl<'f> IdleEmit<'f> {
+    fn into_on_idle(self) -> stop_ports::OnIdle<'f> {
+        match self {
+            Self::Borrowed(on_idle) => on_idle,
+            Self::Owned(emit) => emit,
+        }
+    }
+}
+
+/// An idle emit that owns everything it uses, so it can wait in the deferred queue.
+type OwnedIdle = Box<dyn FnOnce(&crate::state::DictationState) -> bool + Send + 'static>;
+
 impl IdleGuard<'_> {
+    /// Test closures that borrow their frame; production passes owned emits
+    /// ([`Self::finish_owned`]).
+    #[cfg_attr(not(test), allow(dead_code))]
     fn finish<R: stop_ports::EmitOutcome>(
         &mut self,
         on_idle: impl FnOnce(&crate::state::DictationState) -> R,
@@ -1492,7 +1665,27 @@ impl IdleGuard<'_> {
             self.disarmed = true;
             self.run_finish(
                 self.finish_origin,
-                Some(Box::new(move |dictation| on_idle(dictation).delivered())),
+                Some(IdleEmit::Borrowed(Box::new(move |dictation| {
+                    on_idle(dictation).delivered()
+                }))),
+            );
+        }
+    }
+
+    /// [`Self::finish`] with an idle emit that owns what it uses: reached inside a
+    /// core span, the finish is deferred **with** its emit, and the drain makes it
+    /// after D is released (D-S2-7), so the frontend still gets its `idle`.
+    fn finish_owned<R: stop_ports::EmitOutcome>(
+        &mut self,
+        on_idle: impl FnOnce(&crate::state::DictationState) -> R + Send + 'static,
+    ) {
+        if !self.disarmed {
+            self.disarmed = true;
+            self.run_finish(
+                self.finish_origin,
+                Some(IdleEmit::Owned(Box::new(move |dictation| {
+                    on_idle(dictation).delivered()
+                }))),
             );
         }
     }
@@ -1512,13 +1705,16 @@ impl Drop for IdleGuard<'_> {
 /// for the current recording, clears the keyboard gate and emits `idle` under D, so
 /// a concurrent start cannot interleave a `recording` status between the check and
 /// the emit. Shared by the stop command and the legacy `process_audio`.
+///
+/// Returns the instant the D section ended (D released), which is before the
+/// deferred drain its guard runs on return (D-S2-12).
 fn run_pipeline_idle_emit(
     app_state: &AppState,
     recording_id: u64,
     kind: murmur_dictation_core::inputs::PostKind,
     set_processing: &dyn Fn(bool),
     emit_idle: &dyn Fn() -> bool,
-) {
+) -> std::time::Instant {
     use crate::dictation_executor::executor::core_now;
     use crate::dictation_executor::FieldAdapter;
     use murmur_dictation_core::effects::Placement;
@@ -1537,7 +1733,7 @@ fn run_pipeline_idle_emit(
         "the 204b section runs outside a core span"
     );
     // Declared before D: it runs after D is released, on a return and on an unwind.
-    let _drain = DrainDeferredFinishes(app_state);
+    let _drain = DrainDeferredFinishes::new(app_state);
     let ports = stop_ports::IdleEmitPorts::new(app_state, set_processing, emit_idle);
     let mut dictation = app_state.dictation.lock_or_recover();
     let view = FieldAdapter::project_lifecycle_view(app_state, &dictation);
@@ -1557,6 +1753,8 @@ fn run_pipeline_idle_emit(
         Some(&mut dictation),
         recording_id,
     );
+    drop(dictation);
+    std::time::Instant::now()
 }
 
 /// RAII guard that clears `file_transcribing` on drop, so a file transcription
@@ -4292,11 +4490,13 @@ pub async fn process_audio(
     let t_parse = std::time::Instant::now();
     let wav_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &audio_data)
         .map_err(|e| {
-            guard.finish(|_| app_handle.emit("recording-status-changed", "idle"));
+            let app = app_handle.clone();
+            guard.finish_owned(move |_| app.emit("recording-status-changed", "idle"));
             format!("Failed to decode base64: {}", e)
         })?;
     let samples = transcriber::parse_wav_to_samples(&wav_bytes).inspect_err(|_e| {
-        guard.finish(|_| app_handle.emit("recording-status-changed", "idle"));
+        let app = app_handle.clone();
+        guard.finish_owned(move |_| app.emit("recording-status-changed", "idle"));
     })?;
     tracing::info!(target: "pipeline", "audio parse (base64 + WAV): {:?}", t_parse.elapsed());
     performance_guard.record(StageTimingV1::measured(
@@ -5479,7 +5679,7 @@ fn handle_audio_lifecycle_events<R: tauri::Runtime>(
     let state = app_handle.state::<State>();
     // Finishes queued re-entrantly while this entry held D run once it returns,
     // after every lock it took is released (D-S2-4).
-    let _drain = DrainDeferredFinishes(&state.app_state);
+    let _drain = DrainDeferredFinishes::new(&state.app_state);
     let rid = RecordingId(recording_id);
     let now = core_now();
     let ports = lifecycle_ports::LifecyclePorts::new(
@@ -6444,7 +6644,7 @@ async fn stop_native_recording_admitted(
     // stop has run nothing yet) and ends right before the pipeline await; a new
     // one covers the stretch after that await, so no obligation is held across
     // an await that has queued work behind it.
-    let drain = DrainDeferredFinishes(&state.app_state);
+    let drain = DrainDeferredFinishes::new(&state.app_state);
     // The `releaseToStop` endpoint: entry, before any lock wait (#826).
     let stop_entered_at = std::time::Instant::now();
     let transition = state.app_state.recording_transition.lock().await;
@@ -6860,10 +7060,13 @@ async fn stop_native_recording_admitted(
             },
         )
         .await;
+    // D-S2-12: the stamp keeps its base boundary, immediately after the pipeline
+    // await, before the span wait, the reattach and the resume.
+    let pipeline_returned_at = std::time::Instant::now();
     // A stop that a listener polls inline under D parks here until the span ends:
     // the resume and the 204b section both run outside any core span.
     until_outside_core().await;
-    let _drain = DrainDeferredFinishes(&state.app_state);
+    let _drain = DrainDeferredFinishes::new(&state.app_state);
     // Resume the awaited `PS` with what the pipeline actually returned.
     {
         let ports = StopPorts::new(host, state, rid, stop_entered_at);
@@ -6883,19 +7086,18 @@ async fn stop_native_recording_admitted(
             stop_ports::RESUMED.with(|slot| *slot.borrow_mut() = exec.witness().to_vec());
         }
     }
-    let pipeline_returned_at = std::time::Instant::now();
     // Only emit idle if this recording wasn't cancelled/superseded by a new one.
     // Hold the dictation lock across the check+emit to prevent a concurrent
     // start from interleaving a "recording" status between our check and emit.
-    // Site 204b (R204b.1-.4).
-    run_pipeline_idle_emit(
+    // Site 204b (R204b.1-.4). D-S2-12: the idle-status measurement ends when the
+    // 204b D section ends, before any deferred drain.
+    let idle_block_ended_at = run_pipeline_idle_emit(
         &state.app_state,
         rid,
         PostKind::StopPost,
         &|processing| host.keyboard().set_processing(processing),
         &|| host.emit("recording-status-changed", "idle").is_ok(),
     );
-    let idle_block_ended_at = std::time::Instant::now();
     let idle_status_emit_us = micros_between(pipeline_returned_at, idle_block_ended_at);
     let pipeline = match pipeline_result {
         Ok(result) => result,
