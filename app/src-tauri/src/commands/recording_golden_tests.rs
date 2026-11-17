@@ -24,26 +24,26 @@ use std::sync::Mutex as StdMutex;
 
 type StopSlot = Arc<StdMutex<Option<Fut<Result<serde_json::Value, String>>>>>;
 
-fn started(world: &Arc<World>) {
+pub(super) fn started(world: &Arc<World>) {
     let mut start = world.start();
     let reply = complete(&mut start);
     world.reply("start", &reply);
 }
 
-fn stopped(world: &Arc<World>, label: &str, expected: Option<u64>) {
+pub(super) fn stopped(world: &Arc<World>, label: &str, expected: Option<u64>) {
     let mut stop = world.stop(expected);
     let reply = complete(&mut stop);
     world.reply(label, &reply);
 }
 
-fn cancelled(world: &Arc<World>, label: &str) {
+pub(super) fn cancelled(world: &Arc<World>, label: &str) {
     let mut cancel = world.cancel(None);
     let reply = complete(&mut cancel);
     world.reply_unit(label, &reply);
 }
 
 /// A dictation that is `Recording` with its context installed.
-fn recording(world: &Arc<World>) {
+pub(super) fn recording(world: &Arc<World>) {
     world.knobs().cold_start = ColdStart::ReadyBeforeContext;
     started(world);
 }
@@ -713,7 +713,7 @@ fn verify_s12(text: &str) {
 
 // ------------------------------------------------------------- the goldens
 
-fn sub(title: &'static str, body: fn(&Arc<World>)) -> SubRun {
+pub(super) fn sub(title: &'static str, body: fn(&Arc<World>)) -> SubRun {
     SubRun {
         title,
         setup: Setup::idle(),
@@ -721,7 +721,7 @@ fn sub(title: &'static str, body: fn(&Arc<World>)) -> SubRun {
     }
 }
 
-fn sub_from(
+pub(super) fn sub_from(
     title: &'static str,
     status: DictationStatus,
     id: u64,

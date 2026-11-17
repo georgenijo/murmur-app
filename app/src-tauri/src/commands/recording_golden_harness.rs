@@ -203,6 +203,10 @@ pub(super) struct Knobs {
     pub(super) before_ack: Vec<AudioLifecycleEventScript>,
     /// Samples a supervisor stop returns (`Err` is a stop timeout).
     pub(super) stop_result: Result<usize, &'static str>,
+    /// A stop that returns `Ok` without sealing its delivery: the supervisor
+    /// still owns the capture (phase `Stopping`) and parks at
+    /// `hold_before_owner_clear` until the scenario releases it (PD-18 (c)).
+    pub(super) stop_unsealed: bool,
     pub(super) cancel_result: Result<bool, &'static str>,
     /// The pipeline's delivery step takes the ownership fence D through the
     /// production `with_current_delivery_owner` and holds it until the
@@ -219,6 +223,7 @@ impl Default for Knobs {
             accept_before_failing: true,
             before_ack: Vec::new(),
             stop_result: Ok(0),
+            stop_unsealed: false,
             cancel_result: Ok(true),
             hold_delivery: false,
         }
@@ -772,6 +777,14 @@ impl World {
         self.push(format!("supervisor.hold_before_owner_clear {recording_id}"));
     }
 
+    /// Park the supervisor just before `clear_owner` (`audio_lifecycle.rs:2460`)
+    /// with the owner and its phase untouched: the gap `finish_attempt` has
+    /// between its last notification and the owner clear (PD-18 (b), (c)).
+    pub(super) fn hold_owner_clear(&self, recording_id: u64) {
+        locked(&self.supervisor).held_owner_clear = Some(recording_id);
+        self.push(format!("supervisor.hold_before_owner_clear {recording_id}"));
+    }
+
     /// Release `hold_before_owner_clear` (`audio_lifecycle.rs:2460-2461`).
     pub(super) fn release_owner_clear(&self) {
         let recording_id = locked(&self.supervisor)
@@ -972,16 +985,27 @@ impl SupervisorPort for World {
         self.push(format!("supervisor.stop {recording_id} {trigger:?}"));
         self.set_phase(Phase::Stopping);
         self.fire("supervisor.stop");
-        let result = self.knobs().stop_result;
+        let (result, unsealed) = {
+            let knobs = self.knobs();
+            (knobs.stop_result, knobs.stop_unsealed)
+        };
         match result {
             Ok(samples) => {
-                // `RecordingSealed`: the samples leave the supervisor, which
-                // keeps the owner in `Stopping` until the worker exit is
-                // confirmed (`finish_sealed_stop`).
-                locked(&self.supervisor).sealed_pending = Some(recording_id);
-                self.push(format!(
-                    "supervisor.sealed_delivery {recording_id} samples={samples}"
-                ));
+                if unsealed {
+                    // The reply is delivered without `RecordingSealed`
+                    // (`audio_lifecycle.rs:2361-2362`): no `CleanupFinished`
+                    // follows, and the supervisor parks before `clear_owner`
+                    // (PD-18 (c)).
+                    self.hold_owner_clear(recording_id);
+                } else {
+                    // `RecordingSealed`: the samples leave the supervisor, which
+                    // keeps the owner in `Stopping` until the worker exit is
+                    // confirmed (`finish_sealed_stop`).
+                    locked(&self.supervisor).sealed_pending = Some(recording_id);
+                    self.push(format!(
+                        "supervisor.sealed_delivery {recording_id} samples={samples}"
+                    ));
+                }
                 Ok(vec![0.0; samples])
             }
             Err(error) => Err(error.to_string()),
@@ -1103,6 +1127,8 @@ impl KeyboardPort for World {
         _entered: std::time::Instant,
     ) -> Option<crate::stop_gesture::StopStamp> {
         self.push(format!("keyboard.stop_gesture_take_for {recording_id}"));
+        // The last port before the stop reads the recording context (S7).
+        self.fire("keyboard.stop_gesture_take_for");
         None
     }
 }
@@ -1430,7 +1456,7 @@ fn reset_process_globals() {
 }
 
 /// Run one sub-run on a fresh app and return its trace lines.
-fn run_sub_run(sub_run: &SubRun) -> Vec<String> {
+pub(super) fn run_sub_run(sub_run: &SubRun) -> Vec<String> {
     let _serial = locked(&GOLDEN_LOCK);
     let _runtime = runtime().enter();
     S12_TAIL.with(|slot| slot.borrow_mut().take());
