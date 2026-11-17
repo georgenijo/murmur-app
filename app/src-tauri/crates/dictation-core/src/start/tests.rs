@@ -10,7 +10,7 @@
 use super::*;
 use crate::decision::{Continuation, OpStatus, SiteId};
 use crate::ids::OperationId;
-use crate::inputs::{GestureObs, Origin, SmartAutoSel, SpeculativeObs};
+use crate::inputs::{GestureObs, Origin, SmartAutoSel, SpeculativeObs, StartContextInput};
 use crate::rows::rows_of_site;
 use crate::state::LiveObs;
 
@@ -46,6 +46,12 @@ fn tag(placed: &Placed) -> String {
         Effect::CaptureStart(id) => format!("CS({})", id.0),
         Effect::Terminal(t) => format!("TERM({:?}/{:?})", t.outcome, t.code),
         Effect::ReleaseClaims => "REL".to_string(),
+        Effect::SetContext(id) => format!("CX+({})", id.0),
+        Effect::SmartDestinationEmit => "SDE".to_string(),
+        Effect::PerfBegin => "PB".to_string(),
+        Effect::ModelPreparation => "PM".to_string(),
+        Effect::TouchLastTranscription => "TL".to_string(),
+        Effect::StartSideTasks => "SD".to_string(),
         other => panic!("not a start-family effect: {other:?}"),
     };
     format!("{at}:{body}")
@@ -832,4 +838,438 @@ fn start_decisions_never_read_the_live_observations() {
         NOW,
     );
     assert_eq!(plain, observed);
+}
+
+// ------------------------------------------------------------------ R103.x
+
+fn live(cancelled_through: RecordingId) -> LiveObs {
+    LiveObs {
+        cancelled_through,
+        ..LiveObs::default()
+    }
+}
+
+#[test]
+fn r103_0_a_current_capture_continues_and_selects_the_smart_destination_when_enabled() {
+    for status in [
+        Status::Starting,
+        Status::Recording,
+        Status::Recovering,
+        Status::Processing,
+    ] {
+        let enabled = decide_start_destination(&core(status, RID), RID, true, NOW);
+        assert_valid(&enabled);
+        assert_eq!(enabled.row.0, "R103.0", "{status:?}");
+        assert_eq!(enabled.verdict, Verdict::Continue, "{status:?}");
+        assert_eq!(tags(&enabled), ["PDT:SDE"], "{status:?}");
+        let disabled = decide_start_destination(&core(status, RID), RID, false, NOW);
+        assert_eq!(disabled.verdict, Verdict::Continue, "{status:?}");
+        assert!(disabled.effects.is_empty(), "{status:?}");
+        assert_eq!(disabled.reply, None);
+        assert_eq!(disabled.continuation, None);
+    }
+}
+
+#[test]
+fn r103_0_prime_an_idle_stale_or_cancelled_capture_is_stale_with_no_effect() {
+    let cases = [
+        (
+            "idle",
+            DictationCore::project(Status::Idle, RID, LiveObs::default()),
+        ),
+        ("stale id", core(Status::Starting, NEWER)),
+        (
+            "cancelled",
+            DictationCore::project(Status::Starting, RID, live(RID)),
+        ),
+        (
+            "cancelled through a newer id",
+            DictationCore::project(Status::Recording, RID, live(NEWER)),
+        ),
+    ];
+    for (name, view) in cases {
+        for smart in [true, false] {
+            let decided = decide_start_destination(&view, RID, smart, NOW);
+            assert_valid(&decided);
+            assert_eq!(decided.row.0, "R103.0", "{name}");
+            assert_eq!(
+                decided.verdict,
+                Verdict::Stale(StaleKind::StaleRecording),
+                "{name}"
+            );
+            assert!(decided.effects.is_empty(), "{name}");
+            assert_eq!(decided.transition, None);
+        }
+    }
+}
+
+#[test]
+fn r103_0_agrees_with_the_capture_current_query_for_every_status() {
+    for status in ALL {
+        for (current, cancelled) in [
+            (RID, RecordingId::NONE),
+            (RID, RID),
+            (NEWER, RecordingId::NONE),
+        ] {
+            let view = DictationCore::project(status, current, live(cancelled));
+            let decided = decide_start_destination(&view, RID, true, NOW);
+            assert_eq!(
+                decided.verdict == Verdict::Continue,
+                view.q_capture_current(RID),
+                "{status:?} {current:?} {cancelled:?}"
+            );
+        }
+    }
+}
+
+fn context(id: RecordingId, op_status: OpStatus) -> StartContextInput {
+    StartContextInput {
+        token: token(ContKind::ResolveContext, id),
+        op_status,
+    }
+}
+
+fn d_103(status: Status, current: RecordingId) -> Decision {
+    let decided = decide_start_context(
+        &core(status, current),
+        context(RID, OpStatus::Outstanding),
+        NOW,
+    );
+    assert_valid(&decided);
+    decided
+}
+
+fn recovering_reply(state: Status) -> Option<Reply> {
+    Some(Reply::typed(ReplyType::AudioRecovering, state))
+}
+
+#[test]
+fn r103_1_starting_installs_the_context_and_continues_with_ready_publish() {
+    let decided = d_103(Status::Starting, RID);
+    assert_eq!(decided.row.0, "R103.1");
+    assert_eq!(decided.verdict, Verdict::Applied);
+    assert_eq!(decided.transition, None);
+    assert_eq!(tags(&decided), ["In:CX+(7)"]);
+    assert_eq!(decided.reply, None);
+    assert_eq!(
+        decided.continuation,
+        Some(ContinuationSpec {
+            recording_id: RID,
+            kind: ContKind::ReadyPublish
+        })
+    );
+}
+
+#[test]
+fn r103_2_recovering_installs_the_context_flushes_and_replies_recovering() {
+    // PD-8: the context stays installed after the flush.
+    let decided = d_103(Status::Recovering, RID);
+    assert_eq!(decided.row.0, "R103.2");
+    assert_eq!(decided.verdict, Verdict::Applied);
+    assert_eq!(tags(&decided), ["In:CX+(7)", "PT:PB", "PT:REL"]);
+    assert_eq!(decided.reply, recovering_reply(Status::Recovering));
+    assert_eq!(decided.continuation, None);
+}
+
+#[test]
+fn r103_3_idle_flushes_without_installing_a_context() {
+    let decided = d_103(Status::Idle, RID);
+    assert_eq!(decided.row.0, "R103.3");
+    assert_eq!(decided.verdict, Verdict::Applied);
+    assert_eq!(tags(&decided), ["PT:PB", "PT:REL"]);
+    assert_eq!(decided.reply, recovering_reply(Status::Idle));
+    assert_eq!(decided.continuation, None);
+}
+
+#[test]
+fn r103_4_and_5_a_current_recording_or_processing_start_is_superseded() {
+    for (status, row) in [
+        (Status::Recording, "R103.4"),
+        (Status::Processing, "R103.5"),
+    ] {
+        let decided = d_103(status, RID);
+        assert_eq!(decided.row.0, row);
+        assert_eq!(decided.verdict, Verdict::Applied);
+        assert_eq!(
+            tags(&decided),
+            ["PDT:PA", "PDT:TERM(Superseded/StaleOwner)", "PT:REL"]
+        );
+        assert_eq!(decided.reply, recovering_reply(status));
+        assert_eq!(decided.continuation, None);
+    }
+}
+
+#[test]
+fn r103_6_a_stale_id_is_superseded_with_the_live_status_in_the_reply() {
+    for status in ALL {
+        let decided = d_103(status, NEWER);
+        assert_eq!(decided.row.0, "R103.6", "{status:?}");
+        assert_eq!(decided.verdict, Verdict::Stale(StaleKind::StaleRecording));
+        assert_eq!(
+            tags(&decided),
+            ["PDT:PA", "PDT:TERM(Superseded/StaleOwner)", "PT:REL"]
+        );
+        assert_eq!(decided.reply, recovering_reply(status), "{status:?}");
+        assert_eq!(decided.transition, None);
+    }
+}
+
+#[test]
+fn start_context_never_branches_on_the_op_status() {
+    for status in ALL {
+        for current in [RID, NEWER] {
+            let outstanding = decide_start_context(
+                &core(status, current),
+                context(RID, OpStatus::Outstanding),
+                NOW,
+            );
+            let unknown =
+                decide_start_context(&core(status, current), context(RID, OpStatus::Unknown), NOW);
+            assert_eq!(outstanding, unknown, "{status:?} {current:?}");
+        }
+    }
+}
+
+#[test]
+fn r103_flush_and_supersede_rows_release_the_claims_last_and_abort_before_the_terminal() {
+    for status in ALL {
+        for current in [RID, NEWER] {
+            let decided = d_103(status, current);
+            if decided.row.0 == "R103.1" {
+                continue;
+            }
+            assert_eq!(tags(&decided).last().map(String::as_str), Some("PT:REL"));
+            let tags = tags(&decided);
+            if let Some(term) = tags.iter().position(|t| t.contains("TERM")) {
+                assert_eq!(tags[term - 1], "PDT:PA", "PA runs before the claim");
+            }
+        }
+    }
+}
+
+#[test]
+fn site_103_covers_every_registered_row() {
+    let mut seen = std::collections::BTreeSet::new();
+    seen.insert(
+        decide_start_destination(&core(Status::Starting, RID), RID, true, NOW)
+            .row
+            .0,
+    );
+    seen.insert(
+        decide_start_destination(&core(Status::Idle, RID), RID, true, NOW)
+            .row
+            .0,
+    );
+    for status in ALL {
+        for current in [RID, NEWER] {
+            seen.insert(d_103(status, current).row.0);
+        }
+    }
+    let expected: std::collections::BTreeSet<&str> = rows_of_site(SiteId::StartContext).collect();
+    assert_eq!(seen, expected);
+}
+
+// ------------------------------------------------------------------ R104.x
+
+fn ready(rid: RecordingId, audio_ready: bool, context_present: Option<bool>) -> ReadyPublishInput {
+    ReadyPublishInput {
+        token: token(ContKind::ReadyPublish, rid),
+        op_status: OpStatus::Outstanding,
+        rid,
+        audio_ready,
+        context_present,
+        context_ready_at: NOW,
+    }
+}
+
+fn d_104(status: Status, current: RecordingId, input: ReadyPublishInput) -> Decision {
+    let decided = decide_ready_publish(&core(status, current), input, NOW);
+    assert_valid(&decided);
+    decided
+}
+
+fn facts() -> LockFreeFacts {
+    LockFreeFacts {
+        current_id: RID,
+        cancelled_through: RecordingId::NONE,
+    }
+}
+
+#[test]
+fn r104_1_audio_not_ready_is_a_no_lock_continue_for_every_status() {
+    let decided = decide_ready_publish_nolock(facts(), ready(RID, false, None), NOW);
+    assert_valid(&decided);
+    assert_eq!(decided.row.0, "R104.1");
+    assert_eq!(decided.verdict, Verdict::Continue);
+    assert!(decided.effects.is_empty());
+    assert_eq!(decided.reply, None);
+    for status in ALL {
+        let under_d = d_104(status, RID, ready(RID, false, Some(true)));
+        assert_eq!(under_d, decided, "{status:?}: the same row under D");
+    }
+}
+
+#[test]
+fn r104_1_the_no_lock_entry_refuses_a_ready_input() {
+    let decided = decide_ready_publish_nolock(facts(), ready(RID, true, Some(true)), NOW);
+    assert_eq!(
+        decided.verdict,
+        Verdict::Invalid(InvalidKind::Impossible(RowId("R104.1")))
+    );
+    assert!(decided.effects.is_empty());
+}
+
+#[test]
+fn r104_2_a_starting_recording_with_a_context_publishes_recording() {
+    let decided = d_104(Status::Starting, RID, ready(RID, true, Some(true)));
+    assert_eq!(decided.row.0, "R104.2");
+    assert_eq!(decided.verdict, Verdict::Applied);
+    assert_eq!(
+        decided.transition,
+        Some((Status::Starting, Status::Recording))
+    );
+    assert_eq!(
+        tags(&decided),
+        ["In:ST→Recording", "In:TL", "In:EM(recording)", "In:SD"]
+    );
+    assert_eq!(decided.reply, None);
+    assert_eq!(decided.continuation, None);
+}
+
+#[test]
+fn r104_3_a_starting_recording_without_a_context_does_not_publish() {
+    let decided = d_104(Status::Starting, RID, ready(RID, true, Some(false)));
+    assert_eq!(decided.row.0, "R104.3");
+    assert_eq!(decided.verdict, Verdict::Continue);
+    assert!(decided.effects.is_empty());
+    assert_eq!(decided.transition, None);
+}
+
+#[test]
+fn r104_3_the_context_is_read_only_after_the_id_and_status_guards_passed() {
+    let asked = d_104(Status::Starting, RID, ready(RID, true, None));
+    assert_eq!(
+        asked.verdict,
+        Verdict::NeedObservation(ObsKind::ContextPresence { id: RID })
+    );
+    assert!(asked.effects.is_empty());
+    // Any earlier guard answers without the observation (today's short circuit).
+    for (status, current) in [
+        (Status::Starting, NEWER),
+        (Status::Idle, RID),
+        (Status::Recovering, RID),
+        (Status::Processing, RID),
+        (Status::Recording, RID),
+    ] {
+        let decided = d_104(status, current, ready(RID, true, None));
+        assert_eq!(decided.verdict, Verdict::Continue, "{status:?} {current:?}");
+    }
+}
+
+#[test]
+fn r104_4_a_stale_recording_id_does_not_publish_in_any_status() {
+    for status in ALL {
+        for context_present in [None, Some(true), Some(false)] {
+            let decided = d_104(status, NEWER, ready(RID, true, context_present));
+            assert_eq!(decided.row.0, "R104.4", "{status:?}");
+            assert_eq!(decided.verdict, Verdict::Continue);
+            assert!(decided.effects.is_empty());
+            assert_eq!(decided.transition, None);
+        }
+    }
+}
+
+#[test]
+fn r104_5_a_current_recording_that_is_not_starting_does_not_publish() {
+    // #216: the late publish needs `Starting`, whatever the context says.
+    for status in [Status::Idle, Status::Recovering, Status::Processing] {
+        for context_present in [None, Some(true), Some(false)] {
+            let decided = d_104(status, RID, ready(RID, true, context_present));
+            assert_eq!(decided.row.0, "R104.5", "{status:?}");
+            assert_eq!(decided.verdict, Verdict::Continue);
+            assert!(decided.effects.is_empty(), "{status:?}: no ST, EM or SD");
+            assert_eq!(decided.transition, None);
+        }
+    }
+}
+
+#[test]
+fn r104_6_a_recording_recording_does_not_publish_again() {
+    for context_present in [None, Some(true), Some(false)] {
+        let decided = d_104(Status::Recording, RID, ready(RID, true, context_present));
+        assert_eq!(decided.row.0, "R104.6");
+        assert_eq!(decided.verdict, Verdict::Continue);
+        assert!(decided.effects.is_empty());
+    }
+}
+
+#[test]
+fn r104_7_the_flight_end_prepares_the_model_begins_the_performance_and_replies_starting() {
+    let decided = decide_start_flight_end(RID, NOW);
+    assert_valid(&decided);
+    assert_eq!(decided.row.0, "R104.7");
+    assert_eq!(decided.verdict, Verdict::Applied);
+    assert_eq!(tags(&decided), ["PDT:PM", "PT:PB", "PT:REL"]);
+    assert_eq!(
+        decided.reply,
+        Some(Reply::Typed {
+            ty: ReplyType::RecordingStarting,
+            state: Status::Starting,
+            recording_id: Some(RID),
+        })
+    );
+    assert_eq!(decided.continuation, None);
+}
+
+#[test]
+fn ready_publish_decisions_never_branch_on_the_op_status() {
+    for status in ALL {
+        for current in [RID, NEWER] {
+            for audio_ready in [true, false] {
+                let mut unknown = ready(RID, audio_ready, Some(true));
+                unknown.op_status = OpStatus::Unknown;
+                assert_eq!(
+                    d_104(status, current, ready(RID, audio_ready, Some(true))),
+                    d_104(status, current, unknown),
+                    "{status:?} {current:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn site_104_covers_every_registered_row() {
+    let mut seen = std::collections::BTreeSet::new();
+    seen.insert(
+        decide_ready_publish_nolock(facts(), ready(RID, false, None), NOW)
+            .row
+            .0,
+    );
+    for status in ALL {
+        for current in [RID, NEWER] {
+            for context_present in [Some(true), Some(false)] {
+                seen.insert(
+                    d_104(status, current, ready(RID, true, context_present))
+                        .row
+                        .0,
+                );
+            }
+        }
+    }
+    seen.insert(decide_start_flight_end(RID, NOW).row.0);
+    let expected: std::collections::BTreeSet<&str> = rows_of_site(SiteId::ReadyPublish).collect();
+    assert_eq!(seen, expected);
+}
+
+#[test]
+fn site_103_and_104_decisions_are_pure() {
+    let view = core(Status::Starting, RID);
+    let a = decide_start_context(&view, context(RID, OpStatus::Outstanding), NOW);
+    let b = decide_start_context(&view, context(RID, OpStatus::Outstanding), NOW);
+    assert_eq!(a, b);
+    let a = decide_ready_publish(&view, ready(RID, true, Some(true)), NOW);
+    let b = decide_ready_publish(&view, ready(RID, true, Some(true)), NOW);
+    assert_eq!(a, b);
+    assert_eq!(view, core(Status::Starting, RID));
 }
