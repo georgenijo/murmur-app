@@ -590,3 +590,42 @@ fn the_destination_witness_reports_the_real_emit_result() {
         );
     }
 }
+
+// ------------------------------------------------- no managed-state lookup on R104.1
+
+/// R104.1 (audio not ready): the base returns before any managed-state lookup, and
+/// the start already holds its own `&State`, so the publish takes none: it runs on
+/// an app that manages **no** `State` at all (a lookup would panic), retires the
+/// flight's `K:ReadyPublish`, and publishes nothing.
+#[test]
+fn the_audio_not_ready_publish_looks_up_no_managed_state() {
+    use murmur_dictation_core::decision::{ContKind, ContinuationSpec};
+    use murmur_dictation_core::ids::RecordingId;
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build a mock app that manages no State");
+    let state = test_state(AppState::default());
+    let guard = crate::core_history::ContinuationGuard::register(
+        &state.app_state.core_history,
+        ContinuationSpec {
+            recording_id: RecordingId(1),
+            kind: ContKind::ReadyPublish,
+        },
+    );
+    assert_eq!(state.app_state.core_history.outstanding_ops(), 1);
+    let published = publish_recording_ready_with(
+        app.handle(),
+        &state,
+        1,
+        std::time::Instant::now(),
+        guard,
+        |_| false,
+        |_, _, _| unreachable!("no side task for a publish that did not happen"),
+    );
+    assert!(!published);
+    assert_eq!(
+        state.app_state.core_history.outstanding_ops(),
+        0,
+        "the flight's op is retired by R104.1"
+    );
+}
