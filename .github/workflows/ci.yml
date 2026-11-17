@@ -328,11 +328,14 @@ jobs:
         # is bin-only, so its tests stay in the following dedicated step.
         # nextest gives every test its own process, so tests that share process
         # state stay as isolated as `cargo test -- --test-threads=1` kept them,
-        # while the suite uses every core.
+        # while the suite uses every core. The golden scenarios get a per-test
+        # kill budget from .github/nextest-golden.toml so a missing wake fails
+        # here instead of hanging the job before the bounded repeat step.
         run: >-
           cd app/src-tauri &&
           cargo nextest run --cargo-metadata target/ci-cargo-metadata.json
           --binaries-metadata target/ci-test-binaries.json -E 'kind(lib)'
+          --config-file ../../.github/nextest-golden.toml
 
       - name: Run golden dictation scenarios 100 times
         if: needs.changes.outputs.verified != 'true'
