@@ -1468,3 +1468,165 @@ fn the_success_terminal_witness_records_a_claim_the_supervisor_won() {
         },
     });
 }
+
+// ------------------------------------- panic reporting never strands or aborts the drain
+
+/// A subscriber that panics on the first `pipeline.dictation_state_changed`
+/// event (the finish's status trace) and on every recovery event the drain
+/// reports for a panicked finish.
+#[derive(Clone, Default)]
+struct PanickingSubscriber {
+    status_panics_left: Arc<std::sync::atomic::AtomicUsize>,
+    recovery_events: Arc<StdMutex<Vec<String>>>,
+}
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for PanickingSubscriber {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        use std::sync::atomic::Ordering;
+        let text = format!("{event:?}");
+        if text.contains("pipeline.dictation_deferred_finish_panicked") {
+            self.recovery_events.lock().expect("events").push(text);
+            panic!("the subscriber panics on the recovery event");
+        }
+        if text.contains("pipeline.dictation_state_changed")
+            && self
+                .status_panics_left
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+        {
+            panic!("the subscriber panics on the status trace");
+        }
+    }
+}
+
+/// Queues two finishes (recording 2's, which writes the status and so traces it,
+/// then recording 1's stale one) in a 204b listener, under a subscriber that
+/// panics on the first status trace and on the drain's recovery report. The
+/// listener then returns, or panics itself when `listener_panics`. Returns the
+/// recovery events the subscriber saw and the panic message that escaped.
+fn drain_two_finishes_under_a_panicking_subscriber(
+    w: &Arc<World>,
+    listener_panics: bool,
+) -> (Vec<String>, String) {
+    use tracing_subscriber::layer::SubscriberExt;
+    let first = park_stop_of_recording_1_then_start_recording_2(w);
+    let mut second = w.stop(None);
+    assert!(poll_once(&mut second).is_pending());
+    assert_eq!(history_counts(w), (2, 2), "both pipelines are registered");
+    let parked = Arc::new(StdMutex::new(Some((first, second))));
+    let state = w.state();
+    let layer = PanickingSubscriber::default();
+    layer
+        .status_panics_left
+        .store(1, std::sync::atomic::Ordering::SeqCst);
+    let subscriber = tracing_subscriber::Registry::default().with(layer.clone());
+    let outcome = tracing::subscriber::with_default(subscriber, || {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            super::run_pipeline_idle_emit(
+                &state.app_state,
+                2,
+                murmur_dictation_core::inputs::PostKind::StopPost,
+                &|_| {},
+                &|| {
+                    let (first, second) = parked.lock().expect("slot").take().expect("two");
+                    drop(second);
+                    drop(first);
+                    if listener_panics {
+                        panic!("the listener's own panic");
+                    }
+                    true
+                },
+            );
+        }))
+    });
+    let panic = outcome.expect_err("a panic escaped");
+    let message = panic
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_default();
+    // The payload may be leaked or dropped; a panic must not come out of it.
+    drop(panic);
+    assert!(
+        super::DEFERRED_FINISHES.with(|queue| queue.borrow().is_empty()),
+        "the second finish was not stranded"
+    );
+    assert_history_empty(w, "both finishes' H1 and H2 are retired");
+    assert!(!crate::dictation_executor::executor::in_core());
+    w.open_gate("pipeline");
+    let events = layer.recovery_events.lock().expect("events").clone();
+    (events, message)
+}
+
+/// A normal drain: the first finish panics on its status trace and the subscriber
+/// panics again on the recovery report. The second finish still runs, and the
+/// first panic is re-raised once everything has run.
+#[test]
+fn a_panicking_subscriber_cannot_strand_the_second_finish_in_a_normal_drain() {
+    under_watchdog("panicking subscriber, normal drain", || {
+        run_sub_run(&SubRun {
+            title: "panicking subscriber, normal drain",
+            setup: Setup::idle(),
+            body: |w| {
+                let (events, message) = drain_two_finishes_under_a_panicking_subscriber(w, false);
+                assert!(
+                    message.contains("the subscriber panics on the status trace"),
+                    "the first finish's panic is the one re-raised: {message}"
+                );
+                assert_eq!(events.len(), 1, "one panicked finish, reported once");
+            },
+        })
+    });
+}
+
+/// An unwinding drain: the listener's own panic is unwinding when the drain runs,
+/// the first finish panics, and the subscriber panics on the recovery report.
+/// Nothing aborts, the second finish still runs, and the listener's panic wins.
+#[test]
+fn a_panicking_subscriber_cannot_strand_or_abort_an_unwinding_drain() {
+    under_watchdog("panicking subscriber, unwinding drain", || {
+        run_sub_run(&SubRun {
+            title: "panicking subscriber, unwinding drain",
+            setup: Setup::idle(),
+            body: |w| {
+                let (events, message) = drain_two_finishes_under_a_panicking_subscriber(w, true);
+                assert!(
+                    message.contains("the listener's own panic"),
+                    "the original panic wins: {message}"
+                );
+                assert_eq!(events.len(), 1, "one panicked finish, reported once");
+            },
+        })
+    });
+}
+
+/// The report carries the registered code, the recording id and the origin name,
+/// and nothing from the panic payload.
+#[test]
+fn the_panicked_finish_report_is_registered_and_content_free() {
+    under_watchdog("panic report content", || {
+        run_sub_run(&SubRun {
+            title: "panic report content",
+            setup: Setup::idle(),
+            body: |w| {
+                let (events, _message) = drain_two_finishes_under_a_panicking_subscriber(w, false);
+                let text = events.first().expect("a report");
+                assert!(
+                    text.contains("pipeline.dictation_deferred_finish_panicked"),
+                    "{text}"
+                );
+                assert!(text.contains("recording_id"), "{text}");
+                assert!(text.contains("origin"), "{text}");
+                assert!(!text.contains("the subscriber panics"), "{text}");
+                assert_eq!(
+                    crate::telemetry::canonical_event_code(
+                        "pipeline.dictation_deferred_finish_panicked"
+                    ),
+                    Some("pipeline.dictation_deferred_finish_panicked")
+                );
+            },
+        })
+    });
+}

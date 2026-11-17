@@ -357,6 +357,9 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "pipeline.dictation_presentation" => Some("pipeline.dictation_presentation"),
         "pipeline.dictation_stop_handoff" => Some("pipeline.dictation_stop_handoff"),
         "pipeline.dictation_terminal" => Some("pipeline.dictation_terminal"),
+        "pipeline.dictation_deferred_finish_panicked" => {
+            Some("pipeline.dictation_deferred_finish_panicked")
+        }
         "pipeline.dictation_completed" => Some("pipeline.dictation_completed"),
         "pipeline.dictation_metrics" => Some("pipeline.dictation_metrics"),
         "pipeline.dictation_failed" => Some("pipeline.dictation_failed"),
@@ -2200,6 +2203,24 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
             "event_code" => true,
             "sample_count" => value.as_u64().is_some(),
             key if key == owner_field => value.as_u64().is_some_and(|id| id > 0),
+            _ => false,
+        });
+        return;
+    }
+    if obj.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("pipeline.dictation_deferred_finish_panicked")
+    {
+        // Exact content-free schema in every build: the recording id and which
+        // finish origin panicked, never the panic payload.
+        obj.retain(|key, value| match key.as_str() {
+            "event_code" => true,
+            "recording_id" => value.as_u64().is_some_and(|id| id > 0),
+            "origin" => value.as_str().is_some_and(|origin| {
+                matches!(
+                    origin,
+                    "stop_capture" | "pipeline_exit" | "legacy_parse" | "dropped"
+                )
+            }),
             _ => false,
         });
         return;
@@ -4359,6 +4380,36 @@ mod tests {
             data,
             serde_json::json!({"pass_kind": "preview", "recording_id": 41})
         );
+    }
+
+    #[test]
+    fn deferred_finish_panic_schema_is_exact_in_every_build() {
+        let code = "pipeline.dictation_deferred_finish_panicked";
+        assert_eq!(canonical_event_code(code), Some(code));
+        for debug_build in [true, false] {
+            let mut data = serde_json::json!({
+                "event_code": code, "recording_id": 41, "origin": "pipeline_exit",
+                "payload": "SENTINEL_PANIC_TEXT", "text": "SENTINEL_TRANSCRIPT", "other_id": 42
+            });
+            sanitize_event_data("pipeline", &mut data, debug_build);
+            assert_eq!(
+                data,
+                serde_json::json!({"event_code": code, "recording_id": 41, "origin": "pipeline_exit"})
+            );
+            let mut data = serde_json::json!({
+                "event_code": code, "recording_id": 41, "origin": "/Users/private/path"
+            });
+            sanitize_event_data("pipeline", &mut data, debug_build);
+            assert_eq!(
+                data,
+                serde_json::json!({"event_code": code, "recording_id": 41})
+            );
+            let data = serde_json::json!({"event_code": code, "recording_id": 41});
+            assert_eq!(
+                sanitized_summary("pipeline", Some("PRIVATE_SENTINEL".into()), &data, false),
+                code
+            );
+        }
     }
 
     #[test]

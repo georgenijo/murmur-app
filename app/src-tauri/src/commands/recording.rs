@@ -1383,12 +1383,17 @@ fn defer_finish(
 ///
 /// Each finish runs under its own `catch_unwind`: a panic in one (C4.1 allows the
 /// failed finish to be partly applied; its owner's `Drop` retires H1 and H2)
-/// never abandons the later ones. The first panic is re-raised once the queue is
-/// empty, or logged when this thread is already unwinding (a second panic during
-/// an unwind would abort the process).
+/// never abandons the later ones. The loop itself runs nothing that can panic
+/// (no logging, no payload drop): it only notes which finishes panicked and
+/// keeps the first payload. After the queue is empty each panic is reported
+/// inside its own `catch_unwind` (a panicking subscriber cannot strand anything
+/// or abort), then the first payload is re-raised, or leaked when this thread is
+/// already unwinding (a second panic during an unwind would abort the process,
+/// and a foreign payload's destructor may panic).
 fn drain_deferred_finishes(app_state: &AppState) {
     let me = std::ptr::from_ref(app_state) as usize;
     let mut first_panic: Option<Box<dyn std::any::Any + Send>> = None;
+    let mut panicked: Vec<(u64, murmur_dictation_core::inputs::GuardOrigin)> = Vec::new();
     while !crate::dictation_executor::executor::in_core() {
         let next = DEFERRED_FINISHES.with(|queue| {
             let mut queue = queue.borrow_mut();
@@ -1408,18 +1413,61 @@ fn drain_deferred_finishes(app_state: &AppState) {
             );
         }));
         if let Err(panic) = outcome {
-            tracing::error!(
-                target: "pipeline",
-                recording_id = entry.recording_id,
-                "a deferred idle-guard finish panicked; the remaining ones still run"
-            );
-            first_panic.get_or_insert(panic);
+            panicked.push((entry.recording_id, entry.origin));
+            if first_panic.is_none() {
+                first_panic = Some(panic);
+            } else {
+                discard_panic_payload(panic);
+            }
         }
     }
+    for (recording_id, origin) in panicked {
+        // Its own catch: a subscriber that panics on this event must not skip
+        // the other reports or abort an unwinding thread.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tracing::error!(
+                target: "pipeline",
+                event_code = "pipeline.dictation_deferred_finish_panicked",
+                recording_id,
+                origin = guard_origin_name(origin),
+                "a deferred idle-guard finish panicked; the remaining ones still ran"
+            );
+        }))
+        .map_err(discard_panic_payload);
+    }
     if let Some(panic) = first_panic {
-        if !std::thread::panicking() {
+        if std::thread::panicking() {
+            discard_panic_payload(panic);
+        } else {
             std::panic::resume_unwind(panic);
         }
+    }
+}
+
+/// Stable, content-free name of a finish origin for the event registry.
+fn guard_origin_name(origin: murmur_dictation_core::inputs::GuardOrigin) -> &'static str {
+    use murmur_dictation_core::inputs::GuardOrigin;
+    match origin {
+        GuardOrigin::StopCapture => "stop_capture",
+        GuardOrigin::PipelineExit => "pipeline_exit",
+        GuardOrigin::LegacyParse => "legacy_parse",
+        GuardOrigin::Dropped => "dropped",
+    }
+}
+
+/// Dispose of a caught panic payload without ever panicking out of here. While
+/// this thread unwinds the payload is leaked (a destructor that panics would
+/// abort the process); otherwise it drops inside its own `catch_unwind`, and a
+/// payload that panics while dropping is leaked too.
+fn discard_panic_payload(payload: Box<dyn std::any::Any + Send>) {
+    if std::thread::panicking() {
+        std::mem::forget(payload);
+        return;
+    }
+    if let Err(second) =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(payload)))
+    {
+        std::mem::forget(second);
     }
 }
 
