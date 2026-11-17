@@ -14,6 +14,7 @@ use crate::state::{AppState, DictationStatus};
 use crate::transcriber;
 use crate::{audio, audio_decode, injector, keyboard, vad};
 use crate::{MutexExt, State};
+use murmur_dictation_core::admission::{Admission, RefusalCode, SmartAutoObservation};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -1131,10 +1132,36 @@ impl Drop for SharedBackendChangeGuard {
     }
 }
 
+/// The pre-`admit` status test of recording-start preparation, kept as the
+/// oracle the tests compare `admit(ModelPreparation)` against.
+#[cfg(test)]
 fn status_allows_model_preparation(status: DictationStatus) -> bool {
     matches!(
         status,
         DictationStatus::Starting | DictationStatus::Recording
+    )
+}
+
+/// `ModelPreparation` (recording-start variant), read under the dictation lock:
+/// the worker's recording id must be the current one, the status `Starting` or
+/// `Recording`, and the frozen context's model the one being prepared.
+fn recording_model_preparation_eligible(
+    state: &State,
+    dictation: &crate::state::DictationState,
+    recording_id: u64,
+    model_name: &str,
+) -> bool {
+    crate::dictation_admission::model_preparation_eligible(
+        murmur_dictation_core::admission::ModelPrepVariant::RecordingStart,
+        dictation.status,
+        state.app_state.recording_id.load(Ordering::SeqCst),
+        Some(recording_id),
+        || {
+            state
+                .app_state
+                .active_context(recording_id)
+                .is_some_and(|context| context.transcription.model_name == model_name)
+        },
     )
 }
 
@@ -1150,12 +1177,7 @@ fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, rec
         let state = app_handle.state::<State>();
         let is_active = {
             let dictation = state.app_state.dictation.lock_or_recover();
-            state.app_state.recording_id.load(Ordering::SeqCst) == recording_id
-                && status_allows_model_preparation(dictation.status)
-                && state
-                    .app_state
-                    .active_context(recording_id)
-                    .is_some_and(|context| context.transcription.model_name == model_name)
+            recording_model_preparation_eligible(&state, &dictation, recording_id, &model_name)
         };
         if !is_active {
             return;
@@ -1165,12 +1187,7 @@ fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, rec
         // previous inference or model switch to release the backend.
         let is_still_active = {
             let dictation = state.app_state.dictation.lock_or_recover();
-            state.app_state.recording_id.load(Ordering::SeqCst) == recording_id
-                && status_allows_model_preparation(dictation.status)
-                && state
-                    .app_state
-                    .active_context(recording_id)
-                    .is_some_and(|context| context.transcription.model_name == model_name)
+            recording_model_preparation_eligible(&state, &dictation, recording_id, &model_name)
         };
         if !is_still_active {
             return;
@@ -1238,6 +1255,23 @@ fn spawn_model_preparation(app_handle: tauri::AppHandle, model_name: String, rec
     }));
 }
 
+/// `ModelPreparation` (idle warm-up variant), read under the dictation lock:
+/// status `Idle` and the selected model is the one being warmed. The idle
+/// warm-up has no recording-id guard.
+fn idle_model_preparation_eligible(
+    state: &State,
+    dictation: &crate::state::DictationState,
+    model_name: &str,
+) -> bool {
+    crate::dictation_admission::model_preparation_eligible(
+        murmur_dictation_core::admission::ModelPrepVariant::IdleWarm,
+        dictation.status,
+        state.app_state.recording_id.load(Ordering::SeqCst),
+        None,
+        || dictation.model_name == model_name,
+    )
+}
+
 /// Warm an installed Core ML model after startup configuration. A newly linked
 /// application binary can trigger one-time ANE specialization even when the
 /// compiled model cache already exists. Starting it while the app is idle keeps
@@ -1254,7 +1288,7 @@ fn spawn_idle_model_preparation(
         let state = app_handle.state::<State>();
         let is_current = {
             let dictation = state.app_state.dictation.lock_or_recover();
-            dictation.status == DictationStatus::Idle && dictation.model_name == model_name
+            idle_model_preparation_eligible(&state, &dictation, &model_name)
         };
         if !is_current {
             return;
@@ -1262,7 +1296,7 @@ fn spawn_idle_model_preparation(
 
         let is_still_current = {
             let dictation = state.app_state.dictation.lock_or_recover();
-            dictation.status == DictationStatus::Idle && dictation.model_name == model_name
+            idle_model_preparation_eligible(&state, &dictation, &model_name)
         };
         if !is_still_current {
             return;
@@ -4121,10 +4155,8 @@ pub async fn configure_dictation(
         .is_some_and(|requested| requested != dictation.model_name)
     {
         if !state.benchmark.try_start_shared_backend_change() {
-            return Err(
-                "Wait for the benchmark or current model preparation to finish before changing models."
-                    .to_string(),
-            );
+            // `SharedBackendChange`: the coordinator's own answer to the claim.
+            return Err(crate::dictation_admission::shared_backend_change_refusal());
         }
         crate::meeting_suggestions::busy_changed(&app_handle);
         Some(SharedBackendChangeGuard(
@@ -5409,77 +5441,38 @@ pub(crate) struct DictationStartBlocker {
 /// first-tap helper preparation. Callers hold the dictation lock, so
 /// `transcribe_file` cannot slip between the
 /// check and the transition.
+///
+/// A permission relaunch that has committed to exiting refuses new work. The
+/// callers hold the dictation lock, and the relaunch re-reads the activity
+/// gate after it commits, so a start is either seen by that re-read or
+/// refused here. The predicate is `admit(DictationStart)` over the facts in the
+/// order they were read here before (relaunch, meeting, file, corpus,
+/// benchmark, status); see `dictation_admission`.
 pub(crate) fn dictation_start_blocker(
     state: &State,
     status: DictationStatus,
 ) -> Option<DictationStartBlocker> {
-    // A permission relaunch that has committed to exiting refuses new work. The
-    // callers hold the dictation lock, and the relaunch re-reads the activity
-    // gate after it commits, so a start is either seen by that re-read or
-    // refused here.
-    if crate::commands::permissions::relaunch_committed() {
-        return Some(DictationStartBlocker {
-            kind: "busy_restarting",
-            state: "idle",
-        });
-    }
-    dictation_activity_blocker(state, status)
-}
-
-/// What currently occupies dictation, ignoring a committed relaunch. The
-/// relaunch itself asks this, so its own commitment cannot read as activity.
-fn dictation_activity_blocker(
-    state: &State,
-    status: DictationStatus,
-) -> Option<DictationStartBlocker> {
-    let blocked = |kind, state| Some(DictationStartBlocker { kind, state });
-    if state.app_state.meeting_blocks_asr() {
-        return blocked("busy_meeting", "idle");
-    }
-    // Refuse if a file transcription holds the shared Whisper backend.
-    // `transcribe_file` takes the dictation lock only after claiming the flag.
-    if state.app_state.file_transcribing.load(Ordering::SeqCst) {
-        return blocked("busy_transcribing_file", "idle");
-    }
-    #[cfg(feature = "internal-benchmark")]
-    if state.corpus.is_active() {
-        return blocked("busy_recording_corpus", "idle");
-    }
-    if state.benchmark.is_running() {
-        return blocked("busy_benchmarking", "idle");
-    }
-
-    match status {
-        DictationStatus::Starting => blocked("already_starting", "starting"),
-        DictationStatus::Recording => blocked("already_recording", "recording"),
-        DictationStatus::Recovering => blocked("audio_recovering", "recovering"),
-        DictationStatus::Processing => blocked("already_processing", "processing"),
-        DictationStatus::Idle => None,
+    match crate::dictation_admission::dictation_start_admission(state, status) {
+        Admission::RefuseWith(code) => code.reply().map(|(kind, state)| DictationStartBlocker {
+            kind: kind.as_str(),
+            state: state.as_str(),
+        }),
+        _ => None,
     }
 }
 
-/// Whether silent first-tap preparation may spawn an idle capture helper.
-/// It shares the confirmed start's admission guards and additionally refuses
-/// while a previous dictation's capture cleanup is still pending.
-pub(crate) fn dictation_prepare_admitted(state: &State) -> bool {
-    dictation_prepare_refusal(state).is_none()
-}
+// Silent first-tap preparation, Fn key-down and the permission-relaunch gate
+// live in `dictation_admission` (admit() over the same facts, under the same
+// dictation lock). The tests below reach them by their old names.
+#[cfg(test)]
+use crate::dictation_admission::{
+    dictation_prepare_admitted, dictation_prepare_refusal, dictation_relaunch_busy,
+    key_down_capture_admission,
+};
 
-/// The first content-free reason a prepared or key-down capture may not open
-/// now, or `None` when it may.
-pub(crate) fn dictation_prepare_refusal(state: &State) -> Option<&'static str> {
-    dictation_refusal(state, true)
-}
-
-/// Admission for an Fn key-down capture: `Ok(Some(preview))` when the only
-/// obstacle is the visible Settings microphone test, which the capture takes
-/// over in place instead of being skipped. Any other refusal is unchanged.
-pub(crate) fn key_down_capture_admission(state: &State) -> Result<Option<u64>, &'static str> {
-    key_down_admission_from(dictation_prepare_refusal(state), || {
-        state.app_state.microphone_preview.handoff_candidate()
-    })
-}
-
+/// The pre-`admit` tag mapper for Fn key-down admission, kept as the oracle the
+/// tests compare `admit(KeyDownCapture)` against.
+#[cfg(test)]
 fn key_down_admission_from(
     refusal: Option<&'static str>,
     handoff_candidate: impl FnOnce() -> Option<u64>,
@@ -5488,34 +5481,6 @@ fn key_down_admission_from(
         None => Ok(None),
         Some("preview_active") => handoff_candidate().map(Some).ok_or("preview_active"),
         Some(reason) => Err(reason),
-    }
-}
-
-/// Whether anything dictation-related is in progress, for a permission
-/// relaunch. A relaunch that has itself committed does not count.
-pub(crate) fn dictation_relaunch_busy(state: &State) -> Option<&'static str> {
-    dictation_refusal(state, false)
-}
-
-fn dictation_refusal(state: &State, honor_committed_relaunch: bool) -> Option<&'static str> {
-    let dictation = state.app_state.dictation.lock_or_recover();
-    let blocker = if honor_committed_relaunch {
-        dictation_start_blocker(state, dictation.status)
-    } else {
-        dictation_activity_blocker(state, dictation.status)
-    };
-    if blocker.is_some() {
-        Some("dictation_busy")
-    } else if state.app_state.microphone_preview.is_active() {
-        Some("preview_active")
-    } else if audio_lifecycle::is_audio_active() {
-        Some("microphone_busy")
-    } else if audio_lifecycle::is_dictation_cleanup_pending(
-        state.app_state.recording_id.load(Ordering::SeqCst),
-    ) {
-        Some("cleanup_pending")
-    } else {
-        None
     }
 }
 
@@ -5561,16 +5526,25 @@ async fn start_native_recording_inner(
     // Under the transition, a current mic test is one this start kept for the
     // supervisor; if it cannot be taken over, the start queues behind its exit.
     let kept_preview = state.app_state.microphone_preview.is_active();
-    if host.keyboard().is_app_disabled() {
-        tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
-        return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
-    }
+    // The pre-D admission checks: `app_disabled`, then Smart Auto with a fixed
+    // microphone. Both facts are read here, in the old order.
+    let app_disabled = host.keyboard().is_app_disabled();
     let origin = match origin.as_deref() {
         Some("hold") => "hold",
         _ => "toggle",
     };
-    if smart_auto.is_some() && device_name.is_some() {
-        return Err("Smart Auto cannot be combined with a fixed microphone.".to_string());
+    match crate::dictation_admission::dictation_start_pre_admission(
+        app_disabled,
+        smart_auto.is_some() && device_name.is_some(),
+    ) {
+        Admission::RefuseWith(RefusalCode::AppDisabled) => {
+            tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
+            return Ok(serde_json::json!({ "type": "app_disabled", "state": "idle" }));
+        }
+        Admission::RefuseWith(code @ RefusalCode::SmartAutoWithFixedDevice) => {
+            return Err(code.text().to_string());
+        }
+        _ => {}
     }
     // Check and update status in one lock; assign recording ID in the same
     // critical section so no concurrent cancel/start can slip between them.
@@ -5601,9 +5575,13 @@ async fn start_native_recording_inner(
                 return Err("Dictation is not idle.".to_string());
             }
             DictationStatus::Idle => {
-                if host.supervisor().is_dictation_cleanup_pending(
+                let cleanup_pending = host.supervisor().is_dictation_cleanup_pending(
                     state.app_state.recording_id.load(Ordering::SeqCst),
-                ) {
+                );
+                if let Admission::RefuseWith(code) =
+                    crate::dictation_admission::dictation_start_cleanup_admission(cleanup_pending)
+                {
+                    debug_assert!(code.publishes_recovering());
                     // The result has finished, but its capture owner still
                     // needs cleanup. Keep that generation for failure guidance
                     // and let confirmed exit restore Idle independently.
@@ -5614,9 +5592,12 @@ async fn start_native_recording_inner(
                         DictationStatus::Recovering,
                     );
                     let _ = host.emit("recording-status-changed", "recovering");
-                    return Ok(
-                        serde_json::json!({ "type": "audio_recovering", "state": "recovering" }),
-                    );
+                    return Ok(code.reply().map_or_else(
+                        || serde_json::json!({ "type": "audio_recovering", "state": "recovering" }),
+                        |(kind, status)| {
+                            serde_json::json!({ "type": kind.as_str(), "state": status.as_str() })
+                        },
+                    ));
                 }
                 // This is a cache-only policy read while the capture lifecycle
                 // is Idle. Its stable ID is passed to the supervisor below,
@@ -5624,7 +5605,25 @@ async fn start_native_recording_inner(
                 let (selected_device_name, device_selection, smart_auto_reason) =
                     match smart_auto.as_ref() {
                         Some(request) => {
-                            let selection = crate::audio_inventory::resolve_smart_auto(request)?;
+                            // `admit` asks for the Smart Auto resolution
+                            // (`NeedObservation`) after the retiring-capture
+                            // check; a failed resolve refuses with its own text.
+                            let observed =
+                                crate::dictation_admission::dictation_start_smart_auto_admission(
+                                    SmartAutoObservation::Requested(None),
+                                );
+                            debug_assert!(matches!(observed, Admission::NeedObservation(_)));
+                            let resolved = crate::audio_inventory::resolve_smart_auto(request);
+                            if let Admission::RefuseWith(code) =
+                                crate::dictation_admission::dictation_start_smart_auto_admission(
+                                    SmartAutoObservation::Requested(Some(
+                                        resolved.as_ref().map(|_| ()).map_err(Clone::clone),
+                                    )),
+                                )
+                            {
+                                return Err(code.text().to_string());
+                            }
+                            let selection = resolved?;
                             (
                                 Some(selection.device_id),
                                 "smart_auto",
@@ -6587,27 +6586,20 @@ pub async fn transcribe_file(
     state: tauri::State<'_, State>,
     file_path: String,
 ) -> Result<serde_json::Value, String> {
-    let transition = crate::commands::microphone_preview::transition_after_stopping_preview(
+    let stopped = crate::commands::microphone_preview::transition_after_stopping_preview(
         &app_handle,
         state.inner(),
     )
-    .await?;
-    if state.app_state.meeting_blocks_asr() {
-        return Err(
-            "Wait for the meeting transcript to finish before transcribing a file.".to_string(),
-        );
-    }
+    .await;
     // Mutual exclusion with live dictation: both share one Whisper backend.
-    // Claim the slot first (so a racing `start_native_recording` is blocked),
-    // then refuse if a live recording/processing is already underway. The guard
-    // releases the claim on every return path below.
-    if state
-        .app_state
-        .file_transcribing
-        .swap(true, Ordering::SeqCst)
-    {
-        return Err("Already transcribing a file.".to_string());
-    }
+    // `FileTranscriptionPreClaim` under the transition: the preview stop's
+    // error, then the meeting check, then the claim. The claim stays the atomic
+    // `file_transcribing.swap(true)` (its prior value is the admission fact), so
+    // a racing `start_native_recording` is blocked; then a live
+    // recording/processing is refused below. The guard releases the claim on
+    // every return path after this.
+    let transition =
+        crate::dictation_admission::file_transcription_pre_claim(&state.app_state, stopped)?;
     drop(transition);
     let _file_guard = FileTranscribeGuard {
         app_state: &state.app_state,
@@ -6616,21 +6608,8 @@ pub async fn transcribe_file(
     let _ = app_handle.emit("file-transcription-status-changed", true);
     {
         let dictation = state.app_state.dictation.lock_or_recover();
-        if state.benchmark.is_running() {
-            return Err("Wait for the benchmark to finish before transcribing a file.".to_string());
-        }
-        #[cfg(feature = "internal-benchmark")]
-        if state.corpus.is_active() {
-            return Err("Finish the corpus recording before transcribing a file.".to_string());
-        }
-
-        if dictation.status != DictationStatus::Idle {
-            return Err(
-                "Can't transcribe a file while recording or processing live audio. \
-                 Stop the current recording first."
-                    .to_string(),
-            );
-        }
+        // `FileTranscriptionPostClaim`: benchmark, corpus, then status.
+        crate::dictation_admission::file_transcription_post_claim(&state, dictation.status)?;
     }
     let file_run_id = state.app_state.next_file_run_id();
     if let Err(error) = state

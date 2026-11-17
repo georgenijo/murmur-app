@@ -1,8 +1,10 @@
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent};
 use crate::microphone_auto::SmartAutoRequest;
 use crate::microphone_preview::{MicrophonePreviewStatus, PreviewPhase};
+// The tests below name the status; production reads it through `admit`.
+#[cfg(test)]
 use crate::state::DictationStatus;
-use crate::{keyboard, MutexExt, State};
+use crate::{MutexExt, State};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
 
@@ -115,17 +117,15 @@ fn refuse_revoked_start(
     preview: &crate::microphone_preview::MicrophonePreviewState,
     start_generation: u64,
 ) -> Result<(), String> {
-    if preview.start_revoked(start_generation) {
-        Err(PREVIEW_DICTATION_BUSY.to_string())
-    } else {
-        Ok(())
-    }
+    crate::dictation_admission::preview_start_revoked_refusal(preview, start_generation)
 }
 
 /// The frontend treats exactly this text as a quiet "paused for dictation".
+#[cfg(test)]
 pub(crate) const PREVIEW_DICTATION_BUSY: &str =
     "Finish the current dictation before testing the microphone";
 
+#[cfg(test)]
 pub(crate) const PREVIEW_AUDIO_BUSY: &str =
     "The microphone is still in use or recovering. Wait for Murmur to become ready.";
 
@@ -139,10 +139,11 @@ pub(crate) fn preview_audio_blocker(
     retire_key_down: impl FnOnce(),
     audio_active: impl Fn() -> bool,
 ) -> Option<&'static str> {
-    if unconfirmed_key_down() {
-        retire_key_down();
-    }
-    audio_active().then_some(PREVIEW_AUDIO_BUSY)
+    crate::dictation_admission::preview_audio_admission(
+        unconfirmed_key_down,
+        retire_key_down,
+        audio_active,
+    )
 }
 
 /// Take the recording transition once no unconfirmed Fn key-down capture holds
@@ -200,30 +201,10 @@ pub async fn start_microphone_preview(
         // Settings starts a fresh test.
         refuse_revoked_start(&state.app_state.microphone_preview, start_generation)?;
         let dictation = state.app_state.dictation.lock_or_recover();
-        if dictation.status != DictationStatus::Idle {
-            return Err(PREVIEW_DICTATION_BUSY.to_string());
-        }
-        if state.app_state.meeting_blocks_asr() {
-            return Err(
-                "Finish the current meeting transcript before testing the microphone".to_string(),
-            );
-        }
-
-        if state.benchmark.is_running() {
-            return Err("Finish the current benchmark before testing the microphone".to_string());
-        }
-        #[cfg(feature = "internal-benchmark")]
-        if state.corpus.is_active() {
-            return Err(
-                "Finish the personal corpus recording before testing the microphone".to_string(),
-            );
-        }
-        if keyboard::is_app_disabled() {
-            return Err("Enable Murmur before testing the microphone".to_string());
-        }
-        if state.app_state.microphone_preview.is_active() {
-            return Err("A microphone test is already active".to_string());
-        }
+        // `PreviewStart` under the dictation lock, resumed after the standby
+        // retire above: status, meeting, benchmark, corpus, `app_disabled`,
+        // `preview_active`.
+        crate::dictation_admission::preview_start_admission(&state, dictation.status)?;
         if let Some(busy) = preview_audio_blocker(
             audio_lifecycle::is_unconfirmed_key_down_capture,
             audio_lifecycle::retire_standby,
@@ -267,7 +248,11 @@ pub async fn start_microphone_preview(
     tauri::async_runtime::spawn(async move {
         let state = task_app_handle.state::<State>();
         let transition = state.app_state.recording_transition.lock().await;
-        if !state.app_state.microphone_preview.is_connecting(preview_id) {
+        // `PreviewStartRecheck`: `is_connecting(id)` after the claim.
+        if !crate::dictation_admission::preview_still_connecting(
+            &state.app_state.microphone_preview,
+            preview_id,
+        ) {
             if state.app_state.microphone_preview.clear_if(preview_id) {
                 emit_status(&task_app_handle);
             }

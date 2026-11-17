@@ -8,7 +8,10 @@ use crate::meeting_store::{
     MeetingPage, MeetingRepository, MeetingSession, MeetingStoreStatus, SaveMeetingMetadataRequest,
 };
 use crate::microphone_auto::SmartAutoRequest;
-use crate::state::{AppState, DictationStatus};
+use crate::state::AppState;
+// The tests below name the status; production reads it through `admit`.
+#[cfg(test)]
+use crate::state::DictationStatus;
 use crate::{MutexExt, State};
 use serde::Deserialize;
 use std::sync::atomic::Ordering;
@@ -71,6 +74,8 @@ fn clamp_max_sessions(max_sessions: u32) -> u32 {
     max_sessions.clamp(MIN_KEPT_SESSIONS, MAX_KEPT_SESSIONS)
 }
 
+/// The literal `admit(MeetingPostClaim)` refuses with; tests pin it.
+#[cfg(test)]
 const MEETING_RESTARTING: &str =
     "Murmur is restarting to finish a permission reset. Try again in a moment.";
 
@@ -87,54 +92,26 @@ fn claim_meeting_ownership(app_state: &AppState, inference: bool) -> Result<(), 
             .meeting_inference_active
             .store(true, Ordering::SeqCst);
     }
-    if crate::commands::permissions::relaunch_committed() {
+    // `MeetingPostClaim`: the re-read of `relaunch_committed` after the stores.
+    if let Err(refusal) = crate::dictation_admission::meeting_post_claim(
+        crate::commands::permissions::relaunch_committed(),
+    ) {
         app_state.meeting_active.store(false, Ordering::SeqCst);
         if inference {
             app_state
                 .meeting_inference_active
                 .store(false, Ordering::SeqCst);
         }
-        return Err(MEETING_RESTARTING);
+        return Err(refusal);
     }
     Ok(())
 }
 
+/// `MeetingPreClaim`: relaunch, mic-startup check, corpus, `meeting_active`,
+/// `meeting_inference_active`, `audio_active`, file, benchmark, then the
+/// dictation status, evaluated by `admit` in that read order.
 pub(crate) fn meeting_conflict(state: &State) -> Option<&'static str> {
-    if crate::commands::permissions::relaunch_committed() {
-        return Some(MEETING_RESTARTING);
-    }
-    if state.microphone_startup_benchmark.is_active() {
-        return Some("Wait for the microphone startup check to finish before starting a meeting.");
-    }
-    #[cfg(feature = "internal-benchmark")]
-    if state.corpus.is_active() {
-        return Some("Finish the corpus recording before starting a meeting.");
-    }
-
-    if state.app_state.meeting_active.load(Ordering::SeqCst) {
-        return Some("A meeting is already active.");
-    }
-    if state
-        .app_state
-        .meeting_inference_active
-        .load(Ordering::SeqCst)
-    {
-        return Some("Murmur is recovering an interrupted meeting transcript. Try again shortly.");
-    }
-    if crate::audio_lifecycle::is_audio_active() {
-        return Some("Stop the active microphone recording before starting a meeting.");
-    }
-    if state.app_state.file_transcribing.load(Ordering::SeqCst) {
-        return Some("Wait for file transcription to finish before starting a meeting.");
-    }
-    if state.benchmark.is_running() {
-        return Some("Wait for the benchmark to finish before starting a meeting.");
-    }
-
-    if state.app_state.dictation.lock_or_recover().status != DictationStatus::Idle {
-        return Some("Wait for dictation to finish before starting a meeting.");
-    }
-    None
+    crate::dictation_admission::meeting_pre_claim(state)
 }
 
 #[tauri::command]

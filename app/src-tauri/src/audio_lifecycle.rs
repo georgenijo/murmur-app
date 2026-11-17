@@ -3460,6 +3460,62 @@ pub(crate) fn is_audio_active() -> bool {
     supervisor().public.is_active()
 }
 
+/// What the process-global supervisor's public state reports, for tests that
+/// compare admission predicates over the facts they read from it.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PublicForTest {
+    /// `phase == Idle`, no owner.
+    Idle,
+    /// An owner-less capture in the `Recording` phase.
+    Active,
+    /// A retiring capture of this dictation id (`Stopping`, owner `Dictation(id)`).
+    CleanupPending(u64),
+}
+
+/// Restores the idle public state when dropped.
+#[cfg(test)]
+pub(crate) struct PublicForTestRestore;
+
+#[cfg(test)]
+impl Drop for PublicForTestRestore {
+    fn drop(&mut self) {
+        apply_public_for_test(PublicForTest::Idle);
+    }
+}
+
+/// Set the global supervisor's public phase and owner (the facts
+/// `is_audio_active` / `is_dictation_cleanup_pending` read). The supervisor
+/// thread is not involved: nothing sends it a message.
+#[cfg(test)]
+pub(crate) fn set_public_for_test(state: PublicForTest) -> PublicForTestRestore {
+    apply_public_for_test(state);
+    PublicForTestRestore
+}
+
+#[cfg(test)]
+fn apply_public_for_test(state: PublicForTest) {
+    let public = &supervisor().public;
+    let mut owner = public
+        .owner
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match state {
+        PublicForTest::Idle => {
+            public.set_phase(PublicPhase::Idle);
+            *owner = None;
+        }
+        PublicForTest::Active => {
+            public.set_phase(PublicPhase::Recording);
+            *owner = None;
+        }
+        PublicForTest::CleanupPending(id) => {
+            public.set_phase(PublicPhase::Stopping);
+            *owner = Some(AudioOwner::Dictation(id));
+        }
+    }
+}
+
 /// The microphone is held only by an unconfirmed Fn key-down capture (open or
 /// still tearing down). It belongs to no dictation, so an explicit capture such
 /// as the Settings microphone test may supersede it.

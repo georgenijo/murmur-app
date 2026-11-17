@@ -1018,7 +1018,7 @@ fn apply_prepare_signal(
                                 .lock_or_recover()
                                 .as_ref()
                                 .is_some_and(|d| d.preparation_candidate_matches(identity.token))
-                            && crate::commands::recording::dictation_prepare_admitted(&state)
+                            && crate::dictation_admission::dictation_prepare_admitted(&state)
                             && identity.topology_generation
                                 == crate::audio_lifecycle::input_topology_generation()
                             && identity.configuration_generation

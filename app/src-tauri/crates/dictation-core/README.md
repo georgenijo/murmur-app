@@ -1,9 +1,10 @@
 # murmur-dictation-core
 
 The pure dictation decision vocabulary and admission policy. Stage 1a of the
-recording refactor: the crate holds the types and `admit()`; nothing in
-`ui_lib` calls it yet (Stage 1b replaces the admission predicates at their
-existing call sites; Stage 2a adds the `decide_*` functions).
+recording refactor: the crate holds the types and `admit()`. Stage 1b
+(`ui_lib`'s `dictation_admission` module) routes every admission predicate
+through `admit()` / `admit_after()` at its existing call site; Stage 2a adds the
+`decide_*` functions.
 
 Hard rules, enforced by the crate shape:
 

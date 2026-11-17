@@ -389,7 +389,7 @@ fn relaunch_gate(app: &tauri::AppHandle) -> RelaunchGate {
         busy: relaunch_busy_reason(BusyInputs {
             dictation_or_meeting: app
                 .try_state::<crate::State>()
-                .and_then(|state| crate::commands::recording::dictation_relaunch_busy(&state)),
+                .and_then(|state| crate::dictation_admission::dictation_relaunch_busy(&state)),
             model_install: crate::commands::models::install_in_progress()
                 || crate::commands::smart_turn::downloading(),
             update_install: UPDATE_INSTALL_IN_PROGRESS.load(std::sync::atomic::Ordering::SeqCst),

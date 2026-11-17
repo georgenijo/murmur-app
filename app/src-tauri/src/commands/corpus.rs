@@ -9,7 +9,6 @@ use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent};
 use crate::microphone_preview::{
     CLIPPING_SAMPLE_THRESHOLD, QUIET_PEAK_THRESHOLD, QUIET_RMS_THRESHOLD,
 };
-use crate::state::DictationStatus;
 use crate::{MutexExt, State};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -74,6 +73,23 @@ impl CorpusRecorderState {
             phase: CapturePhase::Starting,
         });
         Ok(capture_id)
+    }
+
+    /// Make `is_active()` report `active` without the command's request.
+    #[cfg(all(test, feature = "internal-benchmark"))]
+    pub(crate) fn set_active_for_test(&self, active: bool) {
+        *self.active.lock_or_recover() = active.then(|| ActiveCapture {
+            capture_id: 0,
+            request: CorpusStartRequest {
+                prompt_index: 0,
+                prompt_id: String::new(),
+                label: String::new(),
+                reference: String::new(),
+                device_id: None,
+                device_label: String::new(),
+            },
+            phase: CapturePhase::Starting,
+        });
     }
 
     fn current(&self) -> Option<ActiveCapture> {
@@ -537,20 +553,13 @@ pub async fn start_corpus_recording(
         )
         .await?;
         let dictation = state.app_state.dictation.lock_or_recover();
-        if state.app_state.meeting_blocks_asr() {
-            return Err("Finish the current meeting transcript first".to_string());
-        }
-        if dictation.status != DictationStatus::Idle {
-            return Err("Finish the current dictation before recording corpus audio".to_string());
-        }
-        if state.app_state.file_transcribing.load(Ordering::SeqCst) {
-            return Err("Finish the current file transcription first".to_string());
-        }
-        if state.benchmark.is_running() {
-            return Err("Finish the current benchmark first".to_string());
-        }
-
-        state.corpus.claim(request)?
+        // `Corpus` under the transition and dictation locks: meeting, status,
+        // file, benchmark; then the claim is `corpus.claim()` under both.
+        crate::dictation_admission::corpus_pre_claim(&state, dictation.status)?;
+        state
+            .corpus
+            .claim(request)
+            .map_err(crate::dictation_admission::corpus_claim_failed)?
     };
     emit_status(&app_handle, "starting", None);
     let start_handle = app_handle.clone();

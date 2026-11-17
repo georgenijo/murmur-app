@@ -312,7 +312,7 @@ fn spawn_open(
                     APP_DISABLED.load(Ordering::SeqCst),
                     TRACKER.lock_or_recover().is_active(id),
                     &crate::commands::permissions::check_microphone_permission_status(),
-                    || match crate::commands::recording::key_down_capture_admission(&state) {
+                    || match crate::dictation_admission::key_down_capture_admission(&state) {
                         // An open Settings microphone test is taken over in
                         // place under this same transition, never skipped.
                         Ok(preview) => {
@@ -372,19 +372,14 @@ fn admission_refusal(
     microphone_permission: &str,
     capture_refusal: impl FnOnce() -> Option<&'static str>,
 ) -> Option<&'static str> {
-    if !listener_matches {
-        Some("listener_changed")
-    } else if processing {
-        Some("processing_skipped")
-    } else if disabled {
-        Some("disabled")
-    } else if !gesture_active {
-        Some("gesture_ended")
-    } else if microphone_permission != "granted" {
-        Some("permission_not_granted")
-    } else {
-        capture_refusal()
-    }
+    crate::dictation_admission::key_down_shell_refusal(
+        listener_matches,
+        processing,
+        disabled,
+        gesture_active,
+        microphone_permission,
+    )
+    .or_else(capture_refusal)
 }
 
 fn log_refused(id: u64, reason: &'static str) {
