@@ -1391,10 +1391,16 @@ impl DictationHost for Host {
         // Counted outside the trace so no golden line changes: no scenario asks for
         // Smart Auto, and only the contract tests read the count.
         self.0.smart_auto_resolves.fetch_add(1, Ordering::SeqCst);
-        locked(&self.0.knobs)
+        let result = locked(&self.0.knobs)
             .smart_auto
             .clone()
-            .unwrap_or_else(|| Err("smart auto is not scripted".to_string()))
+            .unwrap_or_else(|| Err("smart auto is not scripted".to_string()));
+        if result.is_ok() {
+            // Production's success emits `smart-auto-microphone-changed` inline,
+            // on this thread, after the commit.
+            self.0.fire("smart_auto.routing_changed");
+        }
+        result
     }
 
     fn refresh_expired_ide_context(&self, _app_state: &AppState, _bundle_id: Option<&str>) {

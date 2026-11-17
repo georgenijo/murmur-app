@@ -64,6 +64,18 @@ pub(super) fn decide_pre<T>(decide: impl FnOnce() -> T) -> Result<T, InvalidKind
     Ok(decide())
 }
 
+/// Run a synchronous host read that runs under D and T (the Smart Auto resolver,
+/// whose success emits `smart-auto-microphone-changed` inline) with the core span
+/// set: a Rust listener of that notification that re-enters the start, stop or
+/// cancel is refused before any lock, and an `IdleGuard` it drops queues its
+/// finish instead of asking for D again (D-S2-2, D-S2-4). The lock placement of the
+/// read is unchanged. Never held across an await.
+pub(super) fn observe_in_core<T>(read: impl FnOnce() -> T) -> T {
+    let _entry = crate::dictation_executor::executor::CoreEntry::enter()
+        .unwrap_or_else(|kind| unreachable!("a start observation outside any core span: {kind:?}"));
+    read()
+}
+
 /// Run one placement and return the executor's report. `dictation` is `Some` only
 /// for `In`: the D guard's contents the shell holds. The caller handles the
 /// report: `Awaiting` for the kept-preview `CS`; `Invalid` (nothing ran) is logged.
