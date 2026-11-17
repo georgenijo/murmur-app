@@ -7498,18 +7498,22 @@ async fn cancel_native_recording_inner(
             return Err(cancel_refused(kind));
         }
     }
-    // D-S2-8: drained after T and D are released (declared before both, so it drops
-    // after them on every return and on an unwind). R205.5's `idle` emit runs
-    // listeners inline, and a listener may drop a parked stop or import future
-    // there; its owner's finish and history retirement queue behind this entry's
-    // span and are applied here, in FIFO order, before the cancel returns. Site
-    // 206's `PT:TERM` and the early returns below are covered by the same guard.
-    let _drain = DrainDeferredFinishes::new(&state.app_state);
+    // D-S2-8: drained after T and D are released (the binding is declared before
+    // both, so it drops after them on every return and on an unwind). R205.5's
+    // `idle` emit runs listeners inline, and a listener may drop a parked stop or
+    // import future there; its owner's finish and history retirement queue behind
+    // this entry's span and are applied here, in FIFO order, before the cancel
+    // returns. Site 206's `PT:TERM` and the early returns below are covered by the
+    // same guard. The guard itself is created only after the awaits below: the
+    // test-build count of live guards is thread-local, and a cancel that waited on
+    // T may resume on another worker (D-S2-13).
+    let _drain;
     let transition = state.app_state.recording_transition.lock().await;
     // A cancel that waited on T and was woken by a listener polling it inline
     // inside another entry's span parks here (self-waking) until that span ends,
     // so its D section never runs inside a span (D-S2-5, defence in depth).
     until_outside_core().await;
+    _drain = DrainDeferredFinishes::new(&state.app_state);
     let now = core_now();
     // Site 205 (T held, D section): `decide_cancel_request`, inline at today's
     // line. The view is built from the live fields under the D hold the section

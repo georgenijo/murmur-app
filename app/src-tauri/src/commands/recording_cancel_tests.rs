@@ -652,6 +652,65 @@ fn a_cancel_drains_what_its_idle_listener_defers_before_it_returns() {
     );
 }
 
+/// The counted drain guard follows the thread that runs the synchronous section
+/// (D-S2-13). A cancel parks on T on worker A and resumes on worker B; the idle
+/// listener queues a stop's finish there. B has a guard alive (it registered after
+/// the post-T fence), the finish and both retirements drain on B with T acquirable,
+/// and worker A is left with no stale count that could hide a missing guard.
+#[test]
+fn a_cancel_that_resumes_on_another_worker_registers_its_drain_there() {
+    run_under_watchdog("a cancel resumed on another worker", || {
+        trace(Setup::idle(), |w| {
+            recording(w);
+            w.knobs().stop_result = Ok(16_000);
+            w.close_gate("pipeline");
+            let mut stop = w.stop(None);
+            assert!(poll_once(&mut stop).is_pending());
+            assert_eq!(history_counts(w), (1, 1), "the parked stop's pipeline");
+            let parked = Arc::new(StdMutex::new(Some(stop)));
+            let slot = Arc::clone(&parked);
+            w.on_inline("emit:recording-status-changed", move || {
+                drop(slot.lock().expect("slot").take());
+            });
+            let alive_before = super::drains_alive_on_this_thread();
+            let state = w.state();
+            let holder = state.app_state.recording_transition.try_lock().expect("T");
+            let mut cancel = w.cancel(None);
+            assert!(poll_once(&mut cancel).is_pending(), "parked on T");
+            assert_eq!(
+                super::drains_alive_on_this_thread(),
+                alive_before,
+                "a cancel parked on T holds no drain registration on this thread"
+            );
+            drop(holder);
+            super::take_t_free_at_drain();
+            let (reply, t_free) = std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        let reply = complete(&mut cancel);
+                        (reply, super::take_t_free_at_drain())
+                    })
+                    .join()
+                    .expect("the second worker (no `no drain guard alive` panic)")
+            });
+            assert_eq!(reply, Ok(()));
+            assert!(parked.lock().expect("slot").is_none(), "the listener ran");
+            assert_eq!(t_free, [true], "the finish drained, with T acquirable");
+            assert_eq!(history_counts(w), (0, 0), "H1 and H2 retired once");
+            assert!(
+                super::DEFERRED_FINISHES.with(|queue| queue.borrow().is_empty()),
+                "nothing is left queued on this thread"
+            );
+            assert_eq!(
+                super::drains_alive_on_this_thread(),
+                alive_before,
+                "no stale count is left on the first worker"
+            );
+            w.open_gate("pipeline");
+        })
+    });
+}
+
 /// A cancel that waits on T and is woken by a listener that polls it inline, inside
 /// another entry's span, runs on to its D section there only after the span ended:
 /// it parks (holding T, self-waking) instead of asking for D inside the span, and
