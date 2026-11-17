@@ -531,7 +531,9 @@ fn sites_215_and_216_interrupted() {
 // ----------------------------------------------------------- C4.1 step 0 / C4.2
 
 /// A lifecycle event of every kind, built fresh (the type is not `Clone`).
-fn every_event() -> Vec<(&'static str, fn() -> AudioLifecycleEvent)> {
+type EventMaker = fn() -> AudioLifecycleEvent;
+
+fn every_event() -> Vec<(&'static str, EventMaker)> {
     vec![
         ("Ready", || AudioLifecycleEvent::Ready),
         ("StillConnecting", || AudioLifecycleEvent::StillConnecting),
