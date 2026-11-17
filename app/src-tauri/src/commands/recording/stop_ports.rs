@@ -52,11 +52,10 @@ pub(super) fn decide(decide: impl FnOnce() -> Decision) -> Decision {
     crate::dictation_executor::executor::decide_guarded(decide)
 }
 
-/// Run one placement. `dictation` is `Some` only for `In`: the D guard's
-/// contents the shell holds. Returns `true` when the executor ran the phase (or
-/// stopped at the awaited `PS`); a refused or out-of-order run does nothing and is
-/// logged. Today's code has no such path.
-pub(super) fn run_phase(
+/// Run one placement and return the executor's report. `dictation` is `Some` only
+/// for `In`: the D guard's contents the shell holds. A refused or out-of-order
+/// run does nothing and is logged; the caller handles the report.
+pub(super) fn try_run_phase(
     executor: &mut Executor<'_>,
     phase: Placement,
     dictation: Option<&mut DictationState>,
@@ -76,6 +75,28 @@ pub(super) fn run_phase(
         );
     }
     report
+}
+
+/// Run one placement where the shell is outside any core span and runs the phases
+/// in order (every stop-family call after its re-entrancy wait): a refused or
+/// out-of-order run cannot happen there, so it is `unreachable!`, never ignored.
+pub(super) fn run_phase(
+    executor: &mut Executor<'_>,
+    phase: Placement,
+    dictation: Option<&mut DictationState>,
+    recording_id: u64,
+) {
+    if let PhaseReport::Invalid(kind) = try_run_phase(executor, phase, dictation, recording_id) {
+        unreachable!("the stop's {} phase was refused: {kind:?}", phase.label());
+    }
+}
+
+/// A decision made outside any core span is never `Invalid`: the only refusal is a
+/// nested decide.
+pub(super) fn expect_valid(decision: &Decision) {
+    if let murmur_dictation_core::decision::Verdict::Invalid(kind) = &decision.verdict {
+        unreachable!("a stop decision outside any core span was refused: {kind:?}");
+    }
 }
 
 /// The awaited `PS` of an accepted pipeline start (R203.9/.10), or the refusal

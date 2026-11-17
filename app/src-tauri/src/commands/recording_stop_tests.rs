@@ -1057,9 +1057,19 @@ fn a_stop_resumed_inline_under_d_waits_out_the_core_span_before_its_204b_section
             });
             w.finish_sealed_stop(1);
             let mut stop = parked.lock().expect("slot").take().expect("parked");
+            stop_ports::RESUMED.with(|slot| slot.borrow_mut().clear());
             let reply = complete(&mut stop);
             w.reply("stop", &reply);
             assert!(reply.is_ok());
+            // The PS continuation was not lost: the stop resumed it with the
+            // pipeline's result (a resume inside the span would be `Invalid`).
+            assert_eq!(
+                last_two(&resumed()),
+                [
+                    ("PS", "Awaiting".to_string()),
+                    ("PS", "Resumed(Completed)".to_string())
+                ]
+            );
             assert_history_empty(w, "after the resumed stop");
         })
     });
@@ -1100,5 +1110,157 @@ fn a_panic_in_pe_vad_leaves_processing_because_the_guard_was_disarmed_first() {
             w.state().app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
             crate::dictation_executor::FieldAdapter::clear_context(&w.state().app_state, 1);
         },
+    });
+}
+
+// --------------------------- the deferred finish ends on the thread that queued it
+
+/// Recording 1's stop is parked at the pipeline gate; recording 2 is live. The
+/// listener of recording 2's own `processing` emit drops recording 1's parked
+/// pipeline: the drop queues a finish on this thread (the span is set). Recording 2
+/// then suspends at its pipeline await, and may finish on another worker, whose
+/// drains cannot see this thread's queue. The finish must therefore be applied
+/// before recording 2's stop awaits, on this thread: 204a for recording 1 (stale)
+/// runs and its H1 and H2 are retired.
+#[test]
+fn a_finish_queued_in_one_stops_emit_is_applied_before_that_stop_awaits() {
+    under_watchdog("a finish queued in a stop's emit", || {
+        run_sub_run(&SubRun {
+            title: "cross-thread drain",
+            setup: Setup::idle(),
+            body: |w| {
+                recording(w);
+                w.knobs().stop_result = Ok(16_000);
+                w.close_gate("pipeline");
+                let mut first = w.stop(None);
+                assert!(poll_once(&mut first).is_pending());
+                cancelled(w, "cancel");
+                w.finish_sealed_stop(1);
+                recording(w);
+                w.knobs().stop_result = Ok(16_000);
+                let parked = Arc::new(StdMutex::new(Some(first)));
+                let slot = Arc::clone(&parked);
+                w.on_inline("emit:recording-status-changed", move || {
+                    drop(slot.lock().expect("slot").take());
+                });
+                let mut second = w.stop(None);
+                assert!(
+                    poll_once(&mut second).is_pending(),
+                    "recording 2 awaits its pipeline"
+                );
+                assert!(
+                    parked.lock().expect("slot").is_none(),
+                    "the listener dropped recording 1"
+                );
+                assert!(
+                    super::DEFERRED_FINISHES.with(|queue| queue.borrow().is_empty()),
+                    "the queued finish ran before the stop awaited"
+                );
+                assert_eq!(
+                    history_counts(w),
+                    (1, 1),
+                    "recording 1's H1 and H2 are retired; only recording 2's pipeline is left"
+                );
+                // Recording 2 goes on elsewhere.
+                w.open_gate("pipeline");
+                let reply = std::thread::scope(|scope| {
+                    scope
+                        .spawn(|| complete(&mut second))
+                        .join()
+                        .expect("the second worker")
+                });
+                w.reply("stop", &reply);
+                assert_history_empty(w, "after recording 2's stop");
+            },
+        })
+    });
+}
+
+/// A listener that queues a finish inside the 204b emit and then panics: the
+/// drain still runs, during the unwind, after D is released.
+#[test]
+fn a_panic_after_a_queued_finish_still_drains_it_during_the_unwind() {
+    under_watchdog("a panic after a queued finish", || {
+        run_sub_run(&SubRun {
+            title: "panic after queue",
+            setup: Setup::idle(),
+            body: |w| {
+                recording(w);
+                w.knobs().stop_result = Ok(16_000);
+                w.close_gate("pipeline");
+                let mut first = w.stop(None);
+                assert!(poll_once(&mut first).is_pending());
+                cancelled(w, "cancel");
+                w.finish_sealed_stop(1);
+                recording(w);
+                w.knobs().stop_result = Ok(16_000);
+                let parked = Arc::new(StdMutex::new(Some(first)));
+                // The first status emit is recording 2's `processing`; the second
+                // is its 204b `idle`, under D.
+                w.on_inline("emit:recording-status-changed", || {});
+                let slot = Arc::clone(&parked);
+                w.on_inline("emit:recording-status-changed", move || {
+                    drop(slot.lock().expect("slot").take());
+                    panic!("the listener panics after queueing a finish");
+                });
+                let mut second = w.stop(None);
+                assert!(poll_once(&mut second).is_pending());
+                w.open_gate("pipeline");
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    complete(&mut second)
+                }));
+                assert!(outcome.is_err(), "the listener's panic propagated");
+                drop(second);
+                assert!(parked.lock().expect("slot").is_none());
+                assert!(
+                    super::DEFERRED_FINISHES.with(|queue| queue.borrow().is_empty()),
+                    "the unwind drained the queue"
+                );
+                assert_history_empty(w, "after the unwind");
+                assert!(!crate::dictation_executor::executor::in_core());
+            },
+        })
+    });
+}
+
+/// The 204b section's own drain runs on an unwind too, with no enclosing stop
+/// entry to do it: a listener of its `idle` emit drops a parked pipeline (queueing
+/// a finish) and panics.
+#[test]
+fn the_204b_section_drains_a_queued_finish_when_its_listener_panics() {
+    under_watchdog("204b listener panics after queueing", || {
+        run_sub_run(&SubRun {
+            title: "204b unwind",
+            setup: Setup::idle(),
+            body: |w| {
+                recording(w);
+                w.knobs().stop_result = Ok(16_000);
+                w.close_gate("pipeline");
+                let mut parked = w.stop(None);
+                assert!(poll_once(&mut parked).is_pending());
+                assert_eq!(history_counts(w), (1, 1));
+                let slot = Arc::new(StdMutex::new(Some(parked)));
+                let state = w.state();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    super::run_pipeline_idle_emit(
+                        &state.app_state,
+                        1,
+                        murmur_dictation_core::inputs::PostKind::StopPost,
+                        &|_| {},
+                        &|| {
+                            drop(slot.lock().expect("slot").take());
+                            panic!("the listener panics after queueing a finish");
+                        },
+                    );
+                }));
+                assert!(outcome.is_err());
+                assert!(
+                    super::DEFERRED_FINISHES.with(|queue| queue.borrow().is_empty()),
+                    "the unwind drained the queue"
+                );
+                assert_history_empty(w, "after the unwind");
+                w.open_gate("pipeline");
+            },
+        })
     });
 }
