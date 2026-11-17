@@ -212,6 +212,14 @@ pub(crate) trait Ports {
     fn blocking(&self, effect: &Effect) -> PortResult;
     /// `SD`, `PM`, `RS` (Detached).
     fn detached(&self, effect: &Effect) -> PortResult;
+    /// A Detached effect that runs in `In`, with the D guard's contents in hand:
+    /// R104.2's `SD` registers the partial ticker under the same D hold that wrote
+    /// `Recording` (`register_partial_ticker_locked` takes the held state).
+    /// Defaults to [`Ports::detached`], so only a port that needs D's contents
+    /// overrides it.
+    fn detached_under_d(&self, effect: &Effect, _dictation: &DictationState) -> PortResult {
+        self.detached(effect)
+    }
 }
 
 // -------------------------------------------------------------------- report
@@ -625,7 +633,10 @@ impl<'a> Executor<'a> {
                 self.record_port(index, effect, result);
             }
             Effect::StartSideTasks | Effect::ModelPreparation | Effect::SelfStop { .. } => {
-                let result = ports.detached(effect);
+                let result = match ctx.dictation.as_deref() {
+                    Some(dictation) => ports.detached_under_d(effect, dictation),
+                    None => ports.detached(effect),
+                };
                 self.record_port(index, effect, result);
             }
             // Awaited: `run` returns `Awaiting` before reaching `execute`.

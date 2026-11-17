@@ -68,11 +68,13 @@ pub(super) trait DictationHost: Send + Sync + 'static {
         context: &DictationContextSnapshot,
         accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
     );
-    /// `publish_recording_ready_if_audio_ready`.
+    /// `publish_recording_ready_if_audio_ready`. `ready_op` is the flight's
+    /// `K:ReadyPublish` (R103.1), consumed by the publish's own decision.
     fn publish_recording_ready_if_audio_ready(
         &self,
         recording_id: u64,
         context_ready_at: std::time::Instant,
+        ready_op: crate::core_history::ContinuationGuard,
     ) -> bool;
     /// `spawn_model_preparation`.
     fn spawn_model_preparation(&self, model_name: String, recording_id: u64);
@@ -288,8 +290,9 @@ impl DictationHost for TauriHost {
         &self,
         recording_id: u64,
         context_ready_at: std::time::Instant,
+        ready_op: crate::core_history::ContinuationGuard,
     ) -> bool {
-        publish_recording_ready_if_audio_ready(&self.app, recording_id, context_ready_at)
+        publish_recording_ready_if_audio_ready(&self.app, recording_id, context_ready_at, ready_op)
     }
 
     fn spawn_model_preparation(&self, model_name: String, recording_id: u64) {

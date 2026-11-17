@@ -1416,6 +1416,7 @@ impl DictationHost for Host {
         &self,
         recording_id: u64,
         context_ready_at: std::time::Instant,
+        ready_op: crate::core_history::ContinuationGuard,
     ) -> bool {
         let world = &self.0;
         world.push(format!("publish_recording_ready {recording_id}"));
@@ -1423,6 +1424,7 @@ impl DictationHost for Host {
             &world.app,
             recording_id,
             context_ready_at,
+            ready_op,
             |recording_id| world.is_dictation_recording(recording_id),
             |app, recording_id, register| {
                 let state = app.state::<State>();

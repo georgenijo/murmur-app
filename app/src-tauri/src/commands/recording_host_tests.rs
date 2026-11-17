@@ -392,6 +392,7 @@ impl DictationHost for FakeHost {
         &self,
         recording_id: u64,
         _context_ready_at: std::time::Instant,
+        _ready_op: crate::core_history::ContinuationGuard,
     ) -> bool {
         self.shared
             .push(Call::PublishRecordingReady, format!("{recording_id}"));
