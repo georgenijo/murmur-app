@@ -1513,7 +1513,17 @@ impl DictationHost for Host {
             // Idle on an id match alone, whatever the status (PD-6).
             let mut wrote_idle = false;
             guard.finish(|_| {
-                assert!(!finish_panics, "the pipeline's idle closure panics");
+                if finish_panics {
+                    // The closure is the guard's `In` effect `EM(idle)`: by now the
+                    // decision is made and both history entries are retired.
+                    let history = &app_state.core_history;
+                    world.push(format!(
+                        "pipeline {recording_id} history before In: h2={} h1={}",
+                        history.pipeline_count(),
+                        history.outstanding_ops()
+                    ));
+                    panic!("the pipeline's idle closure panics");
+                }
                 wrote_idle = true;
             });
             world.push(format!(
