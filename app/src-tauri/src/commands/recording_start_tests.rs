@@ -446,6 +446,7 @@ fn dropping_a_pipeline_owner_from_the_smart_auto_routing_notification_defers_its
                         "nothing is retired while the start holds D and T"
                     );
                 });
+                take_t_free_at_drain();
                 smart_auto_started(w);
                 assert!(parked.lock().expect("slot").is_none(), "the listener ran");
                 assert!(
@@ -453,6 +454,7 @@ fn dropping_a_pipeline_owner_from_the_smart_auto_routing_notification_defers_its
                     "the queue was drained"
                 );
                 assert_eq!(history_counts(w), (0, 0), "H1 and H2 are retired");
+                assert_drained_with_t_free("the routing notification's finish");
                 w.open_gate("pipeline");
             },
         });
@@ -553,6 +555,17 @@ fn queued_finishes() -> usize {
     DEFERRED_FINISHES.with(|queue| queue.borrow().len())
 }
 
+/// D-S2-13: whether the flight's T was acquirable when the drain ran each entry
+/// (`take_t_free_at_drain`, a test-build log kept by the drain itself).
+fn assert_drained_with_t_free(what: &str) {
+    let seen = take_t_free_at_drain();
+    assert!(!seen.is_empty(), "{what}: the drain ran an entry");
+    assert!(
+        seen.iter().all(|free| *free),
+        "{what}: a deferred drain ran while the flight's T was held: {seen:?}"
+    );
+}
+
 /// R101.1 (the pre-D refusal): its `PT:REL` runs in a core span. A listener that
 /// drops a parked stop there queues its finish; the start drains it before it
 /// returns, so H1 and H2 are retired once and the queue is empty.
@@ -566,6 +579,7 @@ fn the_pre_d_refusal_drains_what_its_release_defers() {
                 let parked = park_a_stop_of_recording_1(w);
                 w.knobs().app_disabled = true;
                 let (observer, slot) = (Arc::clone(w), Arc::clone(&parked));
+                take_t_free_at_drain();
                 let _hook = crate::barrier_hook::install(move |point| {
                     if point == "start.release_claims" {
                         drop(slot.lock().expect("slot").take());
@@ -589,6 +603,59 @@ fn the_pre_d_refusal_drains_what_its_release_defers() {
                     0,
                     "the queue is empty when the start returns"
                 );
+                assert_eq!(history_counts(w), (0, 0), "H1 and H2 are retired once");
+                assert_drained_with_t_free("the pre-D refusal");
+                w.open_gate("pipeline");
+            },
+        });
+    });
+}
+
+/// D-S2-13: a start that suspends at its awaited `CS` with work its spans queued
+/// takes that work off the thread-local queue (it travels with the future); it is
+/// applied only after the flight released T, on the thread that finishes the start.
+#[test]
+fn a_flight_that_suspends_with_queued_work_carries_it_and_drains_after_t() {
+    under_watchdog("a flight suspended with queued work", || {
+        run_sub_run(&SubRun {
+            title: "carried work",
+            setup: Setup::idle(),
+            body: |w| {
+                let parked = park_a_stop_of_recording_1(w);
+                keep_a_mic_test(w);
+                w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+                let (observer, slot) = (Arc::clone(w), Arc::clone(&parked));
+                w.on_inline("emit:recording-status-changed", move || {
+                    if slot.lock().expect("slot").take().is_some() {
+                        assert_eq!(queued_finishes(), 1, "the dropped stop's finish is queued");
+                        observer.note("listener: dropped the parked stop");
+                    }
+                });
+                take_t_free_at_drain();
+                let mut start = w.start();
+                assert!(
+                    poll_once(&mut start).is_pending(),
+                    "the kept-preview start awaits its capture start"
+                );
+                assert!(parked.lock().expect("slot").is_none(), "the listener ran");
+                assert_eq!(
+                    queued_finishes(),
+                    0,
+                    "the suspended flight took its queued work off this thread"
+                );
+                assert!(
+                    take_t_free_at_drain().is_empty(),
+                    "nothing drained while parked"
+                );
+                assert_eq!(
+                    history_counts(w).0,
+                    1,
+                    "the dropped stop's pipeline is not retired yet"
+                );
+                let reply = complete_joining(&mut start);
+                assert!(reply.is_ok(), "{reply:?}");
+                assert_drained_with_t_free("the carried finish");
+                assert_eq!(queued_finishes(), 0);
                 assert_eq!(history_counts(w), (0, 0), "H1 and H2 are retired once");
                 w.open_gate("pipeline");
             },
@@ -708,6 +775,7 @@ fn the_capture_failure_prefix_drains_what_the_abort_port_defers() {
                 let parked = park_a_stop_of_recording_1(w);
                 w.knobs().start_ack = Some(AudioStartError::AlreadyStarting);
                 let slot = Arc::clone(&parked);
+                take_t_free_at_drain();
                 let _hook = crate::barrier_hook::install(move |point| {
                     if point == "start.perf_abort" {
                         drop(slot.lock().expect("slot").take());
@@ -720,6 +788,7 @@ fn the_capture_failure_prefix_drains_what_the_abort_port_defers() {
                 assert!(parked.lock().expect("slot").is_none(), "the listener ran");
                 assert_eq!(queued_finishes(), 0);
                 assert_eq!(history_counts(w), (0, 0), "H1 and H2 are retired once");
+                assert_drained_with_t_free("the failure prefix");
                 w.open_gate("pipeline");
             },
         });
@@ -739,6 +808,7 @@ fn a_panic_in_the_abort_port_still_drains_the_failure_prefix() {
                 let parked = park_a_stop_of_recording_1(w);
                 w.knobs().start_ack = Some(AudioStartError::AlreadyStarting);
                 let slot = Arc::clone(&parked);
+                take_t_free_at_drain();
                 let _hook = crate::barrier_hook::install(move |point| {
                     if point == "start.perf_abort" {
                         drop(slot.lock().expect("slot").take());
@@ -752,6 +822,7 @@ fn a_panic_in_the_abort_port_still_drains_the_failure_prefix() {
                 assert!(outcome.is_err(), "the panic unwinds out of the start");
                 assert_eq!(queued_finishes(), 0, "the unwind drained the queue");
                 assert_eq!(history_counts(w), (0, 0), "no history entry is stranded");
+                assert_drained_with_t_free("the unwind from the abort port");
                 w.open_gate("pipeline");
             },
         });

@@ -123,11 +123,26 @@ fn every_owner_dropped_in_a_span_retires_in_fifo_order_at_the_drain() {
         (2, 3)
     );
     let counters = history.counters();
+    // The queued full finish is the current recording's: its idle emit runs, and
+    // at that moment the two retirements queued behind it must still be registered
+    // (a newest-first drain would already have retired them).
+    app_state.recording_id.store(2, Ordering::SeqCst);
+    app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+    let idle_ran = Arc::new(AtomicBool::new(false));
     let drain = DrainDeferredFinishes::new(&app_state);
     {
         let span = CoreEntry::enter().expect("outside any span");
         // The finish is queued first, with its owner.
-        finisher.finish_owned(|_| true);
+        let (seen, probe) = (Arc::clone(&idle_ran), history.clone());
+        finisher.finish_owned(move |_| {
+            assert_eq!(
+                (probe.pipeline_count(), probe.outstanding_ops()),
+                (1, 2),
+                "the retirements queued behind the finish have not run yet"
+            );
+            seen.store(true, Ordering::SeqCst);
+            true
+        });
         drop(parked_start);
         drop(dropped_flight);
         assert_eq!(
@@ -139,6 +154,10 @@ fn every_owner_dropped_in_a_span_retires_in_fifo_order_at_the_drain() {
         drop(span);
     }
     drop(drain);
+    assert!(
+        idle_ran.load(Ordering::SeqCst),
+        "the finish's idle emit ran at the drain"
+    );
     assert_eq!(
         (history.pipeline_count(), history.outstanding_ops()),
         (0, 0)
