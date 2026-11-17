@@ -410,6 +410,12 @@ pub struct AppState {
     /// Set to the recording_id of a cancelled recording. Pipeline checks
     /// `cancelled_id >= my_id` at checkpoints to discard cancelled work.
     pub cancelled_id: AtomicU64,
+    /// The dictation core's operation history (H1 `pending_ops`, H2
+    /// `pipelines`): the one lock the refactor adds. A **leaf** `std` mutex,
+    /// taken only after `dictation` when that is held and never held across
+    /// another lock, an await or an effect (appendix C1.4.1).
+    #[allow(dead_code)] // Stage 2a PR 0: first readers arrive with the family PRs.
+    pub(crate) core_history: crate::core_history::CoreHistoryLock,
     /// True while a file transcription is running. Live recording and file
     /// transcription share one Whisper backend, so they must be mutually
     /// exclusive — this flag lets each path refuse to start over the other.
@@ -539,6 +545,7 @@ impl Default for AppState {
             settings_revision: AtomicU64::new(0),
             active_context: Mutex::new(None),
             cancelled_id: AtomicU64::new(0),
+            core_history: crate::core_history::CoreHistoryLock::default(),
             file_transcribing: AtomicBool::new(false),
             microphone_preview: crate::microphone_preview::MicrophonePreviewState::default(),
             correction_matcher: Mutex::new(None),
