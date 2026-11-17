@@ -1,4 +1,5 @@
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent, AudioStartError};
+use crate::core_history::ContinuationGuard;
 use crate::dictation_context::{self, DictationContextSnapshot, ResolverInputs};
 use crate::dictation_diagnostics::DictationCaptureCompletion;
 use crate::dictation_telemetry::{DictationErrorCode, DictationTerminalOutcome};
@@ -180,6 +181,10 @@ mod host_tests;
 #[cfg(test)]
 #[path = "recording_lifecycle_tests.rs"]
 mod lifecycle_tests;
+
+#[cfg(test)]
+#[path = "recording_lifecycle_barrier_tests.rs"]
+mod lifecycle_barrier_tests;
 
 #[cfg(test)]
 #[path = "recording_golden_harness.rs"]
@@ -4929,18 +4934,22 @@ pub(crate) fn handle_audio_lifecycle(
     recording_id: u64,
     event: AudioLifecycleEvent,
 ) {
-    handle_audio_lifecycle_and_ready_tasks(
+    handle_audio_lifecycle_events(
         app_handle,
         recording_id,
         event,
-        |app_handle, recording_id| {
+        |app_handle, recording_id, auto_stop_owner| {
+            // `RS` (R215.2): the registered `AutoStop` op moves into the spawned
+            // stop, which consumes it at admission. A task that never runs, is
+            // cancelled or panics drops it, and `Drop` retires the op.
             tauri::async_runtime::spawn(async move {
                 let state = app_handle.state::<State>();
-                if stop_native_recording_for(
+                if stop_native_recording_owned(
                     app_handle.clone(),
                     state,
                     Some(recording_id),
                     audio_lifecycle::DictationStopTrigger::Other,
+                    Some(auto_stop_owner),
                 )
                 .await
                 .is_err()
@@ -4964,6 +4973,12 @@ pub(crate) fn handle_audio_lifecycle(
 /// event is handled by [`handle_audio_lifecycle_events`], whose `Ready` decision
 /// ends with the `SD` side-task attempt (the incremental VAD and the partial
 /// ticker, whose `register` takes the dictation lock itself).
+///
+/// The auto-stop closure here does not take the registered `AutoStop` owner (it
+/// only records that the stop was scheduled), so the owner is dropped, and
+/// retired, as the closure returns; production passes it to the stop through
+/// [`handle_audio_lifecycle_events`] directly.
+#[cfg(test)]
 fn handle_audio_lifecycle_and_ready_tasks<R: tauri::Runtime>(
     app_handle: tauri::AppHandle<R>,
     recording_id: u64,
@@ -4975,7 +4990,7 @@ fn handle_audio_lifecycle_and_ready_tasks<R: tauri::Runtime>(
         app_handle,
         recording_id,
         event,
-        transcribe_interruption,
+        |app_handle, recording_id, _owner| transcribe_interruption(app_handle, recording_id),
         spawn_ready_tasks,
     );
 }
@@ -4989,7 +5004,7 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
     event: AudioLifecycleEvent,
     transcribe_interruption: impl FnOnce(tauri::AppHandle<R>, u64),
 ) {
-    handle_audio_lifecycle_events(
+    handle_audio_lifecycle_and_ready_tasks(
         app_handle,
         recording_id,
         event,
@@ -5007,17 +5022,33 @@ fn handle_audio_lifecycle_events<R: tauri::Runtime>(
     app_handle: tauri::AppHandle<R>,
     recording_id: u64,
     event: AudioLifecycleEvent,
-    transcribe_interruption: impl FnOnce(tauri::AppHandle<R>, u64),
+    transcribe_interruption: impl FnOnce(tauri::AppHandle<R>, u64, ContinuationGuard),
     spawn_ready_tasks: impl FnOnce(tauri::AppHandle<R>, u64, Box<dyn FnOnce() -> bool>),
 ) {
     use crate::dictation_executor::convert::{cancel_reason_to_core, error_code_to_core};
-    use crate::dictation_executor::executor::{core_now, decide_guarded};
+    use crate::dictation_executor::executor::{core_now, decide_guarded, CoreEntry};
     use crate::dictation_executor::FieldAdapter;
     use murmur_dictation_core::decision::{Decision, ObsKind, Verdict};
     use murmur_dictation_core::effects::Placement;
     use murmur_dictation_core::ids::{Handle, RecordingId};
     use murmur_dictation_core::lifecycle as core_lifecycle;
 
+    // C4.1 step 0 / C4.2: the **first** statement, before the managed-state
+    // lookup and before any lock. An inline listener that an `In`-phase emit
+    // invokes can re-enter this bridge on this thread while D is held; D is not
+    // reentrant, so the nested entry must be refused before it can ask for D.
+    match CoreEntry::enter() {
+        Ok(entry) => drop(entry),
+        Err(kind) => {
+            tracing::error!(
+                target: "pipeline",
+                recording_id,
+                refusal = ?kind,
+                "re-entrant lifecycle event refused before any lock"
+            );
+            return;
+        }
+    }
     let state = app_handle.state::<State>();
     let rid = RecordingId(recording_id);
     let now = core_now();
@@ -5052,10 +5083,19 @@ fn handle_audio_lifecycle_events<R: tauri::Runtime>(
         }
         // Site 212 (R212.1), D-less: `ACC`, then a `Superseded` terminal for a
         // recording that is no longer current.
+        // `ACC` takes two mutexes and runs **first**, as today; only then is the
+        // current id read, so a generation that advances meanwhile is seen.
         AudioLifecycleEvent::Accepted => {
+            let prefix = core_lifecycle::accepted_prefix();
+            run(
+                Decision::effects_only(prefix.clone(), core_lifecycle::ACCEPTED_PREFIX_ROW),
+                Placement::PostDT,
+                None,
+            );
             let facts = FieldAdapter::lock_free_facts(&state.app_state);
             let decision =
-                decide_guarded(|| core_lifecycle::decide_sup_accepted_nolock(facts, rid, now));
+                decide_guarded(|| core_lifecycle::decide_sup_accepted_nolock(facts, rid, now))
+                    .after_prefix(&prefix);
             run(decision, Placement::PostDT, None);
         }
         // Site 207 (R207.1-.5): the stale check and the status transition under
@@ -5171,9 +5211,18 @@ fn handle_audio_lifecycle_events<R: tauri::Runtime>(
                 error_code,
                 recovery_reason: recovery_reason.map(cancel_reason_to_core),
             };
+            // `PCF` takes the production-metrics mutex and runs **first**, as
+            // today; only then is the current id read.
+            let prefix = core_lifecycle::init_failed_prefix(input.kind);
+            run(
+                Decision::effects_only(prefix.clone(), core_lifecycle::INIT_FAILED_PREFIX_ROW),
+                Placement::PostDT,
+                None,
+            );
             let facts = FieldAdapter::lock_free_facts(&state.app_state);
             let decision =
-                decide_guarded(|| core_lifecycle::decide_sup_init_failed_nolock(facts, input, now));
+                decide_guarded(|| core_lifecycle::decide_sup_init_failed_nolock(facts, input, now))
+                    .after_prefix(&prefix);
             run(decision, Placement::PostDT, None);
         }
         // Site 210 (R210.1-.4): capture completion under D, so a newer
@@ -5210,8 +5259,18 @@ fn handle_audio_lifecycle_events<R: tauri::Runtime>(
                 reason: cancel_reason_to_core(reason),
             };
             let facts = FieldAdapter::lock_free_facts(&state.app_state);
-            let decision =
+            let mut decision =
                 decide_guarded(|| core_lifecycle::decide_sup_interrupted_nolock(facts, input, now));
+            // R215.2: register the `AutoStop` op right after the decide, before
+            // any effect runs (C4.3). The owner waits in the ports for `RS`, which
+            // moves it into the spawned stop; if `RS` never runs, dropping the
+            // ports retires it.
+            if let Some(spec) = decision.continuation.take() {
+                ports.hold_auto_stop(ContinuationGuard::register(
+                    &state.app_state.core_history,
+                    spec,
+                ));
+            }
             let short_capture = decision.row == core_lifecycle::R215_3;
             run(decision, Placement::PostDT, None);
             if short_capture {
@@ -5866,19 +5925,56 @@ async fn stop_native_recording_for(
     expected_recording_id: Option<u64>,
     stop_trigger: audio_lifecycle::DictationStopTrigger,
 ) -> Result<serde_json::Value, String> {
-    let host = TauriHost::new(app_handle, state.performance.clone());
-    stop_native_recording_inner(&host, state.inner(), expected_recording_id, stop_trigger).await
+    stop_native_recording_owned(app_handle, state, expected_recording_id, stop_trigger, None).await
 }
 
+/// [`stop_native_recording_for`] for the self-dispatched stop of an interrupted
+/// capture (R215.2 `RS`), which carries the registered `AutoStop` owner.
+async fn stop_native_recording_owned(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+    expected_recording_id: Option<u64>,
+    stop_trigger: audio_lifecycle::DictationStopTrigger,
+    auto_stop_owner: Option<ContinuationGuard>,
+) -> Result<serde_json::Value, String> {
+    let host = TauriHost::new(app_handle, state.performance.clone());
+    stop_native_recording_admitted(
+        &host,
+        state.inner(),
+        expected_recording_id,
+        stop_trigger,
+        auto_stop_owner,
+    )
+    .await
+}
+
+#[cfg(test)]
 async fn stop_native_recording_inner(
     host: &dyn DictationHost,
     state: &State,
     expected_recording_id: Option<u64>,
     stop_trigger: audio_lifecycle::DictationStopTrigger,
 ) -> Result<serde_json::Value, String> {
+    stop_native_recording_admitted(host, state, expected_recording_id, stop_trigger, None).await
+}
+
+async fn stop_native_recording_admitted(
+    host: &dyn DictationHost,
+    state: &State,
+    expected_recording_id: Option<u64>,
+    stop_trigger: audio_lifecycle::DictationStopTrigger,
+    auto_stop_owner: Option<ContinuationGuard>,
+) -> Result<serde_json::Value, String> {
     // The `releaseToStop` endpoint: entry, before any lock wait (#826).
     let stop_entered_at = std::time::Instant::now();
     let transition = state.app_state.recording_transition.lock().await;
+    // Stop admission (T held): the `AutoStop` op the interruption registered is
+    // consumed here (C1.4.1 rule 4). Its status does not branch anything; the stale
+    // rule below runs whatever it was. Until here the op stayed outstanding, so a
+    // task cancelled while it waited on T, or a panic, retires it through `Drop`.
+    if let Some(mut owner) = auto_stop_owner {
+        owner.consume(|_status| ());
+    }
     let current_recording_id = state.app_state.recording_id.load(Ordering::SeqCst);
     if !stop_owner_matches(current_recording_id, expected_recording_id) {
         let stale_recording_id = expected_recording_id.expect("mismatch requires an expectation");

@@ -460,8 +460,22 @@ pub fn decide_sup_idle(core: &DictationCore, rid: RecordingId, _now: Now) -> Dec
 
 // ---------------------------------------------------------------------- 212
 
+/// The effects of site 212 that today's code runs **before** it reads the current
+/// id (4875-4881): the telemetry `accepted` claim and the diagnostics claim (`ACC`,
+/// both mutex-taking). The shell runs them first, reads [`LockFreeFacts`], decides,
+/// and drops them from the decision ([`Decision::after_prefix`]), so a generation
+/// that advances during them is seen exactly as it is today. Always the leading
+/// effects of [`decide_sup_accepted_nolock`].
+pub fn accepted_prefix() -> Vec<Placed> {
+    vec![placed(Placement::PostDT, Effect::AcceptTelemetry)]
+}
+
+/// The row of [`accepted_prefix`] when run alone.
+pub const ACCEPTED_PREFIX_ROW: RowId = RowId("R212.1");
+
 /// Site 212, `Accepted` (R212.1), D-less: the telemetry `accepted` claim, then a
 /// `Superseded` terminal if the recording is no longer current (read without D).
+/// The claim is [`accepted_prefix`], run before the facts are read.
 pub fn decide_sup_accepted_nolock(facts: LockFreeFacts, rid: RecordingId, _now: Now) -> Decision {
     let mut effects = vec![placed(Placement::PostDT, Effect::AcceptTelemetry)];
     if rid != facts.current_id {
@@ -472,9 +486,24 @@ pub fn decide_sup_accepted_nolock(facts: LockFreeFacts, rid: RecordingId, _now: 
 
 // ---------------------------------------------------------------------- 213
 
+/// The effect of site 213 that today's code runs **before** it reads the current
+/// id (4893): `PCF(kind)`, which takes the production-metrics mutex. The shell runs
+/// it first, reads [`LockFreeFacts`], decides, and drops it from the decision
+/// ([`Decision::after_prefix`]). Always the leading effect of
+/// [`decide_sup_init_failed_nolock`].
+pub fn init_failed_prefix(kind: Handle) -> Vec<Placed> {
+    vec![placed(
+        Placement::PostDT,
+        Effect::ProductionCaptureFailure(kind),
+    )]
+}
+
+/// The row of [`init_failed_prefix`] when run alone (common to R213.1 and R213.2).
+pub const INIT_FAILED_PREFIX_ROW: RowId = RowId("R213.1");
+
 /// Site 213, `InitializationFailed` (R213.1-.2), D-less; **the status is never
 /// written** (it stays `Starting` until the `Idle` event, R211.4, or R102.2).
-/// `PCF(kind)` is always first (4893).
+/// `PCF(kind)` is always first (4893), and is [`init_failed_prefix`].
 pub fn decide_sup_init_failed_nolock(
     facts: LockFreeFacts,
     input: SupInitFailedInput,

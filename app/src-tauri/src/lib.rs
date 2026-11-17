@@ -10,6 +10,8 @@ mod audio_lifecycle;
 // `pub` so the headless benchmark runner (tests/headless_benchmark.rs) can
 // call `benchmark::run` directly with a mock AppHandle; not part of any
 // stable external API.
+#[cfg(test)]
+mod barrier_hook;
 pub mod benchmark;
 mod calendar;
 pub mod capture_agent_probe;

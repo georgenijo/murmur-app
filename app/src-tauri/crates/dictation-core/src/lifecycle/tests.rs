@@ -860,6 +860,88 @@ fn no_lifecycle_decision_reads_m3_or_m4() {
     assert_eq!(bare, observed);
 }
 
+/// Sites 212 and 213 run their mutex-taking leading effect **before** the shell
+/// reads the current id (the base order). The decision still returns it first,
+/// and stripping the prefix leaves exactly what the facts decide.
+#[test]
+fn the_prefix_is_the_leading_effect_and_stripping_it_leaves_the_rest() {
+    let kind = Handle(0);
+    let accepted_prefix = accepted_prefix();
+    let init_prefix = init_failed_prefix(kind);
+    assert_eq!(
+        accepted_prefix.iter().map(tag).collect::<Vec<_>>(),
+        ["PDT:ACC"]
+    );
+    assert_eq!(init_prefix.iter().map(tag).collect::<Vec<_>>(), ["PDT:PCF"]);
+    let input = |rid| SupInitFailedInput {
+        rid,
+        kind,
+        error_code: ErrCode::StreamInvalidated,
+        recovery_reason: None,
+    };
+    for current in [RID, NEWER] {
+        let accepted = decide_sup_accepted_nolock(facts(current), RID, NOW);
+        assert!(accepted.effects.starts_with(&accepted_prefix));
+        let rest = accepted.after_prefix(&accepted_prefix);
+        assert_eq!(
+            tags(&rest),
+            if current == RID {
+                vec![]
+            } else {
+                vec!["PDT:TERM(Superseded/StaleOwner)".to_string()]
+            }
+        );
+        let failed = decide_sup_init_failed_nolock(facts(current), input(RID), NOW);
+        assert!(failed.effects.starts_with(&init_prefix));
+        let rest = failed.after_prefix(&init_prefix);
+        assert!(
+            !rest
+                .effects
+                .iter()
+                .any(|p| matches!(p.effect, Effect::ProductionCaptureFailure(_))),
+            "PCF runs once"
+        );
+        assert!(!rest.effects.is_empty());
+        assert_eq!(rest.validate(), Ok(()), "the stripped list is still valid");
+    }
+    // The paired presentation follows its emit by index after the strip.
+    let current =
+        decide_sup_init_failed_nolock(facts(RID), input(RID), NOW).after_prefix(&init_prefix);
+    assert_eq!(
+        tags(&current),
+        [
+            "PDT:TERM(CaptureInitFailure/StreamInvalidated)",
+            "PDT:CX-(7)",
+            "PDT:PC(Failed,CaptureFinalization,Some(AudioCaptureFailed),duration=false)",
+            "PDT:EV(InitFailed)",
+            "PDT:PRES(InitFailed)<-#3",
+        ]
+    );
+}
+
+/// The prefix runs before the facts are read, so the decision it is stripped
+/// from is the one the **later** current id gives: a generation that advanced
+/// during `ACC` / `PCF` turns an applied row into the stale row.
+#[test]
+fn a_generation_advanced_during_the_prefix_gives_the_stale_row() {
+    let kind = Handle(0);
+    let input = SupInitFailedInput {
+        rid: RID,
+        kind,
+        error_code: ErrCode::StreamInvalidated,
+        recovery_reason: None,
+    };
+    // Snapshot before the prefix would have said R213.2; after it, R213.1.
+    assert_eq!(
+        decide_sup_init_failed_nolock(facts(RID), input, NOW).row,
+        RowId("R213.2")
+    );
+    let late = decide_sup_init_failed_nolock(facts(NEWER), input, NOW)
+        .after_prefix(&init_failed_prefix(kind));
+    assert_eq!(late.row, RowId("R213.1"));
+    assert_eq!(tags(&late), ["PDT:TERM(Superseded/StaleOwner)"]);
+}
+
 #[test]
 fn only_the_continuing_row_returns_a_continuation() {
     for d in grid(core) {

@@ -15,6 +15,7 @@ use super::{
 };
 use crate::audio::AudioFailureKind;
 use crate::audio_lifecycle::{self, AudioCancelReason};
+use crate::core_history::ContinuationGuard;
 use crate::dictation_context::DictationContextSnapshot;
 use crate::dictation_executor::convert::{error_code_from_core, terminal_outcome_from_core};
 use crate::dictation_executor::executor::{
@@ -36,7 +37,8 @@ use tauri::{Emitter, Manager};
 
 type SpawnReadyTasks<'a, R> =
     Box<dyn FnOnce(tauri::AppHandle<R>, u64, Box<dyn FnOnce() -> bool>) + 'a>;
-type TranscribeInterruption<'a, R> = Box<dyn FnOnce(tauri::AppHandle<R>, u64) + 'a>;
+type TranscribeInterruption<'a, R> =
+    Box<dyn FnOnce(tauri::AppHandle<R>, u64, ContinuationGuard) + 'a>;
 
 /// The payloads of the event being handled, bound by the shell (X4).
 #[derive(Default)]
@@ -58,6 +60,9 @@ pub(super) struct LifecyclePorts<'a, R: tauri::Runtime> {
     /// paired presentation trace.
     auto_transcribe: Cell<bool>,
     transcribe_interruption: RefCell<Option<TranscribeInterruption<'a, R>>>,
+    /// The registered `AutoStop` op of R215.2 until `RS` hands it to the spawned
+    /// stop. Dropped with the ports if `RS` never runs, which retires the op.
+    auto_stop_owner: RefCell<Option<ContinuationGuard>>,
     spawn_ready_tasks: RefCell<Option<SpawnReadyTasks<'a, R>>>,
 }
 
@@ -66,7 +71,7 @@ impl<'a, R: tauri::Runtime> LifecyclePorts<'a, R> {
         app: &'a tauri::AppHandle<R>,
         state: &'a State,
         recording_id: u64,
-        transcribe_interruption: impl FnOnce(tauri::AppHandle<R>, u64) + 'a,
+        transcribe_interruption: impl FnOnce(tauri::AppHandle<R>, u64, ContinuationGuard) + 'a,
         spawn_ready_tasks: impl FnOnce(tauri::AppHandle<R>, u64, Box<dyn FnOnce() -> bool>) + 'a,
     ) -> Self {
         Self {
@@ -76,8 +81,14 @@ impl<'a, R: tauri::Runtime> LifecyclePorts<'a, R> {
             payload: RefCell::default(),
             auto_transcribe: Cell::new(false),
             transcribe_interruption: RefCell::new(Some(Box::new(transcribe_interruption))),
+            auto_stop_owner: RefCell::new(None),
             spawn_ready_tasks: RefCell::new(Some(Box::new(spawn_ready_tasks))),
         }
+    }
+
+    /// Hold the `AutoStop` owner the shell registered after the decide (C4.3).
+    pub(super) fn hold_auto_stop(&self, owner: ContinuationGuard) {
+        *self.auto_stop_owner.borrow_mut() = Some(owner);
     }
 
     pub(super) fn set_payload(&self, payload: LifecyclePayload) {
@@ -342,7 +353,13 @@ impl<R: tauri::Runtime> Ports for LifecyclePorts<'_, R> {
                     .borrow_mut()
                     .take()
                     .ok_or(PortFailure)?;
-                spawn(self.app.clone(), self.recording_id);
+                // The spawned stop owns the op from here (`RS`, C1.4.1 rule 4).
+                let owner = self
+                    .auto_stop_owner
+                    .borrow_mut()
+                    .take()
+                    .ok_or(PortFailure)?;
+                spawn(self.app.clone(), self.recording_id, owner);
                 Ok(())
             }
             Effect::StartSideTasks => {
