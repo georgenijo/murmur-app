@@ -181,6 +181,14 @@ pub struct StopInput {
     pub entered: Now,
 }
 
+impl StopInput {
+    /// `expected` names a recording that is not the one observed under T
+    /// (5900): the stale path of R201.1, decided before any D section.
+    pub fn is_stale(&self) -> bool {
+        self.expected.is_some_and(|e| e != self.observed_current_id)
+    }
+}
+
 /// Sites 202 / 202n: stop continuation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StopContextInput {
