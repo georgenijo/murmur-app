@@ -1,0 +1,10 @@
+[package]
+name = "murmur-dictation-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Pure dictation decision vocabulary and admission policy (no I/O, no locks, no clocks)."
+
+# Deliberately no dependencies: the core must stay free of tauri, the app crate,
+# async runtimes, and serde (JSON mapping of replies is the shell's job).
+[dependencies]

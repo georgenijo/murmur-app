@@ -9,6 +9,7 @@ default-run = "ui"
 [workspace]
 members = [
     "crates/capture-helper-protocol",
+    "crates/dictation-core",
     "sidecars/capture",
 ]
 default-members = ["."]
