@@ -25,6 +25,7 @@ mod delivery_recovery;
 mod diarization_assignment;
 mod diarization_audio;
 mod diarization_model;
+mod dictation_admission;
 mod dictation_context;
 #[cfg(test)]
 mod dictation_context_equivalence_tests;

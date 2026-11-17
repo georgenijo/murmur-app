@@ -1,7 +1,6 @@
 use crate::benchmark::{
     self, BenchmarkCoordinator, BenchmarkModel, BenchmarkReport, BenchmarkRequest,
 };
-use crate::state::DictationStatus;
 use crate::{MutexExt, State};
 use serde::Serialize;
 use std::sync::atomic::Ordering;
@@ -50,9 +49,7 @@ pub async fn run_benchmark(
         state.inner(),
     )
     .await?;
-    if state.app_state.meeting_blocks_asr() {
-        return Err("Wait for the meeting transcript to finish before benchmarking".to_string());
-    }
+    crate::dictation_admission::benchmark_meeting_check(&state)?;
     // Auto-dismiss a parked transform review, refuse on an active transform
     // (issue #338 — this path previously ignored the transform status
     // entirely and would run a benchmark right over a parked review). The
@@ -61,22 +58,13 @@ pub async fn run_benchmark(
     {
         let dictation = state.app_state.dictation.lock_or_recover();
 
-        if dictation.status != DictationStatus::Idle {
-            return Err("Stop recording before running a benchmark".to_string());
-        }
-        if state.app_state.file_transcribing.load(Ordering::SeqCst) {
-            return Err("Wait for the file transcription to finish".to_string());
-        }
-        #[cfg(feature = "internal-benchmark")]
-        if state.corpus.is_active() {
-            return Err("Finish the corpus recording before benchmarking".to_string());
-        }
+        // `Benchmark` under the dictation lock: status, file, corpus; then the
+        // claim is the coordinator's own `try_start()` under the same lock.
+        crate::dictation_admission::benchmark_pre_claim(&state, dictation.status)?;
         if !coordinator.try_start() {
-            return Err(if coordinator.is_running() {
-                "A benchmark is already running".to_string()
-            } else {
-                "Wait for model preparation to finish before benchmarking".to_string()
-            });
+            return Err(crate::dictation_admission::benchmark_claim_failed(
+                &coordinator,
+            ));
         }
     }
     drop(transition);
