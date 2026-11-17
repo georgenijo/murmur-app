@@ -371,6 +371,7 @@ fn the_smart_destination_is_selected_only_for_a_current_capture() {
             .any(|l| l.starts_with("emit_smart_destination")),
         "a stale capture selects no destination: {stale:#?}"
     );
+}
 
 // ------------------------------------------------- Smart Auto routing notification
 
