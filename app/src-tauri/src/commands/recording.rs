@@ -4827,15 +4827,13 @@ async fn process_audio_inner(
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
         let now = core_now();
+        // R301.6: the start's R103.0 decision under the import's own row id.
         let decision = decide(|| {
-            murmur_dictation_core::start::decide_start_destination(
-                &view,
-                RecordingId(rid),
-                smart_enabled,
-                now,
-            )
+            core_pa::decide_process_audio_destination(&view, RecordingId(rid), smart_enabled, now)
         });
         expect_valid(&decision);
+        #[cfg(test)]
+        process_audio_ports::DESTINATION_ROW.with(|slot| *slot.borrow_mut() = Some(decision.row.0));
         let ports = ProcessAudioPorts::new(host, app_state).with_destination(&facts);
         ports.bind_recording_id(rid);
         let mut exec = executor(&ports, decision);

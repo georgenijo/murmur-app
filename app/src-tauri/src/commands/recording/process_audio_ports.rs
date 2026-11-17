@@ -170,6 +170,13 @@ thread_local! {
         const { RefCell::new(Vec::new()) };
 }
 
+// Test builds: the row id of the destination decision the shell made (R301.6).
+#[cfg(test)]
+thread_local! {
+    pub(super) static DESTINATION_ROW: RefCell<Option<&'static str>> =
+        const { RefCell::new(None) };
+}
+
 /// What the smart-destination emit reads: the resolved context and the frozen
 /// delivery target.
 pub(super) struct DestinationFacts<'a> {

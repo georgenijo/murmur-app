@@ -476,11 +476,64 @@ fn status_write_and_terminal_call_sites_only_go_down() {
     }
 }
 
+/// The innermost function whose body lexically contains byte offset `at` of `code`
+/// (comments and literals already blanked), or `""` at file scope or in a
+/// non-function block (a closure in a `const`, an `impl` item list).
+///
+/// Walks the braces: `fn name` arms a pending body, the next `{` outside the
+/// signature's parentheses and brackets opens it, a `;` first (a declaration without
+/// a body) disarms it, and every `}` closes the innermost block. The last textual
+/// `fn` before a call is not its enclosing function: a closure placed at file
+/// scope right after a function would otherwise be credited to that function.
+fn enclosing_function(code: &str, at: usize) -> String {
+    let function = Regex::new(r"\bfn\s+(\w+)").expect("regex");
+    let mut heads = function
+        .captures_iter(&code[..at])
+        .map(|found| {
+            let whole = found.get(0).expect("match");
+            (whole.start(), whole.end(), found[1].to_string())
+        })
+        .peekable();
+    let bytes = code[..at].as_bytes();
+    let mut blocks: Vec<Option<String>> = Vec::new();
+    let mut pending: Option<String> = None;
+    let mut open_signature = 0_i32;
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some((start, end, name)) = heads.peek() {
+            if i == *start {
+                pending = Some(name.clone());
+                open_signature = 0;
+                i = *end;
+                heads.next();
+                continue;
+            }
+        }
+        match bytes[i] {
+            b'(' | b'[' if pending.is_some() => open_signature += 1,
+            b')' | b']' if pending.is_some() => open_signature -= 1,
+            b';' if open_signature == 0 => pending = None,
+            b'{' if open_signature == 0 => blocks.push(pending.take()),
+            b'{' => blocks.push(None),
+            b'}' => {
+                blocks.pop();
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    blocks
+        .into_iter()
+        .rev()
+        .flatten()
+        .next()
+        .unwrap_or_default()
+}
+
 /// `(file, enclosing fn, calls)` of every `emit_dictation_terminal*(` call in
 /// `sources` (the definitions are not calls), sorted.
 fn terminal_emit_callers(sources: &[(String, String)]) -> Vec<(String, String, usize)> {
     let call = Regex::new(r"\bemit_dictation_terminal\w*\s*\(").expect("regex");
-    let function = Regex::new(r"\bfn\s+(\w+)").expect("regex");
     let mut counts: std::collections::BTreeMap<(String, String), usize> =
         std::collections::BTreeMap::new();
     for (file, code) in sources {
@@ -488,11 +541,7 @@ fn terminal_emit_callers(sources: &[(String, String)]) -> Vec<(String, String, u
             if code[..m.start()].trim_end().ends_with("fn") {
                 continue; // the definition
             }
-            let enclosing = function
-                .captures_iter(&code[..m.start()])
-                .last()
-                .map(|found| found[1].to_string())
-                .unwrap_or_default();
+            let enclosing = enclosing_function(code, m.start());
             *counts.entry((file.clone(), enclosing)).or_default() += 1;
         }
     }
@@ -547,15 +596,10 @@ const SEEDING_FN: &str = "seed_core";
 /// blanked) as `(file, line, enclosing fn)`.
 fn persisted_core_new_callers(sources: &[(String, String)]) -> Vec<(String, usize, String)> {
     let needle = Regex::new(r"\bPersistedCore\s*::\s*new\b").expect("regex");
-    let function = Regex::new(r"\bfn\s+(\w+)").expect("regex");
     let mut callers = Vec::new();
     for (file, code) in sources {
         for m in needle.find_iter(code) {
-            let enclosing = function
-                .captures_iter(&code[..m.start()])
-                .last()
-                .map(|found| found[1].to_string())
-                .unwrap_or_default();
+            let enclosing = enclosing_function(code, m.start());
             callers.push((file.clone(), line_of(code, m.start()), enclosing));
         }
     }
@@ -764,4 +808,59 @@ fn scanner_flags_a_swapped_terminal_emit() {
         "fn run() { emit_dictation_terminal_x(b); }",
     );
     assert_eq!(check(&quiet), Ok(()));
+}
+
+/// The enclosing function is the lexical body, not the last `fn` before the call: a
+/// forwarding call moved into a closure at file scope right after the allowed
+/// function, or into a block after it, is not credited to that function.
+#[test]
+fn scanner_attributes_a_call_to_its_lexical_function() {
+    let callers =
+        |code: &str| terminal_emit_callers(&[("commands/a.rs".to_string(), production_code(code))]);
+    let only = |function: &str, calls: usize| {
+        vec![("commands/a.rs".to_string(), function.to_string(), calls)]
+    };
+    assert_eq!(
+        callers("fn terminal() { emit_dictation_terminal(a); }"),
+        only("terminal", 1)
+    );
+    // A closure in a file-scope item right after the allowed function.
+    assert_eq!(
+        callers(
+            "fn terminal() { work(); }\n\
+             static FORWARD: fn(u8) = |a| { emit_dictation_terminal(a); };"
+        ),
+        only("", 1)
+    );
+    assert_eq!(
+        callers(
+            "fn terminal() { work(); }\n\
+             const FORWARD: &dyn Fn(u8) = &|a| { emit_dictation_terminal(a); };"
+        ),
+        only("", 1)
+    );
+    // Nested items: the innermost function owns its call; the outer keeps its own.
+    assert_eq!(
+        callers(
+            "fn outer() { fn inner() { emit_dictation_terminal(a); } emit_dictation_terminal(b); }"
+        ),
+        vec![
+            ("commands/a.rs".to_string(), "inner".to_string(), 1),
+            ("commands/a.rs".to_string(), "outer".to_string(), 1),
+        ]
+    );
+    // A closure inside a function stays in that function; signatures with braces-free
+    // generics, arrays and `where` clauses, and bodiless declarations, do not confuse it.
+    assert_eq!(
+        callers(
+            "trait T { fn decl(&self, a: [u8; 3]); }\n\
+             impl X { fn run<F>(f: F, a: [u8; 3]) -> u8 where F: Fn() { let c = || { emit_dictation_terminal(a); }; 0 } }"
+        ),
+        only("run", 1)
+    );
+    // After the function ends, a call in an `impl` block item is at no function.
+    assert_eq!(
+        callers("fn terminal() {}\nimpl X { const C: u8 = { emit_dictation_terminal(a); 1 }; }"),
+        only("", 1)
+    );
 }

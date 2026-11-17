@@ -486,7 +486,7 @@ fn every_c3_7_row_is_covered_by_a_test_here_and_registered() {
         .collect();
     assert_eq!(
         c37,
-        ["R301.1", "R301.2", "R301.3", "R301.4", "R301.5", "R302.1", "R302.2"]
+        ["R301.1", "R301.2", "R301.3", "R301.4", "R301.5", "R301.6", "R302.1", "R302.2"]
     );
     // R301.1-.5 are decided by name above; R302.1 / R302.2 delegate to the 204a /
     // 204b rows listed in C3.7, which must exist in the registry.
@@ -496,6 +496,40 @@ fn every_c3_7_row_is_covered_by_a_test_here_and_registered() {
         "R204b.4e",
     ] {
         assert!(C3_ROWS.iter().any(|(id, _)| *id == row), "{row}");
+    }
+}
+
+/// R301.6, the import's Smart Destination section: exactly the start's R103.0
+/// decision (verdict, transition, effects, continuation, reply) for every status,
+/// generation and Smart destination setting, under the import's own row id: never
+/// an R103.x row, and the registry assigns it to site 301.
+#[test]
+fn the_import_destination_decision_is_the_starts_under_its_own_row() {
+    for status in Status::ALL {
+        for current in [RID, NEWER] {
+            for smart in [true, false] {
+                let view = core(status, current);
+                let start = crate::start::decide_start_destination(&view, RID, smart, NOW);
+                let import = decide_process_audio_destination(&view, RID, smart, NOW);
+                assert_eq!(
+                    import.row,
+                    RowId("R301.6"),
+                    "{status:?} {current:?} {smart}"
+                );
+                assert!(
+                    !import.row.0.starts_with("R103"),
+                    "the import never reports a start row: {:?}",
+                    import.row
+                );
+                assert_eq!(
+                    crate::rows::site_of_row(import.row.0),
+                    Some(SiteId::ProcessAudioStart)
+                );
+                let mut same = import.clone();
+                same.row = start.row;
+                assert_eq!(same, start, "{status:?} {current:?} {smart}");
+            }
+        }
     }
 }
 

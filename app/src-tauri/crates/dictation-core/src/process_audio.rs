@@ -11,6 +11,11 @@
 //!   under D), then R301.5, the accepted import: `In:ID+`, `In:ST→Processing`,
 //!   `In:AX(s)`, `PT:KB(true)`, `PT:EV(GenStarted)`, `PT:EM(processing)` and the
 //!   continuation `K:Pipeline` (the shell registers H1 and H2 together).
+//! * [`decide_process_audio_destination`] (the import's own Smart Destination
+//!   section, row R301.6): the ownership recheck [`decide_start_destination`] makes
+//!   for the start (R103.0), delegated so the two never drift, but returned under
+//!   the import's **own** row id: the import must never report an R103.x row,
+//!   which shadow capture would credit to the start's site 103.
 //! * [`decide_process_audio_finish`] (302, rows R302.1-R302.2): **exactly** the 204a
 //!   rows with `origin = LegacyParse` (the parse failure) and the 204b rows with
 //!   `kind = LegacyPost` (the tail after the pipeline), by C3.7. They are
@@ -38,13 +43,14 @@
 
 use crate::decision::{ContKind, ContinuationSpec, Decision, ObsKind, Refusal, RowId, Verdict};
 use crate::effects::{AxMode, EventKind, Placement as At};
-use crate::ids::Now;
+use crate::ids::{Now, RecordingId};
 use crate::inputs::{
     GuardFinishInput, GuardOrigin, PipelineIdleEmitInput, PostKind, ProcessAudioFinishInput,
     ProcessAudioFinishKind, ProcessAudioStartInput,
 };
 use crate::lifecycle::{decision, emit_event, emit_status, nothing, placed, set_status};
 use crate::replies::{ErrText, ProcessAudioRefusal, Reply, TranscriptText};
+use crate::start::decide_start_destination;
 use crate::state::DictationCore;
 use crate::status::Status;
 use crate::stop::{decide_guard_finish, decide_pipeline_idle_emit};
@@ -133,6 +139,21 @@ pub fn decide_process_audio_start(
         recording_id: rid,
         kind: ContKind::Pipeline,
     });
+    decided
+}
+
+/// The import's Smart Destination section (R301.6): under D, is the capture still
+/// current? **Exactly** [`decide_start_destination`] (`Continue` and `In:SDE` iff
+/// Smart destination is enabled and the capture is current, else `Stale` with no
+/// effect), with the import's own row id (`R301.6`, registered under site 301).
+pub fn decide_process_audio_destination(
+    core: &DictationCore,
+    rid: RecordingId,
+    smart_enabled: bool,
+    now: Now,
+) -> Decision {
+    let mut decided = decide_start_destination(core, rid, smart_enabled, now);
+    decided.row = RowId("R301.6");
     decided
 }
 

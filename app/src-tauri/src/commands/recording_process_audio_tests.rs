@@ -463,6 +463,58 @@ fn a_payload_that_is_not_a_wav_resets_to_idle_and_never_runs_the_pipeline() {
     });
 }
 
+thread_local! {
+    /// The span an import's parse failure runs inside (see
+    /// `a_parse_failure_inside_a_span_emits_idle_at_the_drain`).
+    static PARSE_SPAN: std::cell::RefCell<Option<crate::dictation_executor::executor::CoreEntry>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// D-S2-7: the import's parse failure finishes with an *owned* idle emit, so a finish
+/// reached inside a core span (the import was polled by a listener's thread) queues
+/// it as data and makes it at the drain, after D is released. A borrowed emitter
+/// would be dropped with only an error log. The span is entered at the barrier that
+/// lands after the destination section and before the parse guard exists, and the
+/// drain guard stands before it, as an entry's does.
+#[test]
+fn a_parse_failure_inside_a_span_emits_idle_at_the_drain() {
+    let not_wav = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"junk");
+    for (payload, expected) in [
+        ("not base64 !!", "Failed to decode base64"),
+        (not_wav.as_str(), "Failed to parse WAV"),
+    ] {
+        run(|run| {
+            let drain = DrainDeferredFinishes::new(&run.state.app_state);
+            *locked(&run.host.after_accept) = Some(Box::new(|_| {
+                PARSE_SPAN.with(|slot| {
+                    *slot.borrow_mut() = Some(
+                        crate::dictation_executor::executor::CoreEntry::enter()
+                            .expect("outside any span"),
+                    );
+                });
+            }));
+            let error = run.process(payload).expect_err("parse failure");
+            assert!(error.starts_with(expected), "{error}");
+            assert_eq!(idle_emits(run), 0, "nothing is emitted inside the span");
+            assert_eq!(
+                run.status(),
+                DictationStatus::Processing,
+                "the finish is queued, not applied"
+            );
+            PARSE_SPAN.with(|slot| drop(slot.borrow_mut().take()));
+            drop(drain);
+            assert_eq!(
+                idle_emits(run),
+                1,
+                "idle is emitted at the drain: {:?}",
+                run.host.lines()
+            );
+            assert_eq!(run.status(), DictationStatus::Idle);
+            assert_eq!(run.host.counts(), (0, 0), "H1 and H2 are retired");
+        });
+    }
+}
+
 #[test]
 fn a_newer_recording_during_the_destination_capture_is_left_alone() {
     run(|run| {
@@ -1149,6 +1201,22 @@ fn the_import_destination_witness_reports_the_real_emit_result() {
         vec![],
         "no section without Smart destination"
     );
+}
+
+/// The import's destination section reports its own row, `R301.6`, never the
+/// start's `R103.0`: shadow capture would credit a start row to site 103.
+#[test]
+fn the_import_destination_decision_never_reports_a_start_row() {
+    super::process_audio_ports::DESTINATION_ROW.with(|slot| *slot.borrow_mut() = None);
+    run(|run| {
+        enable_destination(run);
+        run.process(&wav_base64(8_000)).expect("success");
+    });
+    let row = super::process_audio_ports::DESTINATION_ROW
+        .with(|slot| *slot.borrow())
+        .expect("the destination section decided");
+    assert_eq!(row, "R301.6");
+    assert!(!row.starts_with("R103"), "the import reported {row}");
 }
 
 /// The destination emit holds D (the shell owns the section): a probe from inside the
