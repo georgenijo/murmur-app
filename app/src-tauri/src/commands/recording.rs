@@ -5471,7 +5471,7 @@ pub async fn start_native_recording(
     origin: Option<String>,
     gesture_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    let host = TauriHost::new(app_handle);
+    let host = TauriHost::new(app_handle, state.performance.clone());
     start_native_recording_inner(
         &host,
         state.inner(),
@@ -5891,7 +5891,7 @@ async fn stop_native_recording_for(
     expected_recording_id: Option<u64>,
     stop_trigger: audio_lifecycle::DictationStopTrigger,
 ) -> Result<serde_json::Value, String> {
-    let host = TauriHost::new(app_handle);
+    let host = TauriHost::new(app_handle, state.performance.clone());
     stop_native_recording_inner(&host, state.inner(), expected_recording_id, stop_trigger).await
 }
 
@@ -6387,7 +6387,7 @@ pub async fn cancel_native_recording(
     state: tauri::State<'_, State>,
     expected_recording_id: Option<u64>,
 ) -> Result<(), String> {
-    let host = TauriHost::new(app_handle);
+    let host = TauriHost::new(app_handle, state.performance.clone());
     cancel_native_recording_inner(&host, state.inner(), expected_recording_id).await
 }
 

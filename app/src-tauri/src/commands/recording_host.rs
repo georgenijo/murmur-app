@@ -191,13 +191,21 @@ pub(super) trait PerformancePort: Send + Sync {
 pub(super) struct TauriHost {
     app: tauri::AppHandle,
     supervisor: Arc<TauriSupervisor>,
+    /// The command's own `State::performance` handle (an `Arc` clone), so the
+    /// performance port never goes through Tauri's managed-state map, which
+    /// takes a lock the old code did not.
+    performance: crate::performance_metrics::PerformanceMetrics,
 }
 
 impl TauriHost {
-    pub(super) fn new(app: tauri::AppHandle) -> Self {
+    pub(super) fn new(
+        app: tauri::AppHandle,
+        performance: crate::performance_metrics::PerformanceMetrics,
+    ) -> Self {
         Self {
             supervisor: Arc::new(TauriSupervisor(app.clone())),
             app,
+            performance,
         }
     }
 }
@@ -411,23 +419,16 @@ impl PerformancePort for TauriHost {
         selection: crate::performance_metrics::production::MicrophoneSelectionV1,
         kind: Option<crate::performance_metrics::production::MicrophoneKindV1>,
     ) {
-        self.app
-            .state::<State>()
-            .performance
+        self.performance
             .register_production(recording_id, selection, kind)
     }
 
     fn production_context(&self, recording_id: u64, context: &DictationContextSnapshot) {
-        self.app
-            .state::<State>()
-            .performance
-            .production_context(recording_id, context)
+        self.performance.production_context(recording_id, context)
     }
 
     fn production_sample_count(&self, recording_id: u64, count: usize) {
-        self.app
-            .state::<State>()
-            .performance
+        self.performance
             .production_sample_count(recording_id, count)
     }
 
@@ -441,7 +442,7 @@ impl PerformancePort for TauriHost {
 
     fn spawn_begin(&self, recording_id: u64, runtimes: Vec<RuntimeIdentityV1>, started_at_ms: i64) {
         spawn_native_dictation_performance_begin(
-            self.app.state::<State>().performance.clone(),
+            self.performance.clone(),
             recording_id,
             runtimes,
             started_at_ms,
@@ -457,7 +458,7 @@ impl PerformancePort for TauriHost {
         runtimes: Option<Vec<RuntimeIdentityV1>>,
     ) {
         complete_dictation_performance(
-            &self.app.state::<State>().performance,
+            &self.performance,
             recording_id,
             outcome,
             stages,
