@@ -5907,7 +5907,9 @@ async fn start_native_recording_inner(
     };
     use murmur_dictation_core::replies::Reply as CoreReply;
     use murmur_dictation_core::start as core_start;
-    use start_ports::{decide, executor, run_phase, StartPlan, StartPorts, StartSlots};
+    use start_ports::{
+        decide, executor, expect_valid, run_phase, try_run_phase, StartPlan, StartPorts, StartSlots,
+    };
 
     // C4.1 step 0 / C4.2: the **first** statement, before the claims, T, D or any
     // managed-state lookup.
@@ -5925,6 +5927,10 @@ async fn start_native_recording_inner(
     // A flowing Settings microphone test is not stopped here: the supervisor
     // hands its open device to this dictation (see `hand_preview_to`).
     let _transition = host.microphone_transition(state).await?;
+    // A start that parked on T and is polled again inside a core span (a listener)
+    // waits the span out before it takes any lock or enters the executor: ready on
+    // the first poll (D-S2-4).
+    until_outside_core().await;
     // Under the transition, a current mic test is one this start kept for the
     // supervisor; if it cannot be taken over, the start queues behind its exit.
     let kept_preview = state.app_state.microphone_preview.is_active();
@@ -5962,7 +5968,7 @@ async fn start_native_recording_inner(
     };
     // Site 101, R101.1-.2 (no D).
     if let Some(pre) = start_ports::decide_pre(|| core_start::decide_start_request_pre(&input, now))
-        .map_err(start_ports::start_refused)?
+        .unwrap_or_else(|kind| unreachable!("the pre-D check ran inside a core span: {kind:?}"))
     {
         if pre.row == RowId("R101.1") {
             tracing::info!(target: "pipeline", "start_native_recording: app disabled — ignoring");
@@ -6029,8 +6035,10 @@ async fn start_native_recording_inner(
                 | Verdict::Invalid(_) => break decision,
             }
         };
+        // Made outside any core span (after the wait on T): never `Invalid`.
+        expect_valid(&decision);
         match &decision.verdict {
-            Verdict::Invalid(kind) => return Err(start_ports::start_refused(*kind)),
+            Verdict::Invalid(_) => unreachable!("expect_valid refused an invalid start decision"),
             Verdict::Refused(_) => {
                 // R101.3-.11 (typed `{"type","state"}` replies) are the blockers
                 // and the status step; R101.14 is the Smart Auto resolve's own
@@ -6053,12 +6061,9 @@ async fn start_native_recording_inner(
             // restore Idle independently: `In:ST→Recovering`, `In:EM(recovering)`.
             let ports = StartPorts::new(host, state, &slots, Some(current));
             let mut exec = executor(&ports, decision.clone(), false);
-            let report = run_phase(&mut exec, Placement::In, Some(&mut dictation), current);
+            run_phase(&mut exec, Placement::In, Some(&mut dictation), current);
             drop(dictation);
             drop(_transition);
-            if let PhaseReport::Invalid(kind) = report {
-                return Err(start_ports::start_refused(kind));
-            }
             run_phase(&mut exec, Placement::PostT, None, current);
             return start_ports::reply_of(&decision, None);
         }
@@ -6108,11 +6113,7 @@ async fn start_native_recording_inner(
         let ports = StartPorts::new(host, state, &slots, None);
         let mut exec = executor(&ports, decision, kept_preview);
         // `In:ID+, GA, PCC, TRQ, ST→Starting, AX(a)`, under D.
-        if let PhaseReport::Invalid(kind) =
-            run_phase(&mut exec, Placement::In, Some(&mut dictation), current)
-        {
-            return Err(start_ports::start_refused(kind));
-        }
+        run_phase(&mut exec, Placement::In, Some(&mut dictation), current);
         let rid = exec
             .bound_recording_id()
             .expect("R101.15's `ID+` allocated the recording id");
@@ -6122,7 +6123,7 @@ async fn start_native_recording_inner(
         // `PDT:SPEC, EV(GenStarted), EM(starting)?, PR, CS(rid)`, T held. A
         // kept-preview `CS` is awaited: the cursor is parked across the await with
         // no port or executor held (they are not `Send`).
-        let parked = match run_phase(&mut exec, Placement::PostDT, None, rid) {
+        let parked = match try_run_phase(&mut exec, Placement::PostDT, None, rid) {
             PhaseReport::Done => None,
             PhaseReport::Awaiting(awaited)
                 if matches!(awaited.effect, CoreEffect::CaptureStart(_)) =>
@@ -6132,7 +6133,9 @@ async fn start_native_recording_inner(
             PhaseReport::Awaiting(other) => {
                 unreachable!("R101.15 awaits only its capture start, not {other:?}")
             }
-            PhaseReport::Invalid(kind) => return Err(start_ports::start_refused(kind)),
+            PhaseReport::Invalid(kind) => {
+                unreachable!("the start's PostDT phase was refused: {kind:?}")
+            }
         };
         (rid, smart_enabled, parked, capture_guard, smart_auto_reason)
     };
@@ -6166,11 +6169,11 @@ async fn start_native_recording_inner(
         } else {
             AwaitedOutcome::Failed
         });
-        if let PhaseReport::Invalid(kind) = report {
-            // Never discard an `Invalid` report: nothing was recorded.
-            return Err(start_ports::start_refused(kind));
-        }
-        debug_assert!(exec.is_finished(), "R101.15 ends at its capture start");
+        // Outside any core span and in order: nothing else can happen here.
+        assert!(
+            report == PhaseReport::Done && exec.is_finished(),
+            "the start's capture start resumes outside any core span, in order: {report:?}"
+        );
         #[cfg(test)]
         {
             start_ports::RESUMED.with(|slot| *slot.borrow_mut() = exec.witness().to_vec());
@@ -6207,9 +6210,10 @@ async fn start_native_recording_inner(
                     )
                 })
             });
+            expect_valid(&decision);
             match decision.verdict {
                 Verdict::Continue => {}
-                Verdict::Invalid(kind) => return Err(start_ports::start_refused(kind)),
+                Verdict::Invalid(_) => unreachable!("expect_valid refused an invalid decision"),
                 Verdict::Applied
                 | Verdict::Refused(_)
                 | Verdict::Stale(_)
@@ -6267,9 +6271,7 @@ async fn start_native_recording_inner(
                     })
                 })
                 .after_pre();
-            if let Verdict::Invalid(kind) = decision.verdict {
-                return Err(start_ports::start_refused(kind));
-            }
+            expect_valid(&decision);
             // `In:ST→Idle` (the current id only), `In:EM(idle)` (unconditional,
             // PD-3) and `In:TERM`, under D and T.
             let mut exec = executor(&ports, decision.clone(), false);

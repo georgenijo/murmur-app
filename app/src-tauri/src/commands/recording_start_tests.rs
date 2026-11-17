@@ -6,7 +6,7 @@
 //! `decide_*`; the awaited-effect and history witnesses read the executor's
 //! parked cursor and `core_history`, which only the refactored shell has.
 use super::golden_harness::*;
-use super::golden_tests::{recording, started};
+use super::golden_tests::recording;
 use super::*;
 use std::task::Poll;
 
@@ -56,7 +56,11 @@ fn the_awaited_capture_start_resumes_completed_when_the_supervisor_acknowledges(
             keep_a_mic_test(w);
             w.knobs().cold_start = ColdStart::ReadyBeforeContext;
             start_ports::RESUMED.with(|slot| slot.borrow_mut().clear());
-            started(w);
+            // The kept-preview start joins a `spawn_blocking` task.
+            let mut start = w.start();
+            let reply = complete_joining(&mut start);
+            w.reply("start", &reply);
+            assert!(reply.is_ok(), "{reply:?}");
             assert_eq!(
                 last_two(&resumed()),
                 [
@@ -81,7 +85,7 @@ fn the_awaited_capture_start_resumes_failed_when_the_supervisor_refuses() {
             w.knobs().start_ack = Some(AudioStartError::AudioRecovering);
             start_ports::RESUMED.with(|slot| slot.borrow_mut().clear());
             let mut start = w.start();
-            let reply = complete(&mut start);
+            let reply = complete_joining(&mut start);
             w.reply("start", &reply);
             assert_eq!(
                 reply.expect("the refusal is a typed reply"),

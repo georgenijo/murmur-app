@@ -64,10 +64,10 @@ pub(super) fn decide_pre<T>(decide: impl FnOnce() -> T) -> Result<T, InvalidKind
     Ok(decide())
 }
 
-/// Run one placement. `dictation` is `Some` only for `In`: the D guard's contents
-/// the shell holds. The report is returned: `Awaiting` for the kept-preview `CS`,
-/// `Invalid` when nothing ran (logged).
-pub(super) fn run_phase(
+/// Run one placement and return the executor's report. `dictation` is `Some` only
+/// for `In`: the D guard's contents the shell holds. The caller handles the
+/// report: `Awaiting` for the kept-preview `CS`; `Invalid` (nothing ran) is logged.
+pub(super) fn try_run_phase(
     executor: &mut Executor<'_>,
     phase: Placement,
     dictation: Option<&mut DictationState>,
@@ -88,6 +88,28 @@ pub(super) fn run_phase(
         );
     }
     report
+}
+
+/// Run one placement where the shell is outside any core span and runs the phases
+/// in order (every start call after its re-entrancy wait): a refused or
+/// out-of-order run cannot happen there, so it is `unreachable!`, never ignored.
+pub(super) fn run_phase(
+    executor: &mut Executor<'_>,
+    phase: Placement,
+    dictation: Option<&mut DictationState>,
+    recording_id: u64,
+) {
+    if let PhaseReport::Invalid(kind) = try_run_phase(executor, phase, dictation, recording_id) {
+        unreachable!("the start's {} phase was refused: {kind:?}", phase.label());
+    }
+}
+
+/// A decision made outside any core span is never `Invalid`: the only refusal is a
+/// nested decide.
+pub(super) fn expect_valid(decision: &Decision) {
+    if let murmur_dictation_core::decision::Verdict::Invalid(kind) = &decision.verdict {
+        unreachable!("a start decision outside any core span was refused: {kind:?}");
+    }
 }
 
 // Test builds: the witness of the start's executor after it resumed the awaited
@@ -140,10 +162,7 @@ pub(super) fn reply_of(
     decision: &Decision,
     shell_error: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    use murmur_dictation_core::decision::Verdict;
-    if let Verdict::Invalid(kind) = &decision.verdict {
-        return Err(start_refused(*kind));
-    }
+    expect_valid(decision);
     let reply = decision
         .reply
         .as_ref()
