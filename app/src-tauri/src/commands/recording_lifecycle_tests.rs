@@ -926,3 +926,71 @@ fn the_auto_stop_op_is_retired_at_admission_not_held_through_the_stop() {
     );
     assert_eq!(history.outstanding_ops(), 0);
 }
+
+// --------------------------------------------------- D-S2-9: the terminal claim
+
+/// A stale `Ready` (R207.1) decides `TERM(Superseded/StaleOwner)`; the executor's
+/// witness for it is the telemetry ledger's real answer.
+fn witness_of_a_stale_ready(claim_first: bool) -> Vec<(&'static str, WitnessOutcome)> {
+    let app_state = AppState::default();
+    app_state.recording_id.store(NEWER, Ordering::SeqCst);
+    app_state.dictation.lock_or_recover().status = Recording;
+    app_state.dictation_telemetry.accepted(RID);
+    if claim_first {
+        // Another sink already claimed this id's terminal.
+        assert!(app_state.dictation_telemetry.emit_terminal_with_output(
+            RID,
+            DictationTerminalOutcome::Superseded,
+            DictationErrorCode::StaleOwner,
+            0
+        ));
+    }
+    let app = tauri::test::mock_builder()
+        .manage(test_state(app_state))
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build mock Tauri app");
+    lifecycle_ports::LAST_WITNESS.with(|slot| slot.borrow_mut().clear());
+    handle_audio_lifecycle_and_ready_tasks(
+        app.handle().clone(),
+        RID,
+        AudioLifecycleEvent::Ready,
+        |_, _| {},
+        |_, _, _| {},
+    );
+    lifecycle_ports::LAST_WITNESS.with(|slot| {
+        slot.borrow()
+            .iter()
+            .filter(|(code, _)| *code == "TERM")
+            .copied()
+            .collect()
+    })
+}
+
+use crate::dictation_executor::executor::WitnessOutcome;
+
+/// D-S2-9, winning claim: the ledger accepts the terminal and the witness is `Ran`.
+#[test]
+fn a_winning_terminal_claim_is_witnessed_as_ran() {
+    let witness = witness_of_a_stale_ready(false);
+    assert!(!witness.is_empty(), "the stale Ready decides a TERM");
+    assert!(
+        witness
+            .iter()
+            .all(|(_, outcome)| *outcome == WitnessOutcome::Ran),
+        "{witness:?}"
+    );
+}
+
+/// D-S2-9, losing claim: a stale `Ready` for an id whose terminal was already
+/// claimed. The ledger rejects the claim, so the witness is `Failed`, not `Ran`.
+#[test]
+fn a_losing_terminal_claim_is_witnessed_as_failed() {
+    let witness = witness_of_a_stale_ready(true);
+    assert!(!witness.is_empty(), "the stale Ready decides a TERM");
+    assert!(
+        witness
+            .iter()
+            .all(|(_, outcome)| *outcome == WitnessOutcome::Failed),
+        "{witness:?}"
+    );
+}
