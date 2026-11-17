@@ -115,6 +115,13 @@ pub enum ObsKind {
         /// Recording whose preserved capture is taken.
         id: RecordingId,
     },
+    /// `active_context(rid).is_some()` (4947), a leaf-mutex read today's `Ready`
+    /// arm performs only after the stale check passed (decision D-S1-2: the
+    /// decide function asks for it instead of the shell reading it eagerly).
+    ContextPresence {
+        /// Recording whose installed context is looked up.
+        id: RecordingId,
+    },
 }
 
 /// Why a stale input (stale recording id, never an op status) takes the site's
@@ -244,6 +251,34 @@ pub enum DecisionError {
 }
 
 impl Decision {
+    /// A decision that holds only `pre`, the input-derived effects that run
+    /// before the D section (C2.1 `pre_effects()`). The shell runs it through its
+    /// own executor **before** it acquires D and decides.
+    pub fn pre_only(pre: Vec<Placed>, row: RowId) -> Self {
+        Self {
+            verdict: Verdict::Applied,
+            transition: None,
+            effects: pre,
+            continuation: None,
+            reply: None,
+            row,
+        }
+    }
+
+    /// This decision without its leading `Pre` effects, which the shell already
+    /// ran from `pre_effects()` before the decide (`decide_*` returns them
+    /// prepended, for tracing and shadow, C2.1).
+    #[must_use]
+    pub fn after_pre(mut self) -> Self {
+        let pre = self
+            .effects
+            .iter()
+            .take_while(|placed| placed.at == crate::effects::Placement::Pre)
+            .count();
+        self.effects.drain(..pre);
+        self
+    }
+
     /// Check the structural rules of C2.1: valid effect list, and `transition`
     /// is `Some` iff an `ST` effect is present (with a matching target).
     pub fn validate(&self) -> Result<(), DecisionError> {

@@ -41,6 +41,18 @@ thread_local! {
     static IN_CORE: Cell<bool> = const { Cell::new(false) };
 }
 
+/// The shell's monotonic stamp (`Now`, C2.1): microseconds since the first call.
+/// Taken before D is acquired, where today's code takes its own timing instant.
+/// No decide function branches on it.
+pub(crate) fn core_now() -> murmur_dictation_core::ids::Now {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let micros = EPOCH
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_micros();
+    murmur_dictation_core::ids::Now(u64::try_from(micros).unwrap_or(u64::MAX))
+}
+
 /// `true` while the current thread is inside a core span.
 pub(crate) fn in_core() -> bool {
     IN_CORE.with(Cell::get)
