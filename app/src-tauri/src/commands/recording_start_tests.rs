@@ -5,6 +5,7 @@
 //! shell, so they hold before and after the start family moves behind
 //! `decide_*`; the awaited-effect and history witnesses read the executor's
 //! parked cursor and `core_history`, which only the refactored shell has.
+#![cfg(test)]
 use super::golden_harness::*;
 use super::golden_tests::{cancelled, recording};
 use super::*;

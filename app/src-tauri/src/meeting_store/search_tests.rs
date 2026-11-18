@@ -1,4 +1,5 @@
 //! Transcript search and upgrade compatibility with legacy derived rows.
+#![cfg(test)]
 use super::*;
 use std::fs;
 use tempfile::TempDir;

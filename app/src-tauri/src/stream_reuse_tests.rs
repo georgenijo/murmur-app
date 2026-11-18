@@ -1,3 +1,4 @@
+#![cfg(test)]
 use super::*;
 
 const A: Bounds = (8_000, 72_000); // 4 s of speech

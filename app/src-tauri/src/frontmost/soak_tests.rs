@@ -10,6 +10,7 @@
 //! ```text
 //! cargo test --lib frontmost::soak_tests -- --ignored --nocapture --test-threads=1
 //! ```
+#![cfg(test)]
 
 use crate::alloc;
 

@@ -99,7 +99,7 @@ pub(super) trait DictationHost: Send + Sync + 'static {
 
 impl dyn DictationHost + '_ {
     /// Same shape as `AppHandle::emit`, so call sites read `host.emit(..)`.
-    pub(super) fn emit<S: serde::Serialize>(
+    pub(super) fn emit_event<S: serde::Serialize>(
         &self,
         event: &str,
         payload: S,

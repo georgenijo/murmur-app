@@ -8,6 +8,7 @@
 //! ran), so it fails if the executor wiring, a port payload or a placement drifts
 //! from today's inline code. The golden traces and PD witnesses cover the
 //! interleavings; this covers every (event, status, id) cell of the table.
+#![cfg(test)]
 
 use super::tests::test_state;
 use super::*;

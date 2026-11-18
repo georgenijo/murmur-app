@@ -41,14 +41,6 @@ pub fn compute_peak(samples: &[f32]) -> f32 {
 }
 
 const AUDIO_LEVEL_THROTTLE_MS: u64 = 16;
-/// Raw RMS stream for the main window (Stop on Silence, the recording bar,
-/// the corpus recorder). Emitted with `emit_to("main", ..)`.
-const AUDIO_LEVEL_EVENT: &str = "audio-level";
-/// Peak-held waveform feed for the overlay window only. It has its own name
-/// because a frontend `listen()` registers for any target, and Tauri
-/// delivers an `emit_to` for one label to every webview that has such a
-/// listener: sharing `audio-level` would hand each window both streams.
-const OVERLAY_AUDIO_LEVEL_EVENT: &str = "overlay-audio-level";
 /// The overlay waveform redraws bars from a rAF loop and eases them with a CSS
 /// transition, so it gains nothing from more than ~30 samples a second.
 const AUDIO_LEVEL_OVERLAY_MS: u64 = 33;
@@ -3234,10 +3226,14 @@ fn run_backend(
                             // from the peak-held `overlay-audio-level` at ~30 Hz.
                             // Neither window listens to the other's event.
                             let level = compute_rms(&pcm.samples);
-                            let _ = handle.emit_to("main", AUDIO_LEVEL_EVENT, level);
+                            let _ = handle.emit_to("main", crate::events::AUDIO_LEVEL_EVENT, level);
                             crate::main_thread_watch::count_audio_level_emit();
                             if let Some(held) = overlay_level_gate.observe(level, Instant::now()) {
-                                let _ = handle.emit_to("overlay", OVERLAY_AUDIO_LEVEL_EVENT, held);
+                                let _ = handle.emit_to(
+                                    "overlay",
+                                    crate::events::OVERLAY_AUDIO_LEVEL_EVENT,
+                                    held,
+                                );
                                 crate::main_thread_watch::count_overlay_audio_level_emit();
                             }
                         }
@@ -3945,6 +3941,7 @@ mod tests {
         // A frontend `listen()` receives every `emit_to` for that event name,
         // whichever window it targets, so the overlay's peak-held feed must not
         // share a name with the raw stream Stop on Silence reads.
+        use crate::events::{AUDIO_LEVEL_EVENT, OVERLAY_AUDIO_LEVEL_EVENT};
         assert_eq!(AUDIO_LEVEL_EVENT, "audio-level");
         assert_eq!(OVERLAY_AUDIO_LEVEL_EVENT, "overlay-audio-level");
         assert_ne!(AUDIO_LEVEL_EVENT, OVERLAY_AUDIO_LEVEL_EVENT);

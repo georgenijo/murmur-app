@@ -14,6 +14,7 @@
 //! preparation (exact 48k -> 16k resample, Silero VAD at the default
 //! sensitivity) and an installed backend. It never reads Murmur history or the
 //! personal corpus, and prints only synthetic phrases.
+#![cfg(test)]
 
 use super::*;
 use murmur_capture_helper_protocol::ProductionPcm;
