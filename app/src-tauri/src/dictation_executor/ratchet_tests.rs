@@ -1468,7 +1468,10 @@ fn flatten_use(
 #[derive(Default)]
 struct CrateIndex {
     consts: std::collections::HashMap<String, Vec<syn::Expr>>,
-    uses: std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>>,
+    /// Every distinct target a module-level `use` gives a name, under any `cfg`: a
+    /// name with more than one target (or a target and a declaration in the same
+    /// module) is ambiguous and unresolved (D-S2b-12 follow-up).
+    uses: std::collections::HashMap<String, std::collections::HashMap<String, Vec<Vec<String>>>>,
     renamed: std::collections::HashMap<String, std::collections::HashSet<String>>,
     macros: std::collections::HashSet<String>,
     /// D-S2b-12 (a): every identifier a `use` inside a function or block binds. Name
@@ -1608,11 +1611,17 @@ impl<'ast> syn::visit::Visit<'ast> for IndexBuilder<'_> {
                     .or_default()
                     .insert(ident.clone());
             }
-            self.index
+            let target = absolutize(&self.module, &path);
+            let targets = self
+                .index
                 .uses
                 .entry(key.clone())
                 .or_default()
-                .insert(ident, absolutize(&self.module, &path));
+                .entry(ident)
+                .or_default();
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
         }
     }
 
@@ -1623,7 +1632,7 @@ impl<'ast> syn::visit::Visit<'ast> for IndexBuilder<'_> {
         if item.mac.path.is_ident("macro_rules") {
             if let Some(name) = &item.ident {
                 self.index.macros.insert(plain(name));
-                if name == "concat" {
+                if plain(name) == "concat" {
                     self.index
                         .banned
                         .push(format!("{}: `macro_rules! concat`", self.file));
@@ -1683,7 +1692,7 @@ impl Resolver<'_> {
                     .path
                     .segments
                     .last()
-                    .is_some_and(|s| s.ident == "concat") =>
+                    .is_some_and(|s| plain(&s.ident) == "concat") =>
             {
                 if !self.is_builtin_concat(&call.mac) {
                     return Err("a `concat!` that is not the built-in one".to_string());
@@ -1750,8 +1759,16 @@ impl Resolver<'_> {
             {
                 return Err(format!("`{shown}` is bound by a `use .. as ..`"));
             }
-            candidates.push(self.module.iter().cloned().chain([name.clone()]).collect());
-            if let Some(target) = self.index.uses.get(&module_key).and_then(|u| u.get(name)) {
+            let local: Vec<String> = self.module.iter().cloned().chain([name.clone()]).collect();
+            let targets = self.index.uses.get(&module_key).and_then(|u| u.get(name));
+            let declared_here = self.index.consts.contains_key(&local.join("::"));
+            if targets.map_or(0, Vec::len) + usize::from(declared_here) > 1 {
+                return Err(format!(
+                    "`{shown}` has more than one `use` target or declaration in its module"
+                ));
+            }
+            candidates.push(local);
+            if let Some([target]) = targets.map(Vec::as_slice) {
                 candidates.push(target.clone());
             }
         } else {
@@ -1759,10 +1776,22 @@ impl Resolver<'_> {
                 "crate" | "self" | "super" => candidates.push(absolutize(&self.module, &segments)),
                 first => {
                     candidates.push(self.module.iter().chain(&segments).cloned().collect());
-                    if let Some(target) =
-                        self.index.uses.get(&module_key).and_then(|u| u.get(first))
+                    match self
+                        .index
+                        .uses
+                        .get(&module_key)
+                        .and_then(|u| u.get(first))
+                        .map(Vec::as_slice)
                     {
-                        candidates.push(target.iter().chain(&segments[1..]).cloned().collect());
+                        Some([target]) => {
+                            candidates.push(target.iter().chain(&segments[1..]).cloned().collect())
+                        }
+                        Some(_) => {
+                            return Err(format!(
+                                "`{shown}` starts with a name that has more than one `use` target"
+                            ))
+                        }
+                        None => {}
                     }
                 }
             }
@@ -2527,6 +2556,7 @@ fn a_concat_import_or_macro_fails_the_status_ratchet() {
         "use std::concat as concat;",
         "use some::path::concat as other_name;",
         "macro_rules! concat { () => { \"recording-status-changed\" }; }",
+        "macro_rules! r#concat { () => { \"recording-status-changed\" }; }",
     ] {
         let sources = sources_with(
             "commands/models.rs",
@@ -2572,6 +2602,39 @@ fn a_path_attribute_in_a_macro_body_fails_the_status_ratchet() {
     // A macro variable named `path` is not the attribute.
     let tokens: proc_macro2::TokenStream = "($path:expr) => { f($path); }".parse().expect("tokens");
     assert!(!macro_body_has_path_attr(tokens));
+}
+
+/// Round-5 probe (platform-gated imports): the import index kept the last target of
+/// a name, so a macOS `use` of the status event and a fallback `use` of a harmless
+/// one passed whichever order they were declared in, while the macOS build emitted
+/// the status event after the final idle. A name with more than one module-level
+/// `use` target (or a target and a declaration) is unresolved, under any `cfg`.
+#[test]
+fn cfg_gated_imports_of_one_emitted_name_fail_the_status_ratchet_in_both_orders() {
+    for (first, second) in [
+        ("recording-status-changed", "model-installed"),
+        ("model-installed", "recording-status-changed"),
+    ] {
+        let items = format!(
+            "mod install_events_a {{ pub const VAD_INSTALL_EVENT: &str = {first:?}; }}\n\
+             mod install_events_b {{ pub const VAD_INSTALL_EVENT: &str = {second:?}; }}\n\
+             #[cfg(target_os = \"macos\")]\nuse install_events_a::VAD_INSTALL_EVENT;\n\
+             #[cfg(not(target_os = \"macos\"))]\nuse install_events_b::VAD_INSTALL_EVENT;\n"
+        );
+        let mut sources = models_with("let _ = app_handle.emit(VAD_INSTALL_EVENT, 1);");
+        let (_, text) = sources
+            .iter_mut()
+            .find(|(name, _)| name == "commands/models.rs")
+            .expect("models.rs is scanned");
+        let anchor = "pub(crate) async fn ensure_vad_model<R: tauri::Runtime>(";
+        assert_eq!(text.matches(anchor).count(), 1);
+        *text = text.replace(anchor, &format!("{items}\n{anchor}"));
+        let error = the_status_ratchet_rejects(&sources);
+        assert!(
+            error.contains("unresolvable event name") && error.contains("commands/models.rs"),
+            "{first} / {second}: {error}"
+        );
+    }
 }
 
 /// Round-3 probe 5: `OwnedJsonEmit::emit_json` remapped an event through an unpinned
@@ -2709,7 +2772,7 @@ fn event_counts(source: &str) -> (usize, usize, usize) {
 #[test]
 fn the_event_scanner_resolves_by_proof_only() {
     // (source, status emits, status listeners, unresolved emits)
-    let cases: [(&str, (usize, usize, usize)); 40] = [
+    let cases: [(&str, (usize, usize, usize)); 45] = [
         ("fn f(a: &A) { a.emit(\"recording-status-changed\", 1); }", (1, 0, 0)),
         ("fn f(a: &A) { a.emit(\"other\", 1); }", (0, 0, 0)),
         ("fn f(a: &A) { a.emit(concat!(\"recording-status-\", \"changed\"), 1); }", (1, 0, 0)),
@@ -2798,6 +2861,28 @@ fn the_event_scanner_resolves_by_proof_only() {
         ),
         (
             "mod m { pub const E: &str = \"recording-status-changed\"; } fn f(a: &A) { { use m::E; a.emit(E, 1); } } fn g() { use harmless::E; }",
+            (0, 0, 1),
+        ),
+        // Round-5: a name with more than one module-level `use` target, or a target and
+        // a declaration, under any `cfg`, is unresolved (both declaration orders).
+        (
+            "mod a { pub const E: &str = \"recording-status-changed\"; } mod b { pub const E: &str = \"x\"; } #[cfg(unix)] use a::E; #[cfg(not(unix))] use b::E; fn f(h: &A) { h.emit(E, 1); }",
+            (0, 0, 1),
+        ),
+        (
+            "mod a { pub const E: &str = \"x\"; } mod b { pub const E: &str = \"recording-status-changed\"; } #[cfg(unix)] use a::E; #[cfg(not(unix))] use b::E; fn f(h: &A) { h.emit(E, 1); }",
+            (0, 0, 1),
+        ),
+        (
+            "#[cfg(unix)] const E: &str = \"recording-status-changed\"; #[cfg(not(unix))] const E: &str = \"x\"; fn f(h: &A) { h.emit(E, 1); }",
+            (0, 0, 1),
+        ),
+        (
+            "#[cfg(unix)] const E: &str = \"x\"; #[cfg(not(unix))] const E: &str = \"recording-status-changed\"; fn f(h: &A) { h.emit(E, 1); }",
+            (0, 0, 1),
+        ),
+        (
+            "mod m { pub const E: &str = \"recording-status-changed\"; } #[cfg(unix)] use m::E; #[cfg(not(unix))] const E: &str = \"x\"; fn f(h: &A) { h.emit(E, 1); }",
             (0, 0, 1),
         ),
         // A constant declared twice at one path is not proven.
