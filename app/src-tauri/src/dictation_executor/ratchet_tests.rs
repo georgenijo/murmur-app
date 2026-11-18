@@ -1521,11 +1521,7 @@ fn macro_body_has_path_attr(tokens: proc_macro2::TokenStream) -> bool {
                     return true;
                 }
             }
-            TokenTree::Group(group) => {
-                if macro_body_has_path_attr(group.stream()) {
-                    return true;
-                }
-            }
+            TokenTree::Group(group) if macro_body_has_path_attr(group.stream()) => return true,
             _ => {}
         }
     }
