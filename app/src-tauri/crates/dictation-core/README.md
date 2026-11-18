@@ -383,6 +383,16 @@ splitmix64 generator turns a seed into the whole run.
   `Attempt` grammar. Every supervisor word ends with an explicit `OwnerClear` step
   (followed by `CleanupFinished` for a sealed stop only); `cleanup_pending` is derived
   from the model (owner set and phase `Stopping`/`Recovering`), never generated.
+* **Supervisor mirror** (D-S2b-9 (a), `supervisor.rs`): `MIRROR` is a table in which every
+  modeled supervisor or client step cites the `audio_lifecycle.rs` function and line
+  range it mirrors, with a fragment of source that must appear there;
+  `the_supervisor_mirror_cites_the_real_source` reads the source and fails a row that
+  drifted, and a model step with no row. A command has five events: the client's
+  enqueue (never blocked by a busy supervisor), the supervisor's acceptance, the reply
+  at its production point (a stop's at the seal or the worker's exit, a cancel's when
+  handled; a stop with no attempt answers empty audio), the receiver's timeout and the
+  client's continuation. A notification fires only in a state where the cited code
+  sends it.
 * **Supervisor fidelity** (D-S2b-7 (b), `supervisor.rs`, `sup_task.rs`): the model may
   not invent or exclude a schedule. The worker's own end (a recovery, a crash, a failed
   open) is a pending end that a stop or a cancel command can still win until the
@@ -400,17 +410,24 @@ splitmix64 generator turns a seed into the whole run.
   whole world). The README rules above hold: a start can only be dropped between steps,
   at its smart-capture await.
 * **Checks** (`checks.rs`, `c3.rs`): SP1-SP4, SP6-SP10 after every step.
-  * *C3 effect table* (`c3.rs`): every status write, terminal and performance completion
-    is checked against the `(row, from -> to)`, `(row, outcome, code)` and
-    `(row, outcome)` C3 lists for the row, so a row that grows an extra write or claims
-    another outcome fails even when its decision stays valid. SP2 for terminals: under D
-    a stale input claims only what the row lists for a stale input.
+  * *C3 effect fixture* (`c3_fixture.txt`, `c3.rs`, D-S2b-9 (d)): a hand transcription
+    of appendix-c.md C3.1-C3.7, one line per row of `C3_ROWS` (a snapshot of observed
+    effects is not a fixture), reachable by the harness or not. Every decision, including
+    each stale or valid input the model never reaches, must match one allowed outcome of
+    its row with exactly those effects, each the stated number of times, so a row that
+    grows an extra write, claims another outcome or emits a duplicate terminal fails. The
+    continuation-ID bound is checked at every registration. SP2 for terminals: under D a
+    stale input claims only what the row lists for a stale input. SP5 stays structural
+    (the #1152 ratchet) and file admission stays a unit test.
   * *SP4(b) signatures*: a terminal and a performance outcome that disagree are judged
     at the step where the second one arrives. The split leaves the failure set only when
-    one signature matches in full: the PD, the terminal rows with outcome and code, the
-    statuses the claim saw, the performance outcome class (or exact rows) and a causal
-    precondition read from what each winner recorded (`Won`: the cancel's tail open, the
-    order of the winners, a later claim lost). No PD exempts a whole recording.
+    one signature matches in full, with every element bound to the same window: the PD,
+    the terminal rows with outcome and code, the statuses the claim saw, the performance
+    outcome class (or exact rows) and a causal precondition read from what each winner
+    recorded (`Won`: the cancel's tail open, the order of the winners, a later claim
+    lost). PD-4 needs its second ticker (or the gated claim) in the same window; PD-22
+    needs the winning `Idle` claim and the losing named claim in the same cancel tail.
+    No PD exempts a whole recording.
   * *SP10*: the partial-decode lease changes only by its holder's own acquire and drop,
     and is released by the end of the run.
   * *C7.3 liveness* is evaluated for every run from per-generation evidence, never by
@@ -425,14 +442,17 @@ splitmix64 generator turns a seed into the whole run.
   a model world, not the shell. Where a model witness and a production-reachable shell
   fixture disagree, the fixture wins and the model is fixed. PD-19..PD-22 were found
   this way (`src/commands/recording_harness_findings_tests.rs`, pinned seeds in
-  `FINDING_SEEDS`, each beside its shell test); PD-4 counts only after its defining
-  behaviour (the second ticker).
+  `FINDING_SEEDS`, each beside its shell test). The shell fixtures drive the Stage 0b
+  fake host, because the real supervisor has no test seam outside `audio_lifecycle.rs`
+  (D-S2b-9 (b)): each injected notification or reply cites its production sender and
+  state, uses the production strings, and the test asserts the exact replies, statuses
+  and ledger outcomes.
 * **Seeds**: 10,000 in CI (well under 20 s); `PROPTEST_CASES=100000 cargo test -p
   murmur-dictation-core --lib property::` raises it. `TRACE_SEED=<n> cargo test -p
   murmur-dictation-core --lib property::tests::trace_one -- --nocapture` prints one run.
-  `DUMP_C3=1` prints every status write, terminal and performance completion, to
-  regenerate the C3 table after a core row changes; `DUMP_SP4B=1` prints the context
-  of every split no signature matches.
+  `DUMP_SP4B=1` prints the context of every split no signature matches. A core row
+  change that is meant to differ from C3 edits `c3_fixture.txt` by hand, after the
+  appendix.
 
 What this layer does not cover: SP5 (structural), the shell's own locks and executor
 (the golden harness and the shell tests drive those through the 0a seams), and
