@@ -64,6 +64,7 @@ mod dictation_shadow_policy_tests;
 mod dictation_telemetry;
 mod dock_watch;
 pub mod evaluation;
+mod events;
 mod file_output;
 mod frontmost;
 mod hang_diagnostics;

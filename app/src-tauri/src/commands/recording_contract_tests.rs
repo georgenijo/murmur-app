@@ -7,6 +7,7 @@
 //! with its reason.
 //!
 //! Ordering is by causal barriers only: no clock, no sleep.
+#![cfg(test)]
 
 use super::golden_harness::*;
 use super::golden_tests::{cancelled, recording, started, stopped, sub, sub_from};

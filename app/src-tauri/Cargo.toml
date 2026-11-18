@@ -107,8 +107,12 @@ tauri = { version = "2", features = ["test"] }
 # The SP5 ratchet (`dictation_executor/ratchet_tests.rs`) resolves qualified
 # function identities from real Rust syntax. Already in the lockfile through Tauri.
 syn = { version = "2", features = ["full", "visit"] }
-proc-macro2 = "1"
+# `span-locations`: the pin normalization finds a doc comment by its span.
+proc-macro2 = { version = "1", features = ["span-locations"] }
 quote = "1"
+# The SP5 ratchet parses this manifest to check the production targets. Resolves to the
+# `toml` 1.0.6 already in the lockfile (through tauri-utils).
+toml = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 whisper-rs = { version = "0.15", features = ["metal"] }

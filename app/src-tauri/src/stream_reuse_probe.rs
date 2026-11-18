@@ -18,6 +18,7 @@
 //!
 //! The output is content-free: counts, milliseconds and word *indices* only
 //! (never a word of the clip or of either decode).
+#![cfg(test)]
 
 use super::*;
 use crate::transcriber::{self, TranscriptionBackend};

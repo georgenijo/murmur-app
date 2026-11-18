@@ -17,6 +17,7 @@
 //! Scenario bodies are driven by the barriers described in
 //! `recording_golden_harness.rs`; none of them waits on a clock (G3 is
 //! enforced by `golden_scenarios_never_wait_on_a_clock`).
+#![cfg(test)]
 
 use super::golden_harness::*;
 use super::*;

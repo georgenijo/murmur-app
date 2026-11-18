@@ -2,6 +2,7 @@
 //! and the stop path call, over a fake backend that answers from a script and
 //! records how much audio it was asked to decode. Audio is synthetic PCM and
 //! the texts are fixed phrases.
+#![cfg(test)]
 
 use super::*;
 use crate::audio_lifecycle::PeekSince;

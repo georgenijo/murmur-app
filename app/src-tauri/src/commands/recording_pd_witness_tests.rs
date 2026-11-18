@@ -14,6 +14,7 @@
 //!
 //! The PD → test map lives in `recording_pd_witness_map.md` and is checked by
 //! `pd_witness_map_is_complete_and_names_real_tests`.
+#![cfg(test)]
 
 use super::golden_harness::*;
 use super::golden_tests::{cancelled, recording, sub};
