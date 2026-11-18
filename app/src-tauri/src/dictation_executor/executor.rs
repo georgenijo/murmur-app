@@ -851,10 +851,7 @@ impl<'a> Executor<'a> {
                     self.noted_ticker = ports
                         .take_ticker_gate()
                         .map(super::shadow::TickerNote::Gate)
-                        .or_else(|| {
-                            super::shadow::take_ticker_skip(ctx.recording_id)
-                                .map(super::shadow::TickerNote::Skipped)
-                        });
+                        .or_else(super::shadow::take_ticker_skip);
                 }
                 self.record_port(index, effect, result);
             }
