@@ -1203,9 +1203,9 @@ fn a_start_dropped_while_suspended_with_carried_work_drains_after_t() {
                 );
                 let after = w.state().app_state.core_history.counters();
                 assert_eq!(
-                    format!("{after:?}").len(),
-                    format!("{counters:?}").len(),
-                    "counters keep their shape"
+                    after, counters,
+                    "the drain retires through matching tokens: no unknown, duplicate or \
+                     over-threshold count moves"
                 );
                 w.open_gate("smart_capture");
                 // The dropped start left Starting behind; put the end state in order.

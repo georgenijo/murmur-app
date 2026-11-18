@@ -294,8 +294,9 @@ port callback) runs inside a core span, that is, with `IN_CORE` set and D or T h
 
 1. **Polling rule (D-S2-5).** Production polls dictation futures (the start, stop,
    cancel and import commands, the lifecycle bridge) only from Tokio tasks and IPC
-   handlers, never from inside a listener. A listener may *drop* such a future
-   (which queues work, rule 2), not poll it. Entries still protect themselves:
+   handlers, never from inside a listener. A listener may drop a pipeline owner or
+   a continuation guard (which queues work, rule 2), never a dictation future
+   (D-S2-16: drops follow the same rule as polls). Entries still protect themselves:
    an entry reached inside a span is refused before any lock (D-S2-2/3), and a
    future that is resumed inside a span after an await waits with
    `until_outside_core().await` before it asks for T or D. That wait is defence in

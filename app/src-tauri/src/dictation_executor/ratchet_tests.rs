@@ -358,6 +358,185 @@ fn is_test_only_file(relative: &str) -> bool {
     TEST_ONLY_FILES.contains(&relative) || TEST_ONLY_NAMING_EXCEPTIONS.contains(&relative)
 }
 
+/// The attribute lines directly above line `at` (comment lines between them are
+/// ignored): the contiguous run of `#[..]` lines.
+fn attribute_lines_above<'l>(lines: &[&'l str], at: usize) -> Vec<&'l str> {
+    let mut attrs = Vec::new();
+    let mut index = at;
+    while index > 0 {
+        index -= 1;
+        let line = lines[index].trim();
+        if line.starts_with("#[") {
+            attrs.push(line);
+        } else if !(line.starts_with("//") || line.is_empty()) {
+            break;
+        }
+    }
+    attrs
+}
+
+/// Whether any of the attribute `lines` is a `cfg` whose predicate requires `test`.
+fn lines_require_test(attrs: &[&str]) -> bool {
+    attrs.iter().any(|line| {
+        syn::parse::Parser::parse_str(syn::Attribute::parse_outer, line)
+            .is_ok_and(|parsed| parsed.iter().any(is_cfg_test))
+    })
+}
+
+fn indentation(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// A declaration grep (not module resolution): every `mod <name>;` or
+/// `include!("..")` line in `sources` that declares the file at `relative`, and
+/// whether `#[cfg(test)]` (a predicate that requires `test`) gates it, through the
+/// attribute lines directly above it or above an enclosing `mod x {` block. A
+/// `mod` line declares a file by its name (the file stem, or the directory for
+/// `mod.rs`) or by a `#[path = ".."]` attribute naming it; an `include!` by its
+/// path. Returns `(ungated declarations, all declarations)` as `file:line`.
+fn declarations_of(sources: &[(String, String)], relative: &str) -> (Vec<String>, Vec<String>) {
+    let file_name = relative.rsplit('/').next().unwrap_or(relative);
+    let stem = file_name.trim_end_matches(".rs");
+    let module_name = if stem == "mod" {
+        relative.rsplit('/').nth(1).unwrap_or(stem)
+    } else {
+        stem
+    };
+    let mod_line = Regex::new(r"^(?:pub(?:\([a-z:]+\))?\s+)?mod\s+(\w+)\s*;").expect("regex");
+    let include_line = Regex::new(r#"include!\(\s*"([^"]+)"\s*\)"#).expect("regex");
+    let path_attr = Regex::new(r#"^#\[path\s*=\s*"([^"]+)"\s*\]"#).expect("regex");
+    let names_file = |path: &str| path.rsplit('/').next() == Some(file_name);
+    let (mut ungated, mut all) = (Vec::new(), Vec::new());
+    for (source_file, source) in sources {
+        let lines: Vec<&str> = source.lines().collect();
+        for (at, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            let attrs = attribute_lines_above(&lines, at);
+            let declares = if let Some(found) = mod_line.captures(trimmed) {
+                let explicit = attrs
+                    .iter()
+                    .find_map(|attr| path_attr.captures(attr).map(|c| c[1].to_string()));
+                match explicit {
+                    Some(path) => names_file(&path),
+                    None => &found[1] == module_name,
+                }
+            } else if let Some(found) = include_line.captures(trimmed) {
+                names_file(&found[1])
+            } else {
+                false
+            };
+            if !declares {
+                continue;
+            }
+            let here = format!("{source_file}:{}", at + 1);
+            all.push(here.clone());
+            // Gated by its own attributes, or by an enclosing `mod x {` block.
+            let mut gated = lines_require_test(&attrs);
+            let mut outer = indentation(line);
+            for above in (0..at).rev() {
+                if gated || outer == 0 {
+                    break;
+                }
+                let candidate = lines[above];
+                let header = candidate.trim_start();
+                if !candidate.trim().is_empty()
+                    && indentation(candidate) < outer
+                    && (header.starts_with("mod ") || header.starts_with("pub mod "))
+                    && header.trim_end().ends_with('{')
+                {
+                    outer = indentation(candidate);
+                    gated = lines_require_test(&attribute_lines_above(&lines, above));
+                }
+            }
+            if !gated {
+                ungated.push(here);
+            }
+        }
+    }
+    (ungated, all)
+}
+
+/// D-S2-18 (a): the last fail-open path. A file in `TEST_ONLY_FILES` or
+/// `TEST_ONLY_NAMING_EXCEPTIONS` is skipped whole, so something must declare it, and
+/// every declaration (`mod <name>;`, `#[path]`, `include!`) must be gated by
+/// `#[cfg(test)]`; otherwise a production module could be listed and silently dropped.
+#[test]
+fn every_test_only_file_is_declared_under_cfg_test() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    // Every file is searched, the listed ones too (a declaration can live in a test
+    // module that a gated parent declares), except this file, whose fixtures are
+    // text about declarations.
+    let sources = scan_dir(&src, &|relative| {
+        relative == "dictation_executor/ratchet_tests.rs"
+    });
+    for file in TEST_ONLY_FILES.iter().chain(TEST_ONLY_NAMING_EXCEPTIONS) {
+        let (ungated, all) = declarations_of(&sources, file);
+        assert!(
+            !all.is_empty(),
+            "{file} is listed as test-only but no `mod` or `include!` line declares it"
+        );
+        assert!(
+            ungated.is_empty(),
+            "{file} is listed as test-only but is declared without `#[cfg(test)]` at {ungated:?}"
+        );
+    }
+}
+
+/// The declaration grep on fixtures: gated, ungated, `#[path]`, `include!` in a gated
+/// block, a predicate that does not require `test`, and no declaration at all.
+#[test]
+fn the_declaration_grep_sees_a_missing_cfg_test() {
+    let one = |code: &str| vec![("lib.rs".to_string(), code.to_string())];
+    let gated = |code: &str, file: &str| {
+        let (ungated, all) = declarations_of(&one(code), file);
+        (all.len(), ungated.len())
+    };
+    assert_eq!(
+        gated("#[cfg(test)]\nmod helper_tests;\n", "helper_tests.rs"),
+        (1, 0)
+    );
+    assert_eq!(gated("mod helper_tests;\n", "helper_tests.rs"), (1, 1));
+    assert_eq!(
+        gated(
+            "#[cfg(any(test, unix))]\nmod helper_tests;\n",
+            "helper_tests.rs"
+        ),
+        (1, 1)
+    );
+    assert_eq!(
+        gated(
+            "#[cfg(test)]\n#[path = \"dir/harness.rs\"]\nmod golden;\n",
+            "dir/harness.rs"
+        ),
+        (1, 0)
+    );
+    assert_eq!(
+        gated("#[path = \"harness.rs\"]\nmod golden;\n", "harness.rs"),
+        (1, 1)
+    );
+    // A `mod.rs` is declared by its directory name.
+    assert_eq!(
+        gated("#[cfg(test)]\nmod nested;\n", "nested/mod.rs"),
+        (1, 0)
+    );
+    // `include!` inside a gated block, and inside an ungated one.
+    let block = |attr: &str| {
+        format!("{attr}\nmod tests {{\n    mod inner {{\n        include!(\"a_tests.rs\");\n    }}\n}}\n")
+    };
+    assert_eq!(gated(&block("#[cfg(test)]"), "a_tests.rs"), (1, 0));
+    assert_eq!(gated(&block(""), "a_tests.rs"), (1, 1));
+    // Two declarations: one ungated is enough to fail.
+    assert_eq!(
+        gated(
+            "#[cfg(test)]\nmod x_tests;\n#[path = \"x_tests.rs\"]\nmod again;\n",
+            "x_tests.rs"
+        ),
+        (2, 1)
+    );
+    // No declaration at all.
+    assert_eq!(gated("mod other;\n", "x_tests.rs"), (0, 0));
+}
+
 /// `(path relative to dir, raw source)` of every `.rs` file under `dir` that
 /// `skip` does not name, sorted. No module resolution: whatever is not skipped by
 /// name is scanned.
