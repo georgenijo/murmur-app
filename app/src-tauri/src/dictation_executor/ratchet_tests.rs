@@ -743,6 +743,12 @@ struct SiteFinder<'m> {
     include_cfg_test: bool,
     is_target: &'m dyn Fn(&[String]) -> bool,
     hits: Vec<String>,
+    /// Record every call, method call and macro with its enclosing function and that
+    /// function's local bindings (the event-name scanner, SP5 status events).
+    record_calls: bool,
+    calls: Vec<CallRecord>,
+    /// The bindings of each enclosing function, innermost last.
+    bindings: Vec<std::rc::Rc<Bindings>>,
 }
 
 impl SiteFinder<'_> {
@@ -767,15 +773,6 @@ impl SiteFinder<'_> {
                     chain.push(syn::ext::IdentExt::unraw(&ident).to_string())
                 }
                 TokenTree::Punct(punct) if punct.as_char() == ':' => {}
-                // A string literal inside a macro's tokens (`emit!("event", ..)`):
-                // offered to `is_target` as its quoted text, which no identifier
-                // path equals.
-                TokenTree::Literal(literal) => {
-                    flush(self, &mut chain);
-                    if (self.is_target)(&[literal.to_string()]) {
-                        self.hit();
-                    }
-                }
                 TokenTree::Group(group) => {
                     flush(self, &mut chain);
                     self.scan_tokens(group.stream());
@@ -788,6 +785,83 @@ impl SiteFinder<'_> {
 
     fn skip(&self, attrs: &[syn::Attribute]) -> bool {
         !self.include_cfg_test && attrs.iter().any(is_cfg_test)
+    }
+
+    fn record(&mut self, callee: String, args: Option<Vec<syn::Expr>>, path_call: bool) {
+        if !self.record_calls {
+            return;
+        }
+        let bindings = self.bindings.last().cloned().unwrap_or_default();
+        self.calls.push(CallRecord {
+            function: self.scope.join("::"),
+            callee,
+            args,
+            path_call,
+            bindings,
+        });
+    }
+
+    /// A macro invocation, with its arguments when they parse as expressions (the
+    /// calls inside them are visited too), else the calls written in its tokens.
+    fn record_macro(&mut self, mac: &syn::Macro) {
+        use syn::visit::Visit;
+        let Some(last) = mac.path.segments.last() else {
+            return;
+        };
+        let name = plain(&last.ident);
+        match parse_expr_list(mac.tokens.clone()) {
+            Some(args) => {
+                if !PURE_MACROS.contains(&name.as_str()) {
+                    self.record(name, Some(args.clone()), false);
+                }
+                for arg in &args {
+                    self.visit_expr(arg);
+                }
+            }
+            None => self.record_token_calls(mac.tokens.clone()),
+        }
+    }
+
+    /// `name(..)` written inside macro tokens: recorded with its arguments when they
+    /// parse, and (unparsed) when `name` is an emit API.
+    fn record_token_calls(&mut self, tokens: proc_macro2::TokenStream) {
+        use proc_macro2::{Delimiter, TokenTree};
+        let mut previous: Option<String> = None;
+        for token in tokens {
+            match token {
+                TokenTree::Ident(ident) => previous = Some(plain(&ident)),
+                TokenTree::Group(group) => {
+                    if group.delimiter() == Delimiter::Parenthesis {
+                        if let Some(name) = previous.take() {
+                            let args = parse_expr_list(group.stream());
+                            if args.is_some() || is_emit_api_name(&name) {
+                                self.record(name, args, false);
+                            }
+                        }
+                    }
+                    previous = None;
+                    self.record_token_calls(group.stream());
+                }
+                _ => previous = None,
+            }
+        }
+    }
+
+    /// Enter a function body: its local bindings are collected up front.
+    fn within_fn(
+        &mut self,
+        segment: String,
+        bindings: impl FnOnce() -> Bindings,
+        walk: impl FnOnce(&mut Self),
+    ) {
+        let pushed = self.record_calls;
+        if pushed {
+            self.bindings.push(std::rc::Rc::new(bindings()));
+        }
+        self.within(segment, walk);
+        if pushed {
+            self.bindings.pop();
+        }
     }
 
     fn within(&mut self, segment: String, walk: impl FnOnce(&mut Self)) {
@@ -895,27 +969,33 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         if self.skip(&item.attrs) {
             return;
         }
-        self.within(plain(&item.sig.ident), |this| {
-            syn::visit::visit_item_fn(this, item)
-        });
+        self.within_fn(
+            plain(&item.sig.ident),
+            || fn_bindings(&item.sig, Some(&item.block)),
+            |this| syn::visit::visit_item_fn(this, item),
+        );
     }
 
     fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
         if self.skip(&item.attrs) {
             return;
         }
-        self.within(plain(&item.sig.ident), |this| {
-            syn::visit::visit_impl_item_fn(this, item)
-        });
+        self.within_fn(
+            plain(&item.sig.ident),
+            || fn_bindings(&item.sig, Some(&item.block)),
+            |this| syn::visit::visit_impl_item_fn(this, item),
+        );
     }
 
     fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
         if self.skip(&item.attrs) {
             return;
         }
-        self.within(plain(&item.sig.ident), |this| {
-            syn::visit::visit_trait_item_fn(this, item)
-        });
+        self.within_fn(
+            plain(&item.sig.ident),
+            || fn_bindings(&item.sig, item.default.as_ref()),
+            |this| syn::visit::visit_trait_item_fn(this, item),
+        );
     }
 
     fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
@@ -1010,6 +1090,15 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         if self.skip(&call.attrs) {
             return;
         }
+        if let syn::Expr::Path(function) = &*call.func {
+            if let Some(last) = function.path.segments.last() {
+                self.record(
+                    plain(&last.ident),
+                    Some(call.args.iter().cloned().collect()),
+                    true,
+                );
+            }
+        }
         syn::visit::visit_expr_call(self, call);
     }
 
@@ -1039,18 +1128,18 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         if (self.is_target)(&[plain(&call.method)]) {
             self.hit();
         }
+        self.record(
+            plain(&call.method),
+            Some(call.args.iter().cloned().collect()),
+            false,
+        );
         syn::visit::visit_expr_method_call(self, call);
     }
 
-    /// A string literal in an expression (the event name of an `emit(..)`), offered
-    /// to `is_target` as its quoted text.
-    fn visit_lit_str(&mut self, literal: &'ast syn::LitStr) {
-        if (self.is_target)(&[format!("{:?}", literal.value())]) {
-            self.hit();
-        }
-    }
-
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        if self.record_calls {
+            self.record_macro(mac);
+        }
         self.scan_tokens(mac.tokens.clone());
         syn::visit::visit_macro(self, mac);
     }
@@ -1070,6 +1159,9 @@ fn call_scopes(
         include_cfg_test,
         is_target,
         hits: Vec::new(),
+        record_calls: false,
+        calls: Vec::new(),
+        bindings: Vec::new(),
     };
     finder.visit_file(&file);
     finder.hits
@@ -1142,146 +1234,872 @@ fn terminal_emit_callers_are_exactly_the_allowlisted_functions() {
     );
 }
 
-// ------------------------------------------------ SP5: status emits (D-S2b-3)
+// ------------------------------------------------ SP5: status events (D-S2b-3)
+//
+// The event argument of every emit call is resolved, not the event-name literals
+// counted. A call "touches" the status event when any argument resolves to it; the
+// touch is an emit unless the callee is a listener (`listen`, `once`, ...), which is
+// counted separately. An emit API call whose event name cannot be resolved is a
+// dynamic emit and must be on the reviewed list.
 
-/// The quoted event name SP5 pins.
-const STATUS_EVENT: &str = "\"recording-status-changed\"";
+/// The event name SP5 pins.
+const STATUS_EVENT: &str = "recording-status-changed";
 
-fn is_status_event_literal(segments: &[String]) -> bool {
-    segments.len() == 1 && segments[0] == STATUS_EVENT
+/// What a name is bound to inside one function.
+#[derive(Clone)]
+enum Binding {
+    /// `let name = <expr>;`
+    Expr(syn::Expr),
+    /// `for name in <expr> { .. }`: every element of the iterable.
+    Each(syn::Expr),
+    /// A parameter, a pattern binding, or anything else not statically known.
+    Dynamic,
 }
 
-/// SP5 (appendix C7.2, C13.3 #117): every production occurrence of the
+type Bindings = std::collections::HashMap<String, Vec<Binding>>;
+type Consts = std::collections::HashMap<String, Vec<syn::Expr>>;
+
+/// One call, method call or macro with the arguments written at it.
+struct CallRecord {
+    function: String,
+    callee: String,
+    /// `None`: macro tokens that did not parse as arguments.
+    args: Option<Vec<syn::Expr>>,
+    /// Written as a path call (`Emitter::emit(app, ..)`: the receiver is argument 0).
+    path_call: bool,
+    bindings: std::rc::Rc<Bindings>,
+}
+
+/// Macros whose arguments are data, not calls with an event name.
+const PURE_MACROS: [&str; 30] = [
+    "concat",
+    "stringify",
+    "format",
+    "vec",
+    "json",
+    "matches",
+    "assert",
+    "assert_eq",
+    "assert_ne",
+    "debug_assert",
+    "debug_assert_eq",
+    "debug_assert_ne",
+    "println",
+    "eprintln",
+    "print",
+    "eprint",
+    "write",
+    "writeln",
+    "panic",
+    "unreachable",
+    "todo",
+    "unimplemented",
+    "dbg",
+    "cfg",
+    "env",
+    "info",
+    "debug",
+    "warn",
+    "error",
+    "trace",
+];
+
+fn parse_expr_list(tokens: proc_macro2::TokenStream) -> Option<Vec<syn::Expr>> {
+    use syn::parse::Parser;
+    syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated
+        .parse2(tokens)
+        .ok()
+        .map(|list| list.into_iter().collect())
+}
+
+/// The listener APIs: their event argument is a subscription, not an emit.
+const LISTENERS: [&str; 4] = ["listen", "once", "listen_any", "once_any"];
+
+/// `(name, arguments of the method form, index of the event argument)`. The Tauri
+/// `Emitter` API, and this code's own `emit_json` / `RecordingHost::emit` wrappers.
+const EMIT_APIS: [(&str, usize, usize); 8] = [
+    ("emit", 2, 0),
+    ("emit_all", 2, 0),
+    ("emit_str", 2, 0),
+    ("emit_json", 2, 0),
+    ("emit_to", 3, 1),
+    ("emit_str_to", 3, 1),
+    ("emit_filter", 3, 0),
+    ("emit_str_filter", 3, 0),
+];
+
+fn is_emit_api_name(name: &str) -> bool {
+    EMIT_APIS.iter().any(|(api, _, _)| *api == name)
+}
+
+/// The index of the event argument when `name(args)` has an emit API's shape (a path
+/// call carries the receiver as argument 0, so one more argument and index).
+fn emit_event_index(name: &str, args: usize, path_call: bool) -> Option<usize> {
+    let shift = usize::from(path_call);
+    EMIT_APIS
+        .iter()
+        .find(|(api, arity, _)| *api == name && arity + shift == args)
+        .map(|(_, _, index)| index + shift)
+}
+
+/// The names bound inside one function: its parameters and everything its body
+/// binds (a `let`, a `for`, a closure parameter, a pattern).
+fn fn_bindings(sig: &syn::Signature, body: Option<&syn::Block>) -> Bindings {
+    use syn::visit::Visit;
+    let mut collector = BindingCollector {
+        map: Bindings::new(),
+    };
+    for input in &sig.inputs {
+        collector.visit_fn_arg(input);
+    }
+    if let Some(body) = body {
+        collector.visit_block(body);
+    }
+    collector.map
+}
+
+struct BindingCollector {
+    map: Bindings,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for BindingCollector {
+    fn visit_local(&mut self, local: &'ast syn::Local) {
+        let name = match &local.pat {
+            syn::Pat::Ident(ident) => Some(plain(&ident.ident)),
+            syn::Pat::Type(typed) => match &*typed.pat {
+                syn::Pat::Ident(ident) => Some(plain(&ident.ident)),
+                _ => None,
+            },
+            _ => None,
+        };
+        match (name, &local.init) {
+            (Some(name), Some(init)) => {
+                self.map
+                    .entry(name)
+                    .or_default()
+                    .push(Binding::Expr((*init.expr).clone()));
+                self.visit_expr(&init.expr);
+                if let Some((_, diverge)) = &init.diverge {
+                    self.visit_expr(diverge);
+                }
+            }
+            _ => syn::visit::visit_local(self, local),
+        }
+    }
+
+    fn visit_expr_for_loop(&mut self, node: &'ast syn::ExprForLoop) {
+        if let syn::Pat::Ident(ident) = &*node.pat {
+            self.map
+                .entry(plain(&ident.ident))
+                .or_default()
+                .push(Binding::Each((*node.expr).clone()));
+            self.visit_expr(&node.expr);
+            self.visit_block(&node.body);
+        } else {
+            syn::visit::visit_expr_for_loop(self, node);
+        }
+    }
+
+    fn visit_pat_ident(&mut self, ident: &'ast syn::PatIdent) {
+        self.map
+            .entry(plain(&ident.ident))
+            .or_default()
+            .push(Binding::Dynamic);
+        syn::visit::visit_pat_ident(self, ident);
+    }
+}
+
+/// Every `const` / `static` (also associated consts) by name, across files.
+struct ConstCollector<'c> {
+    consts: &'c mut Consts,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for ConstCollector<'_> {
+    fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
+        self.consts
+            .entry(plain(&item.ident))
+            .or_default()
+            .push((*item.expr).clone());
+        syn::visit::visit_item_const(self, item);
+    }
+
+    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+        self.consts
+            .entry(plain(&item.ident))
+            .or_default()
+            .push((*item.expr).clone());
+        syn::visit::visit_item_static(self, item);
+    }
+
+    fn visit_impl_item_const(&mut self, item: &'ast syn::ImplItemConst) {
+        self.consts
+            .entry(plain(&item.ident))
+            .or_default()
+            .push(item.expr.clone());
+        syn::visit::visit_impl_item_const(self, item);
+    }
+}
+
+type Names = std::collections::BTreeSet<String>;
+
+fn one(name: impl Into<String>) -> Result<Names, String> {
+    Ok(std::iter::once(name.into()).collect())
+}
+
+/// Union of the alternatives; one that cannot be resolved makes the whole unresolved.
+fn union(parts: impl IntoIterator<Item = Result<Names, String>>) -> Result<Names, String> {
+    let mut all = Names::new();
+    for part in parts {
+        all.extend(part?);
+    }
+    Ok(all)
+}
+
+/// Resolves an expression to the set of string values it can have, through
+/// literals, `concat!`, `String::from` / `.to_string()` / `.into()`, consts and
+/// statics, simple `let` bindings, `for` loop variables over array literals and
+/// const arrays, `if` / `match` / block tails. Anything else is unresolved, with the
+/// reason.
+struct Resolver<'a> {
+    consts: &'a Consts,
+    locals: &'a Bindings,
+}
+
+const MAX_DEPTH: usize = 12;
+
+impl Resolver<'_> {
+    fn value(&self, expr: &syn::Expr, depth: usize) -> Result<Names, String> {
+        if depth > MAX_DEPTH {
+            return Err("a binding chain too deep to follow".to_string());
+        }
+        match expr {
+            syn::Expr::Lit(literal) => match &literal.lit {
+                syn::Lit::Str(text) => one(text.value()),
+                syn::Lit::Int(number) => one(number.base10_digits()),
+                syn::Lit::Bool(flag) => one(flag.value.to_string()),
+                syn::Lit::Char(character) => one(character.value().to_string()),
+                other => Err(format!("literal {}", written(other))),
+            },
+            syn::Expr::Reference(inner) => self.value(&inner.expr, depth),
+            syn::Expr::Paren(inner) => self.value(&inner.expr, depth),
+            syn::Expr::Group(inner) => self.value(&inner.expr, depth),
+            syn::Expr::Macro(call) => self.macro_value(&call.mac, depth),
+            syn::Expr::Path(path) => self.path_value(path, depth),
+            syn::Expr::MethodCall(call)
+                if ["to_string", "to_owned", "into", "as_str", "clone", "as_ref"]
+                    .contains(&plain(&call.method).as_str()) =>
+            {
+                self.value(&call.receiver, depth)
+            }
+            syn::Expr::Call(call) if is_string_from(call) => self.value(&call.args[0], depth),
+            syn::Expr::If(branch) => {
+                let Some((_, otherwise)) = &branch.else_branch else {
+                    return Err("an `if` without `else`".to_string());
+                };
+                union([
+                    self.block_value(&branch.then_branch, depth),
+                    self.value(otherwise, depth),
+                ])
+            }
+            syn::Expr::Match(arms) => {
+                union(arms.arms.iter().map(|arm| self.value(&arm.body, depth)))
+            }
+            syn::Expr::Block(block) => self.block_value(&block.block, depth),
+            other => Err(short(&written(other))),
+        }
+    }
+
+    fn block_value(&self, block: &syn::Block, depth: usize) -> Result<Names, String> {
+        match block.stmts.last() {
+            Some(syn::Stmt::Expr(tail, None)) => self.value(tail, depth),
+            _ => Err("a block without a tail expression".to_string()),
+        }
+    }
+
+    fn macro_value(&self, mac: &syn::Macro, depth: usize) -> Result<Names, String> {
+        let name = mac
+            .path
+            .segments
+            .last()
+            .map(|segment| plain(&segment.ident))
+            .unwrap_or_default();
+        match name.as_str() {
+            "concat" => {
+                let parts = parse_expr_list(mac.tokens.clone()).ok_or("an unparsable `concat!`")?;
+                let mut acc = Names::from(["".to_string()]);
+                for part in &parts {
+                    let values = self.value(part, depth + 1)?;
+                    acc = acc
+                        .iter()
+                        .flat_map(|head| values.iter().map(move |tail| format!("{head}{tail}")))
+                        .collect();
+                }
+                Ok(acc)
+            }
+            "stringify" => one(mac.tokens.to_string().replace(' ', "")),
+            "format" => {
+                let parts = parse_expr_list(mac.tokens.clone()).ok_or("an unparsable `format!`")?;
+                match parts.as_slice() {
+                    [syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(text),
+                        ..
+                    })] if !text.value().contains('{') => one(text.value()),
+                    _ => Err("a `format!` with arguments".to_string()),
+                }
+            }
+            other => Err(format!("macro `{other}!`")),
+        }
+    }
+
+    fn path_value(&self, path: &syn::ExprPath, depth: usize) -> Result<Names, String> {
+        let Some(last) = path.path.segments.last() else {
+            return Err("an empty path".to_string());
+        };
+        let name = plain(&last.ident);
+        if path.path.segments.len() == 1 {
+            if let Some(bindings) = self.locals.get(&name) {
+                return union(bindings.iter().map(|binding| match binding {
+                    Binding::Expr(bound) => self.value(bound, depth + 1),
+                    Binding::Each(iterable) => self.elements(iterable, depth + 1),
+                    Binding::Dynamic => Err(format!("`{name}` is a parameter or pattern binding")),
+                }));
+            }
+        }
+        match self.consts.get(&name) {
+            Some(values) => union(values.iter().map(|bound| self.value(bound, depth + 1))),
+            None => Err(format!("`{}` is not a known const or local", written(path))),
+        }
+    }
+
+    /// The values of the elements of an iterable expression.
+    fn elements(&self, expr: &syn::Expr, depth: usize) -> Result<Names, String> {
+        if depth > MAX_DEPTH {
+            return Err("a binding chain too deep to follow".to_string());
+        }
+        match expr {
+            syn::Expr::Array(array) => {
+                union(array.elems.iter().map(|elem| self.value(elem, depth + 1)))
+            }
+            syn::Expr::Reference(inner) => self.elements(&inner.expr, depth),
+            syn::Expr::Paren(inner) => self.elements(&inner.expr, depth),
+            syn::Expr::Group(inner) => self.elements(&inner.expr, depth),
+            syn::Expr::MethodCall(call)
+                if ["iter", "into_iter", "copied", "cloned"]
+                    .contains(&plain(&call.method).as_str()) =>
+            {
+                self.elements(&call.receiver, depth)
+            }
+            syn::Expr::Macro(call)
+                if call
+                    .mac
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|s| s.ident == "vec") =>
+            {
+                let parts =
+                    parse_expr_list(call.mac.tokens.clone()).ok_or("an unparsable `vec!`")?;
+                union(parts.iter().map(|part| self.value(part, depth + 1)))
+            }
+            syn::Expr::Path(path) => {
+                let Some(last) = path.path.segments.last() else {
+                    return Err("an empty path".to_string());
+                };
+                let name = plain(&last.ident);
+                if path.path.segments.len() == 1 {
+                    if let Some(bindings) = self.locals.get(&name) {
+                        return union(bindings.iter().map(|binding| match binding {
+                            Binding::Expr(bound) => self.elements(bound, depth + 1),
+                            _ => Err(format!("`{name}` is not a known array")),
+                        }));
+                    }
+                }
+                match self.consts.get(&name) {
+                    Some(values) => {
+                        union(values.iter().map(|bound| self.elements(bound, depth + 1)))
+                    }
+                    None => Err(format!("`{}` is not a known array", written(path))),
+                }
+            }
+            other => Err(format!("iterable {}", short(&written(other)))),
+        }
+    }
+}
+
+fn short(text: &str) -> String {
+    let text: String = text.chars().take(60).collect();
+    format!("`{text}`")
+}
+
+fn is_string_from(call: &syn::ExprCall) -> bool {
+    let syn::Expr::Path(function) = &*call.func else {
+        return false;
+    };
+    let names: Vec<String> = function
+        .path
+        .segments
+        .iter()
+        .map(|segment| plain(&segment.ident))
+        .collect();
+    call.args.len() == 1 && names.ends_with(&["String".to_string(), "from".to_string()])
+}
+
+/// What the scan found: the calls that touch the status event (emits and listeners
+/// apart) and the emits whose event name could not be resolved.
+#[derive(Debug, Default)]
+struct EventSites {
+    /// `(file, qualified fn, "emit" | "listen")` → calls with an argument that can be
+    /// the status event.
+    status: std::collections::BTreeMap<(String, String, &'static str), usize>,
+    /// `(file, qualified fn)` → unresolved emits, with the reasons.
+    dynamic: std::collections::BTreeMap<(String, String), (usize, Names)>,
+}
+
+/// Classify one call: a status touch (emit or listener) and/or an unresolved emit.
+fn classify_call(file: &str, record: &CallRecord, consts: &Consts, found: &mut EventSites) {
+    let resolver = Resolver {
+        consts,
+        locals: &record.bindings,
+    };
+    let function = record.function.clone();
+    let name = record.callee.as_str();
+    let Some(args) = &record.args else {
+        let entry = found
+            .dynamic
+            .entry((file.to_string(), function))
+            .or_default();
+        entry.0 += 1;
+        entry
+            .1
+            .insert(format!("the tokens of an `{name}(..)` in a macro"));
+        return;
+    };
+    // A conversion (`String::from(name)`) only passes the name on; the call it ends
+    // up in is the site.
+    let conversion = [
+        "from",
+        "to_string",
+        "to_owned",
+        "into",
+        "as_str",
+        "clone",
+        "as_ref",
+    ]
+    .contains(&name);
+    let touches = !conversion
+        && args.iter().any(|arg| {
+            resolver
+                .value(arg, 0)
+                .is_ok_and(|names| names.contains(STATUS_EVENT))
+        });
+    if touches {
+        let kind = if LISTENERS.contains(&name) {
+            "listen"
+        } else {
+            "emit"
+        };
+        *found
+            .status
+            .entry((file.to_string(), function.clone(), kind))
+            .or_default() += 1;
+    }
+    if let Some(index) = emit_event_index(name, args.len(), record.path_call) {
+        if let Err(why) = resolver.value(&args[index], 0) {
+            let entry = found
+                .dynamic
+                .entry((file.to_string(), function))
+                .or_default();
+            entry.0 += 1;
+            entry.1.insert(why);
+        }
+    }
+}
+
+/// The scan of `sources` (`(file relative to src, raw Rust source)`, production code
+/// only: `#[cfg(test)]` items are skipped).
+fn event_sites(sources: &[(String, String)]) -> EventSites {
+    use syn::visit::Visit;
+    let files: Vec<(&String, syn::File)> = sources
+        .iter()
+        .map(|(file, source)| {
+            (
+                file,
+                syn::parse_file(source).unwrap_or_else(|error| panic!("parse {file}: {error}")),
+            )
+        })
+        .collect();
+    let mut consts = Consts::new();
+    for (_, file) in &files {
+        ConstCollector {
+            consts: &mut consts,
+        }
+        .visit_file(file);
+    }
+    let never = |_: &[String]| false;
+    let mut found = EventSites::default();
+    for (path, file) in &files {
+        let mut finder = SiteFinder {
+            scope: Vec::new(),
+            include_cfg_test: false,
+            is_target: &never,
+            hits: Vec::new(),
+            record_calls: true,
+            calls: Vec::new(),
+            bindings: Vec::new(),
+        };
+        finder.visit_file(file);
+        for record in &finder.calls {
+            classify_call(path, record, &consts, &mut found);
+        }
+    }
+    found
+}
+
+/// SP5 (appendix C7.2, C13.3 #117): every production call that can carry the
 /// `recording-status-changed` event name, pinned per enclosing function:
-/// `(file relative to src, qualified enclosing fn, occurrences)`. The walk is the
-/// D-S2-17 fail-closed one (`raw_production_sources`: every `src/**/*.rs` file
-/// except the declared test-only ones), so a status emit planted in any other file
-/// (the #117 shape: `commands/models.rs`) fails. The set is:
+/// `(file relative to src, qualified enclosing fn, "emit" | "listen", calls)`. The
+/// walk is the D-S2-17 fail-closed one (`raw_production_sources`: every `src/**/*.rs`
+/// file except the declared test-only ones), so a status emit planted in any other
+/// file (the #117 shape: `commands/models.rs`) fails. The set is:
 ///
 /// * the executor's own `EM` effect ports (`*_ports.rs`), the sanctioned emitters;
-/// * two **listeners** that only subscribe to the event name (`initialize` of
-///   `smart_auto_probe.rs` and `meeting_suggestions.rs`), not emits;
-/// * four idle emits the shell still passes as closures to the legacy parse and
-///   pipeline-idle finishers (`recording.rs`), the `204a` / `204b` / `302` tails
-///   that run under the executor's decisions: pinned so they can only go down.
+/// * four idle emits the shell still passes to the legacy parse and pipeline-idle
+///   finishers (`recording.rs`), the `204a` / `204b` / `302` tails that run under the
+///   executor's decisions: pinned so they can only go down;
+/// * two **listeners** that subscribe to the event name (`initialize` of
+///   `smart_auto_probe.rs` and `meeting_suggestions.rs`), counted apart from emits:
+///   an emit added in one of those functions is a new `"emit"` entry and fails.
 ///
 /// A new occurrence anywhere else must go through the executor's `EM` effect.
-const STATUS_EMIT_ALLOWLIST: [(&str, &str, usize); 10] = [
+const STATUS_EVENT_ALLOWLIST: [(&str, &str, &str, usize); 10] = [
     // The legacy idle emits (two parse-failure closures and the 204b tail in
     // `process_audio_inner`, the stop's 204b tail): decided by site 204/302.
-    ("commands/recording.rs", "process_audio_inner", 3),
-    ("commands/recording.rs", "stop_native_recording_admitted", 1),
+    ("commands/recording.rs", "process_audio_inner", "emit", 3),
+    (
+        "commands/recording.rs",
+        "stop_native_recording_admitted",
+        "emit",
+        1,
+    ),
     // The executor's `EM` effect ports.
     (
         "commands/recording/cancel_ports.rs",
         "<CancelPorts<'_> as Ports>::emit",
+        "emit",
         1,
     ),
     (
         "commands/recording/lifecycle_ports.rs",
         "<LifecyclePorts<'_,R> as Ports>::emit",
+        "emit",
         1,
     ),
     (
         "commands/recording/process_audio_ports.rs",
         "<ProcessAudioPorts<'_> as Ports>::emit",
+        "emit",
         1,
     ),
     (
         "commands/recording/ready_ports.rs",
         "<ReadyPorts<'_,R> as Ports>::emit",
+        "emit",
         1,
     ),
     (
         "commands/recording/start_ports.rs",
         "<StartPorts<'_> as Ports>::emit",
+        "emit",
         1,
     ),
     (
         "commands/recording/stop_ports.rs",
         "<StopPorts<'_> as Ports>::emit",
+        "emit",
         1,
     ),
-    // Listeners, not emits.
-    ("meeting_suggestions.rs", "initialize", 1),
-    ("smart_auto_probe.rs", "initialize", 1),
+    // Listeners, not emits (the loop variable ranges over eight event names, the
+    // status event among them).
+    ("meeting_suggestions.rs", "initialize", "listen", 1),
+    ("smart_auto_probe.rs", "initialize", "listen", 1),
 ];
 
-/// Every occurrence of the status event name in the production code of `sources`.
-fn status_event_sites(sources: &[(String, String)]) -> Vec<(String, String, usize)> {
-    let mut counts: std::collections::BTreeMap<(String, String), usize> =
-        std::collections::BTreeMap::new();
-    for (file, source) in sources {
-        for function in call_scopes(source, false, &is_status_event_literal) {
-            *counts.entry((file.clone(), function)).or_default() += 1;
-        }
-    }
-    counts
-        .into_iter()
-        .map(|((file, function), n)| (file, function, n))
-        .collect()
-}
+/// Emit calls whose event name cannot be resolved statically, each reviewed: which
+/// event names the function can produce. `(file, qualified fn, calls, names)`. A
+/// caller that passes the status event to such a wrapper is itself a status touch
+/// (the argument resolves there), so the wrapper cannot hide one.
+const DYNAMIC_EMIT_ALLOWLIST: [(&str, &str, usize, &str); 4] = [
+    // The dictation host's emit wrappers: each forwards its `event` parameter to
+    // `AppHandle::emit` unchanged. The callers pass literals: the dictation
+    // lifecycle events (`audio-initialization-stalled`, `audio-recovery-started`,
+    // `recording-cancelled`, `recording-cleanup-finished`,
+    // `recording-initialization-failed`, `recording-interrupted`,
+    // `recording-recovery-stalled`), `dictation-generation-started`,
+    // `dictation-delivery-outcome`, `transcription-complete`, and
+    // `recording-status-changed` (each such caller is a status site above).
+    (
+        "commands/recording/process_audio_ports.rs",
+        "<TauriImportHost as ImportedAudioHost>::emit_json",
+        1,
+        "the caller's event: recording-status-changed (idle), dictation-generation-started",
+    ),
+    (
+        "commands/recording/process_audio_ports.rs",
+        "<TauriImportHost as ImportedAudioHost>::idle_emitter",
+        1,
+        "the owned closure forwards the caller's event: recording-status-changed (idle)",
+    ),
+    (
+        "commands/recording_host.rs",
+        "<TauriHost as DictationHost>::emit_json",
+        1,
+        "any event the dictation lifecycle passes (list above)",
+    ),
+    (
+        "commands/recording_host.rs",
+        "dynDictationHost+'_::emit",
+        1,
+        "any event the dictation lifecycle passes (list above); forwards to emit_json",
+    ),
+];
 
-fn check_status_event_sites(
-    found: &[(String, String, usize)],
-    allowed: &[(&str, &str, usize)],
+fn check_event_sites(
+    found: &EventSites,
+    status_allowed: &[(&str, &str, &str, usize)],
+    dynamic_allowed: &[(&str, &str, usize, &str)],
 ) -> Result<(), String> {
-    let mut want: Vec<(String, String, usize)> = allowed
+    let mut problems = Vec::new();
+    let status: Vec<(String, String, String, usize)> = found
+        .status
         .iter()
-        .map(|(file, function, n)| (file.to_string(), function.to_string(), *n))
+        .map(|((file, function, kind), n)| (file.clone(), function.clone(), kind.to_string(), *n))
+        .collect();
+    let mut want: Vec<(String, String, String, usize)> = status_allowed
+        .iter()
+        .map(|(file, function, kind, n)| {
+            (file.to_string(), function.to_string(), kind.to_string(), *n)
+        })
         .collect();
     want.sort();
-    if found == want.as_slice() {
+    if status != want {
+        problems.push(format!(
+            "the `recording-status-changed` sites changed (SP5).\n  found:   {status:?}\n  allowed: {want:?}\n\
+             A status emit outside the executor's `EM` effect is not allowed; an emit in a \
+             listener's function is a new `emit` entry; moving a legacy emit behind the \
+             executor lowers its entry in STATUS_EVENT_ALLOWLIST."
+        ));
+    }
+    let dynamic: Vec<(String, String, usize)> = found
+        .dynamic
+        .iter()
+        .map(|((file, function), (n, _))| (file.clone(), function.clone(), *n))
+        .collect();
+    let mut want_dynamic: Vec<(String, String, usize)> = dynamic_allowed
+        .iter()
+        .map(|(file, function, n, _)| (file.to_string(), function.to_string(), *n))
+        .collect();
+    want_dynamic.sort();
+    if dynamic != want_dynamic {
+        let reasons: Vec<String> = found
+            .dynamic
+            .iter()
+            .map(|((file, function), (_, why))| format!("{file} {function}: {why:?}"))
+            .collect();
+        problems.push(format!(
+            "emits with an unresolvable event name changed.\n  found:   {dynamic:?}\n  allowed: {want_dynamic:?}\n  why: {reasons:?}\n\
+             Resolve the name through a literal, `concat!`, a const or a `let`, or review the \
+             emitter and add it to DYNAMIC_EMIT_ALLOWLIST with the event names it can produce."
+        ));
+    }
+    for (file, function, _, names) in dynamic_allowed {
+        if names.trim().is_empty() {
+            problems.push(format!(
+                "DYNAMIC_EMIT_ALLOWLIST: {file} {function} has no comment naming its events"
+            ));
+        }
+    }
+    if problems.is_empty() {
         Ok(())
     } else {
-        Err(format!(
-            "the `recording-status-changed` sites changed (SP5).\n  found:   {found:?}\n  allowed: {want:?}\n\
-             A status emit outside the executor's `EM` effect is not allowed; moving a legacy \
-             emit behind the executor lowers its entry in STATUS_EMIT_ALLOWLIST."
-        ))
+        Err(problems.join("\n"))
     }
 }
 
 #[test]
 fn status_events_are_emitted_only_by_the_allowlisted_functions() {
-    let sources = raw_production_sources();
-    let found = status_event_sites(&sources);
-    if let Err(message) = check_status_event_sites(&found, &STATUS_EMIT_ALLOWLIST) {
+    let found = event_sites(&raw_production_sources());
+    if let Err(message) =
+        check_event_sites(&found, &STATUS_EVENT_ALLOWLIST, &DYNAMIC_EMIT_ALLOWLIST)
+    {
         panic!("{message}");
     }
 }
 
+/// A source file of the tree with `old` replaced by `new` (exactly one occurrence).
+fn sources_with(file: &str, old: &str, new: &str) -> Vec<(String, String)> {
+    let mut sources = raw_production_sources();
+    let (_, text) = sources
+        .iter_mut()
+        .find(|(name, _)| name == file)
+        .unwrap_or_else(|| panic!("{file} is scanned"));
+    assert_eq!(
+        text.matches(old).count(),
+        1,
+        "`{old}` occurs once in {file}"
+    );
+    *text = text.replace(old, new);
+    sources
+}
+
+fn the_status_ratchet_rejects(sources: &[(String, String)]) -> String {
+    let found = event_sites(sources);
+    check_event_sites(&found, &STATUS_EVENT_ALLOWLIST, &DYNAMIC_EMIT_ALLOWLIST)
+        .expect_err("the planted status emit must fail the ratchet")
+}
+
 #[test]
 fn a_planted_status_emit_in_models_rs_fails_the_status_ratchet() {
-    let mut sources = raw_production_sources();
     // The #117 shape: a status emit on the VAD download path.
+    let mut sources = raw_production_sources();
     sources.push((
         "commands/models.rs".to_string(),
         "async fn ensure_vad_model(app: &AppHandle) { let _ = app.emit(\"recording-status-changed\", \"processing\"); }"
             .to_string(),
     ));
-    let found = status_event_sites(&sources);
-    let error = check_status_event_sites(&found, &STATUS_EMIT_ALLOWLIST)
-        .expect_err("a planted emit must fail");
+    let error = the_status_ratchet_rejects(&sources);
     assert!(error.contains("commands/models.rs") && error.contains("ensure_vad_model"));
-    // The same emit written inside a macro is seen too, and a `cfg(test)` one is not.
-    for (source, expected) in [
-        ("fn f(a: &A) { emit!(a, \"recording-status-changed\"); }", 1),
+}
+
+/// Sol's probe 1: an extra emit that reuses the *listener's* event variable inside
+/// `meeting_suggestions::initialize`. The old scan counted the literal once per
+/// function and passed it; the emit's argument resolves to the status event, so it
+/// is a new `emit` entry for `initialize`.
+#[test]
+fn an_emit_reusing_the_listener_variable_fails_the_status_ratchet() {
+    let sources = sources_with(
+        "meeting_suggestions.rs",
+        "        app.listen_any(event, move |_| busy_changed(&app_for_event));\n",
+        "        app.listen_any(event, move |_| busy_changed(&app_for_event));\n        let _ = app.emit(event, \"processing\");\n",
+    );
+    let error = the_status_ratchet_rejects(&sources);
+    assert!(
+        error.contains("meeting_suggestions.rs\", \"initialize\", \"emit\""),
+        "{error}"
+    );
+}
+
+/// Sol's probe 2: the event name built with `concat!`.
+#[test]
+fn a_concat_status_emit_fails_the_status_ratchet() {
+    let sources = sources_with(
+        "commands/models.rs",
+        "    let _ = tokio::fs::remove_file(model_download::resume_path(&temp_path)).await;\n    tracing::info!(target: \"system\", \"VAD model downloaded: {} ({} bytes)\", vad::VAD_MODEL_FILENAME, received);\n",
+        "    let _ = tokio::fs::remove_file(model_download::resume_path(&temp_path)).await;\n    let _ = app_handle.emit(concat!(\"recording-status-\", \"changed\"), \"processing\");\n    tracing::info!(target: \"system\", \"VAD model downloaded: {} ({} bytes)\", vad::VAD_MODEL_FILENAME, received);\n",
+    );
+    let error = the_status_ratchet_rejects(&sources);
+    assert!(
+        error.contains("commands/models.rs") && error.contains("ensure_vad_model_with_progress"),
+        "{error}"
+    );
+}
+
+/// Counts for one synthetic file: `(status emits, status listeners, unresolved emits)`.
+fn event_counts(source: &str) -> (usize, usize, usize) {
+    let found = event_sites(&[("x.rs".to_string(), source.to_string())]);
+    let status = |wanted: &str| {
+        found
+            .status
+            .iter()
+            .filter(|((_, _, kind), _)| *kind == wanted)
+            .map(|(_, n)| n)
+            .sum::<usize>()
+    };
+    (
+        status("emit"),
+        status("listen"),
+        found.dynamic.values().map(|(n, _)| n).sum(),
+    )
+}
+
+#[test]
+fn the_event_scanner_resolves_the_event_argument() {
+    const STATUS: &str = "recording-status-changed";
+    // (source, status emits, status listeners, unresolved emits)
+    let cases: [(&str, (usize, usize, usize)); 22] = [
+        ("fn f(a: &A) { a.emit(\"recording-status-changed\", 1); }", (1, 0, 0)),
+        ("fn f(a: &A) { a.emit(\"other\", 1); }", (0, 0, 0)),
+        // The extra emit in a listener's function is an emit, not a listener.
         (
-            "#[cfg(test)] fn f(a: &A) { a.emit(\"recording-status-changed\", 1); }",
-            0,
+            "fn f(a: &A) { let e = \"recording-status-changed\"; a.listen_any(e, |_| ()); a.emit(e, 1); }",
+            (1, 1, 0),
         ),
-        ("fn f() { let n = \"recording-status-changedx\"; }", 0),
-    ] {
-        assert_eq!(
-            status_event_sites(&[("x.rs".to_string(), source.to_string())])
-                .iter()
-                .map(|(_, _, n)| n)
-                .sum::<usize>(),
-            expected,
-            "{source}"
-        );
+        (
+            "fn f(a: &A) { for e in [\"x\", \"recording-status-changed\"] { a.listen_any(e, |_| ()); } }",
+            (0, 1, 0),
+        ),
+        ("fn f(a: &A) { a.emit(concat!(\"recording-status-\", \"changed\"), 1); }", (1, 0, 0)),
+        (
+            "fn f(a: &A) { a.emit(concat!(\"recording\", \"-status\", \"-changed\"), 1); }",
+            (1, 0, 0),
+        ),
+        ("const E: &str = \"recording-status-changed\"; fn f(a: &A) { a.emit(E, 1); }", (1, 0, 0)),
+        (
+            "const E: &str = concat!(\"recording-status-\", \"changed\"); fn f(a: &A) { a.emit(crate::E, 1); }",
+            (1, 0, 0),
+        ),
+        (
+            "const ALL: [&str; 2] = [\"a\", \"recording-status-changed\"]; fn f(a: &A) { for e in ALL { a.emit(e, 1); } }",
+            (1, 0, 0),
+        ),
+        (
+            "fn f(a: &A) { let e = if c { \"recording-status-changed\" } else { \"b\" }; a.emit(e, 1); }",
+            (1, 0, 0),
+        ),
+        (
+            "fn f(a: &A) { a.emit(match c { 1 => \"b\", _ => \"recording-status-changed\" }, 1); }",
+            (1, 0, 0),
+        ),
+        ("fn f(a: &A) { a.emit(String::from(\"recording-status-changed\"), 1); }", (1, 0, 0)),
+        ("fn f(a: &A) { a.emit(\"recording-status-changed\".to_string(), 1); }", (1, 0, 0)),
+        ("fn f(a: &A) { a.emit_to(\"main\", \"recording-status-changed\", 1); }", (1, 0, 0)),
+        ("fn f(a: &A) { tauri::Emitter::emit(a, concat!(\"recording-status-\", \"changed\"), 1); }", (1, 0, 0)),
+        ("fn f(a: &A) { w!(a, concat!(\"recording-status-\", \"changed\")); }", (1, 0, 0)),
+        // A name that is not the status event, a test-only emit, a pure macro.
+        ("fn f(a: &A) { a.emit(\"recording-status-changedx\", 1); }", (0, 0, 0)),
+        ("#[cfg(test)] fn f(a: &A) { a.emit(\"recording-status-changed\", 1); }", (0, 0, 0)),
+        ("fn f() { let n = format!(\"{}\", \"recording-status-changed\"); }", (0, 0, 0)),
+        // Unresolvable event names: a parameter, a call, a field.
+        ("fn f(a: &A, name: &str) { a.emit(name, 1); }", (0, 0, 1)),
+        ("fn f(a: &A) { a.emit(event_name(), 1); }", (0, 0, 1)),
+        ("fn f(a: &A, s: &S) { a.emit(s.event, 1); }", (0, 0, 1)),
+    ];
+    for (source, expected) in cases {
+        assert_eq!(event_counts(source), expected, "{source}");
     }
+    // A call that is not an emit API's shape is not an emit (`ports.emit(effect)`).
+    assert_eq!(event_counts("fn f(p: &P, e: &E) { p.emit(e); }"), (0, 0, 0));
+    // Tokens of a macro definition: `$event` cannot be resolved.
+    assert_eq!(
+        event_counts("macro_rules! m { ($a:expr, $e:expr) => { $a.emit($e, 1) }; }"),
+        (0, 0, 1)
+    );
+    assert_eq!(STATUS, STATUS_EVENT);
+}
+
+#[test]
+fn a_reviewed_dynamic_emitter_passes_and_needs_its_event_names() {
+    let found = event_sites(&[(
+        "x.rs".to_string(),
+        "fn wrap(a: &A, name: &str) { a.emit(name, 1); }".to_string(),
+    )]);
+    assert!(check_event_sites(
+        &found,
+        &[],
+        &[("x.rs", "wrap", 1, "any event the caller passes")]
+    )
+    .is_ok());
+    assert!(check_event_sites(&found, &[], &[("x.rs", "wrap", 1, " ")]).is_err());
+    assert!(check_event_sites(&found, &[], &[]).is_err());
 }
 
 /// The one function allowed to call `PersistedCore::new` (decision D-S1-5 a).
