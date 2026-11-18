@@ -39,15 +39,18 @@ pub enum Cmd {
         app_disabled: bool,
         smart: bool,
     },
-    /// A user stop. `via_ipc` marks the caller that bypasses the frontend: the registered
+    /// A user stop, always unscoped (`recording_id = None`), as production sends it: the
+    /// frontend's `stop_native_recording` call carries no expected id, and neither does the
+    /// direct IPC (`recording.rs` `stop_native_recording`). A stale id reaches the stop
+    /// family only through the supervisor's generation-scoped `Interrupted` auto-stop (a
+    /// flight, not a command) and through the explicit decision tests (D-S2b-17 (c)).
+    ///
+    /// `via_ipc` marks the caller that bypasses the frontend: the registered
     /// `stop_native_recording` IPC (callable from any local window, with no `Recovering`
-    /// guard, `lib.rs:290`, `recording.rs:7317`). Every other caller (the main window, the
-    /// hold and toggle hotkeys, the overlay, the silence auto-stop) gates on the status the
-    /// frontend observed and sends no stop while it holds `Recovering`
-    /// (`useRecordingState.ts` `handleStop`). The supervisor's `Interrupted` auto-stop is
-    /// not generated: it is a flight the supervisor starts, and it keeps every schedule.
+    /// guard). Every other caller (the main window, the hold and toggle hotkeys, the
+    /// overlay, the silence auto-stop) acts on the status its window last *received* and
+    /// sends no stop while that is `Recovering` (`useRecordingState.ts` `handleStop`).
     Stop {
-        id: IdVar,
         cfg: StopCfg,
         via_ipc: bool,
     },
@@ -255,7 +258,6 @@ pub fn scenario(rng: &mut Rng) -> Scenario {
             cmds.push((
                 at + 4 + rng.below(45) as u32,
                 Cmd::Stop {
-                    id: id_var(rng),
                     cfg: stop_cfg(rng),
                     via_ipc: rng.chance(1, 4),
                 },

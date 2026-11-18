@@ -17,6 +17,15 @@
 //!   spacing and commas kept, and only whitespace and comments stripped
 //!   ([`crate::token_pin_tests`]). A comment-only edit passes; a one-token edit fails.
 //!
+//! The per-item pins miss what is not an item with a body: a `serde` attribute on an enum,
+//! a `macro_rules!` body, an `impl` with no methods, a module's own `cfg`, a `use`. So the
+//! **whole production file** is pinned too ([`LIFECYCLE_FILE_PIN`], D-S2b-17 (a)): the
+//! normalized tokens of every item of `audio_lifecycle.rs` except what is test-only, which
+//! is a module or an item whose own attribute is exactly `#[cfg(test)]` (and, inside an
+//! `impl` or a trait, a member with that attribute). Any production edit fails
+//! [`the_audio_lifecycle_production_source_is_pinned_as_a_whole`] until the file is
+//! re-pinned; the per-item pins stay, to name the item that changed.
+//!
 //! The citations are checked here too, as tokens: every row's function exists, its cited
 //! lines lie inside it, and its fragment and every guard occur as a token sequence within
 //! the cited lines. The rows themselves live in the core crate beside the model
@@ -261,6 +270,203 @@ fn pin_problems(
         }
     }
     problems
+}
+
+/// Whether an attribute list carries exactly `#[cfg(test)]` (not `cfg(all(test, ..))`, not
+/// `cfg(not(test))`: only the plain test gate marks an item as test-only).
+fn is_exactly_cfg_test(attrs: &[syn::Attribute]) -> bool {
+    attrs.iter().any(|attr| {
+        attr.path().is_ident("cfg")
+            && attr
+                .meta
+                .require_list()
+                .is_ok_and(|list| list.tokens.to_string().trim() == "test")
+    })
+}
+
+/// `items` without the test-only ones, at every depth an item can sit (modules, `impl`
+/// and trait members).
+fn without_test_items(items: Vec<syn::Item>) -> Vec<syn::Item> {
+    items
+        .into_iter()
+        .filter_map(|item| match item {
+            syn::Item::Fn(i) if is_exactly_cfg_test(&i.attrs) => None,
+            syn::Item::Const(i) if is_exactly_cfg_test(&i.attrs) => None,
+            syn::Item::Static(i) if is_exactly_cfg_test(&i.attrs) => None,
+            syn::Item::Struct(i) if is_exactly_cfg_test(&i.attrs) => None,
+            syn::Item::Enum(i) if is_exactly_cfg_test(&i.attrs) => None,
+            syn::Item::Use(i) if is_exactly_cfg_test(&i.attrs) => None,
+            syn::Item::Type(i) if is_exactly_cfg_test(&i.attrs) => None,
+            syn::Item::Macro(i) if is_exactly_cfg_test(&i.attrs) => None,
+            syn::Item::Union(i) if is_exactly_cfg_test(&i.attrs) => None,
+            syn::Item::ExternCrate(i) if is_exactly_cfg_test(&i.attrs) => None,
+            syn::Item::ForeignMod(i) if is_exactly_cfg_test(&i.attrs) => None,
+            syn::Item::TraitAlias(i) if is_exactly_cfg_test(&i.attrs) => None,
+            syn::Item::Mod(mut module) => {
+                if is_exactly_cfg_test(&module.attrs) {
+                    return None;
+                }
+                if let Some((brace, content)) = module.content.take() {
+                    module.content = Some((brace, without_test_items(content)));
+                }
+                Some(syn::Item::Mod(module))
+            }
+            syn::Item::Impl(mut implementation) => {
+                if is_exactly_cfg_test(&implementation.attrs) {
+                    return None;
+                }
+                implementation.items.retain(|member| match member {
+                    syn::ImplItem::Fn(m) => !is_exactly_cfg_test(&m.attrs),
+                    syn::ImplItem::Const(m) => !is_exactly_cfg_test(&m.attrs),
+                    syn::ImplItem::Type(m) => !is_exactly_cfg_test(&m.attrs),
+                    syn::ImplItem::Macro(m) => !is_exactly_cfg_test(&m.attrs),
+                    _ => true,
+                });
+                Some(syn::Item::Impl(implementation))
+            }
+            syn::Item::Trait(mut item_trait) => {
+                if is_exactly_cfg_test(&item_trait.attrs) {
+                    return None;
+                }
+                item_trait.items.retain(|member| match member {
+                    syn::TraitItem::Fn(m) => !is_exactly_cfg_test(&m.attrs),
+                    syn::TraitItem::Const(m) => !is_exactly_cfg_test(&m.attrs),
+                    syn::TraitItem::Type(m) => !is_exactly_cfg_test(&m.attrs),
+                    syn::TraitItem::Macro(m) => !is_exactly_cfg_test(&m.attrs),
+                    _ => true,
+                });
+                Some(syn::Item::Trait(item_trait))
+            }
+            other => Some(other),
+        })
+        .collect()
+}
+
+/// The hash of the whole production source: the normalized tokens of the file (inner
+/// attributes included) with the test-only items removed.
+fn production_file_hash(source: &str) -> u64 {
+    let mut file = syn::parse_file(source).expect("the source parses");
+    file.items = without_test_items(std::mem::take(&mut file.items));
+    token_hash(&file)
+}
+
+/// D-S2b-17 (a): the whole production file is pinned, so what no per-item pin sees (a serde
+/// attribute, a `macro_rules!` body, an impl with no methods, a module's cfg, a `use`)
+/// fails too.
+#[test]
+fn the_audio_lifecycle_production_source_is_pinned_as_a_whole() {
+    let today = production_file_hash(LIFECYCLE_SOURCE);
+    assert_eq!(
+        today, LIFECYCLE_FILE_PIN,
+        "the production source of audio_lifecycle.rs changed (hash {today:#018x}, pinned \
+         {LIFECYCLE_FILE_PIN:#018x}); the per-item test names the item when one changed.\n\n{RE_PIN}"
+    );
+}
+
+/// What the whole-file pin sees and what it ignores, on the real source and on probes.
+#[test]
+fn the_whole_file_pin_sees_every_production_edit_and_no_test_or_comment_edit() {
+    let base = production_file_hash(LIFECYCLE_SOURCE);
+    let edit = |from: &str, to: &str| {
+        assert!(
+            LIFECYCLE_SOURCE.contains(from),
+            "the probe's anchor `{from}` exists in audio_lifecycle.rs"
+        );
+        production_file_hash(&LIFECYCLE_SOURCE.replacen(from, to, 1))
+    };
+    // Sol's serde probe: the stop trigger's wire spelling is an attribute on the enum, which
+    // no per-item pin hashes.
+    assert_ne!(
+        edit(
+            "#[serde(rename_all = \"snake_case\")]",
+            "#[serde(rename_all = \"camelCase\")]"
+        ),
+        base,
+        "a serde rename is a production edit"
+    );
+    assert_ne!(
+        edit(
+            "#[cfg(target_os = \"macos\")]\npub(crate) fn register_sleep",
+            "#[cfg(not(target_os = \"linux\"))]\npub(crate) fn register_sleep"
+        ),
+        base
+    );
+    assert_ne!(
+        edit("use std::", "use core::"),
+        base,
+        "a `use` is production"
+    );
+    // Probes the real file has no instance of: appended, then edited.
+    let appended = |extra: &str| production_file_hash(&format!("{LIFECYCLE_SOURCE}\n{extra}\n"));
+    for (one, other, what) in [
+        (
+            "macro_rules! probe { () => { 1 } }",
+            "macro_rules! probe { () => { 2 } }",
+            "a top-level macro_rules! body",
+        ),
+        (
+            "impl Marker for Probe {}",
+            "impl Other for Probe {}",
+            "an impl with no methods",
+        ),
+        (
+            "unsafe impl Send for Probe {}",
+            "impl Send for Probe {}",
+            "an unsafe impl",
+        ),
+        (
+            "#[cfg(target_os = \"macos\")] mod probe { pub fn f() {} }",
+            "#[cfg(target_os = \"linux\")] mod probe { pub fn f() {} }",
+            "a production module's cfg",
+        ),
+        (
+            "#[derive(Debug)] struct Probe;",
+            "#[derive(Clone)] struct Probe;",
+            "a derive",
+        ),
+    ] {
+        assert_ne!(appended(one), base, "{what}: an addition is an edit");
+        assert_ne!(
+            appended(one),
+            appended(other),
+            "{what}: an edit of it is an edit"
+        );
+    }
+    // Test-only content is not production: a `#[cfg(test)]` module, an item whose own
+    // attribute is exactly `#[cfg(test)]`, an impl member with it.
+    assert_eq!(
+        appended("#[cfg(test)] mod probe_tests { fn f() { 1 } }"),
+        appended("#[cfg(test)] mod probe_tests { fn f() { 2 } }")
+    );
+    assert_eq!(
+        appended("#[cfg(test)] fn probe() { 1 }"),
+        appended("#[cfg(test)] fn probe() { 2 }")
+    );
+    assert_eq!(
+        appended("struct P; impl P { #[cfg(test)] fn t() { 1 } }"),
+        appended("struct P; impl P { #[cfg(test)] fn t() { 2 } }")
+    );
+    // ... and only the exact attribute: `cfg(all(test, unix))` is kept (it is production
+    // in a unix test build and an edit of it is an edit).
+    assert_ne!(
+        appended("#[cfg(all(test, unix))] fn probe() { 1 }"),
+        appended("#[cfg(all(test, unix))] fn probe() { 2 }")
+    );
+    // A comment is not an edit; a doc comment is not an edit.
+    assert_eq!(
+        edit(
+            "let cancelled = should_abandon;",
+            "let cancelled = should_abandon;/* x */ // note\n"
+        ),
+        base
+    );
+    assert_eq!(
+        edit(
+            "pub(crate) fn dictation_id(",
+            "/// a new doc line\n    pub(crate) fn dictation_id("
+        ),
+        base
+    );
 }
 
 const RE_PIN: &str = "re-check the model steps that cite the item (`property/mirror_table.rs`), \
@@ -608,6 +814,9 @@ const NOT_MODELED: &[(&str, &str)] = &[
 /// Every cited function of `audio.rs`, with its pin.
 const AUDIO_PINS: &[(&str, u64)] = &[("spawn_capture_worker", 0x18d7e43cb5dc29ce)];
 
+/// The whole production source of `audio_lifecycle.rs` (D-S2b-17 (a)).
+const LIFECYCLE_FILE_PIN: u64 = 0x6f306b1fe4ba53ae;
+
 /// Every production function, method, constant and static of `audio_lifecycle.rs`.
 const LIFECYCLE_PINS: &[(&str, u64)] = &[
     ("const STILL_CONNECTING_AFTER", 0x35059d9cc16f5ec1),
@@ -755,6 +964,10 @@ const LIFECYCLE_PINS: &[(&str, u64)] = &[
 #[test]
 #[ignore = "prints the pin tables for a re-pin"]
 fn print_current_pins() {
+    println!(
+        "const LIFECYCLE_FILE_PIN: u64 = {:#018x};",
+        production_file_hash(LIFECYCLE_SOURCE)
+    );
     println!("const LIFECYCLE_PINS: &[(&str, u64)] = &[");
     for item in production_items(LIFECYCLE_SOURCE) {
         println!(

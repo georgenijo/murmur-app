@@ -22,21 +22,22 @@ const CI_BUDGET: Duration = Duration::from_secs(20);
 /// all, so every witness is produced by the run itself: there is no pinned exception to
 /// the converse check, and a witness that drifted away fails it.
 ///
-/// * 15,632: PD-22 with the cancel completing performance (R211.2, R205.5).
-/// * 43,329: PD-19 through a dropped start (no context was ever installed).
-/// * 176,140: PD-21 with a short stop (R206.2, R203.4).
-/// * 1,769,144: PD-19's refused auto-stop (the capture stays in the store and no ordinary
+/// * 10,843: PD-21 with a short stop (R206.2, R203.4).
+/// * 14,262: PD-19 through a dropped start (no context was ever installed).
+/// * 93,074: PD-22 with the stop's failure tail completing performance (R211.2, R203.2).
+/// * 97,854: PD-19 through `TerminationUnconfirmed`.
+/// * 2,798,896: PD-19's refused auto-stop (the capture stays in the store and no ordinary
 ///   control sends the stop that would take it; D-S2b-15 (c), (d)). It is rare because the
 ///   unscoped stop IPC, one in four generated stops, takes the capture when it lands.
-const FIXED_SEEDS: [u64; 4] = [15_632, 43_329, 176_140, 1_769_144];
+const FIXED_SEEDS: [u64; 5] = [10_843, 14_262, 93_074, 97_854, 2_798_896];
 
 /// PD-18's witnesses, one seed per instance (C7.5): the first seed of the fixed
 /// range that ends stuck in `Recovering` through that instance, with the generation's
 /// own evidence (R101.12 in the gap after its last restorer).
 const PD18_SEEDS: [(&str, u64); 3] = [
-    ("(a) S12", 169),
-    ("(b) Idle-arm tail", 312),
-    ("(c) unsealed stop", 1_759),
+    ("(a) S12", 959),
+    ("(b) Idle-arm tail", 271),
+    ("(c) unsealed stop", 507),
 ];
 
 /// A witness of one of PD-19..PD-24: the PD, the seed that takes it, the matched
@@ -57,77 +58,77 @@ struct Witness {
 const FINDING_SEEDS: [Witness; 14] = [
     Witness {
         pd: 19,
-        seed: 9_652,
+        seed: 97_854,
         split: None,
         shell_test: Some("pd19_termination_unconfirmed_after_retained_pcm_leaves_recovering"),
         sig: None,
     },
     Witness {
         pd: 19,
-        seed: 43_329,
+        seed: 14_262,
         split: None,
         shell_test: Some("pd19_a_dropped_start_and_a_retained_runtime_failure_leave_recovering"),
         sig: None,
     },
     Witness {
         pd: 19,
-        seed: 1_769_144,
+        seed: 2_798_896,
         split: None,
         shell_test: Some("pd19_a_refused_auto_stop_leaves_the_capture_and_recovering"),
         sig: None,
     },
     Witness {
         pd: 20,
-        seed: 127,
+        seed: 305,
         split: Some(("R205.5", "R203.5")),
         shell_test: Some("pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree"),
         sig: None,
     },
     Witness {
         pd: 21,
-        seed: 176_140,
+        seed: 10_843,
         split: Some(("R206.2", "R203.4")),
         shell_test: Some("pd21_timed_out_cancel_then_a_short_stop_disagree"),
         sig: None,
     },
     Witness {
         pd: 21,
-        seed: 39,
+        seed: 243,
         split: Some(("R206.2", "R209.4")),
         shell_test: Some("pd21_timed_out_cancel_and_the_late_recovery_disagree"),
         sig: None,
     },
     Witness {
         pd: 22,
-        seed: 3_125,
+        seed: 93_074,
         split: Some(("R211.2", "R203.2")),
         shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance"),
         sig: None,
     },
     Witness {
         pd: 22,
-        seed: 15_632,
+        seed: 382,
         split: Some(("R211.2", "R205.5")),
         shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_cancel_completes_performance"),
         sig: None,
     },
     Witness {
         pd: 23,
-        seed: 286,
+        seed: 484,
         split: Some(("R207.3", "R203.5")),
         shell_test: Some("pd23_superseded_terminal_and_an_empty_stop_no_speech_disagree"),
         sig: None,
     },
     Witness {
         pd: 23,
-        seed: 74,
+        seed: 66,
         split: Some(("R207.3", "R203.1")),
         shell_test: Some("pd23_superseded_terminal_and_a_refused_stop_failed_disagree"),
         sig: None,
     },
     Witness {
         pd: 23,
-        seed: 76,
+        seed: 93,
         split: Some(("R207.3", "R205.5")),
         shell_test: Some("pd23_superseded_terminal_and_a_cancel_of_processing_cancelled_disagree"),
         sig: None,
@@ -137,14 +138,14 @@ const FINDING_SEEDS: [Witness; 14] = [
     // the claim, so it has no shell fixture; it stays allowlisted (D-S2b-13 (e)).
     Witness {
         pd: 23,
-        seed: 537,
+        seed: 244,
         split: Some(("R207.3", "R204b.6")),
         shell_test: None,
         sig: Some(2),
     },
     Witness {
         pd: 24,
-        seed: 3_946,
+        seed: 8_161,
         split: Some(("R102.3", "R209.3")),
         shell_test: Some(
             "pd24_start_timeout_terminal_and_the_users_cancel_arm_performance_outcome_disagree",
@@ -153,7 +154,7 @@ const FINDING_SEEDS: [Witness; 14] = [
     },
     Witness {
         pd: 24,
-        seed: 8_419,
+        seed: 2_813,
         split: Some(("R102.3", "R209.5")),
         shell_test: Some(
             "pd24_start_timeout_terminal_and_an_environmental_recovery_arm_performance_outcome_disagree",
@@ -1659,9 +1660,9 @@ fn pd19_is_witnessed_with_its_whole_story() {
     // One seed per entry: `TerminationUnconfirmed`, a dropped start, the refused auto-stop
     // that leaves the capture in the store (no user-accessible recovery).
     for (seed, entries) in [
-        (9_652, [1, 0, 0]),
-        (43_329, [0, 1, 0]),
-        (1_769_144, [0, 0, 1]),
+        (97_854, [1, 0, 0]),
+        (14_262, [0, 1, 0]),
+        (2_798_896, [0, 0, 1]),
     ] {
         let report = run_seed(seed);
         assert!(report.hits.pd[19] > 0, "{seed}: {:?}", report.hits);
@@ -1671,33 +1672,70 @@ fn pd19_is_witnessed_with_its_whole_story() {
     }
 }
 
-/// D-S2b-15 (c): stops follow their caller. A frontend-gated stop issued while the status
-/// is `Recovering` is dropped, and the unscoped `stop_native_recording` IPC keeps the
-/// schedule. Both occur in the seeded runs, and the IPC's stop in `Recovering` is a
-/// flight that runs (a run that issues one still passes every property).
+/// D-S2b-15 (c), D-S2b-17 (b), (c): stops follow their caller. A frontend-gated stop acts
+/// on the status its window last *received*: it is dropped once `Recovering` has been
+/// delivered, and still issued while the window shows an older status after the shell
+/// entered `Recovering` (delivery is a step of its own). The unscoped
+/// `stop_native_recording` IPC keeps the schedule. All three occur in the seeded runs and
+/// every property holds in each.
 #[test]
 fn stops_follow_their_caller() {
-    let (mut suppressed, mut unscoped) = (0, 0);
-    for seed in 0..3_000 {
+    let (mut suppressed, mut stale, mut unscoped) = (0, 0, 0);
+    for seed in 0..5_000 {
         let (report, trace) = run_seed_with(seed, true);
         assert!(
             report.violations.is_empty(),
             "{seed}: {:?}",
             report.violations
         );
-        suppressed += trace
-            .iter()
-            .filter(|line| line.contains("frontend stop suppressed"))
-            .count();
-        unscoped += trace
-            .iter()
-            .filter(|line| line.contains("unscoped stop IPC issued"))
-            .count();
+        let count = |needle: &str| trace.iter().filter(|line| line.contains(needle)).count();
+        suppressed += count("frontend stop suppressed (delivered status Recovering)");
+        stale += count("frontend stop issued on a stale observation");
+        unscoped += count("unscoped stop IPC issued");
     }
-    assert!(suppressed > 0, "no frontend stop was ever suppressed");
+    assert!(
+        suppressed > 0,
+        "no delivered-Recovering stop was ever suppressed"
+    );
+    assert!(stale > 0, "no stop was ever issued on a stale observation");
     assert!(
         unscoped > 0,
         "no unscoped stop IPC was ever issued in Recovering"
+    );
+}
+
+/// D-S2b-17 (b): the window's observation is a separate step. The shell writes a status
+/// at once; the window shows it only after its delivery step.
+#[test]
+fn a_status_reaches_the_window_in_a_step_of_its_own() {
+    use super::sup_task::FrontendTask;
+    let mut w = World::new();
+    w.status = Status::Recovering;
+    w.status_events.push_back(Status::Recovering);
+    assert_eq!(w.observed, Status::Idle, "written, not yet delivered");
+    let mut out = StepOut::default();
+    let mut spawned: Vec<Box<dyn Task>> = Vec::new();
+    let mut mailbox = Vec::new();
+    let mut cx = Cx {
+        w: &mut w,
+        out: &mut out,
+        spawn: &mut spawned,
+        tid: 3,
+        mailbox: &mut mailbox,
+    };
+    assert_eq!(FrontendTask.step(&mut cx), Poll::Progress);
+    assert_eq!(w.observed, Status::Recovering);
+    let mut cx = Cx {
+        w: &mut w,
+        out: &mut out,
+        spawn: &mut spawned,
+        tid: 3,
+        mailbox: &mut mailbox,
+    };
+    assert_eq!(
+        FrontendTask.step(&mut cx),
+        Poll::Blocked,
+        "nothing left to deliver"
     );
 }
 

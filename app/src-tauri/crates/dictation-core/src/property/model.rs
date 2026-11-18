@@ -456,6 +456,12 @@ pub struct History {
 pub struct World {
     // M1-M4
     pub status: Status,
+    /// The status the frontend window last *received* (D-S2b-17 (b)). The shell writes
+    /// `status`; each write is queued in `status_events` and delivered to the window by a
+    /// step of its own (`FrontendTask`), so a window can still show `Recording` after the
+    /// shell entered `Recovering`.
+    pub observed: Status,
+    pub status_events: std::collections::VecDeque<Status>,
     pub current_id: Rid,
     pub cancelled_through: Rid,
     pub context_for: Option<Rid>,
@@ -495,6 +501,8 @@ impl World {
     pub fn new() -> Self {
         Self {
             status: Status::Idle,
+            observed: Status::Idle,
+            status_events: std::collections::VecDeque::new(),
             current_id: 0,
             cancelled_through: 0,
             context_for: None,

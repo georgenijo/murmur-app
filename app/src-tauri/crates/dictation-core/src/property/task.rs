@@ -334,7 +334,11 @@ pub fn apply(cx: &mut Cx<'_>, fx: &FxCtx, at: Placement, effect: &Effect) -> boo
         | Effect::CaptureCancel { .. }
         | Effect::SelfStop { .. }
         | Effect::PipelineSpawn(_) => return false,
-        Effect::SetStatus(to) => cx.w.status = *to,
+        Effect::SetStatus(to) => {
+            cx.w.status = *to;
+            // The window learns the status from an event, in a step of its own.
+            cx.w.status_events.push_back(*to);
+        }
         Effect::AllocId => {
             // SP6: `next_recording_id` only under D+T.
             debug_assert_eq!(cx.w.t_holder, Some(fx.tid), "ID+ without T");

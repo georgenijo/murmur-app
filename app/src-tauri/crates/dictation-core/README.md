@@ -404,7 +404,11 @@ splitmix64 generator turns a seed into the whole run.
   `audio_lifecycle.rs` has its **own pin** (`LIFECYCLE_PINS`: the FNV-1a hash of the item's
   normalized token stream), so any edit, addition or removal fails
   `every_production_item_of_audio_lifecycle_is_pinned` and names the item until its pin is
-  updated. The normalization is the shell ratchet's (`src/token_pin_tests.rs`, shared:
+  updated. The **whole production file is pinned too** (`LIFECYCLE_FILE_PIN`,
+  D-S2b-17 (a)): the normalized tokens of every item except `#[cfg(test)]` modules and
+  items whose own attribute is exactly `#[cfg(test)]`, so a serde attribute, a
+  `macro_rules!` body, a methodless impl, a module's cfg or a `use` fails too; the per-item
+  pins stay to name what changed. The normalization is the shell ratchet's (`src/token_pin_tests.rs`, shared:
   `proc_macro2` tokens, token kinds, punctuation spacing and commas kept, only whitespace and
   comments stripped), so a comment-only edit passes and a one-token edit fails. The
   citations are matched as token sequences within the cited lines (`span-locations`), so a
@@ -489,8 +493,13 @@ splitmix64 generator turns a seed into the whole run.
     (`useRecordingState.ts` `handleStop`; `useRecordingState.test.tsx` "issues no stop or
     cancel IPC while the status is recovering"), so the generator drops a stop a
     frontend-gated caller (the main window, the hold and toggle hotkeys, the overlay, the
-    silence auto-stop) would issue while the status is `Recovering` (a stop already in
-    flight stays a flight). The registered `stop_native_recording` IPC has no such guard and
+    silence auto-stop) would issue while the status its window last *received* is
+    `Recovering`. Observation and delivery are separate (D-S2b-17 (b)): the shell's status
+    write is queued and a `FrontendTask` step delivers it, so a stop sent while the window
+    still shows `Recording` after the shell entered `Recovering` is a valid schedule (a stop
+    already in flight stays a flight). Every generated user stop is unscoped
+    (`recording_id = None`), as production sends it; a stale id reaches the stop family only
+    through the `Interrupted` auto-stop and the explicit decision tests (D-S2b-17 (c)). The registered `stop_native_recording` IPC has no such guard and
     the supervisor's `Interrupted` auto-stop bypasses the frontend: both keep every
     schedule (D-S2b-15 (c)); a run in which the unscoped IPC takes the retained capture ends
     in `Idle`, and one in which nothing does is PD-19's third entry (ordinary controls leave
@@ -508,10 +517,10 @@ splitmix64 generator turns a seed into the whole run.
   (D-S2b-9 (b)): each injected notification or reply cites its production sender and
   state, uses the production strings, and the test asserts the exact replies, statuses
   and ledger outcomes.
-* **Seeds**: 10,000 in CI (about a second and a half, budget 20 s): `0..9,996` and four
-  fixed seeds (`FIXED_SEEDS`: 15,632, 43,329, 176,140, 1,769,144) that take the PD-22
-  (cancel), PD-19 (dropped start and refused auto-stop) and PD-21 (short stop) entries no
-  seed of the plain range takes, so the converse check (every PD and every signature row is
+* **Seeds**: 10,000 in CI (about a second and a half, budget 20 s): `0..9,995` and five
+  fixed seeds (`FIXED_SEEDS`: 10,843, 14,262, 93,074, 97,854, 2,798,896) that take the
+  PD-21 (short stop), PD-19 (dropped start, `TerminationUnconfirmed`, refused auto-stop)
+  and PD-22 (stop's failure tail) entries no seed of the plain range takes, so the converse check (every PD and every signature row is
   witnessed) has no pinned exception. `PROPTEST_CASES=300000 cargo test -p
   murmur-dictation-core --lib property::` raises it. `TRACE_SEED=<n> cargo test -p
   murmur-dictation-core --lib property::tests::trace_one -- --nocapture` prints one run.

@@ -18,6 +18,27 @@ use std::collections::VecDeque;
 /// next deadline or message when it is between messages (`run_supervisor`).
 pub struct SupTask;
 
+/// The frontend window's receiving end: delivers the next status event the shell wrote
+/// (D-S2b-17 (b)). Frontend-gated stop callers read what it last delivered, not the
+/// shell's current status.
+pub struct FrontendTask;
+
+impl Task for FrontendTask {
+    fn name(&self) -> &'static str {
+        "frontend"
+    }
+
+    fn step(&mut self, cx: &mut Cx<'_>) -> Poll {
+        match cx.w.status_events.pop_front() {
+            Some(status) => {
+                cx.w.observed = status;
+                Poll::Progress
+            }
+            None => Poll::Blocked,
+        }
+    }
+}
+
 /// The worker thread (`audio.rs`): sends its events into the supervisor's channel.
 pub struct WorkerTask;
 
