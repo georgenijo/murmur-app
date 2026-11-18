@@ -45,8 +45,11 @@ every production call that can carry it, per enclosing function
   one destination, and every caller of it passes a name that resolves and that the entry
   declares. The owned idle emitter (`OwnedIdleEmit`) takes no event parameter and emits
   one fixed event; its two forwarding bodies are pinned (`PINNED_FUNCTIONS`).
-* **Pins keep what matters.** The token hash strips only whitespace and comments (doc
-  comments included). Every comma and every punctuation token's spacing is kept, so
+* **Pins keep what matters.** The token hash strips only whitespace, comments and
+  source doc comments (`///`, `//!`, `/** */`, `/*! */`) outside macro invocations and
+  attributes. Every token inside a macro invocation or a non-doc attribute is kept, and
+  so is an explicit `#[doc = ".."]` attribute: a macro can expand a `#[doc = "a"]`
+  argument into anything, so `"a"` to `"b"` there is an edit. Every comma and every punctuation token's spacing is kept, so
   `(x,)` differs from `(x)` and `m!(&&x)` from `m!(& &x)`. Editing a pinned function
   means re-reviewing it and re-pinning the hash the failure message prints.
 
