@@ -239,7 +239,8 @@ pub enum GuardOrigin {
     StopCapture,
     /// The pipeline guard (2885).
     PipelineExit,
-    /// Legacy `process_audio` parse failure.
+    /// Legacy `process_audio` parse failure: site 302 (`ProcessAudioFinish`,
+    /// R302.1); `handle` routes it there.
     LegacyParse,
     /// `IdleGuard::drop` (panic or early return).
     Dropped,
@@ -290,7 +291,8 @@ pub enum PipelineResult {
 pub struct PipelineIdleEmitInput {
     /// Recording id.
     pub rid: RecordingId,
-    /// Stop or legacy tail.
+    /// Stop or legacy tail. `LegacyPost` is decided by `decide_process_audio_finish`
+    /// (site 302, R302.2 with its reply); `handle` routes it there.
     pub kind: PostKind,
     /// Tail result (`StopPost` only).
     pub result: Option<PipelineResult>,
@@ -345,8 +347,10 @@ pub enum SupervisorEvent {
     Ready {
         /// Recording id.
         rid: RecordingId,
-        /// Context installed (`[in]`, 4947).
-        context_present: bool,
+        /// Context installed (`[in]`, 4947). `None` until the decision answers
+        /// `NeedObservation(ContextPresent)`: the shell passes `None` first and
+        /// reads the slot only when asked (D-S1-2), so this carries both calls.
+        context_present: Option<bool>,
         /// Stamp at 4927.
         ready_received: Now,
     },
@@ -547,7 +551,15 @@ impl Input {
             Self::StopContext(i) if i.context_present => SiteId::StopContextNoLock,
             Self::StopContext(_) => SiteId::StopContext,
             Self::StopCaptureResult(_) => SiteId::StopCaptureResult,
+            // The legacy import's two finishes are site 302 (one representation,
+            // `ProcessAudioFinish`): `handle` routes them through it.
+            Self::GuardFinish(i) if i.origin == GuardOrigin::LegacyParse => {
+                SiteId::ProcessAudioFinish
+            }
             Self::GuardFinish(_) => SiteId::GuardFinish,
+            Self::PipelineIdleEmit(i) if i.kind == PostKind::LegacyPost => {
+                SiteId::ProcessAudioFinish
+            }
             Self::PipelineIdleEmit(_) => SiteId::PipelineIdleEmit,
             Self::CancelRequest(_) => SiteId::CancelRequest,
             Self::CancelCaptureResult(_) => SiteId::CancelCaptureResult,
@@ -713,7 +725,7 @@ mod tests {
             }),
             Input::Supervisor(SupervisorEvent::Ready {
                 rid,
-                context_present: true,
+                context_present: Some(true),
                 ready_received: Now(0),
             }),
             Input::Supervisor(SupervisorEvent::StillConnecting { rid }),
