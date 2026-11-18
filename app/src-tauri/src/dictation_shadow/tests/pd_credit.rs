@@ -7,6 +7,8 @@ use murmur_dictation_core::decision::OpStatus;
 use murmur_dictation_core::effects::Effect;
 use murmur_dictation_core::status::Status;
 
+use murmur_dictation_core::ids::RecordingId;
+
 use super::harness::*;
 use crate::dictation_shadow::pd::{credited, PdEvidence, PD_DEFS};
 use crate::dictation_shadow::types::{EffectResult, ShadowMsg};
@@ -137,6 +139,22 @@ fn pd_4_needs_the_rendezvous_a_second_ticker_and_the_later_success() {
     h.feed(&pipeline_success(3, 3));
     assert_clean(&h);
     assert_eq!(credited_count(&h, 4), 0);
+
+    // Another recording's success does not settle it: the stop tail of recording 41
+    // completes 41's performance, although RID is the one that is current.
+    let mut h = harness();
+    h.feed(&ready_publish(1, 1, OpStatus::Outstanding));
+    h.feed(&ready_while_recording(2, 2, duplicate));
+    h.feed(&pipeline_success_for(3, 3, RecordingId(41)));
+    assert_eq!(
+        credited_count(&h, 4),
+        0,
+        "borrowed another recording's success: {:?}",
+        h.stats().pd_witness
+    );
+    // Its own recording's success still does.
+    h.feed(&pipeline_success(4, 4));
+    assert_eq!(credited_count(&h, 4), 1, "{:?}", h.stats().pd_witness);
 
     // A losing terminal claim is not the defect: the stale terminal did not win.
     let mut h = harness();

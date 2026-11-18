@@ -36,11 +36,12 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use murmur_dictation_core::decision::{ContKind, Continuation, Decision, OpStatus, Verdict};
 use murmur_dictation_core::effects::{Cond, Effect, PerfOutcome, Placement};
-use murmur_dictation_core::ids::{Now, RecordingId};
-use murmur_dictation_core::inputs::Input;
+use murmur_dictation_core::ids::{Now, OperationId, RecordingId};
+use murmur_dictation_core::inputs::{GuardOrigin, Input, ProcessAudioFinishKind};
 use murmur_dictation_core::state::{DictationCore, LiveObs, PersistedCore};
 use murmur_dictation_core::status::Status;
 
@@ -301,6 +302,28 @@ fn same_token(op: &LiveOp, token: &Continuation) -> bool {
     op.recording_id == token.recording_id && op.cont == token.kind && op.op == token.op
 }
 
+/// The recording a **pipeline-owned finish** is for: the guard finish of the
+/// pipeline itself (R204a.*, `PipelineExit`) and the legacy import's parse failure
+/// (R302.1, whichever of its two inputs carries it). Such a finish retires the
+/// pipeline's owner at its boundary: H1 (`K:Pipeline`, the owner's full token) and
+/// H2 (the finishing recording), both required (D-S2c-3 major 2).
+pub(crate) fn pipeline_owned_finish(input: &Input) -> Option<RecordingId> {
+    match input {
+        Input::GuardFinish(i)
+            if matches!(
+                i.origin,
+                GuardOrigin::PipelineExit | GuardOrigin::LegacyParse
+            ) =>
+        {
+            Some(i.rid)
+        }
+        Input::ProcessAudioFinish(i) if i.kind == ProcessAudioFinishKind::ParseFailed => {
+            Some(i.rid)
+        }
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Slot {
     /// Decided, not yet witnessed.
@@ -357,6 +380,16 @@ struct Record {
     /// R203.10, R301.5), if it does.
     h2_needed: Option<RecordingId>,
     h2_registered: bool,
+    /// A pipeline-owned finish's recording (see [`pipeline_owned_finish`]).
+    owner_finish: Option<RecordingId>,
+    /// The `K:Pipeline` operation the shadow saw registered for that recording, if
+    /// it did: the owner's full token is `(recording, Pipeline, op)`.
+    owner_op: Option<OperationId>,
+    h1_owner_retired: bool,
+    h2_owner_retired: bool,
+    /// The recording the input is about: the recording whose performance a
+    /// `PipelineGuardFinish(Completed)` completes.
+    input_rid: Option<RecordingId>,
     /// The recording the decision's `SD` targets: the input's recording id, else the
     /// current id at the effect (the start's freshly allocated one).
     side_target: Option<RecordingId>,
@@ -433,6 +466,11 @@ impl Record {
             h1_retired: false,
             h2_needed,
             h2_registered: false,
+            owner_finish: pipeline_owned_finish(&header.input),
+            owner_op: None,
+            h1_owner_retired: false,
+            h2_owner_retired: false,
+            input_rid: header.input.recording_id(),
             side_target: header.input.recording_id(),
             perf_success: false,
             token: input_token(&header.input),
@@ -696,9 +734,18 @@ impl Record {
                         self.h1_retired = true;
                         first && matched == (status == OpStatus::Outstanding)
                     }
-                    // Another operation's retirement (the pipeline's own, an
-                    // owner's drop): not the row's token, nothing to compare.
-                    _ => true,
+                    // A pipeline-owned finish retires its owner's H1 token: the
+                    // finishing recording, `K:Pipeline`, and the very operation the
+                    // registration drew, found, exactly once.
+                    _ => match self.owner_finish {
+                        Some(rid) if op.cont == ContKind::Pipeline && op.recording_id == rid => {
+                            let first = !self.h1_owner_retired;
+                            self.h1_owner_retired = true;
+                            first && matched && self.owner_op.is_none_or(|owner| owner == op.op)
+                        }
+                        // Another operation's retirement: not the row's token.
+                        _ => true,
+                    },
                 },
                 (HistoryTable::H2, HistoryAction::Registered) => {
                     let wanted = self.h2_needed == Some(op.recording_id);
@@ -706,9 +753,16 @@ impl Record {
                     self.h2_registered = true;
                     wanted && first
                 }
-                (HistoryTable::H2, HistoryAction::Retired { matched }) => {
-                    matched && self.ids.contains(&op.recording_id)
-                }
+                (HistoryTable::H2, HistoryAction::Retired { matched }) => match self.owner_finish {
+                    // The finishing recording's pipeline, found: never another
+                    // recording's (the newer current one included).
+                    Some(rid) => {
+                        let ok = matched && op.recording_id == rid;
+                        self.h2_owner_retired |= ok;
+                        ok
+                    }
+                    None => matched && self.ids.contains(&op.recording_id),
+                },
             };
             if !ok {
                 diffs.push(DiffKind::Continuation);
@@ -720,10 +774,13 @@ impl Record {
     /// An operation the row requires that nobody reported. At the header: the
     /// input's H1 retirement (it happens before the decision is taken, so the header
     /// carries it). At a completed close: the H2 registration (a `K:Pipeline` row
-    /// registers it right after the decision or when it spawns).
+    /// registers it right after the decision or when it spawns) and, for a
+    /// pipeline-owned finish, both of the owner's retirements.
     fn missing_history(&self, completed_close: bool) -> bool {
         if completed_close {
-            self.h2_needed.is_some() && !self.h2_registered
+            (self.h2_needed.is_some() && !self.h2_registered)
+                || (self.owner_finish.is_some()
+                    && !(self.h1_owner_retired && self.h2_owner_retired))
         } else {
             self.token.is_some() && !self.h1_retired
         }
@@ -881,6 +938,17 @@ pub(crate) struct Comparator {
     pending: BTreeMap<u64, ShadowHeader>,
     /// Positions a loss entry named: skipped, in `seq` order, when reached.
     lost_seqs: BTreeSet<u64>,
+    /// What each lost position's flight was about, read from its header before the
+    /// header was discarded: tainted and invalidated **at the position** (D-S2c-3 3).
+    lost_subjects: BTreeMap<u64, Vec<RecordingId>>,
+    /// A message popped while the loss log had an unpublished head: held until the
+    /// loss entries recorded before it are readable (D-S2c-3 major 1).
+    deferred: Option<ShadowMsg>,
+    /// The `K:Pipeline` operation registered for each recording, for the owner's
+    /// full H1 token at its finish.
+    pipeline_ops: BTreeMap<u64, OperationId>,
+    /// The process-wide count of messages whose recorder had no transport yet.
+    unavailable: Option<&'static AtomicU64>,
     records: HashMap<RecorderId, Record>,
     held: HashMap<RecorderId, Vec<ShadowMsg>>,
     /// Open recorders (records and held ones), oldest first.
@@ -915,6 +983,10 @@ impl Comparator {
             next_seq: 1,
             pending: BTreeMap::new(),
             lost_seqs: BTreeSet::new(),
+            lost_subjects: BTreeMap::new(),
+            deferred: None,
+            pipeline_ops: BTreeMap::new(),
+            unavailable: None,
             records: HashMap::new(),
             held: HashMap::new(),
             open: VecDeque::new(),
@@ -942,22 +1014,50 @@ impl Comparator {
         )
     }
 
+    /// Fold the messages of recorders that had no transport into `dropped` and
+    /// `dropped_unavailable` from now on (the production comparator's counter).
+    pub(crate) fn count_unavailable_from(&mut self, counter: &'static AtomicU64) {
+        self.unavailable = Some(counter);
+    }
+
     /// Take everything the live side has queued: each message is applied **after**
     /// the loss log was read, so a loss recorded before a message was pushed is always
-    /// seen first. Returns whether anything was applied.
+    /// seen first. A loss entry a producer has reserved but not yet published (the
+    /// log's head is claimed, not readable) may be one of those: the message is held
+    /// until it can be read, and nothing is compared past it (D-S2c-3 major 1). Only
+    /// the consumer waits; every producer still makes one attempt. Returns whether
+    /// anything was applied.
     pub(crate) fn drain(&mut self, transport: &Transport) -> bool {
         let mut progressed = false;
-        while let Some(msg) = transport.pop() {
-            self.pump_losses(transport);
+        loop {
+            let msg = match self.deferred.take() {
+                Some(msg) => msg,
+                None => match transport.pop() {
+                    Some(msg) => msg,
+                    None => break,
+                },
+            };
+            if self.fold_losses(transport).1 {
+                self.deferred = Some(msg);
+                return progressed;
+            }
             self.apply(msg);
             progressed = true;
         }
-        self.pump_losses(transport) | progressed
+        self.fold_losses(transport).0 | progressed
     }
 
     /// Fold the live side's counters and the loss log into the comparison. Returns
     /// whether it saw anything.
     pub(crate) fn pump_losses(&mut self, transport: &Transport) -> bool {
+        self.fold_losses(transport).0
+    }
+
+    /// `(saw anything, the loss log's head is claimed but unpublished)`. The second
+    /// is sampled *before* each pop that comes back empty, so an empty answer with
+    /// `false` means nothing was reserved when it was asked: every loss recorded
+    /// before the message in hand was read.
+    fn fold_losses(&mut self, transport: &Transport) -> (bool, bool) {
         let mut seen = false;
         let dropped = transport.take_dropped();
         let overflow = transport.take_overflow();
@@ -965,16 +1065,27 @@ impl Comparator {
         self.stats.dropped_contended += transport.take_contended();
         self.stats.witness_overflow += overflow;
         seen |= dropped > 0 || overflow > 0;
+        if let Some(counter) = self.unavailable {
+            let unavailable = counter.swap(0, Ordering::Relaxed);
+            self.stats.dropped += unavailable;
+            self.stats.dropped_unavailable += unavailable;
+            seen |= unavailable > 0;
+        }
         let unattributed = transport.take_loss_overflow();
         if unattributed > 0 {
             seen = true;
             self.on_unattributed_loss(unattributed);
         }
-        while let Some(loss) = transport.pop_loss() {
-            seen = true;
-            self.on_loss(loss);
+        loop {
+            let blocked = transport.losses_unpublished();
+            match transport.pop_loss() {
+                Some(loss) => {
+                    seen = true;
+                    self.on_loss(loss);
+                }
+                None => return (seen, blocked),
+            }
         }
-        seen
     }
 
     /// Apply one message. The shadow's own panics are caught per header.
@@ -1008,8 +1119,10 @@ impl Comparator {
         let rec = header.rec;
         if seq < self.next_seq {
             // Its position was already declared lost: applying it would compare
-            // evidence that was already given up on.
+            // evidence that was already given up on. What it was about is applied now:
+            // the position has passed.
             self.stats.late_header_discarded += 1;
+            self.taint_and_invalidate(&subject_ids(&header));
             self.forget(rec);
             return;
         }
@@ -1017,6 +1130,7 @@ impl Comparator {
             // Its flight was invalidated or evicted: discard the header, and skip
             // its position in `seq` order so the headers behind it are not stuck.
             self.stats.late_header_discarded += 1;
+            self.note_lost_subjects(seq, &header);
             self.lost_seqs.insert(seq);
             self.drain_ready();
             return;
@@ -1040,13 +1154,31 @@ impl Comparator {
     /// neighbours at this position, and move on.
     fn lose_position(&mut self) {
         self.stats.lost_gap += 1;
-        let before = self.last_subject.clone();
+        let mut before = self.last_subject.clone();
+        // What the lost flight itself was about, if its header was seen: applied here,
+        // at its position, even though the header was never compared (D-S2c-3 major 3).
+        before.extend(
+            self.lost_subjects
+                .remove(&self.next_seq)
+                .unwrap_or_default(),
+        );
         // The record the neighbour before the gap opened may still be open: it is
         // invalidated here, where the taint is applied, so it cannot close clean or
         // earn preserved-defect credit (D-S2c-2 e).
         self.taint_and_invalidate(&before);
         self.taint_next = true;
         self.next_seq += 1;
+    }
+
+    /// Remember what a header about to be discarded was about, for its position.
+    fn note_lost_subjects(&mut self, seq: u64, header: &ShadowHeader) {
+        self.lost_subjects
+            .entry(seq)
+            .or_default()
+            .extend(subject_ids(header));
+        while self.lost_subjects.len() > MAX_PENDING_HEADERS * 2 {
+            self.lost_subjects.pop_first();
+        }
     }
 
     fn drain_ready(&mut self) {
@@ -1119,7 +1251,9 @@ impl Comparator {
             .find(|(_, header)| header.rec == rec)
             .map(|(seq, _)| *seq);
         if let Some(seq) = waiting {
-            self.pending.remove(&seq);
+            if let Some(header) = self.pending.remove(&seq) {
+                self.note_lost_subjects(seq, &header);
+            }
             self.stats.late_header_discarded += 1;
             self.lost_seqs.insert(seq);
         }
@@ -1208,7 +1342,13 @@ impl Comparator {
 
         self.core.commit(&decision);
         let post = self.core.post();
+        for live in header.live_ops.iter() {
+            self.note_pipeline_registration(live);
+        }
         let mut record = Record::new(&header, decision, skipped);
+        record.owner_op = record
+            .owner_finish
+            .and_then(|rid| self.pipeline_ops.get(&rid.0).copied());
         if !skipped {
             if let Some(diff) = Self::cp1(&mut record, &header, post) {
                 record.mismatched = true;
@@ -1255,7 +1395,24 @@ impl Comparator {
 
     // ------------------------------------------------------------- messages
 
+    /// Remember the operation an H1 `K:Pipeline` registration drew, by recording: the
+    /// owner's full token, which its finish must retire.
+    fn note_pipeline_registration(&mut self, op: &LiveOp) {
+        if op.table == HistoryTable::H1
+            && op.action == HistoryAction::Registered
+            && op.cont == ContKind::Pipeline
+        {
+            self.pipeline_ops.insert(op.recording_id.0, op.op);
+            while self.pipeline_ops.len() > MAX_REMEMBERED_IDS {
+                self.pipeline_ops.pop_first();
+            }
+        }
+    }
+
     fn route(&mut self, rec: RecorderId, msg: ShadowMsg) {
+        if let ShadowMsg::History { op, .. } = &msg {
+            self.note_pipeline_registration(op);
+        }
         if self.closed.contains(&rec) {
             // A late message of a flight already closed, abandoned or invalidated:
             // the comparison is over.
@@ -1355,11 +1512,12 @@ impl Comparator {
             }
         }
         // This record's own successful outcome settles what waited on its recording.
+        // The recording whose performance completed is the one the completion's input
+        // names, never another that merely appears in the record (D-S2c-3 minor 1).
         if completed && record.perf_success {
-            for id in &record.ids {
-                for (pd, site, row) in self.pd_pending.remove(&id.0).unwrap_or_default() {
-                    self.credit(pd, site, row);
-                }
+            let done = record.input_rid.unwrap_or(record.pre_id);
+            for (pd, site, row) in self.pd_pending.remove(&done.0).unwrap_or_default() {
+                self.credit(pd, site, row);
             }
         }
         if completed && !record.pre_id.is_none() {

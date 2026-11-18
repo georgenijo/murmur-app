@@ -111,6 +111,31 @@ impl Transport {
         self.queue.release(pos);
     }
 
+    /// Whether the loss log's next entry is claimed by a producer but not yet
+    /// readable (D-S2c-3 major 1): the consumer must not compare past it, because a
+    /// loss recorded before the message it holds is still on its way.
+    pub(crate) fn losses_unpublished(&self) -> bool {
+        self.losses.head_unpublished()
+    }
+
+    /// Test seam: a producer that reserved a loss slot and was paused.
+    #[cfg(test)]
+    pub(crate) fn reserve_loss_for_test(&self) -> usize {
+        self.losses.claim_for_test().expect("a free loss slot")
+    }
+
+    /// Test seam: the paused producer's second step.
+    #[cfg(test)]
+    pub(crate) fn publish_loss_for_test(&self, pos: usize, loss: LossEntry) {
+        self.losses.publish_for_test(pos, loss);
+    }
+
+    /// Test seam: another producer's loss, published in one go.
+    #[cfg(test)]
+    pub(crate) fn record_loss_for_test(&self, loss: LossEntry) {
+        self.record_loss(loss);
+    }
+
     /// The consumer's side: the next recorded loss.
     pub(crate) fn pop_loss(&self) -> Option<LossEntry> {
         self.losses.pop()
@@ -140,7 +165,8 @@ impl Transport {
     pub(crate) fn recorder(self: &Arc<Self>) -> ShadowRecorder {
         ShadowRecorder {
             rec: RecorderId(self.rec.fetch_add(1, Ordering::Relaxed)),
-            transport: Arc::clone(self),
+            transport: Some(Arc::clone(self)),
+            unavailable: None,
             next_idx: AtomicU16::new(0),
             site: AtomicU16::new(0),
             header_seq: AtomicU64::new(0),
@@ -224,7 +250,11 @@ pub(crate) struct PreCapture {
 ///   but before the header was sent is the ticket's loss.
 pub(crate) struct ShadowRecorder {
     rec: RecorderId,
-    transport: Arc<Transport>,
+    /// `None` for a recorder created before the transport was published (the first
+    /// enabled startup): every message of it is an `Unavailable` drop.
+    transport: Option<Arc<Transport>>,
+    /// Where an `Unavailable` drop is counted (a recorder without a transport).
+    unavailable: Option<&'static AtomicU64>,
     next_idx: AtomicU16,
     /// The site of the decision, set when the ticket is taken (0 before).
     site: AtomicU16,
@@ -240,6 +270,26 @@ pub(crate) struct ShadowRecorder {
 }
 
 impl ShadowRecorder {
+    /// A recorder with no transport yet: the comparison thread has not published it
+    /// (the first enabled startup). It never blocks and never allocates; every
+    /// message it would send is counted in `counter` as an `Unavailable` drop, and
+    /// nothing is queued, so no loss entry or `seq` exists for it (D-S2c-3 minor 2).
+    pub(crate) fn unavailable(counter: &'static AtomicU64) -> Self {
+        Self {
+            rec: RecorderId(0),
+            transport: None,
+            unavailable: Some(counter),
+            next_idx: AtomicU16::new(0),
+            site: AtomicU16::new(0),
+            header_seq: AtomicU64::new(0),
+            closed: AtomicBool::new(false),
+            pre_entered: AtomicBool::new(false),
+            seq_taken: AtomicBool::new(false),
+            header_submitted: AtomicBool::new(false),
+            pre: PreCapture::default(),
+        }
+    }
+
     /// The recorder's id (not a `seq`).
     pub(crate) fn id(&self) -> RecorderId {
         self.rec
@@ -266,7 +316,9 @@ impl ShadowRecorder {
     fn note_overflow(&mut self, stored: bool) -> bool {
         if !stored {
             self.pre.overflowed = true;
-            self.transport.count_overflow();
+            if let Some(transport) = &self.transport {
+                transport.count_overflow();
+            }
         }
         stored
     }
@@ -302,7 +354,10 @@ impl ShadowRecorder {
     /// cannot take is attributed to this site and `seq`; the ticket records the loss
     /// if it is dropped without a submit.
     pub(crate) fn ticket(&self, site: u16) -> ShadowTicket<'_> {
-        let seq = self.transport.seq.fetch_add(1, Ordering::Relaxed);
+        let seq = self
+            .transport
+            .as_ref()
+            .map_or(0, |transport| transport.seq.fetch_add(1, Ordering::Relaxed));
         self.site.store(site, Ordering::Relaxed);
         self.header_seq.store(seq, Ordering::Relaxed);
         self.seq_taken.store(true, Ordering::Relaxed);
@@ -322,7 +377,16 @@ impl ShadowRecorder {
     }
 
     fn send(&self, msg: ShadowMsg) {
-        self.transport.send(msg, self.origin());
+        match &self.transport {
+            Some(transport) => transport.send(msg, self.origin()),
+            None => self.count_unavailable(),
+        }
+    }
+
+    fn count_unavailable(&self) {
+        if let Some(counter) = self.unavailable {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// The flight ran to its end: send `Close{completed:true}`. Idempotent.
@@ -381,13 +445,16 @@ impl ShadowTicket<'_> {
 impl Drop for ShadowTicket<'_> {
     fn drop(&mut self) {
         if !self.sent {
-            self.recorder.transport.record_loss(LossEntry {
-                rec: self.recorder.rec.0,
-                seq: self.seq,
-                site: u64::from(self.recorder.site.load(Ordering::Relaxed)),
-                header: true,
-                ids: [0; 3],
-            });
+            match &self.recorder.transport {
+                Some(transport) => transport.record_loss(LossEntry {
+                    rec: self.recorder.rec.0,
+                    seq: self.seq,
+                    site: u64::from(self.recorder.site.load(Ordering::Relaxed)),
+                    header: true,
+                    ids: [0; 3],
+                }),
+                None => self.recorder.count_unavailable(),
+            }
         }
     }
 }

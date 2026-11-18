@@ -57,7 +57,7 @@ pub(crate) mod alloc_probe;
 mod tests;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -84,6 +84,8 @@ pub(crate) const THREAD_NAME: &str = "murmur-dictation-shadow";
 
 static ENABLED: OnceLock<bool> = OnceLock::new();
 static TRANSPORT: OnceLock<Arc<Transport>> = OnceLock::new();
+/// Messages sent by recorders created before the transport was published.
+static UNAVAILABLE: AtomicU64 = AtomicU64::new(0);
 static STARTED: OnceLock<()> = OnceLock::new();
 static CONTROL: Control = Control::new();
 
@@ -99,15 +101,31 @@ pub(crate) fn enabled() -> bool {
     *ENABLED.get_or_init(|| parse_flag(std::env::var(ENV_VAR).ok().as_deref()))
 }
 
-/// The process-wide transport the live path sends on.
-pub(crate) fn transport() -> &'static Arc<Transport> {
-    TRANSPORT.get_or_init(|| Transport::new(QUEUE_CAPACITY, LOSS_CAPACITY))
+/// Allocate and publish the process-wide transport. **Runs on the comparison
+/// thread**: both rings are allocated and initialised there, never on the thread
+/// that started the app (D-S2c-3 minor 2).
+fn publish_transport() -> Arc<Transport> {
+    Arc::clone(TRANSPORT.get_or_init(|| Transport::new(QUEUE_CAPACITY, LOSS_CAPACITY)))
 }
 
 /// A new flight recorder, to be created **before** `run(Pre)` (C4.1 step 2); `None`
-/// unless shadow mode is active, so a disabled run allocates nothing.
+/// unless shadow mode is active, so a disabled run allocates nothing. Never blocks
+/// and never allocates: until the comparison thread has published the transport the
+/// recorder is an `Unavailable` one, whose messages are counted and dropped.
 pub(crate) fn recorder() -> Option<ShadowRecorder> {
-    enabled().then(|| transport().recorder())
+    enabled().then(|| recorder_from(&TRANSPORT, &UNAVAILABLE))
+}
+
+/// [`recorder`] over an explicit slot and counter. `OnceLock::get` never waits, even
+/// while another thread is still initialising the value.
+pub(crate) fn recorder_from(
+    slot: &OnceLock<Arc<Transport>>,
+    counter: &'static AtomicU64,
+) -> ShadowRecorder {
+    match slot.get() {
+        Some(transport) => transport.recorder(),
+        None => ShadowRecorder::unavailable(counter),
+    }
 }
 
 /// The comparison thread's stop signal and its acknowledgement, atomics only.
@@ -165,8 +183,9 @@ pub(crate) fn on_comparison_thread() -> bool {
 /// Spawn the comparison thread, once. A no-op unless shadow mode is active.
 ///
 /// **This only spawns.** Everything that touches the file system (the log directory
-/// lookup, creating and truncating the mismatch file, the summary) happens inside
-/// the thread, so a slow disk can never delay the caller (app setup): D-S2c-2 c.
+/// lookup, creating and truncating the mismatch file, the summary) and the allocation
+/// of both rings happen inside the thread, so neither a slow disk nor a slow
+/// allocation can delay the caller (app setup): D-S2c-2 c, D-S2c-3 minor 2.
 pub(crate) fn start() {
     if !enabled() || STARTED.set(()).is_err() {
         return;
@@ -175,35 +194,35 @@ pub(crate) fn start() {
     // counts drops); nothing is logged, because nothing of the shadow passes
     // through `tracing`.
     let _ = spawn_thread(
-        Arc::clone(transport()),
+        publish_transport,
         &CONTROL,
         POLL_INTERVAL,
+        &UNAVAILABLE,
         crate::telemetry::logs_dir,
     );
 }
 
-/// Spawn the comparison thread. `directory` runs **on that thread**, first, and
-/// names where the mismatch file and the summary go; the spawn itself returns
-/// without touching the file system.
+/// Spawn the comparison thread. `init` runs **on that thread**, first: it builds
+/// and publishes the transport. `directory` runs next, on that thread too, and names
+/// where the mismatch file and the summary go; the spawn itself neither allocates
+/// the rings nor touches the file system.
 pub(crate) fn spawn_thread(
-    transport: Arc<Transport>,
+    init: impl FnOnce() -> Arc<Transport> + Send + 'static,
     control: &'static Control,
     poll: Duration,
+    unavailable: &'static AtomicU64,
     directory: impl FnOnce() -> Option<PathBuf> + Send + 'static,
 ) -> std::io::Result<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
         .name(THREAD_NAME.into())
         .spawn(move || {
             COMPARISON_THREAD.with(|flag| flag.set(true));
+            let transport = init();
             let directory = directory();
             let sink = file_sink(directory.as_deref());
-            run(
-                &transport,
-                Comparator::production(sink),
-                directory.as_deref(),
-                control,
-                poll,
-            );
+            let mut comparator = Comparator::production(sink);
+            comparator.count_unavailable_from(unavailable);
+            run(&transport, comparator, directory.as_deref(), control, poll);
         })
 }
 

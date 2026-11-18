@@ -106,6 +106,19 @@ impl<T> Ring<T> {
         value: T,
         between: impl FnOnce(),
     ) -> Result<(), Rejected<T>> {
+        match self.claim(between) {
+            Ok(pos) => {
+                self.publish(pos, value);
+                Ok(())
+            }
+            Err(reason) => Err(Rejected { value, reason }),
+        }
+    }
+
+    /// The first half of a push: one attempt to reserve the slot at the tail. The
+    /// slot is **not readable** until [`Ring::publish`] runs; between the two, the
+    /// consumer sees the head as claimed but unpublished (`head_unpublished`).
+    fn claim(&self, between: impl FnOnce()) -> Result<usize, Rejection> {
         let pos = self.tail.load(Ordering::Relaxed);
         let cell = &self.cells[pos & self.mask];
         let seq = cell.seq.load(Ordering::Acquire);
@@ -123,35 +136,58 @@ impl<T> Ring<T> {
                 )
                 .is_err()
             {
-                return Err(Rejected {
-                    value,
-                    reason: Rejection::Contention,
-                });
+                return Err(Rejection::Contention);
             }
-            // SAFETY: the winning compare-and-swap made this producer the only one
-            // allowed to write the cell at `pos`, and `seq == pos` says the consumer
-            // finished with its previous message.
-            unsafe { (*cell.value.get()).write(value) };
-            cell.seq.store(pos.wrapping_add(1), Ordering::Release);
-            Ok(())
+            Ok(pos)
         } else if lag < 0 {
             // The slot still holds, or is still being released from, a message of the
             // previous lap. Full when every slot is occupied; otherwise the consumer
             // advanced the head and has not released the slot yet: in flight.
             let head = self.head.load(Ordering::Acquire);
-            let reason = if pos.wrapping_sub(head) >= self.capacity() {
-                Rejection::Full
+            if pos.wrapping_sub(head) >= self.capacity() {
+                Err(Rejection::Full)
             } else {
-                Rejection::Contention
-            };
-            Err(Rejected { value, reason })
+                Err(Rejection::Contention)
+            }
         } else {
             // The tail moved under us: another producer claimed `pos` already.
-            Err(Rejected {
-                value,
-                reason: Rejection::Contention,
-            })
+            Err(Rejection::Contention)
         }
+    }
+
+    /// The second half of a push: write the value into the slot [`Ring::claim`]
+    /// reserved and make it readable.
+    fn publish(&self, pos: usize, value: T) {
+        let cell = &self.cells[pos & self.mask];
+        // SAFETY: the winning compare-and-swap made this producer the only one
+        // allowed to write the cell at `pos`, and `seq == pos` said the consumer
+        // finished with its previous message.
+        unsafe { (*cell.value.get()).write(value) };
+        cell.seq.store(pos.wrapping_add(1), Ordering::Release);
+    }
+
+    /// Whether the next message to read is **claimed but not yet published**: a
+    /// producer reserved the head slot and has not finished writing it. Different
+    /// from an empty ring (nothing claimed): entries behind that slot may already be
+    /// published, yet [`Ring::pop`] cannot return them until this one is.
+    pub(crate) fn head_unpublished(&self) -> bool {
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Acquire);
+        tail != head
+            && self.cells[head & self.mask].seq.load(Ordering::Acquire) != head.wrapping_add(1)
+    }
+
+    /// Test seam: reserve a slot and stop before publishing (a producer paused
+    /// between its two steps).
+    #[cfg(test)]
+    pub(crate) fn claim_for_test(&self) -> Result<usize, Rejection> {
+        self.claim(|| {})
+    }
+
+    /// Test seam: finish the push a paused producer started.
+    #[cfg(test)]
+    pub(crate) fn publish_for_test(&self, pos: usize, value: T) {
+        self.publish(pos, value);
     }
 
     /// The consumer's side: the next message, or `None` when the ring is empty (or

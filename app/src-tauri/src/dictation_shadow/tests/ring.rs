@@ -217,6 +217,25 @@ fn contended_drops_reach_the_summary() {
 }
 
 #[test]
+fn a_claimed_but_unpublished_head_is_not_an_empty_ring() {
+    // D-S2c-3 major 1: the consumer must tell "nothing reserved" from "the head slot
+    // is reserved and not yet readable", because entries behind it may already be
+    // published and `pop` cannot return them.
+    let ring = Ring::new(4);
+    assert!(!ring.head_unpublished(), "empty");
+    let paused = ring.claim_for_test().unwrap();
+    assert!(ring.head_unpublished(), "claimed, not published");
+    ring.try_push(2).unwrap();
+    assert_eq!(ring.pop(), None, "the entry behind it is not readable yet");
+    assert!(ring.head_unpublished());
+    ring.publish_for_test(paused, 1);
+    assert!(!ring.head_unpublished(), "published");
+    assert_eq!(ring.pop(), Some(1));
+    assert_eq!(ring.pop(), Some(2));
+    assert!(!ring.head_unpublished(), "drained");
+}
+
+#[test]
 fn the_push_path_has_no_loop_backoff_yield_or_wait() {
     // The whole of `try_push_between` and the transport's `push` / `reject`, as text:
     // a loop, a backoff, a yield, a sleep or a spin hint would reintroduce the stall.
@@ -225,6 +244,8 @@ fn the_push_path_has_no_loop_backoff_yield_or_wait() {
     let bodies = [
         super::policy::function_body(&ring, "pub(crate) fn try_push_between("),
         super::policy::function_body(&ring, "pub(crate) fn try_push("),
+        super::policy::function_body(&ring, "fn claim("),
+        super::policy::function_body(&ring, "fn publish("),
         super::policy::function_body(&transport, "fn push("),
         super::policy::function_body(&transport, "fn reject("),
         super::policy::function_body(&transport, "fn record_loss("),

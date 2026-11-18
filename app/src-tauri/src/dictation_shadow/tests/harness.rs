@@ -9,8 +9,9 @@ use murmur_dictation_core::decision::{ContKind, Continuation, Decision, OpStatus
 use murmur_dictation_core::effects::{Cond, Effect, Placement};
 use murmur_dictation_core::ids::{Now, OperationId, RecordingId};
 use murmur_dictation_core::inputs::{
-    CancelInput, CaptureErr, CaptureResult, CaptureResultInput, DeviceSel, GestureObs, Input,
-    Origin, PipelineIdleEmitInput, PipelineResult, PipelineTerminal, PostKind,
+    CancelInput, CaptureErr, CaptureResult, CaptureResultInput, DeviceSel, GestureObs,
+    GuardFinishInput, GuardOrigin, Input, Origin, PipelineIdleEmitInput, PipelineResult,
+    PipelineTerminal, PostKind, ProcessAudioFinishInput, ProcessAudioFinishKind,
     ProcessAudioStartInput, ReadyPublishInput, SpeculativeObs, StartInput, StopCaptureResult,
     StopCaptureResultInput, StopInput, SupervisorEvent,
 };
@@ -30,6 +31,9 @@ use crate::dictation_shadow::types::{
 
 pub(super) const NOW: Now = Now(0);
 pub(super) const RID: RecordingId = RecordingId(7);
+/// The `K:Pipeline` operation the first flight's registration draws (`1_000 + seq`).
+pub(super) const OWNER_OP: OperationId = OperationId(1_001);
+pub(super) const OWNER_H2_OP: OperationId = OperationId(2_001);
 
 pub(super) type Events = Arc<Mutex<Vec<MismatchEvent>>>;
 
@@ -257,6 +261,7 @@ pub(super) fn flight_with(
         },
     };
     let carried_token = crate::dictation_shadow::compare::input_token(&input);
+    let owner_finish = crate::dictation_shadow::compare::pipeline_owned_finish(&input);
     let mut header = ShadowHeader::new(
         seq,
         rec_id,
@@ -279,6 +284,23 @@ pub(super) fn flight_with(
             recording_id: token.recording_id,
             op: token.op,
         });
+    }
+    // A pipeline-owned finish retires its owner at its boundary: H1 with the owner's
+    // full token (the one a `K:Pipeline` registration at `seq` 1 drew) and H2 for the
+    // finishing recording.
+    if let Some(rid) = owner_finish {
+        for (table, op) in [
+            (HistoryTable::H1, OWNER_OP),
+            (HistoryTable::H2, OWNER_H2_OP),
+        ] {
+            header.add_op(LiveOp {
+                table,
+                action: HistoryAction::Retired { matched: true },
+                cont: ContKind::Pipeline,
+                recording_id: rid,
+                op,
+            });
+        }
     }
     if let Some(spec) = decision.continuation {
         header.add_op(LiveOp {
@@ -525,15 +547,62 @@ pub(super) fn ready_publish(seq: u64, rec: u64, op_status: OpStatus) -> Flight {
     )
 }
 
+/// R204a: the pipeline's own guard finishes for `rid` while `current` is the
+/// recording in `status` (R204a.1 with `rid == current` while `Processing`; R204a.5c
+/// for a stale `rid` while a newer one is `Recording`).
+pub(super) fn pipeline_exit(
+    seq: u64,
+    rec: u64,
+    status: Status,
+    current: RecordingId,
+    rid: RecordingId,
+) -> Flight {
+    flight(
+        seq,
+        rec,
+        view(status, current),
+        Input::GuardFinish(GuardFinishInput {
+            rid,
+            origin: GuardOrigin::PipelineExit,
+            closure_emit: false,
+        }),
+    )
+}
+
+/// R302.1: the legacy import's parse failure, as either of its two inputs (the guard
+/// finish with the `LegacyParse` origin, or the site-302 input).
+pub(super) fn legacy_parse(seq: u64, rec: u64, as_guard: bool) -> Flight {
+    let input = if as_guard {
+        Input::GuardFinish(GuardFinishInput {
+            rid: RID,
+            origin: GuardOrigin::LegacyParse,
+            closure_emit: false,
+        })
+    } else {
+        Input::ProcessAudioFinish(ProcessAudioFinishInput {
+            rid: RID,
+            kind: ProcessAudioFinishKind::ParseFailed,
+            closure_emit: false,
+        })
+    };
+    flight(seq, rec, view(Status::Processing, RID), input)
+}
+
 /// R204b.6: the stop command's pipeline returned successfully for `RID`:
 /// `PDT:TERM(Success)` and `PGF(Completed)`, the recording's successful outcome.
 pub(super) fn pipeline_success(seq: u64, rec: u64) -> Flight {
+    pipeline_success_for(seq, rec, RID)
+}
+
+/// R204b.6 for `rid`, while `RID` is the recording that is current (the tail is
+/// D-less: it names its recording and reads no id).
+pub(super) fn pipeline_success_for(seq: u64, rec: u64, rid: RecordingId) -> Flight {
     flight(
         seq,
         rec,
         view(Status::Processing, RID),
         Input::PipelineIdleEmit(PipelineIdleEmitInput {
-            rid: RID,
+            rid,
             kind: PostKind::StopPost,
             result: Some(PipelineResult::Ok(PipelineTerminal::Success)),
             interrupted: None,

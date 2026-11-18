@@ -64,6 +64,9 @@ pub(crate) struct Stats {
     /// The part of `dropped` that was contention (a slot in flight or a lost race),
     /// not a full ring.
     pub dropped_contended: u64,
+    /// Messages of recorders created before the transport was published (the first
+    /// enabled startup): counted, never queued, never blocking.
+    pub dropped_unavailable: u64,
     /// Header positions that never produced a header: a gap declared lost after
     /// more than 64 later headers, or a lost header known by its `seq`.
     pub lost_gap: u64,
@@ -137,6 +140,7 @@ impl Stats {
             "skipped_incomplete": self.skipped_incomplete,
             "dropped": self.dropped,
             "dropped_contended": self.dropped_contended,
+            "dropped_unavailable": self.dropped_unavailable,
             "lost_gap": self.lost_gap,
             "lost_open": self.lost_open,
             "invalidated": self.invalidated,

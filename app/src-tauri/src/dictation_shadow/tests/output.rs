@@ -321,15 +321,22 @@ fn start_only_spawns_and_the_file_is_opened_on_the_comparison_thread() {
     let control: &'static Control = Box::leak(Box::new(Control::new()));
     let transport = default_transport();
     let started = std::time::Instant::now();
-    let thread = spawn_thread(transport, control, Duration::from_millis(5), {
-        let dir = dir.clone();
-        move || {
-            let name = std::thread::current().name().map(str::to_owned);
-            entered.send((name, on_comparison_thread())).unwrap();
-            gate.recv().unwrap();
-            Some(dir)
-        }
-    })
+    let unused: &'static AtomicU64 = Box::leak(Box::new(AtomicU64::new(0)));
+    let thread = spawn_thread(
+        move || transport,
+        control,
+        Duration::from_millis(5),
+        unused,
+        {
+            let dir = dir.clone();
+            move || {
+                let name = std::thread::current().name().map(str::to_owned);
+                entered.send((name, on_comparison_thread())).unwrap();
+                gate.recv().unwrap();
+                Some(dir)
+            }
+        },
+    )
     .expect("the thread spawns");
     assert!(
         started.elapsed() < Duration::from_secs(2),
@@ -397,9 +404,10 @@ fn the_panic_hook_skips_the_live_flush_on_the_comparison_thread() {
     let control: &'static Control = Box::leak(Box::new(Control::new()));
     let (seen, result) = std::sync::mpsc::channel::<bool>();
     let thread = spawn_thread(
-        default_transport(),
+        default_transport,
         control,
         Duration::from_millis(5),
+        Box::leak(Box::new(AtomicU64::new(0))),
         move || {
             seen.send(crate::telemetry::live_flush_allowed()).unwrap();
             None
@@ -420,4 +428,136 @@ fn the_panic_hook_skips_the_live_flush_on_the_comparison_thread() {
         .find("EVENT_WRITER")
         .expect("the hook flushes the writer");
     assert!(gate < writer, "the flush must come after the check");
+}
+
+#[test]
+fn the_rings_are_built_on_the_comparison_thread_and_early_recorders_are_unavailable() {
+    // Sol 6.2 round 3, minor 2: the first enabled startup allocated and initialised
+    // both rings on the app setup thread. Here the transport's construction blocks on
+    // the comparison thread: `spawn_thread` has returned, recorders created meanwhile
+    // neither block nor allocate and count as `Unavailable` drops, and once the
+    // transport is published, new recorders get it.
+    use crate::dictation_shadow::alloc_probe::count_heap_calls;
+    use crate::dictation_shadow::recorder_from;
+    use crate::dictation_shadow::transport::{mark, witness, Mark};
+    use crate::dictation_shadow::types::ReplyKind;
+    use std::sync::OnceLock;
+
+    let dir = scratch("unavailable");
+    let slot: &'static OnceLock<Arc<crate::dictation_shadow::transport::Transport>> =
+        Box::leak(Box::new(OnceLock::new()));
+    let counter: &'static AtomicU64 = Box::leak(Box::new(AtomicU64::new(0)));
+    let control: &'static Control = Box::leak(Box::new(Control::new()));
+    let (release, gate) = std::sync::mpsc::channel::<()>();
+    let (entered, on_thread) = std::sync::mpsc::channel::<Option<String>>();
+    let started = std::time::Instant::now();
+    let thread = spawn_thread(
+        move || {
+            entered
+                .send(std::thread::current().name().map(str::to_owned))
+                .unwrap();
+            gate.recv().unwrap();
+            Arc::clone(slot.get_or_init(default_transport))
+        },
+        control,
+        Duration::from_millis(5),
+        counter,
+        {
+            let dir = dir.clone();
+            move || Some(dir)
+        },
+    )
+    .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "spawn waited for the transport"
+    );
+    let name = on_thread.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(name.as_deref(), Some(THREAD_NAME), "built off the caller");
+    assert!(slot.get().is_none(), "not published yet");
+
+    // A flight that starts now: nothing blocks, nothing allocates or frees.
+    let before = std::time::Instant::now();
+    let ((), allocations, frees) = count_heap_calls(|| {
+        let recorder = recorder_from(slot, counter);
+        recorder.enter_pre();
+        mark(&recorder, Mark::Reply(ReplyKind::Ok));
+        witness(
+            &recorder,
+            0,
+            murmur_dictation_core::effects::Placement::PostDT,
+            crate::dictation_shadow::types::WitnessedEffect::ran(
+                murmur_dictation_core::effects::Effect::PerfAbort,
+            ),
+        );
+        // Dropped without a header: `PreAbandoned` would be sent, and it is counted too.
+    });
+    assert!(before.elapsed() < Duration::from_secs(1));
+    assert_eq!(
+        (allocations, frees),
+        (0, 0),
+        "an unavailable recorder used the heap"
+    );
+    assert_eq!(
+        counter.load(Ordering::Relaxed),
+        3,
+        "reply, witness, pre-abandon"
+    );
+
+    release.send(()).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while slot.get().is_none() {
+        assert!(std::time::Instant::now() < deadline, "never published");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // A recorder created after the publication has the transport.
+    let live = recorder_from(slot, counter);
+    mark(&live, Mark::Reply(ReplyKind::Ok));
+    drop(live);
+
+    control.request_shutdown();
+    assert!(control.wait_finished(Duration::from_secs(10)));
+    thread.join().unwrap();
+    // The thread counted the three early messages as drops, and as nothing else.
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(SUMMARY_FILE)).unwrap()).unwrap();
+    assert_eq!(summary["dropped_unavailable"], 3, "{summary}");
+    assert_eq!(summary["dropped"], 3, "{summary}");
+    assert_eq!(summary["lost_gap"], 0, "{summary}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn recorder_lookup_and_startup_source_never_allocate_or_wait() {
+    let module = super::policy::production_source(include_str!("../mod.rs"));
+    for signature in ["pub(crate) fn recorder(", "pub(crate) fn recorder_from("] {
+        let body = super::policy::function_body(&module, signature);
+        for token in [
+            "get_or_init",
+            "Transport::new",
+            "Arc::new",
+            "Box::new",
+            ".lock(",
+            "wait",
+            "sleep",
+            "Vec",
+        ] {
+            assert!(!body.contains(token), "`{signature}` contains `{token}`");
+        }
+    }
+    let start = super::policy::function_body(&module, "pub(crate) fn start(");
+    for token in [
+        "Transport::new",
+        "get_or_init",
+        "Ring::new",
+        "publish_transport()",
+    ] {
+        assert!(
+            !start.contains(token),
+            "`start` builds the transport: `{token}`"
+        );
+    }
+    // The thread builds it: `init` runs before anything else in the thread body.
+    let spawn = super::policy::function_body(&module, "pub(crate) fn spawn_thread(");
+    assert!(spawn.find("init()").unwrap() < spawn.find("directory()").unwrap());
 }

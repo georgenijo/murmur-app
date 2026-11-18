@@ -4,6 +4,7 @@
 
 use murmur_dictation_core::decision::{ContKind, OpStatus};
 use murmur_dictation_core::ids::{OperationId, RecordingId};
+use murmur_dictation_core::status::Status;
 
 use super::harness::*;
 use crate::dictation_shadow::compare::replayed_token;
@@ -294,4 +295,140 @@ fn r104_2_needs_its_h1_retirement_with_the_full_token() {
         DiffKind::Continuation.code(),
         "twice"
     );
+}
+
+fn retirements(flight: &Flight) -> Vec<LiveOp> {
+    flight
+        .header
+        .live_ops
+        .to_vec()
+        .into_iter()
+        .filter(|live| matches!(live.action, HistoryAction::Retired { .. }))
+        .collect()
+}
+
+/// The owner's two retirements at a pipeline finish: the full `K:Pipeline` token in
+/// H1, the finishing recording in H2.
+fn is_owner_retirement(table: HistoryTable) -> impl Fn(&LiveOp) -> bool {
+    move |live| live.table == table && matches!(live.action, HistoryAction::Retired { .. })
+}
+
+#[test]
+fn a_pipeline_finish_needs_both_owner_retirements() {
+    // Sol 6.2 round 3, major 2: an R204a.1 `PipelineExit` with neither retirement
+    // closed clean. The owner's token is the one the registration drew (op 1001 at
+    // `seq` 1), so the whole flow is: the pipeline starts, then its guard finishes.
+    for (name, build) in [
+        (
+            "R204a.1",
+            (|| pipeline_exit(2, 2, Status::Processing, RID, RID)) as fn() -> Flight,
+        ),
+        ("R302.1 guard", || legacy_parse(2, 2, true)),
+        ("R302.1 site 302", || legacy_parse(2, 2, false)),
+    ] {
+        let expected = if name == "R204a.1" {
+            "R204a.1"
+        } else {
+            "R302.1"
+        };
+        let faithful = build();
+        assert_eq!(faithful.decision.row.0, expected, "{name}");
+        let mut h = harness();
+        h.feed(&pipeline_start(1, 1));
+        h.feed(&faithful);
+        assert_clean(&h);
+        assert_eq!(h.stats().matched, 2, "{name}");
+
+        // Missing: neither, or only one of the two.
+        for (what, keep) in [
+            ("neither", (|_: &LiveOp| false) as fn(&LiveOp) -> bool),
+            ("H1 only", |live| live.table == HistoryTable::H1),
+            ("H2 only", |live| live.table == HistoryTable::H2),
+        ] {
+            let mut missing = build();
+            without_ops(&mut missing, |live| {
+                !matches!(live.action, HistoryAction::Retired { .. }) || keep(live)
+            });
+            let mut h = harness();
+            h.feed(&pipeline_start(1, 1));
+            h.feed(&missing);
+            assert_eq!(
+                h.only_event().diff_kind,
+                DiffKind::Continuation.code(),
+                "{name}: {what} retired"
+            );
+            assert_eq!(h.stats().matched, 1, "{name}: only the start is clean");
+        }
+
+        // H1 names the owner's **full** token: its operation, its kind, its recording.
+        type Damage = fn(&mut LiveOp);
+        let damages: [(&str, Damage); 3] = [
+            ("op", |live| live.op = OperationId(1_002)),
+            ("kind", |live| live.cont = ContKind::CaptureStart),
+            ("recording", |live| live.recording_id = RecordingId(41)),
+        ];
+        for (what, damage) in damages {
+            let mut wrong = build();
+            for live in wrong.header.live_ops.iter_mut() {
+                if is_owner_retirement(HistoryTable::H1)(live) {
+                    damage(live);
+                }
+            }
+            let mut h = harness();
+            h.feed(&pipeline_start(1, 1));
+            h.feed(&wrong);
+            assert_eq!(
+                h.only_event().diff_kind,
+                DiffKind::Continuation.code(),
+                "{name}: H1 wrong {what}"
+            );
+        }
+        // An H1 retirement that found nothing is not the owner's.
+        let mut unmatched = build();
+        for live in unmatched.header.live_ops.iter_mut() {
+            if is_owner_retirement(HistoryTable::H1)(live) {
+                live.action = HistoryAction::Retired { matched: false };
+            }
+        }
+        let mut h = harness();
+        h.feed(&pipeline_start(1, 1));
+        h.feed(&unmatched);
+        assert_eq!(
+            h.only_event().diff_kind,
+            DiffKind::Continuation.code(),
+            "{name}"
+        );
+        let _ = retirements(&faithful);
+    }
+}
+
+#[test]
+fn a_stale_pipeline_finish_retires_its_own_recording_not_the_current_one() {
+    // R204a.5c: the finishing pipeline's recording is stale (RID) while a newer one
+    // is `Recording`. Its H2 witness retired the newer current recording and closed
+    // clean, because the newer id is among the ids the record names.
+    let newer = RecordingId(RID.0 + 1);
+    let build = || pipeline_exit(2, 2, Status::Recording, newer, RID);
+    assert_eq!(build().decision.row.0, "R204a.5c");
+    let mut h = harness();
+    h.feed(&pipeline_start(1, 1));
+    h.feed(&build());
+    assert_clean(&h);
+
+    for table in [HistoryTable::H2, HistoryTable::H1] {
+        let mut misdirected = build();
+        for live in misdirected.header.live_ops.iter_mut() {
+            if is_owner_retirement(table)(live) {
+                live.recording_id = newer;
+            }
+        }
+        let mut h = harness();
+        h.feed(&pipeline_start(1, 1));
+        h.feed(&misdirected);
+        assert_eq!(
+            h.only_event().diff_kind,
+            DiffKind::Continuation.code(),
+            "{table:?} retired the newer current recording"
+        );
+    }
 }

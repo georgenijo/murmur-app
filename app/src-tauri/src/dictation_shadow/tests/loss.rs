@@ -6,6 +6,7 @@
 //! after its gap was declared lost was applied anyway.
 
 use murmur_dictation_core::ids::RecordingId;
+use murmur_dictation_core::status::Status;
 
 use super::harness::*;
 use crate::dictation_shadow::compare::{Comparator, MAX_PENDING_HEADERS};
@@ -376,4 +377,155 @@ fn a_loss_with_no_known_site_is_counted_unattributed_not_filed_under_zero() {
     h.comparator.on_loss(lost_header(9, 1, 0, [0; 3]));
     assert_eq!(h.stats().lost_by_site.get(&0), None);
     assert_eq!(h.stats().loss_unattributed, 1);
+}
+
+/// Send `flight`'s later messages through the real producer path, but record the loss
+/// of its first witness (a witness the ring could not take) instead of sending it.
+/// Returns the loss entry it recorded.
+fn send_later_losing_first_witness(
+    transport: &crate::dictation_shadow::transport::Transport,
+    recorder: &crate::dictation_shadow::transport::ShadowRecorder,
+    flight: &Flight,
+    seq: u64,
+) {
+    use crate::dictation_shadow::transport::{witness, Mark};
+    let mut lost = false;
+    for msg in flight.later.clone() {
+        match msg {
+            ShadowMsg::Witness { .. } if !lost => {
+                lost = true;
+                transport.record_loss_for_test(LossEntry {
+                    rec: recorder.id().0,
+                    seq,
+                    site: u64::from(flight.header.site_id),
+                    header: false,
+                    ids: [0; 3],
+                });
+            }
+            ShadowMsg::Witness {
+                idx,
+                placement,
+                effect,
+                ..
+            } => witness(recorder, idx, placement, effect),
+            ShadowMsg::Cond { pred, taken, .. } => mark(recorder, Mark::Cond { pred, taken }),
+            ShadowMsg::Mirror { mirror, .. } => mark(recorder, Mark::Mirror(mirror)),
+            ShadowMsg::Ticker { gate, .. } => mark(recorder, Mark::Ticker(gate)),
+            ShadowMsg::History { op, .. } => mark(recorder, Mark::History(op)),
+            ShadowMsg::Reply { kind, .. } => mark(recorder, Mark::Reply(kind)),
+            ShadowMsg::Close { .. } => recorder.finish(),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert!(lost, "the flight has a witness to lose");
+}
+
+#[test]
+fn a_loss_still_being_published_defers_the_comparison_instead_of_a_false_mismatch() {
+    // Sol 6.2 round 3, major 1: a producer paused after it reserved a loss-ring slot;
+    // a second producer published a witness loss *behind* it; the comparator then
+    // applied the flight's `Close` while that loss was unreadable (the ring looked
+    // empty) and reported `EffectSet` for a correct flight, which stayed reported
+    // after the loss drained.
+    let transport = local_transport(64);
+    let paused = transport.reserve_loss_for_test();
+    let recorder = transport.recorder();
+    let flight = pipeline_success(0, 0);
+    let seq = submit_header(&recorder, &flight);
+    send_later_losing_first_witness(&transport, &recorder, &flight, seq);
+
+    let mut h = harness();
+    drain(&mut h.comparator, &transport);
+    assert!(
+        h.events().is_empty(),
+        "no verdict while a loss is unreadable"
+    );
+    assert_eq!(h.stats().mismatched_root, 0, "{:?}", h.events());
+    assert_eq!(h.stats().compared, 0, "nothing is compared past the head");
+    // Polling again changes nothing while the producer is still paused.
+    drain(&mut h.comparator, &transport);
+    assert_eq!(h.stats().compared, 0);
+
+    // The paused producer finishes: its (unrelated) loss and the witness loss are
+    // both read, so the flight is invalidated instead of mismatched.
+    transport.publish_loss_for_test(paused, lost_header(999_999, 0, 0, [0; 3]));
+    drain(&mut h.comparator, &transport);
+    assert!(h.events().is_empty(), "{:?}", h.events());
+    assert_eq!(h.stats().mismatched_root, 0);
+    assert_eq!(
+        h.stats().matched,
+        0,
+        "a record that lost a witness is not clean"
+    );
+    assert_eq!(h.stats().dropped, 0, "this test recorded losses, not drops");
+    drop(recorder);
+}
+
+#[test]
+fn an_empty_loss_log_does_not_defer_anything() {
+    // The other half of the distinction: nothing reserved means nothing to wait for.
+    let transport = local_transport(64);
+    let recorder = transport.recorder();
+    let flight = pipeline_success(0, 0);
+    submit_header(&recorder, &flight);
+    send_later(&recorder, &flight);
+    let mut h = harness();
+    drain(&mut h.comparator, &transport);
+    assert_eq!(h.stats().matched, 1, "{:?}", h.stats());
+    assert_clean(&h);
+}
+
+#[test]
+fn a_lost_close_applies_its_flights_subjects_at_its_position_header_queued() {
+    // Sol 6.2 round 3, major 3: A's R205.5 stays open; B's header is applied; then the
+    // `Close` of C (a stale pipeline finish about A's recording) is dropped while C's
+    // header is still queued. The header was discarded before its subject ids were
+    // read, so A's R205.5 closed clean and earned PD-16.
+    let a = cancel(1, 1);
+    let mut h = harness();
+    h.feed_header(&a);
+    h.feed(&idle_for(2, 2, 41));
+    let c = pipeline_exit(3, 3, Status::Recording, RecordingId(RID.0 + 1), RID);
+    // The loss is read first (it was recorded before the header was popped), then
+    // the header arrives.
+    h.comparator.on_loss(LossEntry {
+        rec: c.header.rec.0,
+        seq: 3,
+        site: u64::from(c.header.site_id),
+        header: false,
+        ids: [0; 3],
+    });
+    h.send(ShadowMsg::Header(c.header.clone()));
+    assert_eq!(h.stats().late_header_discarded, 1);
+    h.feed_later(&a);
+    assert_eq!(h.stats().matched, 1, "only B is clean: {:?}", h.stats());
+    assert_eq!(pd_16(&h), 0, "{:?}", h.stats().pd_witness);
+    assert_eq!(h.stats().invalidated, 1);
+}
+
+#[test]
+fn a_lost_close_applies_its_flights_subjects_at_its_position_header_pending() {
+    // The same loss, with C's header waiting behind a gap (`seq` 3 has not arrived).
+    let a = cancel(1, 1);
+    let mut h = harness();
+    h.feed_header(&a);
+    h.feed(&idle_for(2, 2, 41));
+    let c = pipeline_exit(4, 3, Status::Recording, RecordingId(RID.0 + 1), RID);
+    h.send(ShadowMsg::Header(c.header.clone()));
+    h.comparator.on_loss(LossEntry {
+        rec: c.header.rec.0,
+        seq: 4,
+        site: u64::from(c.header.site_id),
+        header: false,
+        ids: [0; 3],
+    });
+    // The missing position arrives; the lost one is then reached and applied there.
+    h.feed(&idle_for(3, 4, 42));
+    assert_eq!(h.stats().late_header_discarded, 1);
+    h.feed_later(&a);
+    // A, and the filler that was still open when the lost position was reached (the
+    // neighbour before the gap); B closed clean before.
+    assert_eq!(h.stats().invalidated, 2, "{:?}", h.stats());
+    assert_eq!(pd_16(&h), 0, "{:?}", h.stats().pd_witness);
+    assert_eq!(h.stats().matched, 1, "only B: {:?}", h.stats());
 }
