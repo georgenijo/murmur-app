@@ -127,67 +127,11 @@ pub(super) fn complete_joining<T>(future: &mut Fut<T>) -> T {
     }
 }
 
-/// How long a helper thread may take to reach its barrier or to finish. A scenario
-/// that exceeds it fails, instead of blocking until CI kills the process.
-const HELPER_BOUND: std::time::Duration = std::time::Duration::from_secs(20);
-
-/// Wait for a helper thread to signal that it reached its barrier. A helper that
-/// finishes first (its panic, or a return that skipped the barrier) or a wait past
-/// [`HELPER_BOUND`] fails the scenario at once, and a helper's panic is re-raised on
-/// the scenario's thread. The arrival sender lives in a hook the world keeps, so a
-/// helper that panics before the barrier never disconnects the channel: the finished
-/// thread is what is checked.
-pub(super) fn await_arrival<T>(
-    entered: &std::sync::mpsc::Receiver<()>,
-    thread: &std::thread::JoinHandle<T>,
-    what: &str,
-) -> Result<(), HelperEnded> {
-    let deadline = std::time::Instant::now() + HELPER_BOUND;
-    loop {
-        match entered.recv_timeout(std::time::Duration::from_millis(5)) {
-            Ok(()) => return Ok(()),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err(HelperEnded),
-        }
-        if thread.is_finished() {
-            // A signal sent just before it finished still counts.
-            return entered.try_recv().map_err(|_| HelperEnded);
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "{what}: the helper did not reach its barrier within {HELPER_BOUND:?}"
-        );
-    }
-}
-
-/// A helper thread ended before it reached its barrier.
-pub(super) struct HelperEnded;
-
-/// Fail the scenario because `thread` ended without arriving: re-raise its panic, or
-/// name the early return.
-pub(super) fn helper_failed<T>(thread: std::thread::JoinHandle<T>, what: &str) -> ! {
-    match thread.join() {
-        Err(payload) => std::panic::resume_unwind(payload),
-        Ok(_) => panic!("{what}: the helper returned without reaching its barrier"),
-    }
-}
-
-/// Join a helper that has been released, bounded by [`HELPER_BOUND`]; a helper's
-/// panic is re-raised here.
-pub(super) fn join_bounded<T>(thread: std::thread::JoinHandle<T>, what: &str) -> T {
-    let deadline = std::time::Instant::now() + HELPER_BOUND;
-    while !thread.is_finished() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "{what}: the helper did not finish within {HELPER_BOUND:?}"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
-    match thread.join() {
-        Ok(value) => value,
-        Err(payload) => std::panic::resume_unwind(payload),
-    }
-}
+// The failure bound on helper threads lives in its own file: it never orders a
+// scenario (G3: no scenario waits on a clock), it only turns a hang into a failure.
+#[path = "recording_helper_wait.rs"]
+mod helper_wait;
+pub(super) use helper_wait::{await_arrival, helper_failed, join_bounded};
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
