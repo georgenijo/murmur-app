@@ -154,6 +154,17 @@ cargo test --lib --features dictation-shadow every_family_pd_is_witnessed -- --t
 cargo test --lib --features dictation-shadow headers_leave_d -- --test-threads=1
 ```
 
+Capture sites are **insertion only** in the live files (D-S2c-8): against `main` the diff
+adds lines and removes none, and every added line is behind `feature = "dictation-shadow"`.
+`python3 scripts/check_shadow_diff.py` (CI, `tests/test_shadow_diff.py`) reads
+`git diff --numstat` and fails on any deleted line in a live file unless
+`SHADOW_DIFF_ALLOW` names it. E7 also reconciles the shell's own counts: decision
+sections entered at D == headers submitted + named no-decision outcomes + unwound, and
+`lost == 0` and `unverifiable == 0` unless the test that provoked the loss asserts it.
+Each `#[tauri::command]` return is witnessed by a feature-only wrapper command
+(`commands/recording/shadow_commands.rs`) that calls the original and records the reply it
+returned; only the `generate_handler!` entries in `lib.rs` choose between the two.
+
 `MURMUR_E7_COLLECT=1` turns the E7 assertion into a findings listing (one
 `E7FINDING` line per divergence: sub-run, site, rows, input kind, diff kind) and
 keeps going, to report every divergence at once. The gate never runs in that mode.
