@@ -342,57 +342,163 @@ fn scan_dir(dir: &Path, skip: &dyn Fn(&str) -> bool) -> Vec<(String, String)> {
         .collect()
 }
 
-/// `(path relative to src, production code)` for already loaded sources: comments and
-/// literals blanked and `#[cfg(test)]` items removed. It loads nothing.
-fn blank_to_production(sources: Vec<(String, String)>) -> Vec<(String, String)> {
-    sources
-        .into_iter()
-        .map(|(relative, text)| (relative, production_code(&text)))
-        .collect()
-}
-
 /// The crate's `src/` directory. A plain path: no caching, no reading.
 fn src_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
 }
 
-/// The one loader of production sources, by source root: every `.rs` file under `src`
-/// that is not self-gated test code (see [`is_self_gated_test_file`]) as
-/// `(path relative to src, raw source)`, for the syntax-aware scanner (it skips
-/// `#[cfg(test)]` items itself). Every real-tree test calls it with `&src_root()` and
-/// the stale-source regression probe calls it with a temp dir, so nothing sits between
-/// the tests and the loader the probe exercises, and any snapshot added here or in a
-/// helper it calls is caught by that probe. There is deliberately no wrapper.
-fn raw_production_sources_in(src: &Path) -> Vec<(String, String)> {
-    scan_dir_self_gated(src)
+/// A copy of the real tree's raw production sources, for a probe to plant an edit in.
+/// It comes from the view, like everything else a real-tree test reads.
+fn real_sources() -> Vec<(String, String)> {
+    production_view(&src_root()).raw().to_vec()
 }
 
-/// Called only by [`raw_production_sources_in`]: every `.rs` file under `dir` that does
-/// not gate itself with `#![cfg(test)]`. The
-/// directory is read from the filesystem on every call: only the parsing is cached,
-/// and only for identical bytes, so a file edited since an earlier call is seen.
-fn scan_dir_self_gated(dir: &Path) -> Vec<(String, String)> {
-    scan_dir(dir, &|_| false)
-        .into_iter()
-        .filter(|(_, source)| !is_self_gated_cached(source))
-        .collect()
-}
+use view::production_view;
 
-/// [`is_self_gated_test_file`], remembered per exact source text (a parse per file is
-/// the slow part of reading the tree).
-fn is_self_gated_cached(source: &str) -> bool {
-    static GATED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, bool>>> =
-        std::sync::OnceLock::new();
-    let cache = GATED.get_or_init(Default::default);
-    if let Some(gated) = cache.lock().expect("gate cache").get(source) {
-        return *gated;
+/// D-S2b-22: the one way a real-tree test obtains production sources and everything
+/// derived from them. The loader, the blanking, the self-gate parse cache and every
+/// cache of a derived result are private to this module, so no test can read the tree
+/// or a derived result except through [`production_view`]: a stale snapshot cannot sit
+/// between a test and the disk without the stale-source probe
+/// (`an_edited_file_is_never_answered_from_the_scan_cache`) seeing it in some field.
+///
+/// `production_view(root)` reads `root` from the filesystem on every call. A view is a
+/// pure function of the bytes read, so views are memoized by those exact bytes
+/// (compared in full), and each field is derived lazily from them the first time it is
+/// asked for (a test pays only for the fields it reads). The pure scanners it calls
+/// (`direct_write_counts`, `event_sites`, ...) stay outside: they take sources as an
+/// argument and read nothing, and the synthetic-source unit tests feed them directly.
+mod view {
+    use super::*;
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    /// Every `.rs` file under `src` that does not gate itself with `#![cfg(test)]`, as
+    /// `(path relative to src, raw source)`, read from the filesystem now.
+    fn load(src: &Path) -> Vec<(String, String)> {
+        scan_dir(src, &|_| false)
+            .into_iter()
+            .filter(|(_, source)| !is_self_gated_cached(source))
+            .collect()
     }
-    let gated = is_self_gated_test_file(source);
-    cache
-        .lock()
-        .expect("gate cache")
-        .insert(source.to_string(), gated);
-    gated
+
+    /// [`is_self_gated_test_file`], remembered per exact source text (a parse per file
+    /// is the slow part of reading the tree).
+    fn is_self_gated_cached(source: &str) -> bool {
+        static GATED: OnceLock<Mutex<std::collections::HashMap<String, bool>>> = OnceLock::new();
+        let cache = GATED.get_or_init(Default::default);
+        if let Some(gated) = cache.lock().expect("gate cache").get(source) {
+            return *gated;
+        }
+        let gated = is_self_gated_test_file(source);
+        cache
+            .lock()
+            .expect("gate cache")
+            .insert(source.to_string(), gated);
+        gated
+    }
+
+    /// `(path relative to src, production code)`: comments and literals blanked and
+    /// `#[cfg(test)]` items removed.
+    fn blank(sources: &[(String, String)]) -> Vec<(String, String)> {
+        sources
+            .iter()
+            .map(|(relative, text)| (relative.clone(), production_code(text)))
+            .collect()
+    }
+
+    /// The production sources under one root and what the ratchet derives from them.
+    pub(super) struct ProductionView {
+        raw: Vec<(String, String)>,
+        blanked: OnceLock<Vec<(String, String)>>,
+        direct_writes: OnceLock<Vec<(&'static str, Vec<String>)>>,
+        status_call_sites: OnceLock<Vec<String>>,
+        terminal_call_sites: OnceLock<Vec<String>>,
+        terminal_callers: OnceLock<Vec<(String, String, usize)>>,
+        events_module: OnceLock<EventsModule>,
+        crate_root_problems: OnceLock<Vec<String>>,
+        event_sites: OnceLock<EventSites>,
+    }
+
+    impl ProductionView {
+        fn new(raw: Vec<(String, String)>) -> Self {
+            Self {
+                raw,
+                blanked: OnceLock::new(),
+                direct_writes: OnceLock::new(),
+                status_call_sites: OnceLock::new(),
+                terminal_call_sites: OnceLock::new(),
+                terminal_callers: OnceLock::new(),
+                events_module: OnceLock::new(),
+                crate_root_problems: OnceLock::new(),
+                event_sites: OnceLock::new(),
+            }
+        }
+
+        /// `(path relative to src, raw source)` of every non-self-gated `.rs` file.
+        pub(super) fn raw(&self) -> &[(String, String)] {
+            &self.raw
+        }
+
+        /// [`Self::raw`] with comments and literals blanked and `#[cfg(test)]` items removed.
+        pub(super) fn blanked(&self) -> &[(String, String)] {
+            self.blanked.get_or_init(|| blank(&self.raw))
+        }
+
+        /// Direct writes to the M fields outside the adapter, per field.
+        pub(super) fn direct_writes(&self) -> &[(&'static str, Vec<String>)] {
+            self.direct_writes
+                .get_or_init(|| direct_write_counts(self.blanked()))
+        }
+
+        /// `transition_dictation_status(` call sites.
+        pub(super) fn status_call_sites(&self) -> &Vec<String> {
+            self.status_call_sites
+                .get_or_init(|| call_sites(self.blanked(), r"\btransition_dictation_status\s*\("))
+        }
+
+        /// `emit_dictation_terminal*(` call sites.
+        pub(super) fn terminal_call_sites(&self) -> &Vec<String> {
+            self.terminal_call_sites
+                .get_or_init(|| call_sites(self.blanked(), r"\bemit_dictation_terminal\w*\s*\("))
+        }
+
+        /// `(file, qualified enclosing fn, calls)` of every terminal emit.
+        pub(super) fn terminal_callers(&self) -> &Vec<(String, String, usize)> {
+            self.terminal_callers
+                .get_or_init(|| terminal_emit_callers(&self.raw))
+        }
+
+        /// The events module (`events.rs`) and what is wrong with it or `lib.rs`.
+        pub(super) fn events_module(&self) -> &EventsModule {
+            self.events_module
+                .get_or_init(|| parse_events_module(&self.raw))
+        }
+
+        /// What is wrong with the crate roots other than `lib.rs`.
+        pub(super) fn crate_root_problems(&self) -> &Vec<String> {
+            self.crate_root_problems
+                .get_or_init(|| check_crate_roots(&self.raw, MAIN_RS_HASH))
+        }
+
+        /// The status-event scan.
+        pub(super) fn event_sites(&self) -> &EventSites {
+            self.event_sites.get_or_init(|| event_sites(&self.raw))
+        }
+    }
+
+    /// Read `root` now and return the view of exactly those bytes.
+    pub(super) fn production_view(root: &Path) -> Arc<ProductionView> {
+        static VIEWS: OnceLock<Mutex<Vec<Arc<ProductionView>>>> = OnceLock::new();
+        let raw = load(root);
+        let views = VIEWS.get_or_init(Default::default);
+        let mut views = views.lock().expect("view cache");
+        if let Some(same) = views.iter().find(|view| view.raw == raw) {
+            return Arc::clone(same);
+        }
+        let view = Arc::new(ProductionView::new(raw));
+        views.push(Arc::clone(&view));
+        view
+    }
 }
 
 fn line_of(code: &str, offset: usize) -> usize {
@@ -479,8 +585,9 @@ fn call_sites(sources: &[(String, String)], pattern: &str) -> Vec<String> {
 /// SP5, field half: no production code writes M1-M4 except through the adapter.
 #[test]
 fn no_direct_m_field_writes_outside_the_adapter() {
-    let sources = blank_to_production(raw_production_sources_in(&src_root()));
-    for (field, found) in direct_write_counts(&sources) {
+    let view = production_view(&src_root());
+    for (field, found) in view.direct_writes() {
+        let field = *field;
         let baseline = DIRECT_WRITE_BASELINE
             .iter()
             .find(|(name, _)| *name == field)
@@ -505,18 +612,18 @@ fn no_direct_m_field_writes_outside_the_adapter() {
 /// sites only go down, family by family.
 #[test]
 fn status_write_and_terminal_call_sites_only_go_down() {
-    let sources = blank_to_production(raw_production_sources_in(&src_root()));
-    let status = call_sites(&sources, r"\btransition_dictation_status\s*\(");
-    let terminal = call_sites(&sources, r"\bemit_dictation_terminal\w*\s*\(");
+    let view = production_view(&src_root());
+    let status = view.status_call_sites();
+    let terminal = view.terminal_call_sites();
     for (what, found, baseline) in [
         (
             "transition_dictation_status",
-            &status,
+            status,
             STATUS_WRITE_SITES_BASELINE,
         ),
         (
             "emit_dictation_terminal*",
-            &terminal,
+            terminal,
             TERMINAL_EMIT_SITES_BASELINE,
         ),
     ] {
@@ -1086,9 +1193,9 @@ fn check_terminal_emit_callers(
 /// alone would let a `TERM` call be swapped for an inline emit elsewhere.
 #[test]
 fn terminal_emit_callers_are_exactly_the_allowlisted_functions() {
-    let sources = raw_production_sources_in(&src_root());
-    let callers = terminal_emit_callers(&sources);
-    if let Err(message) = check_terminal_emit_callers(&callers, &TERMINAL_EMIT_ALLOWLIST) {
+    let view = production_view(&src_root());
+    let callers = view.terminal_callers();
+    if let Err(message) = check_terminal_emit_callers(callers, &TERMINAL_EMIT_ALLOWLIST) {
         panic!("{message}");
     }
     assert_eq!(
@@ -2150,7 +2257,7 @@ fn merge_file_scans(found: &mut EventSites, scans: Vec<FileScan>) {
 /// SP5 (appendix C7.2, C13.3 #117): every production call that can carry the
 /// `recording-status-changed` event name, pinned per enclosing function:
 /// `(file relative to src, qualified enclosing fn, "emit" | "listen", calls)`. The
-/// walk is the D-S2-17 fail-closed one (`raw_production_sources_in`: every `src/**/*.rs`
+/// walk is the D-S2-17 fail-closed one (`production_view`'s loader: every `src/**/*.rs`
 /// file that does not gate itself with `#![cfg(test)]`), so a status emit planted in
 /// any other file (the #117 shape: `commands/models.rs`) fails. The set is:
 ///
@@ -2518,8 +2625,8 @@ fn check_tree(found: &EventSites) -> Result<(), String> {
 
 #[test]
 fn status_events_are_emitted_only_by_the_allowlisted_functions() {
-    let found = event_sites(&raw_production_sources_in(&src_root()));
-    if let Err(message) = check_tree(&found) {
+    let view = production_view(&src_root());
+    if let Err(message) = check_tree(view.event_sites()) {
         panic!("{message}");
     }
     // Round 10: the layout of `src/` and `src/main.rs` come from the filesystem.
@@ -2529,7 +2636,7 @@ fn status_events_are_emitted_only_by_the_allowlisted_functions() {
 
 /// A source file of the tree with `old` replaced by `new` (exactly one occurrence).
 fn sources_with(file: &str, old: &str, new: &str) -> Vec<(String, String)> {
-    let mut sources = raw_production_sources_in(&src_root());
+    let mut sources = real_sources();
     let (_, text) = sources
         .iter_mut()
         .find(|(name, _)| name == file)
@@ -2562,7 +2669,7 @@ fn models_with(plant: &str) -> Vec<(String, String)> {
 #[test]
 fn a_planted_status_emit_in_models_rs_fails_the_status_ratchet() {
     // The #117 shape: a status emit on the VAD download path.
-    let mut sources = raw_production_sources_in(&src_root());
+    let mut sources = real_sources();
     sources.push((
         "commands/models.rs".to_string(),
         "async fn ensure_vad_model(app: &AppHandle) { let _ = app.emit(\"recording-status-changed\", \"processing\"); }"
@@ -2896,109 +3003,236 @@ fn a_status_event_in_the_events_module_is_a_status_site() {
     );
 }
 
-/// The scan cache must never answer for bytes it has not seen. A tree is read and
-/// scanned (warming the cache), then a file is edited on disk and the tree is read
-/// again, as the real-tree test does at its start: the edit must be seen, whether it is
-/// a status emit in a file or a second `mod events;` in the crate root. (A temp-dir tree
-/// stands in for `src/`: no test writes into the real one.)
+/// Everything the real-tree tests read from a [`production_view`], owned.
+#[derive(Clone, PartialEq, Debug)]
+struct Seen {
+    raw: Vec<(String, String)>,
+    blanked: Vec<(String, String)>,
+    direct_writes: Vec<(&'static str, Vec<String>)>,
+    status_call_sites: Vec<String>,
+    terminal_call_sites: Vec<String>,
+    terminal_callers: Vec<(String, String, usize)>,
+    events_consts: std::collections::BTreeMap<String, String>,
+    events_problems: Vec<String>,
+    crate_root_problems: Vec<String>,
+    status_emits: Vec<(String, String)>,
+    unresolved_emits: Vec<(String, String)>,
+    banned: Vec<String>,
+}
+
+/// Read every field of the view of `root`.
+fn seen(root: &Path) -> Seen {
+    let view = production_view(root);
+    let found = view.event_sites();
+    let events = view.events_module();
+    Seen {
+        raw: view.raw().to_vec(),
+        blanked: view.blanked().to_vec(),
+        direct_writes: view.direct_writes().to_vec(),
+        status_call_sites: view.status_call_sites().clone(),
+        terminal_call_sites: view.terminal_call_sites().clone(),
+        terminal_callers: view.terminal_callers().clone(),
+        events_consts: events.consts.clone(),
+        events_problems: events.problems.clone(),
+        crate_root_problems: view.crate_root_problems().clone(),
+        status_emits: found
+            .status
+            .keys()
+            .filter(|(_, _, kind)| *kind == "emit")
+            .map(|(file, function, _)| (file.clone(), function.clone()))
+            .collect(),
+        unresolved_emits: found.dynamic.keys().cloned().collect(),
+        banned: found.banned.clone(),
+    }
+}
+
+/// D-S2b-22: a view must never answer for bytes it has not read. A tree is read through
+/// [`production_view`] (the one entry point of every real-tree test, called here with a
+/// temp dir for `src/`) and every field of the view is read, warming every cache; then
+/// a file is edited **in place**, a constant of the events module changes, a file is
+/// added and a file removed, and after each the view is read again. After an edit the
+/// fields it should change did change, the ones it should not did not, and undoing the
+/// edit gives back exactly the first reading. A stale snapshot or memo anywhere between
+/// the disk and a field (the loader, the self-gate parse, the blanking, any scan or
+/// derived result) leaves some field unchanged and fails here. No test writes into the
+/// real `src/`.
 #[test]
 fn an_edited_file_is_never_answered_from_the_scan_cache() {
     let dir = tempfile::tempdir().expect("temp dir");
     let write = |name: &str, text: &str| {
-        std::fs::write(dir.path().join(name), text).expect("write");
+        let path = dir.path().join(name);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(path, text).expect("write");
     };
-    // The production loader itself (the real-tree tests call it with `&src_root()`):
-    // a snapshot added to it, or to a helper it calls, must fail this test.
-    let sites = || event_sites(&raw_production_sources_in(dir.path()));
-    let emits_in_a = |found: &EventSites| {
-        found
-            .status
-            .keys()
-            .any(|(file, _, kind)| file == "a.rs" && *kind == "emit")
-    };
+    const QUIET: &str = "pub fn quiet(app: &A) { app.emit(\"other\", 1); }\n";
     write("lib.rs", "mod events;\nmod a;\n");
     write(EVENTS_FILE, SYNTHETIC_EVENTS);
+    write("a.rs", QUIET);
+    // Warm every field, twice (the second reading is a cache hit and must agree).
+    let base = seen(dir.path());
+    assert_eq!(
+        seen(dir.path()),
+        base,
+        "a second reading of unchanged bytes"
+    );
+    assert!(
+        base.events_problems.is_empty() && base.banned.is_empty(),
+        "{base:?}"
+    );
+    assert!(base.direct_writes.iter().all(|(_, hits)| hits.is_empty()));
+    assert!(base.status_call_sites.is_empty() && base.terminal_call_sites.is_empty());
+    assert!(base.terminal_callers.is_empty() && base.status_emits.is_empty());
+    assert!(base.crate_root_problems.is_empty());
+    let a = "a.rs".to_string();
+
+    // 1. One in-place edit of `a.rs` that every field of the view should notice: a
+    // status emit, a direct M1 write, a status call site, a terminal emit.
     write(
         "a.rs",
-        "pub fn quiet(app: &A) { app.emit(\"other\", 1); }\n",
+        "pub fn loud(app: &A, state: &S) {\n\
+         \x20   app.emit(\"recording-status-changed\", 1);\n\
+         \x20   state.dictation.status = DictationStatus::Idle;\n\
+         \x20   transition_dictation_status(state);\n\
+         \x20   emit_dictation_terminal(state);\n}\n",
     );
-    // Warm the cache, twice (the second read is a cache hit and must agree).
-    let first = sites();
+    let edited = seen(dir.path());
+    assert_ne!(edited.raw, base.raw, "raw sources are stale");
+    assert_ne!(edited.blanked, base.blanked, "blanked sources are stale");
     assert!(
-        !emits_in_a(&first) && first.banned.is_empty(),
+        edited
+            .blanked
+            .iter()
+            .any(|(file, code)| *file == a && code.contains("DictationStatus::Idle")),
+        "blanked sources are stale"
+    );
+    let m1 = edited
+        .direct_writes
+        .iter()
+        .find(|(field, _)| *field == "M1");
+    assert!(
+        m1.is_some_and(|(_, hits)| hits.len() == 1 && hits[0].starts_with("a.rs:")),
+        "the direct M1 write is not counted: {:?}",
+        edited.direct_writes
+    );
+    assert_eq!(
+        edited.status_call_sites.len(),
+        1,
         "{:?}",
-        first.banned
+        edited.status_call_sites
     );
-    let again = sites();
-    assert!(!emits_in_a(&again) && again.banned.is_empty());
-    // A status emit appears in a file after the cache is warm.
-    write(
-        "a.rs",
-        "pub fn quiet(app: &A) { app.emit(\"recording-status-changed\", 1); }\n",
+    assert_eq!(
+        edited.terminal_call_sites.len(),
+        1,
+        "{:?}",
+        edited.terminal_call_sites
     );
-    assert!(emits_in_a(&sites()), "the cached scan hid an edited file");
-    write(
-        "a.rs",
-        "pub fn quiet(app: &A) { app.emit(\"other\", 1); }\n",
+    assert_eq!(
+        edited.terminal_callers,
+        [(a.clone(), "loud".to_string(), 1)],
+        "terminal callers are stale"
     );
-    assert!(
-        !emits_in_a(&sites()),
+    assert_eq!(
+        edited.status_emits,
+        [(a.clone(), "loud".to_string())],
+        "event sites are stale"
+    );
+    // Fields this edit does not touch stay as they were.
+    assert_eq!(edited.events_consts, base.events_consts);
+    assert_eq!(edited.events_problems, base.events_problems);
+    assert_eq!(edited.crate_root_problems, base.crate_root_problems);
+    // Undoing the edit gives back exactly the first reading.
+    write("a.rs", QUIET);
+    assert_eq!(
+        seen(dir.path()),
+        base,
         "the edit is undone and seen as undone"
     );
-    // A new file appears after the cache is warm (a stale directory listing hides it),
-    // and goes away again.
-    let emits_in = |found: &EventSites, name: &str| {
-        found
-            .status
-            .keys()
-            .any(|(file, _, kind)| file == name && *kind == "emit")
-    };
-    write(
-        "b.rs",
-        "pub fn added(app: &A) { app.emit(\"recording-status-changed\", 1); }\n",
-    );
-    assert!(
-        emits_in(&sites(), "b.rs"),
-        "a new file was not read from the filesystem"
-    );
-    std::fs::remove_file(dir.path().join("b.rs")).expect("remove b.rs");
-    assert!(
-        !emits_in(&sites(), "b.rs"),
-        "a removed file is still scanned"
-    );
-    // A second `mod events;` appears in the crate root after the cache is warm.
-    write("lib.rs", "mod events;\nmod a;\nmod events;\n");
-    let doubled = sites();
-    assert!(
-        doubled
-            .banned
-            .iter()
-            .any(|problem| problem.contains("lib.rs")),
-        "{:?}",
-        doubled.banned
-    );
-    // A changed events constant is seen by every file that resolves against it.
-    write("lib.rs", "mod events;\nmod a;\n");
+
+    // 2. A constant of the events module changes: every file resolving against it is
+    // rescanned.
     write(
         "a.rs",
         "pub fn quiet(app: &A) { app.emit(crate::events::OTHER, 1); }\n",
     );
-    assert!(!emits_in_a(&sites()));
+    let via_const = seen(dir.path());
+    assert!(
+        via_const.status_emits.is_empty(),
+        "{:?}",
+        via_const.status_emits
+    );
     write(
         EVENTS_FILE,
         "pub const STATUS: &str = \"recording-status-changed\";\npub const OTHER: &str = \"recording-status-changed\";\n",
     );
-    assert!(
-        emits_in_a(&sites()),
+    let changed = seen(dir.path());
+    assert_ne!(
+        changed.events_consts, via_const.events_consts,
+        "the events module is stale"
+    );
+    assert_eq!(
+        changed.status_emits,
+        [(a.clone(), "quiet".to_string())],
         "a stale scan ignored the new constant"
     );
+    write(EVENTS_FILE, SYNTHETIC_EVENTS);
+    write("a.rs", QUIET);
+    assert_eq!(seen(dir.path()), base);
+
+    // 3. A new file appears (a stale directory listing hides it) and goes away again.
+    write(
+        "b.rs",
+        "pub fn added(app: &A) { app.emit(\"recording-status-changed\", 1); }\n",
+    );
+    let with_b = seen(dir.path());
+    assert!(
+        with_b.raw.iter().any(|(file, _)| file == "b.rs"),
+        "a new file was not read from the filesystem"
+    );
+    assert_eq!(
+        with_b.status_emits,
+        [("b.rs".to_string(), "added".to_string())]
+    );
+    std::fs::remove_file(dir.path().join("b.rs")).expect("remove b.rs");
+    assert_eq!(seen(dir.path()), base, "a removed file is still scanned");
+
+    // 4. A second `mod events;` appears in the crate root.
+    write("lib.rs", "mod events;\nmod a;\nmod events;\n");
+    let doubled = seen(dir.path());
+    assert!(
+        doubled
+            .events_problems
+            .iter()
+            .any(|problem| problem.contains("lib.rs")),
+        "{:?}",
+        doubled.events_problems
+    );
+    assert!(doubled
+        .banned
+        .iter()
+        .any(|problem| problem.contains("lib.rs")));
+    write("lib.rs", "mod events;\nmod a;\n");
+    assert_eq!(seen(dir.path()), base);
+
+    // 5. An unknown crate root appears under `bin/`.
+    write("bin/tool.rs", "fn main() { ui_lib::run() }\n");
+    let with_bin = seen(dir.path());
+    assert!(
+        with_bin
+            .crate_root_problems
+            .iter()
+            .any(|problem| problem.contains("bin/tool.rs")),
+        "{:?}",
+        with_bin.crate_root_problems
+    );
+    std::fs::remove_file(dir.path().join("bin/tool.rs")).expect("remove tool.rs");
+    assert_eq!(seen(dir.path()), base);
 }
 
 /// An overlay that repeats a file lands on the same `(file, fn)` keys: the counts add
 /// up (a duplicated emitter file counts its emits twice) and the ratchet rejects it.
 #[test]
 fn a_duplicated_emitter_file_counts_its_emits_twice() {
-    let sources = raw_production_sources_in(&src_root());
+    let sources = real_sources();
     let duplicate = |file: &str| {
         let text = sources
             .iter()
@@ -3148,14 +3382,16 @@ fn a_second_crate_root_with_its_own_events_module_fails_the_status_ratchet() {
         "    ui_lib::quiet();\n    ui_lib::run()\n",
     ));
     assert!(error.contains("main.rs: was edited"), "{error}");
-    let mut with_bin = raw_production_sources_in(&src_root());
+    let mut with_bin = real_sources();
     with_bin.push((
         "bin/tool.rs".to_string(),
         "fn main() { ui_lib::run() }\n".to_string(),
     ));
     reject(with_bin, "an unknown bin root");
     // The real `main.rs` only calls into `ui_lib::..` and passes.
-    assert!(check_crate_roots(&raw_production_sources_in(&src_root()), MAIN_RS_HASH).is_empty());
+    assert!(production_view(&src_root())
+        .crate_root_problems()
+        .is_empty());
 }
 
 #[test]
@@ -3305,7 +3541,7 @@ fn the_src_layout_check_rejects_case_variants_a_second_bin_and_a_missing_main() 
         );
     }
     // The source-list path rejects a `Bin/` file in any case.
-    let mut sources = raw_production_sources_in(&src_root());
+    let mut sources = real_sources();
     sources.push(("Bin/tool.rs".to_string(), bin_main.to_string()));
     assert!(check_crate_roots(&sources, MAIN_RS_HASH)
         .iter()
@@ -3620,7 +3856,8 @@ fn the_events_module_must_hold_only_public_string_literal_constants() {
 
 #[test]
 fn the_real_events_module_is_valid_and_declares_the_emitted_constants() {
-    let events = parse_events_module(&raw_production_sources_in(&src_root()));
+    let view = production_view(&src_root());
+    let events = view.events_module();
     assert!(events.problems.is_empty(), "{:?}", events.problems);
     for name in [
         "INVENTORY_EVENT",
@@ -3817,7 +4054,8 @@ fn scanner_flags_a_planted_direct_write() {
 
 #[test]
 fn test_only_files_are_skipped_and_production_files_are_scanned() {
-    let files = blank_to_production(raw_production_sources_in(&src_root()));
+    let view = production_view(&src_root());
+    let files = view.blanked();
     let names: Vec<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
     for test_file in [
         "commands/recording_contract_tests.rs",
@@ -3857,11 +4095,9 @@ fn a_file_is_skipped_only_by_its_own_cfg_test() {
         "commands/gated_tests.rs",
         "//! docs\n#![cfg(test)]\nfn k() { emit_dictation_terminal(e); }",
     );
-    let found = check_terminal_emit_callers(
-        &terminal_emit_callers(&raw_production_sources_in(dir.path())),
-        &allowed,
-    )
-    .expect_err("the ungated and the conditionally gated files are scanned");
+    let found =
+        check_terminal_emit_callers(production_view(dir.path()).terminal_callers(), &allowed)
+            .expect_err("the ungated and the conditionally gated files are scanned");
     assert!(found.contains("commands/new_feature_tests.rs"), "{found}");
     assert!(found.contains("commands/conditional.rs"), "{found}");
     assert!(!found.contains("gated_tests"), "{found}");

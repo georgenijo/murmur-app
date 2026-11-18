@@ -84,9 +84,20 @@ macro could expand to a module declaration that loads a file outside the walk
 
 ## How the probes plant their edits
 
-Every test reads `src/` from the filesystem when it starts, through the one loader
-`raw_production_sources_in(&src_root())` (there is no wrapper, and the stale-source
-probe calls the same loader with a temp dir); reads are cheap, parsing is not. A probe takes an owned copy of those sources with one
+Every real-tree test gets production sources, and everything the ratchet derives from
+them, from one function: `production_view(&src_root())` (D-S2b-22). It reads `src/`
+from the filesystem on every call, and its fields (`raw`, `blanked`, `direct_writes`,
+the status and terminal call sites, `terminal_callers`, `events_module`,
+`crate_root_problems`, `event_sites`) are derived lazily from exactly the bytes it
+read; views are memoized by those bytes, compared in full. The loader, the blanking and
+the caches live in a private `view` module, so no test can load the tree or read a
+derived result any other way (the seeder and layout checks read the filesystem
+directly, as before). The stale-source probe calls `production_view` on a temp dir,
+reads every field, edits files in place (a status emit, a direct M1 write, a call site,
+an events constant, a new and a removed file, a second crate root) and requires each
+field to change as expected and to return to its first value when the edit is undone,
+so a snapshot anywhere between the disk and a field fails it. Reads are cheap,
+parsing is not. A probe takes an owned copy of the view's raw sources with one
 file replaced or added (`sources_with`, `models_with`, a `push`); nothing is written to
 `src/`. `event_sites` caches each file's scan (`scan_file_cached`) keyed by its path, its
 exact bytes and the events module's constants, so a file is parsed once per process for
