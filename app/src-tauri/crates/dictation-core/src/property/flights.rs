@@ -565,11 +565,21 @@ pub struct StopFlight {
     cc: Option<Result<bool, ()>>,
     reply: Option<PipelineReply>,
     panicked: bool,
+    /// The window whose `handleStop` sent this stop (#1167): its in-flight guard clears when
+    /// the flight returns.
+    window: Option<usize>,
 }
 
 impl StopFlight {
+    /// This stop was sent by window `window`'s gesture handler.
+    pub fn with_window(mut self, window: usize) -> Self {
+        self.window = Some(window);
+        self
+    }
+
     pub fn new(expected: Option<Rid>, auto: Option<Continuation>, cfg: StopCfg) -> Self {
         Self {
+            window: None,
             st: Ts::AcquireT,
             q: VecDeque::new(),
             expected,
@@ -1111,6 +1121,9 @@ impl Task for StopFlight {
             Ts::Finish => {
                 self.retire_tokens(cx);
                 release_t(cx);
+                if let Some(window) = self.window {
+                    cx.w.window_stop_returned(window);
+                }
                 return Poll::Done;
             }
         }
