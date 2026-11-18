@@ -22,8 +22,9 @@
 //! files that are test-only modules (`#[cfg(test)] mod x;`, with or without
 //! `#[path]`) are skipped. The per-function call-site checks parse real Rust
 //! syntax (`syn`) and name each caller by its qualified identity (module path,
-//! `impl` type, fn names), so same-named functions in sibling modules or impls
-//! differ; the textual checks blank comments and literals first.
+//! `impl` type or `<Type as Trait>`, fn names), so same-named functions in sibling
+//! modules, impls or trait impls differ, and skip an item only when its `cfg`
+//! predicate requires `test`; the textual checks blank comments and literals first.
 
 use regex::Regex;
 use std::collections::HashSet;
@@ -45,7 +46,8 @@ const TERMINAL_EMIT_SITES_BASELINE: usize = 6;
 
 /// The functions that may still call `emit_dictation_terminal*(`, with the number
 /// of calls each makes: `(file relative to src, qualified enclosing fn, calls)`
-/// (module path, `impl` type, then fn names, joined by `::`). The sum is
+/// (module path, the `impl` as `Type` or `<Type as Trait>`, then fn names, joined by
+/// `::`). The sum is
 /// [`TERMINAL_EMIT_SITES_BASELINE`]. Moving a site behind `TERM` lowers its entry;
 /// a call in any other function, or more calls in one, fails.
 const TERMINAL_EMIT_ALLOWLIST: [(&str, &str, usize); 6] = [
@@ -56,20 +58,24 @@ const TERMINAL_EMIT_ALLOWLIST: [(&str, &str, usize); 6] = [
     // The four families' `TERM` ports: the executor's terminal effect.
     (
         "commands/recording/cancel_ports.rs",
-        "CancelPorts::terminal",
+        "<CancelPorts<'_> as Ports>::terminal",
         1,
     ),
     (
         "commands/recording/lifecycle_ports.rs",
-        "LifecyclePorts::terminal",
+        "<LifecyclePorts<'_,R> as Ports>::terminal",
         1,
     ),
     (
         "commands/recording/start_ports.rs",
-        "StartPorts::terminal",
+        "<StartPorts<'_> as Ports>::terminal",
         1,
     ),
-    ("commands/recording/stop_ports.rs", "StopPorts::terminal", 1),
+    (
+        "commands/recording/stop_ports.rs",
+        "<StopPorts<'_> as Ports>::terminal",
+        1,
+    ),
 ];
 
 // ------------------------------------------------------------------ scanner
@@ -504,15 +510,21 @@ fn status_write_and_terminal_call_sites_only_go_down() {
 
 // ------------------------------------------------ syntax-aware call-site scanner
 
-/// Where a call lives: the qualified identity of its enclosing function, built from
-/// real Rust syntax: inline module path, the `impl` / `trait` type, then the `fn`
-/// names (`a::b::Type::method`, nested functions append). A call outside any
-/// function body (a `const` / `static` initializer) is `<const NAME>` / `<static
-/// NAME>` under its module path. Two functions with the same name in different
-/// modules or impls have different identities, and a closure belongs to the
-/// function that contains it.
+/// Where a use lives: the qualified identity of its enclosing function, built from
+/// real Rust syntax: inline module path, the `impl` / `trait` the function is in,
+/// then the `fn` names (nested functions append). An inherent impl contributes its
+/// full implementing type (`StopPorts<'a>`), a trait impl contributes
+/// `<Type as Trait>` with both written out (two trait impls of one type, each with a
+/// `terminal`, are two identities). A use outside any function body (a `const` /
+/// `static` initializer) is `<const NAME>` / `<static NAME>` under its module path.
+/// A closure belongs to the function that contains it.
+///
+/// A "use" is a call, a method call, a path used as a value (`let make =
+/// PersistedCore::new;`), or any of these written inside a macro's tokens. Limits:
+/// a renamed `use .. as ..` import is not followed.
 struct SiteFinder<'m> {
     scope: Vec<String>,
+    /// Scan `#[cfg(test)]` items too (the single-seeder check covers test code).
     include_cfg_test: bool,
     is_target: &'m dyn Fn(&[String]) -> bool,
     hits: Vec<String>,
@@ -523,28 +535,29 @@ impl SiteFinder<'_> {
         self.hits.push(self.scope.join("::"));
     }
 
-    /// Calls written inside a macro invocation's tokens (`name(..)` or `a::b(..)`):
-    /// the macro's arguments are not parsed as expressions.
+    /// Uses written inside a macro invocation's tokens (`name(..)`, `a::b(..)`, or
+    /// the bare path): the macro's arguments are not parsed as expressions.
     fn scan_tokens(&mut self, tokens: proc_macro2::TokenStream) {
         use proc_macro2::TokenTree;
         let mut chain: Vec<String> = Vec::new();
+        let flush = |this: &mut Self, chain: &mut Vec<String>| {
+            if !chain.is_empty() && (this.is_target)(chain) {
+                this.hit();
+            }
+            chain.clear();
+        };
         for token in tokens {
             match token {
                 TokenTree::Ident(ident) => chain.push(ident.to_string()),
                 TokenTree::Punct(punct) if punct.as_char() == ':' => {}
                 TokenTree::Group(group) => {
-                    if group.delimiter() == proc_macro2::Delimiter::Parenthesis
-                        && !chain.is_empty()
-                        && (self.is_target)(&chain)
-                    {
-                        self.hit();
-                    }
-                    chain.clear();
+                    flush(self, &mut chain);
                     self.scan_tokens(group.stream());
                 }
-                _ => chain.clear(),
+                _ => flush(self, &mut chain),
             }
         }
+        flush(self, &mut chain);
     }
 
     fn skip(&self, attrs: &[syn::Attribute]) -> bool {
@@ -558,30 +571,61 @@ impl SiteFinder<'_> {
     }
 }
 
-/// `#[cfg(test)]` (also `cfg(all(test, ..))`; `cfg(not(test))` is production).
+/// Whether `meta` (a `cfg` predicate) can only be true when `test` is: `test`,
+/// `all(test, ..)` (any member requires it), `any(..)` when every member requires
+/// it, and `not(not(..))`. `any(test, target_os = "macos")` is also true outside
+/// `test`, so it is production code; so is `not(test)`.
+fn requires_test(meta: &syn::Meta) -> bool {
+    let members = |list: &syn::MetaList| -> Vec<syn::Meta> {
+        list.parse_args_with(
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+        )
+        .map(|members| members.into_iter().collect())
+        .unwrap_or_default()
+    };
+    match meta {
+        syn::Meta::Path(path) => path.is_ident("test"),
+        syn::Meta::List(list) if list.path.is_ident("all") => {
+            members(list).iter().any(requires_test)
+        }
+        syn::Meta::List(list) if list.path.is_ident("any") => {
+            let members = members(list);
+            !members.is_empty() && members.iter().all(requires_test)
+        }
+        syn::Meta::List(list) if list.path.is_ident("not") => match members(list).as_slice() {
+            [syn::Meta::List(inner)] if inner.path.is_ident("not") => {
+                matches!(members(inner).as_slice(), [only] if requires_test(only))
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// `#[cfg(<predicate>)]` where the predicate requires `test`.
 fn is_cfg_test(attr: &syn::Attribute) -> bool {
     if !attr.path().is_ident("cfg") {
         return false;
     }
-    let syn::Meta::List(list) = &attr.meta else {
-        return false;
-    };
-    let text = list.tokens.to_string();
-    let words: Vec<&str> = text
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .collect();
-    words.contains(&"test") && !words.contains(&"not")
+    attr.parse_args::<syn::Meta>()
+        .is_ok_and(|predicate| requires_test(&predicate))
 }
 
-fn type_name(ty: &syn::Type) -> String {
-    match ty {
-        syn::Type::Path(path) => path
-            .path
-            .segments
-            .last()
-            .map_or_else(|| "_".to_string(), |segment| segment.ident.to_string()),
-        syn::Type::Reference(reference) => type_name(&reference.elem),
-        _ => "_".to_string(),
+/// A type or path as written, without spaces: `StopPorts<'_>`, `a::B<T>`.
+fn written<T: quote::ToTokens>(node: &T) -> String {
+    node.to_token_stream().to_string().replace(' ', "")
+}
+
+/// The scope segment of an `impl` block.
+fn impl_segment(item: &syn::ItemImpl) -> String {
+    match &item.trait_ {
+        Some((negation, trait_path, _)) => format!(
+            "<{} as {}{}>",
+            written(&*item.self_ty),
+            if negation.is_some() { "!" } else { "" },
+            written(trait_path)
+        ),
+        None => written(&*item.self_ty),
     }
 }
 
@@ -599,7 +643,7 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         if self.skip(&item.attrs) {
             return;
         }
-        self.within(type_name(&item.self_ty), |this| {
+        self.within(impl_segment(item), |this| {
             syn::visit::visit_item_impl(this, item)
         });
     }
@@ -667,22 +711,66 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         });
     }
 
+    /// An item-position macro: a `macro_rules!` definition (its body is scanned as
+    /// tokens) or an invocation. A `#[cfg(test)]` one is not production.
+    fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
+        if self.skip(&item.attrs) {
+            return;
+        }
+        syn::visit::visit_item_macro(self, item);
+    }
+
+    fn visit_stmt_macro(&mut self, item: &'ast syn::StmtMacro) {
+        if self.skip(&item.attrs) {
+            return;
+        }
+        syn::visit::visit_stmt_macro(self, item);
+    }
+
+    fn visit_expr_macro(&mut self, item: &'ast syn::ExprMacro) {
+        if self.skip(&item.attrs) {
+            return;
+        }
+        syn::visit::visit_expr_macro(self, item);
+    }
+
+    fn visit_local(&mut self, item: &'ast syn::Local) {
+        if self.skip(&item.attrs) {
+            return;
+        }
+        syn::visit::visit_local(self, item);
+    }
+
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-        if let syn::Expr::Path(path) = &*call.func {
-            let segments: Vec<String> = path
-                .path
-                .segments
-                .iter()
-                .map(|segment| segment.ident.to_string())
-                .collect();
-            if (self.is_target)(&segments) {
-                self.hit();
-            }
+        if self.skip(&call.attrs) {
+            return;
         }
         syn::visit::visit_expr_call(self, call);
     }
 
+    /// A path used as a value or called (`PersistedCore::new(..)`, or `let make =
+    /// PersistedCore::new;`): the call's function is such a path, so a call is counted
+    /// once, here.
+    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        if self.skip(&path.attrs) {
+            return;
+        }
+        let segments: Vec<String> = path
+            .path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect();
+        if (self.is_target)(&segments) {
+            self.hit();
+        }
+        syn::visit::visit_expr_path(self, path);
+    }
+
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        if self.skip(&call.attrs) {
+            return;
+        }
         if (self.is_target)(&[call.method.to_string()]) {
             self.hit();
         }
@@ -695,8 +783,8 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
     }
 }
 
-/// The enclosing-function identity of every call `is_target` accepts in `source`
-/// (parsed as a Rust file; one entry per call).
+/// The enclosing-function identity of every use `is_target` accepts in `source`
+/// (parsed as a Rust file; one entry per use).
 fn call_scopes(
     source: &str,
     include_cfg_test: bool,
@@ -714,14 +802,15 @@ fn call_scopes(
     finder.hits
 }
 
-/// `emit_dictation_terminal*(` (a call, a method call, or inside a macro's tokens).
+/// `emit_dictation_terminal*` (a call, a path used as a value, a method call, or
+/// inside a macro's tokens).
 fn is_terminal_emit(segments: &[String]) -> bool {
     segments
         .last()
         .is_some_and(|name| name.starts_with("emit_dictation_terminal"))
 }
 
-/// `PersistedCore::new(`.
+/// `PersistedCore::new`, called or used as a value.
 fn is_persisted_core_new(segments: &[String]) -> bool {
     segments.ends_with(&["PersistedCore".to_string(), "new".to_string()])
 }
@@ -1130,5 +1219,147 @@ fn scanner_handles_a_const_expression_in_a_return_type() {
     assert_eq!(
         callers("fn terminal() -> [u8; { emit_dictation_terminal(a); 4 }] { [0; 4] }"),
         only("terminal", 1)
+    );
+}
+
+/// Sol minor (#1151): only a `cfg` predicate that requires `test` hides an item.
+/// `any(test, target_os = "macos")` is also true in production, so a caller under it
+/// counts; `all(test, ..)`, `test` alone and a double negation do not.
+#[test]
+fn scanner_skips_an_item_only_when_its_cfg_requires_test() {
+    let callers =
+        |code: &str| terminal_emit_callers(&[("commands/a.rs".to_string(), code.to_string())]);
+    let only = |function: &str| vec![("commands/a.rs".to_string(), function.to_string(), 1)];
+    for production in [
+        r#"#[cfg(any(test, target_os = "macos"))] fn run() { emit_dictation_terminal(a); }"#,
+        r#"#[cfg(any(test, feature = "x"))] fn run() { emit_dictation_terminal(a); }"#,
+        "#[cfg(not(test))] fn run() { emit_dictation_terminal(a); }",
+        r#"#[cfg(target_os = "macos")] fn run() { emit_dictation_terminal(a); }"#,
+        "#[cfg_attr(test, inline)] fn run() { emit_dictation_terminal(a); }",
+    ] {
+        assert_eq!(callers(production), only("run"), "{production}");
+    }
+    for test_only in [
+        "#[cfg(test)] fn run() { emit_dictation_terminal(a); }",
+        r#"#[cfg(all(test, target_os = "macos"))] fn run() { emit_dictation_terminal(a); }"#,
+        "#[cfg(any(test, all(test, unix)))] fn run() { emit_dictation_terminal(a); }",
+        "#[cfg(not(not(test)))] fn run() { emit_dictation_terminal(a); }",
+        "#[cfg(test)] mod m { fn run() { emit_dictation_terminal(a); } }",
+        "#[cfg(test)] impl X { fn run() { emit_dictation_terminal(a); } }",
+        "fn run() { #[cfg(test)] emit_dictation_terminal(a); }",
+        "fn run() { #[cfg(test)] let f = emit_dictation_terminal; }",
+    ] {
+        assert_eq!(callers(test_only), vec![], "{test_only}");
+    }
+}
+
+/// Sol minor (#1151): a `#[cfg(test)]` macro definition (or invocation) is not
+/// production, while an ordinary one is scanned.
+#[test]
+fn scanner_skips_a_cfg_test_macro_definition() {
+    let callers =
+        |code: &str| terminal_emit_callers(&[("commands/a.rs".to_string(), code.to_string())]);
+    assert_eq!(
+        callers("#[cfg(test)] macro_rules! m { () => { emit_dictation_terminal(a) }; }"),
+        vec![]
+    );
+    assert_eq!(
+        callers("#[cfg(test)] m!(emit_dictation_terminal(a));"),
+        vec![]
+    );
+    assert_eq!(
+        callers("fn run() { #[cfg(test)] log!(emit_dictation_terminal(a)); }"),
+        vec![]
+    );
+    assert_eq!(
+        callers(
+            r#"#[cfg(any(test, unix))] macro_rules! m { () => { emit_dictation_terminal(a) }; }"#
+        ),
+        vec![("commands/a.rs".to_string(), String::new(), 1)]
+    );
+    assert_eq!(
+        callers("macro_rules! m { () => { emit_dictation_terminal(a) }; }"),
+        vec![("commands/a.rs".to_string(), String::new(), 1)]
+    );
+}
+
+/// Sol minor (#1151): two trait impls for one type, each with a `terminal`, are two
+/// identities; the allowed one does not excuse the other, and an inherent method of
+/// the same name is a third.
+#[test]
+fn scanner_tells_trait_impls_of_one_type_apart() {
+    let allowed = [("commands/a.rs", "<StopPorts<'_> as Ports>::terminal", 1)];
+    let check = |code: &str| {
+        check_terminal_emit_callers(
+            &terminal_emit_callers(&[("commands/a.rs".to_string(), code.to_string())]),
+            &allowed,
+        )
+    };
+    let good =
+        "impl Ports for StopPorts<'_> { fn terminal(&self) { emit_dictation_terminal(a); } }\n\
+                impl Other for StopPorts<'_> { fn terminal(&self) {} }";
+    assert_eq!(check(good), Ok(()));
+    let other_trait = "impl Ports for StopPorts<'_> { fn terminal(&self) {} }\n\
+                       impl Other for StopPorts<'_> { fn terminal(&self) { emit_dictation_terminal(a); } }";
+    assert!(check(other_trait).is_err());
+    let inherent = "impl Ports for StopPorts<'_> { fn terminal(&self) {} }\n\
+                    impl StopPorts<'_> { fn terminal(&self) { emit_dictation_terminal(a); } }";
+    assert!(check(inherent).is_err());
+    // The full implementing type, not its last path segment: another type with the
+    // same last segment is another identity.
+    let other_type = "impl Ports for other::StopPorts<'_> { fn terminal(&self) { emit_dictation_terminal(a); } }";
+    assert!(check(other_type).is_err());
+    assert_eq!(
+        terminal_emit_callers(&[("commands/a.rs".to_string(), other_trait.to_string())]),
+        vec![(
+            "commands/a.rs".to_string(),
+            "<StopPorts<'_> as Other>::terminal".to_string(),
+            1
+        )]
+    );
+}
+
+/// Sol minor (#1151): a constructor taken as a value (`let make = PersistedCore::new;`)
+/// is a use of the constructor, so it cannot bypass the single-seeder gate; the same
+/// holds for the terminal emit. Calls through a macro's tokens and a fully qualified
+/// path are scanned too.
+#[test]
+fn scanner_counts_constructors_used_as_values() {
+    let seeder = |code: &str| {
+        check_single_seeder(&persisted_core_new_callers(&[(
+            SEEDING_FILE.to_string(),
+            code.to_string(),
+        )]))
+    };
+    let seed = "impl FieldAdapter { fn seed_core(a: &A) { PersistedCore::new(s, i); } }";
+    assert_eq!(seeder(seed), Ok(()));
+    assert!(seeder(&format!(
+        "{seed} impl FieldAdapter {{ fn other() {{ let make = PersistedCore::new; make(s, i); }} }}"
+    ))
+    .is_err());
+    assert!(seeder(&format!(
+        "{seed} fn other() {{ let make: fn(_, _) -> _ = state::PersistedCore::new; }}"
+    ))
+    .is_err());
+    assert!(seeder(&format!(
+        "{seed} fn other() {{ let all = [1].map(PersistedCore::new); }}"
+    ))
+    .is_err());
+    assert!(seeder(&format!(
+        "{seed} fn other() {{ dbg!(PersistedCore::new); }}"
+    ))
+    .is_err());
+    // The seeder holding the constructor as a value is its one use.
+    assert_eq!(
+        seeder("impl FieldAdapter { fn seed_core(a: &A) { let make = PersistedCore::new; make(s, i); } }"),
+        Ok(())
+    );
+    let emit_as_value = terminal_emit_callers(&[(
+        "commands/a.rs".to_string(),
+        "fn run() { let f = emit_dictation_terminal; f(a); }".to_string(),
+    )]);
+    assert_eq!(
+        emit_as_value,
+        vec![("commands/a.rs".to_string(), "run".to_string(), 1)]
     );
 }
