@@ -130,6 +130,87 @@ pub(crate) fn take_ticker_skip() -> Option<TickerNote> {
     })
 }
 
+struct Live {
+    rec: ShadowRecorder,
+    /// `Pre` witnesses buffered until the header exists.
+    pre: PreCapture,
+    /// Effect indices consumed by earlier executors of this flight (the dropped
+    /// prefix of `after_pre` / `after_prefix`): a witness keeps the index it has in
+    /// the **full** decided list (C8.2).
+    base: u16,
+    /// History operations and observed facts recorded before the header exists.
+    ops: Inline<LiveOp, OPS_CAPACITY>,
+    observed: Inline<ObservedFact, OBSERVED_CAPACITY>,
+    ops_overflowed: bool,
+    header: RefCell<Option<ShadowHeader>>,
+    submitted: Cell<bool>,
+    deferred: RefCell<Inline<Later, DEFERRED_CAPACITY>>,
+    reply: Cell<Option<ReplyKind>>,
+    /// Every effect of the decision ran: `Reply` and `Close` follow the header.
+    complete: Cell<bool>,
+    concluded: Cell<bool>,
+    /// A leading executor (the `Pre` effects, a prefix) holds the flight: its last
+    /// effect does not end the decision, which has not been taken yet.
+    leading: Cell<bool>,
+}
+
+impl Live {
+    fn new(rec: ShadowRecorder) -> Self {
+        Self {
+            rec,
+            pre: PreCapture::default(),
+            base: 0,
+            ops: Inline::default(),
+            observed: Inline::default(),
+            ops_overflowed: false,
+            header: RefCell::new(None),
+            submitted: Cell::new(false),
+            deferred: RefCell::new(Inline::default()),
+            reply: Cell::new(None),
+            complete: Cell::new(false),
+            concluded: Cell::new(false),
+            leading: Cell::new(false),
+        }
+    }
+
+    /// One message that follows the header: sent now if the header is out, queued if
+    /// not. A full queue marks the (unsent) header incomplete: counted, never guessed.
+    fn later(&self, message: Later) {
+        if self.submitted.get() {
+            self.send(message);
+            return;
+        }
+        let stored = self.deferred.borrow_mut().push(message);
+        if !stored {
+            if let Some(header) = self.header.borrow_mut().as_mut() {
+                header.overflowed = true;
+            }
+        }
+    }
+
+    fn send(&self, message: Later) {
+        match message {
+            Later::Witness {
+                idx,
+                placement,
+                effect,
+            } => transport::witness(&self.rec, idx, placement, effect),
+            Later::Mark(mark) => transport::mark(&self.rec, mark),
+        }
+    }
+
+    /// `Reply`, then `Close{completed:true}`, once, and only after the header.
+    fn conclude(&self) {
+        if !self.submitted.get() || !self.complete.get() || self.concluded.replace(true) {
+            return;
+        }
+        if let Some(kind) = self.reply.get() {
+            transport::mark(&self.rec, Mark::Reply(kind));
+        }
+        self.rec.finish();
+    }
+}
+
 /// The capture of one decision. Empty (and free) unless shadow mode is active.
 pub(crate) struct Flight {
     live: Option<Live>,
