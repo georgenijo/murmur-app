@@ -40,7 +40,16 @@ every production call that can carry it, per enclosing function
   pins): any edit fails until it is re-reviewed (it may only call `ui_lib::..`) and
   re-pinned, which also closes `include!`, `mod` and `#[path]` in the binary. The
   earlier token checks (no `mod`, `macro_rules!`, `include`, emitter identifier or
-  `crate::events` path) stay as diagnostics that name the reason. Build
+  `crate::events` path) stay as diagnostics that name the reason. `src/` is also checked
+  through the filesystem, before any test-source filtering (round 10): `src/main.rs` is
+  read and hashed directly and a missing file fails; an entry directly under `src/` that
+  matches `bin` or `main.rs` case-insensitively but is not spelled exactly so fails
+  (Cargo resolves `src/Bin/tool.rs` as a binary and `src/Main.rs` as `src/main.rs` on a
+  case-insensitive filesystem such as macOS); and `src/bin` must not exist at all. The
+  manifest must also give Cargo a `ui` binary built with the production feature set:
+  the default `src/main.rs` with autobins on and a package named `ui`, or one explicit
+  `[[bin]] name = "ui"` at `src/main.rs`; `autobins = false` without that explicit bin,
+  or any `required-features` on it, fails. Build
   scripts, examples and integration tests are not production roots and are not
   scanned. Attribute names are matched after normalizing raw identifiers (`r#path`).
   Any `use .. as concat`, any import whose final
