@@ -722,6 +722,8 @@ fn sp5_models_rs_emits_no_recording_status() {
 struct VadInstall {
     seam: crate::vad::test_seam::Installed,
     cancel: Arc<tokio::sync::Notify>,
+    /// Set when the worker's thread body has returned.
+    stopped: Arc<std::sync::atomic::AtomicBool>,
     worker: Option<std::thread::JoinHandle<Result<(), String>>>,
 }
 
@@ -732,6 +734,9 @@ const VAD_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10)
 /// The longest the worker may take to stop after it is cancelled.
 const VAD_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// The watchdog bound on a drop: the cancellation bound plus margin.
+const VAD_DROP_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(8);
+
 /// The error a cancelled install returns.
 const VAD_INSTALL_CANCELLED: &str = "the VAD install was cancelled";
 
@@ -741,8 +746,10 @@ impl VadInstall {
         let handle = world.app_handle();
         let cancel = Arc::new(tokio::sync::Notify::new());
         let worker_cancel = Arc::clone(&cancel);
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_stopped = Arc::clone(&stopped);
         let worker = std::thread::spawn(move || {
-            tokio::runtime::Builder::new_current_thread()
+            let result = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("runtime")
@@ -753,12 +760,24 @@ impl VadInstall {
                         result = super::super::models::ensure_vad_model(&handle) => result,
                         () = worker_cancel.notified() => Err(VAD_INSTALL_CANCELLED.to_string()),
                     }
-                })
+                });
+            worker_stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+            result
         });
         Self {
             seam,
             cancel,
+            stopped,
             worker: Some(worker),
+        }
+    }
+
+    /// Wait until the worker has reached the install lock (the lock a test holds).
+    fn wait_reached_lock(&self) -> Result<(), String> {
+        if self.seam.wait_reached_lock(VAD_PARK_TIMEOUT) {
+            Ok(())
+        } else {
+            Err("the VAD install never reached the install lock".to_string())
         }
     }
 
@@ -920,6 +939,54 @@ fn bug117_a_blocked_installer_is_cancelled_not_awaited() {
         "shutdown was bounded, took {:?}",
         started.elapsed()
     );
+}
+
+/// D-S2b-12 (d): the destructor is bounded too. The worker reaches the install lock
+/// the test holds and is signalled to have done so; `VadInstall` is then dropped with
+/// the worker handle still present, on its own thread, while this thread is the
+/// independent watchdog: it fails the test after `VAD_DROP_WATCHDOG` instead of
+/// waiting. Restoring an unconditional join in `Drop` hangs the dropping thread (the
+/// worker never leaves the lock wait) and fails the test at the watchdog.
+#[test]
+fn bug117_dropping_a_blocked_installer_is_bounded() {
+    let lock = super::super::models::hold_vad_install_lock_for_test();
+    let reports = std::sync::Mutex::new(None);
+    run_sub_run_observed(
+        &sub(
+            "117 dropping an installer blocked on the install lock",
+            |_| {},
+        ),
+        &|w| {
+            let install = VadInstall::start(w, &bug117_models_dir());
+            let reached = install.wait_reached_lock();
+            let stopped = Arc::clone(&install.stopped);
+            let (done, finished) = std::sync::mpsc::channel();
+            // The worker handle is still present when the drop runs.
+            let dropper = std::thread::spawn(move || {
+                drop(install);
+                let _ = done.send(());
+            });
+            let dropped = finished.recv_timeout(VAD_DROP_WATCHDOG).is_ok();
+            if dropped {
+                dropper.join().expect("the dropping thread");
+            }
+            // A dropper that is still stuck is left detached: the test fails below.
+            *reports.lock().unwrap() = Some((
+                reached,
+                dropped,
+                stopped.load(std::sync::atomic::Ordering::SeqCst),
+            ));
+        },
+    );
+    drop(lock);
+    let (reached, dropped, stopped) = reports.lock().unwrap().take().expect("the observer ran");
+    assert_eq!(reached, Ok(()), "the installer reaches the contested lock");
+    assert!(
+        dropped,
+        "dropping a VadInstall whose worker is blocked on the install lock did not return \
+         within {VAD_DROP_WATCHDOG:?}: the destructor must cancel, not join unconditionally"
+    );
+    assert!(stopped, "the drop stopped the worker");
 }
 
 /// The scratch models directory of the #117 replay (runs are serialized).

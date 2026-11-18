@@ -1471,11 +1471,65 @@ struct CrateIndex {
     uses: std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>>,
     renamed: std::collections::HashMap<String, std::collections::HashSet<String>>,
     macros: std::collections::HashSet<String>,
+    /// D-S2b-12 (a): every identifier a `use` inside a function or block binds. Name
+    /// resolution consults module-level `use` items only; a scoped binding of an
+    /// identifier makes it unresolved wherever it is emitted.
+    scoped_uses: std::collections::HashSet<String>,
+    /// D-S2b-12 (b), (c): blanket rejections found while indexing (`file: why`).
+    banned: Vec<String>,
 }
 
 struct IndexBuilder<'i> {
     index: &'i mut CrateIndex,
+    file: String,
     module: Vec<String>,
+    /// Block nesting: above 0, a `use` is function- or block-scoped.
+    block_depth: usize,
+}
+
+/// D-S2b-12 (c): a `#[path` or `path =` token sequence anywhere in a macro body
+/// (`path` after a `$` is a macro variable, not the attribute).
+fn macro_body_has_path_attr(tokens: proc_macro2::TokenStream) -> bool {
+    use proc_macro2::{Delimiter, Spacing, TokenTree};
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+    for (at, token) in tokens.iter().enumerate() {
+        match token {
+            TokenTree::Punct(hash) if hash.as_char() == '#' => {
+                let mut next = at + 1;
+                if matches!(tokens.get(next), Some(TokenTree::Punct(bang)) if bang.as_char() == '!')
+                {
+                    next += 1;
+                }
+                if let Some(TokenTree::Group(group)) = tokens.get(next) {
+                    let path_first = matches!(
+                        group.stream().into_iter().next(),
+                        Some(TokenTree::Ident(ident)) if ident == "path"
+                    );
+                    if group.delimiter() == Delimiter::Bracket && path_first {
+                        return true;
+                    }
+                }
+            }
+            TokenTree::Ident(ident) if ident == "path" => {
+                let after = matches!(
+                    tokens.get(at + 1),
+                    Some(TokenTree::Punct(eq)) if eq.as_char() == '=' && eq.spacing() == Spacing::Alone
+                );
+                let dollar =
+                    at > 0 && matches!(&tokens[at - 1], TokenTree::Punct(d) if d.as_char() == '$');
+                if after && !dollar {
+                    return true;
+                }
+            }
+            TokenTree::Group(group) => {
+                if macro_body_has_path_attr(group.stream()) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 impl IndexBuilder<'_> {
@@ -1519,6 +1573,12 @@ impl<'ast> syn::visit::Visit<'ast> for IndexBuilder<'_> {
         }
     }
 
+    fn visit_block(&mut self, block: &'ast syn::Block) {
+        self.block_depth += 1;
+        syn::visit::visit_block(self, block);
+        self.block_depth -= 1;
+    }
+
     fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
         if item.attrs.iter().any(is_cfg_test) {
             return;
@@ -1527,6 +1587,24 @@ impl<'ast> syn::visit::Visit<'ast> for IndexBuilder<'_> {
         flatten_use(&item.tree, &mut Vec::new(), &mut bound);
         let key = self.module.join("::");
         for (ident, path, renamed) in bound {
+            // D-S2b-12 (b): an import bound to `concat`, or of a name ending in
+            // `concat`, anywhere in the crate.
+            if ident == "concat" || path.last().is_some_and(|last| last == "concat") {
+                self.index.banned.push(format!(
+                    "{}: `use {}{}` binds or imports `concat`",
+                    self.file,
+                    path.join("::"),
+                    if renamed {
+                        format!(" as {ident}")
+                    } else {
+                        String::new()
+                    }
+                ));
+            }
+            if self.block_depth > 0 {
+                self.index.scoped_uses.insert(ident);
+                continue;
+            }
             if renamed {
                 self.index
                     .renamed
@@ -1549,6 +1627,17 @@ impl<'ast> syn::visit::Visit<'ast> for IndexBuilder<'_> {
         if item.mac.path.is_ident("macro_rules") {
             if let Some(name) = &item.ident {
                 self.index.macros.insert(plain(name));
+                if name == "concat" {
+                    self.index
+                        .banned
+                        .push(format!("{}: `macro_rules! concat`", self.file));
+                }
+            }
+            if macro_body_has_path_attr(item.mac.tokens.clone()) {
+                self.index.banned.push(format!(
+                    "{}: a `#[path` / `path =` token sequence in a `macro_rules!` body",
+                    self.file
+                ));
             }
         }
     }
@@ -1645,6 +1734,11 @@ impl Resolver<'_> {
             .iter()
             .map(|segment| plain(&segment.ident))
             .collect();
+        if self.index.scoped_uses.contains(&segments[0]) {
+            return Err(format!(
+                "`{shown}` names an identifier a function- or block-scoped `use` binds"
+            ));
+        }
         let module_key = self.module.join("::");
         let mut candidates: Vec<Vec<String>> = Vec::new();
         if segments.len() == 1 {
@@ -1722,6 +1816,9 @@ struct EventSites {
     /// `(file, module)` carrying a `#[path]` attribute in production source.
     path_attrs: Vec<(String, String, String)>,
     fn_defs: Vec<(String, FnDef)>,
+    /// D-S2b-12 (b), (c): blanket rejections (`concat` imports and macros, a path
+    /// attribute inside a `macro_rules!` body).
+    banned: Vec<String>,
 }
 
 /// Classify one call: a status touch (emit or listener), an unresolved emit, and a
@@ -1802,12 +1899,17 @@ fn event_sites(sources: &[(String, String)]) -> EventSites {
     for (path, file) in &files {
         IndexBuilder {
             index: &mut index,
+            file: path.to_string(),
             module: module_of_file(path),
+            block_depth: 0,
         }
         .visit_file(file);
     }
     let never = |_: &[String]| false;
-    let mut found = EventSites::default();
+    let mut found = EventSites {
+        banned: std::mem::take(&mut index.banned),
+        ..EventSites::default()
+    };
     for (path, file) in &files {
         let mut finder = SiteFinder {
             scope: Vec::new(),
@@ -2157,6 +2259,9 @@ fn check_event_sites(
             }
         }
     }
+    for banned in &found.banned {
+        problems.push(format!("{banned} (D-S2b-12: rejected wherever it appears)"));
+    }
     // D-S2b-10 (a) and (d).
     for (file, function, name) in &found.escapes {
         problems.push(format!(
@@ -2390,6 +2495,89 @@ fn a_local_concat_macro_fails_the_status_ratchet() {
     assert!(the_status_ratchet_rejects(&sources).contains("ensure_vad_model_with_progress"));
 }
 
+/// Round-4 probe 1 (D-S2b-12 a): a `use` inside a function or block that binds an
+/// emitted identifier makes the argument unresolved. Before, imports were indexed by
+/// module, so a later function's harmless `EVENT` import replaced the VAD
+/// completion's import of the status `EVENT` and the emit passed the scan.
+#[test]
+fn a_block_scoped_import_of_an_emitted_name_fails_the_status_ratchet() {
+    let sources = sources_with(
+        "commands/models.rs",
+        VAD_TAIL,
+        &format!(
+            "    {{ use status_names::EVENT; let _ = app_handle.emit(EVENT, 1); }}\n{VAD_TAIL}\
+             }}\n\
+             mod status_names {{ pub const EVENT: &str = \"recording-status-changed\"; }}\n\
+             mod harmless_names {{ pub const EVENT: &str = \"model-installed\"; }}\n\
+             fn a_later_function() {{ use harmless_names::EVENT; let _ = EVENT;\n"
+        ),
+    );
+    let error = the_status_ratchet_rejects(&sources);
+    assert!(
+        error.contains("commands/models.rs") && error.contains("function- or block-scoped `use`"),
+        "{error}"
+    );
+}
+
+/// Round-4 probe 2 (D-S2b-12 b): any import bound to `concat` or ending in `concat`,
+/// and any `macro_rules! concat`, fails wherever it appears. `use install_event as
+/// concat` made `concat!("model-", "installed")` expand to the status event while the
+/// scanner read the built-in's value.
+#[test]
+fn a_concat_import_or_macro_fails_the_status_ratchet() {
+    for plant in [
+        "macro_rules! install_event { () => { \"recording-status-changed\" }; }\nuse install_event as concat;",
+        "use std::concat;",
+        "use std::concat as concat;",
+        "use some::path::concat as other_name;",
+        "macro_rules! concat { () => { \"recording-status-changed\" }; }",
+    ] {
+        let sources = sources_with(
+            "commands/models.rs",
+            "pub(crate) async fn ensure_vad_model<R: tauri::Runtime>(",
+            &format!("{plant}\n\npub(crate) async fn ensure_vad_model<R: tauri::Runtime>("),
+        );
+        let error = the_status_ratchet_rejects(&sources);
+        assert!(
+            error.contains("commands/models.rs") && error.contains("concat"),
+            "{plant}: {error}"
+        );
+        assert!(
+            error.contains("D-S2b-12"),
+            "{plant}: {error}"
+        );
+    }
+    // Inside a function too.
+    let sources = models_with("{ use std::concat; }");
+    assert!(the_status_ratchet_rejects(&sources).contains("D-S2b-12"));
+}
+
+/// Round-4 probe 3 (D-S2b-12 c): a `macro_rules!` body that carries a `#[path` or a
+/// `path =` token sequence fails: it can expand to a module declaration that loads a
+/// file outside the `src/` walk.
+#[test]
+fn a_path_attribute_in_a_macro_body_fails_the_status_ratchet() {
+    for plant in [
+        "macro_rules! bridge { () => { #[path = \"../model_bridge.rs\"] mod model_bridge; }; }",
+        "macro_rules! bridge { () => { #[cfg_attr(not(test), path = \"../model_bridge.rs\")] mod model_bridge; }; }",
+        "macro_rules! bridge { ($p:literal) => { #[path = $p] mod model_bridge; }; }",
+    ] {
+        let sources = sources_with(
+            "commands/models.rs",
+            "pub(crate) async fn ensure_vad_model<R: tauri::Runtime>(",
+            &format!("{plant}\n\npub(crate) async fn ensure_vad_model<R: tauri::Runtime>("),
+        );
+        let error = the_status_ratchet_rejects(&sources);
+        assert!(
+            error.contains("commands/models.rs") && error.contains("`macro_rules!` body"),
+            "{plant}: {error}"
+        );
+    }
+    // A macro variable named `path` is not the attribute.
+    let tokens: proc_macro2::TokenStream = "($path:expr) => { f($path); }".parse().expect("tokens");
+    assert!(!macro_body_has_path_attr(tokens));
+}
+
 /// Round-3 probe 5: `OwnedJsonEmit::emit_json` remapped an event through an unpinned
 /// boxed closure. The idle emitter has no event parameter now, and its forwarding
 /// bodies are pinned.
@@ -2525,7 +2713,7 @@ fn event_counts(source: &str) -> (usize, usize, usize) {
 #[test]
 fn the_event_scanner_resolves_by_proof_only() {
     // (source, status emits, status listeners, unresolved emits)
-    let cases: [(&str, (usize, usize, usize)); 38] = [
+    let cases: [(&str, (usize, usize, usize)); 40] = [
         ("fn f(a: &A) { a.emit(\"recording-status-changed\", 1); }", (1, 0, 0)),
         ("fn f(a: &A) { a.emit(\"other\", 1); }", (0, 0, 0)),
         ("fn f(a: &A) { a.emit(concat!(\"recording-status-\", \"changed\"), 1); }", (1, 0, 0)),
@@ -2606,6 +2794,16 @@ fn the_event_scanner_resolves_by_proof_only() {
         ),
         // A macro body that does not parse and names an emitter fails.
         ("fn f(a: &A) { w!(x = %a.emit(\"recording-status-changed\", 1)); }", (1, 0, 1)),
+        // D-S2b-12 (a): a function- or block-scoped `use` of the identifier is
+        // unresolved, whichever module-level import or const exists.
+        (
+            "const E: &str = \"recording-status-changed\"; fn f(a: &A) { use other::E; a.emit(E, 1); }",
+            (0, 0, 1),
+        ),
+        (
+            "mod m { pub const E: &str = \"recording-status-changed\"; } fn f(a: &A) { { use m::E; a.emit(E, 1); } } fn g() { use harmless::E; }",
+            (0, 0, 1),
+        ),
         // A constant declared twice at one path is not proven.
         (
             "const E: &str = \"recording-status-changed\"; const E: &str = \"x\"; fn f(a: &A) { a.emit(E, 1); }",

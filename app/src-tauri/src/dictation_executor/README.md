@@ -20,9 +20,12 @@ every production call that can carry it, per enclosing function
 * **Event names resolve by proof.** A string literal, `concat!` of literals, or a path to
   a `const` / `static` declared exactly once at that module path (or imported by `use`),
   with no pattern, parameter, closure argument or `use .. as` binding the same
-  identifier. `concat!` counts only as `concat!` / `std::concat!` / `core::concat!`, and
-  only when the crate defines no macro named `concat`. There is no value-flow
-  analysis: a `let`, a loop variable or a call result is unresolved.
+  identifier. Only module-level `use` items are consulted: a `use` inside a function or
+  block that binds an identifier makes that identifier unresolved wherever it is
+  emitted (D-S2b-12 a). `concat!` counts only as `concat!` / `std::concat!` /
+  `core::concat!`; any `use .. as concat`, any import whose final name is `concat`, and
+  any `macro_rules! concat` anywhere in the crate fails the ratchet (D-S2b-12 b). There
+  is no value-flow analysis: a `let`, a loop variable or a call result is unresolved.
 * **An unresolved emit is allowed only inside a reviewed wrapper** on
   `DYNAMIC_EMIT_ALLOWLIST`, pinned by token hash. Each wrapper name has one entry and
   one destination, and every caller of it passes a name that resolves and that the entry
@@ -40,14 +43,28 @@ A source file is skipped only when it starts with its own `#![cfg(test)]`. Any
 seven reviewed declarations in `PATH_ATTR_ALLOWLIST` (none of their targets is
 self-gated); a path alias is how a self-gated file could be compiled into the app
 and skipped by the walk. A `#[path]` module's real module path differs from the one the
-scan derives from the file name, which fails closed for constants declared in it.
+scan derives from the file name, which fails closed for constants declared in it. A
+`#[path` or `path =` token sequence inside any `macro_rules!` body fails too, since a
+macro could expand to a module declaration that loads a file outside the walk
+(D-S2b-12 c).
 
 ## Threat model
 
-The ratchet defends against **accidental and plausible changes in ordinary Rust
-source**: a new emit in an unrelated file, a refactor that moves or renames an emit, a
-wrapper that remaps an event, a name spelled through a constant, local or macro. It is
-not a defence against code written to evade it. Out of scope:
+The ratchet catches **accidental changes in ordinary Rust source**: a new emit in an
+unrelated file, a refactor that moves or renames an emit, a wrapper that remaps an
+event, a name spelled through a constant, local or macro. It is not a defence against
+code written to evade it (D-S2b-12 e). A construction that only makes sense as a
+deliberate evasion of the scanner is a nit, recorded here, and does not block. Known
+examples, rejected where cheap and otherwise accepted:
+
+* aliasing a macro to a built-in's name (`use m as concat`; rejected by blanket rule);
+* generating module attributes from macros (`macro_rules!` bodies with `#[path`;
+  rejected by blanket rule; other macro-generated attributes are not tracked);
+* shadowing a constant through scoped imports that reuse the name (a function- or
+  block-scoped `use` makes the identifier unresolved; nothing finer is tracked);
+* glob imports (`use m::*`), which the resolver does not follow.
+
+Out of scope entirely:
 
 * proc-macro and build-script output;
 * `include!`d files (the four `capture_*_tests.rs` files are test-only and scanned

@@ -319,6 +319,8 @@ pub(crate) mod test_seam {
         model_path: PathBuf,
         released: AtomicBool,
         parked: AtomicBool,
+        /// The installer is about to wait for the install lock (D-S2b-12 d).
+        reached_lock: AtomicBool,
         waker: Mutex<Option<Waker>>,
     }
 
@@ -326,6 +328,13 @@ pub(crate) mod test_seam {
 
     fn current() -> Option<Arc<Fake>> {
         FAKE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Called by the installer just before it waits for the install lock.
+    pub(crate) fn reaching_install_lock() {
+        if let Some(fake) = current() {
+            fake.reached_lock.store(true, Ordering::SeqCst);
+        }
     }
 
     pub(crate) fn model_path() -> Option<PathBuf> {
@@ -378,6 +387,7 @@ pub(crate) mod test_seam {
             model_path: models_dir.join(super::VAD_MODEL_FILENAME),
             released: AtomicBool::new(false),
             parked: AtomicBool::new(false),
+            reached_lock: AtomicBool::new(false),
             waker: Mutex::new(None),
         });
         *FAKE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&fake));
@@ -412,6 +422,18 @@ pub(crate) mod test_seam {
                 }
                 std::thread::yield_now();
             }
+        }
+
+        /// Wait until the installer has reached the install lock, or `timeout` passes.
+        pub(crate) fn wait_reached_lock(&self, timeout: std::time::Duration) -> bool {
+            let deadline = std::time::Instant::now() + timeout;
+            while !self.0.reached_lock.load(Ordering::SeqCst) {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::yield_now();
+            }
+            true
         }
 
         /// Let the parked download finish.

@@ -1332,6 +1332,8 @@ async fn ensure_vad_model_with_progress<R: tauri::Runtime>(
     let cancel = progress_context
         .map(|context| context.cancel)
         .unwrap_or(&fallback);
+    #[cfg(test)]
+    vad::test_seam::reaching_install_lock();
     let _install_guard = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(model_download::CANCELLED.to_string()),
