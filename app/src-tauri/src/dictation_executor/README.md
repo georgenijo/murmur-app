@@ -84,15 +84,19 @@ macro could expand to a module declaration that loads a file outside the walk
 
 ## How the probes plant their edits
 
-The real tree is read once per test process (`real_raw_sources`) and its per-file scans
-are taken once (`real_tree_scan`). A probe takes an owned copy of the sources with one
+Every test reads `src/` from the filesystem when it starts (`raw_production_sources`);
+reads are cheap, parsing is not. A probe takes an owned copy of those sources with one
 file replaced or added (`sources_with`, `models_with`, a `push`); nothing is written to
-`src/`. `event_sites` reuses the cached scan of every file that is byte-for-byte the real
-one and re-parses only the planted file, or every file when the probe changes the events
-module's constants (a file's scan depends on its own source and those constants). A
-probe that needs a real directory layout (`src/Bin`, a `src/bin` symlink) builds a small
-temp-dir fixture with only the files it needs. A probe must keep failing for its own
-reason: to check, disable the scanner guard it targets and confirm the probe fails.
+`src/`. `event_sites` caches each file's scan (`scan_file_cached`) keyed by its path, its
+exact bytes and the events module's constants, so a file is parsed once per process for
+a given content: an unchanged file is a hit, a planted or edited file (or any file, when
+a probe changes the events constants) is a miss and is parsed. A hit needs identical
+bytes, so a file edited after the cache was warmed is always seen
+(`an_edited_file_is_never_answered_from_the_scan_cache`). A path given twice is summed,
+not overwritten (`a_duplicated_emitter_file_counts_its_emits_twice`). A probe that needs
+a real directory layout (`src/Bin`, a `src/bin` symlink) builds a small temp-dir fixture
+with only the files it needs. A probe must keep failing for its own reason: to check,
+disable the scanner guard it targets and confirm the probe fails.
 
 ## Threat model
 

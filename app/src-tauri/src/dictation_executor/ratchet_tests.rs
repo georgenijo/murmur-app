@@ -356,22 +356,34 @@ fn production_sources() -> Vec<(String, String)> {
 /// `(path relative to src, raw source)`, for the syntax-aware scanner (it skips
 /// `#[cfg(test)]` items itself).
 fn raw_production_sources() -> Vec<(String, String)> {
-    real_raw_sources().clone()
+    scan_dir_self_gated(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
 }
 
-/// The real tree, read and self-gate-filtered once per test process. Every probe takes
-/// an owned copy of this and plants its edit in the copy; nothing writes into `src/`.
-fn real_raw_sources() -> &'static Vec<(String, String)> {
-    static REAL: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
-    REAL.get_or_init(|| scan_dir_self_gated(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src")))
-}
-
-/// Every `.rs` file under `dir` that does not gate itself with `#![cfg(test)]`.
+/// Every `.rs` file under `dir` that does not gate itself with `#![cfg(test)]`. The
+/// directory is read from the filesystem on every call: only the parsing is cached,
+/// and only for identical bytes, so a file edited since an earlier call is seen.
 fn scan_dir_self_gated(dir: &Path) -> Vec<(String, String)> {
     scan_dir(dir, &|_| false)
         .into_iter()
-        .filter(|(_, source)| !is_self_gated_test_file(source))
+        .filter(|(_, source)| !is_self_gated_cached(source))
         .collect()
+}
+
+/// [`is_self_gated_test_file`], remembered per exact source text (a parse per file is
+/// the slow part of reading the tree).
+fn is_self_gated_cached(source: &str) -> bool {
+    static GATED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, bool>>> =
+        std::sync::OnceLock::new();
+    let cache = GATED.get_or_init(Default::default);
+    if let Some(gated) = cache.lock().expect("gate cache").get(source) {
+        return *gated;
+    }
+    let gated = is_self_gated_test_file(source);
+    cache
+        .lock()
+        .expect("gate cache")
+        .insert(source.to_string(), gated);
+    gated
 }
 
 fn line_of(code: &str, offset: usize) -> usize {
@@ -2001,26 +2013,53 @@ fn classify_call(file: &str, record: &CallRecord, events: &EventsModule, found: 
 /// only: `#[cfg(test)]` items are skipped).
 fn event_sites(sources: &[(String, String)]) -> EventSites {
     let events = parse_events_module(sources);
-    let real = real_tree_scan();
-    // A file's scan depends only on its own source and on the constants of the events
-    // module, so a file that is byte-for-byte the real one is not parsed again, unless
-    // the probe changed the events constants.
-    let reusable = events.consts == real.consts;
+    // A file's scan depends only on its path, its source and the constants of the
+    // events module, so a scan is reused only for the identical path, bytes and
+    // constants. The caller always passes freshly read (or deliberately edited) sources.
+    let consts = format!("{:?}", events.consts);
     let mut found = EventSites {
         banned: events.problems.clone(),
         ..EventSites::default()
     };
-    let mut scans = Vec::with_capacity(sources.len());
-    for (path, source) in sources {
-        match real.files.get(path) {
-            Some((real_source, scan)) if reusable && real_source == source => {
-                scans.push(scan.clone());
-            }
-            _ => scans.push(scan_file(path, source, &events)),
-        }
-    }
+    let scans: Vec<FileScan> = sources
+        .iter()
+        .map(|(path, source)| scan_file_cached(path, source, &consts, &events))
+        .collect();
     merge_file_scans(&mut found, scans);
     found
+}
+
+/// Scans already taken: path → every `(source, events constants, scan)` seen for it.
+/// The syntax trees are not `Send`, so the owned results are what is shared. A hit
+/// needs byte-identical source and constants (compared in full, never by a hash alone),
+/// so a stale scan cannot be returned for a changed file.
+type ScanCache = std::collections::HashMap<String, Vec<(String, String, FileScan)>>;
+
+fn scan_file_cached(path: &str, source: &str, consts: &str, events: &EventsModule) -> FileScan {
+    static SCANS: std::sync::OnceLock<std::sync::Mutex<ScanCache>> = std::sync::OnceLock::new();
+    let cache = SCANS.get_or_init(Default::default);
+    let hit = cache
+        .lock()
+        .expect("scan cache")
+        .get(path)
+        .and_then(|seen| {
+            seen.iter()
+                .find(|(seen_source, seen_consts, _)| {
+                    seen_source == source && seen_consts == consts
+                })
+                .map(|(_, _, scan)| scan.clone())
+        });
+    if let Some(scan) = hit {
+        return scan;
+    }
+    let scan = scan_file(path, source, events);
+    cache
+        .lock()
+        .expect("scan cache")
+        .entry(path.to_string())
+        .or_default()
+        .push((source.to_string(), consts.to_string(), scan.clone()));
+    scan
 }
 
 /// One file's share of the scan: the blanket rejections found in it and its sites.
@@ -2031,7 +2070,8 @@ struct FileScan {
 }
 
 /// Scan one file. Every key of the maps in `sites` carries the file, so the shares of
-/// different files never collide.
+/// different files never collide (the same path given twice is summed by
+/// [`merge_file_scans`]).
 fn scan_file(path: &str, source: &str, events: &EventsModule) -> FileScan {
     use syn::visit::Visit;
     let file = syn::parse_file(source).unwrap_or_else(|error| panic!("parse {path}: {error}"));
@@ -2074,47 +2114,28 @@ fn scan_file(path: &str, source: &str, events: &EventsModule) -> FileScan {
     }
 }
 
-/// Add the files' shares to `found`, in file order.
+/// Add the files' shares to `found`, in file order. Two entries of the input with the
+/// same path (an overlay that repeats a file) land on the same `(file, fn)` keys, so
+/// colliding counts are summed and the reasons merged, exactly as one pass over every
+/// file into shared maps would; a later hash replaces an earlier one.
 fn merge_file_scans(found: &mut EventSites, scans: Vec<FileScan>) {
     for scan in scans {
         found.banned.extend(scan.banned);
         let sites = scan.sites;
-        found.status.extend(sites.status);
-        found.dynamic.extend(sites.dynamic);
+        for (key, count) in sites.status {
+            *found.status.entry(key).or_default() += count;
+        }
+        for (key, (count, reasons, hash)) in sites.dynamic {
+            let entry = found.dynamic.entry(key).or_default();
+            entry.0 += count;
+            entry.1.extend(reasons);
+            entry.2 = hash;
+        }
         found.wrapper_calls.extend(sites.wrapper_calls);
         found.escapes.extend(sites.escapes);
         found.path_attrs.extend(sites.path_attrs);
         found.fn_defs.extend(sites.fn_defs);
     }
-}
-
-/// The real tree's per-file scans, taken once per test process under the real events
-/// module (the syntax trees are not `Send`, so the owned results are what is shared).
-struct RealTreeScan {
-    consts: std::collections::BTreeMap<String, String>,
-    /// path → (raw source, its scan)
-    files: std::collections::HashMap<String, (String, FileScan)>,
-}
-
-fn real_tree_scan() -> &'static RealTreeScan {
-    static REAL: std::sync::OnceLock<RealTreeScan> = std::sync::OnceLock::new();
-    REAL.get_or_init(|| {
-        let sources = real_raw_sources();
-        let events = parse_events_module(sources);
-        let files = sources
-            .iter()
-            .map(|(path, source)| {
-                (
-                    path.clone(),
-                    (source.clone(), scan_file(path, source, &events)),
-                )
-            })
-            .collect();
-        RealTreeScan {
-            consts: events.consts,
-            files,
-        }
-    })
 }
 
 /// SP5 (appendix C7.2, C13.3 #117): every production call that can carry the
@@ -2867,6 +2888,123 @@ fn a_status_event_in_the_events_module_is_a_status_site() {
             && error.contains("commands/models.rs"),
         "{error}"
     );
+}
+
+/// The scan cache must never answer for bytes it has not seen. A tree is read and
+/// scanned (warming the cache), then a file is edited on disk and the tree is read
+/// again, as the real-tree test does at its start: the edit must be seen, whether it is
+/// a status emit in a file or a second `mod events;` in the crate root. (A temp-dir tree
+/// stands in for `src/`: no test writes into the real one.)
+#[test]
+fn an_edited_file_is_never_answered_from_the_scan_cache() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let write = |name: &str, text: &str| {
+        std::fs::write(dir.path().join(name), text).expect("write");
+    };
+    let sites = || event_sites(&scan_dir_self_gated(dir.path()));
+    let emits_in_a = |found: &EventSites| {
+        found
+            .status
+            .keys()
+            .any(|(file, _, kind)| file == "a.rs" && *kind == "emit")
+    };
+    write("lib.rs", "mod events;\nmod a;\n");
+    write(EVENTS_FILE, SYNTHETIC_EVENTS);
+    write(
+        "a.rs",
+        "pub fn quiet(app: &A) { app.emit(\"other\", 1); }\n",
+    );
+    // Warm the cache, twice (the second read is a cache hit and must agree).
+    let first = sites();
+    assert!(
+        !emits_in_a(&first) && first.banned.is_empty(),
+        "{:?}",
+        first.banned
+    );
+    let again = sites();
+    assert!(!emits_in_a(&again) && again.banned.is_empty());
+    // A status emit appears in a file after the cache is warm.
+    write(
+        "a.rs",
+        "pub fn quiet(app: &A) { app.emit(\"recording-status-changed\", 1); }\n",
+    );
+    assert!(emits_in_a(&sites()), "the cached scan hid an edited file");
+    write(
+        "a.rs",
+        "pub fn quiet(app: &A) { app.emit(\"other\", 1); }\n",
+    );
+    assert!(
+        !emits_in_a(&sites()),
+        "the edit is undone and seen as undone"
+    );
+    // A second `mod events;` appears in the crate root after the cache is warm.
+    write("lib.rs", "mod events;\nmod a;\nmod events;\n");
+    let doubled = sites();
+    assert!(
+        doubled
+            .banned
+            .iter()
+            .any(|problem| problem.contains("lib.rs")),
+        "{:?}",
+        doubled.banned
+    );
+    // A changed events constant is seen by every file that resolves against it.
+    write("lib.rs", "mod events;\nmod a;\n");
+    write(
+        "a.rs",
+        "pub fn quiet(app: &A) { app.emit(crate::events::OTHER, 1); }\n",
+    );
+    assert!(!emits_in_a(&sites()));
+    write(
+        EVENTS_FILE,
+        "pub const STATUS: &str = \"recording-status-changed\";\npub const OTHER: &str = \"recording-status-changed\";\n",
+    );
+    assert!(
+        emits_in_a(&sites()),
+        "a stale scan ignored the new constant"
+    );
+}
+
+/// An overlay that repeats a file lands on the same `(file, fn)` keys: the counts add
+/// up (a duplicated emitter file counts its emits twice) and the ratchet rejects it.
+#[test]
+fn a_duplicated_emitter_file_counts_its_emits_twice() {
+    let sources = raw_production_sources();
+    let duplicate = |file: &str| {
+        let text = sources
+            .iter()
+            .find(|(name, _)| name == file)
+            .unwrap_or_else(|| panic!("{file} is scanned"))
+            .clone();
+        let mut doubled = sources.clone();
+        doubled.push(text);
+        doubled
+    };
+    // A status emitter: `cancel_ports.rs` emits the status event once.
+    let doubled = duplicate("commands/recording/cancel_ports.rs");
+    let found = event_sites(&doubled);
+    let emits: usize = found
+        .status
+        .iter()
+        .filter(|((file, _, kind), _)| {
+            file == "commands/recording/cancel_ports.rs" && *kind == "emit"
+        })
+        .map(|(_, count)| count)
+        .sum();
+    assert_eq!(emits, 2, "the duplicated file's emit is counted twice");
+    let error = the_status_ratchet_rejects(&doubled);
+    assert!(error.contains("cancel_ports.rs"), "{error}");
+    // A reviewed unresolved emitter: the count doubles and the ratchet rejects it.
+    let entry = &DYNAMIC_EMIT_ALLOWLIST[0];
+    let doubled = duplicate(entry.file);
+    let found = event_sites(&doubled);
+    let count = found
+        .dynamic
+        .get(&(entry.file.to_string(), entry.function.to_string()))
+        .map(|(count, _, _)| *count);
+    assert_eq!(count, Some(entry.emits * 2), "{}", entry.function);
+    let error = the_status_ratchet_rejects(&doubled);
+    assert!(error.contains(entry.file), "{error}");
 }
 
 /// Round 7: `src/events.rs` is read as the `events` module, so the crate root must
