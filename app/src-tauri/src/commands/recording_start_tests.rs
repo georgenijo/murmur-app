@@ -229,6 +229,150 @@ fn a_start_nested_in_a_port_emit_is_refused_before_any_lock() {
     }
 }
 
+// ---------------------------------------------------------------- site 104
+
+/// R104.5 / #216 mutation witness (appendix C13.3): the start reads
+/// `is_dictation_recording(rid) == true` and, before it takes D, a runtime failure
+/// for the current id lands (`Recovering{RuntimeFailure}` writes `Recovering` and
+/// preserves the installed context). The publish then runs with a stale audio
+/// read and must publish nothing: no `recording` emit, no status write, no `SD`.
+///
+/// Dropping R104.5's `status == Starting` guard makes it publish `Recording` over
+/// `Recovering`: this test fails (the mutation check in the PR).
+#[test]
+fn a_late_ready_publish_after_a_runtime_failure_publishes_nothing() {
+    let lines = run_sub_run(&SubRun {
+        title: "late publish",
+        setup: Setup::idle(),
+        body: |w| {
+            w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+            w.on("supervisor.is_dictation_recording", {
+                let world = Arc::clone(w);
+                move || world.runtime_failure(1)
+            });
+            let mut start = w.start();
+            let reply = complete(&mut start);
+            w.reply("start", &reply);
+            assert_eq!(
+                reply.expect("the start flight ends with its own reply"),
+                serde_json::json!({ "type": "recording_starting", "state": "starting", "recordingId": 1 })
+            );
+            assert_eq!(
+                w.side_task_spawns(),
+                0,
+                "no side task starts for a publish that did not happen"
+            );
+            let state = w.state();
+            assert_eq!(
+                state.app_state.dictation.lock_or_recover().status,
+                DictationStatus::Recovering,
+                "Recovering is not overwritten with Recording"
+            );
+        },
+    });
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "publish_recording_ready 1 -> false"),
+        "{lines:#?}"
+    );
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.contains("recording-status-changed \"recording\"")),
+        "no `recording` emit: {lines:#?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("-> Recording")),
+        "no status write to Recording: {lines:#?}"
+    );
+}
+
+/// The same publish with nothing in the window is R104.2: `Starting→Recording`,
+/// the `recording` emit and exactly one `SD`.
+#[test]
+fn an_undisturbed_ready_publish_writes_recording_emits_and_starts_the_side_tasks() {
+    let lines = run_sub_run(&SubRun {
+        title: "publish",
+        setup: Setup::idle(),
+        body: |w| {
+            w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+            let mut start = w.start();
+            let reply = complete(&mut start);
+            w.reply("start", &reply);
+            assert!(reply.is_ok(), "{reply:?}");
+            assert_eq!(w.side_task_spawns(), 1);
+        },
+    });
+    assert!(
+        lines
+            .iter()
+            .any(|l| l == "publish_recording_ready 1 -> true"),
+        "{lines:#?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("-> Recording")),
+        "{lines:#?}"
+    );
+}
+
+// ---------------------------------------------------------------- site 103
+
+fn enable_smart_destination(w: &Arc<World>) {
+    let state = w.state();
+    let mut dictation = state.app_state.dictation.lock_or_recover();
+    dictation.smart_destination_enabled = true;
+    dictation.auto_paste = true;
+    dictation.save_audio = false;
+    dictation.save_transcript = false;
+}
+
+/// R103.0: a current capture with Smart destination enabled selects the
+/// destination (`PDT:SDE`); a capture cancelled while the smart-destination
+/// capture was in flight (R103.0') does not, and its late result is discarded.
+#[test]
+fn the_smart_destination_is_selected_only_for_a_current_capture() {
+    let current = run_sub_run(&SubRun {
+        title: "current capture",
+        setup: Setup::idle(),
+        body: |w| {
+            enable_smart_destination(w);
+            recording(w);
+        },
+    });
+    assert!(
+        current.iter().any(|l| l == "emit_smart_destination 1"),
+        "{current:#?}"
+    );
+    let stale = run_sub_run(&SubRun {
+        title: "cancelled during the capture",
+        setup: Setup::idle(),
+        body: |w| {
+            enable_smart_destination(w);
+            w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+            w.close_gate("smart_capture");
+            let mut start = w.start();
+            assert!(poll_once(&mut start).is_pending());
+            w.state().app_state.cancel_recording(1);
+            w.open_gate("smart_capture");
+            let reply = complete(&mut start);
+            w.reply("start", &reply);
+        },
+    });
+    assert!(
+        stale
+            .iter()
+            .any(|l| l == "smart_destination.capture enabled=true"),
+        "{stale:#?}"
+    );
+    assert!(
+        !stale
+            .iter()
+            .any(|l| l.starts_with("emit_smart_destination")),
+        "a stale capture selects no destination: {stale:#?}"
+    );
+}
+
 // ------------------------------------------------- Smart Auto routing notification
 
 fn script_smart_auto(w: &Arc<World>) {
@@ -311,6 +455,80 @@ fn dropping_a_pipeline_owner_from_the_smart_auto_routing_notification_defers_its
                 );
                 assert_eq!(history_counts(w), (0, 0), "H1 and H2 are retired");
                 assert_drained_with_t_free("the routing notification's finish");
+                w.open_gate("pipeline");
+            },
+        });
+    });
+}
+
+// ------------------------------------------- the smart-destination emit's D section
+
+fn destination_witness() -> Vec<(&'static str, String)> {
+    start_ports::DESTINATION.with(|slot| {
+        slot.borrow()
+            .iter()
+            .map(|w| (w.code, format!("{:?}", w.outcome)))
+            .collect()
+    })
+}
+
+/// R103.0 (decision D-S2-4): the shell owns the emit's D section and runs `In:SDE`
+/// under it. An inline listener of the emit that drops a parked pipeline owner and
+/// then panics queues the owner's finish (D is held and not reentrant); the unwind
+/// drains it on that thread, after D is released, and H1 and H2 are retired
+/// instead of waiting for an owner that never reaches the next drain guard.
+#[test]
+fn a_listener_that_drops_a_pipeline_owner_and_panics_in_the_destination_emit_drains_on_the_unwind()
+{
+    under_watchdog("a panic in the smart-destination emit", || {
+        run_sub_run(&SubRun {
+            title: "unwind drains the destination section",
+            setup: Setup::idle(),
+            body: |w| {
+                recording(w);
+                w.knobs().stop_result = Ok(16_000);
+                w.close_gate("pipeline");
+                let mut stop = w.stop(None);
+                assert!(poll_once(&mut stop).is_pending());
+                cancelled(w, "cancel");
+                w.finish_sealed_stop(1);
+                assert_eq!(history_counts(w), (1, 1), "the parked stop's pipeline");
+                enable_smart_destination(w);
+                w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+                let parked = Arc::new(std::sync::Mutex::new(Some(stop)));
+                let slot = Arc::clone(&parked);
+                w.on_inline("smart_destination.emit", move || {
+                    drop(slot.lock().expect("slot").take());
+                    panic!("the listener panics under D");
+                });
+                let d_free_during_finish = Arc::new(std::sync::Mutex::new(Vec::new()));
+                let (observer, seen) = (Arc::clone(w), Arc::clone(&d_free_during_finish));
+                let _barrier = crate::barrier_hook::install(move |point| {
+                    if point == "guard_finish" {
+                        let state = observer.state();
+                        // A panic under D poisons it; `try_lock_or_recover` sees through that.
+                        let free = state.app_state.dictation.try_lock_or_recover().is_some();
+                        seen.lock().expect("seen").push(free);
+                    }
+                });
+                take_t_free_at_drain();
+                let mut start = w.start();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    poll_once(&mut start)
+                }));
+                assert!(outcome.is_err(), "the listener's panic propagated");
+                assert_drained_with_t_free("the unwind from the destination emit");
+                assert!(
+                    DEFERRED_FINISHES.with(|queue| queue.borrow().is_empty()),
+                    "the unwind drained the queued finish"
+                );
+                assert_eq!(
+                    *d_free_during_finish.lock().expect("seen"),
+                    vec![true],
+                    "the finish ran once, with D already released"
+                );
+                drop(start);
+                assert_eq!(history_counts(w), (0, 0), "H1 and H2 are retired");
                 w.open_gate("pipeline");
             },
         });
@@ -447,6 +665,105 @@ fn a_flight_that_suspends_with_queued_work_carries_it_and_drains_after_t() {
     });
 }
 
+/// A generation that ends between query 402's read and the emit's own D section is
+/// stopped by the ownership gate **before dispatch**: no event is delivered and the
+/// executor has no `SDE` entry to report as `Ran`.
+#[test]
+fn the_destination_gate_suppresses_the_emit_before_dispatch() {
+    start_ports::DESTINATION.with(|slot| slot.borrow_mut().clear());
+    let lines = run_sub_run(&SubRun {
+        title: "cancelled between the query and the emit",
+        setup: Setup::idle(),
+        body: |w| {
+            enable_smart_destination(w);
+            w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+            w.on("refresh_expired_ide_context", {
+                let world = Arc::clone(w);
+                move || world.state().app_state.cancel_recording(1)
+            });
+            let mut start = w.start();
+            let reply = complete(&mut start);
+            w.reply("start", &reply);
+        },
+    });
+    assert!(
+        !lines
+            .iter()
+            .any(|l| l.starts_with("emit_smart_destination")),
+        "no event is delivered: {lines:#?}"
+    );
+    assert_eq!(destination_witness(), vec![], "nothing was dispatched");
+}
+
+/// When the emit runs, its witness is the emit's real result: delivered is `Ran`,
+/// a rejected emit is `Failed`.
+#[test]
+fn the_destination_witness_reports_the_real_emit_result() {
+    for (fails, expected) in [(false, "Ran"), (true, "Failed")] {
+        start_ports::DESTINATION.with(|slot| slot.borrow_mut().clear());
+        run_sub_run(&SubRun {
+            title: "emit result",
+            setup: Setup::idle(),
+            body: if fails {
+                |w| {
+                    w.knobs().smart_destination_emit_error = true;
+                    enable_smart_destination(w);
+                    recording(w);
+                }
+            } else {
+                |w| {
+                    enable_smart_destination(w);
+                    recording(w);
+                }
+            },
+        });
+        assert_eq!(
+            destination_witness(),
+            vec![("SDE", expected.to_string())],
+            "emit fails: {fails}"
+        );
+    }
+}
+
+// ------------------------------------------------- no managed-state lookup on R104.1
+
+/// R104.1 (audio not ready): the base returns before any managed-state lookup, and
+/// the start already holds its own `&State`, so the publish takes none: it runs on
+/// an app that manages **no** `State` at all (a lookup would panic), retires the
+/// flight's `K:ReadyPublish`, and publishes nothing.
+#[test]
+fn the_audio_not_ready_publish_looks_up_no_managed_state() {
+    use murmur_dictation_core::decision::{ContKind, ContinuationSpec};
+    use murmur_dictation_core::ids::RecordingId;
+    let app = tauri::test::mock_builder()
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build a mock app that manages no State");
+    let state = crate::commands::recording::tests::test_state(AppState::default());
+    let guard = crate::core_history::ContinuationGuard::register(
+        &state.app_state.core_history,
+        ContinuationSpec {
+            recording_id: RecordingId(1),
+            kind: ContKind::ReadyPublish,
+        },
+    );
+    assert_eq!(state.app_state.core_history.outstanding_ops(), 1);
+    let published = publish_recording_ready_with(
+        app.handle(),
+        &state,
+        1,
+        std::time::Instant::now(),
+        guard,
+        |_| false,
+        |_, _, _| unreachable!("no side task for a publish that did not happen"),
+    );
+    assert!(!published);
+    assert_eq!(
+        state.app_state.core_history.outstanding_ops(),
+        0,
+        "the flight's op is retired by R104.1"
+    );
+}
+
 /// R102's failure prefix (`Pre:PA, Pre:CX-`) runs before D, in a core span: a
 /// listener of the abort port that drops a parked stop queues its finish, and the
 /// start drains it after releasing D (a finish that ran under D would deadlock).
@@ -512,6 +829,149 @@ fn a_panic_in_the_abort_port_still_drains_the_failure_prefix() {
             },
         });
     });
+}
+
+thread_local! {
+    /// The barrier point the flight-end test stands on (on the scenario's own thread).
+    static FLIGHT_POINT: std::cell::Cell<&'static str> = const { std::cell::Cell::new("") };
+}
+
+/// R104.7 (the flight end): `PDT:PM` runs with T held and `PT:PB`, `PT:REL` after T
+/// is released, all in core spans with no D of their own. A listener that drops a
+/// parked stop at any of them queues its finish; the start drains it before it
+/// replies, so H1 and H2 are retired once and the queue is empty.
+#[test]
+fn the_flight_end_drains_what_each_of_its_phases_defers() {
+    for point in [
+        "start.model_preparation",
+        "start.perf_begin",
+        "start.release_claims",
+    ] {
+        under_watchdog("a stop dropped during the flight end", move || {
+            FLIGHT_POINT.with(|slot| slot.set(point));
+            run_sub_run(&SubRun {
+                title: "flight end drain",
+                setup: Setup::idle(),
+                body: |w| {
+                    let parked = park_a_stop_of_recording_1(w);
+                    let (observer, slot) = (Arc::clone(w), Arc::clone(&parked));
+                    let hook_point = FLIGHT_POINT.with(std::cell::Cell::get);
+                    take_t_free_at_drain();
+                    let _hook = crate::barrier_hook::install(move |point| {
+                        if point == hook_point && slot.lock().expect("slot").is_some() {
+                            drop(slot.lock().expect("slot").take());
+                            assert_eq!(
+                                history_counts(&observer).0,
+                                1,
+                                "nothing retires in the span"
+                            );
+                            assert_eq!(queued_finishes(), 1, "the finish is queued");
+                        }
+                    });
+                    let mut start = w.start();
+                    let reply = complete(&mut start);
+                    assert!(reply.is_ok(), "{reply:?}");
+                    assert!(parked.lock().expect("slot").is_none(), "the listener ran");
+                    assert_eq!(
+                        queued_finishes(),
+                        0,
+                        "the queue is empty when the start returns"
+                    );
+                    assert_eq!(
+                        history_counts(w),
+                        (0, 0),
+                        "the parked stop's H1 and H2 are retired once"
+                    );
+                    assert_drained_with_t_free("the flight end");
+                    w.open_gate("pipeline");
+                },
+            });
+        });
+    }
+}
+
+/// The same flight end, when a port's callback queues a finish and panics: the guard
+/// declared before the first effect drains on the unwind.
+#[test]
+fn a_panic_at_the_flight_end_still_drains_the_queue() {
+    under_watchdog("an unwind from the flight end", || {
+        run_sub_run(&SubRun {
+            title: "flight end unwind",
+            setup: Setup::idle(),
+            body: |w| {
+                let parked = park_a_stop_of_recording_1(w);
+                let slot = Arc::clone(&parked);
+                take_t_free_at_drain();
+                let _hook = crate::barrier_hook::install(move |point| {
+                    if point == "start.model_preparation" {
+                        drop(slot.lock().expect("slot").take());
+                        panic!("the flight end's callback panics after queueing a finish");
+                    }
+                });
+                let mut start = w.start();
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    poll_once(&mut start)
+                }));
+                assert!(outcome.is_err(), "the panic unwinds out of the start");
+                assert_eq!(queued_finishes(), 0, "the unwind drained the queue");
+                assert_eq!(history_counts(w), (0, 0), "no history entry is stranded");
+                assert_drained_with_t_free("the unwind from the flight end's PM");
+                w.open_gate("pipeline");
+            },
+        });
+    });
+}
+
+thread_local! {
+    /// Which `recording-status-changed` emit of the start the next test drops a stop at.
+    static STATUS_EMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// A listener drops a parked stop inside the `nth` (0-based) `recording-status-changed`
+/// emit of a start: the `starting` emit (the site-101 block's `PDT`, T held) or the
+/// `recording` emit (the ready publish's own D section). The finish it queues drains
+/// only after the flight released T (D-S2-13), and H1 and H2 are retired once.
+fn drop_a_stop_at_status_emit(nth: usize) {
+    under_watchdog("a stop dropped inside a start's status emit", move || {
+        STATUS_EMIT.with(|slot| slot.set(nth));
+        run_sub_run(&SubRun {
+            title: "status emit drain",
+            setup: Setup::idle(),
+            body: |w| {
+                let parked = park_a_stop_of_recording_1(w);
+                w.knobs().cold_start = ColdStart::ReadyBeforeContext;
+                let nth = STATUS_EMIT.with(std::cell::Cell::get);
+                for at in 0..=nth {
+                    let slot = Arc::clone(&parked);
+                    w.on_inline("emit:recording-status-changed", move || {
+                        if at == nth {
+                            drop(slot.lock().expect("slot").take());
+                            assert_eq!(queued_finishes(), 1, "the finish is queued");
+                        }
+                    });
+                }
+                take_t_free_at_drain();
+                let mut start = w.start();
+                let reply = complete(&mut start);
+                assert!(reply.is_ok(), "{reply:?}");
+                assert!(parked.lock().expect("slot").is_none(), "the listener ran");
+                assert_eq!(queued_finishes(), 0);
+                assert_eq!(history_counts(w), (0, 0), "H1 and H2 are retired once");
+                assert_drained_with_t_free("the status emit");
+                w.open_gate("pipeline");
+            },
+        });
+    });
+}
+
+#[test]
+fn a_finish_queued_in_the_starting_emit_drains_after_t() {
+    drop_a_stop_at_status_emit(0);
+}
+
+#[test]
+fn a_finish_queued_in_the_ready_publishs_emit_drains_after_t() {
+    drop_a_stop_at_status_emit(1);
 }
 
 // ------------------------------- D-S2-13 / D-S2-15: the flight's carried work

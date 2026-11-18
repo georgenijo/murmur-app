@@ -126,23 +126,20 @@ pub struct CaptureResultInput {
     pub result: CaptureResult,
 }
 
-/// Site 103: context install.
+/// Site 103: context install (R103.1-.6). Whether the capture is still current
+/// (R103.0) is decided earlier, by [`crate::start::decide_start_destination`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StartContextInput {
-    /// The flight's token.
+    /// The flight's token (`K:ResolveContext`).
     pub token: Continuation,
     /// Validated token status.
     pub op_status: OpStatus,
-    /// No speculative capture is involved.
-    pub speculative_none: bool,
-    /// `q_capture_current` result (`[in]`, 5699).
-    pub capture_is_current: bool,
 }
 
-/// Site 104: ready publish.
+/// Site 104: ready publish (R104.1-.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadyPublishInput {
-    /// The flight's token.
+    /// The flight's token (`K:ReadyPublish`).
     pub token: Continuation,
     /// Validated token status.
     pub op_status: OpStatus,
@@ -150,8 +147,10 @@ pub struct ReadyPublishInput {
     pub rid: RecordingId,
     /// Supervisor phase/owner read before D (5306).
     pub audio_ready: bool,
-    /// One leaf-mutex read under D (5314).
-    pub context_present: bool,
+    /// `active_context(rid).is_some()`: one leaf-mutex read, taken only after the
+    /// id and status guards passed (decision D-S1-2), so it is an `Option`:
+    /// `None` makes the decision answer `NeedObservation(ContextPresence)`.
+    pub context_present: Option<bool>,
     /// Stamp taken at 5816.
     pub context_ready_at: Now,
 }
@@ -593,18 +592,13 @@ mod tests {
                 op_status,
                 result: CaptureResult::Ok,
             }),
-            Input::StartContext(StartContextInput {
-                token,
-                op_status,
-                speculative_none: true,
-                capture_is_current: true,
-            }),
+            Input::StartContext(StartContextInput { token, op_status }),
             Input::ReadyPublish(ReadyPublishInput {
                 token,
                 op_status,
                 rid,
                 audio_ready: true,
-                context_present: true,
+                context_present: Some(true),
                 context_ready_at: Now(0),
             }),
             Input::StopRequest(StopInput {

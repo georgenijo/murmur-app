@@ -1,5 +1,6 @@
 //! Stage 2a-4: the start-family decide functions (appendix C2.3 sites 101-104;
-//! rows of C3.1-C3.4). This file holds sites 101 and 102 (PR 2a-4a).
+//! rows of C3.1-C3.4). Sites 101 and 102 landed in PR 2a-4a; 103 and 104 (and the
+//! smart-destination query that gates them) in 2a-4b.
 //!
 //! One pure function per D critical section of the start command. Each takes the
 //! decision view (`&DictationCore`, or [`LockFreeFacts`] for the `*_nolock`
@@ -41,12 +42,15 @@ use crate::decision::{
 };
 use crate::effects::{AxMode, Cond, Effect, EventKind, Placed, Placement as At};
 use crate::ids::{Now, RecordingId};
-use crate::inputs::{CaptureErr, CaptureResult, CaptureResultInput, DeviceSel, StartInput};
+use crate::inputs::{
+    CaptureErr, CaptureResult, CaptureResultInput, DeviceSel, ReadyPublishInput, StartContextInput,
+    StartInput,
+};
 use crate::lifecycle::{
     clear_context, decision, emit_status, nothing, placed, set_status, terminal,
 };
 use crate::replies::{ErrText, Reply, ReplyType};
-use crate::state::{DictationCore, LockFreeFacts};
+use crate::state::{DictationCore, LockFreeFacts, StartContextAction};
 use crate::status::{ErrCode, Status, TerminalOutcome};
 
 fn with_reply(mut decided: Decision, reply: Reply) -> Decision {
@@ -358,6 +362,207 @@ pub fn decide_start_capture_result(
         ErrCode::RuntimeFailure,
     ));
     with_reply(decision(verdict, transition, effects, row), reply)
+}
+
+// ---------------------------------------------------------------------- 103
+
+/// Row R103.0 / R103.0' (the smart-destination emit's own D section, 2074): under
+/// D, is the capture still current (`q_capture_current`: id current, not cancelled,
+/// status not `Idle`)? The earlier query-402 read that picks the destination is the
+/// shell's separate short D read; this decision is the ownership recheck the emit
+/// always made under its own D hold.
+///
+/// * R103.0, current: `Continue`; `In:SDE` (the `smart-destination-selected` emit,
+///   under that D hold) only when Smart destination is enabled.
+/// * R103.0', not current: `Stale`; no effect: the gate suppresses the emit before
+///   it is dispatched, so no witness reports a delivery that did not happen.
+///
+/// The registry has one id for both rows (`R103.0`).
+pub fn decide_start_destination(
+    core: &DictationCore,
+    rid: RecordingId,
+    smart_enabled: bool,
+    _now: Now,
+) -> Decision {
+    if core.q_capture_current(rid) {
+        let effects = if smart_enabled {
+            vec![placed(At::In, Effect::SmartDestinationEmit)]
+        } else {
+            Vec::new()
+        };
+        decision(Verdict::Continue, None, effects, "R103.0")
+    } else {
+        nothing(Verdict::Stale(StaleKind::StaleRecording), "R103.0")
+    }
+}
+
+/// Site 103, the context install under D+T (5745-5762, R103.1-.6).
+/// `q_start_context_action(rid)` picks the row; M4 (the context) is written by
+/// `CX+` only (live slot), never read here.
+///
+/// * R103.1 `Starting`, current: `In:CX+`; the flight continues with
+///   `K:ReadyPublish`.
+/// * R103.2 `Recovering`, current: `In:CX+` (**PD-8**: the context stays installed
+///   after the flush), `PT:PB`, `PT:REL`; reply `audio_recovering` / `recovering`.
+/// * R103.3 `Idle`, current: `PT:PB`, `PT:REL`; reply `audio_recovering` / `idle`.
+/// * R103.4 `Recording`, R103.5 `Processing` (current), R103.6 (`rid` not current,
+///   any status): `PDT:PA`, `PDT:TERM(Superseded/StaleOwner)`, `PT:REL`; reply
+///   `audio_recovering` with the **live** status.
+pub fn decide_start_context(core: &DictationCore, input: StartContextInput, _now: Now) -> Decision {
+    let rid = input.token.recording_id;
+    let recovering = |state: Status| Reply::typed(ReplyType::AudioRecovering, state);
+    match core.q_start_context_action(rid) {
+        StartContextAction::Activate => {
+            let mut decided = decision(
+                Verdict::Applied,
+                None,
+                vec![placed(At::In, Effect::SetContext(rid))],
+                "R103.1",
+            );
+            decided.continuation = Some(ContinuationSpec {
+                recording_id: rid,
+                kind: ContKind::ReadyPublish,
+            });
+            decided
+        }
+        StartContextAction::FlushLifecycleTerminal { install_context } => {
+            let (row, state) = if install_context {
+                ("R103.2", Status::Recovering)
+            } else {
+                ("R103.3", Status::Idle)
+            };
+            let mut effects = Vec::new();
+            if install_context {
+                effects.push(placed(At::In, Effect::SetContext(rid)));
+            }
+            effects.push(placed(At::PostT, Effect::PerfBegin));
+            effects.push(release_claims());
+            with_reply(
+                decision(Verdict::Applied, None, effects, row),
+                recovering(state),
+            )
+        }
+        StartContextAction::Superseded => {
+            let row = if rid != core.current_id {
+                "R103.6"
+            } else if core.status == Status::Recording {
+                "R103.4"
+            } else {
+                "R103.5"
+            };
+            let verdict = if rid == core.current_id {
+                Verdict::Applied
+            } else {
+                Verdict::Stale(StaleKind::StaleRecording)
+            };
+            let effects = vec![
+                placed(At::PostDT, Effect::PerfAbort),
+                terminal(At::PostDT, TerminalOutcome::Superseded, ErrCode::StaleOwner),
+                release_claims(),
+            ];
+            with_reply(
+                decision(verdict, None, effects, row),
+                recovering(core.status),
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------- 104
+
+/// Site 104, the readiness publish when the audio is **not** ready (R104.1): the
+/// supervisor phase/owner read before D said no, D is not taken and nothing is
+/// written. The publish returns `false`; the flight goes on to its end (R104.7).
+/// An `audio_ready` input is [`decide_ready_publish`].
+pub fn decide_ready_publish_nolock(
+    _facts: LockFreeFacts,
+    input: ReadyPublishInput,
+    _now: Now,
+) -> Decision {
+    if input.audio_ready {
+        nothing(
+            Verdict::Invalid(InvalidKind::Impossible(RowId("R104.1"))),
+            "R104.1",
+        )
+    } else {
+        nothing(Verdict::Continue, "R104.1")
+    }
+}
+
+/// Site 104, the readiness publish under D (5311-5333, R104.1-.6), after the
+/// D-less audio-ready read. The guards run in today's order: id current, then
+/// status `Starting`, then (read only now, D-S1-2) the installed context.
+///
+/// * R104.2 `Starting`, current, context installed: `Starting→Recording`;
+///   `In:ST→Recording`, `In:TL`, `In:EM(recording)`, `In:SD` (the VAD stream, and
+///   the ticker `register` under this same D hold). `Applied`: the publish
+///   returns `true`.
+/// * R104.3 context missing, R104.4 `rid` not current, R104.5 current but not
+///   `Starting` (`Idle`, `Recovering`, `Processing`: a supervisor event landed
+///   after the context install), R104.6 `Recording`: `Continue` with no effect;
+///   the publish returns `false`.
+pub fn decide_ready_publish(core: &DictationCore, input: ReadyPublishInput, now: Now) -> Decision {
+    if !input.audio_ready {
+        return decide_ready_publish_nolock(
+            LockFreeFacts {
+                current_id: core.current_id,
+                cancelled_through: RecordingId::NONE,
+            },
+            input,
+            now,
+        );
+    }
+    if input.rid != core.current_id {
+        return nothing(Verdict::Continue, "R104.4");
+    }
+    match core.status {
+        Status::Recording => nothing(Verdict::Continue, "R104.6"),
+        Status::Idle | Status::Recovering | Status::Processing => {
+            nothing(Verdict::Continue, "R104.5")
+        }
+        Status::Starting => match input.context_present {
+            None => nothing(
+                Verdict::NeedObservation(ObsKind::ContextPresence { id: input.rid }),
+                "R104.3",
+            ),
+            Some(false) => nothing(Verdict::Continue, "R104.3"),
+            Some(true) => decision(
+                Verdict::Applied,
+                Some((Status::Starting, Status::Recording)),
+                vec![
+                    set_status(Status::Recording),
+                    placed(At::In, Effect::TouchLastTranscription),
+                    emit_status(At::In, Status::Recording),
+                    placed(At::In, Effect::StartSideTasks),
+                ],
+                "R104.2",
+            ),
+        },
+    }
+}
+
+/// Row R104.7, the end of the start flight (5841-5850), after the publish whatever
+/// its outcome: `PDT:PM` (the model-preparation attempt, self-gating), `PT:PB` (the
+/// performance begin, after T is released), `PT:REL`; reply `recording_starting` /
+/// `starting` with the recording id. Pure: it reads nothing.
+pub fn decide_start_flight_end(rid: RecordingId, _now: Now) -> Decision {
+    with_reply(
+        decision(
+            Verdict::Applied,
+            None,
+            vec![
+                placed(At::PostDT, Effect::ModelPreparation),
+                placed(At::PostT, Effect::PerfBegin),
+                release_claims(),
+            ],
+            "R104.7",
+        ),
+        Reply::Typed {
+            ty: ReplyType::RecordingStarting,
+            state: Status::Starting,
+            recording_id: Some(rid),
+        },
+    )
 }
 
 #[cfg(test)]

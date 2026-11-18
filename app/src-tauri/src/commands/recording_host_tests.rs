@@ -262,6 +262,8 @@ struct Shared {
     log: StdMutex<Vec<(Call, String)>>,
     state: Arc<State>,
     script: StdMutex<Script>,
+    /// `on_emit_smart_destination` is due at the next host call after the emit.
+    after_emit_hook_due: std::sync::atomic::AtomicBool,
 }
 
 impl Shared {
@@ -295,6 +297,7 @@ impl FakeHost {
     pub(super) fn new(state: Arc<State>) -> Self {
         Self {
             shared: Arc::new(Shared {
+                after_emit_hook_due: std::sync::atomic::AtomicBool::new(false),
                 log: StdMutex::new(Vec::new()),
                 state,
                 script: StdMutex::new(Script::default()),
@@ -376,22 +379,27 @@ impl DictationHost for FakeHost {
 
     fn emit_smart_destination(
         &self,
-        _app_state: &AppState,
         recording_id: u64,
         _context: &DictationContextSnapshot,
         _accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
-    ) {
+    ) -> Result<(), String> {
         self.shared
             .push(Call::EmitSmartDestination, format!("{recording_id}"));
-        if let Some(hook) = self.shared.script().on_emit_smart_destination.as_ref() {
-            hook(&self.shared.state);
-        }
+        // The shell now calls this under its own D hold, so the hook (which takes D)
+        // runs at the next host call, after that section: the same observable order
+        // (the emit, then the status change, before the context install).
+        self.shared
+            .after_emit_hook_due
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     }
 
     fn publish_recording_ready_if_audio_ready(
         &self,
+        _state: &State,
         recording_id: u64,
         _context_ready_at: std::time::Instant,
+        _ready_op: crate::core_history::ContinuationGuard,
     ) -> bool {
         self.shared
             .push(Call::PublishRecordingReady, format!("{recording_id}"));
@@ -603,6 +611,14 @@ impl PerformancePort for Shared {
             Call::PerformanceProductionContext,
             format!("{recording_id}"),
         );
+        if self
+            .after_emit_hook_due
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            if let Some(hook) = self.script().on_emit_smart_destination.as_ref() {
+                hook(&self.state);
+            }
+        }
     }
 
     fn production_sample_count(&self, recording_id: u64, count: usize) {

@@ -175,6 +175,7 @@ mod dictation_host;
 use dictation_host::{DictationHost, TauriHost};
 mod cancel_ports;
 mod lifecycle_ports;
+mod ready_ports;
 mod start_ports;
 mod stop_ports;
 
@@ -2493,6 +2494,18 @@ fn emit_smart_destination(
     ) {
         return;
     }
+    let _ = emit_smart_destination_selected(app, rid, context, accepted_target);
+}
+
+/// The emit of [`emit_smart_destination`] without its D section and ownership
+/// gate: the start's shell owns both (`decide_start_destination`, `In:SDE`) and
+/// calls it with D held. Returns the emit's real result.
+fn emit_smart_destination_selected(
+    app: &tauri::AppHandle,
+    rid: u64,
+    context: &DictationContextSnapshot,
+    accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
+) -> tauri::Result<()> {
     let eligible = context.delivery.auto_paste
         && !context.delivery.save_audio
         && !context.delivery.save_transcript;
@@ -2510,12 +2523,12 @@ fn emit_smart_destination(
     } else {
         destination_application_name(&context.app.delivery_target)
     };
-    let _ = app.emit(
+    app.emit(
         "smart-destination-selected",
         serde_json::json!({
             "recordingId": rid, "status": status, "appName": app_name,
         }),
-    );
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -3368,6 +3381,9 @@ trait DictationPerformanceStageRecorder {
     fn enter(&mut self, stage: PerformanceStageV1);
 }
 
+/// Production: `DictationCore::q_start_context_action` (R103.1-.6); this is its
+/// oracle in tests.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeStartContextAction {
     Activate,
@@ -3375,6 +3391,7 @@ enum NativeStartContextAction {
     Superseded,
 }
 
+#[cfg(test)]
 fn native_start_context_action(
     is_current_generation: bool,
     status: DictationStatus,
@@ -6205,13 +6222,17 @@ pub(crate) fn complete_dictation_capture_cleanup(
 
 fn publish_recording_ready_if_audio_ready(
     app_handle: &tauri::AppHandle,
+    state: &State,
     recording_id: u64,
     context_ready_at: std::time::Instant,
+    ready_op: ContinuationGuard,
 ) -> bool {
     publish_recording_ready_with(
         app_handle,
+        state,
         recording_id,
         context_ready_at,
+        ready_op,
         audio_lifecycle::is_dictation_recording,
         |app_handle, recording_id, register| {
             spawn_vad_stream(app_handle.clone(), recording_id);
@@ -6222,44 +6243,110 @@ fn publish_recording_ready_if_audio_ready(
 
 /// [`publish_recording_ready_if_audio_ready`] with its process-global read and
 /// its spawns (the incremental VAD and the partial ticker, whose `register`
-/// runs under the dictation lock) passed in. Stage 0b seam: the body is the
-/// same statements in the same order.
+/// runs under the dictation lock) passed in. Stage 0b seam.
+///
+/// Site 104 (rows R104.1-R104.6): the supervisor read happens before D and a
+/// not-ready audio is the D-less R104.1; otherwise D is taken and
+/// [`decide_ready_publish`] guards in today's order (id, status `Starting`, then
+/// the installed context, read lazily, D-S1-2). Only R104.2 has effects
+/// (`ST→Recording`, `TL`, `EM(recording)`, `SD`), run by the executor under that
+/// same D hold. `ready_op` is the flight's `K:ReadyPublish`, consumed exactly
+/// once by whichever row decides.
 fn publish_recording_ready_with<R: tauri::Runtime>(
     app_handle: &tauri::AppHandle<R>,
+    state: &State,
     recording_id: u64,
     context_ready_at: std::time::Instant,
+    mut ready_op: ContinuationGuard,
     is_audio_recording: impl FnOnce(u64) -> bool,
     spawn_ready_tasks: impl FnOnce(&tauri::AppHandle<R>, u64, Box<dyn FnOnce() -> bool + '_>),
 ) -> bool {
-    if !is_audio_recording(recording_id) {
+    use crate::dictation_executor::executor::{core_now, CoreEntry};
+    use crate::dictation_executor::FieldAdapter;
+    use murmur_dictation_core::decision::{ObsKind, Verdict};
+    use murmur_dictation_core::effects::Placement;
+    use murmur_dictation_core::ids::RecordingId;
+    use murmur_dictation_core::inputs::ReadyPublishInput;
+    use murmur_dictation_core::start as core_start;
+    use ready_ports::ReadyPorts;
+    use start_ports::{decide, executor, expect_valid, run_phase};
+
+    // D-S2-3: an internal entry checks re-entrancy before any lock. The `State` is
+    // the start's own reference (no managed-state lookup, so the audio-not-ready
+    // path takes no lock the base did not). The start reaches here right after it
+    // waited outside any core span, so a refusal is a bug, never an input.
+    drop(CoreEntry::enter().unwrap_or_else(|kind| {
+        unreachable!("the ready publish was entered inside a core span: {kind:?}")
+    }));
+    let now = core_now();
+    let rid = RecordingId(recording_id);
+    let token = ready_op.token();
+    let mut input = ReadyPublishInput {
+        token,
+        op_status: murmur_dictation_core::decision::OpStatus::Unknown,
+        rid,
+        audio_ready: is_audio_recording(recording_id),
+        context_present: None,
+        context_ready_at: now,
+    };
+
+    if !input.audio_ready {
+        // R104.1 (D-less): the supervisor said no before D; D is not taken.
+        let facts = FieldAdapter::lock_free_facts(&state.app_state);
+        let decision = ready_op.consume(|op_status| {
+            input.op_status = op_status;
+            decide(|| core_start::decide_ready_publish_nolock(facts, input, now))
+        });
+        expect_valid(&decision);
         return false;
     }
 
-    let state = app_handle.state::<State>();
+    // No drain guard here: the start flight holds T around this call and opens a
+    // stretch of its own (D-S2-13), which hands the finishes this section's span
+    // queues up to the flight's drain, run after T is released.
     let mut dictation = state.app_state.dictation.lock_or_recover();
-    if state.app_state.recording_id.load(Ordering::SeqCst) != recording_id
-        || dictation.status != DictationStatus::Starting
-        || state.app_state.active_context(recording_id).is_none()
-    {
-        return false;
+    let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+    let decision = ready_op.consume(|op_status| {
+        input.op_status = op_status;
+        let mut rounds = 0_u8;
+        loop {
+            let decision = decide(|| core_start::decide_ready_publish(&view, input, now));
+            rounds += 1;
+            match decision.verdict {
+                // Read only once the id and status guards passed, as `||` did.
+                Verdict::NeedObservation(ObsKind::ContextPresence { id }) if rounds == 1 => {
+                    input.context_present = Some(state.app_state.active_context(id.0).is_some());
+                }
+                _ => break decision,
+            }
+        }
+    });
+    expect_valid(&decision);
+    let published = match decision.verdict {
+        Verdict::Applied => true,
+        Verdict::Continue => false,
+        Verdict::Invalid(_)
+        | Verdict::Refused(_)
+        | Verdict::Stale(_)
+        | Verdict::NeedObservation(_) => {
+            unreachable!(
+                "a ready publish applies or continues: {:?}",
+                decision.verdict
+            )
+        }
+    };
+    if published {
+        let ports = ReadyPorts::new(
+            app_handle,
+            state,
+            recording_id,
+            context_ready_at,
+            Box::new(spawn_ready_tasks),
+        );
+        let mut exec = executor(&ports, decision.clone(), false);
+        run_phase(&mut exec, Placement::In, Some(&mut dictation), recording_id);
     }
-
-    transition_dictation_status(recording_id, &mut dictation, DictationStatus::Recording);
-    *state.app_state.last_transcription_at.lock_or_recover() = Some(std::time::Instant::now());
-    let _ = app_handle.emit("recording-status-changed", "recording");
-    tracing::info!(
-        target: "pipeline",
-        event_code = "audio.recording_status_timing",
-        recording_id,
-        context_to_status_emit_ms = context_ready_at.elapsed().as_millis() as u64,
-        "recording status emitted after context ready"
-    );
-    spawn_ready_tasks(
-        app_handle,
-        recording_id,
-        Box::new(|| register_partial_ticker_locked(&state.app_state, &dictation, recording_id)),
-    );
-    true
+    published
 }
 
 /// A reason the shared dictation start transition refuses a new recording.
@@ -6715,10 +6802,11 @@ async fn start_native_recording_inner(
                     unreachable!("a successful capture start continues (R102.1)")
                 }
             }
-            // R102.1's `H1 reg op_ctx`: consumed by site 103 (still inline here).
-            let _context_guard = decision
+            // R102.1's `H1 reg op_ctx`: consumed by site 103.
+            let context_guard = decision
                 .continuation
-                .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec));
+                .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec))
+                .expect("R102.1 returns `K:ResolveContext`");
             start_after_capture(
                 host,
                 state,
@@ -6728,6 +6816,9 @@ async fn start_native_recording_inner(
                 delivery_target,
                 performance_started_at_ms,
                 smart_auto_reason,
+                slots,
+                context_guard,
+                &mut flight,
             )
             .await
         }
@@ -6779,19 +6870,33 @@ async fn start_native_recording_inner(
     }
 }
 
-/// The rest of the start after the supervisor accepted it (sites 103 and 104,
-/// still inline in this PR): T is held and is released here, as before.
+/// The rest of the start after the supervisor accepted it (sites 103 and 104):
+/// T is held and is released here, as before. `context_guard` is R102.1's
+/// `K:ResolveContext`, consumed by site 103.
 #[allow(clippy::too_many_arguments)]
 async fn start_after_capture(
     host: &dyn DictationHost,
     state: &State,
-    _transition: tokio::sync::MutexGuard<'_, ()>,
+    transition: tokio::sync::MutexGuard<'_, ()>,
     rid: u64,
     smart_enabled: bool,
     delivery_target: crate::frontmost::DeliveryTargetSnapshot,
     performance_started_at_ms: i64,
     smart_auto_reason: Option<&'static str>,
+    slots: start_ports::StartSlots,
+    mut context_guard: ContinuationGuard,
+    flight: &mut FlightDrain<'_>,
 ) -> Result<serde_json::Value, String> {
+    use crate::dictation_executor::executor::core_now;
+    use crate::dictation_executor::FieldAdapter;
+    use murmur_dictation_core::effects::Placement;
+    use murmur_dictation_core::ids::RecordingId;
+    use murmur_dictation_core::inputs::StartContextInput;
+    use murmur_dictation_core::start as core_start;
+    use start_ports::{decide, executor, expect_valid, reply_of, run_phase, StartPorts, TailFacts};
+
+    let now = core_now();
+    let recording = RecordingId(rid);
     tracing::debug!(
         target: "pipeline",
         smart_auto_reason = smart_auto_reason.unwrap_or("not_used"),
@@ -6806,14 +6911,16 @@ async fn start_after_capture(
         .smart_destination()
         .capture(&delivery_target, smart_enabled)
         .await;
+    // A listener that polled this future inline while an outer entry held D waits
+    // out that span before the next D section (D-S2-3, D-S2-4).
+    until_outside_core().await;
+    // Query 402 (`q_capture_current`): a short D read after the capture picks the
+    // destination. The emit's own ownership recheck is R103.0, below.
     let capture_is_current = {
+        let _stretch = flight.stretch();
         let dictation = state.app_state.dictation.lock_or_recover();
-        recording_capture_is_current(
-            rid,
-            state.app_state.recording_id.load(Ordering::SeqCst),
-            state.app_state.is_cancelled(rid),
-            dictation.status,
-        )
+        FieldAdapter::project_lifecycle_view(&state.app_state, &dictation)
+            .q_capture_current(recording)
     };
     let smart_destination = if capture_is_current {
         captured_smart_destination
@@ -6837,80 +6944,95 @@ async fn start_after_capture(
         Arc::make_mut(&mut context).homophone_engine =
             Some(crate::homophone_context::system_engine());
     }
+    let tail = TailFacts {
+        delivery_target: &delivery_target,
+        context: Arc::clone(&context),
+        performance_started_at_ms,
+    };
     if smart_enabled && capture_is_current {
-        host.emit_smart_destination(&state.app_state, rid, &context, &delivery_target);
+        // The emit's own D section, owned by the shell (R103.0): D is taken, the
+        // generation ownership is rechecked there and `In:SDE` runs under that hold,
+        // as the helper's own lock did. A finish an inline listener queued (a dropped
+        // pipeline owner) is handed up to the flight's drain on both the return and
+        // an unwind, and runs after D and T are released (D-S2-4, D-S2-13).
+        let _stretch = flight.stretch();
+        let mut dictation = state.app_state.dictation.lock_or_recover();
+        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let decision =
+            decide(|| core_start::decide_start_destination(&view, recording, smart_enabled, now));
+        expect_valid(&decision);
+        let ports = StartPorts::new(host, state, &slots, Some(rid)).with_tail(&tail);
+        let mut exec = executor(&ports, decision, false);
+        run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
+        #[cfg(test)]
+        start_ports::DESTINATION.with(|slot| *slot.borrow_mut() = exec.witness().to_vec());
     }
     host.performance().production_context(rid, &context);
-    let context_action = {
-        let dictation = state.app_state.dictation.lock_or_recover();
-        let action = native_start_context_action(
-            state.app_state.recording_id.load(Ordering::SeqCst) == rid,
-            dictation.status,
-        );
-        if matches!(
-            action,
-            NativeStartContextAction::Activate
-                | NativeStartContextAction::FlushLifecycleTerminal {
-                    install_context: true
-                }
-        ) {
-            crate::dictation_executor::FieldAdapter::set_context(
-                &state.app_state,
-                rid,
-                Arc::clone(&context),
-            );
+    // Site 103 (R103.1-.6): the context install under D and T.
+    let context_token = context_guard.token();
+    let (context_decision, ready_op) = {
+        let _stretch = flight.stretch();
+        let mut dictation = state.app_state.dictation.lock_or_recover();
+        let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let decision = context_guard.consume(|op_status| {
+            decide(|| {
+                core_start::decide_start_context(
+                    &view,
+                    StartContextInput {
+                        token: context_token,
+                        op_status,
+                    },
+                    now,
+                )
+            })
+        });
+        expect_valid(&decision);
+        // R103.1's `H1 reg op_ready`, before any effect.
+        let ready_op = decision
+            .continuation
+            .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec));
+        // `In:CX+` (R103.1, R103.2): the live context slot only, under D.
+        let ports = StartPorts::new(host, state, &slots, Some(rid)).with_tail(&tail);
+        let mut exec = executor(&ports, decision.clone(), false);
+        run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
+        let status = view.status;
+        drop(dictation);
+        // The `PDT` and `PT` effects of a refused or flushed start run after D is
+        // released, T held then released, exactly where today's statements ran.
+        match decision.row.0 {
+            "R103.1" => {}
+            "R103.2" | "R103.3" => {
+                tracing::info!(
+                    target: "pipeline",
+                    recording_id = rid,
+                    ?status,
+                    "flushing reserved diagnostics after audio lifecycle terminal"
+                );
+                drop(transition);
+                run_phase(&mut exec, Placement::PostT, None, rid);
+                return reply_of(&decision, None);
+            }
+            "R103.4" | "R103.5" | "R103.6" => {
+                // The warning follows the terminal claim, as it always did.
+                slots.after_terminal(Box::new(move || {
+                    tracing::warn!(
+                        target: "pipeline",
+                        recording_id = rid,
+                        ?status,
+                        "dictation context discarded after audio initialization ended"
+                    );
+                }));
+                run_phase(&mut exec, Placement::PostDT, None, rid);
+                drop(transition);
+                run_phase(&mut exec, Placement::PostT, None, rid);
+                return reply_of(&decision, None);
+            }
+            other => unreachable!("not a start-context row: {other}"),
         }
-        (action, dictation.status)
+        (decision, ready_op)
     };
-    match context_action {
-        (NativeStartContextAction::Activate, _) => {}
-        (NativeStartContextAction::FlushLifecycleTerminal { .. }, status) => {
-            let runtimes =
-                runtime_identity(&context.transcription.model_name, ModelWarmStateV1::Unknown);
-            tracing::info!(
-                target: "pipeline",
-                recording_id = rid,
-                ?status,
-                "flushing reserved diagnostics after audio lifecycle terminal"
-            );
-            drop(_transition);
-            host.performance()
-                .spawn_begin(rid, runtimes, performance_started_at_ms);
-            return Ok(serde_json::json!({
-                "type": "audio_recovering",
-                "state": match status {
-                    DictationStatus::Idle => "idle",
-                    DictationStatus::Recovering => "recovering",
-                    _ => unreachable!("lifecycle flush only follows idle or recovering"),
-                }
-            }));
-        }
-        (NativeStartContextAction::Superseded, status) => {
-            host.performance().begin_abort(rid);
-            emit_dictation_terminal(
-                state,
-                rid,
-                DictationTerminalOutcome::Superseded,
-                DictationErrorCode::StaleOwner,
-            );
-            tracing::warn!(
-                target: "pipeline",
-                recording_id = rid,
-                ?status,
-                "dictation context discarded after audio initialization ended"
-            );
-            return Ok(serde_json::json!({
-                "type": "audio_recovering",
-                "state": match status {
-                    DictationStatus::Idle => "idle",
-                    DictationStatus::Starting => "starting",
-                    DictationStatus::Recording => "recording",
-                    DictationStatus::Recovering => "recovering",
-                    DictationStatus::Processing => "processing",
-                }
-            }));
-        }
-    }
+    debug_assert_eq!(context_decision.row.0, "R103.1");
+    let ready_op = ready_op.expect("R103.1 returns `K:ReadyPublish`");
     let context_ready_at = std::time::Instant::now();
     tracing::info!(
         target: "pipeline",
@@ -6935,20 +7057,31 @@ async fn start_after_capture(
         // this context's disposable owner, never app-wide recording state.
         engine.prewarm();
     }
-    host.publish_recording_ready_if_audio_ready(rid, context_ready_at);
-    host.spawn_model_preparation(context.transcription.model_name.clone(), rid);
-    let runtimes = runtime_identity(&context.transcription.model_name, ModelWarmStateV1::Unknown);
-    // Ownership is fully installed before diagnostics begin. Release the
-    // transition first so Recording, stop, and cancel never wait for SQLite.
-    drop(_transition);
-    host.performance()
-        .spawn_begin(rid, runtimes, performance_started_at_ms);
-
-    Ok(serde_json::json!({
-        "type": "recording_starting",
-        "state": "starting",
-        "recordingId": rid
-    }))
+    // Site 104 (R104.1-.6); the publish's own decision consumes `K:ReadyPublish`.
+    {
+        // The publish's own D section (R104.2's `In` effects emit inline): a stretch,
+        // so what it queues drains after T is released (D-S2-13).
+        let _stretch = flight.stretch();
+        host.publish_recording_ready_if_audio_ready(state, rid, context_ready_at, ready_op);
+    }
+    // R104.7, whatever the publish decided: `PDT:PM`, then T is released, then
+    // `PT:PB` (ownership is fully installed before diagnostics begin, so
+    // Recording, stop, and cancel never wait for SQLite) and `PT:REL`.
+    let flight_end = decide(|| core_start::decide_start_flight_end(recording, now));
+    expect_valid(&flight_end);
+    // D-S2-8: the flight end's `PDT` and `PT` phases run in core spans with no D of
+    // their own. The stretch is opened before the first effect (`PM`), so a finish
+    // an inline listener queues there is handed up on the return and on an unwind
+    // (a panic in `PM` skips the explicit release below, and the unwind drops `transition`
+    // before the caller's flight drains): the flight's drain always runs after T is
+    // released (D-S2-13).
+    let _stretch = flight.stretch();
+    let ports = StartPorts::new(host, state, &slots, Some(rid)).with_tail(&tail);
+    let mut exec = executor(&ports, flight_end.clone(), false);
+    run_phase(&mut exec, Placement::PostDT, None, rid);
+    drop(transition);
+    run_phase(&mut exec, Placement::PostT, None, rid);
+    reply_of(&flight_end, None)
 }
 
 #[tauri::command]

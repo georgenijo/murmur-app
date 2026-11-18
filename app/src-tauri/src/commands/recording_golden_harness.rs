@@ -221,6 +221,8 @@ pub(super) struct Knobs {
     /// What the Smart Auto resolve port answers (`None`: an error, the scenario did
     /// not script it).
     pub(super) smart_auto: Option<Result<crate::microphone_auto::SmartAutoSelection, String>>,
+    /// The `smart-destination-selected` emit fails.
+    pub(super) smart_destination_emit_error: bool,
 }
 
 impl Default for Knobs {
@@ -238,6 +240,7 @@ impl Default for Knobs {
             pipeline_error: None,
             pipeline_finish_panics: false,
             smart_auto: None,
+            smart_destination_emit_error: false,
         }
     }
 }
@@ -326,6 +329,9 @@ pub(super) struct World {
     delivery: StdMutex<Option<Delivery>>,
     /// Smart Auto resolves the start asked its host for.
     smart_auto_resolves: std::sync::atomic::AtomicUsize,
+    /// How many times the publish asked for its side tasks (`SD`): a counter, not
+    /// a trace line, so no recorded golden changes.
+    side_task_spawns: std::sync::atomic::AtomicUsize,
 }
 
 /// A delivery operation parked inside the production ownership fence.
@@ -353,6 +359,7 @@ impl World {
             auto_stops: StdMutex::new(Vec::new()),
             delivery: StdMutex::new(None),
             smart_auto_resolves: std::sync::atomic::AtomicUsize::new(0),
+            side_task_spawns: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -642,6 +649,11 @@ impl World {
     }
 
     /// How many Smart Auto resolves the start asked its host for.
+    /// How many times the ready publish started its side tasks (`SD`).
+    pub(super) fn side_task_spawns(&self) -> usize {
+        self.side_task_spawns.load(Ordering::SeqCst)
+    }
+
     pub(super) fn smart_auto_resolves(&self) -> usize {
         self.smart_auto_resolves.load(Ordering::SeqCst)
     }
@@ -1177,6 +1189,9 @@ impl World {
         self.push(format!(
             "supervisor.is_dictation_recording {recording_id} -> {recording}"
         ));
+        // A point where a scenario lands an event after the read and before D
+        // (R104.5's mutation witness).
+        self.fire("supervisor.is_dictation_recording");
         recording
     }
 }
@@ -1405,32 +1420,45 @@ impl DictationHost for Host {
 
     fn refresh_expired_ide_context(&self, _app_state: &AppState, _bundle_id: Option<&str>) {
         self.0.push("refresh_expired_ide_context");
+        // A point between query 402's read and the emit's own D section.
+        self.0.fire("refresh_expired_ide_context");
     }
 
     fn emit_smart_destination(
         &self,
-        _app_state: &AppState,
         recording_id: u64,
         _context: &DictationContextSnapshot,
         _accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
-    ) {
+    ) -> Result<(), String> {
         self.0
             .push(format!("emit_smart_destination {recording_id}"));
+        // An inline listener of the emit (on this thread, under the shell's D hold).
+        self.0.fire("smart_destination.emit");
+        if locked(&self.0.knobs).smart_destination_emit_error {
+            Err("the emit failed".to_string())
+        } else {
+            Ok(())
+        }
     }
 
     fn publish_recording_ready_if_audio_ready(
         &self,
+        state: &State,
         recording_id: u64,
         context_ready_at: std::time::Instant,
+        ready_op: crate::core_history::ContinuationGuard,
     ) -> bool {
         let world = &self.0;
         world.push(format!("publish_recording_ready {recording_id}"));
         let published = publish_recording_ready_with(
             &world.app,
+            state,
             recording_id,
             context_ready_at,
+            ready_op,
             |recording_id| world.is_dictation_recording(recording_id),
             |app, recording_id, register| {
+                world.side_task_spawns.fetch_add(1, Ordering::SeqCst);
                 let state = app.state::<State>();
                 let Some(context) = state.app_state.active_context(recording_id) else {
                     return;
