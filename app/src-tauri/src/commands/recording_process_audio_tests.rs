@@ -1329,6 +1329,12 @@ fn the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal() {
             run.state.app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
         }),
     ];
+    const DEFAULT_BUILD_ALLOCATIONS: [(&str, u64); 4] = [
+        ("a meeting is active (before D)", 0),
+        ("a file transcription (under D)", 1),
+        ("a benchmark (under D)", 1),
+        ("a live dictation (under D)", 2),
+    ];
     let mut counted = 0;
     for (title, setup) in scenarios {
         let baseline = measured(setup, true);
@@ -1336,6 +1342,17 @@ fn the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal() {
         assert_eq!(
             armed, baseline,
             "process_audio refused by {title}: armed {armed} allocations under D, disarmed {baseline}"
+        );
+        // The disarmed run is the default build's allocation (every shadow read is gated
+        // on an armed flight): a feature-only extra under D changes this number.
+        let (_, pinned) = DEFAULT_BUILD_ALLOCATIONS
+            .iter()
+            .find(|(name, _)| *name == title)
+            .expect("every scenario has a pinned default-build count");
+        assert_eq!(
+            baseline, *pinned,
+            "process_audio refused by {title}: {baseline} allocations under D with the shadow \
+             compiled in and not armed, the default build makes {pinned} (D-S2c-7 c)"
         );
         counted += baseline;
     }

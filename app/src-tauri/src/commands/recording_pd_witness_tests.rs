@@ -1258,6 +1258,22 @@ pub(super) mod under_d {
         ALLOCATIONS_UNDER_D.with(|total| total.set(total.get() + allocations));
     }
 
+    /// What each refusal allocates while D is held in the default build (counted on a
+    /// feature build with the shadow disarmed, where every shadow read is gated off).
+    /// An intended change to a refusal's own D section re-pins its line.
+    const DEFAULT_BUILD_ALLOCATIONS_UNDER_D: [(&str, u64); 10] = [
+        ("start refused before D (Smart Auto with a fixed device)", 0),
+        ("start refused under D (a meeting is active)", 6),
+        ("start refused under D (already recording)", 21),
+        ("stop refused (stale, R201.1)", 0),
+        ("stop refused (processing, R201.2)", 5),
+        ("stop refused (idle, R201.3)", 5),
+        ("stop refused (recovering, nothing preserved, R201.6)", 11),
+        ("cancel refused (stale, R205.1)", 0),
+        ("cancel no-op (idle, R205.2)", 0),
+        ("cancel no-op (recovering, R205.3)", 0),
+    ];
+
     struct Scenario {
         title: &'static str,
         setup: Setup,
@@ -1370,6 +1386,19 @@ pub(super) mod under_d {
             assert_eq!(
                 armed, baseline,
                 "{}: armed {armed} allocations under D, disarmed {baseline}",
+                scenario.title
+            );
+            // The disarmed run is the default build's allocation: every shadow read is
+            // gated on an armed flight, so a feature-only extra under D (equal armed and
+            // disarmed, so the comparison above cannot see it) changes this number.
+            let (_, pinned) = DEFAULT_BUILD_ALLOCATIONS_UNDER_D
+                .iter()
+                .find(|(title, _)| *title == scenario.title)
+                .unwrap_or_else(|| panic!("{}: no pinned default-build count", scenario.title));
+            assert_eq!(
+                baseline, *pinned,
+                "{}: {baseline} allocations under D with the shadow compiled in and not armed, \
+                 the default build makes {pinned} (D-S2c-7 c)",
                 scenario.title
             );
             counted += baseline;
