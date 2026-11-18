@@ -14,7 +14,9 @@ use murmur_dictation_core::status::Status;
 use super::harness::*;
 use crate::dictation_shadow::compare::{Comparator, MAX_OPEN_RECORDS};
 use crate::dictation_shadow::transport::{submit, ShadowRecorder, ShadowTicket, Transport};
-use crate::dictation_shadow::types::{HistoryAction, HistoryTable, RecorderId, ShadowMsg};
+use crate::dictation_shadow::types::{
+    DiffKind, HistoryAction, HistoryTable, RecorderId, ReplyKind, ShadowMsg,
+};
 
 fn panicking_comparator() -> Comparator {
     Comparator::new(
@@ -505,6 +507,67 @@ fn a_late_conflict_leaves_the_finish_unverifiable_not_a_premature_mismatch() {
         "only the duplicate registration is a proven mismatch: {:?}",
         h.stats()
     );
+}
+
+#[test]
+fn a_wrong_owner_token_and_a_wrong_reply_are_one_close_with_the_lowest_diff_kind() {
+    // Sol round 8: the deferred identity check was flagged after the close had chosen
+    // its own lowest level, so the identity mismatch became a second report (a
+    // follow-up) instead of one of the close's levels. It is one of them now: the
+    // flight reports the lowest `diff_kind` across the close's levels, once. In this
+    // crate's documented order (`DiffKind`) the reply (4) is lower than the
+    // continuation (6), so the reply is the root; the identity adds no second report.
+    let mut h = harness();
+    h.feed(&pipeline_start(1, 1));
+    let mut finish = pipeline_exit(2, 2, Status::Processing, RID, RID);
+    finish
+        .header
+        .live_ops
+        .iter_mut()
+        .find(|op| {
+            op.table == HistoryTable::H1 && matches!(op.action, HistoryAction::Retired { .. })
+        })
+        .unwrap()
+        .op = OperationId(9_999);
+    let decided = finish.later.iter().find_map(|msg| match msg {
+        ShadowMsg::Reply { kind, .. } => Some(*kind),
+        _ => None,
+    });
+    let wrong = if decided == Some(ReplyKind::Err) {
+        ReplyKind::Ok
+    } else {
+        ReplyKind::Err
+    };
+    finish
+        .later
+        .retain(|msg| !matches!(msg, ShadowMsg::Reply { .. }));
+    let at = finish
+        .later
+        .iter()
+        .position(|msg| matches!(msg, ShadowMsg::Close { .. }))
+        .unwrap();
+    finish.later.insert(
+        at,
+        ShadowMsg::Reply {
+            rec: finish.header.rec,
+            kind: wrong,
+        },
+    );
+    h.feed(&finish);
+    assert_eq!(h.stats().mismatched_root, 1, "{:?}", h.stats());
+    assert_eq!(
+        h.stats().followup,
+        0,
+        "one close, one report: {:?}",
+        h.stats()
+    );
+    assert_eq!(
+        h.only_event().diff_kind,
+        DiffKind::Reply.code(),
+        "the lowest level of the close"
+    );
+    assert!(DiffKind::Reply < DiffKind::Continuation);
+    assert_eq!(h.stats().closed_mismatched, 1, "{:?}", h.stats());
 }
 
 #[test]

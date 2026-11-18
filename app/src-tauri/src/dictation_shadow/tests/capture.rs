@@ -87,6 +87,7 @@ fn produce_one_flight(transport: &Arc<crate::dictation_shadow::transport::Transp
     mark(
         &recorder,
         Mark::TickerSkipped {
+            target: rid,
             reason: TickerSkipReason::NoContext,
         },
     );

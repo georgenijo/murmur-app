@@ -6,6 +6,8 @@
 //! the live spawner is right to return early when no context was recorded or the model
 //! has no live preview. The comparator's assumption was the defect.
 
+use murmur_dictation_core::ids::RecordingId;
+
 use super::harness::*;
 use crate::dictation_shadow::transport::{mark, Mark};
 use crate::dictation_shadow::types::{DiffKind, ShadowMsg, TickerSkipReason};
@@ -22,9 +24,15 @@ fn spawning_flight() -> Flight {
     )
 }
 
+/// A skip for the recording the decision targets (`RID` for these flights).
 fn skip(flight: &Flight, reason: TickerSkipReason) -> ShadowMsg {
+    skip_for(flight, RID, reason)
+}
+
+fn skip_for(flight: &Flight, target: RecordingId, reason: TickerSkipReason) -> ShadowMsg {
     ShadowMsg::TickerSkipped {
         rec: flight.header.rec,
+        target,
         reason,
     }
 }
@@ -76,6 +84,51 @@ fn a_skip_alone_matches_whatever_the_reason() {
         assert_eq!(counted, expected, "the reason is recorded per row");
         h.comparator.assert_conserved();
     }
+}
+
+#[test]
+fn a_skip_for_the_wrong_recording_is_a_post_state_mismatch_like_a_gate() {
+    // Sol round 8: the shell asked for recording 6 instead of 7, the spawner found no
+    // context and skipped. The skip carries the requested id, so it is judged against
+    // the decision's target exactly as a gate's id is (the same wrong id on a gate is
+    // `PostState`, see `comparison.rs`).
+    let previous = RecordingId(RID.0 - 1);
+    for reason in TickerSkipReason::ALL {
+        let mut flight = spawning_flight();
+        let at = flight
+            .later
+            .iter()
+            .position(|msg| matches!(msg, ShadowMsg::Ticker { .. }))
+            .unwrap();
+        flight.later[at] = skip_for(&flight, previous, reason);
+        let mut h = harness();
+        h.feed(&flight);
+        let event = h.only_event();
+        assert_eq!(event.diff_kind, DiffKind::PostState.code(), "{reason:?}");
+        assert_eq!(h.stats().matched, 0, "{:?}", h.stats());
+    }
+
+    // The same through the real producer path (`mark` carries the target).
+    let mut flight = spawning_flight();
+    let at = flight
+        .later
+        .iter()
+        .position(|msg| matches!(msg, ShadowMsg::Ticker { .. }))
+        .unwrap();
+    flight.later[at] = skip_for(&flight, previous, TickerSkipReason::NoContext);
+    let transport = default_transport();
+    let recorder = transport.recorder();
+    submit_header(&recorder, &flight);
+    send_later(&recorder, &flight);
+    let mut h = harness();
+    h.comparator.drain(&transport);
+    assert_eq!(
+        h.only_event().diff_kind,
+        DiffKind::PostState.code(),
+        "{:?}",
+        h.stats()
+    );
+    drop(recorder);
 }
 
 #[test]
@@ -177,6 +230,7 @@ fn a_skip_mark_is_one_attempt_and_counted_when_rejected() {
         mark(
             &recorder,
             Mark::TickerSkipped {
+                target: RID,
                 reason: TickerSkipReason::NoContext,
             },
         );

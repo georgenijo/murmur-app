@@ -210,7 +210,7 @@ as immutable observations from the live slot.
 | **2a-4a** (start request: sites 101, 102) | **Authoritative writer, per input moved.** The single writer of M1 `status` and M2 `current_id` for the start command is the executor's `ST` / `ID+` effect through `FieldAdapter::set_status` / `alloc_id`, at the decision's `In` placement under the D hold the section already takes: R101.12 `Idle→Recovering` (old id), R101.15 `ID+` then `Idle→Starting`, R102.2-.5 `→Idle` (only for the current id, PD-3, PD-6). M3 and M4 stay live-only: `CX-` (R102.2-.6 `Pre`, before D) writes only the live slot through `FieldAdapter::clear_context`; no start decide function reads M3 or M4 (the view is `project_lifecycle_view`). H1: R101.15's `K:CaptureStart` is registered in `core_history` right after the decide, before any effect, and site 102 consumes it through `validate`, decide, `ret_if_matches`; R102.1 returns `K:ResolveContext`, registered by the shell and retired by its owner's `Drop` until site 103 moves (2a-4b). `op_status` never branches a row; a flight dropped mid-way retires its op through the owner's `Drop`. H2: untouched. The kept-preview `CS` is the awaited effect: the cursor is parked across the `spawn_blocking` await with no port or executor held and resumed (after the wait outside any core span) with the supervisor's real result. `resolve_smart_auto` is a `DictationHost` port, read only when the decision asks for it. It runs with the core span set (`observe_in_core`, its lock placement unchanged): its success emits `smart-auto-microphone-changed` inline under T and D, so a Rust listener that re-enters the start is refused (D-S2-2) and an `IdleGuard` it drops queues its finish for the drain (D-S2-4). The start entry checks re-entrancy (`CoreEntry`) as its first statement, before the claims, T, D or any managed-state lookup (D-S2-2); the start ports keep `IN_CORE` set; the drain of re-entrantly queued finishes (D-S2-4) runs in the synchronous stretch that holds D, never across an await. D-S1-5(c): the start-site fallbacks (`reply None => admitted`, `_ => {}`, the `audio_recovering` `map_or_else` and the two `debug_assert`s) are exhaustive matches with `unreachable!`. Unchanged and still inline: the smart-destination capture, the context install (103), the readiness publish (104) and the model preparation (2a-4b), `process_audio` (D-S2-1). SP5 ratchet lowered: `transition_dictation_status` call sites 5 -> 2; `emit_dictation_terminal*` 7 -> 7 (the start's failure `TERM` moves into the start `Ports::terminal`; the superseded `TERM` of site 103 stays inline until 2a-4b). |
 | **2a-4b** (start context and ready publish: sites 103, 104, query 402) | **Authoritative writer, per input moved.** M1 `status`: the single writer of the readiness publish (R104.2 `Starting→Recording`) is the executor's `ST` effect through `FieldAdapter::set_status` at `In`, under the D hold the publish already takes (`TL`, `EM(recording)` and `SD` follow at `In`; `SD` runs through the new `Ports::detached_under_d`, so the partial ticker registers under that same hold). M2: not written. M4 `active_context`: `CX+` (R103.1, R103.2 `In`) writes only the live slot through `FieldAdapter::set_context`; no decide function reads M3 or M4 except R103.0's `q_capture_current`, which reads M3 as an atomic observation (the view). H1: R102.1's `K:ResolveContext` is consumed at site 103 through `validate`, decide, `ret_if_matches`; R103.1 returns `K:ReadyPublish`, registered by the shell before any effect and consumed by the publish's own decision (R104.1 D-less, R104.2-.6 under D); every flight end retires its op, a dropped flight retires it through the owner's `Drop`; `op_status` never branches a row. H2: untouched. Staged reads (D-S1-2): the supervisor phase read stays before D (R104.1 takes no D); the installed context is read only after the id and status guards passed. The smart-destination capture await is followed by `until_outside_core()` before the next D sections (D-S2-3). The smart-destination emit's D section is owned by the shell (it was the host helper's hidden lock): R103.0 rechecks generation ownership under it and `In:SDE` runs under that hold, with the real emit result as its witness and the ownership gate suppressing the effect before dispatch (it is then absent from the decision); a drain guard declared before D covers return and unwind (D-S2-4). The ready publish takes the start's own `&State` through the host seam, so the audio-not-ready path takes no managed-state lookup. Appendix deviations (code wins): R104.7 is its own pure function so the flight end does not cross the host seam; R103.0' has no row id of its own in the registry (`R103.0`, verdict `Stale`). SP5 ratchet lowered: `transition_dictation_status` call sites 2 -> 1; `emit_dictation_terminal*` 7 -> 6 (the superseded `TERM` of site 103 moved into the start `Ports::terminal`). |
 | **2a-5** (legacy `process_audio`: sites 301, 302) | **Authoritative writer, per input moved.** The single writer of M1 `status` and M2 `current_id` for the import is the executor's `ST` / `ID+` effect through `FieldAdapter::set_status` / `alloc_id` at R301.5's `In` placement (`ID+`, `ST→Processing`, `AX(s)`), under the D hold the section already takes; `KB(true)`, `EV(GenStarted)` and `EM(processing)` run `PT`, after D and T are released. M2 is written only by `ID+`. M3 and M4 stay live-only and no 30x decide reads them. H1/H2: R301.5 returns `K:Pipeline`; the shell registers it with `pipelines[rid]` (`PipelineOwner::register`) right after the decide and before any effect (C4.3). The owner is held until the pipeline's own guard takes it over (`IdleGuard::take_owner` into `PipelineStopContext.pipeline_op`) and retires both at its finish (204a `PipelineExit`, C3.9); on every earlier exit it retires them itself: a parse failure (R302.1: `validate`, decide, retire H1 and H2 before the guard's `In` effects), a stale or cancelled capture return, a panic (`Drop`); an owner dropped inside a core span (an emit listener drops the owner itself) does not retire on the spot: its H2 and H1 retirement is one history-only item in the deferred FIFO, behind any finish queued earlier, and runs on the drain after D is released (D-S2-4). A refusal (R301.1-.4) registers nothing and burns no id. Site 302 is the 204a `LegacyParse` and 204b `LegacyPost` rows decided by `decide_process_audio_finish`, called inline at the guard's finish section and at the shared post-pipeline tail. Entry (D-S2-2/3): `refuse_reentrant` is the first statement of the command's body, before the transition await, T, D or `core_history`; T is taken through `transition_outside_core`, which parks on every poll made inside a core span (an import that parked on T and is polled by a listener holding D takes neither T nor D) and waits the span out again after T, as the stop family does; the drain of re-entrantly queued finishes (D-S2-4) covers the synchronous 301 section and ends before the destination-capture await, which is followed by `until_outside_core()` before the next D read. The Smart Destination emit follows the start's pattern (D-S2-11): after a short D read of query 402 (`q_capture_current`) the shell owns the emit's D section, rechecks generation ownership there (`decide_process_audio_destination`, R301.6: the start's R103.0 decision under the import's own row id) and runs `In:SDE` under that hold, with the emit's real result as its witness and the ownership gate suppressing the effect before dispatch; the executor's span keeps `IN_CORE` set around the emit and a drain guard declared before D runs a finish an inline listener queued on the return and on an unwind, after D is released (D-S2-4). The host helper that used to take its own D section and gate is gone. The command's own host seam (`ImportedAudioHost`, `process_audio_ports.rs`) passes the existing `&State` through; no port does a managed-state lookup. Appendix deviations (code wins): R301.6 (`decide_process_audio_destination`) is an import destination row the appendix does not list: the import's Smart Destination recheck needs the start's R103.0 decision under a row id of its own so shadow capture never credits site 103, and the row registry holds 141 rows (D-S2-14); R301.1 is `decide_process_audio_start_pre` (no D); `benchmark.is_running()` takes the coordinator mutex, so it is read through `NeedObservation(BenchmarkRunning)` after the file check (D-S1-2); R302.1/R302.2 delegate to the 204a / 204b decisions but return site 302's own row ids (`R302.1`, `R302.2`: a decision's row must belong to the site that produced it, and the tests compare effects, verdict, transition and continuation with the delegates row by row); R302.2's reply is the success reply, and a pipeline that returned `Err` has no row: after the 204b section ran, the shell returns the pipeline's error text as a separate shell tail (`pipeline_result?`), outside the shadow contract; `ProcessAudioFinishInput.closure_emit` carries a deferred finish's missing idle closure; the success reply has no `state` key and the shell keeps today's JSON. Unchanged and still inline: the context resolve and the performance begin. The shared C0.3a queries now back three more gates with their lock scopes, short-circuit order and the ticker claim unchanged: the import's capture check (query 402), the partial-ticker registration (query 401, then the claim) and the delivery ownership gate (query 403); the old predicates survive only as test oracles with parity tests. Shared helpers touched, with no change for the stop family: `IdleGuard::finish_section` and `run_pipeline_idle_emit` pick site 302's function for the legacy origin / kind and the 204a / 204b function otherwise; `IdleGuard::for_legacy_parse` now takes the import's owner. SP5 ratchet lowered: `transition_dictation_status` call sites 1 -> 0 (the helper is test-only); `emit_dictation_terminal*` 6 -> 6 (the import never emits a terminal). |
-| **2c-1** (shadow infrastructure, feature `dictation-shadow`) | **No writer changes.** `DictationCore::handle` (crate `handle`) is pure and reads no live field. The shadow thread owns a `ShadowCore` (M1 `status`, M2 `current_id` only), re-synced from every header's `pre`; M3 and M4 are replayed from the header as observations and compared only as mirror witnesses (`diff_kind` 5). Op ids are replayed from the live shell, never drawn; H1/H2 are not copied. The live side only enqueues: one attempt to store an owned, heap-free message in a preallocated in-crate bounded ring (256; the Vyukov queue of `dictation_shadow/ring.rs`, one consumer, no loop, backoff or yield), with no allocation, free, lock, channel or wake-up (a counting-allocator test counts both allocations and frees on accept, on rejection and on the drop of a rejected header; Smart Auto's refusal is the typed `SmartAutoFailure`, and its reply text stays shell-owned), and a rejected message costs two atomic counters (a global `lost` and one per site), nothing else. The consumer stages each batch and reads `lost` again: if it moved, the batch and every open, held or waiting record are given up (`abandoned_by_loss`), and a later header whose ticket predates the loss is not admitted, its place in the sequence consumed as an explicit skip (Sol round 5; D-S2c-4 d); no loss is attributed to a subject (D-S2c-3, replacing D-S2c-1 c's attribution). Every opened recorder is closed exactly once through one `close(recorder, kind)` (`opened` equals the close counters plus the recorders still open; a second close is a counted no-op, D-S2c-4 b; the closed set never expires and an eviction is a close, D-S2c-5 a, b), and a panic reset closes the flight being processed as well (c). A `PostDT:SD` is witnessed by exactly one ticker gate or one numeric `TickerSkipped` (the spawner returned early, D-S2c-6; the reason is recorded per row, not compared). A pipeline-owned finish is clean only with the owner's full H1 token from the shadow's own registration witness, a registration validated as the only one for its recording (a later conflicting one invalidates it), compared with the operation it retired at its close; otherwise `unverifiable` (D-S2c-4 a, D-S2c-5 d). Mismatches go to `dictation-shadow-events.jsonl` from the comparison thread, never through `tracing` (b); the comparison thread alone writes the summary (f); `PD` counters need the defining behaviour witnessed (d). The feature refuses to compile under `panic = "abort"`; soak builds use the `shadow-soak` profile (e). Nothing in the shell sends a message until the capture sites of 2c-2 land. |
+| **2c-1** (shadow infrastructure, feature `dictation-shadow`) | **No writer changes.** `DictationCore::handle` (crate `handle`) is pure and reads no live field. The shadow thread owns a `ShadowCore` (M1 `status`, M2 `current_id` only), re-synced from every header's `pre`; M3 and M4 are replayed from the header as observations and compared only as mirror witnesses (`diff_kind` 5). Op ids are replayed from the live shell, never drawn; H1/H2 are not copied. The live side only enqueues: one attempt to store an owned, heap-free message in a preallocated in-crate bounded ring (256; the Vyukov queue of `dictation_shadow/ring.rs`, one consumer, no loop, backoff or yield), with no allocation, free, lock, channel or wake-up (a counting-allocator test counts both allocations and frees on accept, on rejection and on the drop of a rejected header; Smart Auto's refusal is the typed `SmartAutoFailure`, and its reply text stays shell-owned), and a rejected message costs two atomic counters (a global `lost` and one per site), nothing else. The consumer stages each batch and reads `lost` again: if it moved, the batch and every open, held or waiting record are given up (`abandoned_by_loss`), and a later header whose ticket predates the loss is not admitted, its place in the sequence consumed as an explicit skip (Sol round 5; D-S2c-4 d); no loss is attributed to a subject (D-S2c-3, replacing D-S2c-1 c's attribution). Every opened recorder is closed exactly once through one `close(recorder, kind)` (`opened` equals the close counters plus the recorders still open; a second close is a counted no-op, D-S2c-4 b; the closed set never expires and an eviction is a close, D-S2c-5 a, b), and a panic reset closes the flight being processed as well (c). An `SD` (`In` or `PostDT`) is witnessed by exactly one ticker gate or one numeric `TickerSkipped { target, reason }` (the spawner returned early, D-S2c-6, D-S2c-7; for an `In:SD` it follows the header and the expectation stays open until the close; its target is checked like a gate's, the reason is recorded per row, not compared). `SPEC`'s value is an `Observed` mark judged before the header's; `Pre`/`In` keyboard and cancelled-through writes are header mirrors. A pipeline-owned finish is clean only with the owner's full H1 token from the shadow's own registration witness, a registration validated as the only one for its recording (a later conflicting one invalidates it), compared with the operation it retired at its close; otherwise `unverifiable` (D-S2c-4 a, D-S2c-5 d). Mismatches go to `dictation-shadow-events.jsonl` from the comparison thread, never through `tracing` (b); the comparison thread alone writes the summary (f); `PD` counters need the defining behaviour witnessed (d). The feature refuses to compile under `panic = "abort"`; soak builds use the `shadow-soak` profile (e). Nothing in the shell sends a message until the capture sites of 2c-2 land. |
 
 ## Stage 1 exit artifacts
 
@@ -370,3 +370,188 @@ Stage 2b's generator drives the same entries and must keep rule 1 above:
    itself and returns `Pending`; the golden harness (`poll_once`) polls it once, with
    no waker that re-polls, and polls again only after the span ended. A driver that
    re-polled on the self-wake would spin inside the span.
+
+## The property harness (Stage 2b-1, appendix C7.5)
+
+`src/property/` is a `#[cfg(test)]` module of this crate (CI runs `cargo nextest
+run -E 'kind(lib)'`, which does not run integration tests). It composes the **real**
+`decide_*` functions of every site with an interpreter of their placed effects over a
+model world (M1-M4, the telemetry ledger, the performance and diagnostics sinks,
+`core_history` H1/H2, the supervisor's owner and phase). It has no dependency: a
+splitmix64 generator turns a seed into the whole run.
+
+**What the harness is evidence for.** It calls the `decide_*` functions directly, not
+through `DictationCore::handle`, so it gives no signal about the cutover's routing. The
+cutover evidence is the goldens, the replays, the harness-findings shell tests
+(`recording_harness_findings_tests.rs`) and the shadow comparison E1-E9. Routing the
+harness through `handle` is tracked in #1160.
+
+* **Generator** (`gen.rs`, `supervisor.rs`): commands (start, stop, cancel; ids
+  `current`, `current-1`, `current+1`, unscoped) and, per start, one word of the C7.3
+  `Attempt` grammar. Every supervisor word ends with an explicit `OwnerClear` step
+  (followed by `CleanupFinished` for a sealed stop only); `cleanup_pending` is derived
+  from the model (owner set and phase `Stopping`/`Recovering`), never generated.
+* **Supervisor mirror** (D-S2b-9 (a), `mirror_table.rs`): `MIRROR` is a table in which
+  every modeled supervisor or client step (and every helper the model mirrors:
+  `is_dictation_cleanup_pending`, `is_dictation_recording`, `take_interrupted_dictation`,
+  `PublicState::owns` and the rest of the public-state accessors) cites the
+  `audio_lifecycle.rs` function it mirrors (no line range: the function is hash-pinned, so
+  the test finds each cited token sequence **exactly once** inside it and prints the lines it matched; a citation that matches zero or several times fails, so a guard cannot be satisfied by the same tokens in another match arm), with a
+  fragment of source that must appear there, the **guard expressions** of the cited code (`guards`) and, where one
+  exists, a test of the real supervisor that runs the behaviour (`real_test`: for the sealed
+  reply `a_sealed_stop_reply_is_delivered_at_the_seal_before_worker_exit`; for cancel
+  `a_cancel_from_recording_stops_capture_and_answers_true` and
+  `a_cancel_from_recovering_has_nothing_to_abandon`; for the queries
+  `a_cleanup_is_pending_only_for_the_owner_while_stopping_or_recovering` and
+  `a_taken_interrupted_capture_is_gone_for_the_next_stop`). This crate checks that every
+  message, worker event, timer and supervisor step of the model has a row
+  (`every_modeled_step_has_a_mirror_row`). **The pins and the citation checks live in the
+  app crate** (D-S2b-15), in `src/audio_lifecycle_mirror_tests.rs`, which includes
+  `mirror_table.rs` by path (so the table the harness runs is the table checked) and
+  parses the source with `syn`: every production function, method, constant and static of
+  `audio_lifecycle.rs` has its **own pin** (`LIFECYCLE_PINS`: the FNV-1a hash of the item's
+  normalized token stream), so any edit, addition or removal fails
+  `every_production_item_of_audio_lifecycle_is_pinned` and names the item until its pin is
+  updated. The **whole production file is pinned too** (`LIFECYCLE_FILE_PIN`,
+  D-S2b-17 (a)): the normalized tokens of every item except `#[cfg(test)]` modules and
+  items whose own attribute is exactly `#[cfg(test)]`, so a serde attribute, a
+  `macro_rules!` body, a methodless impl, a module's cfg or a `use` fails too; the per-item
+  pins stay to name what changed. The normalization is the shell ratchet's (`src/token_pin_tests.rs`, shared:
+  `proc_macro2` tokens, token kinds, punctuation spacing and commas kept, only whitespace and
+  comments stripped), so a comment-only edit passes and a one-token edit fails. The
+  citations are matched as token sequences, exactly once, within the cited, hash-pinned function
+  (`span-locations` gives the matched lines for the diagnostics), so a comment inside a cited
+  expression does not hide it and a line shift breaks nothing. A re-pin commit says the model step
+  was re-checked against the change (`cargo test --lib print_current_pins -- --ignored
+  --nocapture` in the app crate prints the tables). Every function a cited function calls is
+  cited by a row or listed in `NOT_MODELED` with the reason it is outside the model.
+  The core crate has no hand-written lexer and no dependency. A command (start, stop and cancel alike, each with its own
+  receiver deadline) has five events: the client's enqueue (never blocked by a busy
+  supervisor), the supervisor's acceptance, the reply at its production point (a stop's
+  at the seal or the worker's exit, a cancel's when handled), the receiver's timeout and
+  the client's continuation. An immediate refusal (a stop with no attempt or another
+  owner, a cancel with nothing to abandon, a start refused because its caller was
+  revoked or an attempt exists) is a step of its own after the acceptance, so the
+  receiver can expire between the two and the reply is then dropped. A start whose
+  receiver timed out revokes its caller and enqueues `Cancel{User}` (`await_start_response`).
+  A notification fires only in a state where the cited code sends it.
+* **Supervisor fidelity** (D-S2b-7 (b), `supervisor.rs`, `sup_task.rs`): the model may
+  not invent or exclude a schedule. The worker's own end (a recovery, a crash, a failed
+  open) is a pending end that a stop or a cancel command can still win until the
+  supervisor takes it; the start's answer, a cancel's answer (after `begin_recovery`
+  returned) and the attempt's results are steps of their own; `finish_attempt` is one
+  uninterrupted group; `RecoveryStalled` is notified only while stopping or recovering; a
+  cancel client's timeout is its own outcome (`CancelMode::Timeout`: `Err` while the
+  supervisor still handles the cancel).
+* **Scheduler** (`run.rs`, `flights.rs`, `sup_task.rs`): one thread; T-holder flights,
+  D sections, the supervisor thread, each notification's bridge arm, the pipeline, the
+  partial ticker (which takes and drops the partial-decode lease) and a task per
+  duplicate or late token delivery (`redeliver.rs`) are separate actors. A D section is
+  atomic; `Pre`, `PostDT` and `PostT` effects are one step each, so another actor's D
+  section can land between any two. A blocked step changes nothing (a test compares the
+  whole world). The README rules above hold: a start can only be dropped between steps,
+  at its smart-capture await.
+* **Checks** (`checks.rs`, `c3.rs`): SP1-SP4, SP6-SP10 after every step.
+  * *C3 effect fixture* (`c3_fixture.txt`, `c3.rs`, D-S2b-9 (d)): a hand transcription
+    of appendix-c.md C3.1-C3.7, one line per row of `C3_ROWS` (a snapshot of observed
+    effects is not a fixture), reachable by the harness or not. Every decision, including
+    each stale or valid input the model never reaches, must match one allowed outcome of
+    its row with exactly those effects, each the stated number of times, so a row that
+    grows an extra write, claims another outcome or emits a duplicate terminal fails. The
+    typed failure travels through the model (`AudioFailureKind` to its `ErrCode`), and a
+    row whose terminal code is the input's (R203.4-.8, R204b.5-.6, R213.2) is written
+    `@in`: the code must equal the exact code the harness gave that decision, with no
+    wildcard, so a row that rewrites it (`TerminationUnconfirmed` to `HostUnavailable`)
+    fails. The
+    continuation-ID bound is checked at every registration. SP2 for terminals: under D a
+    stale input claims only what the row lists for a stale input. SP5 stays structural
+    (the #1152 ratchet) and file admission stays a unit test.
+  * *SP4(b) signatures*: a terminal and a performance outcome that disagree are judged
+    at the step where the second one arrives. The split leaves the failure set only when
+    one signature matches in full, with every element bound to the same window: the PD,
+    the terminal rows with outcome and code, the statuses the claim saw, the performance
+    outcome class (or exact rows) and a causal precondition read from what each winner
+    recorded (`Won`: the cancel's tail open, the order of the winners, a later claim
+    lost). PD-4 is exactly its C7.1 definition (R207.3 on a live `Recording`, a second
+    ticker, `Success`); the same claim with another outcome is PD-23, whose signature binds
+    each outcome to the stop, cancel or pipeline rows that complete it (a class is not
+    enough), and whose `Success` variant needs the ticker's gate to have refused the second
+    ticker (pending at the shell: source-only). PD-24 has one signature per cause, R209.3
+    (the start timeout's own `Cancel{User}`) and R209.5 (an environmental recovery), and
+    is a mismatch at the performance **coordinator's claim**: the failed start never began a
+    run, so no row is behind it. PD-22 needs the winning `Idle` claim and the losing named
+    claim in the same cancel tail and is judged when that tail closes, because the window's
+    events land in either order. There is no stale-input skip (D-S2b-13 (d)): SP4(b)
+    compares the outcomes a generation actually has, and the model follows the performance
+    run's lifecycle (`request_completion`): a completion is the run's outcome once the run
+    began, waits while the begin is in flight, is dropped by an abort, and is a bare claim
+    of the coordinator with no row when no run was registered (an aborted start, seed
+    8096); only a signature marked `no_run` (PD-24) credits such a claim. No allowlist entry
+    is widened to make a seed pass: a split no signature covers is a finding to reproduce
+    at the shell (PD-23, PD-24) or a model fix. No PD exempts a whole recording.
+  * *SP10*: the partial-decode lease changes only by its holder's own acquire and drop,
+    and is released by the end of the run.
+  * *C7.3 liveness* is evaluated for every run from per-generation evidence, never by
+    filtering a run: a stuck `Recovering` needs the stranded recording's own PD-18
+    instance or PD-19 story. PD-19 has three entries: the user's stop took the preserved
+    capture (R201.5), found no context and wrote `Idle` while the owner recovered, a start
+    took R101.12 in the gap and the auto-stop was refused (`TerminationUnconfirmed`, or a
+    dropped start); or the auto-stop ran at status `Idle`, took nothing, and the capture is
+    still in the store. There is no exemption for a preserved capture nobody took: the stop
+    that could take it is the user's in `Recovering`, which the frontend suppresses
+    (`useRecordingState.ts` `handleStop`; `useRecordingState.test.tsx` "issues no stop or
+    cancel IPC while the status is recovering"), so the generator binds every user stop to
+    its caller (D-S2b-18): a window caller (the main window with the hold and toggle hotkeys
+    and the silence auto-stop, or the overlay) sends the stop IPC only when *its own
+    window* last received `Recording` (`useRecordingState.ts` `handleStop`,
+    `useRecordingControls.ts` click and double-click; on `Starting` a window cancels
+    instead, on `Recovering` it only presents a message). Observation and delivery are
+    separate (D-S2b-17 (b)): the status event is queued when the shell *emits* it
+    (`EmitStatus`, not at the `SetStatus` write, so two rows that write in one order can
+    emit in the other and a window can receive `Idle -> Recovering`), and each window has
+    its own delivery cursor and its own delivery steps. A stop sent while a window still
+    shows `Recording` after the shell entered `Recovering` is a valid schedule, even while
+    the other window has already received `Recovering` (a stop already in flight stays a
+    flight). A delivery changes no shell state, so it takes no model time. Every generated
+    user stop is unscoped (`recording_id = None`), as production sends it; a stale id
+    reaches the stop family only through the `Interrupted` auto-stop and the explicit
+    decision tests (D-S2b-17 (c)). The registered `stop_native_recording` IPC has no window
+    gate and
+    the supervisor's `Interrupted` auto-stop bypasses the frontend: both keep every
+    schedule (D-S2b-15 (c)); a run in which the unscoped IPC takes the retained capture ends
+    in `Idle`, and one in which nothing does is PD-19's third entry (ordinary controls leave
+    the app stuck; only the unscoped IPC recovers it, D-S2b-15 (d)). Only
+    the recording whose attempt awaits a stop or a cancel may stay `Recording` (L4), and
+    only a dropped start's own recording may stay `Starting` or `Recording`.
+  There is no "known findings" set: a behaviour outside the allowlist fails
+  `seeds_hold_the_properties`.
+* **Layer** (D-S2b-4, D-S2b-7 (c)): the harness runs the real `decide_*` functions over
+  a model world, not the shell. Where a model witness and a production-reachable shell
+  fixture disagree, the fixture wins and the model is fixed. PD-19..PD-24 were found
+  this way (`src/commands/recording_harness_findings_tests.rs`, pinned seeds in
+  `FINDING_SEEDS`, each beside its shell test). The shell fixtures drive the Stage 0b
+  fake host, because the real supervisor has no test seam outside `audio_lifecycle.rs`
+  (D-S2b-9 (b)): each injected notification or reply cites its production sender and
+  state, uses the production strings, and the test asserts the exact replies, statuses
+  and ledger outcomes.
+* **Seeds**: 10,000 in CI (about a second and a half, budget 20 s), fixed whatever the
+  environment says: `0..9,993` and seven fixed seeds (`FIXED_SEEDS`: 10,724, 11,125, 18,279,
+  22,704, 23,985, 244,103, 377,529) that take the PD-18 (unsealed stop), PD-19 (`TerminationUnconfirmed`, dropped start,
+  refused auto-stop), PD-24 (environmental recovery), PD-22 (against the cancel's own
+  `TERM`) and PD-21 (short stop) entries no seed of the plain range takes, so the converse
+  check (every PD and every signature row is witnessed) has no pinned exception. The deeper
+  sweep is a separate ignored test, `cargo test -p murmur-dictation-core --lib --release --
+  --ignored the_deep_sweep --nocapture` (300,000 seeds; `DEEP_SWEEP_SEEDS=3000000` sets
+  another size). `TRACE_SEED=<n> cargo test -p
+  murmur-dictation-core --lib property::tests::trace_one -- --nocapture` prints one run.
+  `DUMP_SP4B=1` prints the context of every split no signature matches. A core row
+  change that is meant to differ from C3 edits `c3_fixture.txt` by hand, after the
+  appendix.
+
+What this layer does not cover: SP5 (structural), the shell's own locks and executor
+(the golden harness and the shell tests drive those through the 0a seams), and
+`FieldAdapter`. SP1 is checked on the model ledger (first claim wins by construction).
+A duplicate or late token delivery runs the site's decision in the later world (SP7:
+the same row for a retired token as for an outstanding one) and may retire nothing; its
+own effects do not run, because in the shell a token has one consumer, the flight that
+registered it.

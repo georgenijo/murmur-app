@@ -890,6 +890,22 @@ impl World {
         self.notify(recording_id, AudioLifecycleEvent::Ready);
     }
 
+    /// A start the supervisor accepted whose response it has not sent yet:
+    /// `handle_start` installed the attempt, `set_owner`, `set_phase(Starting)`, then
+    /// `notify(Accepted)` (`audio_lifecycle.rs:1481-1588`).
+    pub(super) fn accepted_start(&self, recording_id: u64) {
+        self.set_owner(Some(recording_id));
+        self.set_phase(Phase::Starting);
+        self.notify(recording_id, AudioLifecycleEvent::Accepted);
+    }
+
+    /// `begin_recovery(reason)` of an attempt: `set_phase(Recovering)`, then
+    /// `notify(Recovering{reason})` (`audio_lifecycle.rs:2672-2689`).
+    pub(super) fn recovering(&self, recording_id: u64, reason: AudioCancelReason) {
+        self.set_phase(Phase::Recovering);
+        self.notify(recording_id, AudioLifecycleEvent::Recovering { reason });
+    }
+
     /// The worker failed at runtime: `Recovering{RuntimeFailure}`.
     pub(super) fn runtime_failure(&self, recording_id: u64) {
         self.set_phase(Phase::Recovering);
@@ -932,6 +948,13 @@ impl World {
     pub(super) fn hold_owner_clear(&self, recording_id: u64) {
         locked(&self.supervisor).held_owner_clear = Some(recording_id);
         self.push(format!("supervisor.hold_before_owner_clear {recording_id}"));
+    }
+
+    /// Another recording's attempt replaced the owner while a stop for `recording_id` was
+    /// queued: the supervisor installed a new attempt (`handle_start`, `set_owner`).
+    pub(super) fn replace_owner(&self, recording_id: u64) {
+        self.set_owner(Some(recording_id));
+        self.push(format!("supervisor.replace_owner {recording_id}"));
     }
 
     /// Release `hold_before_owner_clear` (`audio_lifecycle.rs:2460-2461`).
@@ -1138,6 +1161,29 @@ impl SupervisorPort for World {
             let knobs = self.knobs();
             (knobs.stop_result, knobs.stop_unsealed)
         };
+        // The supervisor handles the `Stop` message against whatever attempt exists then
+        // (`audio_lifecycle.rs:1235-1245`). With no attempt (the owner was cleared) it
+        // answers `Ok(Vec::new())` at once: nothing is sealed, so no `CleanupFinished`
+        // follows and no owner clear is pending. With another recording's attempt (the
+        // owner was replaced) it refuses: `Audio owner changed before stop`.
+        if result.is_ok() {
+            let owner = locked(&self.supervisor).owner;
+            match owner {
+                Some(current) if current == recording_id => {}
+                None => {
+                    self.push(format!(
+                        "supervisor.stop_after_owner_clear {recording_id} samples=0"
+                    ));
+                    return Ok(Vec::new());
+                }
+                Some(other) => {
+                    self.push(format!(
+                        "supervisor.stop_owner_changed {recording_id} owner={other}"
+                    ));
+                    return Err("Audio owner changed before stop".to_string());
+                }
+            }
+        }
         match result {
             Ok(samples) => {
                 if unsealed {

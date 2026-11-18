@@ -132,6 +132,10 @@ impl FieldAdapter {
     /// Live only.
     pub(crate) fn clear_context(app: &AppState, id: u64) -> bool {
         crate::core_history::assert_not_held();
+        // Test builds: the first statement of a cancel's `PostDT` tail, where
+        // another thread's input can land before the cancel's `TERM` claim.
+        #[cfg(test)]
+        crate::barrier_hook::at("adapter.clear_context");
         app.clear_active_context(id)
     }
 
