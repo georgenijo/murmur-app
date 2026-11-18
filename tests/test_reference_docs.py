@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_FILES = (
     "CLAUDE.md",
     "app/src-tauri/src/lib.rs",
+    "app/src-tauri/src/commands/recording/shadow_commands.rs",
     "docs/reference/commands.md",
     "docs/ARCHITECTURE.md",
     "docs/FEATURES.md",
@@ -132,6 +133,53 @@ class ReferenceDocsTests(unittest.TestCase):
 
                 with self.assertRaisesRegex(AssertionError, r"stale command count"):
                     validate_reference_docs(root)
+
+    def test_a_shadow_gated_pair_registers_one_command_under_the_rename_name(self) -> None:
+        wrappers = (
+            '#[tauri::command(rename = "first")]\n'
+            "pub(crate) async fn first_witnessed() {}\n"
+        )
+        handler = (
+            ".invoke_handler(tauri::generate_handler![\n"
+            "    plain,\n"
+            '    #[cfg(not(feature = "dictation-shadow"))]\n'
+            "    commands::a::first,\n"
+            '    #[cfg(feature = "dictation-shadow")]\n'
+            "    commands::a::shadow_commands::first_witnessed,\n"
+            "    last\n"
+            "])"
+        )
+        self.assertEqual(registered_commands(handler, wrappers), ["plain", "first", "last"])
+
+    def test_a_shadow_gated_pair_that_does_not_match_is_rejected(self) -> None:
+        wrappers = (
+            '#[tauri::command(rename = "other")]\n'
+            "pub(crate) async fn first_witnessed() {}\n"
+        )
+        base = (
+            ".invoke_handler(tauri::generate_handler![\n"
+            "    {body}\n"
+            "])"
+        )
+        pair = (
+            '#[cfg(not(feature = "dictation-shadow"))]\n'
+            "first,\n"
+            '#[cfg(feature = "dictation-shadow")]\n'
+            "first_witnessed,\n"
+        )
+        cases = {
+            "renamed to a different command": (pair, r"registered as 'other'"),
+            "a gate with no entry": ('#[cfg(feature = "dictation-shadow")]\n', r"unrecognized"),
+            "an unpaired gated entry": (
+                '#[cfg(not(feature = "dictation-shadow"))]\nfirst,\n',
+                r"unrecognized",
+            ),
+            "an unrelated cfg": ('#[cfg(test)]\nfirst,\n', r"unrecognized"),
+        }
+        for title, (body, message) in cases.items():
+            with self.subTest(case=title):
+                with self.assertRaisesRegex(AssertionError, message):
+                    registered_commands(base.replace("{body}", body), wrappers)
 
     def test_plain_and_instrumented_handlers_register_the_same_commands(self) -> None:
         body = "\n            commands::a::first,\n            second\n        "
