@@ -1654,6 +1654,9 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
     let _runtime = runtime().enter();
     S12_TAIL.with(|slot| slot.borrow_mut().take());
     reset_process_globals();
+    // E7: the real shell runs against the real comparator, on this thread.
+    #[cfg(feature = "dictation-shadow")]
+    let replay = crate::dictation_shadow::replay::Replay::begin();
     let app_state = AppState::default();
     app_state
         .recording_id
@@ -1676,7 +1679,15 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
     let lines = world.finish();
     observe(&world);
     reset_process_globals();
+    // Everything the run drove is dropped before the replay ends, so a flight that
+    // did not finish has reported its abandonment.
+    drop(world);
     drop(app);
+    #[cfg(feature = "dictation-shadow")]
+    {
+        let report = replay.end();
+        report.assert_clean(sub_run.title);
+    }
     lines
 }
 

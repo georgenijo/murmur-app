@@ -9,9 +9,11 @@
 //! (`ST`, `CX-`) go through the `FieldAdapter` on the guard the shell passes the
 //! executor, and every other effect is the statement the arm ran inline before.
 
+#[cfg(not(feature = "dictation-shadow"))]
+use super::register_partial_ticker_locked;
 use super::{
     complete_dictation_performance, emit_dictation_presentation, emit_dictation_terminal,
-    register_partial_ticker_locked, DictationPresentation, State,
+    DictationPresentation, State,
 };
 use crate::audio::AudioFailureKind;
 use crate::audio_lifecycle::{self, AudioCancelReason};
@@ -64,6 +66,9 @@ pub(super) struct LifecyclePorts<'a, R: tauri::Runtime> {
     /// stop. Dropped with the ports if `RS` never runs, which retires the op.
     auto_stop_owner: RefCell<Option<ContinuationGuard>>,
     spawn_ready_tasks: RefCell<Option<SpawnReadyTasks<'a, R>>>,
+    /// The ticker registration attempt the last `SD` made (appendix C8.2).
+    #[cfg(feature = "dictation-shadow")]
+    ticker_gate: std::rc::Rc<Cell<Option<crate::dictation_shadow::types::TickerGate>>>,
 }
 
 impl<'a, R: tauri::Runtime> LifecyclePorts<'a, R> {
@@ -83,6 +88,8 @@ impl<'a, R: tauri::Runtime> LifecyclePorts<'a, R> {
             transcribe_interruption: RefCell::new(Some(Box::new(transcribe_interruption))),
             auto_stop_owner: RefCell::new(None),
             spawn_ready_tasks: RefCell::new(Some(Box::new(spawn_ready_tasks))),
+            #[cfg(feature = "dictation-shadow")]
+            ticker_gate: std::rc::Rc::default(),
         }
     }
 
@@ -165,6 +172,11 @@ pub(super) fn run_phase(
 }
 
 impl<R: tauri::Runtime> Ports for LifecyclePorts<'_, R> {
+    #[cfg(feature = "dictation-shadow")]
+    fn take_ticker_gate(&self) -> Option<crate::dictation_shadow::types::TickerGate> {
+        self.ticker_gate.take()
+    }
+
     fn app_state(&self) -> &AppState {
         &self.state.app_state
     }
@@ -396,12 +408,25 @@ impl<R: tauri::Runtime> Ports for LifecyclePorts<'_, R> {
                     .ok_or(PortFailure)?;
                 let recording_id = self.recording_id;
                 let register_app = self.app.clone();
+                #[cfg(feature = "dictation-shadow")]
+                let gate_slot = std::rc::Rc::clone(&self.ticker_gate);
                 spawn(
                     self.app.clone(),
                     recording_id,
                     Box::new(move || {
                         let state = register_app.state::<State>();
                         let dictation = state.app_state.dictation.lock_or_recover();
+                        #[cfg(feature = "dictation-shadow")]
+                        {
+                            let (registered, gate) = super::register_partial_ticker_observed(
+                                &state.app_state,
+                                &dictation,
+                                recording_id,
+                            );
+                            gate_slot.set(Some(gate));
+                            registered
+                        }
+                        #[cfg(not(feature = "dictation-shadow"))]
                         register_partial_ticker_locked(&state.app_state, &dictation, recording_id)
                     }),
                 );

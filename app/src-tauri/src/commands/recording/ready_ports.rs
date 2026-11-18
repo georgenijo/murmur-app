@@ -13,7 +13,9 @@
 //! constant. `IN_CORE` stays set across the ports (decision D-S2-2); the log line
 //! that followed the emit stays right after it, before `SD`.
 
-use super::{register_partial_ticker_locked, State};
+#[cfg(not(feature = "dictation-shadow"))]
+use super::register_partial_ticker_locked;
+use super::State;
 use crate::dictation_context::DictationContextSnapshot;
 use crate::dictation_executor::executor::{PortFailure, PortResult, Ports};
 use crate::state::{AppState, DictationState};
@@ -35,6 +37,9 @@ pub(super) struct ReadyPorts<'a, R: tauri::Runtime> {
     recording_id: u64,
     context_ready_at: std::time::Instant,
     spawn_ready_tasks: RefCell<Option<SpawnReadyTasks<'a, R>>>,
+    /// The ticker registration attempt the `SD` made (appendix C8.2).
+    #[cfg(feature = "dictation-shadow")]
+    ticker_gate: std::cell::Cell<Option<crate::dictation_shadow::types::TickerGate>>,
 }
 
 impl<'a, R: tauri::Runtime> ReadyPorts<'a, R> {
@@ -51,11 +56,18 @@ impl<'a, R: tauri::Runtime> ReadyPorts<'a, R> {
             recording_id,
             context_ready_at,
             spawn_ready_tasks: RefCell::new(Some(spawn_ready_tasks)),
+            #[cfg(feature = "dictation-shadow")]
+            ticker_gate: std::cell::Cell::new(None),
         }
     }
 }
 
 impl<R: tauri::Runtime> Ports for ReadyPorts<'_, R> {
+    #[cfg(feature = "dictation-shadow")]
+    fn take_ticker_gate(&self) -> Option<crate::dictation_shadow::types::TickerGate> {
+        self.ticker_gate.take()
+    }
+
     fn app_state(&self) -> &AppState {
         &self.state.app_state
     }
@@ -136,7 +148,17 @@ impl<R: tauri::Runtime> Ports for ReadyPorts<'_, R> {
         spawn(
             self.app_handle,
             recording_id,
-            Box::new(|| register_partial_ticker_locked(app_state, dictation, recording_id)),
+            Box::new(|| {
+                #[cfg(feature = "dictation-shadow")]
+                {
+                    let (registered, gate) =
+                        super::register_partial_ticker_observed(app_state, dictation, recording_id);
+                    self.ticker_gate.set(Some(gate));
+                    registered
+                }
+                #[cfg(not(feature = "dictation-shadow"))]
+                register_partial_ticker_locked(app_state, dictation, recording_id)
+            }),
         );
         Ok(())
     }

@@ -54,6 +54,8 @@ pub(crate) mod types;
 #[cfg(test)]
 pub(crate) mod alloc_probe;
 #[cfg(test)]
+pub(crate) mod replay;
+#[cfg(test)]
 mod tests;
 
 use std::path::{Path, PathBuf};
@@ -110,7 +112,31 @@ pub(crate) fn parse_flag(value: Option<&str>) -> bool {
 /// feature gate is the `#[cfg]` that compiles this module at all, so both are
 /// required in a real build.
 pub(crate) fn enabled() -> bool {
+    // Test builds: a replay arms the shadow in synchronous mode without the env var
+    // (see `replay`); no other build has this branch.
+    #[cfg(test)]
+    if TEST_ARMED.load(Ordering::SeqCst) {
+        return true;
+    }
     *ENABLED.get_or_init(|| parse_flag(std::env::var(ENV_VAR).ok().as_deref()))
+}
+
+/// Test builds: a synchronous replay armed the shadow.
+#[cfg(test)]
+static TEST_ARMED: AtomicBool = AtomicBool::new(false);
+
+/// Test builds: the transport of the synchronous replay in progress. Each replay has
+/// its own, so its `seq` starts at 1 and the comparator it installs starts in step.
+#[cfg(test)]
+static TEST_TRANSPORT: std::sync::Mutex<Option<Arc<Transport>>> = std::sync::Mutex::new(None);
+
+/// Test builds: arm (`Some`) or disarm (`None`) the replay transport.
+#[cfg(test)]
+pub(crate) fn set_test_transport(transport: Option<Arc<Transport>>) {
+    TEST_ARMED.store(transport.is_some(), Ordering::SeqCst);
+    *TEST_TRANSPORT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = transport;
 }
 
 /// Allocate and publish the process-wide transport. **Runs on the comparison
@@ -125,6 +151,14 @@ fn publish_transport() -> Arc<Transport> {
 /// and never allocates: until the comparison thread has published the transport the
 /// recorder is an `Unavailable` one, whose messages are counted and dropped.
 pub(crate) fn recorder() -> Option<ShadowRecorder> {
+    #[cfg(test)]
+    if TEST_ARMED.load(Ordering::SeqCst) {
+        return TEST_TRANSPORT
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(|transport| transport.recorder());
+    }
     enabled().then(|| recorder_from(&TRANSPORT, &UNAVAILABLE))
 }
 

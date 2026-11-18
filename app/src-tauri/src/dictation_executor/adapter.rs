@@ -135,6 +135,62 @@ impl FieldAdapter {
         app.clear_active_context(id)
     }
 
+    /// `MC` under the shadow: [`FieldAdapter::cancel_through`] and the high-water mark
+    /// before and after, both from the one `fetch_max` (appendix C8.2).
+    #[cfg(feature = "dictation-shadow")]
+    pub(crate) fn cancel_through_witnessed(
+        app: &AppState,
+        id: u64,
+    ) -> crate::dictation_shadow::types::MirrorWitness {
+        use crate::dictation_shadow::types::{MirrorField, MirrorValue, MirrorWitness};
+        crate::core_history::assert_not_held();
+        let before = app.cancel_recording_observed(id);
+        MirrorWitness {
+            field: MirrorField::CancelledThrough,
+            before: MirrorValue::Id(RecordingId(before)),
+            after: MirrorValue::Id(RecordingId(before.max(id))),
+        }
+    }
+
+    /// `CX+` under the shadow: [`FieldAdapter::set_context`] and the slot before and
+    /// after, read inside the slot's own lock section.
+    #[cfg(feature = "dictation-shadow")]
+    pub(crate) fn set_context_witnessed(
+        app: &AppState,
+        id: u64,
+        snapshot: Arc<crate::dictation_context::DictationContextSnapshot>,
+    ) -> crate::dictation_shadow::types::MirrorWitness {
+        use crate::dictation_shadow::types::{MirrorField, MirrorValue, MirrorWitness};
+        crate::core_history::assert_not_held();
+        let before = app.set_active_context_observed(id, snapshot);
+        MirrorWitness {
+            field: MirrorField::ActiveContext,
+            before: MirrorValue::Slot(before.map(RecordingId)),
+            after: MirrorValue::Slot(Some(RecordingId(id))),
+        }
+    }
+
+    /// `CX-` under the shadow: [`FieldAdapter::clear_context`] and the slot before and
+    /// after, read inside the slot's own lock section (appendix C8.2 `pre_mirrors`).
+    #[cfg(feature = "dictation-shadow")]
+    pub(crate) fn clear_context_witnessed(
+        app: &AppState,
+        id: u64,
+    ) -> crate::dictation_shadow::types::MirrorWitness {
+        use crate::dictation_shadow::types::{MirrorField, MirrorValue, MirrorWitness};
+        crate::core_history::assert_not_held();
+        let (cleared, before) = app.clear_active_context_observed(id);
+        MirrorWitness {
+            field: MirrorField::ActiveContext,
+            before: MirrorValue::Slot(before.map(RecordingId)),
+            after: MirrorValue::Slot(if cleared {
+                None
+            } else {
+                before.map(RecordingId)
+            }),
+        }
+    }
+
     /// The M3/M4 observations of the live slots (C1.2): `cancelled_id` is one
     /// atomic load and the context id is one leaf-mutex read, the same reads
     /// `DictationCore::project` performs and a cut-over entry will perform.
