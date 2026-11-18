@@ -906,3 +906,78 @@ fn c4_9_every_contract_test_is_implemented_or_owned() {
         }
     }
 }
+
+/// A start future dropped while it is parked on the awaited capture start of a kept
+/// microphone test: the R101.15 flight ran `PR` and never reaches `CS`.
+#[cfg(feature = "dictation-shadow")]
+fn pd09c_start_dropped_at_the_awaited_capture_start(world: &Arc<World>) {
+    world
+        .state()
+        .app_state
+        .microphone_preview
+        .claim(50)
+        .expect("a mic test is kept");
+    let mut start = world.start();
+    assert!(poll_once(&mut start).is_pending());
+    drop(start);
+    world.note("the start future is dropped while it waits for the capture start");
+    // The blocking task the future spawned still runs; wait for it by what it does.
+    while !world
+        .trace()
+        .iter()
+        .any(|line| line.starts_with("supervisor.start_after_preview 1"))
+    {
+        std::thread::yield_now();
+    }
+}
+
+/// E8 (appendix C8.5): every preserved defect whose row is in a family is witnessed by
+/// the shadow. The twelve goldens and the Stage 1 PD witness tests run through the
+/// shadow in this process (every sub-run is replayed, `run_sub_run_observed`), and each
+/// PD the allowlist credits is counted. PD-11, PD-14 and PD-17 are not row signatures
+/// (properties of an effect's implementation, or latent) and are not counted.
+#[cfg(feature = "dictation-shadow")]
+#[test]
+fn every_family_pd_is_witnessed_by_the_shadow() {
+    use super::golden_tests as g;
+    use crate::dictation_shadow::replay;
+    replay::reset_totals();
+    g::golden_s01_stop_during_start();
+    g::golden_s02_cancel_in_each_phase();
+    g::golden_s03_interruption_of_8000_samples_or_more();
+    g::golden_s04_interruption_under_8000_samples();
+    g::golden_s05_timeout_teardown();
+    g::golden_s06_stale_stop();
+    g::golden_s07_meeting_conflict();
+    g::golden_s08_preview_handoff();
+    g::golden_s09_supervisor_idle_during_processing();
+    g::golden_s10_ready_vs_context_rendezvous();
+    g::golden_s11_idle_on_a_finished_recording();
+    g::golden_s12_start_failure_vs_initialization_failed();
+    pd03_stop_missing_context_runs_unconditional_idle_effects();
+    pd05_supervisor_events_for_the_current_id_claim_superseded();
+    pd06_pipeline_guard_overwrites_recovering();
+    pd08_flushing_start_leaves_its_context_installed();
+    pd09_dropped_start_orphans_the_begin_ledger_row();
+    pd10_terminal_before_accepted_is_dropped_and_ledger_evicts();
+    pd13_task_panic_restores_idle_without_a_terminal();
+    pd18bc_start_in_the_teardown_tail_leaves_recovering();
+    // PD-9's signature in the allowlist is an R101.15 flight abandoned between `PR` and
+    // `CS`: a start future dropped while it waits for a kept preview's capture start.
+    repeat(&sub(
+        "PD-9 abandoned at the awaited capture start",
+        pd09c_start_dropped_at_the_awaited_capture_start,
+    ));
+    let totals = replay::totals();
+    eprintln!("E8 pd_witness: {:?}", totals.pd_witness);
+    eprintln!("E7 rows compared: {:?}", totals.per_row);
+    let missing: Vec<u8> = [1_u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 15, 16, 18]
+        .into_iter()
+        .filter(|pd| totals.pd_witness.get(pd).copied().unwrap_or(0) == 0)
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "preserved defects the shadow never witnessed: {missing:?} (witnessed: {:?})",
+        totals.pd_witness
+    );
+}

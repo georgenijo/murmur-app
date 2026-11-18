@@ -144,9 +144,6 @@ impl Live {
     }
 
     fn send(&self, message: Later) {
-        if std::env::var_os("SHADOWDBG").is_some() {
-            eprintln!("SHADOWDBG send rec={:?} {message:?}", self.rec.id());
-        }
         match message {
             Later::Witness {
                 idx,
@@ -161,13 +158,6 @@ impl Live {
     fn conclude(&self) {
         if !self.submitted.get() || !self.complete.get() || self.concluded.replace(true) {
             return;
-        }
-        if std::env::var_os("SHADOWDBG").is_some() {
-            eprintln!(
-                "SHADOWDBG conclude rec={:?} reply={:?}",
-                self.rec.id(),
-                self.reply.get()
-            );
         }
         if let Some(kind) = self.reply.get() {
             transport::mark(&self.rec, Mark::Reply(kind));
@@ -487,9 +477,6 @@ impl Sealed<'_> {
         // Test builds: a point where a test observes whether D is still held.
         #[cfg(test)]
         crate::barrier_hook::at("shadow.submit");
-        if std::env::var_os("SHADOWDBG").is_some() {
-            eprintln!("SHADOWDBG header {header:?}");
-        }
         transport::submit(ticket, header);
         live.submitted.set(true);
         let queued = std::mem::take(&mut *live.deferred.borrow_mut());

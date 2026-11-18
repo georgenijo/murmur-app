@@ -343,11 +343,24 @@ struct Run {
 fn run(body: impl FnOnce(&Run)) {
     let _serial = locked(&LOCK);
     keyboard::set_processing(false);
+    // E7 / E8 (appendix C8.5): the import's decisions (sites 301, 302, 204a, 204b) run
+    // through the shadow in sync mode; every flight is closed when the run ends.
+    #[cfg(feature = "dictation-shadow")]
+    let replay = crate::dictation_shadow::replay::Replay::begin();
     let state = Arc::new(super::tests::test_state(AppState::default()));
     let host = FakeHost::new(&state);
     let run = Run { state, host };
     body(&run);
     keyboard::set_processing(false);
+    #[cfg(feature = "dictation-shadow")]
+    {
+        drop(run);
+        replay.end().assert_clean(
+            std::thread::current()
+                .name()
+                .unwrap_or("process_audio test"),
+        );
+    }
 }
 
 impl Run {

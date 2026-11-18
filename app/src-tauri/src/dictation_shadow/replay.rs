@@ -145,6 +145,10 @@ impl Report {
                     event.site_id, event.input_kind, event.diff_kind
                 );
             }
+            eprintln!(
+                "E7ROWS sub_run={what:?} {:?}",
+                s.per_row.keys().collect::<Vec<_>>()
+            );
             return;
         }
         assert!(
