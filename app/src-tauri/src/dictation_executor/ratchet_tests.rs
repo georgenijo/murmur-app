@@ -1455,6 +1455,7 @@ struct EventsModule {
 /// macro, no nested module, each name once.
 fn parse_events_module(sources: &[(String, String)]) -> EventsModule {
     let mut events = EventsModule::default();
+    events.problems.extend(check_events_declaration(sources));
     let Some((_, source)) = sources.iter().find(|(file, _)| file == EVENTS_FILE) else {
         events
             .problems
@@ -1508,6 +1509,48 @@ fn parse_events_module(sources: &[(String, String)]) -> EventsModule {
         }
     }
     events
+}
+
+/// Round 7: `src/events.rs` must be the crate's `events` module. `lib.rs` declares
+/// exactly one module named `events` at the crate root, out of line (`mod events;` or
+/// `pub mod events;`), with no `cfg`, `cfg_attr` or `path` attribute: an inline or
+/// cfg-selected replacement could give `crate::events::NAME` a value the scan never
+/// read, and a second declaration is the same hole.
+fn check_events_declaration(sources: &[(String, String)]) -> Vec<String> {
+    let Some((_, source)) = sources.iter().find(|(file, _)| file == "lib.rs") else {
+        return vec!["lib.rs: the crate root is missing".to_string()];
+    };
+    let root = syn::parse_file(source).unwrap_or_else(|error| panic!("parse lib.rs: {error}"));
+    let declared: Vec<&syn::ItemMod> = root
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Mod(item) if plain(&item.ident) == EVENTS_MODULE => Some(item),
+            _ => None,
+        })
+        .collect();
+    let [only] = declared.as_slice() else {
+        return vec![format!(
+            "lib.rs: {} modules named `{EVENTS_MODULE}` at the crate root (exactly one `mod {EVENTS_MODULE};` is required)",
+            declared.len()
+        )];
+    };
+    let mut problems = Vec::new();
+    if only.content.is_some() {
+        problems.push(format!(
+            "lib.rs: `mod {EVENTS_MODULE}` is inline (it must be the out-of-line `{EVENTS_FILE}`)"
+        ));
+    }
+    if only.attrs.iter().any(|attr| {
+        ["cfg", "cfg_attr", "path"]
+            .iter()
+            .any(|name| attr.path().is_ident(name))
+    }) {
+        problems.push(format!(
+            "lib.rs: `mod {EVENTS_MODULE};` carries a `cfg`, `cfg_attr` or `path` attribute"
+        ));
+    }
+    problems
 }
 
 /// What the scan bans wherever it appears (D-S2b-12 b, c).
@@ -2595,6 +2638,44 @@ fn a_status_event_in_the_events_module_is_a_status_site() {
     );
 }
 
+/// Round 7: `src/events.rs` is read as the `events` module, so the crate root must
+/// declare exactly that module, unconditionally and out of line. A platform split
+/// that keeps `mod events;` for one architecture and an inline `mod events { .. }`
+/// for another can map a constant to the status event where the scan never looked.
+#[test]
+fn a_replaced_or_duplicated_events_module_fails_the_status_ratchet() {
+    let lib = |replacement: &str| {
+        let sources = sources_with("lib.rs", "mod events;\n", replacement);
+        let error = the_status_ratchet_rejects(&sources);
+        assert!(error.contains("lib.rs"), "{replacement}: {error}");
+    };
+    // A cfg-selected inline replacement, in both orders.
+    lib("#[cfg(target_os = \"macos\")]\nmod events;\n\
+         #[cfg(not(target_os = \"macos\"))]\n\
+         mod events { pub const NAME: &str = \"recording-status-changed\"; }\n");
+    lib("#[cfg(not(target_os = \"macos\"))]\n\
+         mod events { pub const NAME: &str = \"recording-status-changed\"; }\n\
+         #[cfg(target_os = \"macos\")]\nmod events;\n");
+    // A cfg-gated or path-redirected out-of-line declaration.
+    lib("#[cfg(target_os = \"macos\")]\nmod events;\n");
+    lib("#[cfg_attr(target_os = \"macos\", path = \"other.rs\")]\nmod events;\n");
+    lib("#[path = \"other.rs\"]\nmod events;\n");
+    // An inline module, a duplicate declaration, a second `pub mod`, no declaration.
+    lib("mod events { pub const NAME: &str = \"x\"; }\n");
+    lib("mod events;\nmod events;\n");
+    lib("mod events;\npub mod events;\n");
+    lib("");
+    // The plain and `pub` out-of-line declarations are accepted by this check.
+    for ok in [
+        "mod events;\n",
+        "pub mod events;\n",
+        "pub(crate) mod events;\n",
+    ] {
+        let sources = sources_with("lib.rs", "mod events;\n", ok);
+        assert!(check_events_declaration(&sources).is_empty(), "{ok}");
+    }
+}
+
 /// Round-3 probe 5: `OwnedJsonEmit::emit_json` remapped an event through an unpinned
 /// boxed closure. The idle emitter has no event parameter now, and its forwarding
 /// bodies are pinned.
@@ -2715,7 +2796,7 @@ const SYNTHETIC_EVENTS: &str =
 /// One synthetic file (`lib.rs`, the crate root) beside a valid events module.
 fn synthetic(source: &str) -> Vec<(String, String)> {
     vec![
-        ("lib.rs".to_string(), source.to_string()),
+        ("lib.rs".to_string(), format!("mod events; {source}")),
         (EVENTS_FILE.to_string(), SYNTHETIC_EVENTS.to_string()),
     ]
 }

@@ -25,7 +25,10 @@ every production call that can carry it, per enclosing function
   (`src/events.rs`) is the one module that declares the event-name constants emitted
   outside wrappers. It holds only `pub const NAME: &str = "<literal>";` items: no
   `use`, no `cfg` or `cfg_attr` on any item (docs only), no macro, no nested module,
-  each name once; any violation fails. Any `use .. as concat`, any import whose final
+  each name once; any violation fails. `lib.rs` must declare exactly one module named
+  `events` at the crate root, out of line (`mod events;` or `pub mod events;`) with no
+  `cfg`, `cfg_attr` or `path` attribute, so no inline or cfg-selected replacement can
+  give `crate::events::NAME` a value the scan never read. Any `use .. as concat`, any import whose final
   name is `concat`, and any `macro_rules! concat` anywhere in the crate fails too
   (D-S2b-12 b). A new emitted constant goes in the events module and is emitted as
   `crate::events::NAME`.
