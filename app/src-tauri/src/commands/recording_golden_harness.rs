@@ -218,6 +218,9 @@ pub(super) struct Knobs {
     /// The pipeline guard's `finish` closure (the `In` effect `EM(idle)`, run under
     /// D) panics.
     pub(super) pipeline_finish_panics: bool,
+    /// What the Smart Auto resolve port answers (`None`: an error, the scenario did
+    /// not script it).
+    pub(super) smart_auto: Option<Result<crate::microphone_auto::SmartAutoSelection, String>>,
 }
 
 impl Default for Knobs {
@@ -234,6 +237,7 @@ impl Default for Knobs {
             hold_delivery: false,
             pipeline_error: None,
             pipeline_finish_panics: false,
+            smart_auto: None,
         }
     }
 }
@@ -320,6 +324,8 @@ pub(super) struct World {
     supervisor: StdMutex<Supervisor>,
     auto_stops: StdMutex<Vec<u64>>,
     delivery: StdMutex<Option<Delivery>>,
+    /// Smart Auto resolves the start asked its host for.
+    smart_auto_resolves: std::sync::atomic::AtomicUsize,
 }
 
 /// A delivery operation parked inside the production ownership fence.
@@ -346,6 +352,7 @@ impl World {
             supervisor: StdMutex::new(Supervisor::default()),
             auto_stops: StdMutex::new(Vec::new()),
             delivery: StdMutex::new(None),
+            smart_auto_resolves: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -605,6 +612,38 @@ impl World {
             let state = world.state();
             start_native_recording_inner(&host, state.inner(), None, None, None, None).await
         })
+    }
+
+    /// A start that asks for Smart Auto (with `device_name` a fixed microphone too,
+    /// which the start refuses before D).
+    pub(super) fn start_smart_auto(
+        self: &Arc<Self>,
+        device_name: Option<String>,
+    ) -> Fut<Result<serde_json::Value, String>> {
+        let world = Arc::clone(self);
+        Box::pin(async move {
+            let host = Host(Arc::clone(&world));
+            let state = world.state();
+            start_native_recording_inner(
+                &host,
+                state.inner(),
+                device_name,
+                Some(SmartAutoRequest {
+                    approved_device_ids: vec!["mic-7".to_string()],
+                    preferred_device_ids: Vec::new(),
+                    allow_continuity: false,
+                    require_recent_signal: false,
+                }),
+                None,
+                None,
+            )
+            .await
+        })
+    }
+
+    /// How many Smart Auto resolves the start asked its host for.
+    pub(super) fn smart_auto_resolves(&self) -> usize {
+        self.smart_auto_resolves.load(Ordering::SeqCst)
     }
 
     pub(super) fn stop(
@@ -1343,6 +1382,25 @@ impl DictationHost for Host {
     ) -> HostFuture<'a, Result<tokio::sync::MutexGuard<'a, ()>, String>> {
         self.0.push("mic_transition");
         Box::pin(async move { Ok(state.app_state.recording_transition.lock().await) })
+    }
+
+    fn resolve_smart_auto(
+        &self,
+        _request: &SmartAutoRequest,
+    ) -> Result<crate::microphone_auto::SmartAutoSelection, String> {
+        // Counted outside the trace so no golden line changes: no scenario asks for
+        // Smart Auto, and only the contract tests read the count.
+        self.0.smart_auto_resolves.fetch_add(1, Ordering::SeqCst);
+        let result = locked(&self.0.knobs)
+            .smart_auto
+            .clone()
+            .unwrap_or_else(|| Err("smart auto is not scripted".to_string()));
+        if result.is_ok() {
+            // Production's success emits `smart-auto-microphone-changed` inline,
+            // on this thread, after the commit.
+            self.0.fire("smart_auto.routing_changed");
+        }
+        result
     }
 
     fn refresh_expired_ide_context(&self, _app_state: &AppState, _bundle_id: Option<&str>) {

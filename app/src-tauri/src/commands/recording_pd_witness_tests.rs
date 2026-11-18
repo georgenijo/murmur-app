@@ -833,8 +833,8 @@ const C4_9_TESTS: [&str; 26] = [
 /// Decision D-S1-1: every C4.9 test is implemented here (a test function of
 /// that name exists in `recording_contract_tests.rs`) or is listed in the map's
 /// owner table with the Stage 2 PR that cannot merge without it and the reason
-/// it cannot exist yet. The only name in both is the split
-/// `take_attempts_iff_recovering` (stop half implemented, start half owned).
+/// it cannot exist yet. `take_attempts_iff_recovering` was split (stop half, then
+/// start half in Stage 2a-4) and is now implemented in full.
 ///
 /// The gate is also **enforced from the code side** (decision D-S1-5 b): each
 /// OWNED test has marker symbols of its subject, `(path under src/, text)`. If
@@ -843,11 +843,8 @@ const C4_9_TESTS: [&str; 26] = [
 /// OWNED means implementing the tests in `recording_contract_tests.rs`. A new
 /// OWNED name must register its markers here.
 const OWNED_SUBJECT_MARKERS: &[(&str, &[(&str, &str)])] = &[
-    // The start family's smart-auto port (`resolve_smart_auto` on the host).
-    (
-        "take_attempts_iff_recovering",
-        &[("commands/recording_host.rs", "fn resolve_smart_auto")],
-    ),
+    // No test is owed any more: the start family's smart-auto port landed in
+    // Stage 2a-4 together with `take_attempts_iff_recovering` (start half).
 ];
 
 #[test]

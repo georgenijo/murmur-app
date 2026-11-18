@@ -24,6 +24,7 @@ pub mod inputs;
 pub mod lifecycle;
 pub mod replies;
 pub mod rows;
+pub mod start;
 pub mod state;
 pub mod status;
 pub mod stop;

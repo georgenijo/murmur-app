@@ -25,9 +25,11 @@
 //! ([`Staged::resuming`]): the retire happens where it did, unconditionally and
 //! before the reads, and evaluation continues at the check after the wait.
 
+#[cfg(test)]
+use murmur_dictation_core::admission::SmartAutoObservation;
 use murmur_dictation_core::admission::{
     admit, admit_after, Admission, KeyDownShellFacts, ModelPrepVariant, Occupancy, RefusalCode,
-    Request, Retry, SmartAutoObservation,
+    Request, Retry,
 };
 use murmur_dictation_core::ids::RecordingId;
 use murmur_dictation_core::status::Status;
@@ -136,6 +138,12 @@ impl Staged {
     pub(crate) fn finish(self) -> Admission {
         self.evaluate()
     }
+
+    /// The facts read so far: a partial occupancy is valid, an unread fact keeps
+    /// its quiet default (decision D-S1-2).
+    pub(crate) fn into_occupancy(self) -> Occupancy {
+        self.occupancy
+    }
 }
 
 /// Run `read_all` and return its first non-`Admit` result, or the final
@@ -243,9 +251,27 @@ mod facts {
 // Dictation start (recording.rs `start_native_recording_inner`)
 // ---------------------------------------------------------------------------
 
-/// `dictation_start_blocker`: relaunch → meeting → file → corpus → benchmark →
-/// status, under the dictation lock the caller holds. The start's own
-/// `cleanup_pending` and Smart Auto reads follow at the start site.
+/// The occupancy the start's decision reads (`decide_start_request`): relaunch →
+/// meeting → file → corpus → benchmark → status, under the dictation lock the
+/// caller holds, **stopping at the first group that refuses** (decision D-S1-2;
+/// today's `dictation_start_blocker`). The start's own `cleanup_pending` and
+/// Smart Auto reads follow, each only when the decision asks for it.
+pub(crate) fn dictation_start_occupancy(state: &State, status: DictationStatus) -> Occupancy {
+    let mut session = Staged::new(Request::DictationStart);
+    let _ = (|| -> Result<(), Admission> {
+        session.read(facts::relaunch)?;
+        session.read(|o| facts::meeting(&state.app_state, o))?;
+        session.read(|o| facts::file(&state.app_state, o))?;
+        session.read(|o| facts::corpus(state, o))?;
+        session.read(|o| facts::benchmark(state, o))?;
+        session.read(|o| facts::status(status, o))
+    })();
+    session.into_occupancy()
+}
+
+/// `dictation_start_blocker`: the same reads as [`dictation_start_occupancy`],
+/// evaluated. The pre-extraction oracle the admission tests compare against.
+#[cfg(test)]
 pub(crate) fn dictation_start_admission(state: &State, status: DictationStatus) -> Admission {
     staged(Staged::new(Request::DictationStart), |s| {
         s.read(facts::relaunch)?;
@@ -259,6 +285,8 @@ pub(crate) fn dictation_start_admission(state: &State, status: DictationStatus) 
 
 /// The start's pre-D checks (`app_disabled`, then Smart Auto with a fixed
 /// device): `Ok` or the refusal, with the facts exactly as the start read them.
+/// Production: `decide_start_request_pre`.
+#[cfg(test)]
 pub(crate) fn dictation_start_pre_admission(
     app_disabled: bool,
     smart_auto_with_fixed_device: bool,
@@ -273,9 +301,9 @@ pub(crate) fn dictation_start_pre_admission(
     )
 }
 
-/// The start's retiring-capture check: `cleanup_pending(current_id)` was read
-/// by the caller under the same dictation-lock hold, after the status check
-/// passed (status is `Idle` here), and before the Smart Auto resolve.
+/// The start's retiring-capture check (`cleanup_pending(current_id)`, read after
+/// the status check passed). Production: `decide_start_request`'s R101.12.
+#[cfg(test)]
 pub(crate) fn dictation_start_cleanup_admission(cleanup_pending: bool) -> Admission {
     admit(
         Request::DictationStart,
@@ -286,8 +314,8 @@ pub(crate) fn dictation_start_cleanup_admission(cleanup_pending: bool) -> Admiss
     )
 }
 
-/// The start's Smart Auto step. `NeedObservation` is answered by the caller's
-/// resolve, then the result is passed back here.
+/// The start's Smart Auto step. Production: `decide_start_request`'s R101.13/.14.
+#[cfg(test)]
 pub(crate) fn dictation_start_smart_auto_admission(observation: SmartAutoObservation) -> Admission {
     admit(
         Request::DictationStart,

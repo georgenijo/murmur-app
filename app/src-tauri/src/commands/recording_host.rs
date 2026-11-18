@@ -50,6 +50,14 @@ pub(super) trait DictationHost: Send + Sync + 'static {
         &'a self,
         state: &'a State,
     ) -> HostFuture<'a, Result<tokio::sync::MutexGuard<'a, ()>, String>>;
+    /// `audio_inventory::resolve_smart_auto`: the Smart Auto observation of the
+    /// start (decision D-S1-1). Read only when the start's decision asks for it
+    /// (`NeedObservation(SmartAutoSelection)`), after the blockers, the status
+    /// step and the retiring-capture check passed.
+    fn resolve_smart_auto(
+        &self,
+        request: &SmartAutoRequest,
+    ) -> Result<crate::microphone_auto::SmartAutoSelection, String>;
     /// `refresh_expired_ide_context`.
     fn refresh_expired_ide_context(&self, app_state: &AppState, bundle_id: Option<&str>);
     /// `emit_smart_destination`.
@@ -253,6 +261,13 @@ impl DictationHost for TauriHost {
         Box::pin(
             crate::commands::microphone_preview::transition_for_dictation_start(&self.app, state),
         )
+    }
+
+    fn resolve_smart_auto(
+        &self,
+        request: &SmartAutoRequest,
+    ) -> Result<crate::microphone_auto::SmartAutoSelection, String> {
+        crate::audio_inventory::resolve_smart_auto(request)
     }
 
     fn refresh_expired_ide_context(&self, app_state: &AppState, bundle_id: Option<&str>) {

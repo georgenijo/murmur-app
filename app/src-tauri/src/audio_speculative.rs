@@ -127,6 +127,11 @@ impl SpeculativeClaim {
             .is_some_and(super::speculative_capture_is_flowing)
     }
 
+    /// Whether the request carried a speculative capture at all.
+    pub(crate) fn is_claimed(&self) -> bool {
+        self.capture_id.is_some()
+    }
+
     /// Hand the capture to the supervisor start request, which either adopts
     /// it or discards it itself.
     pub(crate) fn consume(mut self) -> Option<u64> {
