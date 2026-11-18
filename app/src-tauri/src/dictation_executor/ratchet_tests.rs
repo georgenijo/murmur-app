@@ -20,7 +20,8 @@
 //!
 //! * `status_events_are_emitted_only_by_the_allowlisted_functions`: every call that can
 //!   carry `recording-status-changed` is pinned per enclosing function, and an event
-//!   name the scan cannot prove is allowed only inside a hash-pinned wrapper (D-S2b-10;
+//!   name that is not a literal, a `concat!` of literals or a full `crate::events::NAME`
+//!   path is allowed only inside a hash-pinned wrapper (D-S2b-14;
 //!   `README.md` in this directory states what the scan proves and its threat model).
 //!
 //! The scan sees **production code only**, and fails closed (D-S2-17, D-S2b-10 d). It
@@ -517,7 +518,7 @@ fn status_write_and_terminal_call_sites_only_go_down() {
 ///
 /// A "use" is a call, a method call, a path used as a value (`let make =
 /// PersistedCore::new;`), or any of these written inside a macro's tokens. Limits:
-/// a renamed `use .. as ..` import is not followed.
+/// imports are not followed at all (D-S2b-14).
 struct SiteFinder<'m> {
     scope: Vec<String>,
     /// Scan `#[cfg(test)]` items too (the single-seeder check covers test code).
@@ -580,18 +581,13 @@ impl SiteFinder<'_> {
         if !self.record_calls {
             return;
         }
-        let (fn_hash, locals) = match self.frames.last() {
-            Some(frame) => (frame.hash, std::rc::Rc::clone(&frame.locals)),
-            None => (0, std::rc::Rc::default()),
-        };
+        let fn_hash = self.frames.last().map_or(0, |frame| frame.hash);
         self.calls.push(CallRecord {
             function: self.scope.join("::"),
             callee,
             args,
             path_call,
             fn_hash,
-            module: self.mod_path.join("::"),
-            locals,
         });
     }
 
@@ -1073,7 +1069,7 @@ fn terminal_emit_callers_are_exactly_the_allowlisted_functions() {
     );
 }
 
-// ------------------------------------------------ SP5: status events (D-S2b-10)
+// ------------------------------------------------ SP5: status events (D-S2b-14)
 //
 // The ratchet proves syntactically what it accepts and rejects everything else
 // (see `README.md` in this directory for the threat model).
@@ -1083,11 +1079,12 @@ fn terminal_emit_callers_are_exactly_the_allowlisted_functions() {
 //     or returning it fails. A macro body is parsed as arguments or statements and
 //     its calls get the same checks; a body that cannot be parsed and names an
 //     emitter fails.
-// (b) An event name resolves only by proof: a string literal, `concat!` of literals
-//     (the built-in `concat!`, and only when the crate defines no `concat` macro), or
-//     a path to a `const` / `static` declared exactly once at that module path (or
-//     imported by `use`), with no local pattern, parameter, closure argument or
-//     `use .. as` in scope binding the same identifier. Anything else is unresolved.
+// (b) An event name resolves only as a string literal, a `concat!` of literals
+//     (`concat!`, `std::concat!`, `core::concat!`; any `concat` import or macro
+//     fails), or a path written in full as `crate::events::NAME`, where the events
+//     module (`events.rs`) holds only `pub const NAME: &str = "<literal>";` items.
+//     There is no import resolution: a bare identifier, `self::`, `super::`, an
+//     import, a glob or an alias is unresolved, whatever it names.
 // (c) An unresolved emit is allowed only inside a function on
 //     `DYNAMIC_EMIT_ALLOWLIST`, pinned by token hash (spacing and every comma kept;
 //     whitespace and comments stripped). Each wrapper name reaches one destination,
@@ -1130,9 +1127,6 @@ struct CallRecord {
     path_call: bool,
     /// The token hash of the enclosing function (0 outside any function).
     fn_hash: u64,
-    /// The module path of the call (`crate::commands::recording`).
-    module: String,
-    locals: std::rc::Rc<std::collections::HashSet<String>>,
 }
 
 /// Macros whose arguments are data, not calls with an event name.
@@ -1386,7 +1380,7 @@ fn trait_fn_frame(item: &syn::TraitItemFn) -> FnFrame {
     }
 }
 
-// ---- the crate index: what a path can be proven to name
+// ---- module paths, bans and the events module
 
 /// The module path of a source file relative to `src/`: `commands/recording.rs` is
 /// `crate::commands::recording`, `a/mod.rs` is `crate::a`, `lib.rs` is `crate`. Sound
@@ -1405,28 +1399,8 @@ fn module_of_file(relative: &str) -> Vec<String> {
     std::iter::once("crate".to_string()).chain(parts).collect()
 }
 
-/// A `use` path as an absolute module path (relative paths are relative to the module).
-fn absolutize(module: &[String], segments: &[String]) -> Vec<String> {
-    match segments.first().map(String::as_str) {
-        Some("crate") => segments.to_vec(),
-        Some("self") => module.iter().chain(&segments[1..]).cloned().collect(),
-        Some("super") => {
-            let mut base = module.to_vec();
-            let mut rest = segments;
-            while rest.first().map(String::as_str) == Some("super") {
-                if base.len() > 1 {
-                    base.pop();
-                }
-                rest = &rest[1..];
-            }
-            base.into_iter().chain(rest.iter().cloned()).collect()
-        }
-        _ => module.iter().chain(segments).cloned().collect(),
-    }
-}
-
 /// `(bound identifier, imported path, renamed with `as`)` of every name a `use` tree
-/// binds. Glob imports bind nothing that can be proven.
+/// binds (used only to find `concat` imports). Globs bind nothing nameable.
 fn flatten_use(
     tree: &syn::UseTree,
     prefix: &mut Vec<String>,
@@ -1463,31 +1437,83 @@ fn flatten_use(
     }
 }
 
-/// What the production code of the crate declares: constants and statics by full
-/// path, `use` bindings and renames by module, and the `macro_rules!` names.
+/// D-S2b-14 (a), (b): the one module that declares the event-name constants emitted
+/// outside the pinned wrappers. It is a file of its own, so the module path is
+/// `crate::events` and nothing in it needs resolving.
+const EVENTS_FILE: &str = "events.rs";
+const EVENTS_MODULE: &str = "events";
+
+/// The constants of the events module, and what is wrong with it.
 #[derive(Default)]
-struct CrateIndex {
-    consts: std::collections::HashMap<String, Vec<syn::Expr>>,
-    /// Every distinct target a module-level `use` gives a name, under any `cfg`: a
-    /// name with more than one target (or a target and a declaration in the same
-    /// module) is ambiguous and unresolved (D-S2b-12 follow-up).
-    uses: std::collections::HashMap<String, std::collections::HashMap<String, Vec<Vec<String>>>>,
-    renamed: std::collections::HashMap<String, std::collections::HashSet<String>>,
-    macros: std::collections::HashSet<String>,
-    /// D-S2b-12 (a): every identifier a `use` inside a function or block binds. Name
-    /// resolution consults module-level `use` items only; a scoped binding of an
-    /// identifier makes it unresolved wherever it is emitted.
-    scoped_uses: std::collections::HashSet<String>,
-    /// D-S2b-12 (b), (c): blanket rejections found while indexing (`file: why`).
-    banned: Vec<String>,
+struct EventsModule {
+    consts: std::collections::BTreeMap<String, String>,
+    problems: Vec<String>,
 }
 
-struct IndexBuilder<'i> {
-    index: &'i mut CrateIndex,
+/// D-S2b-14 (b): the events module holds only `pub const NAME: &str = "<literal>";`
+/// items: no `use`, no attribute but a doc comment (so no `cfg` or `cfg_attr`), no
+/// macro, no nested module, each name once.
+fn parse_events_module(sources: &[(String, String)]) -> EventsModule {
+    let mut events = EventsModule::default();
+    let Some((_, source)) = sources.iter().find(|(file, _)| file == EVENTS_FILE) else {
+        events
+            .problems
+            .push(format!("{EVENTS_FILE}: the events module file is missing"));
+        return events;
+    };
+    let file = syn::parse_file(source).unwrap_or_else(|error| panic!("parse events: {error}"));
+    let doc_only = |attrs: &[syn::Attribute]| attrs.iter().all(|attr| attr.path().is_ident("doc"));
+    if !doc_only(&file.attrs) {
+        events.problems.push(format!(
+            "{EVENTS_FILE}: an inner attribute (only docs are allowed)"
+        ));
+    }
+    for item in &file.items {
+        let syn::Item::Const(item) = item else {
+            events.problems.push(format!(
+                "{EVENTS_FILE}: only `pub const NAME: &str = \"..\";` items are allowed"
+            ));
+            continue;
+        };
+        let name = plain(&item.ident);
+        let is_str = matches!(&*item.ty, syn::Type::Reference(reference)
+            if matches!(&*reference.elem, syn::Type::Path(path) if path.path.is_ident("str")));
+        let literal = match &*item.expr {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(text),
+                ..
+            }) => Some(text.value()),
+            _ => None,
+        };
+        if !matches!(item.vis, syn::Visibility::Public(_))
+            || !is_str
+            || !doc_only(&item.attrs)
+            || !item.generics.params.is_empty()
+        {
+            events.problems.push(format!(
+                "{EVENTS_FILE}: `{name}` is not `pub const {name}: &str = \"..\";`"
+            ));
+        }
+        match literal {
+            Some(value) => {
+                if events.consts.insert(name.clone(), value).is_some() {
+                    events
+                        .problems
+                        .push(format!("{EVENTS_FILE}: `{name}` is declared twice"));
+                }
+            }
+            None => events
+                .problems
+                .push(format!("{EVENTS_FILE}: `{name}` is not a string literal")),
+        }
+    }
+    events
+}
+
+/// What the scan bans wherever it appears (D-S2b-12 b, c).
+struct BanFinder {
     file: String,
-    module: Vec<String>,
-    /// Block nesting: above 0, a `use` is function- or block-scoped.
-    block_depth: usize,
+    banned: Vec<String>,
 }
 
 /// D-S2b-12 (c): a `#[path` or `path =` token sequence anywhere in a macro body
@@ -1531,21 +1557,11 @@ fn macro_body_has_path_attr(tokens: proc_macro2::TokenStream) -> bool {
     false
 }
 
-impl IndexBuilder<'_> {
-    fn declare(&mut self, ident: &syn::Ident, init: &syn::Expr) {
-        let key = format!("{}::{}", self.module.join("::"), ident);
-        self.index.consts.entry(key).or_default().push(init.clone());
-    }
-}
-
-impl<'ast> syn::visit::Visit<'ast> for IndexBuilder<'_> {
+impl<'ast> syn::visit::Visit<'ast> for BanFinder {
     fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
-        if item.attrs.iter().any(is_cfg_test) {
-            return;
+        if !item.attrs.iter().any(is_cfg_test) {
+            syn::visit::visit_item_mod(self, item);
         }
-        self.module.push(plain(&item.ident));
-        syn::visit::visit_item_mod(self, item);
-        self.module.pop();
     }
 
     fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
@@ -1560,36 +1576,16 @@ impl<'ast> syn::visit::Visit<'ast> for IndexBuilder<'_> {
         }
     }
 
-    fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
-        if !item.attrs.iter().any(is_cfg_test) {
-            self.declare(&item.ident, &item.expr);
-        }
-    }
-
-    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
-        if !item.attrs.iter().any(is_cfg_test) {
-            self.declare(&item.ident, &item.expr);
-        }
-    }
-
-    fn visit_block(&mut self, block: &'ast syn::Block) {
-        self.block_depth += 1;
-        syn::visit::visit_block(self, block);
-        self.block_depth -= 1;
-    }
-
+    /// D-S2b-12 (b): an import bound to `concat`, or of a name ending in `concat`.
     fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
         if item.attrs.iter().any(is_cfg_test) {
             return;
         }
         let mut bound = Vec::new();
         flatten_use(&item.tree, &mut Vec::new(), &mut bound);
-        let key = self.module.join("::");
         for (ident, path, renamed) in bound {
-            // D-S2b-12 (b): an import bound to `concat`, or of a name ending in
-            // `concat`, anywhere in the crate.
             if ident == "concat" || path.last().is_some_and(|last| last == "concat") {
-                self.index.banned.push(format!(
+                self.banned.push(format!(
                     "{}: `use {}{}` binds or imports `concat`",
                     self.file,
                     path.join("::"),
@@ -1600,50 +1596,27 @@ impl<'ast> syn::visit::Visit<'ast> for IndexBuilder<'_> {
                     }
                 ));
             }
-            if self.block_depth > 0 {
-                self.index.scoped_uses.insert(ident);
-                continue;
-            }
-            if renamed {
-                self.index
-                    .renamed
-                    .entry(key.clone())
-                    .or_default()
-                    .insert(ident.clone());
-            }
-            let target = absolutize(&self.module, &path);
-            let targets = self
-                .index
-                .uses
-                .entry(key.clone())
-                .or_default()
-                .entry(ident)
-                .or_default();
-            if !targets.contains(&target) {
-                targets.push(target);
-            }
         }
     }
 
+    /// D-S2b-12 (b), (c): `macro_rules! concat`; a path attribute in a macro body.
     fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
-        if item.attrs.iter().any(is_cfg_test) {
+        if item.attrs.iter().any(is_cfg_test) || !item.mac.path.is_ident("macro_rules") {
             return;
         }
-        if item.mac.path.is_ident("macro_rules") {
-            if let Some(name) = &item.ident {
-                self.index.macros.insert(plain(name));
-                if plain(name) == "concat" {
-                    self.index
-                        .banned
-                        .push(format!("{}: `macro_rules! concat`", self.file));
-                }
-            }
-            if macro_body_has_path_attr(item.mac.tokens.clone()) {
-                self.index.banned.push(format!(
-                    "{}: a `#[path` / `path =` token sequence in a `macro_rules!` body",
-                    self.file
-                ));
-            }
+        if item
+            .ident
+            .as_ref()
+            .is_some_and(|name| plain(name) == "concat")
+        {
+            self.banned
+                .push(format!("{}: `macro_rules! concat`", self.file));
+        }
+        if macro_body_has_path_attr(item.mac.tokens.clone()) {
+            self.banned.push(format!(
+                "{}: a `#[path` / `path =` token sequence in a `macro_rules!` body",
+                self.file
+            ));
         }
     }
 }
@@ -1655,47 +1628,34 @@ fn short(text: &str) -> String {
     format!("`{text}`")
 }
 
-/// D-S2b-10 (b): resolves an event argument by proof, or says why it cannot.
+/// D-S2b-14 (a): an event name resolves only as a string literal, as `concat!`
+/// (unqualified, `std::` or `core::`) of string literals, or as a path written in full
+/// as `crate::events::NAME`. Everything else (a bare identifier, `self::`, `super::`,
+/// an import, a glob, an alias) is unresolved: there is no import resolution.
 struct Resolver<'a> {
-    index: &'a CrateIndex,
-    module: Vec<String>,
-    locals: &'a std::collections::HashSet<String>,
+    events: &'a EventsModule,
 }
 
 impl Resolver<'_> {
-    /// `concat!`, `std::concat!` or `core::concat!`, and the crate defines no macro
-    /// named `concat`.
-    fn is_builtin_concat(&self, mac: &syn::Macro) -> bool {
-        let segments: Vec<String> = mac
-            .path
-            .segments
-            .iter()
-            .map(|segment| plain(&segment.ident))
-            .collect();
-        let named = matches!(
-            segments.iter().map(String::as_str).collect::<Vec<_>>()[..],
-            ["concat"] | ["std", "concat"] | ["core", "concat"]
-        );
-        named && !self.index.macros.contains("concat")
-    }
-
-    /// A string literal, or the built-in `concat!` of string literals (nothing else).
     fn literal_value(&self, expr: &syn::Expr) -> Result<String, String> {
         match expr {
             syn::Expr::Lit(syn::ExprLit {
                 lit: syn::Lit::Str(text),
                 ..
             }) => Ok(text.value()),
-            syn::Expr::Macro(call)
-                if call
+            syn::Expr::Macro(call) => {
+                let segments: Vec<String> = call
                     .mac
                     .path
                     .segments
-                    .last()
-                    .is_some_and(|s| plain(&s.ident) == "concat") =>
-            {
-                if !self.is_builtin_concat(&call.mac) {
-                    return Err("a `concat!` that is not the built-in one".to_string());
+                    .iter()
+                    .map(|segment| plain(&segment.ident))
+                    .collect();
+                if !matches!(
+                    segments.iter().map(String::as_str).collect::<Vec<_>>()[..],
+                    ["concat"] | ["std", "concat"] | ["core", "concat"]
+                ) {
+                    return Err(short(&written(expr)));
                 }
                 let parts =
                     parse_expr_list(call.mac.tokens.clone()).ok_or("an unparsable `concat!`")?;
@@ -1716,105 +1676,33 @@ impl Resolver<'_> {
     }
 
     fn resolve(&self, expr: &syn::Expr) -> Result<Names, String> {
-        match expr {
-            syn::Expr::Path(path) => self.resolve_path(path),
-            other => self.literal_value(other).map(|name| Names::from([name])),
-        }
-    }
-
-    fn resolve_path(&self, path: &syn::ExprPath) -> Result<Names, String> {
+        let syn::Expr::Path(path) = expr else {
+            return self.literal_value(expr).map(|name| Names::from([name]));
+        };
         let shown = written(path);
-        if path.qself.is_some()
-            || path
-                .path
-                .segments
-                .iter()
-                .any(|segment| !segment.arguments.is_empty())
-        {
-            return Err(format!("`{shown}` has generic arguments"));
-        }
         let segments: Vec<String> = path
             .path
             .segments
             .iter()
             .map(|segment| plain(&segment.ident))
             .collect();
-        if self.index.scoped_uses.contains(&segments[0]) {
-            return Err(format!(
-                "`{shown}` names an identifier a function- or block-scoped `use` binds"
-            ));
-        }
-        let module_key = self.module.join("::");
-        let mut candidates: Vec<Vec<String>> = Vec::new();
-        if segments.len() == 1 {
-            let name = &segments[0];
-            if self.locals.contains(name) {
-                return Err(format!("`{shown}` is shadowed by a local binding"));
-            }
-            if self
-                .index
-                .renamed
-                .get(&module_key)
-                .is_some_and(|renamed| renamed.contains(name))
-            {
-                return Err(format!("`{shown}` is bound by a `use .. as ..`"));
-            }
-            let local: Vec<String> = self.module.iter().cloned().chain([name.clone()]).collect();
-            let targets = self.index.uses.get(&module_key).and_then(|u| u.get(name));
-            let declared_here = self.index.consts.contains_key(&local.join("::"));
-            if targets.map_or(0, Vec::len) + usize::from(declared_here) > 1 {
-                return Err(format!(
-                    "`{shown}` has more than one `use` target or declaration in its module"
-                ));
-            }
-            candidates.push(local);
-            if let Some([target]) = targets.map(Vec::as_slice) {
-                candidates.push(target.clone());
-            }
-        } else {
-            match segments[0].as_str() {
-                "crate" | "self" | "super" => candidates.push(absolutize(&self.module, &segments)),
-                first => {
-                    candidates.push(self.module.iter().chain(&segments).cloned().collect());
-                    match self
-                        .index
-                        .uses
-                        .get(&module_key)
-                        .and_then(|u| u.get(first))
-                        .map(Vec::as_slice)
-                    {
-                        Some([target]) => {
-                            candidates.push(target.iter().chain(&segments[1..]).cloned().collect())
-                        }
-                        Some(_) => {
-                            return Err(format!(
-                                "`{shown}` starts with a name that has more than one `use` target"
-                            ))
-                        }
-                        None => {}
-                    }
-                }
-            }
-        }
-        candidates.sort();
-        candidates.dedup();
-        let declared: Vec<(&Vec<String>, &Vec<syn::Expr>)> = candidates
-            .iter()
-            .filter_map(|candidate| {
-                self.index
-                    .consts
-                    .get(&candidate.join("::"))
-                    .map(|inits| (candidate, inits))
-            })
-            .collect();
-        match declared.as_slice() {
-            [] => Err(format!(
-                "`{shown}` is not a const or static declared at that path"
+        let full = path.qself.is_none()
+            && path.path.leading_colon.is_none()
+            && path
+                .path
+                .segments
+                .iter()
+                .all(|segment| segment.arguments.is_empty());
+        match segments.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+            ["crate", EVENTS_MODULE, name] if full => self
+                .events
+                .consts
+                .get(name)
+                .map(|value| Names::from([value.clone()]))
+                .ok_or_else(|| format!("`{shown}` is not declared in the events module")),
+            _ => Err(format!(
+                "`{shown}` is not a literal, a `concat!` of literals or a full `crate::{EVENTS_MODULE}::NAME` path"
             )),
-            [(_, inits)] if inits.len() == 1 => self
-                .literal_value(&inits[0])
-                .map(|name| Names::from([name])),
-            _ => Err(format!("`{shown}` is not declared exactly once")),
         }
     }
 }
@@ -1848,12 +1736,8 @@ struct EventSites {
 
 /// Classify one call: a status touch (emit or listener), an unresolved emit, and a
 /// wrapper call.
-fn classify_call(file: &str, record: &CallRecord, index: &CrateIndex, found: &mut EventSites) {
-    let resolver = Resolver {
-        index,
-        module: record.module.split("::").map(String::from).collect(),
-        locals: &record.locals,
-    };
+fn classify_call(file: &str, record: &CallRecord, events: &EventsModule, found: &mut EventSites) {
+    let resolver = Resolver { events };
     let name = record.callee.as_str();
     let mut dynamic = |why: String| {
         let entry = found
@@ -1920,19 +1804,18 @@ fn event_sites(sources: &[(String, String)]) -> EventSites {
             )
         })
         .collect();
-    let mut index = CrateIndex::default();
+    let events = parse_events_module(sources);
+    let mut bans = BanFinder {
+        file: String::new(),
+        banned: events.problems.clone(),
+    };
     for (path, file) in &files {
-        IndexBuilder {
-            index: &mut index,
-            file: path.to_string(),
-            module: module_of_file(path),
-            block_depth: 0,
-        }
-        .visit_file(file);
+        bans.file = path.to_string();
+        bans.visit_file(file);
     }
     let never = |_: &[String]| false;
     let mut found = EventSites {
-        banned: std::mem::take(&mut index.banned),
+        banned: bans.banned,
         ..EventSites::default()
     };
     for (path, file) in &files {
@@ -1951,7 +1834,7 @@ fn event_sites(sources: &[(String, String)]) -> EventSites {
         };
         finder.visit_file(file);
         for record in &finder.calls {
-            classify_call(path, record, &index, &mut found);
+            classify_call(path, record, &events, &mut found);
         }
         for (scope, name) in finder.escapes {
             found.escapes.push((path.to_string(), scope, name));
@@ -2194,9 +2077,9 @@ fn check_event_sites(
             .map(|((file, function), (_, why, _))| format!("{file} {function}: {why:?}"))
             .collect();
         problems.push(format!(
-            "emits with an unresolvable event name changed (D-S2b-10 b).\n  found:   {dynamic:?}\n  allowed: {want_dynamic:?}\n  why: {reasons:?}\n\
-             An event name must be a literal, the built-in `concat!` of literals, or a const of one \
-             proven to be the one declared. A reviewed wrapper goes on DYNAMIC_EMIT_ALLOWLIST with \
+            "emits with an unresolvable event name changed (D-S2b-14).\n  found:   {dynamic:?}\n  allowed: {want_dynamic:?}\n  why: {reasons:?}\n\
+             An event name must be a literal, the built-in `concat!` of literals, or a full \
+             `crate::events::NAME` path. A reviewed wrapper goes on DYNAMIC_EMIT_ALLOWLIST with \
              its declared names and hash."
         ));
     }
@@ -2513,7 +2396,6 @@ fn a_local_concat_macro_fails_the_status_ratchet() {
         "macro_rules! concat { ($($t:tt)*) => { \"recording-status-changed\" }; }\n\npub(crate) async fn ensure_vad_model<R: tauri::Runtime>(",
     );
     let error = the_status_ratchet_rejects(&sources);
-    // Every `concat!` in the crate is now unproven.
     assert!(error.contains("commands/models.rs"), "{error}");
     let sources =
         models_with("let _ = app_handle.emit(concat!(\"recording-status-\", \"changed\"), 1);");
@@ -2539,7 +2421,7 @@ fn a_block_scoped_import_of_an_emitted_name_fails_the_status_ratchet() {
     );
     let error = the_status_ratchet_rejects(&sources);
     assert!(
-        error.contains("commands/models.rs") && error.contains("function- or block-scoped `use`"),
+        error.contains("commands/models.rs") && error.contains("unresolvable event name"),
         "{error}"
     );
 }
@@ -2635,6 +2517,82 @@ fn cfg_gated_imports_of_one_emitted_name_fail_the_status_ratchet_in_both_orders(
             "{first} / {second}: {error}"
         );
     }
+}
+
+/// Plants `items` before `ensure_vad_model` and `emit` at the end of the VAD
+/// completion path in `commands/models.rs`.
+fn models_with_items_and_emit(items: &str, emit: &str) -> Vec<(String, String)> {
+    let mut sources = models_with(emit);
+    let (_, text) = sources
+        .iter_mut()
+        .find(|(name, _)| name == "commands/models.rs")
+        .expect("models.rs is scanned");
+    let anchor = "pub(crate) async fn ensure_vad_model<R: tauri::Runtime>(";
+    assert_eq!(text.matches(anchor).count(), 1);
+    *text = text.replace(anchor, &format!("{items}\n{anchor}"));
+    sources
+}
+
+/// Round-6 probe 1: a macOS `use` binds `VAD_INSTALL_EVENT` to the status event while
+/// a fallback `const` supplies `"model-installed"`; the emit names it as
+/// `self::VAD_INSTALL_EVENT`. There is no import resolution: only a full
+/// `crate::events::NAME` path resolves, so `self::`, `super::` and bare names fail.
+#[test]
+fn a_qualified_path_to_a_cfg_gated_binding_fails_the_status_ratchet() {
+    let items = "mod status_events { pub const VAD_INSTALL_EVENT: &str = \"recording-status-changed\"; }\n\
+                 #[cfg(target_os = \"macos\")]\nuse status_events::VAD_INSTALL_EVENT;\n\
+                 #[cfg(not(target_os = \"macos\"))]\nconst VAD_INSTALL_EVENT: &str = \"model-installed\";\n";
+    for path in [
+        "self::VAD_INSTALL_EVENT",
+        "super::models::VAD_INSTALL_EVENT",
+        "crate::commands::models::VAD_INSTALL_EVENT",
+        "VAD_INSTALL_EVENT",
+    ] {
+        let sources =
+            models_with_items_and_emit(items, &format!("let _ = app_handle.emit({path}, 1);"));
+        let error = the_status_ratchet_rejects(&sources);
+        assert!(
+            error.contains("commands/models.rs") && error.contains("unresolvable event name"),
+            "{path}: {error}"
+        );
+    }
+}
+
+/// Round-6 probe 2: a cfg-gated glob supplies the status event on macOS, an explicit
+/// fallback import supplies a harmless one elsewhere; Rust picks the glob's name on
+/// macOS. Globs are not followed: the bare name is unresolved.
+#[test]
+fn a_cfg_gated_glob_hiding_a_platform_binding_fails_the_status_ratchet() {
+    let items =
+        "mod status_events { pub const VAD_INSTALL_EVENT: &str = \"recording-status-changed\"; }\n\
+                 mod fallback_events { pub const VAD_INSTALL_EVENT: &str = \"model-installed\"; }\n\
+                 #[cfg(target_os = \"macos\")]\nuse status_events::*;\n\
+                 #[cfg(not(target_os = \"macos\"))]\nuse fallback_events::VAD_INSTALL_EVENT;\n";
+    let sources =
+        models_with_items_and_emit(items, "let _ = app_handle.emit(VAD_INSTALL_EVENT, 1);");
+    let error = the_status_ratchet_rejects(&sources);
+    assert!(
+        error.contains("commands/models.rs") && error.contains("unresolvable event name"),
+        "{error}"
+    );
+}
+
+/// D-S2b-14 (b): a status name added to the events module is a status site wherever
+/// it is emitted (it resolves), so the ratchet pins it like a literal.
+#[test]
+fn a_status_event_in_the_events_module_is_a_status_site() {
+    let mut sources = models_with("let _ = app_handle.emit(crate::events::RECORDING_STATUS, 1);");
+    let (_, events) = sources
+        .iter_mut()
+        .find(|(name, _)| name == EVENTS_FILE)
+        .expect("the events module is scanned");
+    events.push_str("pub const RECORDING_STATUS: &str = \"recording-status-changed\";\n");
+    let error = the_status_ratchet_rejects(&sources);
+    assert!(
+        error.contains("the `recording-status-changed` sites changed")
+            && error.contains("commands/models.rs"),
+        "{error}"
+    );
 }
 
 /// Round-3 probe 5: `OwnedJsonEmit::emit_json` remapped an event through an unpinned
@@ -2750,10 +2708,21 @@ fn the_token_hash_keeps_commas_and_punctuation_spacing() {
     );
 }
 
+/// The events module of the synthetic sources.
+const SYNTHETIC_EVENTS: &str =
+    "pub const STATUS: &str = \"recording-status-changed\";\npub const OTHER: &str = \"other\";\n";
+
+/// One synthetic file (`lib.rs`, the crate root) beside a valid events module.
+fn synthetic(source: &str) -> Vec<(String, String)> {
+    vec![
+        ("lib.rs".to_string(), source.to_string()),
+        (EVENTS_FILE.to_string(), SYNTHETIC_EVENTS.to_string()),
+    ]
+}
+
 /// Counts for one synthetic file: `(status emits, status listeners, unresolved emits)`.
-/// The file is `lib.rs`, the crate root: its module path is `crate`.
 fn event_counts(source: &str) -> (usize, usize, usize) {
-    let found = event_sites(&[("lib.rs".to_string(), source.to_string())]);
+    let found = event_sites(&synthetic(source));
     let status = |wanted: &str| {
         found
             .status
@@ -2769,41 +2738,32 @@ fn event_counts(source: &str) -> (usize, usize, usize) {
     )
 }
 
+/// D-S2b-14 (a): an event name resolves as a literal, a `concat!` of literals, or a
+/// full `crate::events::NAME` path, and nothing else: no import resolution.
 #[test]
-fn the_event_scanner_resolves_by_proof_only() {
+fn the_event_scanner_resolves_only_literals_concat_and_full_events_paths() {
     // (source, status emits, status listeners, unresolved emits)
-    let cases: [(&str, (usize, usize, usize)); 45] = [
+    let cases: &[(&str, (usize, usize, usize))] = &[
         ("fn f(a: &A) { a.emit(\"recording-status-changed\", 1); }", (1, 0, 0)),
         ("fn f(a: &A) { a.emit(\"other\", 1); }", (0, 0, 0)),
         ("fn f(a: &A) { a.emit(concat!(\"recording-status-\", \"changed\"), 1); }", (1, 0, 0)),
         ("fn f(a: &A) { a.emit(std::concat!(\"recording-status-\", \"changed\"), 1); }", (1, 0, 0)),
-        ("const E: &str = \"recording-status-changed\"; fn f(a: &A) { a.emit(E, 1); }", (1, 0, 0)),
-        ("static E: &str = \"recording-status-changed\"; fn f(a: &A) { a.emit(E, 1); }", (1, 0, 0)),
-        (
-            "const E: &str = concat!(\"recording-status-\", \"changed\"); fn f(a: &A) { a.emit(crate::E, 1); }",
-            (1, 0, 0),
-        ),
-        (
-            "mod m { pub const E: &str = \"recording-status-changed\"; } fn f(a: &A) { a.emit(m::E, 1); }",
-            (1, 0, 0),
-        ),
-        (
-            "mod m { pub const E: &str = \"recording-status-changed\"; } use m::E; fn f(a: &A) { a.emit(E, 1); }",
-            (1, 0, 0),
-        ),
+        ("fn f(a: &A) { a.emit(core::concat!(\"recording-status-\", \"changed\"), 1); }", (1, 0, 0)),
+        ("fn f(a: &A) { a.emit(crate::events::STATUS, 1); }", (1, 0, 0)),
+        ("fn f(a: &A) { a.emit(crate::events::OTHER, 1); }", (0, 0, 0)),
         ("fn f(a: &A) { a.emit_to(\"main\", \"recording-status-changed\", 1); }", (1, 0, 0)),
+        ("fn f(a: &A) { a.emit_to(\"main\", crate::events::STATUS, 1); }", (1, 0, 0)),
         ("fn f(a: &A) { tauri::Emitter::emit(a, concat!(\"recording-status-\", \"changed\"), 1); }", (1, 0, 0)),
         ("fn f(a: &A) { a.listen_any(\"recording-status-changed\", |_| ()); }", (0, 1, 0)),
         ("fn f(a: &A) { w!(a, concat!(\"recording-status-\", \"changed\")); }", (1, 0, 0)),
         ("fn f(a: &A) { w!(a.emit(\"recording-status-changed\", 1)); }", (1, 0, 0)),
         ("fn f(a: &A) { w! { let _ = a.emit(\"recording-status-changed\", 1); } }", (1, 0, 0)),
-        // A name that is not the status event, a test-only emit, a pure macro.
+        // Not the status event, a test-only emit, a pure macro.
         ("fn f(a: &A) { a.emit(\"recording-status-changedx\", 1); }", (0, 0, 0)),
         ("#[cfg(test)] fn f(a: &A) { a.emit(\"recording-status-changed\", 1); }", (0, 0, 0)),
         ("fn f() { let n = format!(\"{}\", \"recording-status-changed\"); }", (0, 0, 0)),
         // Unresolved, however innocent: a parameter, a call, a field, a `let`, a
-        // reassigned `let mut`, a loop variable, a method result, a const of a const,
-        // a const that is not a literal, an undeclared or doubly declared path.
+        // reassigned `let mut`, a loop variable, a method result.
         ("fn f(a: &A, name: &str) { a.emit(name, 1); }", (0, 0, 1)),
         ("fn f(a: &A) { a.emit(event_name(), 1); }", (0, 0, 1)),
         ("fn f(a: &A, s: &S) { a.emit(s.event, 1); }", (0, 0, 1)),
@@ -2814,90 +2774,28 @@ fn the_event_scanner_resolves_by_proof_only() {
         ),
         ("fn f(a: &A) { for e in [\"recording-status-changed\"] { a.emit(e, 1); } }", (0, 0, 1)),
         ("fn f(a: &A) { a.emit(\"recording-status-changed\".to_string(), 1); }", (0, 0, 1)),
-        (
-            "const A: &str = \"recording-status-changed\"; const B: &str = A; fn f(a: &A) { a.emit(B, 1); }",
-            (0, 0, 1),
-        ),
-        (
-            "const A: &str = if c { \"recording-status-changed\" } else { \"x\" }; fn f(a: &A) { a.emit(A, 1); }",
-            (0, 0, 1),
-        ),
         ("fn f(a: &A) { a.emit(String::from(\"recording-status-changed\"), 1); }", (1, 0, 1)),
-        ("fn f(a: &A) { a.emit(nowhere::E, 1); }", (0, 0, 1)),
-        (
-            "const E: &str = \"recording-status-changed\"; mod m { const E: &str = \"x\"; } fn f(a: &A) { a.emit(E, 1); }",
-            (1, 0, 0),
-        ),
-        // A binding that shares the identifier is not the constant: a parameter, a
-        // `let`, a closure parameter, a `use .. as`.
-        (
-            "const E: &str = \"recording-status-changed\"; fn f(a: &A, E: &str) { a.emit(E, 1); }",
-            (0, 0, 1),
-        ),
-        (
-            "const E: &str = \"recording-status-changed\"; fn f(a: &A) { let E = \"x\"; a.emit(E, 1); }",
-            (0, 0, 1),
-        ),
-        (
-            "const E: &str = \"recording-status-changed\"; fn f(a: &A) { let g = |E: &str| a.emit(E, 1); }",
-            (0, 0, 1),
-        ),
-        (
-            "const E: &str = \"recording-status-changed\"; use other::X as E; fn f(a: &A) { a.emit(E, 1); }",
-            (0, 0, 1),
-        ),
-        // A local macro named `concat` is not the built-in.
-        (
-            "macro_rules! concat { () => {}; } fn f(a: &A) { a.emit(concat!(\"recording-status-\", \"changed\"), 1); }",
-            (0, 0, 1),
-        ),
+        // No import resolution: a bare constant, however it is declared or imported.
+        ("const E: &str = \"recording-status-changed\"; fn f(a: &A) { a.emit(E, 1); }", (0, 0, 1)),
+        ("static E: &str = \"recording-status-changed\"; fn f(a: &A) { a.emit(E, 1); }", (0, 0, 1)),
+        ("const E: &str = \"x\"; fn f(a: &A) { a.emit(crate::E, 1); }", (0, 0, 1)),
+        ("fn f(a: &A) { a.emit(self::E, 1); }", (0, 0, 1)),
+        ("fn f(a: &A) { a.emit(super::E, 1); }", (0, 0, 1)),
+        ("mod m { pub const E: &str = \"x\"; } fn f(a: &A) { a.emit(m::E, 1); }", (0, 0, 1)),
+        ("mod m { pub const E: &str = \"x\"; } use m::E; fn f(a: &A) { a.emit(E, 1); }", (0, 0, 1)),
+        ("mod m { pub const E: &str = \"x\"; } use m::*; fn f(a: &A) { a.emit(E, 1); }", (0, 0, 1)),
+        ("use crate::events::STATUS as E; fn f(a: &A) { a.emit(E, 1); }", (0, 0, 1)),
+        ("use crate::events::STATUS; fn f(a: &A) { a.emit(STATUS, 1); }", (0, 0, 1)),
+        ("use crate::events; fn f(a: &A) { a.emit(events::STATUS, 1); }", (0, 0, 1)),
+        ("fn f(a: &A) { a.emit(self::events::STATUS, 1); }", (0, 0, 1)),
+        ("fn f(a: &A) { a.emit(::crate::events::STATUS, 1); }", (0, 0, 1)),
+        ("fn f(a: &A) { a.emit(crate::events::MISSING, 1); }", (0, 0, 1)),
+        ("fn f(a: &A) { a.emit(crate::events::STATUS::<u8>, 1); }", (0, 0, 1)),
         // A macro body that does not parse and names an emitter fails.
         ("fn f(a: &A) { w!(x = %a.emit(\"recording-status-changed\", 1)); }", (1, 0, 1)),
-        // D-S2b-12 (a): a function- or block-scoped `use` of the identifier is
-        // unresolved, whichever module-level import or const exists.
-        (
-            "const E: &str = \"recording-status-changed\"; fn f(a: &A) { use other::E; a.emit(E, 1); }",
-            (0, 0, 1),
-        ),
-        (
-            "mod m { pub const E: &str = \"recording-status-changed\"; } fn f(a: &A) { { use m::E; a.emit(E, 1); } } fn g() { use harmless::E; }",
-            (0, 0, 1),
-        ),
-        // Round-5: a name with more than one module-level `use` target, or a target and
-        // a declaration, under any `cfg`, is unresolved (both declaration orders).
-        (
-            "mod a { pub const E: &str = \"recording-status-changed\"; } mod b { pub const E: &str = \"x\"; } #[cfg(unix)] use a::E; #[cfg(not(unix))] use b::E; fn f(h: &A) { h.emit(E, 1); }",
-            (0, 0, 1),
-        ),
-        (
-            "mod a { pub const E: &str = \"x\"; } mod b { pub const E: &str = \"recording-status-changed\"; } #[cfg(unix)] use a::E; #[cfg(not(unix))] use b::E; fn f(h: &A) { h.emit(E, 1); }",
-            (0, 0, 1),
-        ),
-        (
-            "#[cfg(unix)] const E: &str = \"recording-status-changed\"; #[cfg(not(unix))] const E: &str = \"x\"; fn f(h: &A) { h.emit(E, 1); }",
-            (0, 0, 1),
-        ),
-        (
-            "#[cfg(unix)] const E: &str = \"x\"; #[cfg(not(unix))] const E: &str = \"recording-status-changed\"; fn f(h: &A) { h.emit(E, 1); }",
-            (0, 0, 1),
-        ),
-        (
-            "mod m { pub const E: &str = \"recording-status-changed\"; } #[cfg(unix)] use m::E; #[cfg(not(unix))] const E: &str = \"x\"; fn f(h: &A) { h.emit(E, 1); }",
-            (0, 0, 1),
-        ),
-        // A constant declared twice at one path is not proven.
-        (
-            "const E: &str = \"recording-status-changed\"; const E: &str = \"x\"; fn f(a: &A) { a.emit(E, 1); }",
-            (0, 0, 1),
-        ),
-        // A const of another module is not in scope without a path or `use`.
-        (
-            "mod m { pub const E: &str = \"recording-status-changed\"; } fn f(a: &A) { a.emit(E, 1); }",
-            (0, 0, 1),
-        ),
     ];
     for (source, expected) in cases {
-        assert_eq!(event_counts(source), expected, "{source}");
+        assert_eq!(event_counts(source), *expected, "{source}");
     }
     // A call that is not an emit API's shape is not an emit (`ports.emit(effect)`).
     assert_eq!(event_counts("fn f(p: &P, e: &E) { p.emit(e); }"), (0, 0, 0));
@@ -2908,14 +2806,60 @@ fn the_event_scanner_resolves_by_proof_only() {
     );
 }
 
-/// D-S2b-10 (a): an emitter outside a direct call escapes the argument checks.
+/// D-S2b-14 (b): the events module holds only `pub const NAME: &str = "<literal>";`.
+#[test]
+fn the_events_module_must_hold_only_public_string_literal_constants() {
+    let problems = |events: &str| {
+        let mut sources = synthetic("fn f() {}");
+        sources[1].1 = events.to_string();
+        event_sites(&sources).banned
+    };
+    assert!(problems(SYNTHETIC_EVENTS).is_empty());
+    assert!(problems(
+        "//! docs\n/// doc\npub const A: &str = \"a\";\npub const B: &'static str = \"b\";\n"
+    )
+    .is_empty());
+    for bad in [
+        "use other::X;\npub const A: &str = \"a\";\n",
+        "#[cfg(unix)]\npub const A: &str = \"a\";\n",
+        "#[cfg_attr(unix, allow(dead_code))]\npub const A: &str = \"a\";\n",
+        "#![cfg(unix)]\npub const A: &str = \"a\";\n",
+        "macro_rules! m { () => {}; }\n",
+        "mod nested { pub const A: &str = \"a\"; }\n",
+        "pub const A: &str = \"a\";\npub const A: &str = \"b\";\n",
+        "pub const A: &str = concat!(\"a\", \"b\");\n",
+        "pub const A: &str = B;\n",
+        "const A: &str = \"a\";\n",
+        "pub(crate) const A: &str = \"a\";\n",
+        "pub const A: String = String::new();\n",
+        "pub static A: &str = \"a\";\n",
+        "pub fn f() {}\n",
+    ] {
+        assert!(!problems(bad).is_empty(), "{bad}");
+    }
+    // A missing module fails too.
+    let mut sources = synthetic("fn f() {}");
+    sources.pop();
+    assert!(!event_sites(&sources).banned.is_empty());
+}
+
+#[test]
+fn the_real_events_module_is_valid_and_declares_the_emitted_constants() {
+    let events = parse_events_module(&raw_production_sources());
+    assert!(events.problems.is_empty(), "{:?}", events.problems);
+    for name in [
+        "INVENTORY_EVENT",
+        "AUDIO_LEVEL_EVENT",
+        "OVERLAY_AUDIO_LEVEL_EVENT",
+        "MAIN_THREAD_WATCH_STATUS_EVENT",
+    ] {
+        assert!(events.consts.contains_key(name), "{name}");
+    }
+}
+
 #[test]
 fn the_event_scanner_flags_an_emitter_outside_a_direct_call() {
-    let escapes = |source: &str| {
-        event_sites(&[("lib.rs".to_string(), source.to_string())])
-            .escapes
-            .len()
-    };
+    let escapes = |source: &str| event_sites(&synthetic(source)).escapes.len();
     assert_eq!(
         escapes("fn f(a: &A) { let p = tauri::Emitter::emit; p(a, \"x\", 1); }"),
         1
@@ -2937,7 +2881,7 @@ fn the_event_scanner_flags_an_emitter_outside_a_direct_call() {
 #[test]
 fn a_reviewed_dynamic_emitter_needs_its_pin_and_declarations() {
     let source = "fn wrap(a: &A, name: &str) { a.emit(name, 1); }";
-    let found = event_sites(&[("lib.rs".to_string(), source.to_string())]);
+    let found = event_sites(&synthetic(source));
     let hash = found.dynamic[&("lib.rs".to_string(), "wrap".to_string())].2;
     let entry = |hash, wrapper, names: &'static [&'static str]| {
         [DynamicEmitter {

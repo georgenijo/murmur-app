@@ -17,15 +17,18 @@ every production call that can carry it, per enclosing function
   it or returning it fails. Macro bodies are parsed as arguments, else as statements,
   and their calls get the same checks; a body that parses as neither and names an
   emitter fails.
-* **Event names resolve by proof.** A string literal, `concat!` of literals, or a path to
-  a `const` / `static` declared exactly once at that module path (or imported by `use`),
-  with no pattern, parameter, closure argument or `use .. as` binding the same
-  identifier. Only module-level `use` items are consulted: a `use` inside a function or
-  block that binds an identifier makes that identifier unresolved wherever it is
-  emitted (D-S2b-12 a). `concat!` counts only as `concat!` / `std::concat!` /
-  `core::concat!`; any `use .. as concat`, any import whose final name is `concat`, and
-  any `macro_rules! concat` anywhere in the crate fails the ratchet (D-S2b-12 b). There
-  is no value-flow analysis: a `let`, a loop variable or a call result is unresolved.
+* **Event names resolve by three forms only (D-S2b-14).** A string literal; `concat!`
+  (unqualified, `std::` or `core::`) of string literals; or a path written in full as
+  `crate::events::NAME`. There is **no import resolution**: a bare identifier,
+  `self::`, `super::`, an imported name, a glob or an alias is unresolved, whatever it
+  names, and an unresolved emit outside a pinned wrapper fails. The events module
+  (`src/events.rs`) is the one module that declares the event-name constants emitted
+  outside wrappers. It holds only `pub const NAME: &str = "<literal>";` items: no
+  `use`, no `cfg` or `cfg_attr` on any item (docs only), no macro, no nested module,
+  each name once; any violation fails. Any `use .. as concat`, any import whose final
+  name is `concat`, and any `macro_rules! concat` anywhere in the crate fails too
+  (D-S2b-12 b). A new emitted constant goes in the events module and is emitted as
+  `crate::events::NAME`.
 * **An unresolved emit is allowed only inside a reviewed wrapper** on
   `DYNAMIC_EMIT_ALLOWLIST`, pinned by token hash. Each wrapper name has one entry and
   one destination, and every caller of it passes a name that resolves and that the entry
@@ -60,9 +63,8 @@ examples, rejected where cheap and otherwise accepted:
 * aliasing a macro to a built-in's name (`use m as concat`; rejected by blanket rule);
 * generating module attributes from macros (`macro_rules!` bodies with `#[path`;
   rejected by blanket rule; other macro-generated attributes are not tracked);
-* shadowing a constant through scoped imports that reuse the name (a function- or
-  block-scoped `use` makes the identifier unresolved; nothing finer is tracked);
-* glob imports (`use m::*`), which the resolver does not follow.
+* shadowing or re-binding a constant through imports, globs or `cfg`-gated
+  declarations (the ratchet follows no import, so only the three forms above resolve).
 
 Out of scope entirely:
 
