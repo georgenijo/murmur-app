@@ -92,6 +92,10 @@ fn claim_meeting_ownership(app_state: &AppState, inference: bool) -> Result<(), 
             .meeting_inference_active
             .store(true, Ordering::SeqCst);
     }
+    // Test builds only: the point between the stores and the re-read, where a
+    // relaunch can commit (the `bb66238b` race).
+    #[cfg(test)]
+    crate::barrier_hook::at("meeting.claim.stored");
     // `MeetingPostClaim`: the re-read of `relaunch_committed` after the stores.
     if let Err(refusal) = crate::dictation_admission::meeting_post_claim(
         crate::commands::permissions::relaunch_committed(),
@@ -293,25 +297,52 @@ mod admission_tests {
         }
     }
 
-    /// `bb66238b` (appendix C13.3, Stage 4): a permission relaunch committed over
-    /// a half-started meeting. The post-claim `relaunch_committed` re-read
-    /// (`MeetingPostClaim`) refuses with `MEETING_RESTARTING` and the claim is
-    /// undone (`meeting_active` back to false). The dictation half is
+    /// `bb66238b` (appendix C13.3, Stage 4): a permission relaunch commits *after*
+    /// a meeting claim stored its flags and *before* the claim reads the commitment.
+    /// A test barrier (`meeting.claim.stored`, between the stores and the re-read)
+    /// stands in that window and raises the commitment there; the post-claim re-read
+    /// (`MeetingPostClaim`) refuses with `MEETING_RESTARTING` and the claim is undone
+    /// (`meeting_active` back to false). The barrier hook also asserts the flags are
+    /// already stored when it runs, so a claim that reads the commitment before its
+    /// stores never sees it. The dictation half is
     /// `recording::bug_replay_tests::bug_relaunch_vs_dictation_start`.
     ///
     /// Revert: remove the post-claim re-read from `claim_meeting_ownership`.
-    /// Mutation: remove the `relaunch_recheck` refusal from `MeetingPostClaim`.
+    /// Mutations: move the `relaunch_committed` read before the stores (the race is
+    /// then missed); remove the `relaunch_recheck` refusal from `MeetingPostClaim`.
     #[test]
     fn bug_relaunch_vs_meeting_claim() {
+        // No relaunch: the claim holds.
         let app_state = AppState::default();
         assert_eq!(claim_meeting_ownership(&app_state, true), Ok(()));
         assert!(app_state.meeting_active.load(Ordering::SeqCst));
-        let _committed = crate::commands::permissions::CommittedRelaunchForTest::raise();
         for inference in [true, false] {
-            let app_state = AppState::default();
+            let app_state = std::sync::Arc::new(AppState::default());
+            let seen = std::sync::Arc::clone(&app_state);
+            let committed = std::rc::Rc::new(std::cell::RefCell::new(None));
+            let hook_committed = std::rc::Rc::clone(&committed);
+            let reached = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let hook_reached = std::sync::Arc::clone(&reached);
+            let _hook = crate::barrier_hook::install(move |point| {
+                if point != "meeting.claim.stored" {
+                    return;
+                }
+                assert!(
+                    seen.meeting_active.load(Ordering::SeqCst),
+                    "the barrier is after the ownership stores"
+                );
+                hook_reached.store(true, Ordering::SeqCst);
+                *hook_committed.borrow_mut() =
+                    Some(crate::commands::permissions::CommittedRelaunchForTest::raise());
+            });
             assert_eq!(
                 claim_meeting_ownership(&app_state, inference),
                 Err(MEETING_RESTARTING)
+            );
+            assert!(reached.load(Ordering::SeqCst), "the barrier was reached");
+            assert!(
+                committed.borrow().is_some(),
+                "the commitment was raised at the barrier"
             );
             assert!(!app_state.meeting_active.load(Ordering::SeqCst));
             assert!(!app_state.meeting_inference_active.load(Ordering::SeqCst));
