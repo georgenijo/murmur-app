@@ -45,7 +45,8 @@ every production call that can carry it, per enclosing function
   read and hashed directly and a missing file fails; an entry directly under `src/` that
   matches `bin` or `main.rs` case-insensitively but is not spelled exactly so fails
   (Cargo resolves `src/Bin/tool.rs` as a binary and `src/Main.rs` as `src/main.rs` on a
-  case-insensitive filesystem such as macOS); and `src/bin` must not exist at all. The
+  case-insensitive filesystem such as macOS); and `src/bin` must not exist at all (any
+  entry, including a dangling symlink: the check uses `symlink_metadata`). The
   manifest must also give Cargo a `ui` binary built with the production feature set:
   the default `src/main.rs` with autobins on and a package named `ui`, or one explicit
   `[[bin]] name = "ui"` at `src/main.rs`; `autobins = false` without that explicit bin,
@@ -80,6 +81,18 @@ scan derives from the file name, which fails closed for constants declared in it
 `#[path` or `path =` token sequence inside any `macro_rules!` body fails too, since a
 macro could expand to a module declaration that loads a file outside the walk
 (D-S2b-12 c).
+
+## How the probes plant their edits
+
+The real tree is read once per test process (`real_raw_sources`) and its per-file scans
+are taken once (`real_tree_scan`). A probe takes an owned copy of the sources with one
+file replaced or added (`sources_with`, `models_with`, a `push`); nothing is written to
+`src/`. `event_sites` reuses the cached scan of every file that is byte-for-byte the real
+one and re-parses only the planted file, or every file when the probe changes the events
+module's constants (a file's scan depends on its own source and those constants). A
+probe that needs a real directory layout (`src/Bin`, a `src/bin` symlink) builds a small
+temp-dir fixture with only the files it needs. A probe must keep failing for its own
+reason: to check, disable the scanner guard it targets and confirm the probe fails.
 
 ## Threat model
 

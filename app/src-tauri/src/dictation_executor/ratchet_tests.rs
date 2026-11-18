@@ -64,7 +64,8 @@ const TERMINAL_EMIT_SITES_BASELINE: usize = 6;
 const TERMINAL_EMIT_ALLOWLIST: [(&str, &str, usize); 6] = [
     // The forward inside the helper itself (the plan's 23 does not count it).
     ("commands/recording.rs", "emit_dictation_terminal", 1),
-    // The stop's own inline terminal: not yet behind `TERM`.
+    // The stop's emit sits inside the `StopHooks.terminal` closure that the executor's
+    // `TERM` invokes; the closure is part of this function, so it is attributed here.
     ("commands/recording.rs", "stop_native_recording_admitted", 1),
     // The four families' `TERM` ports: the executor's terminal effect.
     (
@@ -355,7 +356,14 @@ fn production_sources() -> Vec<(String, String)> {
 /// `(path relative to src, raw source)`, for the syntax-aware scanner (it skips
 /// `#[cfg(test)]` items itself).
 fn raw_production_sources() -> Vec<(String, String)> {
-    scan_dir_self_gated(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+    real_raw_sources().clone()
+}
+
+/// The real tree, read and self-gate-filtered once per test process. Every probe takes
+/// an owned copy of this and plants its edit in the copy; nothing writes into `src/`.
+fn real_raw_sources() -> &'static Vec<(String, String)> {
+    static REAL: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    REAL.get_or_init(|| scan_dir_self_gated(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src")))
 }
 
 /// Every `.rs` file under `dir` that does not gate itself with `#![cfg(test)]`.
@@ -1620,7 +1628,9 @@ fn check_src_layout(src: &Path, main_rs_hash: u64) -> Vec<String> {
         }
         Err(error) => problems.push(format!("src/ cannot be read: {error}")),
     }
-    if src.join("bin").exists() {
+    // `symlink_metadata`, not `exists()`: `exists()` follows a link, so a dangling
+    // `src/bin` symlink would pass. The rule is "no entry at all".
+    if std::fs::symlink_metadata(src.join("bin")).is_ok() {
         problems.push(
             "src/bin exists: an unknown production crate root (no `src/bin` is allowed)"
                 .to_string(),
@@ -1903,6 +1913,7 @@ impl Resolver<'_> {
 }
 
 /// A call of a host wrapper and the name it passes.
+#[derive(Clone)]
 struct WrapperCall {
     file: String,
     function: String,
@@ -1911,7 +1922,7 @@ struct WrapperCall {
 }
 
 /// What the scan found.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct EventSites {
     /// `(file, qualified fn, "emit" | "listen")` → calls with an argument that
     /// resolves to the status event.
@@ -1989,59 +2000,121 @@ fn classify_call(file: &str, record: &CallRecord, events: &EventsModule, found: 
 /// The scan of `sources` (`(file relative to src, raw Rust source)`, production code
 /// only: `#[cfg(test)]` items are skipped).
 fn event_sites(sources: &[(String, String)]) -> EventSites {
-    use syn::visit::Visit;
-    let files: Vec<(&String, syn::File)> = sources
-        .iter()
-        .map(|(file, source)| {
-            (
-                file,
-                syn::parse_file(source).unwrap_or_else(|error| panic!("parse {file}: {error}")),
-            )
-        })
-        .collect();
     let events = parse_events_module(sources);
-    let mut bans = BanFinder {
-        file: String::new(),
-        banned: events.problems.clone(),
-    };
-    for (path, file) in &files {
-        bans.file = path.to_string();
-        bans.visit_file(file);
-    }
-    let never = |_: &[String]| false;
+    let real = real_tree_scan();
+    // A file's scan depends only on its own source and on the constants of the events
+    // module, so a file that is byte-for-byte the real one is not parsed again, unless
+    // the probe changed the events constants.
+    let reusable = events.consts == real.consts;
     let mut found = EventSites {
-        banned: bans.banned,
+        banned: events.problems.clone(),
         ..EventSites::default()
     };
-    for (path, file) in &files {
-        let mut finder = SiteFinder {
-            scope: Vec::new(),
-            include_cfg_test: false,
-            is_target: &never,
-            hits: Vec::new(),
-            record_calls: true,
-            calls: Vec::new(),
-            frames: Vec::new(),
-            mod_path: module_of_file(path),
-            fn_defs: Vec::new(),
-            escapes: Vec::new(),
-            path_attrs: Vec::new(),
-        };
-        finder.visit_file(file);
-        for record in &finder.calls {
-            classify_call(path, record, &events, &mut found);
-        }
-        for (scope, name) in finder.escapes {
-            found.escapes.push((path.to_string(), scope, name));
-        }
-        for (module, target) in finder.path_attrs {
-            found.path_attrs.push((path.to_string(), module, target));
-        }
-        for def in finder.fn_defs {
-            found.fn_defs.push((path.to_string(), def));
+    let mut scans = Vec::with_capacity(sources.len());
+    for (path, source) in sources {
+        match real.files.get(path) {
+            Some((real_source, scan)) if reusable && real_source == source => {
+                scans.push(scan.clone());
+            }
+            _ => scans.push(scan_file(path, source, &events)),
         }
     }
+    merge_file_scans(&mut found, scans);
     found
+}
+
+/// One file's share of the scan: the blanket rejections found in it and its sites.
+#[derive(Clone, Default)]
+struct FileScan {
+    banned: Vec<String>,
+    sites: EventSites,
+}
+
+/// Scan one file. Every key of the maps in `sites` carries the file, so the shares of
+/// different files never collide.
+fn scan_file(path: &str, source: &str, events: &EventsModule) -> FileScan {
+    use syn::visit::Visit;
+    let file = syn::parse_file(source).unwrap_or_else(|error| panic!("parse {path}: {error}"));
+    let mut bans = BanFinder {
+        file: path.to_string(),
+        banned: Vec::new(),
+    };
+    bans.visit_file(&file);
+    let never = |_: &[String]| false;
+    let mut finder = SiteFinder {
+        scope: Vec::new(),
+        include_cfg_test: false,
+        is_target: &never,
+        hits: Vec::new(),
+        record_calls: true,
+        calls: Vec::new(),
+        frames: Vec::new(),
+        mod_path: module_of_file(path),
+        fn_defs: Vec::new(),
+        escapes: Vec::new(),
+        path_attrs: Vec::new(),
+    };
+    finder.visit_file(&file);
+    let mut sites = EventSites::default();
+    for record in &finder.calls {
+        classify_call(path, record, events, &mut sites);
+    }
+    for (scope, name) in finder.escapes {
+        sites.escapes.push((path.to_string(), scope, name));
+    }
+    for (module, target) in finder.path_attrs {
+        sites.path_attrs.push((path.to_string(), module, target));
+    }
+    for def in finder.fn_defs {
+        sites.fn_defs.push((path.to_string(), def));
+    }
+    FileScan {
+        banned: bans.banned,
+        sites,
+    }
+}
+
+/// Add the files' shares to `found`, in file order.
+fn merge_file_scans(found: &mut EventSites, scans: Vec<FileScan>) {
+    for scan in scans {
+        found.banned.extend(scan.banned);
+        let sites = scan.sites;
+        found.status.extend(sites.status);
+        found.dynamic.extend(sites.dynamic);
+        found.wrapper_calls.extend(sites.wrapper_calls);
+        found.escapes.extend(sites.escapes);
+        found.path_attrs.extend(sites.path_attrs);
+        found.fn_defs.extend(sites.fn_defs);
+    }
+}
+
+/// The real tree's per-file scans, taken once per test process under the real events
+/// module (the syntax trees are not `Send`, so the owned results are what is shared).
+struct RealTreeScan {
+    consts: std::collections::BTreeMap<String, String>,
+    /// path → (raw source, its scan)
+    files: std::collections::HashMap<String, (String, FileScan)>,
+}
+
+fn real_tree_scan() -> &'static RealTreeScan {
+    static REAL: std::sync::OnceLock<RealTreeScan> = std::sync::OnceLock::new();
+    REAL.get_or_init(|| {
+        let sources = real_raw_sources();
+        let events = parse_events_module(sources);
+        let files = sources
+            .iter()
+            .map(|(path, source)| {
+                (
+                    path.clone(),
+                    (source.clone(), scan_file(path, source, &events)),
+                )
+            })
+            .collect();
+        RealTreeScan {
+            consts: events.consts,
+            files,
+        }
+    })
 }
 
 /// SP5 (appendix C7.2, C13.3 #117): every production call that can carry the
@@ -3047,6 +3120,23 @@ fn the_src_layout_check_rejects_case_variants_a_second_bin_and_a_missing_main() 
         )],
         "main.rs: was edited",
     );
+    // A dangling `src/bin` symlink is still an entry: `exists()` follows the link and
+    // would pass it, `symlink_metadata` does not.
+    #[cfg(unix)]
+    {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::write(dir.path().join("main.rs"), &real_main).expect("write main.rs");
+        std::os::unix::fs::symlink(dir.path().join("no-such-target"), dir.path().join("bin"))
+            .expect("symlink");
+        assert!(!dir.path().join("bin").exists(), "the link dangles");
+        let problems = check_src_layout(dir.path(), MAIN_RS_HASH);
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains("src/bin exists")),
+            "{problems:#?}"
+        );
+    }
     // The source-list path rejects a `Bin/` file in any case.
     let mut sources = raw_production_sources();
     sources.push(("Bin/tool.rs".to_string(), bin_main.to_string()));
