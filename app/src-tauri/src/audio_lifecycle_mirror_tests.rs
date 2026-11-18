@@ -673,6 +673,39 @@ fn a_citation_matches_exactly_once_inside_its_pinned_function() {
     );
 }
 
+/// Sol's round-12 mutant: the dictation `Recovering` arm's `Idle` notification removed
+/// (the cancel's own `Idle`, which PD-23 relies on). `SupStep::Idle` cites that arm, so
+/// the citation fails on the edited tree without any hash; the old citation of the
+/// preview/benchmark tail stayed green.
+#[test]
+fn removing_the_recovering_arms_idle_notification_fails_its_citation() {
+    let old = "            } else if !idle_after_clear
+                && finished.standby_deadline.is_none()
+                && finished.speculative.is_none()
+            {
+                sink.notify(
+                    finished.app_handle.as_ref(),
+                    finished.owner,
+                    AudioLifecycleEvent::Idle,
+                );
+            }";
+    let new = "            } else if !idle_after_clear
+                && finished.standby_deadline.is_none()
+                && finished.speculative.is_none()
+            {
+            }";
+    assert!(LIFECYCLE_SOURCE.contains(old), "the probe's anchor exists");
+    let edited = LIFECYCLE_SOURCE.replacen(old, new, 1);
+    let problems = citation_problems(&edited, AUDIO_SOURCE);
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.starts_with("SupStep::Idle")
+                && problem.contains("are not in `finish_attempt`")),
+        "{problems:?}"
+    );
+}
+
 /// Every problem the mirror's citations have against the given sources.
 fn citation_problems(lifecycle_source: &str, audio_source: &str) -> Vec<String> {
     let (mut problems, matched) = citation_report(lifecycle_source, audio_source);

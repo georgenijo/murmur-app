@@ -386,12 +386,12 @@ pub const MIRROR: &[Mirror] = &[
     },
     Mirror {
         step: "SupStep::Idle",
-        needle: "if idle_after_clear { sink.notify(finished.app_handle.as_ref(), finished.owner, AudioLifecycleEvent::Idle,); }",
+        needle: "else if !idle_after_clear && finished.standby_deadline.is_none() && finished.speculative.is_none() { sink.notify(finished.app_handle.as_ref(), finished.owner, AudioLifecycleEvent::Idle,); }",
         file: "audio_lifecycle.rs",
         function: "finish_attempt",
         guards: &[],
         real_test: None,
-        what: "notify(Idle)",
+        what: "the dictation Recovering arm (a cancelled attempt, no Interrupted capture): notify(Idle)",
     },
     Mirror {
         step: "SupStep::ClearOwner",

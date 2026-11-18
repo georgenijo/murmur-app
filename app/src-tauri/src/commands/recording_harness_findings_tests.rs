@@ -542,6 +542,46 @@ fn assert_queued_stop_after_owner_clear(trace: &[String]) {
     );
 }
 
+/// A queued stop is handled after another recording's attempt replaced the owner: the
+/// supervisor refuses (`Audio owner changed before stop`, `audio_lifecycle.rs:1239-1242`).
+/// It is not the empty reply of a cleared owner, so it cannot drive the `NoSpeech` path.
+#[test]
+fn a_queued_stop_after_the_owner_was_replaced_is_refused() {
+    repeat(&sub(
+        "a stop queued for recording 1 is handled while recording 2 owns the supervisor",
+        |world: &Arc<World>| {
+            recording(world);
+            world.knobs().stop_result = Ok(0);
+            let stop = ParkedStop::start(world);
+            assert_eq!(status(world), DictationStatus::Processing);
+            world.replace_owner(2);
+            let reply = stop.finish();
+            world.reply("stop", &reply);
+            assert_eq!(reply, Err("Audio owner changed before stop".to_string()));
+            let trace = world.trace();
+            assert!(
+                trace
+                    .iter()
+                    .any(|line| line == "supervisor.stop_owner_changed 1 owner=2"),
+                "{trace:#?}"
+            );
+            assert!(
+                !trace
+                    .iter()
+                    .any(|line| line.contains("stop_after_owner_clear")
+                        || line.contains("supervisor.sealed_delivery")
+                        || line.contains("CleanupFinished")),
+                "a replaced owner answers an error, not an empty or sealed reply: {trace:#?}"
+            );
+            assert_ne!(
+                perf_claim(1),
+                Some(RunOutcomeV1::NoSpeech),
+                "the refusal is not the empty-audio path"
+            );
+        },
+    ));
+}
+
 // ------------------------------------------------------------------ PD-21
 // Harness seed 244,103 (R206.2 / R203.4). The cancel of a `Recording` dictation
 // (R205.4) releases T for its capture cancel; before its `Cancel` reaches the

@@ -928,6 +928,13 @@ impl World {
         self.push(format!("supervisor.hold_before_owner_clear {recording_id}"));
     }
 
+    /// Another recording's attempt replaced the owner while a stop for `recording_id` was
+    /// queued: the supervisor installed a new attempt (`handle_start`, `set_owner`).
+    pub(super) fn replace_owner(&self, recording_id: u64) {
+        self.set_owner(Some(recording_id));
+        self.push(format!("supervisor.replace_owner {recording_id}"));
+    }
+
     /// Release `hold_before_owner_clear` (`audio_lifecycle.rs:2460-2461`).
     pub(super) fn release_owner_clear(&self) {
         let recording_id = locked(&self.supervisor)
@@ -1132,15 +1139,28 @@ impl SupervisorPort for World {
             let knobs = self.knobs();
             (knobs.stop_result, knobs.stop_unsealed)
         };
-        // A stop the supervisor handles after the attempt's owner was cleared finds no
-        // attempt: `handle_message` answers `Ok(Vec::new())` at once
-        // (`audio_lifecycle.rs:1235-1238`). Nothing is sealed, so no `CleanupFinished`
-        // follows and no owner clear is pending.
-        if result.is_ok() && locked(&self.supervisor).owner != Some(recording_id) {
-            self.push(format!(
-                "supervisor.stop_after_owner_clear {recording_id} samples=0"
-            ));
-            return Ok(Vec::new());
+        // The supervisor handles the `Stop` message against whatever attempt exists then
+        // (`audio_lifecycle.rs:1235-1245`). With no attempt (the owner was cleared) it
+        // answers `Ok(Vec::new())` at once: nothing is sealed, so no `CleanupFinished`
+        // follows and no owner clear is pending. With another recording's attempt (the
+        // owner was replaced) it refuses: `Audio owner changed before stop`.
+        if result.is_ok() {
+            let owner = locked(&self.supervisor).owner;
+            match owner {
+                Some(current) if current == recording_id => {}
+                None => {
+                    self.push(format!(
+                        "supervisor.stop_after_owner_clear {recording_id} samples=0"
+                    ));
+                    return Ok(Vec::new());
+                }
+                Some(other) => {
+                    self.push(format!(
+                        "supervisor.stop_owner_changed {recording_id} owner={other}"
+                    ));
+                    return Err("Audio owner changed before stop".to_string());
+                }
+            }
         }
         match result {
             Ok(samples) => {
