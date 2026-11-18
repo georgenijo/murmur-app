@@ -535,7 +535,7 @@ fn cont_spec(rid: u64, kind: ContKind) -> ContinuationSpec {
 struct Scenario {
     r_first: bool,
     extra_owner: bool,
-    end_state: Option<String>,
+    end_state: Option<EndState>,
 }
 
 static SCENARIO: std::sync::Mutex<Scenario> = std::sync::Mutex::new(Scenario {
@@ -545,18 +545,33 @@ static SCENARIO: std::sync::Mutex<Scenario> = std::sync::Mutex::new(Scenario {
 });
 static SCENARIO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// What the scenario of [`finish_f_and_retirement_r`] ends in: status, generation,
-/// history counts and counters, and how many times F's idle emit ran.
-fn end_state(w: &Arc<World>, idle: &AtomicUsize) -> String {
+/// What the scenario of [`finish_f_and_retirement_r`] ends in, typed field by field:
+/// the persisted core (M1 status and M2 id), the live status and generation, H1
+/// and H2, the history counters, and how many times F's idle emit ran.
+#[derive(Debug, PartialEq)]
+struct EndState {
+    persisted_core: murmur_dictation_core::state::PersistedCore,
+    live_status: DictationStatus,
+    generation: u64,
+    pipelines: usize,
+    ops: usize,
+    counters: crate::core_history::HistCounters,
+    idle_emits: usize,
+}
+
+fn end_state(w: &Arc<World>, idle: &AtomicUsize) -> EndState {
     let app = &w.state().app_state;
-    format!(
-        "status={:?} id={} history={:?} counters={:?} idle_emits={}",
-        app.dictation.lock_or_recover().status,
-        app.recording_id.load(Ordering::SeqCst),
-        history_counts(w),
-        app.core_history.counters(),
-        idle.load(AtomicOrdering::SeqCst),
-    )
+    let (pipelines, ops) = history_counts(w);
+    let dictation = app.dictation.lock_or_recover();
+    EndState {
+        persisted_core: dictation.core,
+        live_status: dictation.status,
+        generation: app.recording_id.load(Ordering::SeqCst),
+        pipelines,
+        ops,
+        counters: app.core_history.counters(),
+        idle_emits: idle.load(AtomicOrdering::SeqCst),
+    }
 }
 
 /// An independent entry on this thread (it holds no T): it drops an op inside a core
@@ -575,7 +590,7 @@ fn an_independent_entry_retires(app: &AppState, op: ContinuationGuard) {
 /// suspends in the destination capture, holding T. An independent entry queues and
 /// drains retirement R (an unrelated op) either while the start is suspended (R
 /// first) or after the start returned (F first). Returns the end state.
-fn finish_f_and_retirement_r(r_first: bool, extra_owner: bool) -> String {
+fn finish_f_and_retirement_r(r_first: bool, extra_owner: bool) -> EndState {
     let _one_at_a_time = SCENARIO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     *SCENARIO.lock().unwrap_or_else(|e| e.into_inner()) = Scenario {
         r_first,
@@ -647,8 +662,8 @@ fn finish_f_and_retirement_r(r_first: bool, extra_owner: bool) -> String {
                     an_independent_entry_retires(app, op);
                 }
                 assert_eq!(queued_finishes(), 0);
-                SCENARIO.lock().unwrap_or_else(|e| e.into_inner()).end_state =
-                    Some(end_state(w, &idle));
+                let end = end_state(w, &idle);
+                SCENARIO.lock().unwrap_or_else(|e| e.into_inner()).end_state = Some(end);
             },
         });
     });
@@ -661,16 +676,21 @@ fn finish_f_and_retirement_r(r_first: bool, extra_owner: bool) -> String {
 }
 
 /// D-S2-15: deferred work is ordered per owner. Work carried by a suspended flight
-/// does not block an independent entry's drain, and the end state is the same as
-/// when F drains first: F's idle emit happens exactly once, the history is empty
-/// and the status and generation agree.
+/// does not block an independent entry's drain, and both permitted orders (F then R,
+/// R then F) end in the same typed state: the persisted core (M1/M2), the live
+/// status and generation, H1/H2 and the counters agree, and F's idle emit ran
+/// exactly once in each.
 #[test]
 fn a_retirement_drained_while_a_start_carries_a_finish_ends_in_the_same_state() {
     let f_then_r = finish_f_and_retirement_r(false, false);
     let r_then_f = finish_f_and_retirement_r(true, false);
-    assert_eq!(r_then_f, f_then_r);
-    assert!(f_then_r.contains("idle_emits=1"), "{f_then_r}");
-    assert!(f_then_r.contains("history=(0, 0)"), "{f_then_r}");
+    assert_eq!(f_then_r.idle_emits, 1, "F then R: {f_then_r:?}");
+    assert_eq!(r_then_f.idle_emits, 1, "R then F: {r_then_f:?}");
+    assert_eq!((f_then_r.pipelines, f_then_r.ops), (0, 0), "{f_then_r:?}");
+    assert_eq!(
+        r_then_f, f_then_r,
+        "the two orders end in different states (R then F, F then R)"
+    );
 }
 
 /// A carried finish's idle listener may drop another owner: its retirement is
@@ -679,8 +699,8 @@ fn a_retirement_drained_while_a_start_carries_a_finish_ends_in_the_same_state() 
 #[test]
 fn a_carried_finishes_idle_listener_can_queue_a_retirement_in_the_flights_drain() {
     let state = finish_f_and_retirement_r(false, true);
-    assert!(state.contains("idle_emits=1"), "{state}");
-    assert!(state.contains("history=(0, 0)"), "{state}");
+    assert_eq!(state.idle_emits, 1, "{state:?}");
+    assert_eq!((state.pipelines, state.ops), (0, 0), "{state:?}");
 }
 
 /// Nothing is left on the thread, with T free, when a start future is dropped
@@ -778,61 +798,75 @@ fn a_flight_never_takes_another_entrys_work() {
     assert_eq!(queued_finishes(), 0);
 }
 
-/// A suspended start dropped inside another state's core span: the carried finish
-/// and the retirement of the future's own continuation go to the queue with their
-/// state, and the entry that owns that span runs them once it exits (it belongs to
-/// a different state, and filtering by its own would strand them).
+/// D-S2-16 (b): a start flight dropped inside a core span is out of contract
+/// (production drops a dictation future only on a runtime worker, between polls). Test
+/// and debug builds fail a debug assertion; there is no handoff to an outer entry.
 #[test]
-fn a_flight_dropped_inside_another_states_span_is_drained_by_that_spans_entry() {
+#[should_panic(expected = "a start flight was dropped inside a core span")]
+fn a_flight_dropped_inside_a_core_span_fails_the_debug_assertion() {
+    let app = AppState::default();
+    let rid = app.next_recording_id();
+    app.dictation.lock_or_recover().status = DictationStatus::Processing;
+    let owner = PipelineOwner::register(&app.core_history, cont_spec(rid, ContKind::Pipeline));
+    let mut finisher = IdleGuard::for_pipeline(&app, rid, Some(owner));
+    let mut flight = FlightDrain::new(&app);
+    {
+        let _stretch = flight.stretch();
+        let span = CoreEntry::enter().expect("outside any span");
+        finisher.finish_owned(|_| true);
+        drop(span);
+    }
+    let _drain = DrainDeferredFinishes::new(&app);
+    let _span = CoreEntry::enter().expect("outside any span");
+    drop(flight);
+}
+
+/// D-S2-16 (a): a deferred entry owns what it needs and holds no borrow of, or
+/// pointer to, an `AppState`. Proved in the type (`'static`), and by freeing the
+/// state of queued work: the entries of the freed state are never run, never
+/// dereference it, and a retirement still runs (it needs no state).
+#[test]
+fn a_state_freed_while_its_work_is_queued_is_never_dereferenced() {
+    fn assert_static<T: 'static>() {}
+    assert_static::<DeferredFinish>();
+
     let app_a = AppState::default();
     let app_b = AppState::default();
     let history_a = app_a.core_history.clone();
     let rid = app_a.next_recording_id();
     app_a.dictation.lock_or_recover().status = DictationStatus::Processing;
-    let owner = PipelineOwner::register(&history_a, cont_spec(rid, ContKind::Pipeline));
-    let mut finisher = IdleGuard::for_pipeline(&app_a, rid, Some(owner));
     let idle = Arc::new(AtomicUsize::new(0));
-    let mut flight = FlightDrain::new(&app_a);
     {
-        let _stretch = flight.stretch();
+        let _alive = DrainAlive::new();
+        let owner = PipelineOwner::register(&history_a, cont_spec(rid, ContKind::Pipeline));
+        let mut finisher = IdleGuard::for_pipeline(&app_a, rid, Some(owner));
+        let dropped_later = PipelineOwner::register(&history_a, cont_spec(77, ContKind::Pipeline));
         let span = CoreEntry::enter().expect("outside any span");
         let counted = Arc::clone(&idle);
         finisher.finish_owned(move |_| {
             counted.fetch_add(1, AtomicOrdering::SeqCst);
             true
         });
+        drop(dropped_later);
+        assert_eq!(queued_finishes(), 2, "A's finish and A's retirement");
         drop(span);
     }
-    let own_op =
-        ContinuationGuard::register(&history_a, cont_spec(rid + 1, ContKind::ResolveContext));
-    assert_eq!(
-        (history_a.pipeline_count(), history_a.outstanding_ops()),
-        (1, 2)
-    );
-    let entry_of_b = DrainDeferredFinishes::new(&app_b);
-    {
-        let span_of_b = CoreEntry::enter().expect("outside any span");
-        // The future's fields drop in the span (its continuation defers), then the
-        // flight: nothing can run now.
-        drop(own_op);
-        drop(flight);
-        assert_eq!(queued_finishes(), 2, "both wait for the span to exit");
-        assert_eq!(idle.load(AtomicOrdering::SeqCst), 0);
-        drop(span_of_b);
-    }
-    drop(entry_of_b);
-    assert_eq!(queued_finishes(), 0, "nothing is stranded");
+    assert_eq!(history_a.pipeline_count(), 2);
+    // The state is freed with its work still queued.
+    drop(app_a);
+    drain_deferred_finishes(&app_b);
     assert_eq!(
         idle.load(AtomicOrdering::SeqCst),
+        0,
+        "A's finish did not run"
+    );
+    assert_eq!(
+        history_a.pipeline_count(),
         1,
-        "F's idle emit ran once"
+        "the retirement ran with no state"
     );
-    assert_eq!(
-        app_a.dictation.lock_or_recover().status,
-        DictationStatus::Idle
-    );
-    assert_eq!(
-        (history_a.pipeline_count(), history_a.outstanding_ops()),
-        (0, 0)
-    );
+    assert_eq!(queued_finishes(), 1, "A's finish waits under A's tag");
+    // Its owner retires when the entry is dropped (nothing dereferences A).
+    DEFERRED_FINISHES.with(|queue| queue.borrow_mut().clear());
+    assert_eq!(history_a.pipeline_count(), 0);
 }
