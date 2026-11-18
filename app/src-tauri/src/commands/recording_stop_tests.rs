@@ -915,6 +915,8 @@ fn a_panic_in_the_guards_in_effects_leaves_no_history_entry() {
     crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
         unverifiable: 0,
         unwound: 1,
+        open: 1,
+        ..Default::default()
     });
     run_sub_run(&SubRun {
         title: "panic in the guard",
@@ -1276,6 +1278,8 @@ fn a_panic_after_a_queued_finish_still_drains_it_during_the_unwind() {
         crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
             unverifiable: 0,
             unwound: 1,
+            open: 2,
+            ..Default::default()
         });
         run_sub_run(&SubRun {
             title: "panic after queue",
@@ -1331,6 +1335,8 @@ fn the_204b_section_drains_a_queued_finish_when_its_listener_panics() {
         crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
             unverifiable: 0,
             unwound: 1,
+            open: 2,
+            ..Default::default()
         });
         run_sub_run(&SubRun {
             title: "204b unwind",
@@ -1399,6 +1405,8 @@ fn a_panic_in_one_deferred_finish_does_not_strand_the_next() {
         crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
             unverifiable: 0,
             unwound: 1,
+            open: 2,
+            ..Default::default()
         });
         run_sub_run(&SubRun {
             title: "second panic",
@@ -1682,6 +1690,8 @@ fn a_panicking_subscriber_cannot_strand_the_second_finish_in_a_normal_drain() {
         crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
             unverifiable: 0,
             unwound: 1,
+            open: 2,
+            ..Default::default()
         });
         run_sub_run(&SubRun {
             title: "panicking subscriber, normal drain",
@@ -1710,6 +1720,8 @@ fn a_panicking_subscriber_cannot_strand_or_abort_an_unwinding_drain() {
         crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
             unverifiable: 0,
             unwound: 2,
+            open: 2,
+            ..Default::default()
         });
         run_sub_run(&SubRun {
             title: "panicking subscriber, unwinding drain",
@@ -1737,6 +1749,8 @@ fn the_panicked_finish_report_is_registered_and_content_free() {
         crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
             unverifiable: 0,
             unwound: 1,
+            open: 2,
+            ..Default::default()
         });
         run_sub_run(&SubRun {
             title: "panic report content",

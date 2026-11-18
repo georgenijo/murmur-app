@@ -618,6 +618,7 @@ impl Ports for StartPorts<'_> {
 /// The command's return after a refusal: T was released by the caller, so the
 /// `PT:REL` effect now drops the claims (today's reverse-declaration drop order),
 /// then the reply.
+#[cfg_attr(feature = "dictation-shadow", allow(dead_code))]
 pub(super) fn release_and_reply(
     host: &dyn DictationHost,
     state: &State,
@@ -633,5 +634,24 @@ pub(super) fn release_and_reply(
         None,
         recording_id,
     );
+    reply_of(&decision, smart_auto_error)
+}
+
+/// [`release_and_reply`] with the flight whose decision the refusal's `PT:REL` runs for:
+/// the executor carries it (D-S2c-9 c).
+#[cfg(feature = "dictation-shadow")]
+pub(super) fn release_and_reply_observed(
+    host: &dyn DictationHost,
+    state: &State,
+    slots: &StartSlots,
+    decision: Decision,
+    recording_id: u64,
+    smart_auto_error: Option<String>,
+    flight: &crate::dictation_executor::shadow::Flight,
+) -> Result<serde_json::Value, String> {
+    let ports = StartPorts::new(host, state, slots, Some(recording_id));
+    let mut exec = executor(&ports, decision.clone(), false);
+    exec.attach_flight(flight);
+    run_phase(&mut exec, Placement::PostT, None, recording_id);
     reply_of(&decision, smart_auto_error)
 }

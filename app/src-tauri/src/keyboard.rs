@@ -1688,16 +1688,9 @@ pub fn set_processing(processing: bool) {
     let caller = std::panic::Location::caller();
     let was_processing = IS_PROCESSING.swap(processing, Ordering::SeqCst);
     // The shadow's witness is the value this one atomic write returned, never a later
-    // read (D-S2c-8 e).
+    // read (D-S2c-8 e): the executor brackets the port call with this write's sequence.
     #[cfg(feature = "dictation-shadow")]
-    if crate::dictation_executor::shadow::armed() {
-        use crate::dictation_shadow::types::{MirrorField, MirrorValue, MirrorWitness};
-        crate::dictation_executor::shadow::stash_mirror(MirrorWitness {
-            field: MirrorField::KeyboardProcessing,
-            before: MirrorValue::Flag(was_processing),
-            after: MirrorValue::Flag(processing),
-        });
-    }
+    crate::dictation_executor::shadow::keyboard_written(was_processing, processing);
     tracing::debug!(
         target: "keyboard",
         processing = processing,

@@ -995,6 +995,7 @@ fn dropping_a_suspended_import_in_a_core_span_queues_its_retirement_fifo() {
         crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
             unverifiable: 1,
             unwound: 0,
+            ..Default::default()
         });
         let app_state = &run.state.app_state;
         run.host.hold_capture.store(true, Ordering::SeqCst);

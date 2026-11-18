@@ -5,7 +5,17 @@ import subprocess
 import tempfile
 import unittest
 
-from scripts.check_shadow_diff import LIVE_FILES, SHADOW_DIFF_ALLOW, main, numstat, violations
+from scripts.check_shadow_diff import (
+    SHADOW_DIFF_ALLOW,
+    SHADOW_ONLY,
+    guarded_paths,
+    is_production_path,
+    is_shadow_only,
+    is_test_file,
+    main,
+    numstat,
+    violations,
+)
 
 LIVE = "app/src-tauri/src/keyboard.rs"
 
@@ -80,11 +90,97 @@ class ShadowDiffTests(unittest.TestCase):
         self.assertEqual(violations(stats, allow={LIVE: (2, "a renamed import")}), [])
         self.assertTrue(violations(stats, allow={LIVE: (1, "too few")}))
         self.assertTrue(violations({}, allow={LIVE: (1, " ")}))
-        self.assertTrue(violations({}, allow={"app/other.rs": (1, "not a live file")}))
+        self.assertTrue(violations({}, allow={"app/other.rs": (1, "not a production file")}))
 
-    def test_the_live_files_are_all_listed_once(self):
-        self.assertEqual(len(LIVE_FILES), len(set(LIVE_FILES)))
-        self.assertIn("app/src-tauri/src/commands/recording.rs", LIVE_FILES)
+    def test_every_production_path_is_guarded_without_a_list_to_forget(self):
+        for path in [
+            "app/src-tauri/src/commands/recording.rs",
+            "app/src-tauri/src/commands/recording_host.rs",
+            "app/src-tauri/src/anything/new.rs",
+            "app/src-tauri/crates/dictation-core/src/decision.rs",
+            "app/src-tauri/crates/another/src/deep/file.rs",
+        ]:
+            self.assertTrue(is_production_path(path), path)
+            self.assertTrue(violations({path: (0, 1)}), path)
+        for path in ["scripts/x.py", "app/src/App.tsx", "app/src-tauri/build.rs"]:
+            self.assertFalse(is_production_path(path), path)
+
+    def test_test_files_and_shadow_only_modules_are_not_guarded(self):
+        self.assertTrue(is_test_file("app/src-tauri/src/a_tests.rs", ""))
+        self.assertTrue(is_test_file("app/src-tauri/src/x/tests.rs", ""))
+        self.assertTrue(is_test_file("app/src-tauri/src/x/tests/y.rs", ""))
+        self.assertTrue(is_test_file("app/src-tauri/src/z.rs", "//! doc\n#![cfg(test)]\n"))
+        self.assertFalse(is_test_file("app/src-tauri/src/z.rs", "fn f() {}\n"))
+        # A `#[cfg(test)]` on an inner item does not make a production file a test file.
+        self.assertFalse(is_test_file("app/src-tauri/src/z.rs", "#[cfg(test)]\nmod t {}\n"))
+        for entry in SHADOW_ONLY:
+            self.assertTrue(is_shadow_only(entry if not entry.endswith("/") else entry + "x.rs"))
+        self.assertFalse(is_shadow_only("app/src-tauri/src/commands/recording.rs"))
+
+    def test_a_deletion_in_a_file_the_old_list_did_not_name_fails(self):
+        path = "app/src-tauri/src/commands/recording_host.rs"
+        root = repo("a\nb\nc\n", "a\nb\nc\nd\n")
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text("fn a() {}\nfn b() {}\nfn c() {}\n")
+        git(root, "add", ".")
+        git(root, "commit", "-m", "host on main")
+        git(root, "checkout", "-q", "main")
+        git(root, "merge", "-q", "--ff-only", "branch")
+        git(root, "checkout", "-q", "-b", "simulated")
+        (root / path).write_text("fn a() {}\nfn c() {}\n")
+        git(root, "commit", "-am", "delete a line of the host")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(root, "main")
+        self.assertEqual(code, 1, out.getvalue())
+        self.assertIn(path, err.getvalue())
+        self.assertIn("removes 1 lines", err.getvalue())
+
+    def test_a_renamed_file_is_a_deletion_plus_an_addition(self):
+        old = "app/src-tauri/src/commands/recording_host.rs"
+        new = "app/src-tauri/src/commands/recording_host_moved.rs"
+        root = repo("a\n", "a\nb\n")
+        (root / old).parent.mkdir(parents=True, exist_ok=True)
+        (root / old).write_text("fn a() {}\nfn b() {}\n")
+        git(root, "add", ".")
+        git(root, "commit", "-m", "host on main")
+        git(root, "checkout", "-q", "main")
+        git(root, "merge", "-q", "--ff-only", "branch")
+        git(root, "checkout", "-q", "-b", "renamed")
+        git(root, "mv", old, new)
+        git(root, "commit", "-m", "rename the host")
+        stats = numstat(root, "main")
+        self.assertEqual(stats[old], (0, 2), "the old path is a deletion")
+        self.assertEqual(stats[new], (2, 0), "the new path is an addition")
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(root, "main")
+        self.assertEqual(code, 1, out.getvalue())
+        self.assertIn(old, err.getvalue())
+
+    def test_a_test_file_and_a_shadow_module_may_change_freely(self):
+        root = repo("a\n", "a\nb\n")
+        files = {
+            "app/src-tauri/src/commands/recording_foo_tests.rs": "x\ny\n",
+            "app/src-tauri/src/dictation_shadow/mod.rs": "p\nq\n",
+            "app/src-tauri/src/harnessy.rs": "#![cfg(test)]\nr\ns\n",
+        }
+        for path, text in files.items():
+            (root / path).parent.mkdir(parents=True, exist_ok=True)
+            (root / path).write_text(text)
+        git(root, "add", ".")
+        git(root, "commit", "-m", "base files")
+        git(root, "checkout", "-q", "main")
+        git(root, "merge", "-q", "--ff-only", "branch")
+        git(root, "checkout", "-q", "-b", "edits")
+        for path in files:
+            keeps = "#![cfg(test)]\n" if "harnessy" in path else ""
+            (root / path).write_text(keeps + "changed\n")
+        git(root, "commit", "-am", "edit test and shadow code")
+        stats = numstat(root, "main")
+        self.assertEqual(guarded_paths(stats, root, "main"), [])
+        code, _, err = run(root)
+        self.assertEqual(code, 0, err)
 
     def test_numstat_reads_added_and_removed(self):
         root = repo("a\n", "a\nb\n")

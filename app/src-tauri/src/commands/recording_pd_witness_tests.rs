@@ -1410,16 +1410,18 @@ pub(super) mod under_d {
     }
 
     /// What the lifecycle bridge allocates while D is held in the default build, per
-    /// notification (counted on a feature build with the shadow disarmed). The bridge is
-    /// the one live path the entry scenarios above do not reach, and the shadow's
-    /// capture sits inside it: a disarmed shadow must not allocate there (D-S2c-8 b).
-    const DEFAULT_BUILD_BRIDGE_ALLOCATIONS_UNDER_D: [(&str, u64); 6] = [
-        ("bridge Ready while starting (R207)", 2),
-        ("bridge StillConnecting while starting (R208)", 19),
-        ("bridge Recovering while recording (R209)", 8),
-        ("bridge CleanupFinished while recovering (R210)", 29),
-        ("bridge Idle while recording (R211)", 25),
-        ("bridge Idle while idle (short idle, R215.3/R216)", 5),
+    /// notification, as `(title, first delivery on a thread, a later one)` (counted on a
+    /// feature build with the shadow disarmed). The bridge is the one live path the entry
+    /// scenarios above do not reach, and the shadow's capture sits inside it: a disarmed
+    /// shadow must not allocate there (D-S2c-8 b), and a cost that only the first delivery
+    /// pays must not hide behind a later one (D-S2c-9 f).
+    const DEFAULT_BUILD_BRIDGE_ALLOCATIONS_UNDER_D: [(&str, u64, u64); 6] = [
+        ("bridge Ready while starting (R207)", 2, 2),
+        ("bridge StillConnecting while starting (R208)", 20, 19),
+        ("bridge Recovering while recording (R209)", 9, 9),
+        ("bridge CleanupFinished while recovering (R210)", 30, 30),
+        ("bridge Idle while recording (R211)", 26, 26),
+        ("bridge Idle while idle (short idle, R215.3/R216)", 6, 5),
     ];
 
     fn bridge_measure(world: &Arc<World>, event: AudioLifecycleEvent) {
@@ -1478,37 +1480,51 @@ pub(super) mod under_d {
     /// allocation under D, and the armed run adds none either.
     #[test]
     fn the_lifecycle_bridge_allocates_the_same_armed_disarmed_and_in_the_default_build() {
+        // A delivery's first run on a thread pays that thread's one-time costs (a
+        // thread-local's first use); a later one does not. Both are pinned, separately:
+        // taking the least of several runs would hide a regression only the first delivery
+        // makes. The run happens on a fresh thread under a subscriber that formats nothing,
+        // so a logged duration's digits cannot move the count (D-S2c-9 f). One throwaway
+        // delivery first warms the process-wide state (callsite registration) so the
+        // numbers do not depend on which test ran before.
+        let pair = |scenario: &Scenario, disarmed: bool| -> (u64, u64) {
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        let quiet = tracing_subscriber::Registry::default();
+                        tracing::subscriber::with_default(quiet, || {
+                            (
+                                run_measured(scenario, disarmed),
+                                run_measured(scenario, disarmed),
+                            )
+                        })
+                    })
+                    .join()
+                    .expect("the measuring thread panicked")
+            })
+        };
         let mut counted = 0;
-        let scenarios = bridge_scenarios();
-        for scenario in scenarios {
-            // The least of several deliveries: a first one pays one-time costs (a callsite
-            // registering with the subscriber, a thread-local's first use), and a
-            // notification that logs a duration formats it into a string whose length
-            // varies by a digit, so a single count can read one allocation high.
-            let settled = |disarmed| {
-                (0..5)
-                    .map(|_| run_measured(&scenario, disarmed))
-                    .min()
-                    .unwrap_or(0)
-            };
-            let baseline = settled(true);
-            let armed = settled(false);
+        for scenario in bridge_scenarios() {
+            let _ = pair(&scenario, true);
+            let baseline = pair(&scenario, true);
+            let armed = pair(&scenario, false);
             assert_eq!(
                 armed, baseline,
-                "{}: armed {armed} allocations under D, disarmed {baseline}",
+                "{}: armed (first, later) {armed:?} allocations under D, disarmed {baseline:?}",
                 scenario.title
             );
-            let (_, pinned) = DEFAULT_BUILD_BRIDGE_ALLOCATIONS_UNDER_D
+            let (_, cold, steady) = DEFAULT_BUILD_BRIDGE_ALLOCATIONS_UNDER_D
                 .iter()
-                .find(|(title, _)| *title == scenario.title)
+                .find(|(title, _, _)| *title == scenario.title)
                 .unwrap_or_else(|| panic!("{}: no pinned default-build count", scenario.title));
             assert_eq!(
-                baseline, *pinned,
-                "{}: {baseline} allocations under D with the shadow compiled in and not armed, \
-                 the default build makes {pinned} (D-S2c-8 b)",
+                baseline,
+                (*cold, *steady),
+                "{}: (first, later) {baseline:?} allocations under D with the shadow compiled \
+                 in and not armed, the default build makes ({cold}, {steady}) (D-S2c-9 f)",
                 scenario.title
             );
-            counted += baseline;
+            counted += baseline.0 + baseline.1;
         }
         assert!(
             counted > 0,
@@ -1580,5 +1596,79 @@ pub(super) mod under_d {
             seen_any |= !baseline.is_empty();
         }
         assert!(seen_any, "no refusal warned: the probe saw nothing");
+    }
+}
+
+/// The production ports' ticker observation (D-S2c-9 f): the synchronous preflight the
+/// ports take before the spawn and the spawner's own early return agree, and each skip
+/// reason reaches the comparator as exactly one note. A disagreement notes nothing, so it
+/// would fail the replay instead of being guessed.
+#[cfg(feature = "dictation-shadow")]
+mod ticker_skip_notes {
+    use super::super::golden_tests::sub_from;
+    use super::*;
+    use crate::dictation_shadow::replay;
+    use crate::dictation_shadow::types::TickerSkipReason;
+
+    fn ready(world: &Arc<World>) {
+        world.notify(1, AudioLifecycleEvent::Ready);
+    }
+
+    fn with_model(world: &Arc<World>, model: &str) {
+        world.install_context(1);
+        let state = world.state();
+        let mut context = state
+            .app_state
+            .active_context(1)
+            .expect("the fixture installed a context");
+        Arc::make_mut(&mut context).transcription.model_name = model.to_string();
+        state.app_state.set_active_context(1, context);
+    }
+
+    fn no_context(world: &Arc<World>) {
+        ready(world);
+    }
+    fn no_live_preview(world: &Arc<World>) {
+        with_model(world, "small.en");
+        ready(world);
+    }
+    fn a_live_preview_model(world: &Arc<World>) {
+        with_model(world, "base.en");
+        ready(world);
+    }
+
+    fn skipped_by(title: &'static str, body: fn(&Arc<World>)) -> ([u64; 2], u64) {
+        replay::reset_totals();
+        repeat(&sub_from(title, DictationStatus::Starting, 1, body));
+        let totals = replay::totals();
+        (totals.ticker_skipped, totals.replays)
+    }
+
+    #[test]
+    fn each_skip_reason_is_noted_exactly_once_per_replay() {
+        for (reason, title, body) in [
+            (
+                TickerSkipReason::NoContext,
+                "ticker skip: no recorded context",
+                no_context as fn(&Arc<World>),
+            ),
+            (
+                TickerSkipReason::NoLivePreview,
+                "ticker skip: a model without a live preview",
+                no_live_preview as fn(&Arc<World>),
+            ),
+        ] {
+            let (skipped, replays) = skipped_by(title, body);
+            assert!(replays >= 1, "{title}: nothing was replayed");
+            let mut expected = [0; 2];
+            expected[reason.index()] = replays;
+            assert_eq!(
+                skipped, expected,
+                "{title}: exactly one {reason:?} note per replay, no other"
+            );
+        }
+        let (skipped, replays) = skipped_by("ticker: a live preview model", a_live_preview_model);
+        assert!(replays >= 1);
+        assert_eq!(skipped, [0, 0], "no skip when the spawner registers");
     }
 }

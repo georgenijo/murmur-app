@@ -43,7 +43,6 @@
 //! the flight at that moment.
 
 use std::cell::{Cell, RefCell};
-use std::marker::PhantomData;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use murmur_dictation_core::decision::RowId;
@@ -120,12 +119,34 @@ static NO_DECISION: AtomicU64 = AtomicU64::new(0);
 /// header: recorded as one loss each (D-S2c-7 e), so they balance the books.
 static UNWOUND: AtomicU64 = AtomicU64::new(0);
 
-/// A family entry took a decision section (D acquired, or a D-less decision point).
-/// Counted only while the shadow is armed.
+/// A D-less family entry took a decision section (the decision point; there is no D
+/// guard to count it in). Counted only while the shadow is armed.
 pub(crate) fn entry() {
     if crate::dictation_shadow::enabled() {
         ENTRIES.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// The dictation lock D was acquired: counted **inside the guard function**
+/// (`MutexExt::lock_or_recover`), so a site cannot take D without being counted, and
+/// whatever a site does or leaves out after it cannot take the count with it (D-S2c-9 a).
+/// Test builds exclude test code and the named non-family acquisitions
+/// (`replay::NON_FAMILY`). A disarmed shadow returns after one constant comparison and
+/// one atomic load: no read of D, no allocation.
+pub(crate) fn dictation_lock_taken<T>(at: &'static std::panic::Location<'static>) {
+    if std::any::type_name::<T>() != std::any::type_name::<crate::state::DictationState>() {
+        return;
+    }
+    if !crate::dictation_shadow::enabled() {
+        return;
+    }
+    #[cfg(test)]
+    if crate::dictation_shadow::replay::not_a_decision_section(at) {
+        return;
+    }
+    #[cfg(not(test))]
+    let _ = at;
+    ENTRIES.fetch_add(1, Ordering::Relaxed);
 }
 
 /// A decision section ended with no decision to compare (an observation round that
@@ -188,6 +209,8 @@ struct Live {
     /// A leading executor (the `Pre` effects, a prefix) holds the flight: its last
     /// effect does not end the decision, which has not been taken yet.
     leading: Cell<bool>,
+    /// The slots the executor driving this flight writes the effect's witnesses into.
+    slots: ShadowSlots,
 }
 
 impl Live {
@@ -210,6 +233,7 @@ impl Live {
             complete: Cell::new(false),
             concluded: Cell::new(false),
             leading: Cell::new(false),
+            slots: ShadowSlots::default(),
         }
     }
 
@@ -270,12 +294,16 @@ impl Live {
         if !waiting {
             return;
         }
-        // A reply that is another site's (see `delegated_reply`), or a finish a deferred
-        // drain ran after the command that queued it had already returned: it concludes
-        // with the kind it decided.
-        if self.delegated.get() || DEFERRED.with(Cell::get) > 0 {
+        // A reply that is another site's (see `delegated_reply`) concludes with the kind
+        // that site decided for it. A finish a deferred drain ran after the command that
+        // queued it had already returned has no reply of its own: it closes as the named
+        // no-reply close, never with the kind it decided (D-S2c-9 d).
+        if self.delegated.get() {
             self.reply.set(self.decided_reply.get());
             self.conclude();
+            return;
+        }
+        if DEFERRED.with(Cell::get) > 0 {
             return;
         }
         let live = RefCell::new(Some(self));
@@ -287,12 +315,11 @@ impl Live {
             })
             .is_ok();
         if !handed {
-            if let Some(live) = live.into_inner() {
-                #[cfg(test)]
-                UNRENDERED.fetch_add(1, Ordering::Relaxed);
-                live.reply.set(live.decided_reply.get());
-                live.conclude();
-            }
+            // No command return to witness it: the flight closes incomplete, with no
+            // reply credited (counted for the tests, which require none).
+            #[cfg(test)]
+            UNRENDERED.fetch_add(1, Ordering::Relaxed);
+            drop(live);
         }
     }
 }
@@ -634,24 +661,92 @@ impl Flight {
     }
 }
 
-// ------------------------------------------------------------ the current flight
+// ------------------------------------------------------------ the flight's slots
 
-thread_local! {
-    /// The flight the section running on this thread records into (set by a [`Scope`]).
-    static CURRENT: Cell<*const Flight> = const { Cell::new(std::ptr::null()) };
-    /// The live-field write the effect being run made (state / keyboard writes stash it).
-    static MIRROR: Cell<Option<MirrorWitness>> = const { Cell::new(None) };
+/// The flight-local slots the capture writes into while an executor runs one effect
+/// (D-S2c-9 c): borrowed from the flight by the executor that drives it, never found by
+/// thread. Nothing here is shared: the flight is one decision's, held by the section
+/// that runs it.
+#[derive(Default)]
+pub(crate) struct ShadowSlots {
+    /// The live-field write the effect being run made.
+    pub mirror: Cell<Option<MirrorWitness>>,
     /// The ticker registration attempt the `SD` being run made.
-    static TICKER: Cell<Option<TickerNote>> = const { Cell::new(None) };
-    /// What the last `consume` retired from H1, and the last H2 retirement.
-    static H1_RETIRED: Cell<Option<LiveOp>> = const { Cell::new(None) };
-    static H2_RETIRED: Cell<Option<LiveOp>> = const { Cell::new(None) };
-    /// Deferred finishes this thread is running right now (see [`deferred`]).
+    pub ticker: Cell<Option<TickerNote>>,
+    /// The boolean the port's own `speculative_flowing` read returned for the effect
+    /// being run (D-S2c-9 d).
+    pub spec: Cell<Option<bool>>,
+}
+
+impl ShadowSlots {
+    /// Before an effect runs: nothing an earlier effect left may be attributed to it.
+    pub(crate) fn clear(&self) {
+        self.mirror.set(None);
+        self.ticker.set(None);
+        self.spec.set(None);
+    }
+}
+
+impl Flight {
+    /// The slots of an active flight; `None` for an empty one (the first check of every
+    /// capture statement: a disarmed flight is never read, allocated or written).
+    pub(crate) fn slots(&self) -> Option<&ShadowSlots> {
+        self.live.as_ref().map(|live| &live.slots)
+    }
+}
+
+// ------------------------------------------------ the keyboard's atomic write
+
+// The keyboard module's `IS_PROCESSING` write, as a per-thread sequence: the count of writes
+// this thread made in the high bits, the last one's operands in the low two (`was` << 1 |
+// `now`). The executor brackets the one port call that performs the write with the count
+// before and after, on the same thread and with no `.await` between: the operands are the
+// effect's witness only if **exactly one** write happened in between, so a missing or a
+// repeated write fails closed (no witness) and is never attributed, and another thread's
+// write cannot be taken for this one (D-S2c-9 d). Nothing here names a flight.
+thread_local! {
+    static KEYBOARD_WRITES: Cell<u64> = const { Cell::new(0) };
+}
+
+/// `set_processing` swapped the flag: `was` is what the atomic swap returned, `now` what it
+/// stored. Counted only while the shadow is armed.
+pub(crate) fn keyboard_written(was: bool, now: bool) {
+    if !crate::dictation_shadow::enabled() {
+        return;
+    }
+    let operands = (u64::from(was) << 1) | u64::from(now);
+    KEYBOARD_WRITES.with(|writes| writes.set((((writes.get() >> 2) + 1) << 2) | operands));
+}
+
+/// This thread's number of keyboard writes so far (the bracket's opening).
+pub(crate) fn keyboard_writes() -> u64 {
+    KEYBOARD_WRITES.with(Cell::get)
+}
+
+/// The write this thread made since `before`, if there was exactly one.
+pub(crate) fn keyboard_write_since(before: u64) -> Option<MirrorWitness> {
+    let now = KEYBOARD_WRITES.with(Cell::get);
+    if (now >> 2) != (before >> 2) + 1 {
+        return None;
+    }
+    Some(MirrorWitness {
+        field: crate::dictation_shadow::types::MirrorField::KeyboardProcessing,
+        before: crate::dictation_shadow::types::MirrorValue::Flag(now & 0b10 != 0),
+        after: crate::dictation_shadow::types::MirrorValue::Flag(now & 0b01 != 0),
+    })
+}
+
+// Deferred finishes this thread is running right now: a **depth**, not a flight. The
+// drain is synchronous (no `.await` inside it), so the count cannot leak across tasks or
+// be restored out of order.
+thread_local! {
     static DEFERRED: Cell<u32> = const { Cell::new(0) };
 }
 
 /// A deferred drain is running a queued finish: the command that queued it has already
-/// returned its reply, so the finish's own flight concludes with the kind it decided.
+/// returned, so the finish has no reply of its own to witness. A flight of such a finish
+/// that waits for a reply closes as the named **no-reply close** (incomplete, no `Reply`
+/// mark): it is never given the kind it decided (D-S2c-9 d).
 pub(crate) struct Deferred(bool);
 
 pub(crate) fn deferred() -> Deferred {
@@ -670,77 +765,7 @@ impl Drop for Deferred {
     }
 }
 
-/// The flight of one synchronous section: executors run inside it record into the
-/// flight. `!Send`: a section cannot hold it across an `.await`.
-pub(crate) struct Scope<'a> {
-    previous: *const Flight,
-    active: bool,
-    _flight: PhantomData<&'a Flight>,
-}
-
-impl Flight {
-    /// Open the scope of a synchronous section. An inactive flight does nothing.
-    pub(crate) fn scope(&self) -> Scope<'_> {
-        if self.live.is_none() {
-            return Scope {
-                previous: std::ptr::null(),
-                active: false,
-                _flight: PhantomData,
-            };
-        }
-        let previous = CURRENT.with(|current| current.replace(self as *const Flight));
-        Scope {
-            previous,
-            active: true,
-            _flight: PhantomData,
-        }
-    }
-}
-
-impl Drop for Scope<'_> {
-    fn drop(&mut self) {
-        if self.active {
-            CURRENT.with(|current| current.set(self.previous));
-        }
-    }
-}
-
-/// Run `f` on the flight the running section records into, if one is open and active.
-pub(crate) fn with_current<R>(f: impl FnOnce(&Flight) -> R) -> Option<R> {
-    let pointer = CURRENT.with(Cell::get);
-    // SAFETY: only a live `Scope` sets the pointer, to the flight it borrows, and it
-    // clears it when it drops; the flight cannot move or drop while the scope borrows it.
-    unsafe { pointer.as_ref() }.map(f)
-}
-
-/// A section's flight is open and active on this thread (the first check of every
-/// inserted block).
-pub(crate) fn armed() -> bool {
-    CURRENT.with(|current| !current.get().is_null())
-}
-
-/// A live-field write stashes what it committed for the effect that made it (only
-/// when [`armed`]).
-pub(crate) fn stash_mirror(witness: MirrorWitness) {
-    MIRROR.with(|slot| slot.set(Some(witness)));
-}
-
-/// The stashed write, if any (the executor clears the slot before an effect and takes it
-/// after).
-pub(crate) fn take_mirror() -> Option<MirrorWitness> {
-    MIRROR.with(Cell::take)
-}
-
-/// A ticker spawner stashes the gate it asked or the skip it returned (only when
-/// [`armed`]).
-pub(crate) fn stash_ticker(note: TickerNote) {
-    TICKER.with(|slot| slot.set(Some(note)));
-}
-
-/// The stashed ticker note, if any.
-pub(crate) fn take_ticker() -> Option<TickerNote> {
-    TICKER.with(Cell::take)
-}
+// --------------------------------------------------- the ports an executor observes
 
 // ------------------------------------------------------- the header after D
 
@@ -808,21 +833,17 @@ where
         .await
 }
 
-/// The command is about to return a reply of its own (a shell tail, such as the
-/// pipeline's own error text) that no decision decided: the decisions already waiting
-/// for the command's reply conclude with the kind each decided, instead of being
-/// compared with a value that was never theirs. Does nothing without a command wrapper.
-pub(crate) fn reply_is_a_shell_tail() {
+/// The command is about to return the import pipeline's own error, which the core's
+/// R302.2 (decided as if the pipeline had succeeded) does not model: the decisions
+/// already waiting for the command's reply close as the **named no-reply close**
+/// (incomplete, no `Reply` credited), instead of being given a kind they did not decide
+/// or compared with a reply that was never theirs (D-S2c-9 d). Does nothing without a
+/// command wrapper.
+pub(crate) fn import_pipeline_error() {
     if !crate::dictation_shadow::enabled() {
         return;
     }
-    let _ = REPLY_SINK.try_with(|sink| {
-        let waiting = std::mem::take(&mut *sink.borrow_mut());
-        for live in waiting {
-            live.reply.set(live.decided_reply.get());
-            live.conclude();
-        }
-    });
+    let _ = REPLY_SINK.try_with(|sink| drop(std::mem::take(&mut *sink.borrow_mut())));
 }
 
 /// Test builds: whether this task (and nothing it spawned) is inside a command wrapper's
@@ -1023,56 +1044,18 @@ pub(crate) fn retired(
     }
 }
 
-/// Before an effect runs: a write that stashed for an earlier effect (or outside any
-/// effect) must not be attributed to this one. Does nothing unless a flight is open.
-pub(crate) fn clear_stashes() {
-    if armed() {
-        let _ = take_mirror();
-        let _ = take_ticker();
-    }
-}
-
-/// `consume` retired `token` from H1: stash it for the shell that consumed (only while
-/// the shadow is armed).
-pub(crate) fn stash_retired(
-    token: murmur_dictation_core::decision::Continuation,
-    outcome: crate::core_history::Retired,
-) {
-    if crate::dictation_shadow::enabled() {
-        H1_RETIRED.with(|slot| slot.set(Some(retired(token, outcome))));
-    }
-}
-
-/// The H1 retirement the shell's last `consume` of `token` made, if the shadow saw it.
-pub(crate) fn take_retired_op(
-    token: murmur_dictation_core::decision::Continuation,
-) -> Option<LiveOp> {
-    H1_RETIRED
-        .with(Cell::take)
-        .filter(|op| op.op == token.op && op.recording_id == token.recording_id)
-}
-
-/// A pipeline owner retired its H2 entry (only while the shadow is armed).
-pub(crate) fn stash_h2_retired(op: LiveOp) {
-    if crate::dictation_shadow::enabled() {
-        H2_RETIRED.with(|slot| slot.set(Some(op)));
-    }
-}
-
-/// The H2 retirement the last owner retirement of `recording_id` made.
-pub(crate) fn take_h2_retired_op(recording_id: RecordingId) -> Option<LiveOp> {
-    H2_RETIRED
-        .with(Cell::take)
-        .filter(|op| op.recording_id == recording_id)
-}
-
-/// A ticker spawner returned before asking its gate: for the recording it was asked
-/// to start (only while a flight is open).
-pub(crate) fn stash_ticker_skip(target: u64, reason: TickerSkipReason) {
-    if armed() {
-        stash_ticker(TickerNote::Skipped {
-            target: RecordingId(target),
-            reason,
-        });
+/// An H2 retirement of `recording_id`'s pipeline entry by its owner.
+pub(crate) fn h2_retired(
+    recording_id: RecordingId,
+    op: murmur_dictation_core::ids::OperationId,
+    matched: bool,
+) -> LiveOp {
+    use crate::dictation_shadow::types::{HistoryAction, HistoryTable};
+    LiveOp {
+        table: HistoryTable::H2,
+        action: HistoryAction::Retired { matched },
+        cont: murmur_dictation_core::decision::ContKind::Pipeline,
+        recording_id,
+        op,
     }
 }

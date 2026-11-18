@@ -62,10 +62,19 @@ impl Conservation {
 pub(crate) struct Expect {
     pub unverifiable: u64,
     pub unwound: u64,
+    /// Flights whose header went out but whose close never arrived, because the unwind
+    /// ended them (an incomplete close the test names; the gate otherwise requires 0).
+    pub open: u64,
+    /// Flights that closed before their decision was taken (a `Pre` effect unwound).
+    pub abandoned_pre_d: u64,
+    /// Flights that closed as the named no-reply close (incomplete, no `Reply` credited): a
+    /// finish a deferred drain ran after the command that queued it returned, the import's
+    /// own pipeline error, a flight with no command return to witness it.
+    pub incomplete: u64,
 }
 
 thread_local! {
-    static EXPECT: std::cell::Cell<Expect> = const { std::cell::Cell::new(Expect { unverifiable: 0, unwound: 0 }) };
+    static EXPECT: std::cell::Cell<Expect> = const { std::cell::Cell::new(Expect { unverifiable: 0, unwound: 0, open: 0, abandoned_pre_d: 0, incomplete: 0 }) };
 }
 
 /// Called by the test that provokes the loss, before it drives the sub-run on this
@@ -83,6 +92,9 @@ pub(crate) struct Report {
     /// Messages the live side could not hand over (a full ring, or a ticket dropped
     /// unsent by an unwind).
     pub lost: u64,
+    /// Recorders still open when the replay ended: comparison is credited at close, so
+    /// one still open was never compared to its end (D-S2c-9 b).
+    pub open: usize,
 }
 
 /// Counters summed over every replay of this process (E3 and E8 evidence).
@@ -97,6 +109,8 @@ pub(crate) struct Totals {
     pub unverifiable: u64,
     pub per_row: BTreeMap<(u16, u16), u64>,
     pub pd_witness: BTreeMap<u8, u64>,
+    /// Ticker skips the comparator was told of, by reason (`TickerSkipReason::index`).
+    pub ticker_skipped: [u64; super::types::TickerSkipReason::ALL.len()],
 }
 
 /// The totals so far.
@@ -141,9 +155,9 @@ impl Replay {
     pub(crate) fn end(mut self) -> Report {
         self.ended = true;
         super::set_test_transport(None);
-        let stats = self.transport.with_sync(|comparator| {
+        let (stats, open) = self.transport.with_sync(|comparator| {
             comparator.assert_conserved();
-            comparator.stats.clone()
+            (comparator.stats.clone(), comparator.open_flights())
         });
         self.transport.set_sync(None);
         let events = self
@@ -160,6 +174,13 @@ impl Replay {
         totals.unverifiable += stats.unverifiable;
         for (row, row_stats) in &stats.per_row {
             *totals.per_row.entry(*row).or_default() += row_stats.compared;
+            for (total, noted) in totals
+                .ticker_skipped
+                .iter_mut()
+                .zip(row_stats.ticker_skipped)
+            {
+                *total += noted;
+            }
         }
         for (pd, count) in &stats.pd_witness {
             *totals.pd_witness.entry(*pd).or_default() += count;
@@ -169,6 +190,7 @@ impl Replay {
             events,
             conservation: None,
             lost: self.transport.lost(),
+            open,
         }
     }
 }
@@ -289,6 +311,145 @@ impl Drop for Replay {
     }
 }
 
+// ------------------------------------------------ the D guard's non-family acquisitions
+
+/// Production sites that take the dictation lock D without taking a decision section: not
+/// a family entry, so no header is owed for them (D-S2c-9 a). The guard function counts
+/// **every** other acquisition while armed, and the replay requires each one to end in a
+/// header, a named no-decision outcome or an unwind. A site is named by its file and the
+/// text of its line and of the line after it (so an edit elsewhere does not shift it),
+/// with the reason.
+const NON_FAMILY: &[(&str, &str, &str, &str)] = &[
+    (
+        "src/commands/recording.rs",
+        "let dictation = app_state.dictation.lock_or_recover();",
+        "(",
+        "the code-vocabulary prompt's fast-path read of three fields",
+    ),
+    (
+        "src/commands/recording.rs",
+        "let dictation = app_state.dictation.lock_or_recover();",
+        "let Some(current_code_vocab) = cached_code_vocab_prompt(&dictation, bundle_id) else {",
+        "the context snapshot's code-vocabulary revalidation",
+    ),
+    (
+        "src/commands/recording.rs",
+        "let dictation = state.app_state.dictation.lock_or_recover();",
+        "project_lifecycle_view(&state.app_state, &dictation)",
+        "query 402, the short read after a smart-destination capture (D-S2-3)",
+    ),
+    (
+        "src/commands/recording.rs",
+        "let dictation = app_state.dictation.lock_or_recover();",
+        "if !owns_delivery(app_state, &dictation, recording_id) {",
+        "the delivery ownership fence (query 403): held across a paste, not a decision",
+    ),
+    (
+        "src/commands/recording.rs",
+        "let dictation = app_state.dictation.lock_or_recover();",
+        "drop(wait);",
+        "the timed delivery ownership fence (query 403)",
+    ),
+    (
+        "src/commands/recording.rs",
+        "let _dictation = app_state.dictation.lock_or_recover();",
+        "if app_state.recording_id.load(Ordering::SeqCst) != recording_id",
+        "the generation fence around an emit: held across it, not a decision",
+    ),
+    (
+        "src/commands/recording/lifecycle_ports.rs",
+        "let dictation = state.app_state.dictation.lock_or_recover();",
+        "register_partial_ticker_locked",
+        "the ticker registration `SD` makes inside its own section's spawn",
+    ),
+    (
+        "src/dictation_admission.rs",
+        "s.read(|o| facts::status(app_state.dictation.lock_or_recover().status, o))",
+        "});",
+        "the admission probe's read of the status",
+    ),
+];
+
+/// Whether the acquisition at `at` is test code or a named non-family site: not counted
+/// as a decision section. Cached per site; the first look reads the source file.
+pub(crate) fn not_a_decision_section(at: &'static std::panic::Location<'static>) -> bool {
+    static CACHE: Mutex<BTreeMap<(&'static str, u32), bool>> = Mutex::new(BTreeMap::new());
+    let key = (at.file(), at.line());
+    if let Some(known) = CACHE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&key)
+    {
+        return *known;
+    }
+    let excluded = classify_site(at);
+    CACHE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(key, excluded);
+    excluded
+}
+
+fn classify_site(at: &std::panic::Location<'_>) -> bool {
+    let file = at.file();
+    if file.ends_with("_tests.rs")
+        || file.ends_with("_harness.rs")
+        || file.contains("/tests/")
+        || file.contains("dictation_shadow/")
+    {
+        return true;
+    }
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let name = std::path::Path::new(file);
+    let text = [name.to_path_buf(), manifest.join(name)]
+        .into_iter()
+        .chain(
+            name.strip_prefix("app/src-tauri")
+                .ok()
+                .map(|rest| manifest.join(rest)),
+        )
+        .find_map(|path| std::fs::read_to_string(path).ok())
+        .unwrap_or_else(|| panic!("the D guard's caller file {file} cannot be read"));
+    let lines: Vec<&str> = text.lines().collect();
+    let line = lines
+        .get(at.line() as usize - 1)
+        .map(|line| line.trim())
+        .unwrap_or_default();
+    // An inline `#[cfg(test)] mod x {`: its lines, up to the `}` at column 0 that rustfmt
+    // puts at its end, are test code.
+    let in_test_module = lines
+        .windows(2)
+        .enumerate()
+        .filter(|(_, pair)| {
+            pair[0].trim() == "#[cfg(test)]"
+                && pair[1].trim_start().starts_with("mod ")
+                && pair[1].trim_end().ends_with('{')
+        })
+        .any(|(start, _)| {
+            let end = lines[start + 2..]
+                .iter()
+                .position(|line| *line == "}")
+                .map_or(lines.len(), |offset| start + 2 + offset + 1);
+            (start + 2..=end).contains(&(at.line() as usize))
+        });
+    if in_test_module {
+        return true;
+    }
+    let next = lines
+        .get(at.line() as usize)
+        .map(|line| line.trim())
+        .unwrap_or_default();
+    let named = NON_FAMILY.iter().any(|(path, text, after, _)| {
+        file.ends_with(path)
+            && line == *text
+            && (next == *after || (after.len() > 1 && next.contains(*after)))
+    });
+    if !named && std::env::var_os("MURMUR_E7_SITES").is_some() {
+        eprintln!("E7SITE {file}:{} {line}", at.line());
+    }
+    named
+}
+
 /// Sub-runs that by design drive no family entry (they exercise a ledger directly), so
 /// `at least one decision compared` does not apply to them. Each is held to taking
 /// none.
@@ -344,7 +505,6 @@ impl Report {
                 && s.lost_open == 0
                 && s.abandoned_by_loss == 0
                 && s.abandoned_by_panic == 0
-                && s.skipped_incomplete == 0
                 && s.witness_overflow == 0,
             "{what}: the shadow reported a divergence: events {:?}, stats {s:?}",
             self.events
@@ -388,9 +548,10 @@ impl Report {
             );
         } else {
             assert!(
-                s.compared >= 1 && c.entries >= 1,
-                "{what}: the sub-run compared {} decisions (entered {}): it proves nothing",
-                s.compared,
+                s.matched >= 1 && c.entries >= 1,
+                "{what}: the sub-run matched {} decisions at close (entered {}): it proves \
+                 nothing",
+                s.matched,
                 c.entries
             );
         }
@@ -401,10 +562,151 @@ impl Report {
             "{what}: the live side lost {} messages ({} expected by the test)",
             self.lost, expected.unwound
         );
+        // Comparison is credited at close (D-S2c-9 b): nothing is left open, every header
+        // ended in exactly one close, and the clean ones matched. A flight whose header
+        // arrived but whose close never did (a missing reply, a lost tail) is open here,
+        // whatever the comparison thought of its header. A test that provoked an unwind
+        // states how many decisions it ended (`Expect::unwound`); each of those is a flight
+        // whose header was never sent, so it is open or closed incomplete, and nothing else is.
+        assert_eq!(
+            s.abandoned_pre_d, expected.abandoned_pre_d,
+            "{what}: {} flights closed before their decision ({} expected by the test)",
+            s.abandoned_pre_d, expected.abandoned_pre_d
+        );
+        assert_eq!(
+            self.open as u64, expected.open,
+            "{what}: {} flights were still open at the end of the sub-run ({} expected by the \
+             test): {s:?}",
+            self.open, expected.open
+        );
+        assert_eq!(
+            s.closed_total() - s.abandoned_pre_d + self.open as u64,
+            c.headers,
+            "{what}: {} headers were submitted, but {} closes were credited and {} flights \
+             are still open ({s:?})",
+            c.headers,
+            s.closed_total(),
+            self.open
+        );
+        assert_eq!(
+            s.skipped_incomplete, expected.incomplete,
+            "{what}: {} flights closed incomplete ({} named by the test): {s:?}",
+            s.skipped_incomplete, expected.incomplete
+        );
+        assert_eq!(
+            s.matched + s.unverifiable + s.abandoned_pre_d + s.skipped_incomplete,
+            s.closed_total(),
+            "{what}: a close was neither a match nor expected ({s:?})"
+        );
         assert_eq!(
             c.unrendered, 0,
             "{what}: {} completed flights never rendered their reply at a command return",
             c.unrendered
         );
+    }
+}
+
+/// The E7 gate itself (D-S2c-9 b): a replay in which a flight's close never arrived, a loss
+/// was recorded or a flight was unverifiable fails, unless the test that provoked it said
+/// so; and what it said is exactly what is required.
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+
+    /// One matched flight, one header, one entry: a clean replay.
+    fn clean() -> Report {
+        Report {
+            stats: Stats {
+                compared: 1,
+                matched: 1,
+                ..Stats::default()
+            },
+            events: Vec::new(),
+            conservation: Some(Conservation {
+                entries: 1,
+                headers: 1,
+                no_decision: 0,
+                unrendered: 0,
+                unwound: 0,
+            }),
+            lost: 0,
+            open: 0,
+        }
+    }
+
+    #[test]
+    fn a_clean_replay_passes() {
+        clean().assert_clean("clean");
+    }
+
+    #[test]
+    #[should_panic(expected = "still open at the end")]
+    fn a_flight_whose_close_never_arrived_fails_the_gate() {
+        let mut report = clean();
+        report.open = 1;
+        report.conservation.as_mut().unwrap().headers = 2;
+        report.conservation.as_mut().unwrap().entries = 2;
+        report.assert_clean("never closed");
+    }
+
+    #[test]
+    #[should_panic(expected = "headers were submitted")]
+    fn a_header_without_a_close_fails_the_gate() {
+        let mut report = clean();
+        report.conservation.as_mut().unwrap().headers = 2;
+        report.conservation.as_mut().unwrap().entries = 2;
+        report.assert_clean("header without a close");
+    }
+
+    #[test]
+    #[should_panic(expected = "closed unverifiable")]
+    fn an_unverifiable_flight_fails_the_gate() {
+        let mut report = clean();
+        report.stats.unverifiable = 1;
+        report.assert_clean("unverifiable");
+    }
+
+    #[test]
+    #[should_panic(expected = "lost")]
+    fn a_lost_message_fails_the_gate() {
+        let mut report = clean();
+        report.lost = 1;
+        report.assert_clean("lost");
+    }
+
+    #[test]
+    #[should_panic(expected = "closed incomplete")]
+    fn an_incomplete_close_fails_the_gate_unless_named() {
+        let mut report = clean();
+        report.stats.skipped_incomplete = 1;
+        report.conservation.as_mut().unwrap().headers = 2;
+        report.conservation.as_mut().unwrap().entries = 2;
+        report.assert_clean("incomplete");
+    }
+
+    #[test]
+    fn what_a_test_names_is_exactly_what_the_gate_accepts() {
+        // A named incomplete close passes; the same replay unnamed fails (above).
+        let mut report = clean();
+        report.stats.matched = 1;
+        report.stats.skipped_incomplete = 1;
+        report.conservation.as_mut().unwrap().headers = 2;
+        report.conservation.as_mut().unwrap().entries = 2;
+        expect(Expect {
+            incomplete: 1,
+            ..Expect::default()
+        });
+        report.assert_clean("named incomplete");
+        // A named expectation that does not happen fails too.
+        let result = std::panic::catch_unwind(|| {
+            expect(Expect {
+                open: 1,
+                ..Expect::default()
+            });
+            clean().assert_clean("named but absent");
+        });
+        assert!(result.is_err(), "an expectation nothing met must fail");
+        // The panic above left the expectation consumed: nothing leaks to the next gate.
+        clean().assert_clean("clean again");
     }
 }

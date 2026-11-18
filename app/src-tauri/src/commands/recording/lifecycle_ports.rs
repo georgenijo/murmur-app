@@ -419,4 +419,46 @@ impl<R: tauri::Runtime> Ports for LifecyclePorts<'_, R> {
             _ => Err(PortFailure),
         }
     }
+
+    /// `SD` with the flight's slots: the same spawn, whose `register` closure notes the
+    /// gate it asked, and the skip the spawner took when it never called it. Every other
+    /// detached effect is [`Self::detached`] unchanged (D-S2c-9 c, f).
+    #[cfg(feature = "dictation-shadow")]
+    fn detached_observed(
+        &self,
+        effect: &Effect,
+        slots: &crate::dictation_executor::shadow::ShadowSlots,
+    ) -> PortResult {
+        let Effect::StartSideTasks = effect else {
+            return self.detached(effect);
+        };
+        let spawn = self
+            .spawn_ready_tasks
+            .borrow_mut()
+            .take()
+            .ok_or(PortFailure)?;
+        let recording_id = self.recording_id;
+        let register_app = self.app.clone();
+        let gate = std::rc::Rc::new(std::cell::Cell::new(None));
+        let preflight = super::ticker_preflight(&self.app.state::<State>().app_state, recording_id);
+        let noted = std::rc::Rc::clone(&gate);
+        spawn(
+            self.app.clone(),
+            recording_id,
+            Box::new(move || {
+                let state = register_app.state::<State>();
+                let dictation = state.app_state.dictation.lock_or_recover();
+                super::register_partial_ticker_locked_observed(
+                    &state.app_state,
+                    &dictation,
+                    recording_id,
+                    &noted,
+                )
+            }),
+        );
+        slots
+            .ticker
+            .set(super::ticker_note(recording_id, preflight, gate.take()));
+        Ok(())
+    }
 }

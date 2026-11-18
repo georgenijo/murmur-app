@@ -79,3 +79,76 @@ fn the_default_features_and_dev_profiles_unwind() {
         );
     }
 }
+
+/// Every production acquisition of the dictation lock D goes through
+/// `MutexExt::lock_or_recover`, the one function that counts it for the shadow's
+/// conservation check (D-S2c-9 a). A raw `.lock()` / `.try_lock()` on `dictation` in
+/// production code would take D without being counted, which is the bypass the guard-level
+/// count exists to close.
+#[test]
+fn every_production_dictation_lock_goes_through_the_counting_guard() {
+    fn production_files(dir: &Path, found: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if path.is_dir() {
+                if name != "tests" {
+                    production_files(&path, found);
+                }
+            } else if name.ends_with(".rs")
+                && !name.ends_with("_tests.rs")
+                && name != "tests.rs"
+                && !name.ends_with("_harness.rs")
+            {
+                found.push(path);
+            }
+        }
+    }
+    /// The text with inline `#[cfg(test)] mod x { .. }` blocks (to the `}` at column 0 that
+    /// rustfmt puts at their end) and `//` comment lines removed.
+    fn production_text(text: &str) -> String {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut keep = vec![true; lines.len()];
+        for at in 0..lines.len().saturating_sub(1) {
+            if lines[at].trim() == "#[cfg(test)]"
+                && lines[at + 1].contains("mod ")
+                && lines[at + 1].trim_end().ends_with('{')
+            {
+                let end = lines[at + 2..]
+                    .iter()
+                    .position(|line| *line == "}")
+                    .map_or(lines.len() - 1, |offset| at + 2 + offset);
+                keep[at..=end].iter_mut().for_each(|k| *k = false);
+            }
+        }
+        lines
+            .iter()
+            .zip(keep)
+            .filter(|(line, keep)| *keep && !line.trim_start().starts_with("//"))
+            .map(|(line, _)| *line)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let mut files = Vec::new();
+    production_files(&manifest_dir().join("src"), &mut files);
+    assert!(
+        files.len() > 50,
+        "the walk found {} source files",
+        files.len()
+    );
+    let mut raw = Vec::new();
+    for file in files {
+        let text = std::fs::read_to_string(&file).unwrap();
+        for (number, line) in production_text(&text).lines().enumerate() {
+            if line.contains("dictation.lock()") || line.contains("dictation.try_lock()") {
+                raw.push(format!("{}: {}", file.display(), line.trim()));
+                let _ = number;
+            }
+        }
+    }
+    assert!(
+        raw.is_empty(),
+        "a production site takes the dictation lock without `lock_or_recover` (uncounted by \
+         the shadow's conservation check): {raw:#?}"
+    );
+}

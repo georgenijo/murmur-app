@@ -1031,10 +1031,11 @@ fn a_delegated_reply_concludes_with_the_decided_kind() {
     assert_eq!(reply_and_close(&pop_all(&transport)), (vec![], vec![]));
 }
 
-/// A flight that no command wrapper is around (a caller that is not an IPC command)
-/// concludes with the kind it decided, and the test build counts it as unrendered.
+/// A flight that no command wrapper is around (a caller that is not an IPC command) has no
+/// return to witness: it is never given the kind it decided, closes incomplete (the named
+/// no-reply close) and the test build counts it as unrendered (D-S2c-9 d).
 #[test]
-fn a_flight_outside_a_command_concludes_with_its_decided_kind_and_is_counted() {
+fn a_flight_outside_a_command_closes_with_no_reply_and_is_counted() {
     use murmur_dictation_core::replies::{Reply, ReplyType};
 
     let transport = default_transport();
@@ -1045,8 +1046,11 @@ fn a_flight_outside_a_command_concludes_with_its_decided_kind_and_is_counted() {
         Status::Idle,
     )));
     let (replies, closes) = reply_and_close(&pop_all(&transport));
-    assert_eq!(replies, vec![ReplyKind::Typed(ReplyType::NotRecording)]);
-    assert_eq!(closes, vec![true]);
+    assert!(replies.is_empty(), "no reply was witnessed: {replies:?}");
+    assert!(
+        !closes.contains(&true),
+        "the flight is never closed as completed: {closes:?}"
+    );
     let after = crate::dictation_executor::shadow::conservation_now().since(before);
     assert_eq!(after.unrendered, 1);
 }
@@ -1092,4 +1096,244 @@ fn a_spawned_continuation_cannot_observe_the_reply_scope() {
         false,
         "disarmed: no scope, no allocation"
     );
+}
+
+// ------------------------------------------- the flight's slots (D-S2c-9 c)
+
+/// One flight's `In` effect carrying a mirror the capture wrote into the flight's own
+/// slots (what `ObservingPorts`/the `*_observed` twins do), noted the way the executor
+/// notes it: take the slot's value, hand it to the flight.
+fn mirror_of(id: u64) -> MirrorWitness {
+    MirrorWitness {
+        field: MirrorField::CancelledThrough,
+        before: MirrorValue::Id(RecordingId(0)),
+        after: MirrorValue::Id(RecordingId(id)),
+    }
+}
+
+fn decided_flight(effects: usize) -> crate::dictation_executor::shadow::Flight {
+    use crate::dictation_executor::shadow::{view_projection, Flight};
+    let core = view(Status::Recording, RID);
+    let input = Input::CancelRequest(CancelInput { expected: None });
+    let decision = core.handle(input.clone(), NOW);
+    let flight = Flight::begin();
+    flight.enter_pre();
+    flight.decided(
+        input,
+        view_projection(&core),
+        NOW,
+        decision.row,
+        None,
+        effects,
+    );
+    flight
+}
+
+fn note_mirror(flight: &crate::dictation_executor::shadow::Flight, effect: &Effect) {
+    use crate::dictation_executor::shadow::Noted;
+    let slots = flight.slots().expect("an active flight has slots");
+    flight.effect(Noted {
+        index: 0,
+        placement: Placement::In,
+        effect,
+        taken: true,
+        result: crate::dictation_shadow::types::EffectResult::Ran,
+        mirror: slots.mirror.take(),
+        ticker: slots.ticker.take(),
+    });
+}
+
+fn header_mirrors(messages: &[ShadowMsg]) -> Vec<Vec<MirrorWitness>> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ShadowMsg::Header(header) => Some(header.in_d_mirrors.to_vec()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The probe that showed the thread-local flight misattributing across an `.await`: two
+/// decisions' flights live on **one thread**, their tasks interleaved at an await. Each
+/// capture writes into its own flight's slots, so each header carries its own write and
+/// nothing of the other's, whatever order the tasks run in. A capture holds nothing that
+/// names "the current flight".
+#[test]
+fn flights_interleaved_across_an_await_on_one_thread_never_see_each_others_slots() {
+    let transport = default_transport();
+    let _armed = Armed::on(&transport);
+    let effect = Effect::MarkCancelled(RecordingId(1));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("a runtime");
+    runtime.block_on(async {
+        let task = |id: u64, yields: usize| {
+            let effect = effect.clone();
+            async move {
+                let flight = decided_flight(1);
+                flight
+                    .slots()
+                    .expect("slots")
+                    .mirror
+                    .set(Some(mirror_of(id)));
+                for _ in 0..yields {
+                    // Another task runs here, on this very thread, writing its own flight.
+                    tokio::task::yield_now().await;
+                }
+                note_mirror(&flight, &effect);
+                flight.seal(None).submit();
+            }
+        };
+        tokio::join!(task(11, 3), task(22, 1), task(33, 0));
+    });
+    let mut seen: Vec<Vec<MirrorWitness>> = header_mirrors(&pop_all(&transport));
+    seen.sort_by_key(|mirrors| match mirrors.first().map(|m| m.after) {
+        Some(MirrorValue::Id(id)) => id.0,
+        _ => 0,
+    });
+    assert_eq!(
+        seen,
+        vec![
+            vec![mirror_of(11)],
+            vec![mirror_of(22)],
+            vec![mirror_of(33)]
+        ],
+        "each flight's header carries exactly its own write"
+    );
+}
+
+/// The other probe: flights dropped in an order that is not the order they began in. A
+/// dropped flight in the middle of its decision records its loss and takes nothing with
+/// it; the others still report their own writes (there is no restore of a previous
+/// "current" to dangle).
+#[test]
+fn flights_dropped_out_of_order_lose_only_themselves() {
+    let transport = default_transport();
+    let _armed = Armed::on(&transport);
+    let effect = Effect::MarkCancelled(RecordingId(1));
+    let before = crate::dictation_executor::shadow::conservation_now();
+
+    let first = decided_flight(1);
+    first.slots().expect("slots").mirror.set(Some(mirror_of(1)));
+    let second = decided_flight(1);
+    second
+        .slots()
+        .expect("slots")
+        .mirror
+        .set(Some(mirror_of(2)));
+    let third = decided_flight(1);
+    third.slots().expect("slots").mirror.set(Some(mirror_of(3)));
+
+    // The middle one is dropped first, then the first: neither reports a header.
+    drop(second);
+    drop(first);
+    note_mirror(&third, &effect);
+    third.seal(None).submit();
+    drop(third);
+
+    let after = crate::dictation_executor::shadow::conservation_now().since(before);
+    assert_eq!(
+        after.unwound, 2,
+        "the two dropped flights are recorded losses"
+    );
+    assert_eq!(
+        after.headers, 1,
+        "only the surviving flight submitted a header"
+    );
+    assert_eq!(
+        header_mirrors(&pop_all(&transport)),
+        vec![vec![mirror_of(3)]],
+        "the surviving flight's header carries its own write, nothing else"
+    );
+}
+
+// ------------------------------------------ named no-reply closes (D-S2c-9 d)
+
+/// A finish a deferred drain ran after its command had already returned has no reply of
+/// its own: it closes as the named no-reply close, never with the kind it decided and
+/// never completed.
+#[test]
+fn a_deferred_finish_closes_with_no_reply_and_is_never_given_the_decided_kind() {
+    use crate::dictation_executor::shadow::{commanded, deferred};
+    use murmur_dictation_core::replies::{Reply, ReplyType};
+
+    let transport = default_transport();
+    let _armed = Armed::on(&transport);
+    let _ = block_on(commanded(async {
+        let drain = deferred();
+        drop(replying_flight(&Reply::typed(
+            ReplyType::NotRecording,
+            Status::Idle,
+        )));
+        drop(drain);
+        Ok::<_, String>(serde_json::json!({"type": "not_recording", "state": "idle"}))
+    }));
+    let (replies, closes) = reply_and_close(&pop_all(&transport));
+    assert!(replies.is_empty(), "no reply was credited: {replies:?}");
+    assert!(
+        !closes.contains(&true),
+        "closed as completed: {closes:?} (the command's own return is not this finish's)"
+    );
+}
+
+/// The import's own pipeline error is the reply the command returns, which R302.2 does not
+/// model: the flights waiting for that return close as the named no-reply close, and the
+/// error is not read as the kind they decided.
+#[test]
+fn an_import_pipeline_error_closes_waiting_flights_with_no_reply() {
+    use crate::dictation_executor::shadow::{commanded, import_pipeline_error};
+    use murmur_dictation_core::replies::{Reply, ReplyType};
+
+    let transport = default_transport();
+    let _armed = Armed::on(&transport);
+    let result: Result<serde_json::Value, String> = block_on(commanded(async {
+        drop(replying_flight(&Reply::typed(
+            ReplyType::NotRecording,
+            Status::Idle,
+        )));
+        import_pipeline_error();
+        Err("the pipeline failed".to_string())
+    }));
+    assert!(result.is_err());
+    let (replies, closes) = reply_and_close(&pop_all(&transport));
+    assert!(replies.is_empty(), "no reply was credited: {replies:?}");
+    assert!(!closes.contains(&true), "closed as completed: {closes:?}");
+}
+
+/// The capture keeps no ambient "current flight": nothing in the shadow's live module is a
+/// thread-local flight, a scope, or a stash another site takes from (D-S2c-9 c).
+#[test]
+fn the_live_capture_module_keeps_no_ambient_flight_or_stash() {
+    let source = include_str!("../../dictation_executor/shadow.rs");
+    let code: String = source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for banned in [
+        "static CURRENT",
+        "fn with_current",
+        "fn stash_",
+        "fn take_retired_op",
+        "fn take_h2_retired_op",
+        "fn armed(",
+        "static MIRROR",
+        "static TICKER",
+        "static H1_RETIRED",
+        "static H2_RETIRED",
+    ] {
+        assert!(!code.contains(banned), "shadow.rs still has `{banned}`");
+    }
+    // The only thread-locals left are a depth counter and a write sequence: no flight.
+    for block in code.split("thread_local!").skip(1) {
+        let head: String = block.lines().take(4).collect::<Vec<_>>().join(" ");
+        assert!(
+            head.contains("DEFERRED") || head.contains("KEYBOARD_WRITES"),
+            "an unexpected thread-local in the live capture: {head}"
+        );
+        assert!(
+            !head.contains("Flight"),
+            "a thread-local names a flight: {head}"
+        );
+    }
 }

@@ -2328,8 +2328,12 @@ mod tests {
             .find("tauri::generate_handler![")
             .expect("generate_handler! in lib.rs")
             + "tauri::generate_handler![".len();
-        // The list ends at the `]` that closes the macro (`]))`); an entry may carry a
-        // `#[cfg(..)]` attribute, whose own `]` is not the end.
+        // Superseded by the next statement, kept as it was so the diff against `main`
+        // only inserts: `lib.rs` source now carries `#[cfg(..)]` attributes inside the
+        // macro in every build, and their own `]` is not the end of the list.
+        #[cfg(any())]
+        let end = start + lib_rs[start..].find(']').expect("handler end");
+        // The list ends at the `]` that closes the macro (`]))`).
         let end = start + lib_rs[start..].find("]))").expect("handler end");
         // The shadow build registers a witnessing wrapper (`<name>_witnessed`, renamed to
         // `<name>` for IPC) next to a `cfg(not(feature))` entry of the command itself: the

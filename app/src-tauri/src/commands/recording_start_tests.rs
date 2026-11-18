@@ -488,6 +488,8 @@ fn a_listener_that_drops_a_pipeline_owner_and_panics_in_the_destination_emit_dra
         crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
             unverifiable: 0,
             unwound: 1,
+            open: 1,
+            ..Default::default()
         });
         run_sub_run(&SubRun {
             title: "unwind drains the destination section",
@@ -811,6 +813,13 @@ fn the_capture_failure_prefix_drains_what_the_abort_port_defers() {
 #[test]
 fn a_panic_in_the_abort_port_still_drains_the_failure_prefix() {
     under_watchdog("an unwind from the abort port", || {
+        // The abort port panics before the start's decision is taken: that flight closes
+        // incomplete, before its decision, and the test says so.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned_pre_d: 1,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "failure prefix unwind",
             setup: Setup::idle(),
@@ -1072,6 +1081,7 @@ fn finish_f_and_retirement_r(r_first: bool, extra_owner: bool) -> EndState {
         crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
             unverifiable: 1,
             unwound: 0,
+            ..Default::default()
         });
         run_sub_run(&SubRun {
             title: "carried finish F against retirement R",

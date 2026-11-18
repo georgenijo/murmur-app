@@ -42,8 +42,6 @@ use super::tests::test_state;
 use super::*;
 #[cfg(feature = "dictation-shadow")]
 use crate::dictation_shadow::replay as shadow_replay;
-#[cfg(feature = "dictation-shadow")]
-use crate::dictation_shadow::types::TickerSkipReason;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -801,22 +799,12 @@ impl World {
                     // context and a model that supports a live preview.
                     let state = app.state::<State>();
                     let Some(context) = state.app_state.active_context(recording_id) else {
-                        #[cfg(feature = "dictation-shadow")]
-                        crate::dictation_executor::shadow::stash_ticker_skip(
-                            recording_id,
-                            TickerSkipReason::NoContext,
-                        );
                         return;
                     };
                     let model = &context.transcription.model_name;
                     if !transcriber::whisper::supports_live_preview(model)
                         && !transcriber::is_coreml_model(model)
                     {
-                        #[cfg(feature = "dictation-shadow")]
-                        crate::dictation_executor::shadow::stash_ticker_skip(
-                            recording_id,
-                            TickerSkipReason::NoLivePreview,
-                        );
                         return;
                     }
                     let registered = register();
@@ -1545,22 +1533,12 @@ impl DictationHost for Host {
                 world.side_task_spawns.fetch_add(1, Ordering::SeqCst);
                 let state = app.state::<State>();
                 let Some(context) = state.app_state.active_context(recording_id) else {
-                    #[cfg(feature = "dictation-shadow")]
-                    crate::dictation_executor::shadow::stash_ticker_skip(
-                        recording_id,
-                        TickerSkipReason::NoContext,
-                    );
                     return;
                 };
                 let model = &context.transcription.model_name;
                 if !transcriber::whisper::supports_live_preview(model)
                     && !transcriber::is_coreml_model(model)
                 {
-                    #[cfg(feature = "dictation-shadow")]
-                    crate::dictation_executor::shadow::stash_ticker_skip(
-                        recording_id,
-                        TickerSkipReason::NoLivePreview,
-                    );
                     return;
                 }
                 let registered = register();

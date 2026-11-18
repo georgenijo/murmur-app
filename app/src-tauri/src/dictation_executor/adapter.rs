@@ -117,6 +117,16 @@ impl FieldAdapter {
         app.cancel_recording(id);
     }
 
+    /// [`Self::cancel_through`], returning the shadow's witness of the write.
+    #[cfg(feature = "dictation-shadow")]
+    pub(crate) fn cancel_through_observed(
+        app: &AppState,
+        id: u64,
+    ) -> crate::dictation_shadow::types::MirrorWitness {
+        crate::core_history::assert_not_held();
+        app.cancel_recording_observed(id)
+    }
+
     /// `CX+`: `set_active_context`. Live only: M4 is never stored in the core.
     pub(crate) fn set_context(
         app: &AppState,
@@ -125,6 +135,17 @@ impl FieldAdapter {
     ) {
         crate::core_history::assert_not_held();
         app.set_active_context(id, snapshot);
+    }
+
+    /// [`Self::set_context`], returning the shadow's witness of the write.
+    #[cfg(feature = "dictation-shadow")]
+    pub(crate) fn set_context_observed(
+        app: &AppState,
+        id: u64,
+        snapshot: Arc<crate::dictation_context::DictationContextSnapshot>,
+    ) -> crate::dictation_shadow::types::MirrorWitness {
+        crate::core_history::assert_not_held();
+        app.set_active_context_observed(id, snapshot)
     }
 
     /// `CX-`: `clear_active_context(id)`, which also clears `vad_stream` and
@@ -137,6 +158,18 @@ impl FieldAdapter {
         #[cfg(test)]
         crate::barrier_hook::at("adapter.clear_context");
         app.clear_active_context(id)
+    }
+
+    /// [`Self::clear_context`], returning the shadow's witness of the write.
+    #[cfg(feature = "dictation-shadow")]
+    pub(crate) fn clear_context_observed(
+        app: &AppState,
+        id: u64,
+    ) -> (bool, crate::dictation_shadow::types::MirrorWitness) {
+        crate::core_history::assert_not_held();
+        #[cfg(test)]
+        crate::barrier_hook::at("adapter.clear_context");
+        app.clear_active_context_observed(id)
     }
 
     /// The M3/M4 observations of the live slots (C1.2): `cancelled_id` is one
