@@ -1642,6 +1642,13 @@ fn reset_process_globals() {
 
 /// Run one sub-run on a fresh app and return its trace lines.
 pub(super) fn run_sub_run(sub_run: &SubRun) -> Vec<String> {
+    run_sub_run_observed(sub_run, &|_| {})
+}
+
+/// [`run_sub_run`], then `observe` runs on the finished world (the trace is already
+/// taken; `observe` adds no line). Additive: the Stage 4 replays read test-only
+/// observers (the successful terminal claims) that the trace does not carry.
+pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World>)) -> Vec<String> {
     let _serial = locked(&GOLDEN_LOCK);
     let _runtime = runtime().enter();
     S12_TAIL.with(|slot| slot.borrow_mut().take());
@@ -1666,6 +1673,7 @@ pub(super) fn run_sub_run(sub_run: &SubRun) -> Vec<String> {
     }
     (sub_run.body)(&world);
     let lines = world.finish();
+    observe(&world);
     reset_process_globals();
     drop(app);
     lines

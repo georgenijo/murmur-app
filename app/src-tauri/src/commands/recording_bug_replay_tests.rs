@@ -453,6 +453,44 @@ fn s04a(world: &Arc<World>) {
     world.release_owner_clear();
 }
 
+/// 3c: the auto-stop takes the capture first; the user stop then finds Processing.
+fn s03c(world: &Arc<World>) {
+    interrupted_recording(world, 9_000);
+    world.close_gate("pipeline");
+    let requests = world.auto_stop_requests();
+    let mut auto = world.stop(Some(requests[0]));
+    assert!(poll_once(&mut auto).is_pending());
+    world.note("auto-stop took the capture and is in the pipeline");
+    stopped(world, "user stop", None);
+    world.open_gate("pipeline");
+    let reply = complete(&mut auto);
+    world.reply("auto-stop", &reply);
+    world.release_owner_clear();
+}
+
+/// 4b (PD-1): a user stop runs after the bridge read "current" and before its Idle
+/// write; the hook runs at the bridge's `recording-interrupted` emit.
+fn s04b(world: &Arc<World>) {
+    type StopSlot = Arc<std::sync::Mutex<Option<Fut<Result<serde_json::Value, String>>>>>;
+    recording(world);
+    world.runtime_failure(1);
+    world.close_gate("pipeline");
+    let slot: StopSlot = Arc::new(std::sync::Mutex::new(None));
+    let (between, parked) = (Arc::clone(world), Arc::clone(&slot));
+    world.on("emit:recording-interrupted", move || {
+        let mut stop = between.stop(None);
+        assert!(poll_once(&mut stop).is_pending());
+        *parked.lock().expect("slot") = Some(stop);
+    });
+    world.finish_interrupted(1, 6_000);
+    world.note("the bridge has returned; the user stop is still in the pipeline");
+    world.open_gate("pipeline");
+    let mut stop = slot.lock().expect("slot").take().expect("a parked stop");
+    let reply = complete(&mut stop);
+    world.reply("user stop", &reply);
+    world.release_owner_clear();
+}
+
 fn s05(world: &Arc<World>) {
     recording(world);
     world.knobs().stop_result = Err("stop timed out");
@@ -464,26 +502,26 @@ fn s05(world: &Arc<World>) {
 }
 
 /// #535 / PR #563 (`ddf2b6a1`, `80747cd4`): every dictation attempt reaches a
-/// terminal exactly once and correlatably. Runs scenarios 3 (a, b), 4 (a), 5 and
-/// 12 (a, b, c) and asserts the **terminal ledger**, not the status (SP4): for
-/// every accepted id (id 1 in each scenario) exactly one terminal claim is
-/// `Claimed`: the harness samples the telemetry ledger at every boundary, so a
-/// second claim that wins shows as a second `~ terminal 1` line. Where a
-/// performance class was claimed it is in `M(T)` (C7.4; `Superseded`, PD-4 and
-/// PD-5 are exempt and none of these scenarios produces one).
-///
-/// Each scenario also asserts its exact terminal outcome and error code (the one
-/// its golden records, D-S2b-1), so a fallback path that claims a different code
-/// after a dropped `TERM` is seen. Limit: a second winning claim with the *same*
-/// outcome and code as the first does not change the ledger and is not seen.
+/// terminal exactly once and correlatably. Runs scenarios 3 (a, b, c), 4 (a, b), 5
+/// and 12 (a, b, c) and asserts the **terminal claims**, not the ledger: a test-only
+/// observer in `DictationTelemetry::claim_terminal` records every *successful*
+/// claim per id (it adds no trace line, so no golden changes), and each scenario
+/// must have exactly one for id 1, with the exact outcome and code its golden
+/// records (D-S2b-1). The same-outcome case the ledger cannot see is forced after
+/// each scenario: the replay re-claims id 1 with the first claim's own outcome and
+/// code and asserts the claim is refused and the count stays one. The ledger lines
+/// (`~ terminal 1`) are still checked, and where a performance class was claimed it
+/// is in `M(T)` (C7.4; `Superseded`, PD-4 and PD-5 are exempt and none of these
+/// scenarios produces one).
 ///
 /// Revert: remove the once-only claim in `DictationTelemetry::claim_terminal`
-/// (`if attempt.terminal.is_some() { return false; }`). Mutation: drop `TERM` from
+/// (`if attempt.terminal.is_some() { return false; }`): the forced re-claim wins and
+/// the count is two, with the same outcome and code. Mutation: drop `TERM` from
 /// R102.2 or make R211.3's `TERM` conditional.
 #[test]
 fn bug535_exactly_one_terminal() {
     // (title, body, the terminal the golden trace records for id 1: outcome/code)
-    let scenarios: [TerminalScenario; 7] = [
+    let scenarios: [TerminalScenario; 9] = [
         (
             "3a interruption, auto-stop transcribes",
             s03a,
@@ -495,8 +533,18 @@ fn bug535_exactly_one_terminal() {
             "RuntimeInterruption/StreamInvalidated",
         ),
         (
+            "3c interruption, the auto-stop wins",
+            s03c,
+            "RuntimeInterruption/StreamInvalidated",
+        ),
+        (
             "4a short interruption",
             s04a,
+            "RuntimeInterruption/RuntimeFailure",
+        ),
+        (
+            "4b short interruption, a user stop between the check and the idle write",
+            s04b,
             "RuntimeInterruption/RuntimeFailure",
         ),
         (
@@ -522,27 +570,45 @@ fn bug535_exactly_one_terminal() {
     ];
     for _ in 0..repeat_count() {
         for (title, body, expected) in scenarios {
-            let lines = run_sub_run(&sub(title, body));
-            // Every scenario accepts id 1. A second claim that overwrites the
-            // ledger shows as a second `~ terminal 1` line (the harness samples
-            // the ledger at every boundary).
+            // Every scenario accepts id 1.
             let id = 1;
+            let claims = std::cell::RefCell::new(Vec::new());
+            let refused_again = std::cell::Cell::new(None);
+            let lines = run_sub_run_observed(&sub(title, body), &|w| {
+                let telemetry = &w.state().app_state.dictation_telemetry;
+                let successful = telemetry.successful_claims_for_test(id);
+                // Force a second claim with the first claim's own outcome and code.
+                if let Some(&(outcome, code)) = successful.first() {
+                    refused_again.set(Some(!telemetry.emit_terminal(id, outcome, code)));
+                }
+                *claims.borrow_mut() = telemetry
+                    .successful_claims_for_test(id)
+                    .into_iter()
+                    .map(|(outcome, code)| format!("{outcome:?}/{code:?}"))
+                    .collect::<Vec<_>>();
+            });
+            let claims = claims.into_inner();
+            assert_eq!(
+                claims,
+                [expected],
+                "{title}: id {id} must have exactly one successful terminal claim, with the golden's outcome/code\n{}",
+                lines.join("\n")
+            );
+            assert_eq!(
+                refused_again.get(),
+                Some(true),
+                "{title}: a second claim of id {id} with the same outcome and code must be refused"
+            );
+            // The ledger agrees: one `~ terminal` line, the same terminal.
             let outcomes: Vec<&str> = lines
                 .iter()
                 .filter_map(|l| l.strip_prefix(&format!("~ terminal {id} ")))
                 .collect();
             assert_eq!(
-                outcomes.len(),
-                1,
-                "{title}: id {id} must have exactly one terminal, got {outcomes:?}\n{}",
+                outcomes,
+                [expected],
+                "{title}: id {id} ledger\n{}",
                 lines.join("\n")
-            );
-            // D-S2b-1: the exact outcome and error code the golden trace records,
-            // so a fallback path that claims a different code is not mistaken for
-            // the row's own terminal.
-            assert_eq!(
-                outcomes[0], expected,
-                "{title}: id {id} terminal outcome/code differs from the golden"
             );
             // M(T): the performance class the winning terminal is compatible with.
             let terminal = outcomes[0].split('/').next().unwrap_or_default();
