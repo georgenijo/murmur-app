@@ -4957,13 +4957,16 @@ async fn process_audio_inner(
     let wav_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, audio_data)
         .map_err(|e| {
             let emit = host.idle_emitter();
-            guard
-                .finish_owned(move |_| emit("recording-status-changed", serde_json::json!("idle")));
+            guard.finish_owned(move |_| {
+                emit.emit_json("recording-status-changed", serde_json::json!("idle"))
+            });
             format!("Failed to decode base64: {}", e)
         })?;
     let samples = transcriber::parse_wav_to_samples(&wav_bytes).inspect_err(|_e| {
         let emit = host.idle_emitter();
-        guard.finish_owned(move |_| emit("recording-status-changed", serde_json::json!("idle")));
+        guard.finish_owned(move |_| {
+            emit.emit_json("recording-status-changed", serde_json::json!("idle"))
+        });
     })?;
     tracing::info!(target: "pipeline", "audio parse (base64 + WAV): {:?}", t_parse.elapsed());
     performance_guard.record(StageTimingV1::measured(
@@ -7925,7 +7928,7 @@ async fn stop_native_recording_admitted(
         rid,
         PostKind::StopPost,
         &|processing| host.keyboard().set_processing(processing),
-        &|| host.emit("recording-status-changed", "idle").is_ok(),
+        &|| host.emit_event("recording-status-changed", "idle").is_ok(),
     );
     let idle_status_emit_us = micros_between(pipeline_returned_at, idle_block_ended_at);
     let pipeline = match pipeline_result {
@@ -8081,7 +8084,7 @@ async fn stop_native_recording_admitted(
                 let history = history
                     .as_ref()
                     .expect("non-empty completed transcription has history metadata");
-                host.emit(
+                host.emit_event(
                     "transcription-complete",
                     serde_json::json!({
                         "recordingId": rid,

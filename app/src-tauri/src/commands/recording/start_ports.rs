@@ -378,14 +378,14 @@ impl Ports for StartPorts<'_> {
         match effect {
             Effect::EmitStatus { status, .. } => self
                 .host
-                .emit("recording-status-changed", status.as_str())
+                .emit_event("recording-status-changed", status.as_str())
                 .map_err(|_| PortFailure),
             // Publish Starting before the worker can report Ready, otherwise a
             // very fast device open could emit Recording first and this command
             // would then overwrite the frontend with a stale Starting event.
             Effect::EmitEvent(EventKind::GenStarted) => self
                 .host
-                .emit(
+                .emit_event(
                     "dictation-generation-started",
                     serde_json::json!({ "recordingId": self.rid() }),
                 )

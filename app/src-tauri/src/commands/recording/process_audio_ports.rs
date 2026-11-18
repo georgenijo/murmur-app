@@ -16,9 +16,28 @@ use crate::state::AppState;
 use std::sync::Arc;
 use tauri::Emitter;
 
-/// An owned `emit_json` (see [`ImportedAudioHost::idle_emitter`]).
-pub(super) type OwnedJsonEmit =
-    Box<dyn Fn(&str, serde_json::Value) -> Result<(), HostEmitError> + Send + 'static>;
+/// An owned `emit_json` (see [`ImportedAudioHost::idle_emitter`]). A struct with an
+/// `emit_json` method, not a bare closure, so every use is a visible `.emit_json(..)`
+/// call (the SP5 ratchet checks the event name at each).
+pub(super) struct OwnedJsonEmit(
+    Box<dyn Fn(&str, serde_json::Value) -> Result<(), HostEmitError> + Send + 'static>,
+);
+
+impl OwnedJsonEmit {
+    pub(super) fn new(
+        emit: impl Fn(&str, serde_json::Value) -> Result<(), HostEmitError> + Send + 'static,
+    ) -> Self {
+        Self(Box::new(emit))
+    }
+
+    pub(super) fn emit_json(
+        &self,
+        event: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), HostEmitError> {
+        (self.0)(event, payload)
+    }
+}
 
 /// What the legacy `process_audio` needs from the application handle.
 pub(super) trait ImportedAudioHost: Send + Sync + 'static {
@@ -84,7 +103,7 @@ impl ImportedAudioHost for TauriImportHost {
 
     fn idle_emitter(&self) -> OwnedJsonEmit {
         let app = self.app.clone();
-        Box::new(move |event, payload| {
+        OwnedJsonEmit::new(move |event, payload| {
             app.emit(event, payload)
                 .map_err(|e| HostEmitError(e.to_string()))
         })

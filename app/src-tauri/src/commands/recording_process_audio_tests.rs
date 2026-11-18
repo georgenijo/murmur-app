@@ -133,7 +133,7 @@ impl ImportedAudioHost for FakeHost {
 
     fn idle_emitter(&self) -> super::process_audio_ports::OwnedJsonEmit {
         let (log, history) = (Arc::clone(&self.log), self.history.clone());
-        Box::new(move |event, payload| {
+        super::process_audio_ports::OwnedJsonEmit::new(move |event, payload| {
             let (h2, h1) = (history.pipeline_count(), history.outstanding_ops());
             locked(&log).push(format!("emit {event} {payload} h2={h2} h1={h1}"));
             Ok(())
