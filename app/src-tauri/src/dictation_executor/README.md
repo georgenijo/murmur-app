@@ -30,10 +30,17 @@ every production call that can carry it, per enclosing function
   `cfg`, `cfg_attr` or `path` attribute, so no inline or cfg-selected replacement can
   give `crate::events::NAME` a value the scan never read. `crate::events` is
   resolved against `src/lib.rs` only, so every other production crate root is
-  validated too: the ratchet knows `src/lib.rs` and `src/main.rs`; any file under
-  `src/bin/`, a `[[bin]]` target or a non-default `[lib]` path in `Cargo.toml` is an
-  unknown root and fails; `main.rs` may contain no `mod` item, no `macro_rules!`, no
-  emitter identifier and no `crate::events` path (it only calls `ui_lib::..`). Build
+  validated too: the ratchet knows `src/lib.rs` and `src/main.rs`. `Cargo.toml` is
+  parsed as TOML (the `toml` dev-dependency, the version the lockfile already
+  resolved), not line-scanned, so spacing, comments and inline tables cannot hide a
+  target: the production targets must be exactly one `[lib]` named `ui_lib` at its
+  default path and one `[[bin]]` at `src/main.rs`; any other `[[bin]]`, any
+  non-default `path` and any file under `src/bin/` fails. `src/main.rs` is pinned
+  whole by its token hash (`MAIN_RS_HASH`, the same normalization as the wrapper
+  pins): any edit fails until it is re-reviewed (it may only call `ui_lib::..`) and
+  re-pinned, which also closes `include!`, `mod` and `#[path]` in the binary. The
+  earlier token checks (no `mod`, `macro_rules!`, `include`, emitter identifier or
+  `crate::events` path) stay as diagnostics that name the reason. Build
   scripts, examples and integration tests are not production roots and are not
   scanned. Attribute names are matched after normalizing raw identifiers (`r#path`).
   Any `use .. as concat`, any import whose final
