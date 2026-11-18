@@ -23,6 +23,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{json, Map, Value};
 
+use super::types::TickerSkipReason;
+
 /// The summary's file name, in the log directory.
 pub(crate) const SUMMARY_FILE: &str = "dictation-shadow-summary.json";
 
@@ -39,6 +41,9 @@ pub(crate) struct RowStats {
     pub compared: u64,
     pub mismatched: u64,
     pub pd_witness: u64,
+    /// `PostDT:SD` spawns that returned before the gate, by reason code - 1
+    /// ([`TickerSkipReason`]); recorded, never compared with the core (D-S2c-6).
+    pub ticker_skipped: [u64; TickerSkipReason::ALL.len()],
 }
 
 /// Every counter of C8.4 step 5, plus the loss counters of D-S2c-3.
@@ -149,12 +154,23 @@ impl Stats {
             .per_row
             .iter()
             .map(|((site, row), stats)| {
+                // One counter per closed reason code, keyed by the code.
+                let ticker_skipped: Map<String, Value> = TickerSkipReason::ALL
+                    .iter()
+                    .map(|reason| {
+                        (
+                            reason.code().to_string(),
+                            json!(stats.ticker_skipped[reason.index()]),
+                        )
+                    })
+                    .collect();
                 (
                     format!("{site}.{row}"),
                     json!({
                         "compared": stats.compared,
                         "mismatched": stats.mismatched,
                         "pd_witness": stats.pd_witness,
+                        "ticker_skipped": ticker_skipped,
                     }),
                 )
             })

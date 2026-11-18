@@ -278,6 +278,38 @@ impl TickerGate {
     }
 }
 
+/// Why a `StartSideTasks` that ran spawned no ticker and so produced no gate: the
+/// spawner returned before it asked the gate (D-S2c-6). Closed and numeric: no
+/// content, no id. The reason is recorded per row and never compared with the core,
+/// which does not model the spawner's preconditions (they are live-only
+/// observations).
+///
+/// A spawner that reaches the gate and is refused is **not** a skip: that attempt is
+/// a [`TickerGate`] with `registered: false`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum TickerSkipReason {
+    /// No recording context was recorded for the recording.
+    NoContext = 1,
+    /// The model has no live preview (neither Whisper nor Core ML).
+    NoLivePreview = 2,
+}
+
+impl TickerSkipReason {
+    /// Every reason, by code: the summary has one counter per entry.
+    pub(crate) const ALL: [Self; 2] = [Self::NoContext, Self::NoLivePreview];
+
+    /// The wire and summary code: 1-based, so `0` is never a reason.
+    pub(crate) const fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// Index into a per-reason counter array.
+    pub(crate) const fn index(self) -> usize {
+        self as usize - 1
+    }
+}
+
 /// Persisted M1/M2 as the live path read them, plus the M3/M4 observations
 /// (`obs`, C1.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -506,6 +538,12 @@ pub(crate) enum ShadowMsg {
         rec: RecorderId,
         gate: TickerGate,
     },
+    /// A `PostDT:SD` whose spawner returned before the gate (D-S2c-6): the
+    /// alternative to a [`ShadowMsg::Ticker`], never both.
+    TickerSkipped {
+        rec: RecorderId,
+        reason: TickerSkipReason,
+    },
     /// An H1 / H2 operation after D (an owner's `Drop`, a deferred retirement).
     History {
         rec: RecorderId,
@@ -536,6 +574,7 @@ impl ShadowMsg {
             | Self::Cond { rec, .. }
             | Self::Mirror { rec, .. }
             | Self::Ticker { rec, .. }
+            | Self::TickerSkipped { rec, .. }
             | Self::History { rec, .. }
             | Self::Reply { rec, .. }
             | Self::Close { rec, .. }

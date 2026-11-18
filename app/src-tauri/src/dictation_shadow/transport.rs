@@ -31,7 +31,8 @@ use murmur_dictation_core::effects::Placement;
 use super::ring::{Rejection, Ring};
 use super::types::{
     CondWitness, Inline, LiveOp, MirrorWitness, PredId, RecorderId, ReplyKind, ShadowHeader,
-    ShadowMsg, TickerGate, WitnessedEffect, COND_CAPACITY, MIRROR_CAPACITY, PRE_CAPACITY,
+    ShadowMsg, TickerGate, TickerSkipReason, WitnessedEffect, COND_CAPACITY, MIRROR_CAPACITY,
+    PRE_CAPACITY,
 };
 
 /// The queue's capacity (C8.2, D-S2c-1 a).
@@ -485,6 +486,9 @@ pub(crate) enum Mark {
     Mirror(MirrorWitness),
     /// A ticker registration attempt after D.
     Ticker(TickerGate),
+    /// A `PostDT:SD` whose spawner returned before the gate: no gate exists, and
+    /// this is the witness that says why (D-S2c-6). Numeric only.
+    TickerSkipped { reason: TickerSkipReason },
     /// An H1 / H2 operation after D.
     History(LiveOp),
     /// The command's reply kind.
@@ -542,6 +546,10 @@ pub(crate) fn mark(rec: &ShadowRecorder, mark: Mark) {
             mirror,
         },
         Mark::Ticker(gate) => ShadowMsg::Ticker { rec: rec_id, gate },
+        Mark::TickerSkipped { reason } => ShadowMsg::TickerSkipped {
+            rec: rec_id,
+            reason,
+        },
         Mark::History(op) => ShadowMsg::History { rec: rec_id, op },
         Mark::Reply(kind) => ShadowMsg::Reply { rec: rec_id, kind },
     };

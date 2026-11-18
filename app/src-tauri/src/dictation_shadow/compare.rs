@@ -39,7 +39,11 @@
 //!   `diff_kind` order, with `Pre` compared before `In`. Effects are matched across
 //!   placements, so an effect that ran in another placement than decided is
 //!   `Placement` (3), not a missing and an extra effect. Every conditional, mirror
-//!   and ticker attempt needs exactly one witness at a completed close.
+//!   and ticker attempt needs exactly one witness at a completed close. A `PostDT:SD`
+//!   needs exactly one of a `TickerGate` or a `TickerSkipped` (the spawner returned
+//!   before the gate: no context recorded, or no live preview, D-S2c-6); neither, or
+//!   both, is `EffectSet`. The skip reason is recorded per row, never compared with the
+//!   core.
 //! * **Cascade control**: a mismatch taints its recording id, and a later mismatch
 //!   with the same `(site, row, diff_kind)`, or any later level of a record that
 //!   already mismatched, is a `followup`, not a new root.
@@ -922,6 +926,23 @@ impl Record {
         (!self.target_matches(j, gate) || !gate_consistent(gate)).then_some(DiffKind::PostState)
     }
 
+    /// A `PostDT:SD` whose spawner returned before the gate (D-S2c-6): it stands in
+    /// for the decided `StartSideTasks`' gate, so it consumes the same slot. A second
+    /// witness for one `SD` (a gate and a skip, or two skips), or one when the
+    /// decision has none, is an extra witness (`EffectSet`). The reason is recorded by
+    /// the caller and never compared with the core.
+    fn on_ticker_skipped(&mut self) -> Option<DiffKind> {
+        let Some(&mut (_, ref mut consumed)) = self
+            .later_tickers
+            .iter_mut()
+            .find(|(_, consumed)| !*consumed)
+        else {
+            return Some(DiffKind::EffectSet);
+        };
+        *consumed = true;
+        None
+    }
+
     /// CP4: the flight closed.
     fn on_close(&mut self, completed: bool) -> Option<DiffKind> {
         let mut diffs = Vec::new();
@@ -1551,6 +1572,7 @@ impl Comparator {
             self.hold(rec, msg);
             return;
         };
+        let (site, row) = (record.site_id, record.row);
         let mut closing = false;
         let mut completed = false;
         let diff = {
@@ -1564,6 +1586,13 @@ impl Comparator {
                 ShadowMsg::Cond { pred, taken, .. } => record.on_cond(pred, taken),
                 ShadowMsg::Mirror { mirror, .. } => record.on_mirror(&mirror),
                 ShadowMsg::Ticker { gate, .. } => record.on_ticker(&gate),
+                ShadowMsg::TickerSkipped { reason, .. } => {
+                    let diff = record.on_ticker_skipped();
+                    if diff.is_none() {
+                        self.stats.row(site, row).ticker_skipped[reason.index()] += 1;
+                    }
+                    diff
+                }
                 ShadowMsg::History { op, .. } => {
                     record.check_history(std::iter::once(&op)).into_iter().min()
                 }
