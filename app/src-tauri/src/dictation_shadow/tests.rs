@@ -13,6 +13,7 @@
 //! here drive the comparison and the transport with synthetic data only.
 
 mod capture;
+mod closing;
 mod comparison;
 mod conditionals;
 mod harness;

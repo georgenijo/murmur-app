@@ -83,8 +83,20 @@ pub(crate) struct Stats {
     /// never applied.
     pub late_header_discarded: u64,
     /// Pipeline-owned finishes closed without the owner's H1 token (no registration
-    /// witnessed): neither clean nor a mismatch (D-S2c-3 f).
+    /// witnessed, or an ambiguous one): neither clean nor a mismatch (D-S2c-3 f,
+    /// D-S2c-4 a).
     pub unverifiable: u64,
+    /// Recorders the comparison saw open: every one is closed exactly once, by one of
+    /// `matched`, `closed_mismatched`, `unverifiable`, `abandoned_by_loss`,
+    /// `abandoned_by_panic`, `abandoned_pre_d`, `skipped_incomplete` or `lost_open`,
+    /// or is still open (D-S2c-4 b).
+    pub opened: u64,
+    /// Flights that closed with a mismatch already reported (a close kind of its own,
+    /// so the conservation `opened == sum of closes` holds).
+    pub closed_mismatched: u64,
+    /// A second close of a recorder already closed: a no-op, counted. Zero outside a
+    /// test that plants one.
+    pub double_close_suppressed: u64,
     /// Messages claimed in the ring and never consumed when the final summary was
     /// written (shutdown only).
     pub unconsumed: u64,
@@ -116,6 +128,19 @@ pub(crate) struct Stats {
 impl Stats {
     pub(crate) fn row(&mut self, site_id: u16, row: u16) -> &mut RowStats {
         self.per_row.entry((site_id, row)).or_default()
+    }
+
+    /// The sum of every way a recorder is counted out (D-S2c-4 b).
+    #[cfg(test)]
+    pub(crate) fn closed_total(&self) -> u64 {
+        self.matched
+            + self.closed_mismatched
+            + self.unverifiable
+            + self.abandoned_by_loss
+            + self.abandoned_by_panic
+            + self.abandoned_pre_d
+            + self.skipped_incomplete
+            + self.lost_open
     }
 
     /// The summary document. Numbers only.
@@ -159,6 +184,9 @@ impl Stats {
             "late_message_discarded": self.late_message_discarded,
             "late_header_discarded": self.late_header_discarded,
             "unverifiable": self.unverifiable,
+            "opened": self.opened,
+            "closed_mismatched": self.closed_mismatched,
+            "double_close_suppressed": self.double_close_suppressed,
             "unconsumed": self.unconsumed,
             "reserved_unpublished": self.reserved_unpublished,
             "loss_unattributed": self.loss_unattributed,

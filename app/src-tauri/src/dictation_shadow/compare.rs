@@ -22,7 +22,14 @@
 //!   (`abandoned_by_loss`) and the sequence resynchronises on the next header. A
 //!   producer bumps `lost` before it can publish a later message, so a batch holding a
 //!   message that follows a loss always sees the loss. Nothing is compared past a loss
-//!   and nothing is guessed about what it touched.
+//!   and nothing is guessed about what it touched. A header whose ticket predates the
+//!   loss is rejected at its own place in the sequence (an explicit skip); one after it
+//!   is judged on its own merits even if the reset moved the sequence past it
+//!   (D-S2c-4 d).
+//! * **Every opened recorder is closed exactly once** (D-S2c-4 b, c): `close(rec,
+//!   kind)` is the only exit, a closed-recorder memory makes a second close a counted
+//!   no-op, and the flight being processed stays open until it is closed, so a panic
+//!   reset counts it too.
 //! * **At most 64 records are open** ([`MAX_OPEN_RECORDS`]); the oldest beyond that
 //!   is closed as `lost_open`. A witness that arrives before its header is held (at
 //!   most 32 per recorder).
@@ -36,7 +43,8 @@
 //!   already mismatched, is a `followup`, not a new root.
 //! * **Resync, not cascade**: every header resets M1/M2 from its own `pre`.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -70,6 +78,24 @@ const STAGE_CAPACITY: usize = 64;
 const MAX_REMEMBERED_IDS: usize = 1024;
 /// Rows remembered per recording id for the two-flight preserved defects.
 const MAX_ROWS_PER_ID: usize = 8;
+
+/// How a recorder was closed: the one place each opened recorder is counted out
+/// (D-S2c-4 b). `late_message_discarded` and `late_header_discarded` stay message
+/// counters: a late message or header belongs to a recorder that is already closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CloseKind {
+    Matched,
+    Mismatched,
+    Unverifiable,
+    AbandonedByLoss,
+    AbandonedByPanic,
+    /// `run(Pre)` began and D was never entered.
+    PreAbandoned,
+    /// A capture list overflowed: nothing complete to compare.
+    Incomplete,
+    /// The oldest open record past the 64-record cap.
+    Evicted,
+}
 
 /// Rate limit of the mismatch event (C8.4 step 4): one per `(site, input_kind,
 /// diff_kind)` per 60 s, and at most 50 per session.
@@ -355,6 +381,10 @@ struct Record {
     /// The `K:Pipeline` registration this record validated, until the comparator
     /// takes it into its cache.
     registered: Option<(RecordingId, OperationId)>,
+    /// Recordings for which this record saw a `K:Pipeline` registration it could not
+    /// validate (unwanted, or a duplicate): the comparator invalidates whatever it
+    /// cached for them (D-S2c-4 a).
+    conflicts: Vec<RecordingId>,
     /// The token the input carried and its validated status: the full H1 token whose
     /// retirement the row requires (D-S2c-2 d).
     token: Option<(Continuation, OpStatus)>,
@@ -446,6 +476,7 @@ impl Record {
             last_idx: [None; 4],
             h1_registered: 0,
             registered: None,
+            conflicts: Vec::new(),
             h1_retired: false,
             h2_needed,
             h2_registered: false,
@@ -708,8 +739,15 @@ impl Record {
                     });
                     let first = self.h1_registered == 0;
                     self.h1_registered = self.h1_registered.saturating_add(1);
-                    if wanted && first && op.cont == ContKind::Pipeline {
-                        self.registered = Some((op.recording_id, op.op));
+                    if op.cont == ContKind::Pipeline {
+                        if wanted && first {
+                            self.registered = Some((op.recording_id, op.op));
+                        } else {
+                            // A registration the decision did not ask for, or a
+                            // second one: the recording's token is ambiguous, and
+                            // whatever was cached for it is invalidated.
+                            self.conflicts.push(op.recording_id);
+                        }
                     }
                     wanted && first
                 }
@@ -940,9 +978,15 @@ pub(crate) struct Comparator {
     unavailable_total: u64,
     /// The `K:Pipeline` operation registered for each recording, for the owner's
     /// full H1 token at its finish.
-    pipeline_ops: BTreeMap<u64, OperationId>,
+    /// `None` marks a recording whose registration was ambiguous (D-S2c-4 a).
+    pipeline_ops: BTreeMap<u64, Option<OperationId>>,
     /// The process-wide count of messages whose recorder had no transport yet.
     unavailable: Option<&'static AtomicU64>,
+    /// Recorders opened and not yet closed: every message the comparison took up for a
+    /// recorder not in `closed` opens it, and [`Comparator::close`] is the only way
+    /// out (D-S2c-4 b). A flight being processed stays here even while its record is
+    /// out of `records`, so a panic reset still sees it (D-S2c-4 c).
+    live: HashSet<RecorderId>,
     records: HashMap<RecorderId, Record>,
     held: HashMap<RecorderId, Vec<ShadowMsg>>,
     /// Open recorders (records and held ones), oldest first.
@@ -959,6 +1003,27 @@ pub(crate) struct Comparator {
     event_last_ms: HashMap<(u16, u16, u8), u64>,
     events_sent: u64,
     pub(crate) stats: Stats,
+    /// A test planted a second close on purpose (D-S2c-4 e).
+    #[cfg(test)]
+    planted_duplicate_close: bool,
+}
+
+#[cfg(test)]
+impl Drop for Comparator {
+    /// Every test that builds a comparator doubles as a conservation check
+    /// (D-S2c-4 e): each recorder it opened is closed once or still open, and no
+    /// second close happened unless the test planted one.
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
+        self.assert_conserved();
+        assert!(
+            self.planted_duplicate_close || self.stats.double_close_suppressed == 0,
+            "a recorder was closed twice: {:?}",
+            self.stats
+        );
+    }
 }
 
 impl Comparator {
@@ -976,6 +1041,7 @@ impl Comparator {
             unavailable_total: 0,
             pipeline_ops: BTreeMap::new(),
             unavailable: None,
+            live: HashSet::new(),
             records: HashMap::new(),
             held: HashMap::new(),
             open: VecDeque::new(),
@@ -986,6 +1052,8 @@ impl Comparator {
             event_last_ms: HashMap::new(),
             events_sent: 0,
             stats: Stats::default(),
+            #[cfg(test)]
+            planted_duplicate_close: false,
         }
     }
 
@@ -1097,22 +1165,24 @@ impl Comparator {
                 }
             });
         }
-        let flights = self.abandon(batch);
-        self.stats.abandoned_by_loss += flights;
+        self.abandon(batch, CloseKind::AbandonedByLoss);
     }
 
-    /// Give up the staged batch and every open, held or waiting record: counted once
-    /// per flight (`abandoned_by_loss`), remembered as closed so a late message of it
-    /// is dropped, and with every cache that depended on them forgotten. The sequence
-    /// resynchronises on the next header.
-    fn abandon(&mut self, batch: &[ShadowMsg]) -> u64 {
-        let mut flights: BTreeSet<RecorderId> = batch.iter().map(ShadowMsg::rec).collect();
-        flights.extend(self.records.keys().copied());
-        flights.extend(self.held.keys().copied());
-        flights.extend(self.pending.values().map(|header| header.rec));
-        let count = u64::try_from(flights.len()).unwrap_or(u64::MAX);
+    /// Give up the staged batch and every open, held, waiting or in-process flight:
+    /// each recorder is closed exactly once, as `kind` (a recorder already closed is
+    /// skipped, and its staged late messages are only dropped), and every cache that
+    /// depended on them is forgotten. The sequence resynchronises on the next header
+    /// (D-S2c-4 b, c).
+    fn abandon(&mut self, batch: &[ShadowMsg], kind: CloseKind) {
+        for msg in batch {
+            if !self.admit(msg.rec()) {
+                // Its flight is closed already: dropped, not counted again.
+                self.stats.late_message_discarded += 1;
+            }
+        }
+        let flights: Vec<RecorderId> = self.live.iter().copied().collect();
         for rec in flights {
-            self.remember_closed(rec);
+            self.close(rec, kind);
         }
         self.records.clear();
         self.held.clear();
@@ -1122,40 +1192,124 @@ impl Comparator {
         self.pd_pending.clear();
         self.pipeline_ops.clear();
         self.resync = true;
-        count
     }
 
     /// Apply one message. The shadow's own panics are caught per header.
     ///
     /// A panic can leave a record half applied, so it is a loss like any other: every
-    /// open, held or waiting record is given up and nothing partially applied is
-    /// compared afterwards (Sol round 5).
+    /// open, held, waiting or in-process flight is given up and nothing partially
+    /// applied is compared afterwards (Sol round 5). The flight being processed is
+    /// still in `live`, so the reset closes it too, once.
     fn apply(&mut self, msg: ShadowMsg) {
-        let rec = msg.rec();
         let outcome = catch_unwind(AssertUnwindSafe(|| self.handle_msg(msg)));
         if outcome.is_err() {
             self.stats.shadow_panic += 1;
-            self.remember_closed(rec);
             self.reset_after_panic();
         }
     }
 
     fn reset_after_panic(&mut self) {
-        let flights = self.abandon(&[]);
-        self.stats.abandoned_by_panic += flights;
+        self.abandon(&[], CloseKind::AbandonedByPanic);
+    }
+
+    /// A recorder is open from the first message the comparison takes up for it until
+    /// [`Comparator::close`]. Returns false for one that is closed already.
+    fn admit(&mut self, rec: RecorderId) -> bool {
+        if self.live.contains(&rec) {
+            return true;
+        }
+        if self.closed.contains(&rec) {
+            return false;
+        }
+        self.live.insert(rec);
+        self.stats.opened += 1;
+        true
+    }
+
+    /// The only way a recorder is closed: forget its state, remember the id so a late
+    /// message or header is dropped instead of held or applied, and count it under
+    /// `kind`. A second close of the same recorder is a counted no-op (D-S2c-4 b).
+    fn close(&mut self, rec: RecorderId, kind: CloseKind) {
+        if !self.live.remove(&rec) {
+            self.stats.double_close_suppressed += 1;
+            return;
+        }
+        self.records.remove(&rec);
+        self.held.remove(&rec);
+        self.open.retain(|id| *id != rec);
+        self.remember_closed(rec);
+        match kind {
+            CloseKind::Matched => self.stats.matched += 1,
+            CloseKind::Mismatched => self.stats.closed_mismatched += 1,
+            CloseKind::Unverifiable => self.stats.unverifiable += 1,
+            CloseKind::AbandonedByLoss => self.stats.abandoned_by_loss += 1,
+            CloseKind::AbandonedByPanic => self.stats.abandoned_by_panic += 1,
+            CloseKind::PreAbandoned => self.stats.abandoned_pre_d += 1,
+            CloseKind::Incomplete => self.stats.skipped_incomplete += 1,
+            CloseKind::Evicted => self.stats.lost_open += 1,
+        }
+    }
+
+    /// Test seam: close a recorder a second time (a planted duplicate).
+    #[cfg(test)]
+    pub(crate) fn close_again_for_test(&mut self, rec: RecorderId) {
+        self.planted_duplicate_close = true;
+        self.close(rec, CloseKind::Matched);
+    }
+
+    /// Conservation (D-S2c-4 e): every recorder opened is closed exactly once, by one
+    /// kind, or still open; and an open one is somewhere it can still be closed from.
+    #[cfg(test)]
+    pub(crate) fn assert_conserved(&self) {
+        assert_eq!(
+            self.stats.opened,
+            self.stats.closed_total() + self.live.len() as u64,
+            "opened == closes + still open: {:?}",
+            self.stats
+        );
+        assert!(
+            self.live_is_accounted_for(),
+            "an open recorder nothing can close any more: {:?}",
+            self.stats
+        );
+    }
+
+    /// Recorders open now (test visibility for the conservation check).
+    #[cfg(test)]
+    pub(crate) fn open_flights(&self) -> usize {
+        self.live.len()
+    }
+
+    /// Every open recorder is somewhere the comparison can still close it from:
+    /// a record, held messages, a waiting header, or the one being processed.
+    #[cfg(test)]
+    pub(crate) fn live_is_accounted_for(&self) -> bool {
+        self.live.iter().all(|rec| {
+            self.records.contains_key(rec)
+                || self.held.contains_key(rec)
+                || self.pending.values().any(|header| header.rec == *rec)
+        }) && self.live.iter().all(|rec| !self.closed.contains(rec))
     }
 
     pub(crate) fn handle_msg(&mut self, msg: ShadowMsg) {
+        let rec = msg.rec();
         match msg {
-            ShadowMsg::Header(header) => self.on_header(header),
+            ShadowMsg::Header(header) => {
+                // A header of a closed flight is dropped by `apply_header`, at its
+                // place in the sequence.
+                self.admit(rec);
+                self.on_header(header);
+            }
             ShadowMsg::PreAbandoned { rec } => {
                 // `run(Pre)` began and D was never entered: no decision, no seq, no
                 // gap. Reported, not a mismatch.
-                self.stats.abandoned_pre_d += 1;
-                self.forget(rec);
+                if self.admit(rec) {
+                    self.close(rec, CloseKind::PreAbandoned);
+                } else {
+                    self.stats.late_message_discarded += 1;
+                }
             }
             other => {
-                let rec = other.rec();
                 self.route(rec, other);
             }
         }
@@ -1163,24 +1317,19 @@ impl Comparator {
 
     // ------------------------------------------------------------- ordering
 
+    /// Order the headers by their sequence. A header the sequence has already moved
+    /// past (a reset resynchronised it) is not discarded for arriving late: the
+    /// epoch check in [`Comparator::apply_header`] decides whether its flight
+    /// predates a loss, and a flight after the loss is judged on its own merits
+    /// (D-S2c-4 d). A header the reset rejects still consumes its place, as an
+    /// explicit skip.
     fn on_header(&mut self, header: ShadowHeader) {
-        if header.epoch < self.seen_lost {
-            // The flight took its ticket before a loss the last reset acknowledged:
-            // one of its messages may be the lost one, and the reset could not see
-            // the flight (its header was still in the ring or behind an unpublished
-            // slot). Given up, with whatever it sends afterwards (Sol round 5, major 1).
-            self.stats.abandoned_by_loss += 1;
-            self.remember_closed(header.rec);
-            return;
-        }
         let seq = header.seq;
         if std::mem::take(&mut self.resync) {
             self.next_seq = seq;
         }
         if seq < self.next_seq {
-            // A reset moved the sequence past it: its position was given up.
-            self.stats.late_header_discarded += 1;
-            self.forget(header.rec);
+            self.apply_header(header);
             return;
         }
         if seq == self.next_seq {
@@ -1193,8 +1342,7 @@ impl Comparator {
         if self.pending.len() > MAX_PENDING_HEADERS {
             // More than 64 later headers wait on one open gap. Without a counted loss
             // that cannot happen; if it does, it is a loss like any other (D-S2c-3 d).
-            let flights = self.abandon(&[]);
-            self.stats.abandoned_by_loss += flights;
+            self.abandon(&[], CloseKind::AbandonedByLoss);
         }
     }
 
@@ -1214,14 +1362,23 @@ impl Comparator {
             self.stats.late_header_discarded += 1;
             return;
         }
+        if header.epoch < self.seen_lost {
+            // The flight took its ticket before a loss the last reset acknowledged:
+            // one of its messages may be the lost one, and the reset could not see
+            // the flight (its header was still in the ring or behind an unpublished
+            // slot). Given up, with whatever it sends afterwards (Sol round 5, major
+            // 1). Its position in the sequence is consumed by the caller: an explicit
+            // skip, so the headers behind it are not left waiting (D-S2c-4 d).
+            self.close(header.rec, CloseKind::AbandonedByLoss);
+            return;
+        }
         let ids = header_ids(&header);
         let (site, row) = (header.site_id, header.row);
 
         if header.overflowed {
             // A capture list overflowed: the header is incomplete, so there is
             // nothing complete to compare. Counted, never reported as a mismatch.
-            self.stats.skipped_incomplete += 1;
-            self.forget(header.rec);
+            self.close(header.rec, CloseKind::Incomplete);
             return;
         }
 
@@ -1239,7 +1396,7 @@ impl Comparator {
                 self.stats.row(site, row).compared += 1;
                 self.stats.shadow_panic += 1;
                 self.report(site, row, DiffKind::ShadowPanic, &ids);
-                self.forget(header.rec);
+                // The flight is still open, so the reset closes it with the others.
                 self.reset_after_panic();
                 return;
             }
@@ -1251,7 +1408,7 @@ impl Comparator {
             // The decision asked for a read the live path did not record: there is
             // nothing complete to compare (`diff_kind 7`).
             self.report(site, row, DiffKind::Observation, &ids);
-            self.forget(header.rec);
+            self.close(header.rec, CloseKind::Mismatched);
             return;
         }
 
@@ -1260,7 +1417,7 @@ impl Comparator {
         let mut record = Record::new(&header, decision);
         record.owner_op = record
             .owner_finish
-            .and_then(|rid| self.pipeline_ops.get(&rid.0).copied());
+            .and_then(|rid| self.pipeline_ops.get(&rid.0).copied().flatten());
         if let Some(diff) = Self::cp1(&mut record, &header, post) {
             record.mismatched = true;
             self.report(site, row, diff, &ids);
@@ -1310,18 +1467,32 @@ impl Comparator {
     /// owner's full token, which its finish must retire. Only a registration the
     /// admitted record itself validated (the decision asked for it, once) is taken, so
     /// a message of an abandoned or unadmitted flight never reaches the cache
-    /// (Sol round 5, major 2).
+    /// (Sol round 5, major 2). A token is also valid only while it is the **only**
+    /// registration for its recording: a second one, or one the record could not
+    /// validate, turns the cached entry into an ambiguous one (`None`), however late it
+    /// arrives, and the finish that needed it is `unverifiable` (D-S2c-4 a).
     fn note_pipeline_registration(&mut self, record: &mut Record) {
         if let Some((recording, op)) = record.registered.take() {
-            self.pipeline_ops.insert(recording.0, op);
-            while self.pipeline_ops.len() > MAX_REMEMBERED_IDS {
-                self.pipeline_ops.pop_first();
+            match self.pipeline_ops.entry(recording.0) {
+                Entry::Vacant(slot) => {
+                    slot.insert(Some(op));
+                }
+                // A second validated registration for the same recording.
+                Entry::Occupied(mut slot) => {
+                    slot.insert(None);
+                }
             }
+        }
+        for recording in record.conflicts.drain(..) {
+            self.pipeline_ops.insert(recording.0, None);
+        }
+        while self.pipeline_ops.len() > MAX_REMEMBERED_IDS {
+            self.pipeline_ops.pop_first();
         }
     }
 
     fn route(&mut self, rec: RecorderId, msg: ShadowMsg) {
-        if self.closed.contains(&rec) {
+        if !self.admit(rec) {
             // A late message of a flight already closed, abandoned or given up: the
             // comparison is over, and it reaches no cache.
             self.stats.late_message_discarded += 1;
@@ -1378,15 +1549,22 @@ impl Comparator {
         }
         self.note_pipeline_registration(&mut record);
         if closing {
-            if record.mismatched {
-                // Reported already.
-            } else if record.unverifiable() {
-                self.stats.unverifiable += 1;
-            } else {
-                self.stats.matched += 1;
-                self.credit_pd(&record, completed);
+            // The cached token may have turned ambiguous since the header: a finish
+            // is verified against the cache as it stands at its close.
+            if let Some(owner) = record.owner_finish {
+                if self.pipeline_ops.get(&owner.0).copied().flatten() != record.owner_op {
+                    record.owner_op = None;
+                }
             }
-            self.forget(rec);
+            let kind = if record.mismatched {
+                CloseKind::Mismatched
+            } else if record.unverifiable() {
+                CloseKind::Unverifiable
+            } else {
+                self.credit_pd(&record, completed);
+                CloseKind::Matched
+            };
+            self.close(rec, kind);
         } else {
             self.records.insert(rec, record);
         }
@@ -1469,20 +1647,8 @@ impl Comparator {
             let Some(oldest) = self.open.pop_front() else {
                 break;
             };
-            self.stats.lost_open += 1;
-            self.records.remove(&oldest);
-            self.held.remove(&oldest);
-            self.remember_closed(oldest);
+            self.close(oldest, CloseKind::Evicted);
         }
-    }
-
-    /// The recorder is finished with: forget its state and remember the id so a late
-    /// message or header is dropped instead of held or applied.
-    fn forget(&mut self, rec: RecorderId) {
-        self.records.remove(&rec);
-        self.held.remove(&rec);
-        self.open.retain(|id| *id != rec);
-        self.remember_closed(rec);
     }
 
     fn remember_closed(&mut self, rec: RecorderId) {

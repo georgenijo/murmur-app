@@ -129,11 +129,17 @@ fn a_header_waiting_behind_a_gap_and_its_held_close_are_given_up() {
     // The next header resynchronises, whatever its seq.
     h.feed(&at_epoch(short_idle(40, 40), 1));
     assert_eq!(h.stats().compared, 2, "{:?}", h.stats());
-    // A header the reset moved the sequence past is discarded, not applied.
+    // A post-loss header the reset moved the sequence past is judged on its own
+    // merits, not discarded for arriving out of order (D-S2c-4 d).
     h.feed(&at_epoch(short_idle(39, 39), 1));
-    assert_eq!(h.stats().late_header_discarded, 1);
-    assert_eq!(h.stats().compared, 2);
+    assert_eq!(h.stats().late_header_discarded, 0);
+    assert_eq!(h.stats().compared, 3);
+    assert_eq!(h.stats().matched, 3, "{:?}", h.stats());
     assert_eq!(h.stats().mismatched_root, 0);
+    // One that took its ticket before the loss is given up, whatever its place.
+    h.feed(&at_epoch(short_idle(38, 38), 0));
+    assert_eq!(h.stats().compared, 3);
+    assert_eq!(h.stats().abandoned_by_loss, 2, "{:?}", h.stats());
 }
 
 #[test]
@@ -627,7 +633,10 @@ fn a_caught_comparator_panic_gives_up_everything_open() {
     comparator.drain(&transport);
     let stats = &comparator.stats;
     assert_eq!(stats.shadow_panic, 1, "{stats:?}");
-    assert_eq!(stats.abandoned_by_panic, 1, "the open R205.5: {stats:?}");
+    assert_eq!(
+        stats.abandoned_by_panic, 2,
+        "the open R205.5 and the flight being applied: {stats:?}"
+    );
     assert_eq!(stats.matched, 0, "{stats:?}");
     assert_eq!(
         stats.pd_witness.get(&16).copied().unwrap_or(0),
@@ -654,7 +663,12 @@ fn a_decider_panic_gives_up_everything_open_too() {
     h.feed_header(&open);
     h.feed(&short_idle(2, 2));
     assert_eq!(h.stats().shadow_panic, 1, "{:?}", h.stats());
-    assert_eq!(h.stats().abandoned_by_panic, 1, "{:?}", h.stats());
+    assert_eq!(
+        h.stats().abandoned_by_panic,
+        2,
+        "the open flight and the one whose decider panicked: {:?}",
+        h.stats()
+    );
     h.feed_later(&open);
     assert_eq!(h.stats().matched, 0, "{:?}", h.stats());
     assert_eq!(pd_16(&h), 0);
