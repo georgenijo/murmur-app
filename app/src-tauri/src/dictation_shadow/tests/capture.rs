@@ -820,7 +820,7 @@ fn an_unwind_after_a_partial_in_commit_is_recorded_as_loss_not_pre_abandoned() {
                     .iter()
                     .filter(|placed| placed.at == Placement::In)
                     .count();
-                (in_effects >= 2).then(|| (input, core.clone(), decision))
+                (in_effects >= 2).then_some((input, core, decision))
             })
         })
         .expect("some decision has two `In` effects");

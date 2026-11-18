@@ -1609,7 +1609,8 @@ fn drain_two_finishes_under_a_panicking_subscriber(
                 &state.app_state,
                 2,
                 murmur_dictation_core::inputs::PostKind::StopPost,
-                &|_| {},
+                // The real keyboard gate: the shadow compares what `KB(false)` committed.
+                &|processing| crate::keyboard::set_processing(processing),
                 &|| {
                     let (first, second) = parked.lock().expect("slot").take().expect("two");
                     drop(second);

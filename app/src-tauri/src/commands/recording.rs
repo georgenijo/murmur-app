@@ -7611,16 +7611,6 @@ async fn start_native_recording_inner(
         #[cfg(feature = "dictation-shadow")]
         {
             shadow_flight.history(capture_guard.registered_op());
-            // What `SPEC` will read when it hands the capture over (an atomic load,
-            // taken only for an armed flight): the header's fallback. `SPEC` itself
-            // sends the value it actually read, which the comparator prefers.
-            if shadow_flight.is_active() {
-                shadow_flight.observed(
-                    crate::dictation_shadow::types::ObservedFact::SpeculativeFlowing(
-                        slots.speculative_flowing_now(),
-                    ),
-                );
-            }
         }
         let ports = StartPorts::new(host, state, &slots, None);
         let mut exec = executor(&ports, decision, kept_preview);
@@ -9002,6 +8992,9 @@ async fn stop_native_recording_admitted(
                     exec.seal_shadow(None).submit();
                 }
                 run_phase(&mut exec, Placement::PostDT, None, rid);
+                // The command returns the pipeline's error right below.
+                #[cfg(feature = "dictation-shadow")]
+                exec.shadow_flight().rendered::<(), ()>(&Err(()));
             }
             tracing::error!(
                 target: "pipeline",
@@ -9066,6 +9059,8 @@ async fn stop_native_recording_admitted(
         delivered_at,
     ));
     let recording_secs = samples.len() / 16_000;
+    // `CarriedFlight` is `()` without the shadow feature.
+    #[allow(clippy::let_unit_value)]
     let _tail_carried: CarriedFlight = {
         let ports = StopPorts::new(host, state, rid, stop_entered_at);
         ports.set_hooks(StopHooks {

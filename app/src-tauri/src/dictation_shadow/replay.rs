@@ -34,6 +34,8 @@ pub(crate) struct Conservation {
     pub decisions: u64,
     pub headers: u64,
     pub unrendered: u64,
+    /// Decisions dropped by an unwind before their header (each recorded as a loss).
+    pub unwound: u64,
 }
 
 impl Conservation {
@@ -42,6 +44,7 @@ impl Conservation {
             decisions: self.decisions - before.decisions,
             headers: self.headers - before.headers,
             unrendered: self.unrendered - before.unrendered,
+            unwound: self.unwound - before.unwound,
         }
     }
 }
@@ -261,6 +264,19 @@ impl Drop for Replay {
     }
 }
 
+/// Sub-runs in which exactly this many flights close `unverifiable` **by design**: a
+/// pipeline-owned finish whose owner's registering flight was abandoned (the owner is
+/// dropped by a listener inside a core span, or the import future is dropped while
+/// suspended), so the comparator never saw a validated registration to check the
+/// retirement against (D-S2c-3 f). Any other `unverifiable` fails the gate.
+const EXPECTED_UNVERIFIABLE: &[(&str, u64)] = &[
+    ("carried finish F against retirement R", 1),
+    (
+        "dropping_a_suspended_import_in_a_core_span_queues_its_retirement_fifo",
+        1,
+    ),
+];
+
 /// Sub-runs that by design drive no family entry (they exercise a ledger directly), so
 /// `at least one decision compared` does not apply to them. Each is held to taking
 /// none.
@@ -324,19 +340,26 @@ impl Report {
         // Entry/header conservation (D-S2c-7 a): a sub-run that compared nothing, or
         // took a decision without submitting its header, or closed a flight the
         // comparator could not verify, proves nothing.
-        assert!(
-            s.unverifiable == 0,
-            "{what}: {} flights closed unverifiable: {s:?}",
+        let expected_unverifiable = EXPECTED_UNVERIFIABLE
+            .iter()
+            .find(|(name, _)| what.ends_with(name))
+            .map_or(0, |(_, count)| *count);
+        assert_eq!(
+            s.unverifiable, expected_unverifiable,
+            "{what}: {} flights closed unverifiable ({expected_unverifiable} expected): {s:?}",
             s.unverifiable
         );
         let c = self.conservation.unwrap_or_else(|| {
             panic!("{what}: the harness handed the replay no entry/header counters")
         });
         assert_eq!(
-            c.decisions, c.headers,
+            c.decisions,
+            c.headers + c.unwound,
             "{what}: the live shell took {} decisions but its flights submitted {} headers \
-             (a family entry returned without a capture)",
-            c.decisions, c.headers
+             and {} were lost to an unwind (a family entry returned without a capture)",
+            c.decisions,
+            c.headers,
+            c.unwound
         );
         if NO_SHELL_ENTRY.contains(&what) {
             // A ledger-only scenario: it must still take no decision (if it ever drives
@@ -355,9 +378,9 @@ impl Report {
             );
         }
         assert_eq!(
-            self.lost, 0,
-            "{what}: the live side lost {} messages",
-            self.lost
+            self.lost, c.unwound,
+            "{what}: the live side lost {} messages, {} of them to unwinds",
+            self.lost, c.unwound
         );
         assert_eq!(
             c.unrendered, 0,

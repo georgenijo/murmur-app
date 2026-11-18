@@ -50,9 +50,9 @@ use murmur_dictation_core::replies::Reply;
 
 use crate::dictation_shadow::transport::{self, Mark, PreCapture, ShadowRecorder, ShadowTicket};
 use crate::dictation_shadow::types::{
-    CondWitness, EffectResult, Inline, LiveOp, MirrorField, MirrorWitness, ObservedFact, PredId,
-    Projection, ReplyKind, ShadowHeader, TickerGate, TickerSkipReason, WitnessedEffect,
-    OBSERVED_CAPACITY, OPS_CAPACITY,
+    CondWitness, EffectResult, Inline, LiveOp, MirrorWitness, ObservedFact, PredId, Projection,
+    ReplyKind, ShadowHeader, TickerGate, TickerSkipReason, WitnessedEffect, OBSERVED_CAPACITY,
+    OPS_CAPACITY,
 };
 
 /// Messages a flight can hold until its header is submitted: a prefix that runs ahead
@@ -122,6 +122,9 @@ pub(crate) fn note_decision(decision: &murmur_dictation_core::decision::Decision
 
 static DECISIONS: AtomicU64 = AtomicU64::new(0);
 static HEADERS: AtomicU64 = AtomicU64::new(0);
+/// Decisions whose flight was dropped by an unwind after the decision and before its
+/// header: recorded as one loss each (D-S2c-7 e), so they balance the books.
+static UNWOUND: AtomicU64 = AtomicU64::new(0);
 
 /// A final decision was taken by the live shell. Counted only while the shadow is armed.
 pub(crate) fn note_decision_taken() {
@@ -143,17 +146,8 @@ pub(crate) fn conservation_now() -> crate::dictation_shadow::replay::Conservatio
         decisions: DECISIONS.load(Ordering::Relaxed),
         headers: HEADERS.load(Ordering::Relaxed),
         unrendered: UNRENDERED.load(Ordering::Relaxed),
+        unwound: UNWOUND.load(Ordering::Relaxed),
     }
-}
-
-/// TEMP(#1156): whether the comparator in this tree expects a `KeyboardProcessing` or
-/// `MarkCancelled` mirror in the header lists (its `is_header_mirrored` extension, API
-/// request 3). The base at a34789e0 covers only the context slot; flip to `true` when
-/// the base that carries the extension is merged in (D-S2c-7 f).
-const ALL_MIRRORS_IN_HEADER: bool = false;
-
-fn header_mirrored(mirror: &MirrorWitness) -> bool {
-    ALL_MIRRORS_IN_HEADER || mirror.field == MirrorField::ActiveContext
 }
 
 struct Live {
@@ -408,7 +402,7 @@ impl Flight {
                             } else {
                                 stored &= header.pre_effects.push(witnessed);
                             }
-                            if let Some(mirror) = noted.mirror.filter(header_mirrored) {
+                            if let Some(mirror) = noted.mirror {
                                 if in_d {
                                     header.add_in_mirror(mirror);
                                 } else {
@@ -419,8 +413,8 @@ impl Flight {
                                 match noted.ticker {
                                     Some(TickerNote::Gate(gate)) => header.add_in_ticker(gate),
                                     // A skip under D cannot be in the header: it follows it.
-                                    Some(TickerNote::Skipped { reason, .. }) => {
-                                        pending_skip = Some(reason);
+                                    Some(TickerNote::Skipped { target, reason }) => {
+                                        pending_skip = Some((target, reason));
                                     }
                                     None => {}
                                 }
@@ -445,7 +439,7 @@ impl Flight {
                             }
                             if noted.taken {
                                 stored &= live.pre.effects.push(witnessed);
-                                if let Some(mirror) = noted.mirror.filter(header_mirrored) {
+                                if let Some(mirror) = noted.mirror {
                                     stored &= live.pre.mirrors.push(mirror);
                                 }
                             }
@@ -455,8 +449,8 @@ impl Flight {
                         }
                     }
                 }
-                if let Some(reason) = pending_skip {
-                    live.later(Later::Mark(Mark::TickerSkipped { reason }));
+                if let Some((target, reason)) = pending_skip {
+                    live.later(Later::Mark(Mark::TickerSkipped { target, reason }));
                 }
             }
             Placement::PostDT | Placement::PostT => {
@@ -479,8 +473,8 @@ impl Flight {
                         Some(TickerNote::Gate(gate)) => {
                             live.later(Later::Mark(Mark::Ticker(gate)));
                         }
-                        Some(TickerNote::Skipped { reason, .. }) => {
-                            live.later(Later::Mark(Mark::TickerSkipped { reason }));
+                        Some(TickerNote::Skipped { target, reason }) => {
+                            live.later(Later::Mark(Mark::TickerSkipped { target, reason }));
                         }
                         None => {}
                     }
@@ -512,6 +506,15 @@ impl Flight {
                 live.reply.set(live.decided_reply.get());
             }
             live.conclude();
+        }
+    }
+
+    /// The value an effect actually read, sent as an incremental observation right
+    /// after the effect's own witness and before any later conditional that depends on
+    /// it (`SPEC`'s `speculative_flowing`, D-S2c-7 f).
+    pub(crate) fn observed_read(&self, fact: ObservedFact) {
+        if let Some(live) = &self.live {
+            live.later(Later::Mark(Mark::Observed(fact)));
         }
     }
 
@@ -645,6 +648,7 @@ impl Drop for Live {
         if self.in_decision.get() {
             let site = self.header.get_mut().as_ref().map_or(0, |h| h.site_id);
             drop(self.rec.ticket(site));
+            UNWOUND.fetch_add(1, Ordering::Relaxed);
         }
         #[cfg(test)]
         if self.complete.get() && self.expects_reply.get() && self.reply.get().is_none() {

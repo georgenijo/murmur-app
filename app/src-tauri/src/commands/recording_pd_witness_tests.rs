@@ -1104,12 +1104,14 @@ fn pd09c_start_dropped_at_the_awaited_capture_start(world: &Arc<World>) {
     );
     assert!(coordinator.begin_is_pending(1));
     go.send(()).expect("the blocking task is parked");
-    // The task finishes on its own thread; wait for it by what it does, bounded.
+    // The task finishes on its own thread; wait for its last act (the supervisor's
+    // acknowledgement is pushed after the barrier and after the cold start), bounded.
+    // The entry line is pushed before the barrier, so it proves nothing about the end.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while !world
         .trace()
         .iter()
-        .any(|line| line.starts_with("supervisor.start_after_preview 1"))
+        .any(|line| line.starts_with("supervisor.start_ack 1"))
     {
         assert!(
             std::time::Instant::now() < deadline,
@@ -1204,5 +1206,243 @@ fn headers_leave_d_and_precede_blocking_effects_at_every_live_site() {
             "the goldens never reached `{point}`: {:?}",
             site.blocking_points
         );
+    }
+}
+
+// ------------------------------------------ what the armed shadow adds under D (D-S2c-7 b, c)
+
+#[cfg(feature = "dictation-shadow")]
+pub(super) mod under_d {
+    use super::*;
+    use crate::dictation_shadow::alloc_probe::count_allocations_when;
+    use std::cell::Cell;
+
+    thread_local! {
+        static D: Cell<*const std::sync::Mutex<crate::state::DictationState>> =
+            const { Cell::new(std::ptr::null()) };
+        static ALLOCATIONS_UNDER_D: Cell<u64> = const { Cell::new(0) };
+        static WARNED_UNDER_D: Cell<Vec<bool>> = const { Cell::new(Vec::new()) };
+    }
+
+    /// The dictation lock is held right now (by this thread: the shell is synchronous).
+    /// Performs no allocation, which the allocator calls it from requires.
+    fn d_is_held() -> bool {
+        D.try_with(|pointer| {
+            let pointer = pointer.get();
+            // SAFETY: the pointer is set by `measure` from the world's own state, which
+            // outlives the measured call, and is cleared right after it.
+            !pointer.is_null()
+                && matches!(
+                    unsafe { &*pointer }.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                )
+        })
+        .unwrap_or(false)
+    }
+
+    /// Run `f` and count the allocations this thread made while `dictation` was held.
+    pub(in crate::commands) fn count_under_d<R>(
+        dictation: &std::sync::Mutex<crate::state::DictationState>,
+        f: impl FnOnce() -> R,
+    ) -> (R, u64) {
+        D.with(|pointer| pointer.set(dictation));
+        let (result, allocations) = count_allocations_when(d_is_held, f);
+        D.with(|pointer| pointer.set(std::ptr::null()));
+        (result, allocations)
+    }
+
+    /// Drive an entry to completion and count the allocations made while D was held.
+    fn measure<T>(world: &Arc<World>, mut entry: Fut<T>) {
+        let state = world.state();
+        let (_, allocations) = count_under_d(&state.app_state.dictation, || complete(&mut entry));
+        ALLOCATIONS_UNDER_D.with(|total| total.set(total.get() + allocations));
+    }
+
+    struct Scenario {
+        title: &'static str,
+        setup: Setup,
+        body: fn(&Arc<World>),
+    }
+
+    fn at(status: DictationStatus, recording_id: u64) -> Setup {
+        Setup {
+            status,
+            recording_id,
+        }
+    }
+
+    /// One refusal branch per entry of every family that refuses under D or before it:
+    /// start (pre-D Smart Auto + fixed device, meeting, already recording), stop
+    /// (R201.1 stale, .2 processing, .3 idle, .6 nothing preserved), cancel (R205.1
+    /// stale, R205.2 idle, R205.3 recovering).
+    fn scenarios() -> Vec<Scenario> {
+        vec![
+            Scenario {
+                title: "start refused before D (Smart Auto with a fixed device)",
+                setup: Setup::idle(),
+                body: |w| measure(w, w.start_smart_auto(Some("fixed".to_string()))),
+            },
+            Scenario {
+                title: "start refused under D (a meeting is active)",
+                setup: Setup::idle(),
+                body: |w| {
+                    w.state()
+                        .app_state
+                        .meeting_active
+                        .store(true, Ordering::SeqCst);
+                    measure(w, w.start());
+                },
+            },
+            Scenario {
+                title: "start refused under D (already recording)",
+                setup: at(DictationStatus::Recording, 1),
+                body: |w| measure(w, w.start()),
+            },
+            Scenario {
+                title: "stop refused (stale, R201.1)",
+                setup: at(DictationStatus::Recording, 2),
+                body: |w| measure(w, w.stop(Some(1))),
+            },
+            Scenario {
+                title: "stop refused (processing, R201.2)",
+                setup: at(DictationStatus::Processing, 1),
+                body: |w| measure(w, w.stop(None)),
+            },
+            Scenario {
+                title: "stop refused (idle, R201.3)",
+                setup: Setup::idle(),
+                body: |w| measure(w, w.stop(None)),
+            },
+            Scenario {
+                title: "stop refused (recovering, nothing preserved, R201.6)",
+                setup: at(DictationStatus::Recovering, 1),
+                body: |w| measure(w, w.stop(None)),
+            },
+            Scenario {
+                title: "cancel refused (stale, R205.1)",
+                setup: at(DictationStatus::Recording, 2),
+                body: |w| measure(w, w.cancel(Some(1))),
+            },
+            Scenario {
+                title: "cancel no-op (idle, R205.2)",
+                setup: Setup::idle(),
+                body: |w| measure(w, w.cancel(None)),
+            },
+            Scenario {
+                title: "cancel no-op (recovering, R205.3)",
+                setup: at(DictationStatus::Recovering, 1),
+                body: |w| measure(w, w.cancel(None)),
+            },
+        ]
+    }
+
+    fn run_measured(scenario: &Scenario, disarmed: bool) -> u64 {
+        ALLOCATIONS_UNDER_D.with(|total| total.set(0));
+        REPLAY_DISARMED.store(disarmed, Ordering::SeqCst);
+        struct Rearm;
+        impl Drop for Rearm {
+            fn drop(&mut self) {
+                REPLAY_DISARMED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _rearm = Rearm;
+        run_sub_run(&SubRun {
+            title: scenario.title,
+            setup: Setup {
+                status: scenario.setup.status,
+                recording_id: scenario.setup.recording_id,
+            },
+            body: scenario.body,
+        });
+        ALLOCATIONS_UNDER_D.with(Cell::get)
+    }
+
+    /// D-S2c-7 b: through the shell entry point (not the `Flight` API), each refusal
+    /// branch allocates under D exactly what it allocates with the shadow compiled in and
+    /// not armed. The armed run builds no executor, clones no effect vector and sends
+    /// nothing that allocates while D is held.
+    #[test]
+    fn the_armed_shadow_adds_no_allocation_under_d_at_any_refusal() {
+        let mut counted = 0;
+        for scenario in scenarios() {
+            let baseline = run_measured(&scenario, true);
+            let armed = run_measured(&scenario, false);
+            assert_eq!(
+                armed, baseline,
+                "{}: armed {armed} allocations under D, disarmed {baseline}",
+                scenario.title
+            );
+            counted += baseline;
+        }
+        assert!(
+            counted > 0,
+            "the probe counted no allocation under D at all: it is not measuring"
+        );
+    }
+
+    struct WarnUnderD;
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnUnderD {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            // The refusal's own warning: it is emitted from inside the D section in the
+            // default build, so it must be here too, armed or not (D-S2c-7 c).
+            let text = format!("{event:?}");
+            if text.contains("blocked") || text.contains("not recording") {
+                let held = d_is_held();
+                WARNED_UNDER_D.with(|seen| {
+                    let mut all = seen.take();
+                    all.push(held);
+                    seen.set(all);
+                });
+            }
+        }
+    }
+
+    fn warning_release_points(scenario: &Scenario, disarmed: bool) -> Vec<bool> {
+        use tracing_subscriber::layer::SubscriberExt;
+        WARNED_UNDER_D.with(|seen| seen.set(Vec::new()));
+        REPLAY_DISARMED.store(disarmed, Ordering::SeqCst);
+        struct Rearm;
+        impl Drop for Rearm {
+            fn drop(&mut self) {
+                REPLAY_DISARMED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _rearm = Rearm;
+        let subscriber = tracing_subscriber::Registry::default().with(WarnUnderD);
+        tracing::subscriber::with_default(subscriber, || {
+            // The measure helper points the probe at D for the run.
+            run_sub_run(&SubRun {
+                title: scenario.title,
+                setup: Setup {
+                    status: scenario.setup.status,
+                    recording_id: scenario.setup.recording_id,
+                },
+                body: scenario.body,
+            });
+        });
+        WARNED_UNDER_D.with(|seen| seen.take())
+    }
+
+    /// D-S2c-7 c: with the feature compiled in, a refusal that warns does so at the same
+    /// lock boundary armed or not: inside the D section, as the default build does.
+    #[test]
+    fn a_refusal_keeps_its_d_release_point_armed_or_not() {
+        let mut seen_any = false;
+        for scenario in scenarios() {
+            let baseline = warning_release_points(&scenario, true);
+            let armed = warning_release_points(&scenario, false);
+            assert_eq!(
+                armed, baseline,
+                "{}: the refusal's warning moved across the D release",
+                scenario.title
+            );
+            seen_any |= !baseline.is_empty();
+        }
+        assert!(seen_any, "no refusal warned: the probe saw nothing");
     }
 }

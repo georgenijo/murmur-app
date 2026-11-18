@@ -159,10 +159,7 @@ fn file_is_gated(source_dir: &Path, relative: &str) -> bool {
             let code = line.split("//").next().unwrap_or("");
             code.contains(&format!("mod {stem};"))
                 && (inside_a_gated_item(&lines, n)
-                    || code
-                        .split("mod ")
-                        .next()
-                        .is_some_and(|before| attribute_gates(before)))
+                    || code.split("mod ").next().is_some_and(attribute_gates))
         })
     })
 }
@@ -260,7 +257,7 @@ fn shadow_off_by_default() {
         if file_gated {
             continue;
         }
-        for line in ungated_uses(&text) {
+        if let Some(line) = ungated_uses(&text).into_iter().next() {
             panic!("{relative}:{line} names the shadow without the feature gate");
         }
     }

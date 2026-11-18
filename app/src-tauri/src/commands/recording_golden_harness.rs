@@ -1706,6 +1706,12 @@ impl Setup {
     }
 }
 
+/// Test builds with the shadow compiled in: run sub-runs with the shadow **not** armed
+/// (the feature on, `MURMUR_SHADOW` unset), the baseline a measurement compares with.
+#[cfg(feature = "dictation-shadow")]
+pub(super) static REPLAY_DISARMED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// One named sub-run of a scenario.
 pub(super) struct SubRun {
     pub(super) title: &'static str,
@@ -1737,8 +1743,11 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
     S12_TAIL.with(|slot| slot.borrow_mut().take());
     reset_process_globals();
     // E7: the real shell runs against the real comparator, on this thread.
+    // (A test measuring what the armed shadow adds disarms it for the baseline run.)
     #[cfg(feature = "dictation-shadow")]
-    let replay = shadow_replay::Replay::begin();
+    let armed = !REPLAY_DISARMED.load(Ordering::SeqCst);
+    #[cfg(feature = "dictation-shadow")]
+    let replay = armed.then(shadow_replay::Replay::begin);
     #[cfg(feature = "dictation-shadow")]
     let counters_before = crate::dictation_executor::shadow::conservation_now();
     let app_state = AppState::default();
@@ -1762,7 +1771,7 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
     // C8.7 at the site: every header is submitted with D free, and a blocking effect
     // runs only after its header was compared.
     #[cfg(feature = "dictation-shadow")]
-    let probe = {
+    let probe = armed.then(|| {
         let probed = Arc::clone(&world);
         shadow_replay::SiteProbe::install(move || {
             !matches!(
@@ -1770,7 +1779,7 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
                 Err(std::sync::TryLockError::WouldBlock)
             )
         })
-    };
+    });
     (sub_run.body)(&world);
     let lines = world.finish();
     observe(&world);
@@ -1782,7 +1791,7 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
     drop(world);
     drop(app);
     #[cfg(feature = "dictation-shadow")]
-    {
+    if let Some(replay) = replay {
         let report = replay.end().conserved(
             crate::dictation_executor::shadow::conservation_now().since(counters_before),
         );

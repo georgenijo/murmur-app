@@ -590,6 +590,25 @@ impl<'a> Executor<'a> {
             _ => EffectResult::Ran,
         };
         let placement = self.decision.effects[index].at;
+        // A condition on `speculative_flowing` is judged against the value the shell
+        // read at that point: send it before the witness (and so before the `Cond` mark),
+        // whether the effect ran or was skipped (D-S2c-7, amendment 2).
+        if matches!(
+            effect,
+            Effect::EmitStatus {
+                cond: Cond::UnlessSpeculativeFlowing,
+                ..
+            } | Effect::Presentation {
+                cond: Cond::UnlessSpeculativeFlowing,
+                ..
+            }
+        ) {
+            self.shadow.observed_read(
+                crate::dictation_shadow::types::ObservedFact::SpeculativeFlowing(
+                    self.ports.speculative_flowing(),
+                ),
+            );
+        }
         self.shadow.effect(super::shadow::Noted {
             index,
             placement,
@@ -599,6 +618,16 @@ impl<'a> Executor<'a> {
             mirror,
             ticker,
         });
+        // `SPEC` hands the capture over and records whether it was already flowing: the
+        // value it read goes out as an observation, before the `EmitStatus` whose
+        // condition depends on it (D-S2c-7 f).
+        if matches!(effect, Effect::SpeculativeConsume) {
+            self.shadow.observed_read(
+                crate::dictation_shadow::types::ObservedFact::SpeculativeFlowing(
+                    self.ports.speculative_flowing(),
+                ),
+            );
+        }
     }
 
     /// Attach the shadow flight to this decision, which was taken under D (D-less

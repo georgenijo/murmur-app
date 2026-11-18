@@ -21,6 +21,10 @@ thread_local! {
     static ARMED: Cell<bool> = const { Cell::new(false) };
     static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
     static DEALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+    /// An optional condition a counted call must also meet (it must not allocate): the
+    /// probe at the shell counts only the calls made while the dictation lock is held.
+    static ONLY_WHEN: Cell<Option<fn() -> bool>> = const { Cell::new(None) };
+    static IN_GATE: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Forwards to the app's allocator, counting allocation calls on an armed thread.
@@ -35,10 +39,24 @@ static COUNTING: CountingAllocator = CountingAllocator;
 fn note() {
     // `try_with`: a thread that is being torn down has no counters left.
     let _ = ARMED.try_with(|armed| {
-        if armed.get() {
+        if armed.get() && gate_open() {
             let _ = ALLOCATIONS.try_with(|count| count.set(count.get() + 1));
         }
     });
+}
+
+fn gate_open() -> bool {
+    // The gate runs inside the allocator: a call it makes into the allocator must not
+    // evaluate it again.
+    if IN_GATE.try_with(Cell::get).unwrap_or(true) {
+        return false;
+    }
+    let _ = IN_GATE.try_with(|busy| busy.set(true));
+    let open = ONLY_WHEN
+        .try_with(|gate| gate.get().is_none_or(|gate| gate()))
+        .unwrap_or(true);
+    let _ = IN_GATE.try_with(|busy| busy.set(false));
+    open
 }
 
 fn note_free() {
@@ -77,6 +95,19 @@ unsafe impl GlobalAlloc for CountingAllocator {
 /// made while it ran.
 pub(crate) fn count_allocations<R>(f: impl FnOnce() -> R) -> (R, u64) {
     let (result, allocations, _) = count_heap_calls(f);
+    (result, allocations)
+}
+
+/// Run `f` and return its result with the number of allocation calls **this thread**
+/// made while `only_when()` held (it must not allocate or lock): the calls made while
+/// a lock of interest was held.
+pub(crate) fn count_allocations_when<R>(
+    only_when: fn() -> bool,
+    f: impl FnOnce() -> R,
+) -> (R, u64) {
+    ONLY_WHEN.with(|gate| gate.set(Some(only_when)));
+    let (result, allocations, _) = count_heap_calls(f);
+    ONLY_WHEN.with(|gate| gate.set(None));
     (result, allocations)
 }
 

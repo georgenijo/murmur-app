@@ -346,7 +346,9 @@ fn run(body: impl FnOnce(&Run)) {
     // E7 / E8 (appendix C8.5): the import's decisions (sites 301, 302, 204a, 204b) run
     // through the shadow in sync mode; every flight is closed when the run ends.
     #[cfg(feature = "dictation-shadow")]
-    let replay = crate::dictation_shadow::replay::Replay::begin();
+    let armed = !super::golden_harness::REPLAY_DISARMED.load(Ordering::SeqCst);
+    #[cfg(feature = "dictation-shadow")]
+    let replay = armed.then(crate::dictation_shadow::replay::Replay::begin);
     #[cfg(feature = "dictation-shadow")]
     let counters_before = crate::dictation_executor::shadow::conservation_now();
     let state = Arc::new(super::tests::test_state(AppState::default()));
@@ -355,7 +357,7 @@ fn run(body: impl FnOnce(&Run)) {
     body(&run);
     keyboard::set_processing(false);
     #[cfg(feature = "dictation-shadow")]
-    {
+    if let Some(replay) = replay {
         drop(run);
         replay
             .end()
@@ -1275,4 +1277,70 @@ fn a_pipeline_error_runs_the_idle_gate_and_returns_its_text_as_a_shell_tail() {
         assert_eq!(run.history(), (0, 0));
         assert!(!keyboard::is_processing());
     });
+}
+
+/// D-S2c-7 b, c: through the `process_audio` entry, each refusal allocates under D
+/// exactly what it allocates with the shadow compiled in and not armed, and the
+/// warning it logs is emitted at the same lock boundary.
+#[cfg(feature = "dictation-shadow")]
+#[test]
+fn the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal() {
+    use super::golden_harness::REPLAY_DISARMED;
+    use super::pd_witness_tests::under_d::count_under_d;
+    fn measured(setup: fn(&Run), disarmed: bool) -> u64 {
+        REPLAY_DISARMED.store(disarmed, Ordering::SeqCst);
+        struct Rearm;
+        impl Drop for Rearm {
+            fn drop(&mut self) {
+                REPLAY_DISARMED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _rearm = Rearm;
+        let allocations = std::cell::Cell::new(0);
+        run(|run| {
+            setup(run);
+            let (result, count) = count_under_d(&run.state.app_state.dictation, || {
+                run.process(&wav_base64(8_000))
+            });
+
+            assert!(result.is_err(), "the scenario refuses");
+            allocations.set(count);
+        });
+        allocations.get()
+    }
+    type Scenario = (&'static str, fn(&Run));
+    let scenarios: [Scenario; 4] = [
+        ("a meeting is active (before D)", |run| {
+            run.state
+                .app_state
+                .meeting_active
+                .store(true, Ordering::SeqCst);
+        }),
+        ("a file transcription (under D)", |run| {
+            run.state
+                .app_state
+                .file_transcribing
+                .store(true, Ordering::SeqCst);
+        }),
+        ("a benchmark (under D)", |run| {
+            assert!(run.state.benchmark.try_start());
+        }),
+        ("a live dictation (under D)", |run| {
+            run.state.app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        }),
+    ];
+    let mut counted = 0;
+    for (title, setup) in scenarios {
+        let baseline = measured(setup, true);
+        let armed = measured(setup, false);
+        assert_eq!(
+            armed, baseline,
+            "process_audio refused by {title}: armed {armed} allocations under D, disarmed {baseline}"
+        );
+        counted += baseline;
+    }
+    assert!(
+        counted > 0,
+        "the probe counted nothing under D: it is not measuring"
+    );
 }
