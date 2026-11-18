@@ -743,9 +743,8 @@ fn the_live_capture_sites_allocate_and_free_nothing() {
 fn the_live_capture_module_names_no_lock_box_channel_or_wake() {
     // The production text of the module every live site goes through: no lock, no
     // allocation, no wait, no wake, no environment read, no thread.
-    let source = super::policy::production_source(include_str!(
-        "../../dictation_executor/shadow.rs"
-    ));
+    let source =
+        super::policy::production_source(include_str!("../../dictation_executor/shadow.rs"));
     for token in [
         "Mutex",
         "RwLock",
