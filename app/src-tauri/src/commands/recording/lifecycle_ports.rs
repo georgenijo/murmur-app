@@ -37,8 +37,9 @@ use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
-type SpawnReadyTasks<'a, R> =
-    Box<dyn FnOnce(tauri::AppHandle<R>, u64, Box<dyn FnOnce() -> bool>) + 'a>;
+type SpawnReadyTasks<'a, R> = Box<
+    dyn FnOnce(tauri::AppHandle<R>, u64, Box<dyn FnOnce() -> bool>) -> super::SideTaskNote + 'a,
+>;
 type TranscribeInterruption<'a, R> =
     Box<dyn FnOnce(tauri::AppHandle<R>, u64, ContinuationGuard) + 'a>;
 
@@ -68,7 +69,7 @@ pub(super) struct LifecyclePorts<'a, R: tauri::Runtime> {
     spawn_ready_tasks: RefCell<Option<SpawnReadyTasks<'a, R>>>,
     /// The ticker registration attempt the last `SD` made (appendix C8.2).
     #[cfg(feature = "dictation-shadow")]
-    ticker_gate: std::rc::Rc<Cell<Option<crate::dictation_shadow::types::TickerGate>>>,
+    ticker_note: std::rc::Rc<Cell<Option<crate::dictation_executor::shadow::TickerNote>>>,
 }
 
 impl<'a, R: tauri::Runtime> LifecyclePorts<'a, R> {
@@ -77,7 +78,8 @@ impl<'a, R: tauri::Runtime> LifecyclePorts<'a, R> {
         state: &'a State,
         recording_id: u64,
         transcribe_interruption: impl FnOnce(tauri::AppHandle<R>, u64, ContinuationGuard) + 'a,
-        spawn_ready_tasks: impl FnOnce(tauri::AppHandle<R>, u64, Box<dyn FnOnce() -> bool>) + 'a,
+        spawn_ready_tasks: impl FnOnce(tauri::AppHandle<R>, u64, Box<dyn FnOnce() -> bool>) -> super::SideTaskNote
+            + 'a,
     ) -> Self {
         Self {
             app,
@@ -89,7 +91,7 @@ impl<'a, R: tauri::Runtime> LifecyclePorts<'a, R> {
             auto_stop_owner: RefCell::new(None),
             spawn_ready_tasks: RefCell::new(Some(Box::new(spawn_ready_tasks))),
             #[cfg(feature = "dictation-shadow")]
-            ticker_gate: std::rc::Rc::default(),
+            ticker_note: std::rc::Rc::default(),
         }
     }
 
@@ -173,8 +175,8 @@ pub(super) fn run_phase(
 
 impl<R: tauri::Runtime> Ports for LifecyclePorts<'_, R> {
     #[cfg(feature = "dictation-shadow")]
-    fn take_ticker_gate(&self) -> Option<crate::dictation_shadow::types::TickerGate> {
-        self.ticker_gate.take()
+    fn take_ticker_note(&self) -> Option<crate::dictation_executor::shadow::TickerNote> {
+        self.ticker_note.take()
     }
 
     fn app_state(&self) -> &AppState {
@@ -409,26 +411,35 @@ impl<R: tauri::Runtime> Ports for LifecyclePorts<'_, R> {
                 let recording_id = self.recording_id;
                 let register_app = self.app.clone();
                 #[cfg(feature = "dictation-shadow")]
-                let gate_slot = std::rc::Rc::clone(&self.ticker_gate);
-                spawn(
-                    self.app.clone(),
-                    recording_id,
-                    Box::new(move || {
-                        let state = register_app.state::<State>();
-                        let dictation = state.app_state.dictation.lock_or_recover();
-                        #[cfg(feature = "dictation-shadow")]
-                        {
-                            let (registered, gate) = super::register_partial_ticker_observed(
+                let gate_slot = std::rc::Rc::clone(&self.ticker_note);
+                keep_side_task_note!(
+                    self.ticker_note,
+                    spawn(
+                        self.app.clone(),
+                        recording_id,
+                        Box::new(move || {
+                            let state = register_app.state::<State>();
+                            let dictation = state.app_state.dictation.lock_or_recover();
+                            #[cfg(feature = "dictation-shadow")]
+                            {
+                                let (registered, gate) = super::register_partial_ticker_observed(
+                                    &state.app_state,
+                                    &dictation,
+                                    recording_id,
+                                );
+                                gate_slot.set(Some(
+                                    crate::dictation_executor::shadow::TickerNote::Gate(gate),
+                                ));
+                                registered
+                            }
+                            #[cfg(not(feature = "dictation-shadow"))]
+                            register_partial_ticker_locked(
                                 &state.app_state,
                                 &dictation,
                                 recording_id,
-                            );
-                            gate_slot.set(Some(gate));
-                            registered
-                        }
-                        #[cfg(not(feature = "dictation-shadow"))]
-                        register_partial_ticker_locked(&state.app_state, &dictation, recording_id)
-                    }),
+                            )
+                        }),
+                    )
                 );
                 Ok(())
             }

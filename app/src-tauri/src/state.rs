@@ -476,12 +476,17 @@ impl AppState {
         recording_id: u64,
         snapshot: Arc<crate::dictation_context::DictationContextSnapshot>,
     ) {
-        self.set_active_context_observed(recording_id, snapshot);
+        *self.active_context.lock_or_recover() = Some(ActiveDictationContext {
+            recording_id,
+            snapshot,
+        });
     }
 
     /// [`AppState::set_active_context`], also returning the slot's id before the
     /// write. The slot is read inside the same lock section, so the shadow's
-    /// before/after pair adds no lock (appendix C8.2).
+    /// before/after pair adds no lock (appendix C8.2). Used only for an armed flight:
+    /// the live path otherwise runs the plain setter, unchanged.
+    #[cfg(feature = "dictation-shadow")]
     pub(crate) fn set_active_context_observed(
         &self,
         recording_id: u64,
@@ -519,12 +524,24 @@ impl AppState {
     /// Clear only the snapshot owned by `recording_id`. A stale guard must not
     /// erase the context installed by a newer recording generation.
     pub fn clear_active_context(&self, recording_id: u64) -> bool {
-        self.clear_active_context_observed(recording_id).0
+        let mut active = self.active_context.lock_or_recover();
+        if active
+            .as_ref()
+            .is_some_and(|context| context.recording_id == recording_id)
+        {
+            *active = None;
+            self.vad_stream.clear(recording_id);
+            self.stream_reuse.lock_or_recover().clear(recording_id);
+            true
+        } else {
+            false
+        }
     }
 
     /// [`AppState::clear_active_context`], also returning the slot's id before the
     /// clear (the slot is unchanged unless the clear happened). Read inside the same
     /// lock section, so the shadow's before/after pair adds no lock (appendix C8.2).
+    #[cfg(feature = "dictation-shadow")]
     pub(crate) fn clear_active_context_observed(&self, recording_id: u64) -> (bool, Option<u64>) {
         let mut active = self.active_context.lock_or_recover();
         let before = active.as_ref().map(|context| context.recording_id);
@@ -540,11 +557,12 @@ impl AppState {
 
     /// Mark a recording as cancelled by storing its ID.
     pub fn cancel_recording(&self, id: u64) {
-        self.cancel_recording_observed(id);
+        self.cancelled_id.fetch_max(id, Ordering::SeqCst);
     }
 
     /// [`AppState::cancel_recording`], also returning the high-water mark before the
     /// `fetch_max` (the shadow's before value, taken by the same atomic operation).
+    #[cfg(feature = "dictation-shadow")]
     pub(crate) fn cancel_recording_observed(&self, id: u64) -> u64 {
         self.cancelled_id.fetch_max(id, Ordering::SeqCst)
     }

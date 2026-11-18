@@ -106,6 +106,7 @@ fn run(
         |_, id, _register| {
             assert_eq!(id, RID);
             ready_tasks.set(true);
+            Default::default()
         },
     );
     let outcome = Outcome {
@@ -652,7 +653,10 @@ fn nested_entry_outcome(nested: fn() -> AudioLifecycleEvent) -> Nested {
                     RID,
                     nested(),
                     move |_, _| auto.store(true, Ordering::SeqCst),
-                    move |_, _, _| ready.store(true, Ordering::SeqCst),
+                    move |_, _, _| {
+                        ready.store(true, Ordering::SeqCst);
+                        Default::default()
+                    },
                 );
             });
     }
@@ -661,7 +665,7 @@ fn nested_entry_outcome(nested: fn() -> AudioLifecycleEvent) -> Nested {
         RID,
         AudioLifecycleEvent::CleanupFinished,
         |_, _| {},
-        |_, _, _| {},
+        |_, _, _| Default::default(),
     );
     let state = handle.state::<State>();
     let outcome = Nested {
@@ -731,7 +735,7 @@ fn deliver_interrupted(
         RID,
         interrupted(delivered_samples),
         spawn,
-        |_, _, _| {},
+        |_, _, _| Default::default(),
     );
     at_emit.load(Ordering::SeqCst)
 }
@@ -956,7 +960,7 @@ fn witness_of_a_stale_ready(claim_first: bool) -> Vec<(&'static str, WitnessOutc
         RID,
         AudioLifecycleEvent::Ready,
         |_, _| {},
-        |_, _, _| {},
+        |_, _, _| Default::default(),
     );
     lifecycle_ports::LAST_WITNESS.with(|slot| {
         slot.borrow()

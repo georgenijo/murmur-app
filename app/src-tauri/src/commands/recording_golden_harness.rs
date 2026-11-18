@@ -548,7 +548,7 @@ impl World {
             recording_id,
             event,
             |_, _| {},
-            |_, _, _| {},
+            |_, _, _| Default::default(),
         );
     }
 
@@ -789,10 +789,11 @@ impl World {
                     let state = app.state::<State>();
                     let Some(context) = state.app_state.active_context(recording_id) else {
                         #[cfg(feature = "dictation-shadow")]
-                        crate::dictation_executor::shadow::note_ticker_skip(
+                        return Some(super::ticker_skip(
                             recording_id,
                             TickerSkipReason::NoContext,
-                        );
+                        ));
+                        #[cfg(not(feature = "dictation-shadow"))]
                         return;
                     };
                     let model = &context.transcription.model_name;
@@ -800,14 +801,17 @@ impl World {
                         && !transcriber::is_coreml_model(model)
                     {
                         #[cfg(feature = "dictation-shadow")]
-                        crate::dictation_executor::shadow::note_ticker_skip(
+                        return Some(super::ticker_skip(
                             recording_id,
                             TickerSkipReason::NoLivePreview,
-                        );
+                        ));
+                        #[cfg(not(feature = "dictation-shadow"))]
                         return;
                     }
                     let registered = register();
                     self.push(format!("SD ticker {recording_id} registered={registered}"));
+                    #[cfg(feature = "dictation-shadow")]
+                    return None;
                 },
             );
         };
@@ -1487,10 +1491,11 @@ impl DictationHost for Host {
                 let state = app.state::<State>();
                 let Some(context) = state.app_state.active_context(recording_id) else {
                     #[cfg(feature = "dictation-shadow")]
-                    crate::dictation_executor::shadow::note_ticker_skip(
+                    return Some(super::ticker_skip(
                         recording_id,
                         TickerSkipReason::NoContext,
-                    );
+                    ));
+                    #[cfg(not(feature = "dictation-shadow"))]
                     return;
                 };
                 let model = &context.transcription.model_name;
@@ -1498,14 +1503,17 @@ impl DictationHost for Host {
                     && !transcriber::is_coreml_model(model)
                 {
                     #[cfg(feature = "dictation-shadow")]
-                    crate::dictation_executor::shadow::note_ticker_skip(
+                    return Some(super::ticker_skip(
                         recording_id,
                         TickerSkipReason::NoLivePreview,
-                    );
+                    ));
+                    #[cfg(not(feature = "dictation-shadow"))]
                     return;
                 }
                 let registered = register();
                 world.push(format!("SD ticker {recording_id} registered={registered}"));
+                #[cfg(feature = "dictation-shadow")]
+                return None;
             },
         );
         world.push(format!(
@@ -1685,6 +1693,8 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
     // E7: the real shell runs against the real comparator, on this thread.
     #[cfg(feature = "dictation-shadow")]
     let replay = shadow_replay::Replay::begin();
+    #[cfg(feature = "dictation-shadow")]
+    let counters_before = crate::dictation_executor::shadow::conservation_now();
     let app_state = AppState::default();
     app_state
         .recording_id
@@ -1727,7 +1737,9 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
     drop(app);
     #[cfg(feature = "dictation-shadow")]
     {
-        let report = replay.end();
+        let report = replay.end().conserved(
+            crate::dictation_executor::shadow::conservation_now().since(counters_before),
+        );
         report.assert_clean(sub_run.title);
         let site = shadow_replay::site_totals();
         assert!(

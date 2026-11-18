@@ -99,35 +99,61 @@ pub(crate) enum TickerNote {
     },
 }
 
-/// The reason a spawner returned before the gate, packed with its recording id
-/// (`id << 2 | reason`; `0` is none). The spawner and the executor that ran its `SD`
-/// can be on different threads (the lifecycle bridge delivers on its own), so the
-/// correlation is by recording id, in one atomic: no lock, no thread-local.
-static TICKER_SKIP: AtomicU64 = AtomicU64::new(0);
-
-/// A `StartSideTasks` spawner returned before asking the gate. `recording_id` is the id
-/// the spawner was asked to start.
-pub(crate) fn note_ticker_skip(recording_id: u64, reason: TickerSkipReason) {
-    TICKER_SKIP.store(
-        (recording_id << 2) | u64::from(reason.code()),
-        Ordering::Release,
-    );
+/// A final decision was taken (not a `NeedObservation` round, not an `Invalid`
+/// refusal that ran nothing). Counted only while the shadow is armed.
+pub(crate) fn note_decision(decision: &murmur_dictation_core::decision::Decision) {
+    use murmur_dictation_core::decision::Verdict;
+    if matches!(
+        decision.verdict,
+        Verdict::NeedObservation(_) | Verdict::Invalid(_)
+    ) {
+        return;
+    }
+    note_decision_taken();
 }
 
-/// The skip the last spawner noted, with the id **it** was asked to start (not the id
-/// the caller expects: the comparator checks them against each other). Clears the slot.
-pub(crate) fn take_ticker_skip() -> Option<TickerNote> {
-    let packed = TICKER_SKIP.swap(0, Ordering::AcqRel);
-    if packed == 0 {
-        return None;
+// ------------------------------------------------- entry/header conservation
+//
+// D-S2c-7 a: the live shell counts the final decisions it takes while the shadow is
+// armed, and the flights count the headers they submit. One relaxed increment each, no
+// lock, no allocation. E7's synchronous replay asserts the two are equal per sub-run
+// (the harness reads them here and hands the delta to the replay's report), so a
+// family entry that returns without a capture fails closed, whichever branch it is.
+
+static DECISIONS: AtomicU64 = AtomicU64::new(0);
+static HEADERS: AtomicU64 = AtomicU64::new(0);
+
+/// A final decision was taken by the live shell. Counted only while the shadow is armed.
+pub(crate) fn note_decision_taken() {
+    if crate::dictation_shadow::enabled() {
+        DECISIONS.fetch_add(1, Ordering::Relaxed);
     }
-    let reason = TickerSkipReason::ALL
-        .into_iter()
-        .find(|reason| u64::from(reason.code()) == packed & 0b11)?;
-    Some(TickerNote::Skipped {
-        target: RecordingId(packed >> 2),
-        reason,
-    })
+}
+
+/// Test builds: completed flights whose reply the shell never rendered through the
+/// flight (a site missing its `rendered`).
+#[cfg(test)]
+static UNRENDERED: AtomicU64 = AtomicU64::new(0);
+
+/// Test builds: the counters so far; a replay's report takes the difference between
+/// its end and its start.
+#[cfg(test)]
+pub(crate) fn conservation_now() -> crate::dictation_shadow::replay::Conservation {
+    crate::dictation_shadow::replay::Conservation {
+        decisions: DECISIONS.load(Ordering::Relaxed),
+        headers: HEADERS.load(Ordering::Relaxed),
+        unrendered: UNRENDERED.load(Ordering::Relaxed),
+    }
+}
+
+/// TEMP(#1156): whether the comparator in this tree expects a `KeyboardProcessing` or
+/// `MarkCancelled` mirror in the header lists (its `is_header_mirrored` extension, API
+/// request 3). The base at a34789e0 covers only the context slot; flip to `true` when
+/// the base that carries the extension is merged in (D-S2c-7 f).
+const ALL_MIRRORS_IN_HEADER: bool = false;
+
+fn header_mirrored(mirror: &MirrorWitness) -> bool {
+    ALL_MIRRORS_IN_HEADER || mirror.field == MirrorField::ActiveContext
 }
 
 struct Live {
@@ -145,7 +171,16 @@ struct Live {
     header: RefCell<Option<ShadowHeader>>,
     submitted: Cell<bool>,
     deferred: RefCell<Inline<Later, DEFERRED_CAPACITY>>,
+    /// The reply kind the shell **rendered** (D-S2c-7 f), not the decided one.
     reply: Cell<Option<ReplyKind>>,
+    /// The decision has a reply: `Reply` and `Close` wait for the rendered kind.
+    expects_reply: Cell<bool>,
+    /// The kind the decision decided (a reply a later site renders: see
+    /// [`Flight::delegated_reply`]).
+    decided_reply: Cell<Option<ReplyKind>>,
+    /// The decision was taken (D is held, or the entry is D-less) and its header has
+    /// not been sealed: an unwind here is a recorded loss (D-S2c-7 e).
+    in_decision: Cell<bool>,
     /// Every effect of the decision ran: `Reply` and `Close` follow the header.
     complete: Cell<bool>,
     concluded: Cell<bool>,
@@ -167,6 +202,9 @@ impl Live {
             submitted: Cell::new(false),
             deferred: RefCell::new(Inline::default()),
             reply: Cell::new(None),
+            expects_reply: Cell::new(false),
+            decided_reply: Cell::new(None),
+            in_decision: Cell::new(false),
             complete: Cell::new(false),
             concluded: Cell::new(false),
             leading: Cell::new(false),
@@ -201,7 +239,14 @@ impl Live {
 
     /// `Reply`, then `Close{completed:true}`, once, and only after the header.
     fn conclude(&self) {
-        if !self.submitted.get() || !self.complete.get() || self.concluded.replace(true) {
+        if !self.submitted.get() || !self.complete.get() {
+            return;
+        }
+        // A decision with a reply concludes when the shell has rendered it.
+        if self.expects_reply.get() && self.reply.get().is_none() {
+            return;
+        }
+        if self.concluded.replace(true) {
             return;
         }
         if let Some(kind) = self.reply.get() {
@@ -315,7 +360,9 @@ impl Flight {
         live.ops.clear();
         header.overflowed |= live.ops_overflowed;
         header.adopt_pre(std::mem::take(&mut live.pre));
-        live.reply.set(reply.map(ReplyKind::of));
+        live.expects_reply.set(reply.is_some());
+        live.decided_reply.set(reply.map(ReplyKind::of));
+        live.in_decision.set(true);
         live.leading.set(false);
         *live.header.get_mut() = Some(header);
         if effects == 0 {
@@ -341,6 +388,7 @@ impl Flight {
                 let in_d = noted.placement == Placement::In;
                 let header = live.header.get_mut();
                 let mut stored = true;
+                let mut pending_skip = None;
                 match header.as_mut() {
                     Some(header) => {
                         if let Some(pred) = pred {
@@ -360,17 +408,22 @@ impl Flight {
                             } else {
                                 stored &= header.pre_effects.push(witnessed);
                             }
-                            if let Some(mirror) = noted.mirror {
-                                if mirror.field == MirrorField::ActiveContext {
-                                    if in_d {
-                                        header.add_in_mirror(mirror);
-                                    } else {
-                                        stored &= header.pre_mirrors.push(mirror);
-                                    }
+                            if let Some(mirror) = noted.mirror.filter(header_mirrored) {
+                                if in_d {
+                                    header.add_in_mirror(mirror);
+                                } else {
+                                    stored &= header.pre_mirrors.push(mirror);
                                 }
                             }
-                            if let (true, Some(TickerNote::Gate(gate))) = (in_d, noted.ticker) {
-                                header.add_in_ticker(gate);
+                            if in_d {
+                                match noted.ticker {
+                                    Some(TickerNote::Gate(gate)) => header.add_in_ticker(gate),
+                                    // A skip under D cannot be in the header: it follows it.
+                                    Some(TickerNote::Skipped { reason, .. }) => {
+                                        pending_skip = Some(reason);
+                                    }
+                                    None => {}
+                                }
                             }
                         }
                         if !stored {
@@ -392,10 +445,8 @@ impl Flight {
                             }
                             if noted.taken {
                                 stored &= live.pre.effects.push(witnessed);
-                                if let Some(mirror) = noted.mirror {
-                                    if mirror.field == MirrorField::ActiveContext {
-                                        stored &= live.pre.mirrors.push(mirror);
-                                    }
+                                if let Some(mirror) = noted.mirror.filter(header_mirrored) {
+                                    stored &= live.pre.mirrors.push(mirror);
                                 }
                             }
                         }
@@ -403,6 +454,9 @@ impl Flight {
                             live.pre.overflowed = true;
                         }
                     }
+                }
+                if let Some(reason) = pending_skip {
+                    live.later(Later::Mark(Mark::TickerSkipped { reason }));
                 }
             }
             Placement::PostDT | Placement::PostT => {
@@ -435,6 +489,38 @@ impl Flight {
         }
     }
 
+    /// The reply the shell rendered for the decision (D-S2c-7 f): its kind is read
+    /// from the rendered value (the IPC `type` literal), not from the decision, so a
+    /// wrong literal compares unclean. `Reply` and `Close` follow the header and the
+    /// last effect.
+    pub(crate) fn rendered<T: RenderedValue, E>(&self, reply: &Result<T, E>) {
+        if let Some(live) = &self.live {
+            if live.reply.get().is_none() {
+                live.reply.set(Some(rendered_kind(reply)));
+            }
+            live.conclude();
+        }
+    }
+
+    /// R201.4 and R205.4 decide a reply that the command does not render at that point:
+    /// the capture cancel's own result is site 206's, which renders (and is compared
+    /// for) the command's actual reply. The decision's own reply is concluded with the
+    /// kind it decided.
+    pub(crate) fn delegated_reply(&self) {
+        if let Some(live) = &self.live {
+            if live.reply.get().is_none() {
+                live.reply.set(live.decided_reply.get());
+            }
+            live.conclude();
+        }
+    }
+
+    /// A flight that leaves its section with the decision, for the command's return
+    /// to render the reply through (see [`DelegatingFlight`]).
+    pub(crate) fn delegating(self) -> DelegatingFlight {
+        DelegatingFlight(self)
+    }
+
     /// Every effect of the decision ran. `Reply` and `Close{completed:true}` follow
     /// the header (now, or when it is submitted).
     pub(crate) fn finish(&self) {
@@ -457,6 +543,7 @@ impl Flight {
         let Some(mut header) = live.header.borrow_mut().take() else {
             return Sealed { inner: None };
         };
+        live.in_decision.set(false);
         if let Some(post) = post {
             header.live_post_d = post;
         }
@@ -471,6 +558,98 @@ impl Flight {
     #[cfg(test)]
     pub(crate) fn is_submitted(&self) -> bool {
         self.live.as_ref().is_some_and(|live| live.submitted.get())
+    }
+}
+
+/// A flight carried out of its section to the command's return, where the reply is
+/// rendered through it. A return that never reaches that point (an error the decision
+/// does not cover: a pipeline's own failure is a shell tail outside the row, and a
+/// parse failure always returns its error) concludes the flight with the kind the
+/// decision decided when it drops, so the flight never stays open.
+pub(crate) struct DelegatingFlight(Flight);
+
+impl DelegatingFlight {
+    /// Render the command's reply through the flight.
+    pub(crate) fn rendered<T: RenderedValue, E>(&self, reply: &Result<T, E>) {
+        self.0.rendered(reply);
+    }
+}
+
+impl Drop for DelegatingFlight {
+    fn drop(&mut self) {
+        self.0.delegated_reply();
+    }
+}
+
+/// A reply value a command hands to IPC: the kind it renders as.
+pub(crate) trait RenderedValue {
+    fn rendered_kind(&self) -> ReplyKind;
+}
+
+/// `Ok(())` (the cancel command).
+impl RenderedValue for () {
+    fn rendered_kind(&self) -> ReplyKind {
+        ReplyKind::Ok
+    }
+}
+
+impl RenderedValue for serde_json::Value {
+    fn rendered_kind(&self) -> ReplyKind {
+        value_kind(self)
+    }
+}
+
+/// The kind of a rendered reply, from the value the shell is about to hand to IPC.
+fn rendered_kind<T: RenderedValue, E>(reply: &Result<T, E>) -> ReplyKind {
+    match reply {
+        Err(_) => ReplyKind::Err,
+        Ok(value) => value.rendered_kind(),
+    }
+}
+
+fn value_kind(value: &serde_json::Value) -> ReplyKind {
+    use murmur_dictation_core::replies::ReplyType;
+    const TYPES: [ReplyType; 14] = [
+        ReplyType::AppDisabled,
+        ReplyType::BusyRestarting,
+        ReplyType::BusyMeeting,
+        ReplyType::BusyTranscribingFile,
+        ReplyType::BusyRecordingCorpus,
+        ReplyType::BusyBenchmarking,
+        ReplyType::AlreadyStarting,
+        ReplyType::AlreadyRecording,
+        ReplyType::AudioRecovering,
+        ReplyType::AlreadyProcessing,
+        ReplyType::RecordingSuperseded,
+        ReplyType::NotRecording,
+        ReplyType::RecordingCancelled,
+        ReplyType::RecordingStarting,
+    ];
+    match value.get("type").and_then(serde_json::Value::as_str) {
+        None => ReplyKind::Ok,
+        Some("transcription") => ReplyKind::Transcription,
+        // A literal no decision names: it matches nothing the core can decide.
+        Some(literal) => TYPES
+            .into_iter()
+            .find(|ty| ty.as_str() == literal)
+            .map_or(ReplyKind::Err, ReplyKind::Typed),
+    }
+}
+
+impl Drop for Live {
+    /// A flight dropped after its decision was taken and before its header was
+    /// sealed (an effect unwound under D): the ticket is taken and dropped unsent, which
+    /// records the loss and keeps the recorder from reporting `PreAbandoned` for a
+    /// decision that entered D (D-S2c-7 e).
+    fn drop(&mut self) {
+        if self.in_decision.get() {
+            let site = self.header.get_mut().as_ref().map_or(0, |h| h.site_id);
+            drop(self.rec.ticket(site));
+        }
+        #[cfg(test)]
+        if self.complete.get() && self.expects_reply.get() && self.reply.get().is_none() {
+            UNRENDERED.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -529,6 +708,7 @@ impl Sealed<'_> {
         #[cfg(test)]
         crate::barrier_hook::at("shadow.submit");
         transport::submit(ticket, header);
+        HEADERS.fetch_add(1, Ordering::Relaxed);
         live.submitted.set(true);
         let queued = std::mem::take(&mut *live.deferred.borrow_mut());
         for message in queued.iter() {

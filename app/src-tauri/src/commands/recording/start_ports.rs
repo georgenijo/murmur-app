@@ -628,8 +628,9 @@ impl Ports for StartPorts<'_> {
 
 /// The command's return after a refusal: T was released by the caller, so the
 /// `PT:REL` effect now drops the claims (today's reverse-declaration drop order),
-/// then the reply.
-#[cfg_attr(feature = "dictation-shadow", allow(dead_code))]
+/// then the reply. With the shadow compiled in, the flight's header was already
+/// sealed from the decision under D and submitted after D's release; the executor
+/// (and its effect-vector clone) is built here, where the default build builds it.
 pub(super) fn release_and_reply(
     host: &dyn DictationHost,
     state: &State,
@@ -637,13 +638,15 @@ pub(super) fn release_and_reply(
     decision: Decision,
     recording_id: u64,
     smart_auto_error: Option<String>,
+    #[cfg(feature = "dictation-shadow")] flight: crate::dictation_executor::shadow::Flight,
 ) -> Result<serde_json::Value, String> {
     let ports = StartPorts::new(host, state, slots, Some(recording_id));
-    run_phase(
-        &mut executor(&ports, decision.clone(), false),
-        Placement::PostT,
-        None,
-        recording_id,
-    );
-    reply_of(&decision, smart_auto_error)
+    let mut exec = executor(&ports, decision.clone(), false);
+    #[cfg(feature = "dictation-shadow")]
+    exec.adopt_shadow(flight);
+    run_phase(&mut exec, Placement::PostT, None, recording_id);
+    let reply = reply_of(&decision, smart_auto_error);
+    #[cfg(feature = "dictation-shadow")]
+    exec.shadow_flight().rendered(&reply);
+    reply
 }

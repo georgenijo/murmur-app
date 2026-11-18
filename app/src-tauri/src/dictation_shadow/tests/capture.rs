@@ -789,3 +789,78 @@ fn the_live_capture_module_names_no_lock_box_channel_or_wake() {
         );
     }
 }
+
+/// D-S2c-7 e: an unwind after the decision was taken and part of its `In` effects
+/// committed, before the header was sealed. The decision is not lost from the
+/// comparison: the flight's drop takes the header's ticket and drops it unsent, which
+/// records a loss, and the recorder does not then report a `PreAbandoned` for a
+/// decision that entered D.
+#[test]
+fn an_unwind_after_a_partial_in_commit_is_recorded_as_loss_not_pre_abandoned() {
+    use crate::dictation_executor::shadow::{view_projection, Flight, Noted};
+    use crate::dictation_shadow::replay::Replay;
+    use crate::dictation_shadow::types::EffectResult;
+
+    // A decision with at least two `In` effects: the first commits, the unwind comes
+    // before the second.
+    let (input, core, decision) = Status::ALL
+        .into_iter()
+        .flat_map(|status| {
+            [RID, RecordingId(2), RecordingId::NONE]
+                .into_iter()
+                .map(move |current| (status, current))
+        })
+        .find_map(|(status, current)| {
+            let core = view(status, current);
+            every_input_family().into_iter().find_map(|input| {
+                let decision = core.handle(input.clone(), NOW);
+                let in_effects = decision
+                    .effects
+                    .iter()
+                    .filter(|placed| placed.at == Placement::In)
+                    .count();
+                (in_effects >= 2).then(|| (input, core.clone(), decision))
+            })
+        })
+        .expect("some decision has two `In` effects");
+    let replay = Replay::begin();
+    {
+        let mut flight = Flight::begin();
+        flight.enter_pre();
+        flight.decided(
+            input,
+            view_projection(&core),
+            NOW,
+            decision.row,
+            decision.reply.as_ref(),
+            decision.effects.len(),
+        );
+        let first_in = decision
+            .effects
+            .iter()
+            .position(|placed| placed.at == Placement::In)
+            .expect("an `In` effect");
+        flight.effect(Noted {
+            index: first_in,
+            placement: Placement::In,
+            effect: &decision.effects[first_in].effect,
+            taken: true,
+            result: EffectResult::Ran,
+            mirror: None,
+            ticker: None,
+        });
+        // The unwind: the flight is dropped with its header unsealed.
+        drop(flight);
+    }
+    let report = replay.end();
+    let stats = &report.stats;
+    assert_eq!(
+        stats.abandoned_pre_d, 0,
+        "a decision that entered D must not read as PreAbandoned: {stats:?}"
+    );
+    assert_eq!(
+        report.lost, 1,
+        "the unwind must be recorded as one lost header: {stats:?}"
+    );
+    assert_eq!(stats.compared, 0, "nothing was compared: {stats:?}");
+}

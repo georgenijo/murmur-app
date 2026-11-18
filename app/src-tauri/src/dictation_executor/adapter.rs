@@ -179,6 +179,10 @@ impl FieldAdapter {
     ) -> crate::dictation_shadow::types::MirrorWitness {
         use crate::dictation_shadow::types::{MirrorField, MirrorValue, MirrorWitness};
         crate::core_history::assert_not_held();
+        // The same test hook as the ordinary path (a cancel's tail, where another
+        // thread's input can land before the `TERM` claim).
+        #[cfg(test)]
+        crate::barrier_hook::at("adapter.clear_context");
         let (cleared, before) = app.clear_active_context_observed(id);
         MirrorWitness {
             field: MirrorField::ActiveContext,

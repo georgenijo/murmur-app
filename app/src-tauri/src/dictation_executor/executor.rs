@@ -104,7 +104,14 @@ pub(crate) fn refused(kind: InvalidKind) -> Decision {
 /// returns `Invalid(Reentrant)` without calling `decide`.
 pub(crate) fn decide_guarded(decide: impl FnOnce() -> Decision) -> Decision {
     match CoreEntry::enter() {
-        Ok(_entry) => decide(),
+        Ok(_entry) => {
+            let decision = decide();
+            // Entry/header conservation (D-S2c-7 a): E7 counts the decisions the live
+            // shell took against the headers its flights submitted.
+            #[cfg(feature = "dictation-shadow")]
+            super::shadow::note_decision(&decision);
+            decision
+        }
         Err(kind) => refused(kind),
     }
 }
@@ -229,7 +236,7 @@ pub(crate) trait Ports {
     /// runs `SD` stores it where the gate ran and the executor takes it right after
     /// the effect. Default: none.
     #[cfg(feature = "dictation-shadow")]
-    fn take_ticker_gate(&self) -> Option<crate::dictation_shadow::types::TickerGate> {
+    fn take_ticker_note(&self) -> Option<super::shadow::TickerNote> {
         None
     }
 }
@@ -617,6 +624,13 @@ impl<'a> Executor<'a> {
         self.shadow = flight;
     }
 
+    /// Adopt a flight whose header the shell already sealed (a refusal's header is
+    /// sealed from the decision under D, before any executor exists).
+    #[cfg(feature = "dictation-shadow")]
+    pub(crate) fn adopt_shadow(&mut self, flight: super::shadow::Flight) {
+        self.shadow = flight;
+    }
+
     /// Attach the flight to an executor that runs only a leading part of the decision
     /// (its `Pre` effects, or a prefix that runs ahead of the decision): the
     /// witnesses buffer inline until the header exists.
@@ -707,12 +721,16 @@ impl<'a> Executor<'a> {
                 self.record(index, effect, WitnessOutcome::Ran);
             }
             Effect::MarkCancelled(id) => {
+                // With the feature compiled and the shadow not armed for this flight,
+                // the live path is the default build's, exactly (D-S2c-7 c).
                 #[cfg(feature = "dictation-shadow")]
-                {
+                if self.shadow.is_active() {
                     self.noted_mirror = Some(FieldAdapter::cancel_through_witnessed(
                         ports.app_state(),
                         id.0,
                     ));
+                } else {
+                    FieldAdapter::cancel_through(ports.app_state(), id.0);
                 }
                 #[cfg(not(feature = "dictation-shadow"))]
                 FieldAdapter::cancel_through(ports.app_state(), id.0);
@@ -720,11 +738,13 @@ impl<'a> Executor<'a> {
             }
             Effect::ClearContext(id) => {
                 #[cfg(feature = "dictation-shadow")]
-                {
+                if self.shadow.is_active() {
                     self.noted_mirror = Some(FieldAdapter::clear_context_witnessed(
                         ports.app_state(),
                         id.0,
                     ));
+                } else {
+                    FieldAdapter::clear_context(ports.app_state(), id.0);
                 }
                 #[cfg(not(feature = "dictation-shadow"))]
                 FieldAdapter::clear_context(ports.app_state(), id.0);
@@ -733,12 +753,14 @@ impl<'a> Executor<'a> {
             Effect::SetContext(id) => match ports.context_snapshot(*id) {
                 Some(snapshot) => {
                     #[cfg(feature = "dictation-shadow")]
-                    {
+                    if self.shadow.is_active() {
                         self.noted_mirror = Some(FieldAdapter::set_context_witnessed(
                             ports.app_state(),
                             id.0,
                             snapshot,
                         ));
+                    } else {
+                        FieldAdapter::set_context(ports.app_state(), id.0, snapshot);
                     }
                     #[cfg(not(feature = "dictation-shadow"))]
                     FieldAdapter::set_context(ports.app_state(), id.0, snapshot);
@@ -802,20 +824,21 @@ impl<'a> Executor<'a> {
                 self.record_port(index, effect, result);
             }
             Effect::KeyboardProcessing(flag) => {
-                let result = ports.keyboard(effect);
-                // `keyboard::set_processing` stores the requested flag; a port that
-                // ran it left the flag at the decided value, one that failed did not.
+                // The flag the port actually committed, read from the live flag itself
+                // (not derived from the request or the port's result), before and after;
+                // only for an armed flight (D-S2c-7 c, f).
                 #[cfg(feature = "dictation-shadow")]
-                {
+                let before = self.shadow.is_active().then(crate::keyboard::is_processing);
+                let result = ports.keyboard(effect);
+                #[cfg(feature = "dictation-shadow")]
+                if let Some(before) = before {
                     use crate::dictation_shadow::types::{MirrorField, MirrorValue, MirrorWitness};
-                    let after = if result.is_ok() { *flag } else { !*flag };
                     self.noted_mirror = Some(MirrorWitness {
                         field: MirrorField::KeyboardProcessing,
-                        before: MirrorValue::Flag(!*flag),
-                        after: MirrorValue::Flag(after),
+                        before: MirrorValue::Flag(before),
+                        after: MirrorValue::Flag(crate::keyboard::is_processing()),
                     });
                 }
-                #[cfg(not(feature = "dictation-shadow"))]
                 let _ = flag;
                 self.record_port(index, effect, result);
             }
@@ -846,12 +869,9 @@ impl<'a> Executor<'a> {
                 };
                 #[cfg(feature = "dictation-shadow")]
                 if *effect == Effect::StartSideTasks {
-                    // The gate if the spawner asked for it; otherwise the reason it
-                    // returned before asking (D-S2c-6): exactly one of the two.
-                    self.noted_ticker = ports
-                        .take_ticker_gate()
-                        .map(super::shadow::TickerNote::Gate)
-                        .or_else(super::shadow::take_ticker_skip);
+                    // The gate the spawner asked, or the skip it returned (D-S2c-6, 7 d):
+                    // exactly one, taken from this port's own slot.
+                    self.noted_ticker = ports.take_ticker_note();
                 }
                 self.record_port(index, effect, result);
             }

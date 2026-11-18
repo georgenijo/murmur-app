@@ -25,10 +25,36 @@ pub(crate) struct Replay {
     ended: bool,
 }
 
+/// The live side's entry/header counters (D-S2c-7 a), as a difference: decisions the
+/// shell took while armed, headers its flights submitted, completed flights whose reply
+/// never went through the flight. The harness that drives the shell reads them (the
+/// replay may not name the live side) and hands the delta to [`Report::conserved`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Conservation {
+    pub decisions: u64,
+    pub headers: u64,
+    pub unrendered: u64,
+}
+
+impl Conservation {
+    pub(crate) fn since(self, before: Self) -> Self {
+        Self {
+            decisions: self.decisions - before.decisions,
+            headers: self.headers - before.headers,
+            unrendered: self.unrendered - before.unrendered,
+        }
+    }
+}
+
 /// What a replay's comparison counted.
 pub(crate) struct Report {
     pub stats: Stats,
     pub events: Vec<MismatchEvent>,
+    /// The live side's counters over this replay, once the harness handed them over.
+    pub conservation: Option<Conservation>,
+    /// Messages the live side could not hand over (a full ring, or a ticket dropped
+    /// unsent by an unwind).
+    pub lost: u64,
 }
 
 /// Counters summed over every replay of this process (E3 and E8 evidence).
@@ -110,7 +136,12 @@ impl Replay {
         for (pd, count) in &stats.pd_witness {
             *totals.pd_witness.entry(*pd).or_default() += count;
         }
-        Report { stats, events }
+        Report {
+            stats,
+            events,
+            conservation: None,
+            lost: self.transport.lost(),
+        }
     }
 }
 
@@ -230,7 +261,27 @@ impl Drop for Replay {
     }
 }
 
+/// Sub-runs that by design drive no family entry (they exercise a ledger directly), so
+/// `at least one decision compared` does not apply to them. Each is held to taking
+/// none.
+const NO_SHELL_ENTRY: &[&str] = &[
+    // Ledger / telemetry scenarios that call the ledger or a host port directly.
+    "PD-10 eviction after 128",
+    "PD-11",
+    // The model installer parked on its lock: the scenario drives the installer, not a
+    // family entry.
+    "117 installer blocked on the install lock",
+    "117 install fails before parking",
+    "117 dropping an installer blocked on the install lock",
+];
+
 impl Report {
+    /// Hand over the live side's counters for this replay.
+    pub(crate) fn conserved(mut self, conservation: Conservation) -> Self {
+        self.conservation = Some(conservation);
+        self
+    }
+
     /// The E7 gate for one replay: no mismatch, no loss, no panic, nothing skipped.
     pub(crate) fn assert_clean(&self, what: &str) {
         let s = &self.stats;
@@ -269,6 +320,49 @@ impl Report {
                 && s.witness_overflow == 0,
             "{what}: the shadow reported a divergence: events {:?}, stats {s:?}",
             self.events
+        );
+        // Entry/header conservation (D-S2c-7 a): a sub-run that compared nothing, or
+        // took a decision without submitting its header, or closed a flight the
+        // comparator could not verify, proves nothing.
+        assert!(
+            s.unverifiable == 0,
+            "{what}: {} flights closed unverifiable: {s:?}",
+            s.unverifiable
+        );
+        let c = self.conservation.unwrap_or_else(|| {
+            panic!("{what}: the harness handed the replay no entry/header counters")
+        });
+        assert_eq!(
+            c.decisions, c.headers,
+            "{what}: the live shell took {} decisions but its flights submitted {} headers \
+             (a family entry returned without a capture)",
+            c.decisions, c.headers
+        );
+        if NO_SHELL_ENTRY.contains(&what) {
+            // A ledger-only scenario: it must still take no decision (if it ever drives
+            // the shell, it leaves this list and is held to the rule below).
+            assert_eq!(
+                (c.decisions, s.compared),
+                (0, 0),
+                "{what}: listed as driving no family entry, but the shell took decisions"
+            );
+        } else {
+            assert!(
+                s.compared >= 1 && c.decisions >= 1,
+                "{what}: the sub-run compared {} decisions (took {}): it proves nothing",
+                s.compared,
+                c.decisions
+            );
+        }
+        assert_eq!(
+            self.lost, 0,
+            "{what}: the live side lost {} messages",
+            self.lost
+        );
+        assert_eq!(
+            c.unrendered, 0,
+            "{what}: {} completed flights never rendered their reply through the flight",
+            c.unrendered
         );
     }
 }

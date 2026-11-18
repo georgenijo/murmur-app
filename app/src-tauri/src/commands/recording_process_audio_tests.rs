@@ -347,6 +347,8 @@ fn run(body: impl FnOnce(&Run)) {
     // through the shadow in sync mode; every flight is closed when the run ends.
     #[cfg(feature = "dictation-shadow")]
     let replay = crate::dictation_shadow::replay::Replay::begin();
+    #[cfg(feature = "dictation-shadow")]
+    let counters_before = crate::dictation_executor::shadow::conservation_now();
     let state = Arc::new(super::tests::test_state(AppState::default()));
     let host = FakeHost::new(&state);
     let run = Run { state, host };
@@ -355,11 +357,14 @@ fn run(body: impl FnOnce(&Run)) {
     #[cfg(feature = "dictation-shadow")]
     {
         drop(run);
-        replay.end().assert_clean(
-            std::thread::current()
-                .name()
-                .unwrap_or("process_audio test"),
-        );
+        replay
+            .end()
+            .conserved(crate::dictation_executor::shadow::conservation_now().since(counters_before))
+            .assert_clean(
+                std::thread::current()
+                    .name()
+                    .unwrap_or("process_audio test"),
+            );
     }
 }
 

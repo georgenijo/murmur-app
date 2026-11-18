@@ -908,26 +908,68 @@ fn c4_9_every_contract_test_is_implemented_or_owned() {
 }
 
 /// A start future dropped while it is parked on the awaited capture start of a kept
-/// microphone test: the R101.15 flight ran `PR` and never reaches `CS`.
+/// microphone test: the R101.15 flight ran `PR` and never reaches `CS`. As in PD-9
+/// proper, the begin-ledger row it registered stays pending with nobody to resolve it,
+/// so a completion requested afterwards is held. The spawned blocking task is parked
+/// at its supervisor call by a barrier while the ledger is read, then released.
 #[cfg(feature = "dictation-shadow")]
 fn pd09c_start_dropped_at_the_awaited_capture_start(world: &Arc<World>) {
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
     world
         .state()
         .app_state
         .microphone_preview
         .claim(50)
         .expect("a mic test is kept");
+    let (reached_tx, reached) = channel::<()>();
+    let (go, go_rx) = channel::<()>();
+    world.on("supervisor.start", move || {
+        let _ = reached_tx.send(());
+        let _ = go_rx.recv_timeout(Duration::from_secs(30));
+    });
     let mut start = world.start();
     assert!(poll_once(&mut start).is_pending());
     drop(start);
     world.note("the start future is dropped while it waits for the capture start");
-    // The blocking task the future spawned still runs; wait for it by what it does.
+    reached
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the blocking task reached the supervisor's capture start");
+    // The orphaned ledger row: registered, never begun, and it holds the completion.
+    let state = world.state();
+    assert!(
+        dictation_performance_begins().begin_is_pending(1),
+        "PD-9: the dropped start's begin-ledger row stays pending"
+    );
+    complete_dictation_performance(
+        &state.performance,
+        1,
+        RunOutcomeV1::Cancelled {
+            stage: PerformanceStageV1::CaptureFinalization,
+        },
+        Vec::new(),
+        None,
+        None,
+    );
+    let coordinator = dictation_performance_begins();
+    assert!(
+        !coordinator.completion_is_claimed(1),
+        "PD-9: the completion is held behind a begin that never runs"
+    );
+    assert!(coordinator.begin_is_pending(1));
+    go.send(()).expect("the blocking task is parked");
+    // The task finishes on its own thread; wait for it by what it does, bounded.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while !world
         .trace()
         .iter()
         .any(|line| line.starts_with("supervisor.start_after_preview 1"))
     {
-        std::thread::yield_now();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the blocking task never ran"
+        );
+        std::thread::sleep(Duration::from_millis(1));
     }
 }
 
