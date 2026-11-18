@@ -45,7 +45,8 @@ every production call that can carry it, per enclosing function
   read and hashed directly and a missing file fails; an entry directly under `src/` that
   matches `bin` or `main.rs` case-insensitively but is not spelled exactly so fails
   (Cargo resolves `src/Bin/tool.rs` as a binary and `src/Main.rs` as `src/main.rs` on a
-  case-insensitive filesystem such as macOS); and `src/bin` must not exist at all. The
+  case-insensitive filesystem such as macOS); and `src/bin` must not exist at all (any
+  entry, including a dangling symlink: the check uses `symlink_metadata`). The
   manifest must also give Cargo a `ui` binary built with the production feature set:
   the default `src/main.rs` with autobins on and a package named `ui`, or one explicit
   `[[bin]] name = "ui"` at `src/main.rs`; `autobins = false` without that explicit bin,
@@ -80,6 +81,34 @@ scan derives from the file name, which fails closed for constants declared in it
 `#[path` or `path =` token sequence inside any `macro_rules!` body fails too, since a
 macro could expand to a module declaration that loads a file outside the walk
 (D-S2b-12 c).
+
+## How the probes plant their edits
+
+Every real-tree test gets production sources, and everything the ratchet derives from
+them, from one function: `production_view(&src_root())` (D-S2b-22). It reads `src/`
+from the filesystem on every call, and its fields (`raw`, `blanked`, `direct_writes`,
+the status and terminal call sites, `terminal_callers`, `events_module`,
+`crate_root_problems`, `event_sites`) are derived lazily from exactly the bytes it
+read; views are memoized by those bytes, compared in full. The loader, the blanking and
+the caches live in a private `view` module, so no test can load the tree or read a
+derived result any other way (the seeder and layout checks read the filesystem
+directly, as before). The stale-source probe calls `production_view` on a temp dir,
+reads every field, edits files in place (a status emit, a direct M1 write, a call site,
+an events constant, a new and a removed file, a second crate root) and requires each
+field to change as expected and to return to its first value when the edit is undone,
+so a snapshot anywhere between the disk and a field fails it. Reads are cheap,
+parsing is not. A probe takes an owned copy of the view's raw sources with one
+file replaced or added (`sources_with`, `models_with`, a `push`); nothing is written to
+`src/`. `event_sites` caches each file's scan (`scan_file_cached`) keyed by its path, its
+exact bytes and the events module's constants, so a file is parsed once per process for
+a given content: an unchanged file is a hit, a planted or edited file (or any file, when
+a probe changes the events constants) is a miss and is parsed. A hit needs identical
+bytes, so a file edited after the cache was warmed is always seen
+(`an_edited_file_is_never_answered_from_the_scan_cache`). A path given twice is summed,
+not overwritten (`a_duplicated_emitter_file_counts_its_emits_twice`). A probe that needs
+a real directory layout (`src/Bin`, a `src/bin` symlink) builds a small temp-dir fixture
+with only the files it needs. A probe must keep failing for its own reason: to check,
+disable the scanner guard it targets and confirm the probe fails.
 
 ## Threat model
 

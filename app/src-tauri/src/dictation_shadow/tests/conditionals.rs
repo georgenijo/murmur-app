@@ -40,8 +40,8 @@ fn shadow_conditional_compared_as_predicate() {
         assert_clean(&h);
         assert_eq!(h.stats().matched, 1, "spec_flowing={spec_flowing}");
     }
-    // Flipping the predicate is `diff_kind 9`: the observation says a capture was
-    // flowing but the live path took the emit, and the reverse.
+    // Flipping the predicate is `diff_kind 9`: the effect-time observation says a
+    // capture was flowing but the live path took the emit, and the reverse.
     for observed_flowing in [true, false] {
         let mut h = harness();
         let mut flight = start(
@@ -52,10 +52,11 @@ fn shadow_conditional_compared_as_predicate() {
                 ..Live::default()
             },
         );
-        flight.header.observed.clear();
-        flight
-            .header
-            .add_observed(ObservedFact::SpeculativeFlowing(observed_flowing));
+        for msg in &mut flight.later {
+            if let ShadowMsg::Observed { fact, .. } = msg {
+                *fact = ObservedFact::SpeculativeFlowing(observed_flowing);
+            }
+        }
         h.feed(&flight);
         assert_eq!(
             h.only_event().diff_kind,
@@ -189,11 +190,14 @@ fn a_second_witness_of_one_conditional_is_conditional() {
 
 #[test]
 fn a_missing_speculative_flow_observation_is_observation() {
-    // Review fix (Sol 6.2 major 4): `P-spec-flowing` needs the live read; without it
-    // the conditional cannot be checked, and that is `Observation` (7), not a pass.
+    // Review fix (Sol 6.2 major 4, amendment 2): `P-spec-flowing` needs the effect-time
+    // read; without it the conditional cannot be checked, and that is `Observation`
+    // (7), not a pass, whatever the header observed.
     let mut h = harness();
     let mut flight = start(1, 1, Live::default());
-    flight.header.observed.clear();
+    flight
+        .later
+        .retain(|m| !matches!(m, ShadowMsg::Observed { .. }));
     h.feed(&flight);
     assert_eq!(h.only_event().diff_kind, DiffKind::Observation.code());
 }

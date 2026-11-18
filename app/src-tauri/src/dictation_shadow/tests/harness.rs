@@ -388,6 +388,14 @@ pub(super) fn flight_with(
             }
             Placement::PostDT | Placement::PostT => {
                 if let Some(pred) = pred {
+                    // `SPEC` sends the value it read just before the conditional's
+                    // witness (D-S2c-7 amendment 2): a post-D conditional needs it.
+                    if matches!(pred, PredId::SpecFlowing) {
+                        later.push(ShadowMsg::Observed {
+                            rec: rec_id,
+                            fact: ObservedFact::SpeculativeFlowing(live.spec_flowing),
+                        });
+                    }
                     later.push(ShadowMsg::Cond {
                         rec: rec_id,
                         pred,

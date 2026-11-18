@@ -264,8 +264,8 @@ fn spec_flowing(observed: &[ObservedFact]) -> Option<bool> {
     })
 }
 
-/// The value `SPEC` actually read, as an `Observed` message: the latest one wins over
-/// whatever the header observed (D-S2c-7 amendment).
+/// The value `SPEC` actually read, as an `Observed` message: what a post-D conditional
+/// is judged against, with no fallback to the header's value (D-S2c-7 amendment 2).
 fn observed_flowing(fact: ObservedFact) -> bool {
     match fact {
         ObservedFact::SpeculativeFlowing(flowing) => flowing,
@@ -381,8 +381,9 @@ struct Record {
     ids: Vec<RecordingId>,
     decision: Decision,
     observed: Vec<ObservedFact>,
-    /// The latest `SpeculativeFlowing` an `Observed` message carried, which overrides
-    /// the header's value.
+    /// The latest `SpeculativeFlowing` an `Observed` message carried, waiting for the
+    /// post-D conditional it precedes (which consumes it). The header's value judges
+    /// only header-witnessed conditionals; there is no fallback between the two.
     observed_later: Option<bool>,
     slots: Vec<Slot>,
     /// `Emitted{ok}` results by decided index: what `P-emit-ok(i)` reads.
@@ -557,16 +558,17 @@ impl Record {
     }
 
     /// What a conditional's predicate must have been, from the observation or the
-    /// paired emit's own result.
-    fn expected_taken(&self, cond: Cond) -> Expect {
+    /// paired emit's own result. `observed_flowing` is the `SPEC` value to judge
+    /// `UnlessSpeculativeFlowing` against: the header's for a conditional witnessed in
+    /// the header, the effect-time `Observed` mark's for a post-D one, never the one for
+    /// the other (D-S2c-7 amendment 2).
+    fn expected_taken(&self, cond: Cond, observed_flowing: Option<bool>) -> Expect {
         match cond {
             Cond::Always => Expect::Known(true),
-            Cond::UnlessSpeculativeFlowing => {
-                match self.observed_later.or_else(|| spec_flowing(&self.observed)) {
-                    Some(flowing) => Expect::Known(!flowing),
-                    None => Expect::Missing,
-                }
-            }
+            Cond::UnlessSpeculativeFlowing => match observed_flowing {
+                Some(flowing) => Expect::Known(!flowing),
+                None => Expect::Missing,
+            },
             Cond::EmitOk(paired) => {
                 let paired = usize::from(paired);
                 match self.slots.get(paired) {
@@ -701,7 +703,8 @@ impl Record {
 
         // 3. Conditionals: taken or skipped against what the input says it must be.
         for (g, i, taken) in cond_pairs {
-            match self.expected_taken(cond_of(&self.decision.effects[i].effect)) {
+            let header_value = spec_flowing(&self.observed);
+            match self.expected_taken(cond_of(&self.decision.effects[i].effect), header_value) {
                 Expect::Known(want) if want != taken => diffs[g].push(DiffKind::Conditional),
                 Expect::Missing => diffs[g].push(DiffKind::Observation),
                 Expect::Known(_) => {}
@@ -933,7 +936,11 @@ impl Record {
         if !taken {
             self.slots[idx] = Slot::Skipped;
         }
-        match self.expected_taken(cond) {
+        // A post-D conditional is judged against the value read at effect time, sent as
+        // an `Observed` mark just before it, and consumed by it: each conditional needs
+        // its own read, and the header's value is not a fallback (D-S2c-7 amendment 2).
+        let observed = self.observed_later.take();
+        match self.expected_taken(cond, observed) {
             Expect::Known(want) => (want != taken).then_some(DiffKind::Conditional),
             Expect::Missing => Some(DiffKind::Observation),
         }
