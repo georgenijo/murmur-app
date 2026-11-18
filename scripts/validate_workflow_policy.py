@@ -265,7 +265,12 @@ def validate_ci(ci: str) -> int:
         "cargo nextest run --cargo-metadata target/ci-cargo-metadata.json"
         " --binaries-metadata target/ci-test-binaries.json"
     )
-    assert nextest_reuse + " -E 'kind(lib)'" in " ".join(macos_lib_tests.split())
+    # kind(lib) plus the dictation-core C13.3 bug replays, a separate
+    # integration-test target that kind(lib) alone would skip.
+    assert (
+        nextest_reuse + " -E 'kind(lib) | binary(c13_3_bug_replays)'"
+        in " ".join(macos_lib_tests.split())
+    )
     # The prebuild must use the run steps' package selection and build the
     # examples before the test targets, or the run steps recompile the app crate.
     test_build = " ".join(named_step_block(rust_macos, "Build test binaries", 6).split())
@@ -276,7 +281,7 @@ def validate_ci(ci: str) -> int:
     test_prebuild = test_build.find(
         "cargo nextest list --workspace --lib"
         " --bin murmur-capture-helper --test topology_watch"
-        ""
+        " --test c13_3_bug_replays"
     )
     assert 0 <= example_build < test_prebuild, "build examples, then every test target"
     assert (
