@@ -29,26 +29,31 @@ pub enum Phase {
     Recovering,
 }
 
-/// How a stop's reply reaches the stop command (C7.3 `StopEnd`).
+/// How a stop's reply reaches the stop command (C7.3 `StopEnd`). Whether it reaches
+/// it at all is the *client's* receiver timeout (`STOP_RESPONSE_TIMEOUT`), never part
+/// of the plan: a reply is delivered at the seal or at the worker's exit
+/// (`audio_lifecycle.rs:2279-2302`, `2358-2373`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Delivery {
-    /// `RecordingSealed`: no `Idle`, a `CleanupFinished` after `OwnerClear`.
+    /// `RecordingSealed` hands the samples over: no `Idle`, a `CleanupFinished` after
+    /// `OwnerClear`.
     Sealed,
-    /// Delivered without a seal: no `Idle`, no `CleanupFinished` (PD-18 (c)).
+    /// No seal: `finish_attempt` delivers at the worker's exit: no `Idle`, no
+    /// `CleanupFinished` (PD-18 (c)).
     Unsealed,
-    /// Undelivered: the supervisor sends `Idle`, the stop gets an error.
-    Undelivered,
 }
 
 /// What the supervisor does with a start call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StartKind {
-    /// Refuses before accepting: no notification, no owner (`AlreadyStarting`,
-    /// `AudioRecovering`, anything else).
+    /// Refuses before accepting: no notification, no owner (`Cancelled`, a failed
+    /// spawn: `audio_lifecycle.rs:1402-1413`, `1487-1498`).
     Reject(CaptureErr),
-    /// A queued pending start answered `Cancelled`: `Idle` with no `Accepted`.
+    /// A queued pending start answered `Cancelled`: `Idle` with no `Accepted`
+    /// (`audio_lifecycle.rs:1148-1160`, the standby handoff).
     PendingCancelled,
-    /// `Accepted`, `Pre*`, `InitializationFailed(None)`, `Idle`: the start fails.
+    /// `Accepted`, then the worker's `InitFailed` and exit: `InitializationFailed`,
+    /// `Idle` (`audio_lifecycle.rs:2374-2389`).
     Fail,
     /// A live attempt.
     Live,
@@ -59,43 +64,34 @@ pub enum StartKind {
 pub enum End {
     /// Waits for a stop or a cancel command (L4).
     External,
-    /// `RecoverEnd`.
+    /// `RecoverEnd`: `RuntimeFailed` (or `TerminationUnconfirmed` when `init_failed`)
+    /// for `RuntimeFailure`, a starting-only cancel for a device or power change, the
+    /// hard deadline for `HardDeadline` (only while the attempt is `Starting`).
     Recover {
         reason: AudioCancelReason,
+        /// The recovery reports a failure (`InitializationFailed`): the worker's
+        /// `TerminationUnconfirmed`, or the hard deadline's.
         init_failed: bool,
         /// `Some(n)`: `Interrupted` with `n` samples, else `Idle`.
         interrupted: Option<usize>,
     },
-    /// `CrashEnd`.
+    /// `CrashEnd`: the worker thread exits on its own.
     Crash,
 }
 
-/// What a capture cancel's client sees (`cancel_dictation_capture`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CancelMode {
-    /// The supervisor handles the message and answers after `begin_recovery`
-    /// (its `Recovering{User}` notification) returned.
-    Normal,
-    /// The supervisor is unavailable: `Err` at once, nothing happens.
-    Unavailable,
-    /// The supervisor handles the message but the client's wait times out first:
-    /// `Err` while the cancel still takes effect.
-    Timeout,
-}
-
-/// The generated word of one attempt (C7.3), plus the results the supervisor
-/// answers the commands with.
+/// The generated word of one attempt (C7.3), plus what the worker's stop delivers.
 #[derive(Clone, Debug)]
 pub struct AttemptPlan {
     pub kind: StartKind,
-    pub connecting: u8,
+    /// The `StillConnecting` deadline fires while the attempt is `Starting`.
+    pub connecting: bool,
     pub ready: bool,
-    pub stalled: u8,
+    /// The teardown-stall guidance deadline fires once while stopping or recovering.
+    pub stalled: bool,
     pub end: End,
     pub stop_delivery: Delivery,
     /// Samples a delivered stop returns.
     pub stop_samples: usize,
-    pub cancel: CancelMode,
 }
 
 /// One step of the supervisor thread: a notification, or an internal step.
@@ -103,10 +99,10 @@ pub struct AttemptPlan {
 pub enum SupStep {
     Accepted,
     StillConnecting,
-    /// `set_phase(Recording)`, then `Ready` (one supervisor step).
+    /// `Ready` (the phase became `Recording` when the first buffer was accepted).
     Ready,
     RecoveryStalled,
-    /// `set_phase(Recovering)` then `Recovering{reason}`.
+    /// `Recovering{reason}` (the phase became `Recovering` before it).
     Recovering(AudioCancelReason),
     InitFailed {
         recovery: Option<AudioCancelReason>,
@@ -121,9 +117,12 @@ pub enum SupStep {
     /// The supervisor sends the start call's response (`Ok(())` after `Accepted`,
     /// `audio_lifecycle.rs:1589-1596`): a step of its own, not a notification.
     Answer,
-    /// The supervisor sends a cancel's response, after `begin_recovery` (and so its
-    /// `Recovering{User}` notification) returned (`audio_lifecycle.rs:1336`).
-    CancelAnswer,
+    /// A cancel's response `Ok(true)`, after `begin_recovery` (and so its
+    /// `Recovering{User}` notification) returned (`audio_lifecycle.rs:1332-1336`).
+    CancelAnswer(TaskId),
+    /// A stop in `Starting`: `begin_recovery`, then `Ok(Vec::new())`
+    /// (`audio_lifecycle.rs:1243-1246`).
+    StopAnswer(TaskId),
 }
 
 impl SupStep {
@@ -140,40 +139,92 @@ impl SupStep {
     }
 }
 
-/// An end the worker may begin on its own (a recovery, a crash, a failed open):
-/// not decided until it happens, so a stop or a cancel command can win first.
-#[derive(Clone, Debug)]
-pub struct PendingEnd {
-    /// Steps of the `begin_recovery` handler (and the deadline handler).
-    pub begin: VecDeque<SupStep>,
-    /// Steps of the `finish_attempt` group, run when the worker thread exits.
-    pub finish: VecDeque<SupStep>,
-    pub ended_by: EndedBy,
+/// What the worker thread tells the supervisor (`AudioWorkerEvent`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkerEv {
+    FirstBuffer,
+    RuntimeFailed,
+    TerminationUnconfirmed,
+    InitFailed,
+    RecordingSealed,
+    ThreadExited,
 }
 
+/// A message in the supervisor's channel (`SupervisorMessage`). The channel is FIFO:
+/// a worker event and a client command are taken in the order they were sent.
+#[derive(Clone, Debug)]
+pub enum Msg {
+    Start {
+        rid: Rid,
+        plan: Box<AttemptPlan>,
+    },
+    Stop {
+        rid: Rid,
+        tid: TaskId,
+    },
+    /// `tid: None`: the response receiver is gone (an environment cancel).
+    Cancel {
+        rid: Rid,
+        tid: Option<TaskId>,
+        reason: AudioCancelReason,
+        starting_only: bool,
+    },
+    Worker {
+        rid: Rid,
+        ev: WorkerEv,
+    },
+}
+
+/// What a command's reply carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplyVal {
+    Stop(Result<usize, ()>),
+    Cancel(Result<bool, ()>),
+}
+
+/// The state of a command's response channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplyState {
+    /// The receiver waits: `ticks` polls so far, the timeout fires at `limit`.
+    Waiting { ticks: u16, limit: u16 },
+    /// `send` succeeded; the client has not continued yet.
+    Delivered(ReplyVal),
+    /// `recv_timeout` returned: the receiver is dropped and a later `send` fails.
+    TimedOut,
+}
+
+/// What the worker thread has done (the events it already sent) and was told to do.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Worker {
+    /// `send_worker_stop` was called (`audio_lifecycle.rs:638`).
+    pub stop_sent: bool,
+    pub first_buffer: bool,
+    pub own_end: bool,
+    pub sealed: bool,
+    pub exited: bool,
+}
+
+/// The supervisor's private attempt (`Attempt` in `audio_lifecycle.rs:590`).
 #[derive(Clone, Debug)]
 pub struct Attempt {
     pub rid: Rid,
     pub plan: AttemptPlan,
-    /// Steps before an end: the notifications of a starting and recording attempt.
-    pub prefix: VecDeque<SupStep>,
-    /// The worker's own end, before it begins.
-    pub pending_end: Option<PendingEnd>,
-    /// The steps of a begun end before the worker exits: `begin_recovery`'s
-    /// notifications, a cancel's answer, the one teardown stall.
-    pub begin: VecDeque<SupStep>,
-    /// `finish_attempt`: runs as one uninterrupted group on the supervisor thread
-    /// (it handles no command until `OwnerClear` and what follows ran).
-    pub finish: VecDeque<SupStep>,
-    /// An end has begun (by the word itself, a stop or a cancel): a later stop or
-    /// cancel can no longer take it.
-    pub end_decided: bool,
-    /// The `finish_attempt` group started and has steps left.
-    pub finishing: bool,
-    /// Whether `plan.end` is still waiting for an external stop or cancel.
-    pub awaiting_external: bool,
-    pub stop_called: bool,
-    pub cancelled: bool,
+    /// `AttemptPhase`: `Starting`, `Recording`, `Stopping` or `Recovering` (the
+    /// public phase differs after a teardown stall).
+    pub phase: Phase,
+    pub recovery_reason: Option<AudioCancelReason>,
+    /// `stop_response`: the client waiting for the stop's reply.
+    pub stop_reply: Option<TaskId>,
+    pub sealed_delivery: bool,
+    /// `tail_deadline.is_some()`.
+    pub tail_pending: bool,
+    /// `stopping_guidance_emitted`.
+    pub stall_emitted: bool,
+    /// `still_connecting_emitted`.
+    pub connecting_emitted: bool,
+    /// `failure_reported`.
+    pub failure_reported: bool,
+    pub worker: Worker,
     /// How the end was decided (for the witnesses).
     pub ended_by: EndedBy,
 }
@@ -193,6 +244,13 @@ pub struct Sup {
     pub owner: Option<Rid>,
     pub phase: Option<Phase>,
     pub attempt: Option<Attempt>,
+    /// The channel (`SupervisorMessage`): FIFO.
+    pub queue: VecDeque<Msg>,
+    /// The steps of the message the supervisor thread is handling: it takes no
+    /// other message and no deadline until they all ran.
+    pub handling: VecDeque<SupStep>,
+    /// The recording the handled message (or deadline) is about.
+    pub handling_rid: Rid,
     /// The step whose bridge arm is running on the supervisor thread: it handles
     /// no command and takes no step until the arm returns.
     pub busy: Option<SupStep>,
@@ -202,8 +260,8 @@ pub struct Sup {
     pub finished: Vec<(Rid, EndedBy)>,
     /// The start calls' responses, once sent.
     pub start_answers: BTreeMap<Rid, super::supervisor::StartAnswer>,
-    /// The capture cancels' responses (`Normal` mode), once sent.
-    pub cancel_answers: BTreeMap<Rid, Result<bool, ()>>,
+    /// The response channels of the commands in flight, by client task.
+    pub replies: BTreeMap<TaskId, ReplyState>,
 }
 
 impl Sup {
@@ -222,53 +280,60 @@ impl Sup {
         self.owner == Some(rid) && self.phase() == Phase::Recording
     }
 
-    /// The step the supervisor thread would run next, if it can run one.
-    pub fn next_step(&self) -> Option<SupStep> {
-        if self.busy.is_some() {
-            return None;
-        }
-        let attempt = self.attempt.as_ref()?;
-        attempt
-            .prefix
-            .front()
-            .or_else(|| attempt.begin.front())
-            .or_else(|| attempt.finish.front())
-            .copied()
-    }
-
-    /// Steps still to run for the attempt (any, including an end the worker has
-    /// not begun yet).
-    pub fn pending_steps(&self) -> impl Iterator<Item = SupStep> + '_ {
-        self.attempt.iter().flat_map(|a| {
-            a.prefix
-                .iter()
-                .chain(a.begin.iter())
-                .chain(a.finish.iter())
-                .chain(
-                    a.pending_end
-                        .iter()
-                        .flat_map(|p| p.begin.iter().chain(p.finish.iter())),
-                )
-                .copied()
-        })
-    }
-
     /// The response of the start call for `rid`, once the supervisor sent it.
     pub fn start_answer(&self, rid: Rid) -> Option<super::supervisor::StartAnswer> {
         self.start_answers.get(&rid).cloned()
     }
 
-    /// The attempt can begin its own end: the notifications of its start ran and no
-    /// command decided another end.
-    pub fn can_begin_end(&self) -> bool {
-        self.busy.is_none()
-            && self.attempt.as_ref().is_some_and(|a| {
-                a.pending_end.is_some()
-                    && !a.end_decided
-                    && a.prefix.is_empty()
-                    && a.begin.is_empty()
-                    && a.finish.is_empty()
-            })
+    /// A notification that must restore `Idle` is still to come for the owner (a
+    /// step of the handler, the running arm, or what the attempt's own end makes
+    /// `finish_attempt` send whatever else happens). Whether the stop's reply is
+    /// delivered can still change (a receiver timeout), so a waiting unsealed reply
+    /// counts as none.
+    pub fn restorer_coming(&self) -> bool {
+        if self.handling.iter().any(|step| step.restores_idle())
+            || (self.busy.as_ref().is_some_and(|step| step.restores_idle()) && !self.busy_restored)
+        {
+            return true;
+        }
+        let Some(attempt) = self.attempt.as_ref() else {
+            return false;
+        };
+        match attempt.phase {
+            Phase::Recovering => match (attempt.recovery_reason, attempt.plan.end) {
+                (
+                    Some(AudioCancelReason::RuntimeFailure),
+                    End::Recover {
+                        interrupted: Some(samples),
+                        ..
+                    },
+                ) => samples < crate::lifecycle::AUTO_TRANSCRIBE_MIN_SAMPLES,
+                _ => true,
+            },
+            Phase::Stopping => {
+                attempt.sealed_delivery
+                    || attempt.stop_reply.is_none()
+                    || attempt.plan.stop_delivery == Delivery::Sealed
+            }
+            Phase::Starting | Phase::Recording => {
+                attempt.plan.kind == StartKind::Fail
+                    || match attempt.plan.end {
+                        End::External => false,
+                        End::Crash => true,
+                        End::Recover {
+                            reason,
+                            interrupted,
+                            ..
+                        } => match (reason, interrupted) {
+                            (AudioCancelReason::RuntimeFailure, Some(samples)) => {
+                                samples < crate::lifecycle::AUTO_TRANSCRIBE_MIN_SAMPLES
+                            }
+                            _ => true,
+                        },
+                    }
+            }
+            Phase::Idle => false,
+        }
     }
 }
 
@@ -353,6 +418,8 @@ pub struct World {
     pub perf: Perf,
     pub history: History,
     pub sup: Sup,
+    /// Registrations that broke the continuation-id bound (SP6), drained per step.
+    pub registry_faults: Vec<String>,
     /// Captures preserved for the user, by recording.
     pub preserved: BTreeMap<Rid, Preserved>,
     /// Which row took a preserved capture, by recording (PD-15).
@@ -392,6 +459,7 @@ impl World {
                 ..History::default()
             },
             sup: Sup::default(),
+            registry_faults: Vec::new(),
             preserved: BTreeMap::new(),
             taken_by: BTreeMap::new(),
             tickers: BTreeMap::new(),
@@ -429,6 +497,16 @@ impl World {
     /// `ContinuationGuard::register`: a decision's continuation spec becomes a
     /// token right after the decide, before any effect.
     pub fn register(&mut self, spec: ContinuationSpec) -> Continuation {
+        // SP6 at every registration (D-S2b-9 (d)): a continuation names a recording that
+        // exists. `K:CaptureStart` registers before `ID+` allocates its own id, so it is
+        // the one kind that may name `current + 1`.
+        let limit = self.current_id + u64::from(spec.kind == ContKind::CaptureStart);
+        if spec.recording_id.0 > limit {
+            self.registry_faults.push(format!(
+                "SP6: {:?} continuation names recording {}, above the bound {limit}",
+                spec.kind, spec.recording_id.0
+            ));
+        }
         let op = self.history.next_op;
         self.history.next_op += 1;
         self.history

@@ -6,6 +6,7 @@
 //! actor's D section can land between any two of them (C7.5: "effects of class
 //! PostD_T / PostT interleave with other actors' D sections").
 
+use super::c3;
 use super::model::*;
 use crate::decision::{Decision, SiteId, Verdict};
 use crate::effects::{Effect, Placed, Placement, Terminal};
@@ -139,10 +140,14 @@ pub struct StepOut {
     /// Defects the step itself detected (a decision that differs by op status,
     /// a decision that fails `validate`).
     pub violations: Vec<String>,
+    /// The effects the shell ran before the decide (`Pre` prefix) and stripped from the
+    /// decision it logs next: the C3 check counts the whole list.
+    pub stripped: Vec<Effect>,
 }
 
 impl StepOut {
     pub fn clear(&mut self) {
+        self.stripped.clear();
         self.decisions.clear();
         self.effects.clear();
         self.notes.clear();
@@ -195,6 +200,25 @@ pub enum QItem {
     ReleaseT,
 }
 
+/// `Decision::after_pre`, remembering the stripped `Pre` effects for the next
+/// [`log_decision`] (the shell ran them before the decide).
+pub fn after_pre(cx: &mut Cx<'_>, decision: Decision) -> Decision {
+    let before = decision.effects.clone();
+    let after = decision.after_pre();
+    let cut = before.len() - after.effects.len();
+    cx.out.stripped = before[..cut].iter().map(|p| p.effect.clone()).collect();
+    after
+}
+
+/// `Decision::after_prefix`, remembering the stripped prefix for the next [`log_decision`].
+pub fn after_prefix(cx: &mut Cx<'_>, decision: Decision, prefix: &[Placed]) -> Decision {
+    let before = decision.effects.clone();
+    let after = decision.after_prefix(prefix);
+    let cut = before.len() - after.effects.len();
+    cx.out.stripped = before[..cut].iter().map(|p| p.effect.clone()).collect();
+    after
+}
+
 /// Record a decision; returns it for the caller.
 #[allow(clippy::too_many_arguments)]
 pub fn log_decision(
@@ -210,9 +234,19 @@ pub fn log_decision(
             .push(format!("{}: invalid decision {error:?}", decision.row.0));
     }
     let w = &*cx.w;
+    // SP3 / C3 (D-S2b-9 (d)): the decision's whole effect list is one allowed outcome
+    // of its row in the hand-transcribed fixture.
+    let stripped = std::mem::take(&mut cx.out.stripped);
+    let whole: Vec<Effect> = stripped
+        .into_iter()
+        .chain(decision.effects.iter().map(|placed| placed.effect.clone()))
+        .collect();
+    let w = &*cx.w;
+    if let Err(message) = c3::check_decision(decision.row.0, w.status, input_rid != w.current_id, &whole) {
+        cx.out.violations.push(message);
+    }
     let owner = w.sup.owner;
-    let restorer_pending = w.sup.pending_steps().any(|step| step.restores_idle())
-        || (w.sup.busy.as_ref().is_some_and(|step| step.restores_idle()) && !w.sup.busy_restored);
+    let restorer_pending = w.sup.restorer_coming();
     cx.out.decisions.push(DecisionEv {
         tid: cx.tid,
         site,

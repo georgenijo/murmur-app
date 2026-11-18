@@ -14,7 +14,7 @@ use super::flights::{CancelFlight, StartFlight, StopFlight};
 use super::gen::{self, Bias, Cmd};
 use super::model::*;
 use super::rng::Rng;
-use super::sup_task::SupTask;
+use super::sup_task::{SupTask, WorkerTask};
 use super::task::*;
 
 const MAX_STEPS: u32 = 6_000;
@@ -28,7 +28,7 @@ struct Slot {
 
 fn weight(bias: &Bias, name: &str) -> u64 {
     match name {
-        "supervisor" => bias.supervisor,
+        "supervisor" | "worker" => bias.supervisor,
         "bridge" => bias.bridge,
         "pipeline" => bias.pipeline,
         "ticker" => bias.ticker,
@@ -70,12 +70,19 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
         checker.trace = Some(Vec::new());
     }
     let mut mailbox: Vec<(TaskId, PipelineReply)> = Vec::new();
-    let mut slots: Vec<Slot> = vec![Slot {
-        tid: 1,
-        task: Box::new(SupTask),
-        daemon: true,
-    }];
-    let mut next_tid: TaskId = 2;
+    let mut slots: Vec<Slot> = vec![
+        Slot {
+            tid: 1,
+            task: Box::new(SupTask),
+            daemon: true,
+        },
+        Slot {
+            tid: 2,
+            task: Box::new(WorkerTask),
+            daemon: true,
+        },
+    ];
+    let mut next_tid: TaskId = 3;
     let mut pending: std::collections::VecDeque<(u32, Cmd)> = scenario.cmds.into();
     let mut bias = Bias::roll(&mut rng);
     let mut clock = 0u32;

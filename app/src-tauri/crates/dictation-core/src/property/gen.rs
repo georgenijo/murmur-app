@@ -92,43 +92,54 @@ fn reason(rng: &mut Rng) -> AudioCancelReason {
 }
 
 pub fn plan(rng: &mut Rng) -> AttemptPlan {
-    let kind = match rng.weighted(&[70, 10, 6, 6, 4]) {
+    // `Reject(AlreadyStarting)` is not generated: the supervisor answers it only while
+    // an attempt exists, which `Msg::Start`'s acceptance decides itself.
+    let kind = match rng.weighted(&[70, 10, 6, 8]) {
         0 => StartKind::Live,
         1 => StartKind::Fail,
         2 => StartKind::PendingCancelled,
-        3 => StartKind::Reject(CaptureErr::AlreadyStarting),
         _ => StartKind::Reject(CaptureErr::Other),
     };
-    let end = match rng.weighted(&[45, 38, 10]) {
+    let mut end = match rng.weighted(&[45, 38, 10]) {
         0 => End::External,
         1 => {
             let reason = reason(rng);
             End::Recover {
                 reason,
-                init_failed: rng.chance(1, 4),
+                // `TerminationUnconfirmed` (a failure report) for a runtime failure,
+                // the hard deadline's own failure, nothing for a device change.
+                init_failed: match reason {
+                    AudioCancelReason::RuntimeFailure => rng.chance(1, 4),
+                    AudioCancelReason::HardDeadline => true,
+                    _ => false,
+                },
                 interrupted: (reason == AudioCancelReason::RuntimeFailure && rng.chance(3, 4))
                     .then(|| rng.pick(&[2_000, 7_999, 8_000, 12_000])),
             }
         }
         _ => End::Crash,
     };
+    let ready = rng.chance(9, 10);
+    // An attempt that never becomes ready cannot wait for a command forever: the hard
+    // deadline ends it (`handle_deadlines_at`, 2909-2929).
+    if !ready && end == End::External {
+        end = End::Recover {
+            reason: AudioCancelReason::HardDeadline,
+            init_failed: true,
+            interrupted: None,
+        };
+    }
     AttemptPlan {
         kind,
-        connecting: rng.below(3) as u8,
-        ready: rng.chance(9, 10),
-        stalled: rng.below(2) as u8,
+        connecting: rng.chance(1, 2),
+        ready,
+        stalled: rng.chance(1, 2),
         end,
-        stop_delivery: match rng.weighted(&[50, 30, 20]) {
+        stop_delivery: match rng.weighted(&[50, 30]) {
             0 => Delivery::Sealed,
-            1 => Delivery::Unsealed,
-            _ => Delivery::Undelivered,
+            _ => Delivery::Unsealed,
         },
         stop_samples: rng.pick(&[0, 3_000, 4_799, 4_800, 9_000, 20_000]),
-        cancel: match rng.weighted(&[22, 1, 1]) {
-            0 => CancelMode::Normal,
-            1 => CancelMode::Unavailable,
-            _ => CancelMode::Timeout,
-        },
     }
 }
 

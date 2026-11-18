@@ -14,22 +14,24 @@ use crate::lifecycle as lc;
 use crate::status::{AudioCancelReason, ErrCode};
 use std::collections::VecDeque;
 
-/// The supervisor thread: takes the next step of the attempt when no arm runs.
+/// The supervisor thread: runs the next step of the message it handles, or takes the
+/// next deadline or message when it is between messages (`run_supervisor`).
 pub struct SupTask;
 
-impl World {
-    /// Retire the attempt once every step ran and nothing waits for a command.
-    pub fn sup_finish_if_done(&mut self) {
-        let done = self.sup.attempt.as_ref().is_some_and(|a| {
-            a.prefix.is_empty()
-                && a.begin.is_empty()
-                && a.finish.is_empty()
-                && a.pending_end.is_none()
-                && !a.awaiting_external
-        });
-        if done && self.sup.busy.is_none() {
-            let attempt = self.sup.attempt.take().expect("checked above");
-            self.sup.finished.push((attempt.rid, attempt.ended_by));
+/// The worker thread (`audio.rs`): sends its events into the supervisor's channel.
+pub struct WorkerTask;
+
+impl Task for WorkerTask {
+    fn name(&self) -> &'static str {
+        "worker"
+    }
+
+    fn step(&mut self, cx: &mut Cx<'_>) -> Poll {
+        let coin = (cx.w.step / 2).is_multiple_of(2);
+        if cx.w.worker_step(coin) {
+            Poll::Progress
+        } else {
+            Poll::Blocked
         }
     }
 }
@@ -40,40 +42,35 @@ impl Task for SupTask {
     }
 
     fn step(&mut self, cx: &mut Cx<'_>) -> Poll {
-        cx.w.sup_finish_if_done();
-        if cx.w.sup.can_begin_end() {
-            // The worker's own end happens (a `begin_recovery` or a thread exit).
-            cx.w.sup_begin_pending_end();
-            return Poll::Progress;
-        }
-        let Some(step) = cx.w.sup.next_step() else {
+        if cx.w.sup.busy.is_some() {
+            // An arm runs on this thread.
             return Poll::Blocked;
-        };
-        let rid =
-            cx.w.sup
-                .attempt
-                .as_ref()
-                .expect("a step has an attempt")
-                .rid;
-        {
-            let attempt = cx.w.sup.attempt.as_mut().expect("a step has an attempt");
-            if !attempt.prefix.is_empty() {
-                attempt.prefix.pop_front();
-            } else if !attempt.begin.is_empty() {
-                attempt.begin.pop_front();
-            } else {
-                attempt.finish.pop_front();
-                // `finish_attempt` is one group: no command runs until it ends.
-                attempt.finishing = !attempt.finish.is_empty();
-            }
         }
+        let Some(step) = cx.w.sup.handling.pop_front() else {
+            // Between messages: a deadline that elapsed, else the next message.
+            let coin = cx.w.step.is_multiple_of(2);
+            let timer = cx.w.sup_timer(coin);
+            if timer == Some(true) {
+                return Poll::Progress;
+            }
+            if !cx.w.sup.queue.is_empty() {
+                cx.w.sup_accept();
+                return Poll::Progress;
+            }
+            // A pending deadline that has not elapsed is a tick of time passing.
+            return if timer == Some(false) {
+                Poll::Progress
+            } else {
+                Poll::Blocked
+            };
+        };
+        let rid = cx.w.sup.handling_rid;
         match step {
             SupStep::ClearOwner => {
                 // `active = false`, `clear_owner`, `set_phase(Idle)`.
                 cx.w.sup.owner = None;
                 cx.w.sup.phase = None;
                 cx.out.notes.push(Note::OwnerCleared { rid });
-                cx.w.sup_finish_if_done();
             }
             SupStep::Answer => {
                 // `request.response.send(Ok(()))` after `Accepted` (1589-1596): a
@@ -82,23 +79,19 @@ impl Task for SupTask {
                     .start_answers
                     .entry(rid)
                     .or_insert(super::supervisor::StartAnswer::Started);
-                cx.w.sup_finish_if_done();
             }
-            SupStep::CancelAnswer => {
+            SupStep::CancelAnswer(tid) => {
                 // `response.send(Ok(cancelled))`, after `begin_recovery` returned.
-                cx.w.sup.cancel_answers.insert(rid, Ok(true));
-                cx.w.sup_finish_if_done();
+                cx.w.send_reply_pub(tid, ReplyVal::Cancel(Ok(true)));
+            }
+            SupStep::StopAnswer(tid) => {
+                // `response.send(Ok(Vec::new()))`, after `begin_recovery` returned.
+                cx.w.send_reply_pub(tid, ReplyVal::Stop(Ok(0)));
             }
             other => {
-                match other {
-                    SupStep::Ready => cx.w.sup.phase = Some(Phase::Recording),
-                    SupStep::Recovering(_) => cx.w.sup.phase = Some(Phase::Recovering),
-                    // `report_cleanup_stalled`: `set_phase(Recovering)`, once.
-                    SupStep::RecoveryStalled => cx.w.sup.phase = Some(Phase::Recovering),
-                    SupStep::Interrupted(samples) => {
-                        cx.w.preserved.insert(rid, Preserved { samples });
-                    }
-                    _ => {}
+                if let SupStep::Interrupted(samples) = other {
+                    // The capture goes to the store; the notification follows (2419-2438).
+                    cx.w.preserved.insert(rid, Preserved { samples });
                 }
                 cx.w.sup.busy = Some(other);
                 cx.w.sup.busy_restored = false;
@@ -215,7 +208,8 @@ impl Task for Bridge {
             }
             Bs::ShortIdleD => {
                 let view = cx.w.view();
-                let decision = lc::decide_sup_interrupted_short_idle(&view, id, at).after_pre();
+                let decision = lc::decide_sup_interrupted_short_idle(&view, id, at);
+                let decision = after_pre(cx, decision);
                 log_decision(cx, SiteId::SupInterruptedShortIdle, &decision, rid, None);
                 let ctx = self.ctx(cx, decision.row.0, SiteId::SupInterruptedShortIdle);
                 apply_in(cx, &ctx, &decision);
@@ -230,7 +224,6 @@ impl Task for Bridge {
                     rid,
                     step: self.step,
                 });
-                cx.w.sup_finish_if_done();
                 return Poll::Done;
             }
         }
@@ -243,8 +236,8 @@ impl Bridge {
         let rid = self.rid;
         match self.step {
             SupStep::Accepted => {
-                let decision = lc::decide_sup_accepted_nolock(cx.w.facts(), id, at)
-                    .after_prefix(&lc::accepted_prefix());
+                let decision = lc::decide_sup_accepted_nolock(cx.w.facts(), id, at);
+                let decision = after_prefix(cx, decision, &lc::accepted_prefix());
                 log_decision(cx, SiteId::SupAccepted, &decision, rid, None);
                 let ctx = self.ctx(cx, decision.row.0, SiteId::SupAccepted);
                 queue_phase(&mut self.q, ctx, &decision, Placement::PostDT);
@@ -310,8 +303,8 @@ impl Bridge {
                         recovery_reason: recovery,
                     },
                     at,
-                )
-                .after_prefix(&lc::init_failed_prefix(kind));
+                );
+                let decision = after_prefix(cx, decision, &lc::init_failed_prefix(kind));
                 log_decision(cx, SiteId::SupInitFailed, &decision, rid, None);
                 let ctx = self.ctx(cx, decision.row.0, SiteId::SupInitFailed);
                 queue_phase(&mut self.q, ctx, &decision, Placement::PostDT);
@@ -352,7 +345,10 @@ impl Bridge {
                 apply_in(cx, &ctx, &decision);
                 cx.w.sup.busy_restored = true;
             }
-            SupStep::ClearOwner | SupStep::Answer | SupStep::CancelAnswer => {
+            SupStep::ClearOwner
+            | SupStep::Answer
+            | SupStep::CancelAnswer(_)
+            | SupStep::StopAnswer(_) => {
                 unreachable!("{:?} is not a notification", self.step)
             }
         }

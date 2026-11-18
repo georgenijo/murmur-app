@@ -4,6 +4,7 @@
 //! effect follow the shell (`commands/recording.rs`) and the C3 tables.
 
 use super::model::*;
+use super::supervisor::ReplyPoll;
 use super::task::*;
 use crate::admission::Occupancy;
 use crate::cancel as core_cancel;
@@ -157,7 +158,9 @@ impl Queued for StartFlight {
     fn cross(&mut self, cx: &mut Cx<'_>, _fx: &FxCtx, effect: &Effect) -> Result<(), ()> {
         match effect {
             Effect::CaptureStart(id) => {
-                cx.w.sup_start(id.0, self.plan.clone()).map_err(|_| ())?;
+                // `send_start_request`: the client enqueues; a busy supervisor never
+                // blocks it (D-S2b-9 (a)).
+                cx.w.sup_send_start(id.0, self.plan.clone());
                 Ok(())
             }
             other => unreachable!("a start flight does not run {other:?}"),
@@ -254,11 +257,6 @@ impl Task for StartFlight {
                         let spec = decision
                             .continuation
                             .expect("R101.15 registers K:CaptureStart");
-                        if spec.recording_id.0 > cx.w.current_id + 1 {
-                            cx.out
-                                .violations
-                                .push("SP6: continuation id above current".into());
-                        }
                         self.cap = Some(cx.w.register(spec));
                         let ctx = fx(cx, cx.w.current_id + 1, "R101.15", SiteId::StartRequest);
                         // `AllocId` is the first `In` effect: apply it, then bind the id.
@@ -361,8 +359,8 @@ impl Task for StartFlight {
                             at,
                         )
                     },
-                )
-                .after_pre();
+                );
+                let decision = after_pre(cx, decision);
                 self.cap = None;
                 log_decision(cx, SiteId::StartCaptureResult, &decision, rid, None);
                 let ctx = fx(cx, rid, decision.row.0, SiteId::StartCaptureResult);
@@ -553,8 +551,6 @@ pub struct StopFlight {
     pipeline_op: Option<Continuation>,
     cp: Option<Result<usize, ()>>,
     cc: Option<Result<bool, ()>>,
-    /// The capture cancel's answer is the supervisor's `CancelAnswer` step.
-    cc_pending: bool,
     reply: Option<PipelineReply>,
     panicked: bool,
 }
@@ -575,7 +571,6 @@ impl StopFlight {
             pipeline_op: None,
             cp: None,
             cc: None,
-            cc_pending: false,
             reply: None,
             panicked: false,
         }
@@ -615,18 +610,18 @@ impl Queued for StopFlight {
                     // An interrupted capture's preserved samples bypass the
                     // supervisor (`arm_capture_stop`).
                     Some(preserved) => Ok(preserved.samples),
-                    None => match cx.w.sup_stop(id.0).map_err(|_| ())? {
-                        Ok((samples, _delivery)) => Ok(samples),
-                        Err(()) => Err(()),
-                    },
+                    None => {
+                        // `stop_with_trigger`: the client enqueues and waits; the
+                        // reply, the receiver's timeout and the continuation are
+                        // later events (`AfterCp`).
+                        cx.w.sup_send_stop(id.0, cx.tid);
+                        return Ok(());
+                    }
                 });
                 Ok(())
             }
             Effect::CaptureCancel { id, .. } => {
-                match cx.w.sup_cancel(id.0).map_err(|_| ())? {
-                    super::supervisor::CancelReply::Now(result) => self.cc = Some(result),
-                    super::supervisor::CancelReply::Pending => self.cc_pending = true,
-                }
+                cx.w.sup_send_cancel(id.0, cx.tid);
                 Ok(())
             }
             Effect::PipelineSpawn(id) => {
@@ -754,13 +749,22 @@ impl Task for StopFlight {
             }
             Ts::Site206 => {
                 let rid = self.rid;
-                let Some(result) = self.cc.or_else(|| {
-                    self.cc_pending
-                        .then(|| cx.w.sup.cancel_answers.get(&rid).copied())
-                        .flatten()
-                }) else {
-                    // The client waits for the supervisor's answer.
-                    return Poll::Blocked;
+                let result = match self.cc {
+                    Some(result) => result,
+                    None => match cx.w.sup_poll_reply(cx.tid) {
+                        ReplyPoll::Waiting => return Poll::Progress,
+                        ReplyPoll::Ready(ReplyVal::Cancel(result)) => {
+                            self.cc = Some(result);
+                            result
+                        }
+                        ReplyPoll::TimedOut => {
+                            self.cc = Some(Err(()));
+                            Err(())
+                        }
+                        ReplyPoll::Ready(ReplyVal::Stop(_)) => {
+                            unreachable!("a cancel waits for a cancel reply")
+                        }
+                    },
                 };
                 let token = self.op.take().expect("R201.4 registered K:CaptureCancel");
                 let decision = consume(
@@ -849,8 +853,8 @@ impl Task for StopFlight {
                         },
                         at,
                     )
-                })
-                .after_pre();
+                });
+                let decision = after_pre(cx, decision);
                 self.op = None;
                 log_decision(cx, SiteId::StopContext, &decision, rid, None);
                 let ctx = fx(cx, rid, decision.row.0, SiteId::StopContext);
@@ -860,8 +864,22 @@ impl Task for StopFlight {
                 self.st = Ts::Finish;
             }
             Ts::AfterCp => {
-                let Some(result) = self.cp else {
-                    return Poll::Blocked;
+                let result = match self.cp {
+                    Some(result) => result,
+                    None => match cx.w.sup_poll_reply(cx.tid) {
+                        ReplyPoll::Waiting => return Poll::Progress,
+                        ReplyPoll::Ready(ReplyVal::Stop(result)) => {
+                            self.cp = Some(result);
+                            result
+                        }
+                        ReplyPoll::TimedOut => {
+                            self.cp = Some(Err(()));
+                            Err(())
+                        }
+                        ReplyPoll::Ready(ReplyVal::Cancel(_)) => {
+                            unreachable!("a stop waits for a stop reply")
+                        }
+                    },
                 };
                 if self.cfg.panic_after_cp {
                     // The stop task unwinds: `IdleGuard::drop` finishes with the
@@ -938,8 +956,8 @@ impl Task for StopFlight {
                         closure_emit: false,
                     },
                     at,
-                )
-                .after_pre();
+                );
+                let decision = after_pre(cx, decision);
                 log_decision(
                     cx,
                     SiteId::GuardFinish,
@@ -979,8 +997,8 @@ impl Task for StopFlight {
                             at,
                         )
                     },
-                )
-                .after_pre();
+                );
+                let decision = after_pre(cx, decision);
                 self.stop = None;
                 log_decision(
                     cx,
@@ -1086,7 +1104,6 @@ pub struct CancelFlight {
     rid: Rid,
     op: Option<Continuation>,
     cc: Option<Result<bool, ()>>,
-    cc_pending: bool,
     tail: bool,
 }
 
@@ -1099,7 +1116,6 @@ impl CancelFlight {
             rid: 0,
             op: None,
             cc: None,
-            cc_pending: false,
             tail: false,
         }
     }
@@ -1113,10 +1129,7 @@ impl Queued for CancelFlight {
     fn cross(&mut self, cx: &mut Cx<'_>, _fx: &FxCtx, effect: &Effect) -> Result<(), ()> {
         match effect {
             Effect::CaptureCancel { id, .. } => {
-                match cx.w.sup_cancel(id.0).map_err(|_| ())? {
-                    super::supervisor::CancelReply::Now(result) => self.cc = Some(result),
-                    super::supervisor::CancelReply::Pending => self.cc_pending = true,
-                }
+                cx.w.sup_send_cancel(id.0, cx.tid);
                 Ok(())
             }
             other => unreachable!("a cancel does not run {other:?}"),
@@ -1183,14 +1196,22 @@ impl Task for CancelFlight {
             }
             Cs::Site206 => {
                 let rid = self.rid;
-                let Some(result) = self.cc.or_else(|| {
-                    self.cc_pending
-                        .then(|| cx.w.sup.cancel_answers.get(&rid).copied())
-                        .flatten()
-                }) else {
-                    // The client waits until `begin_recovery` returned and the
-                    // supervisor answered (recording.rs 8285, audio_lifecycle 1332).
-                    return Poll::Blocked;
+                let result = match self.cc {
+                    Some(result) => result,
+                    None => match cx.w.sup_poll_reply(cx.tid) {
+                        ReplyPoll::Waiting => return Poll::Progress,
+                        ReplyPoll::Ready(ReplyVal::Cancel(result)) => {
+                            self.cc = Some(result);
+                            result
+                        }
+                        ReplyPoll::TimedOut => {
+                            self.cc = Some(Err(()));
+                            Err(())
+                        }
+                        ReplyPoll::Ready(ReplyVal::Stop(_)) => {
+                            unreachable!("a cancel waits for a cancel reply")
+                        }
+                    },
                 };
                 let token = self.op.take().expect("R205.4 registered K:CaptureCancel");
                 let decision = consume(
@@ -1379,8 +1400,8 @@ impl Task for Pipeline {
                         closure_emit: false,
                     },
                     at,
-                )
-                .after_pre();
+                );
+                let decision = after_pre(cx, decision);
                 log_decision(cx, SiteId::GuardFinish, &decision, rid, Some(origin));
                 cx.w.history.pipelines.remove(&rid);
                 if let Some(token) = self.op.take() {

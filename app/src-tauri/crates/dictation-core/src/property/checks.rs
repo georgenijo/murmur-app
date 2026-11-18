@@ -4,7 +4,6 @@
 //! precondition, D-S2b-7 (a)) and the end-of-run liveness check (C7.3), which reads
 //! per-generation evidence instead of exempting whole runs.
 
-use super::c3;
 use super::model::*;
 use super::task::*;
 use crate::effects::{Effect, PerfOutcome, Placement};
@@ -248,18 +247,13 @@ pub struct Checker {
     /// Recordings whose pipeline or stop task panicked (PD-13).
     panicked_ids: BTreeSet<Rid>,
     pub steps_checked: u32,
+    /// How many of `World::registry_faults` were already reported.
+    faults_seen: usize,
     /// A readable event trace (for reproducing a seed by hand).
     pub trace: Option<Vec<String>>,
 }
 
 const SP2_EXEMPT: [u8; 4] = [1, 5, 7, 16];
-
-/// `DUMP_C3=1`: print every status write, terminal and performance completion, to
-/// regenerate the C3 table after the core's rows change.
-fn dump_c3() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("DUMP_C3").is_ok())
-}
 
 fn edge_allowed(from: Status, to: Status) -> bool {
     use Status::*;
@@ -324,6 +318,10 @@ impl Checker {
         for violation in &out.violations {
             self.fail(violation.clone());
         }
+        for fault in w.registry_faults.iter().skip(self.faults_seen) {
+            self.violations.push(fault.clone());
+        }
+        self.faults_seen = w.registry_faults.len();
         let mut hits: Vec<Hit> = Vec::new();
         for d in &out.decisions {
             self.detect_decision(d, &mut hits);
@@ -543,78 +541,26 @@ impl Checker {
             .any(|hit| pds.contains(&hit.pd) && (hit.row == row || hit.row == "TERM"))
     }
 
+    /// SP2 and SP3 per effect. The C3 outcomes of a decision (statuses, terminals,
+    /// performance completions) are compared with the fixture once per decision, in
+    /// `task::log_decision`.
     fn check_effect(&mut self, e: &EffectEv, hits: &[Hit]) {
         let stale = e.input_rid != e.current;
-        if dump_c3() {
-            match &e.effect {
-                Effect::SetStatus(to) => {
-                    eprintln!("C3 {} ST {:?}->{:?}", e.row, e.status_before, to)
-                }
-                Effect::Terminal(t) => eprintln!(
-                    "C3 {} TERM {:?}/{:?} at={} stale={stale}",
-                    e.row,
-                    t.outcome,
-                    t.code,
-                    e.at.label()
-                ),
-                Effect::PerfComplete(c) => eprintln!("C3 {} PC {:?}", e.row, c.outcome),
-                Effect::PipelineGuardFinish(o) => eprintln!("C3 {} PGF {:?}", e.row, o),
-                _ => {}
-            }
-        }
-        match &e.effect {
-            Effect::SetStatus(to) => {
-                // SP3: the edge set, then C3's `(row, from, to)`.
-                if !edge_allowed(e.status_before, *to) {
-                    self.fail(format!(
-                        "SP3: {} wrote {:?} -> {:?}",
-                        e.row, e.status_before, to
-                    ));
-                } else if !c3::status_write_listed(e.row, e.status_before, *to) {
-                    self.fail(format!(
-                        "SP3: {} wrote {:?} -> {:?}, which C3 does not list for the row",
-                        e.row, e.status_before, to
-                    ));
-                }
-                // SP2: a stale input never changes the current recording's status.
-                if stale && !Self::exempt(hits, &SP2_EXEMPT, e.row) {
-                    self.fail(format!(
-                        "SP2: {} (input {}) wrote {:?} while current is {}",
-                        e.row, e.input_rid, to, e.current
-                    ));
-                }
-            }
-            Effect::Terminal(terminal) => {
-                // SP2 (terminals): a stale input claims only what C3 lists for a stale
-                // input of the row, and every terminal is one the row may claim.
-                // Only a terminal under D is stale in SP2's sense: the id read at the
-                // decision is the id the effect sees. Later placements may run after
-                // another start allocated an id.
-                let under_d = (e.at == Placement::In).then_some(stale);
-                if !c3::terminal_listed(e.row, terminal.outcome, terminal.code, under_d) {
-                    self.fail(format!(
-                        "C3: {} claimed {:?}/{:?} for {} input {}, which C3 does not list",
-                        e.row,
-                        terminal.outcome,
-                        terminal.code,
-                        if stale { "a stale" } else { "the current" },
-                        e.input_rid
-                    ));
-                }
-            }
-            Effect::PerfComplete(complete) if !c3::perf_listed(e.row, complete.outcome, true) => {
+        if let Effect::SetStatus(to) = &e.effect {
+            // SP3: the edge set.
+            if !edge_allowed(e.status_before, *to) {
                 self.fail(format!(
-                    "C3: {} completed performance {:?}, which C3 does not list",
-                    e.row, complete.outcome
+                    "SP3: {} wrote {:?} -> {:?}",
+                    e.row, e.status_before, to
                 ));
             }
-            Effect::PipelineGuardFinish(outcome) if !c3::perf_listed(e.row, *outcome, false) => {
+            // SP2: a stale input never changes the current recording's status.
+            if stale && !Self::exempt(hits, &SP2_EXEMPT, e.row) {
                 self.fail(format!(
-                    "C3: {} finished the pipeline guard with {:?}, which C3 does not list",
-                    e.row, outcome
+                    "SP2: {} (input {}) wrote {:?} while current is {}",
+                    e.row, e.input_rid, to, e.current
                 ));
             }
-            _ => {}
         }
     }
 
@@ -737,7 +683,7 @@ impl Checker {
             .sup
             .attempt
             .as_ref()
-            .filter(|a| a.awaiting_external)
+            .filter(|a| matches!(a.phase, Phase::Starting | Phase::Recording))
             .map(|a| a.rid);
         let mut problems: Vec<String> = Vec::new();
         if !quiescent_tasks.is_empty() {

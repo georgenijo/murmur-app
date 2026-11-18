@@ -467,71 +467,146 @@ fn sp3_fails_on_an_edge_outside_the_table() {
 /// to)` C3 lists for the row. The two mutants of R211.2 Sol applied to the core: a
 /// row that claims `Success` instead of `Superseded`, and one that also writes
 /// `Idle -> Idle` (a consistent `transition`, so the decision still validates).
-#[test]
-fn the_c3_table_fails_both_r211_2_mutants() {
-    let r211_2 = |effect_kind: Effect| {
-        let mut out = StepOut::default();
-        out.effects
-            .push(effect("R211.2", effect_kind, 1, 1, Status::Idle));
-        check(out)
-    };
-    let unmutated = r211_2(Effect::Terminal(Terminal::new(
-        TerminalOutcome::Superseded,
-        ErrCode::StaleOwner,
-    )));
-    assert!(
-        unmutated.violations.is_empty(),
-        "{:?}",
-        unmutated.violations
-    );
-
-    let success = r211_2(Effect::Terminal(Terminal::new(
-        TerminalOutcome::Success,
-        ErrCode::None,
-    )));
-    assert!(
-        violations(&success).contains("C3: R211.2 claimed Success"),
-        "{:?}",
-        success.violations
-    );
-
-    let extra_write = r211_2(Effect::SetStatus(Status::Idle));
-    assert!(
-        violations(&extra_write).contains("SP3: R211.2 wrote Idle -> Idle"),
-        "{:?}",
-        extra_write.violations
-    );
+fn terminal(outcome: TerminalOutcome, code: ErrCode) -> Effect {
+    Effect::Terminal(Terminal::new(outcome, code))
 }
 
-/// SP2 for terminals: under D a stale input claims only what C3 lists for a stale
-/// input of the row; later placements may see a newer id and are checked on outcome.
+fn perf(outcome: PerfOutcome) -> Effect {
+    Effect::PerfComplete(PerfComplete {
+        outcome,
+        stage: crate::effects::PerfStage::CaptureFinalization,
+        cause: None,
+        with_audio_duration: false,
+    })
+}
+
+/// D-S2b-9 (d): the fixture is the appendix's rows, one line per row of `C3_ROWS`, and
+/// nothing else (a snapshot of what a run observed would silently drop a row).
 #[test]
-fn a_stale_terminal_under_d_must_be_listed_for_a_stale_input() {
-    let superseded = || {
-        Effect::Terminal(Terminal::new(
-            TerminalOutcome::Superseded,
-            ErrCode::StaleOwner,
-        ))
-    };
-    let mut out = StepOut::default();
-    out.effects
-        .push(effect("R211.2", superseded(), 1, 2, Status::Idle));
-    let checker = check(out);
-    assert!(
-        violations(&checker).contains("C3: R211.2 claimed"),
-        "{:?}",
-        checker.violations
-    );
-    let mut out = StepOut::default();
-    out.effects.push(effect_at(
+fn the_c3_fixture_lists_every_c3_row_once() {
+    let mut fixture = super::c3::fixture_rows();
+    fixture.sort_unstable();
+    let mut rows: Vec<&str> = crate::rows::C3_ROWS.iter().map(|(id, _)| *id).collect();
+    rows.sort_unstable();
+    assert_eq!(fixture, rows, "c3_fixture.txt and rows::C3_ROWS differ");
+}
+
+/// Both R211.2 mutants of the earlier round and the duplicate-terminal mutant fail,
+/// per decision, while the unmutated row passes.
+#[test]
+fn the_c3_fixture_fails_the_r211_2_mutants_and_a_duplicate_terminal() {
+    use super::c3::check_decision as check;
+    let superseded = || terminal(TerminalOutcome::Superseded, ErrCode::StaleOwner);
+    assert_eq!(check("R211.2", Status::Idle, false, &[superseded()]), Ok(()));
+
+    // Mutant A: claims `Success` instead of `Superseded`.
+    let success = check(
         "R211.2",
-        superseded(),
-        Placement::PostDT,
-        1,
-        2,
         Status::Idle,
-    ));
-    assert!(check(out).violations.is_empty());
+        false,
+        &[terminal(TerminalOutcome::Success, ErrCode::None)],
+    );
+    assert!(success.unwrap_err().contains("R211.2"), "claim Success");
+    // Mutant B: an extra `Idle -> Idle` write.
+    let write = check(
+        "R211.2",
+        Status::Idle,
+        false,
+        &[superseded(), Effect::SetStatus(Status::Idle)],
+    );
+    assert!(write.unwrap_err().contains("ST:Idle>Idle"), "extra Idle write");
+    // Mutant C: an identical second terminal (the old snapshot accepted it).
+    let twice = check("R211.2", Status::Idle, false, &[superseded(), superseded()]);
+    assert!(twice.is_err(), "a duplicate terminal must fail");
+    // A missing terminal fails too, and R211.2 does not run for a stale input.
+    assert!(check("R211.2", Status::Idle, false, &[]).is_err());
+    assert!(check("R211.2", Status::Idle, true, &[superseded()]).is_err());
+    // The row reads `Idle`: another status is not R211.2.
+    assert!(check("R211.2", Status::Processing, false, &[superseded()]).is_err());
+}
+
+/// Valid inputs the model never observed are accepted (the fixture is the appendix,
+/// not the set of runs): the review's R213.2 and R203.8a cases among them.
+#[test]
+fn the_c3_fixture_accepts_valid_inputs_the_model_never_observed() {
+    use super::c3::check_decision as check;
+    // R213.2 with `recovery_reason == RuntimeFailure`: `RuntimeInterruption/<code>`.
+    assert_eq!(
+        check(
+            "R213.2",
+            Status::Starting,
+            false,
+            &[
+                terminal(
+                    TerminalOutcome::RuntimeInterruption,
+                    ErrCode::TerminationUnconfirmed
+                ),
+                perf(PerfOutcome::Failed)
+            ]
+        ),
+        Ok(())
+    );
+    // R203.8a: a stale stop whose capture is empty finishes the guard with `NoSpeech`.
+    assert_eq!(
+        check(
+            "R203.8a",
+            Status::Idle,
+            true,
+            &[
+                terminal(TerminalOutcome::NoSpeech, ErrCode::EmptyAudio),
+                Effect::PipelineGuardFinish(PerfOutcome::NoSpeech)
+            ]
+        ),
+        Ok(())
+    );
+    // R102.3: the write over `Recovering`; R209.5: a system-wake recovery.
+    assert_eq!(
+        check(
+            "R102.3",
+            Status::Recovering,
+            false,
+            &[
+                Effect::SetStatus(Status::Idle),
+                terminal(TerminalOutcome::CaptureInitFailure, ErrCode::RuntimeFailure)
+            ]
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        check(
+            "R209.5",
+            Status::Starting,
+            false,
+            &[
+                Effect::SetStatus(Status::Recovering),
+                perf(PerfOutcome::Cancelled),
+                terminal(TerminalOutcome::RuntimeInterruption, ErrCode::SystemWake)
+            ]
+        ),
+        Ok(())
+    );
+    // A row the appendix does not have is an error, not a pass.
+    assert!(check("R999.1", Status::Idle, false, &[]).is_err());
+}
+
+/// SP6 at every registration (D-S2b-9 (d)), not only R101.15's.
+#[test]
+fn the_continuation_id_bound_is_checked_at_every_registration() {
+    use crate::decision::{ContKind, ContinuationSpec};
+    use crate::ids::RecordingId;
+    let spec = |rid: u64, kind: ContKind| ContinuationSpec {
+        recording_id: RecordingId(rid),
+        kind,
+    };
+    let mut w = World::new();
+    w.current_id = 4;
+    w.register(spec(4, ContKind::StopContext));
+    w.register(spec(5, ContKind::CaptureStart)); // before ID+: `current + 1`
+    assert!(w.registry_faults.is_empty(), "{:?}", w.registry_faults);
+    w.register(spec(5, ContKind::ResolveContext));
+    w.register(spec(6, ContKind::CaptureStart));
+    w.register(spec(9, ContKind::Pipeline));
+    assert_eq!(w.registry_faults.len(), 3, "{:?}", w.registry_faults);
 }
 
 #[test]
@@ -917,17 +992,15 @@ fn external_attempt(rid: Rid) -> Attempt {
         rid,
         AttemptPlan {
             kind: StartKind::Live,
-            connecting: 0,
+            connecting: false,
             ready: true,
-            stalled: 0,
+            stalled: false,
             end: End::External,
             stop_delivery: Delivery::Sealed,
             stop_samples: 0,
-            cancel: CancelMode::Normal,
         },
-        Default::default(),
     );
-    attempt.awaiting_external = true;
+    attempt.phase = Phase::Recording;
     attempt
 }
 
