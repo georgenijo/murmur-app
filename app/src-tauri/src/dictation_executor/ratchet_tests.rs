@@ -304,6 +304,7 @@ const TEST_ONLY_FILES: &[&str] = &[
     "capture_speculative_tests.rs",
     "capture_standby_tests.rs",
     "capture_stop_diagnostics_tests.rs",
+    "commands/recording_bug_replay_tests.rs",
     "commands/recording_cancel_tests.rs",
     "commands/recording_contract_tests.rs",
     "commands/recording_deferral_tests.rs",

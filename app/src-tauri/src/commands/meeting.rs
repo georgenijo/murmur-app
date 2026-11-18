@@ -293,6 +293,31 @@ mod admission_tests {
         }
     }
 
+    /// `bb66238b` (appendix C13.3, Stage 4): a permission relaunch committed over
+    /// a half-started meeting. The post-claim `relaunch_committed` re-read
+    /// (`MeetingPostClaim`) refuses with `MEETING_RESTARTING` and the claim is
+    /// undone (`meeting_active` back to false). The dictation half is
+    /// `recording::bug_replay_tests::bug_relaunch_vs_dictation_start`.
+    ///
+    /// Revert: remove the post-claim re-read from `claim_meeting_ownership`.
+    /// Mutation: remove the `relaunch_recheck` refusal from `MeetingPostClaim`.
+    #[test]
+    fn bug_relaunch_vs_meeting_claim() {
+        let app_state = AppState::default();
+        assert_eq!(claim_meeting_ownership(&app_state, true), Ok(()));
+        assert!(app_state.meeting_active.load(Ordering::SeqCst));
+        let _committed = crate::commands::permissions::CommittedRelaunchForTest::raise();
+        for inference in [true, false] {
+            let app_state = AppState::default();
+            assert_eq!(
+                claim_meeting_ownership(&app_state, inference),
+                Err(MEETING_RESTARTING)
+            );
+            assert!(!app_state.meeting_active.load(Ordering::SeqCst));
+            assert!(!app_state.meeting_inference_active.load(Ordering::SeqCst));
+        }
+    }
+
     #[test]
     fn claiming_meeting_ownership_sets_the_flags_when_no_relaunch_is_committed() {
         let app_state = AppState::default();
