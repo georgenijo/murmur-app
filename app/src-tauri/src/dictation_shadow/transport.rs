@@ -486,7 +486,8 @@ pub(crate) enum Mark {
     /// A live M-field written at effect time after D, before and after.
     Mirror(MirrorWitness),
     /// A value the live path actually read (before the conditional that depends on
-    /// it): `SPEC` sends `SpeculativeFlowing` here.
+    /// it): `SPEC` sends `SpeculativeFlowing` here, once before each post-D
+    /// `Cond{SpecFlowing}`; the comparator requires it (no header fallback).
     Observed(ObservedFact),
     /// A ticker registration attempt after D.
     Ticker(TickerGate),

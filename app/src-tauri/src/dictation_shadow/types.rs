@@ -539,7 +539,8 @@ pub(crate) enum ShadowMsg {
         gate: TickerGate,
     },
     /// A value the live path actually read, sent before the witness that depends on
-    /// it (D-S2c-7 amendment): the latest `SpeculativeFlowing` overrides the header's.
+    /// it (D-S2c-7 amendments 1 and 2): every post-D `Cond{SpecFlowing}` needs one, and
+    /// is judged against it alone; without one the result is `diff_kind 7`.
     Observed {
         rec: RecorderId,
         fact: ObservedFact,
