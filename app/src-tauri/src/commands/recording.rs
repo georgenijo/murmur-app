@@ -1386,9 +1386,15 @@ impl<'a> IdleGuard<'a> {
 /// A guard finish reached re-entrantly (D-S2-4): its data, queued until the
 /// outermost core entry has released D. Today's code deadlocks on D here; no
 /// production listener reaches it.
+///
+/// An entry owns everything it needs (an owner, an idle emit, a guard: all
+/// `'static`) and never borrows or points at an [`AppState`] (D-S2-16 a): the state
+/// is supplied by the drain that runs it, and `key` is only a tag. An entry whose
+/// state has been freed is never run by another state's drain, and a retirement
+/// needs no state at all.
 struct DeferredFinish {
-    /// Identity of the state's `core_history` (never dereferenced), so an entry is
-    /// only run by an entry of the same state.
+    /// Identity of the state's `core_history` (an address used as a tag, never
+    /// dereferenced), so a finish is only run by an entry of the same state.
     key: usize,
     recording_id: u64,
     origin: murmur_dictation_core::inputs::GuardOrigin,
@@ -1400,37 +1406,6 @@ struct DeferredFinish {
     /// A history-only retirement (a dropped owner): no finish section, no status or
     /// event; dropping `owner` / `op` retires them.
     retire_only: bool,
-    /// Set only when a flight dropped inside a core span hands its carried finishes
-    /// to the queue (D-S2-13): the state the finish belongs to, so the outer entry's
-    /// drain, which may be another state's, can still run it.
-    state: Option<StateRef>,
-}
-
-/// A lifetime-erased reference to an [`AppState`], kept with a deferred finish that
-/// a dropped flight hands to the thread's queue while an outer span is open.
-///
-/// SAFETY of [`StateRef::get`]: such an entry exists only between the drop of the
-/// flight that borrowed the state and the exit of the span that was open at that
-/// drop, on the same thread, and the dropper of the flight (which holds the state
-/// borrow it dropped the flight under) is still on the stack. In production the
-/// state is the process-lifetime managed state.
-#[derive(Clone, Copy)]
-struct StateRef(std::ptr::NonNull<AppState>);
-
-// SAFETY: see above; the pointer is only dereferenced on the thread that queued it.
-unsafe impl Send for StateRef {}
-
-impl StateRef {
-    fn new(state: &AppState) -> Self {
-        Self(std::ptr::NonNull::from(state))
-    }
-
-    /// # Safety
-    /// The state must still be alive (see the type's documentation).
-    unsafe fn get<'x>(self) -> &'x AppState {
-        // SAFETY: the caller upholds the lifetime contract above.
-        unsafe { self.0.as_ref() }
-    }
 }
 
 thread_local! {
@@ -1454,7 +1429,6 @@ fn defer_finish(
             idle,
             op: None,
             retire_only: false,
-            state: None,
         });
     });
 }
@@ -1472,7 +1446,6 @@ fn defer_retirement(owner: PipelineOwner) {
             idle: None,
             op: None,
             retire_only: true,
-            state: None,
         });
     });
 }
@@ -1488,7 +1461,6 @@ pub(crate) fn defer_op_retirement(op: ContinuationGuard) {
             idle: None,
             op: Some(op),
             retire_only: true,
-            state: None,
         });
     });
 }
@@ -1512,9 +1484,8 @@ fn drain_deferred_finishes(app_state: &AppState) {
 
 /// [`drain_deferred_finishes`] over a `batch` (a flight's carried work, run first and
 /// in order) and the thread's queue. With `own_tail_from: None` it runs every entry
-/// of this state, plus any retirement (it needs no state) and any finish a dropped
-/// flight handed over with its state (D-S2-13): an entry guard drains whatever its
-/// own span left. With `Some(mark)` it runs only entries of this state queued at
+/// of this state, plus any retirement (it needs no state): an entry guard drains
+/// whatever its own span left. With `Some(mark)` it runs only entries of this state queued at
 /// or after queue position `mark`: what the batch's own finishes queued in their
 /// own spans. A flight's drain must never run work an independent entry queued
 /// before it (D-S2-15: FIFO is per owner).
@@ -1533,7 +1504,7 @@ fn run_deferred(
                     let mut queue = queue.borrow_mut();
                     let at = queue.iter().enumerate().position(
                         |(index, entry)| match own_tail_from {
-                            None => entry.key == me || entry.retire_only || entry.state.is_some(),
+                            None => entry.key == me || entry.retire_only,
                             Some(mark) => index >= mark && entry.key == me,
                         },
                     )?;
@@ -1543,22 +1514,13 @@ fn run_deferred(
         let Some(mut entry) = next else {
             break;
         };
-        // The state a foreign finish was handed over with (see `StateRef`).
-        let run_state: &AppState = match entry.state {
-            Some(handed_over) if entry.key != me => {
-                // SAFETY: see `StateRef`; the entry was queued on this thread by the
-                // drop of a flight whose dropper still holds the state.
-                unsafe { handed_over.get() }
-            }
-            _ => app_state,
-        };
         // Test builds: whether T was acquirable when the drain ran this entry. A
         // drain never runs while the T of the entry that queued the work is held
         // (D-S2-13); tests read the log with `take_t_free_at_drain`.
         #[cfg(test)]
         T_FREE_AT_DRAIN.with(|log| {
             log.borrow_mut()
-                .push(run_state.recording_transition.try_lock().is_ok());
+                .push(app_state.recording_transition.try_lock().is_ok());
         });
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if entry.retire_only {
@@ -1567,7 +1529,7 @@ fn run_deferred(
                 drop(entry.op.take());
             } else {
                 IdleGuard::finish_section(
-                    run_state,
+                    app_state,
                     entry.recording_id,
                     entry.origin,
                     entry
@@ -1681,6 +1643,12 @@ impl Drop for DrainDeferredFinishes<'_> {
 /// that hands the work its spans queued up to this guard; the work therefore never
 /// stays on a thread-local queue across an await (it moves with the future, and a
 /// later poll on another thread, or another entry on this one, cannot run it).
+///
+/// Dropped outside any span (a runtime worker aborting or completing the future,
+/// the only in-contract drop, D-S2-16) it releases T first, then drains its own
+/// carried work in its `Drop`. Dropped inside a span it is out of contract: a debug
+/// assertion in test and debug builds, and in release the work goes, as owned
+/// entries under their own tag, to the ordinary thread queue.
 struct FlightDrain<'a> {
     app_state: &'a AppState,
     carried: Vec<DeferredFinish>,
@@ -1716,21 +1684,18 @@ impl Drop for FlightDrain<'_> {
         let _alive = DrainAlive::new();
         let carried = std::mem::take(&mut self.carried);
         if crate::dictation_executor::executor::in_core() {
-            // Dropped inside a core span (a listener dropped the suspended start):
-            // nothing can run now. The work goes to the thread's queue with its
-            // state, and the outer entry's drain runs it once that span exits, even
-            // when that entry belongs to another state.
-            let handed_over = StateRef::new(self.app_state);
-            DEFERRED_FINISHES.with(|queue| {
-                queue
-                    .borrow_mut()
-                    .extend(carried.into_iter().map(|mut entry| {
-                        if !entry.retire_only {
-                            entry.state = Some(handed_over);
-                        }
-                        entry
-                    }));
-            });
+            // Out of contract (D-S2-16): production drops a dictation future only
+            // on a runtime worker between polls, never inside a core span. Test and
+            // debug builds fail here; a release build keeps the work, as owned
+            // entries under their own owner tag, on the ordinary thread queue for
+            // the next drain of that state. There is no handoff and no pointer to
+            // the state: a drain of another state leaves these finishes alone.
+            debug_assert!(
+                std::thread::panicking(),
+                "a start flight was dropped inside a core span: dictation futures are \
+                 dropped only outside one (D-S2-16)"
+            );
+            DEFERRED_FINISHES.with(|queue| queue.borrow_mut().extend(carried));
             return;
         }
         // Only the flight's own work: its carried list, then what those finishes
