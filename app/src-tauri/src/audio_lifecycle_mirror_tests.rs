@@ -563,7 +563,10 @@ fn items_for(file: &str) -> Vec<Item> {
 /// The item a row cites, by its qualified key (`Type::name`) or, when the bare name is
 /// unique in the file, by its name.
 fn cited_item(row: &Mirror) -> Result<Item, String> {
-    let items = items_for(row.file);
+    cited_item_in(row, items_for(row.file))
+}
+
+fn cited_item_in(row: &Mirror, items: Vec<Item>) -> Result<Item, String> {
     let exact: Vec<&Item> = items.iter().filter(|i| i.key == row.function).collect();
     let found: Vec<&Item> = if exact.is_empty() {
         items.iter().filter(|i| i.name == row.function).collect()
@@ -582,31 +585,100 @@ fn cited_item(row: &Mirror) -> Result<Item, String> {
     }
 }
 
-/// The mirror's citations are true, as tokens: the cited function exists, its cited lines
-/// lie inside it, and the fragment and every guard of the row occur as a sequence of
-/// tokens within the cited lines. A row that cites a real-supervisor test names a test
-/// that exists.
+/// The mirror's citations are true, as tokens: the cited function exists and is
+/// hash-pinned, and the fragment and every guard of the row occur as a sequence of tokens
+/// within it. A row that cites a real-supervisor test names a test that exists.
 #[test]
 fn the_supervisor_mirror_cites_the_real_source() {
+    let problems = citation_problems(LIFECYCLE_SOURCE, AUDIO_SOURCE);
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// D-S2b-20: a citation is resolved inside its pinned function and keeps no line range.
+/// Lines added anywhere (a comment block at the top of either file, or inside a cited
+/// function) break no citation by themselves; the edit inside the function fails the
+/// function's pin, and a token the function no longer has fails its citation.
+#[test]
+fn a_line_shift_breaks_no_citation() {
+    let pad = "// padding\n// padding\n// padding\n";
+    let lifecycle = format!("{pad}{LIFECYCLE_SOURCE}");
+    let audio = format!("{pad}{AUDIO_SOURCE}");
+    assert!(
+        citation_problems(&lifecycle, &audio).is_empty(),
+        "a shift outside the cited functions must not move a citation"
+    );
+    let inside = LIFECYCLE_SOURCE.replacen(
+        "let cancelled = should_abandon;",
+        "let cancelled = should_abandon;\n        let _padding_line = ();\n        let _padding_line = ();",
+        1,
+    );
+    assert_ne!(inside, LIFECYCLE_SOURCE, "the probe's anchor exists");
+    assert!(
+        citation_problems(&inside, AUDIO_SOURCE).is_empty(),
+        "lines added inside a function break no citation; its pin fails instead"
+    );
+    // A cited token the function no longer has fails, and the diagnostic names the function.
+    let removed = LIFECYCLE_SOURCE.replace("should_abandon", "abandon_now");
+    assert_ne!(removed, LIFECYCLE_SOURCE, "the probe's anchor exists");
+    let problems = citation_problems(&removed, AUDIO_SOURCE);
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.contains("the model mirrors code the source no longer has")),
+        "{problems:?}"
+    );
+    // The report names the lines every citation matched at.
+    let (_, matched) = citation_report(LIFECYCLE_SOURCE, AUDIO_SOURCE);
+    assert!(
+        matched.iter().all(|line| line.contains(" lines ")) && !matched.is_empty(),
+        "{matched:?}"
+    );
+}
+
+/// Every problem the mirror's citations have against the given sources.
+fn citation_problems(lifecycle_source: &str, audio_source: &str) -> Vec<String> {
+    let (mut problems, matched) = citation_report(lifecycle_source, audio_source);
+    if !problems.is_empty() {
+        problems.push(format!("matched citations:\n{}", matched.join("\n")));
+    }
+    problems
+}
+
+/// The problems of every citation and, for each fragment that matched, the lines of the
+/// pinned function it matched at.
+fn citation_report(lifecycle_source: &str, audio_source: &str) -> (Vec<String>, Vec<String>) {
     let mut problems = Vec::new();
-    let tests: BTreeSet<String> = items_of(LIFECYCLE_SOURCE)
+    let mut matched = Vec::new();
+    let tests: BTreeSet<String> = items_of(lifecycle_source)
         .into_iter()
         .filter(|item| item.test_only)
         .map(|item| item.name)
         .collect();
     for row in MIRROR {
-        let item = match cited_item(row) {
+        let items = match row.file {
+            "audio_lifecycle.rs" => production_items(lifecycle_source),
+            "audio.rs" => production_items(audio_source),
+            other => panic!("unknown source file {other}"),
+        };
+        let item = match cited_item_in(row, items) {
             Ok(item) => item,
             Err(problem) => {
                 problems.push(problem);
                 continue;
             }
         };
-        let (first, last) = (row.lines.0 as usize, row.lines.1 as usize);
-        if !(item.lines.0 <= first && first <= last && last <= item.lines.1) {
+        // A citation is resolved inside the row's function, and the function must be
+        // hash-pinned (D-S2b-20): an edit inside it fails its pin first, so the cited tokens
+        // are found anywhere in the pinned function and no absolute line range is kept to
+        // go stale. The diagnostics print the lines the tokens matched.
+        let pinned = match row.file {
+            "audio_lifecycle.rs" => LIFECYCLE_PINS,
+            _ => AUDIO_PINS,
+        };
+        if !pinned.iter().any(|(key, _)| *key == item.key) {
             problems.push(format!(
-                "{}: lines {first}-{last} are not inside `{}` (lines {}-{})",
-                row.step, row.function, item.lines.0, item.lines.1
+                "{}: `{}` is not hash-pinned, so a citation inside it is not guarded",
+                row.step, row.function
             ));
             continue;
         }
@@ -614,12 +686,19 @@ fn the_supervisor_mirror_cites_the_real_source() {
             match fragment_tokens(fragment) {
                 Err(problem) => problems.push(format!("{}: {problem}", row.step)),
                 Ok(wanted) => {
-                    if find_fragment(&item.tokens, &wanted, (first, last)).is_none() {
-                        problems.push(format!(
-                            "{}: the tokens `{fragment}` are not in lines {first}-{last} of \
-                             `{}`: the model mirrors code the source no longer has",
-                            row.step, row.function
-                        ));
+                    match find_fragment(&item.tokens, &wanted, (item.lines.0, item.lines.1)) {
+                        Some(at) => {
+                            let end = item.tokens[at + wanted.len() - 1].line;
+                            matched.push(format!(
+                                "{}: `{}` lines {}-{end}",
+                                row.step, row.function, item.tokens[at].line
+                            ));
+                        }
+                        None => problems.push(format!(
+                            "{}: the tokens `{fragment}` are not in `{}` (lines {}-{}); the model \
+                             mirrors code the source no longer has",
+                            row.step, row.function, item.lines.0, item.lines.1
+                        )),
                     }
                 }
             }
@@ -636,7 +715,7 @@ fn the_supervisor_mirror_cites_the_real_source() {
             problems.push(format!("{}: the row says what the model does", row.step));
         }
     }
-    assert!(problems.is_empty(), "{}", problems.join("\n"));
+    (problems, matched)
 }
 
 /// The names a token sequence calls: `name(` where `name` is not a declaration.
@@ -757,6 +836,11 @@ fn a_comment_only_edit_passes_the_pins_and_the_citations() {
         .filter(|item| !item.test_only)
         .collect::<Vec<_>>();
     assert!(pin_problems("audio_lifecycle.rs", &items, LIFECYCLE_PINS, false).is_empty());
+    assert_eq!(
+        citation_problems(&source, AUDIO_SOURCE),
+        Vec::<String>::new(),
+        "a comment-only edit keeps every citation"
+    );
     // A comment between a receiver and its call does not hide the cited fragment.
     let source = LIFECYCLE_SOURCE.replacen("response.send(", "response/* x */.send(", 1);
     assert_ne!(source, LIFECYCLE_SOURCE);
@@ -767,6 +851,11 @@ fn a_comment_only_edit_passes_the_pins_and_the_citations() {
         .cloned()
         .collect::<Vec<_>>();
     assert!(pin_problems("audio_lifecycle.rs", &handled, LIFECYCLE_PINS, false).is_empty());
+    assert_eq!(
+        citation_problems(&source, AUDIO_SOURCE),
+        Vec::<String>::new(),
+        "a comment between a receiver and its call keeps every citation"
+    );
 }
 
 /// A one-token edit of any production function fails the pins and names it: every guard

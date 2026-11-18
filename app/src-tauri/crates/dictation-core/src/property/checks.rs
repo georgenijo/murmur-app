@@ -337,6 +337,13 @@ struct Gen {
     gap: Option<Instance>,
     /// The row that took the preserved capture.
     taken_by: Option<&'static str>,
+    /// The checked-step stamp of each piece of evidence (the first time it happened), so
+    /// PD-19's story is judged in order (D-S2b-20): the stop's take, the stop path's `Idle`,
+    /// the start in the gap, then the auto-stop's refusal.
+    take_at: Option<u32>,
+    stop_idle_at: Option<u32>,
+    gap_at: Option<u32>,
+    auto_refused_at: Option<u32>,
     /// The user's stop path (R202 / R203 / R204) wrote `Idle` for the generation while
     /// its owner was still cleaning up: a context-less stop (R202.3), or the stop's
     /// pipeline guard (R204a).
@@ -618,7 +625,10 @@ impl Checker {
                 Some(EndedBy::Stop(Delivery::Unsealed)) => Instance::C,
                 _ => Instance::B,
             };
-            self.gens.entry(stranded).or_default().gap = Some(instance);
+            let stamp = self.steps_checked;
+            let gen = self.gens.entry(stranded).or_default();
+            gen.gap = Some(instance);
+            gen.gap_at.get_or_insert(stamp);
         }
     }
 
@@ -629,7 +639,10 @@ impl Checker {
                 .iter()
                 .any(|family| e.row.starts_with(family));
             if stop_family && w.sup.cleanup_pending(e.input_rid) {
-                self.gens.entry(e.input_rid).or_default().stop_idle = true;
+                let stamp = self.steps_checked;
+                let gen = self.gens.entry(e.input_rid).or_default();
+                gen.stop_idle = true;
+                gen.stop_idle_at.get_or_insert(stamp);
             }
         }
     }
@@ -644,13 +657,19 @@ impl Checker {
                 ..
             } => {
                 if *found {
-                    self.gens.entry(*rid).or_default().taken_by = Some(row);
+                    let stamp = self.steps_checked;
+                    let gen = self.gens.entry(*rid).or_default();
+                    gen.taken_by = Some(row);
+                    gen.take_at.get_or_insert(stamp);
                 } else if earlier.is_some() {
                     self.hit(hits, 15, row, *rid);
                 }
             }
             Note::AutoStopTookNothing { rid } => {
-                self.gens.entry(*rid).or_default().auto_stop_took_nothing = true;
+                let stamp = self.steps_checked;
+                let gen = self.gens.entry(*rid).or_default();
+                gen.auto_stop_took_nothing = true;
+                gen.auto_refused_at.get_or_insert(stamp);
             }
             Note::StartDropped {
                 rid,
@@ -963,8 +982,27 @@ impl Checker {
                 // had become `Idle` (the finished stop's `Idle`, R203.2) and took nothing,
                 // and no stop took the capture either; it is still in the store, and the
                 // only stop that could take it is the user's in `Recovering`.
-                let took_by_stop =
-                    gen.stop_idle && gen.taken_by == Some("R201.5") && gen.long_interrupt;
+                //
+                // The first entry is judged in order, on the generation's own evidence
+                // (D-S2b-20): the stop took the capture, then wrote its `Idle`, then a
+                // start took R101.12 in the gap, then the `Interrupted` arm's auto-stop
+                // ran and was refused. A run whose auto-stop never executes (the bridge
+                // never dispatched it) is not stuck through this story. The second
+                // variant (no `TerminationUnconfirmed` end) is a dropped start, and needs
+                // the recording's own `StartDropped`.
+                let ordered = matches!(
+                    (gen.take_at, gen.stop_idle_at, gen.gap_at, gen.auto_refused_at),
+                    (Some(take), Some(idle), Some(gap), Some(refused))
+                        if take < idle && idle < gap && gap < refused
+                );
+                let unconfirmed =
+                    w.sup.finished_fail.get(&rid) == Some(&ErrCode::TerminationUnconfirmed);
+                let took_by_stop = gen.stop_idle
+                    && gen.taken_by == Some("R201.5")
+                    && gen.long_interrupt
+                    && gen.auto_stop_took_nothing
+                    && ordered
+                    && (unconfirmed || self.dropped_ids.contains(&rid));
                 let refused_auto_stop = gen.long_interrupt
                     && gen.auto_stop_took_nothing
                     && gen.taken_by.is_none()
@@ -996,10 +1034,12 @@ impl Checker {
                 // refused auto-stop that left the capture in the store.
                 let entry = if w.preserved.contains_key(&rid) {
                     2
+                } else if w.sup.finished_fail.get(&rid) == Some(&ErrCode::TerminationUnconfirmed) {
+                    0
                 } else {
-                    usize::from(
-                        w.sup.finished_fail.get(&rid) != Some(&ErrCode::TerminationUnconfirmed),
-                    )
+                    // `stranded_instance` admitted it only with the recording's own
+                    // `StartDropped`.
+                    1
                 };
                 self.hits.pd19[entry] += 1;
             }
@@ -1034,4 +1074,115 @@ fn is_supervisor_site(site: crate::decision::SiteId) -> bool {
             | SupInterrupted
             | SupInterruptedShortIdle
     )
+}
+
+/// D-S2b-20 (finding 3): PD-19's first two entries are judged on the generation's own ordered
+/// evidence. The evidence is planted here directly, as the checker records it.
+#[cfg(test)]
+mod pd19_evidence_tests {
+    use super::*;
+
+    /// A stuck `Recovering` world for recording 1, ended by a long `Interrupted`.
+    fn world(failure: Option<ErrCode>) -> World {
+        let mut w = World::new();
+        w.current_id = 1;
+        w.status = Status::Recovering;
+        if let Some(code) = failure {
+            w.sup.finished_fail.insert(1, code);
+        }
+        w
+    }
+
+    /// The story with each piece at the given stamp; `None` leaves it out.
+    fn checker(
+        take: Option<u32>,
+        idle: Option<u32>,
+        gap: Option<u32>,
+        refused: Option<u32>,
+        dropped: bool,
+    ) -> Checker {
+        let mut checker = Checker::default();
+        let gen = checker.gens.entry(1).or_default();
+        gen.long_interrupt = true;
+        gen.gap = Some(Instance::Long);
+        gen.taken_by = take.map(|_| "R201.5");
+        gen.take_at = take;
+        gen.stop_idle = idle.is_some();
+        gen.stop_idle_at = idle;
+        gen.gap_at = gap;
+        gen.auto_stop_took_nothing = refused.is_some();
+        gen.auto_refused_at = refused;
+        if dropped {
+            checker.dropped_ids.insert(1);
+        }
+        checker
+    }
+
+    fn end(mut checker: Checker, w: &World) -> Checker {
+        checker.on_end(w, &[]);
+        checker
+    }
+
+    fn stuck(checker: &Checker) -> bool {
+        checker
+            .violations
+            .iter()
+            .any(|v| v.contains("without PD-18/PD-19 evidence"))
+    }
+
+    #[test]
+    fn the_whole_ordered_story_is_pd19() {
+        let unconfirmed = world(Some(ErrCode::TerminationUnconfirmed));
+        let done = end(
+            checker(Some(1), Some(2), Some(3), Some(4), false),
+            &unconfirmed,
+        );
+        assert!(done.violations.is_empty(), "{:?}", done.violations);
+        assert_eq!(done.hits.pd19, [1, 0, 0]);
+        // The second variant: no `TerminationUnconfirmed`, a dropped start.
+        let other = world(Some(ErrCode::StreamInvalidated));
+        let done = end(checker(Some(1), Some(2), Some(3), Some(4), true), &other);
+        assert!(done.violations.is_empty(), "{:?}", done.violations);
+        assert_eq!(done.hits.pd19, [0, 1, 0]);
+    }
+
+    /// The bridge never dispatches the auto-stop: the run is stuck, but not through
+    /// PD-19's story, so it is a liveness failure.
+    #[test]
+    fn a_run_whose_auto_stop_never_executes_is_not_pd19() {
+        let unconfirmed = world(Some(ErrCode::TerminationUnconfirmed));
+        let done = end(
+            checker(Some(1), Some(2), Some(3), None, false),
+            &unconfirmed,
+        );
+        assert!(stuck(&done), "{:?}", done.violations);
+        let other = world(Some(ErrCode::StreamInvalidated));
+        let done = end(checker(Some(1), Some(2), Some(3), None, true), &other);
+        assert!(stuck(&done), "{:?}", done.violations);
+    }
+
+    /// The second variant needs the recording's own dropped start, and every piece must come
+    /// in order.
+    #[test]
+    fn the_second_variant_needs_a_dropped_start_and_the_story_its_order() {
+        let other = world(Some(ErrCode::StreamInvalidated));
+        let done = end(checker(Some(1), Some(2), Some(3), Some(4), false), &other);
+        assert!(stuck(&done), "a non-unconfirmed end without StartDropped");
+        let unconfirmed = world(Some(ErrCode::TerminationUnconfirmed));
+        for (take, idle, gap, refused) in [
+            (Some(2), Some(1), Some(3), Some(4)), // `Idle` before the take
+            (Some(1), Some(3), Some(2), Some(4)), // the restart before the stop's `Idle`
+            (Some(1), Some(2), Some(4), Some(3)), // the refusal before the restart
+            (None, Some(2), Some(3), Some(4)),    // no take
+            (Some(1), None, Some(3), Some(4)),    // no `Idle` write
+            (Some(1), Some(2), None, Some(4)),    // no restart in the gap
+        ] {
+            let done = end(checker(take, idle, gap, refused, true), &unconfirmed);
+            assert!(
+                stuck(&done),
+                "{take:?} {idle:?} {gap:?} {refused:?}: {:?}",
+                done.violations
+            );
+        }
+    }
 }

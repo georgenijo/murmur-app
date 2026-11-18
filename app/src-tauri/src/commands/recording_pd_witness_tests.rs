@@ -801,6 +801,108 @@ fn pd_witness_map_is_complete_and_names_real_tests() {
     }
 }
 
+/// The names between backticks in `text` that are shell witnesses of a property-harness
+/// finding (`pd<number>_...`).
+fn finding_witness_names(text: &str) -> std::collections::BTreeSet<String> {
+    text.split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|name| {
+            name.strip_prefix("pd").is_some_and(|rest| {
+                let digits = rest.chars().take_while(char::is_ascii_digit).count();
+                digits > 0 && rest[digits..].starts_with('_')
+            }) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// The section of the map that lists the defects the property harness found.
+fn harness_section(map: &str) -> &str {
+    let start = map
+        .find("## Defects found by the property harness")
+        .expect("the map has the property-harness section");
+    let rest = &map[start..];
+    let end = rest[3..].find("\n## ").map_or(rest.len(), |at| at + 3);
+    &rest[..end]
+}
+
+/// Every `pd*_` witness the map's property-harness section names exists in
+/// `recording_harness_findings_tests.rs`, and PD-19..PD-24 each name at least one: renaming
+/// or deleting such a test fails here instead of passing silently.
+#[test]
+fn the_property_harness_section_names_real_shell_tests() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands");
+    let map = std::fs::read_to_string(root.join("recording_pd_witness_map.md")).expect("map");
+    let findings = std::fs::read_to_string(root.join("recording_harness_findings_tests.rs"))
+        .expect("the findings tests");
+    let section = harness_section(&map);
+    let names = finding_witness_names(section);
+    assert!(!names.is_empty(), "the section names no shell witness");
+    for name in &names {
+        assert!(
+            findings.contains(&format!("fn {name}(")),
+            "the map names `{name}`, which is not a test of recording_harness_findings_tests.rs"
+        );
+    }
+    for pd in 19..=24 {
+        let line = section
+            .lines()
+            .find(|line| line.starts_with(&format!("- **PD-{pd}**")))
+            .unwrap_or_else(|| panic!("PD-{pd} has no entry in the property-harness section"));
+        assert!(
+            !finding_witness_names(line).is_empty(),
+            "PD-{pd} names no shell witness: {line}"
+        );
+    }
+}
+
+/// Every `shell_test` of the core crate's `FINDING_SEEDS` names a real test of
+/// `recording_harness_findings_tests.rs` that the map's property-harness section names too
+/// (the crate cannot see the app's tests, so the app reads the crate's source).
+#[test]
+fn every_finding_seed_names_a_real_shell_test() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let seeds = std::fs::read_to_string(root.join("crates/dictation-core/src/property/tests.rs"))
+        .expect("the property tests");
+    let findings =
+        std::fs::read_to_string(root.join("src/commands/recording_harness_findings_tests.rs"))
+            .expect("the findings tests");
+    let map = std::fs::read_to_string(root.join("src/commands/recording_pd_witness_map.md"))
+        .expect("map");
+    let mapped = finding_witness_names(harness_section(&map));
+    let table = &seeds[seeds
+        .find("const FINDING_SEEDS")
+        .expect("FINDING_SEEDS exists")..];
+    let table = &table[..table.find("\n];").expect("the table ends")];
+    let mut named = 0;
+    let mut rest = table;
+    while let Some(at) = rest.find("shell_test:") {
+        rest = &rest[at + "shell_test:".len()..];
+        let entry = &rest[..rest.find("sig:").unwrap_or(rest.len())];
+        if entry.trim_start().starts_with("None") {
+            continue;
+        }
+        let name = entry
+            .split('"')
+            .nth(1)
+            .unwrap_or_else(|| panic!("a shell_test names no string literal: {entry}"));
+        named += 1;
+        assert!(
+            findings.contains(&format!("fn {name}(")),
+            "FINDING_SEEDS names `{name}`, which is not a test of recording_harness_findings_tests.rs"
+        );
+        assert!(
+            mapped.contains(name),
+            "FINDING_SEEDS names `{name}`, which the map's property-harness section does not"
+        );
+    }
+    assert!(
+        named >= 10,
+        "only {named} shell tests were read from FINDING_SEEDS"
+    );
+}
+
 /// Every C4.9 contract test (appendix C4.9, including the v5.1 additions).
 const C4_9_TESTS: [&str; 26] = [
     "executor_phase_order",

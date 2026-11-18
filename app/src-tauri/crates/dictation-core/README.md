@@ -379,6 +379,12 @@ model world (M1-M4, the telemetry ledger, the performance and diagnostics sinks,
 `core_history` H1/H2, the supervisor's owner and phase). It has no dependency: a
 splitmix64 generator turns a seed into the whole run.
 
+**What the harness is evidence for.** It calls the `decide_*` functions directly, not
+through `DictationCore::handle`, so it gives no signal about the cutover's routing. The
+cutover evidence is the goldens, the replays, the harness-findings shell tests
+(`recording_harness_findings_tests.rs`) and the shadow comparison E1-E9. Routing the
+harness through `handle` is tracked in #1160.
+
 * **Generator** (`gen.rs`, `supervisor.rs`): commands (start, stop, cancel; ids
   `current`, `current-1`, `current+1`, unscoped) and, per start, one word of the C7.3
   `Attempt` grammar. Every supervisor word ends with an explicit `OwnerClear` step
@@ -388,8 +394,9 @@ splitmix64 generator turns a seed into the whole run.
   every modeled supervisor or client step (and every helper the model mirrors:
   `is_dictation_cleanup_pending`, `is_dictation_recording`, `take_interrupted_dictation`,
   `PublicState::owns` and the rest of the public-state accessors) cites the
-  `audio_lifecycle.rs` function and line range it mirrors, with a fragment of source that
-  must appear there, the **guard expressions** of the cited code (`guards`) and, where one
+  `audio_lifecycle.rs` function it mirrors (no line range: the function is hash-pinned, so
+  the test finds the cited tokens anywhere inside it and prints the lines it matched), with a
+  fragment of source that must appear there, the **guard expressions** of the cited code (`guards`) and, where one
   exists, a test of the real supervisor that runs the behaviour (`real_test`: for the sealed
   reply `a_sealed_stop_reply_is_delivered_at_the_seal_before_worker_exit`; for cancel
   `a_cancel_from_recording_stops_capture_and_answers_true` and
@@ -411,8 +418,9 @@ splitmix64 generator turns a seed into the whole run.
   pins stay to name what changed. The normalization is the shell ratchet's (`src/token_pin_tests.rs`, shared:
   `proc_macro2` tokens, token kinds, punctuation spacing and commas kept, only whitespace and
   comments stripped), so a comment-only edit passes and a one-token edit fails. The
-  citations are matched as token sequences within the cited lines (`span-locations`), so a
-  comment inside a cited expression does not hide it. A re-pin commit says the model step
+  citations are matched as token sequences within the cited, hash-pinned function
+  (`span-locations` gives the matched lines for the diagnostics), so a comment inside a cited
+  expression does not hide it and a line shift breaks nothing. A re-pin commit says the model step
   was re-checked against the change (`cargo test --lib print_current_pins -- --ignored
   --nocapture` in the app crate prints the tables). Every function a cited function calls is
   cited by a row or listed in `NOT_MODELED` with the reason it is outside the model.

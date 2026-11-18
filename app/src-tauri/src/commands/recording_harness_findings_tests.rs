@@ -567,6 +567,28 @@ fn pd21_timed_out_cancel_then_a_stop_that_wins_capture(world: &Arc<World>) {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .take()
         .expect("the hook parked the stop");
+    // The late `Cancel` answers `Ok(false)` and publishes nothing: the only `Recovering`
+    // the supervisor publishes below is the worker's own runtime failure.
+    // Seed 244,103's order after the cancel's receive expired: the worker failed at
+    // runtime with 12,000 samples retained (`2630-2698`, `Recovering{RuntimeFailure}`,
+    // R209.2 at `Processing`), `finish_attempt` stored the capture and notified
+    // `Interrupted` (`2405-2432`; the arm schedules the auto-stop, R215.2), the
+    // auto-stop is refused at `Processing` (R201.2) and the owner clears (`2460`). Only
+    // then does the parked stop's capture stop return, and its reply is empty (R203.4).
+    world.runtime_failure(1);
+    world.finish_interrupted(1, 12_000);
+    assert_eq!(
+        world.auto_stop_requests(),
+        vec![1],
+        "the Interrupted arm scheduled the auto-stop"
+    );
+    let refused = stop_reply(world, Some(1));
+    assert_eq!(
+        refused,
+        Ok(serde_json::json!({ "type": "already_processing", "state": "processing" })),
+        "the auto-stop is refused at Processing (R201.2)"
+    );
+    world.release_owner_clear();
     let reply = stop.finish();
     world.reply("stop", &reply);
     assert_eq!(reply, empty_transcription());
@@ -580,13 +602,21 @@ fn pd21_timed_out_cancel_then_a_stop_that_wins_capture(world: &Arc<World>) {
         "the stop's terminal lost the claim"
     );
     assert_eq!(perf_claim(1), Some(RunOutcomeV1::NoSpeech));
-    // The late `Cancel` answers `Ok(false)` and publishes nothing.
+    let trace = world.trace();
     assert!(
-        !world
-            .trace()
+        !trace
             .iter()
-            .any(|line| line.starts_with("supervisor.notify 1 Recovering")),
-        "the late cancel notified nothing"
+            .any(|line| line.starts_with("supervisor.notify 1 Recovering") && line.contains("User")),
+        "the late cancel published no Recovering{{User}}: {trace:#?}"
+    );
+    let cleared = position(&trace, "supervisor.clear_owner 1");
+    let stopped = trace
+        .iter()
+        .position(|line| line.starts_with("supervisor.stop 1 "))
+        .expect("the stop reached the capture stop");
+    assert!(
+        cleared > stopped,
+        "the owner cleared while the stop was parked"
     );
 }
 
@@ -880,7 +910,7 @@ fn pd24_start_timeout_terminal_and_an_environmental_recovery_arm_performance_out
 }
 
 // ------------------------------------------------------------------ PD-23
-// Harness seeds 484 (R207.3 / R203.5), 66 (R207.3 / R203.1) and 93 (R207.3 / R205.5).
+// Harness seeds 447 (R207.3 / R203.5), 171 (R207.3 / R203.1) and 163 (R207.3 / R205.5).
 // C8 (`s10c`, PD-4): the fake supervisor sets the phase to `Recording` and holds before
 // notifying `Ready`, the start's continuation publishes `Recording`, and the held `Ready`
 // is handled for a recording that is already `Recording`: R207.3 claims
@@ -905,50 +935,94 @@ fn pd23_c8_forced(world: &Arc<World>) {
     assert_eq!(terminal(world, 1), Some(SUPERSEDED));
 }
 
-/// The recording is the **preview handoff** of PD-20: a Settings microphone test is kept
-/// and the confirmed dictation start hands the running worker to dictation in place
-/// (`hand_preview_to`, `audio_lifecycle.rs:1719-1830`), which begins fresh PCM retention
-/// (`begin_handoff_retention`, 1732) and publishes `Accepted` and `Ready` (1802, 1807). A
-/// stop before the worker captured anything new has nothing to deliver, so the empty
-/// delivery is a production path, not an injected zero after a cold `Ready`.
-fn pd23_c8_forced_through_the_preview_handoff(world: &Arc<World>) {
-    world.knobs().cold_start = ColdStart::HoldBeforeReady;
-    world
-        .state()
-        .app_state
-        .microphone_preview
-        .claim(50)
-        .expect("a Settings microphone test is kept");
-    let mut start = world.start();
-    let reply = complete_joining(&mut start);
-    world.reply("start", &reply);
-    assert!(reply.is_ok(), "{reply:?}");
-    assert!(
-        world
-            .trace()
-            .iter()
-            .any(|line| line.starts_with("supervisor.start_after_preview 1 ")),
-        "the start was the preview handoff"
-    );
-    assert_eq!(status(world), DictationStatus::Recording);
-    world.release_ready();
-    assert_eq!(terminal(world, 1), Some(SUPERSEDED));
-}
-
-/// The stop captured nothing: R203.5 completes performance as `NoSpeech`.
+/// Seed 447's cold-start rendezvous (R207.3 / R203.5). The cold start's `Ready` is held
+/// until the start's continuation published `Recording`, and R207.3 claims `Superseded`
+/// for the live recording (`pd23_c8_forced`). The user cancels the `Recording` dictation
+/// (R205.4): the capture cancel is accepted, `Recovering{User}` is published and the
+/// attempt's own `Idle` is held, and before the cancel's capture cancel returns a stop
+/// lands (R201.8), takes T and parks in the supervisor's capture stop at `Processing`.
+/// A second cancel of the `Processing` dictation runs R205.5. At its tail's `CX-` (D
+/// released, status already `Idle`) the attempt's `finish_attempt` publishes `Idle` and
+/// clears the owner (`audio_lifecycle.rs:2457-2467`), and only then does the parked
+/// capture stop return its empty reply (`2358-2362`): the stop's R203.5 empty-audio rows
+/// complete performance as `NoSpeech` before the cancel's `PT:PC(Cancelled)`, which then
+/// loses. The terminal stays `Superseded`.
 fn pd23_an_empty_stop_completes_no_speech(world: &Arc<World>) {
-    world.knobs().stop_result = Ok(0);
-    pd23_c8_forced_through_the_preview_handoff(world);
-    assert_eq!(stop_reply(world, None), empty_transcription());
+    {
+        let mut knobs = world.knobs();
+        knobs.stop_result = Ok(0);
+        knobs.cancel_result = Ok(true);
+    }
+    pd23_c8_forced(world);
+    // The first cancel (R205.4): a stop lands while its capture cancel is in the supervisor.
+    let landing = Arc::clone(world);
+    let parked: Arc<std::sync::Mutex<Option<ParkedStop>>> = Arc::new(std::sync::Mutex::new(None));
+    let filed = Arc::clone(&parked);
+    world.on("supervisor.cancel", move || {
+        let stop = ParkedStop::start(&landing);
+        *filed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(stop);
+    });
+    let mut first = world.cancel(None);
+    let first_reply = complete(&mut first);
+    world.reply_unit("cancel", &first_reply);
+    assert_eq!(first_reply, Ok(()));
+    assert_eq!(status(world), DictationStatus::Processing);
+    let stop = parked
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+        .expect("the hook parked the stop");
+    // The second cancel (R205.5). At its `CX-` the attempt's own `Idle` and the owner
+    // clear run, then the parked stop's empty reply.
+    let (finish, reply) = stop.finish_into();
+    let supervisor = Arc::clone(world);
+    let mut landing = Some(finish);
+    let barrier = crate::barrier_hook::install(move |point| {
+        if point != "adapter.clear_context" {
+            return;
+        }
+        if let Some(finish) = landing.take() {
+            supervisor.release_cancel_finish();
+            finish();
+        }
+    });
+    let mut second = world.cancel(None);
+    let second_reply = complete(&mut second);
+    drop(barrier);
+    world.reply_unit("cancel", &second_reply);
+    assert_eq!(second_reply, Ok(()));
+    let reply = reply
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+        .expect("the barrier finished the stop");
+    world.reply("stop", &reply);
+    assert_eq!(reply, empty_transcription());
     assert_eq!(status(world), DictationStatus::Idle);
     assert_eq!(terminal(world, 1), Some(SUPERSEDED));
-    assert_eq!(perf_claim(1), Some(RunOutcomeV1::NoSpeech));
+    assert_eq!(
+        perf_claim(1),
+        Some(RunOutcomeV1::NoSpeech),
+        "NoSpeech won performance before the cancel tail completed"
+    );
+    let trace = world.trace();
+    let cleared = position(&trace, "supervisor.clear_owner 1");
+    let stopped = trace
+        .iter()
+        .position(|line| line.starts_with("supervisor.stop 1 "))
+        .expect("the stop reached the capture stop");
+    assert!(
+        cleared > stopped,
+        "the owner cleared while the stop was parked"
+    );
 }
 
 #[test]
 fn pd23_superseded_terminal_and_an_empty_stop_no_speech_disagree() {
     repeat(&sub(
-        "PD-23: R207.3's Superseded for a live recording started through the preview handoff, then an empty stop completes NoSpeech (R207.3, R203.5)",
+        "PD-23: R207.3's Superseded for a live recording, then a stop that gets its empty reply after the owner cleared completes NoSpeech inside a cancel's tail (R207.3, R203.5)",
         pd23_an_empty_stop_completes_no_speech,
     ));
 }
