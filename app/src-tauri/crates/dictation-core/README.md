@@ -368,3 +368,36 @@ Stage 2b's generator drives the same entries and must keep rule 1 above:
    itself and returns `Pending`; the golden harness (`poll_once`) polls it once, with
    no waker that re-polls, and polls again only after the span ended. A driver that
    re-polled on the self-wake would spin inside the span.
+
+## The property harness (Stage 2b-1, appendix C7.5)
+
+`src/property/` is a `#[cfg(test)]` module of this crate (CI runs `cargo nextest
+run -E 'kind(lib)'`, which does not run integration tests). It composes the **real**
+`decide_*` functions of every site with an interpreter of their placed effects over a
+model world (M1-M4, the telemetry ledger, the performance and diagnostics sinks,
+`core_history` H1/H2, the supervisor's owner and phase). It has no dependency: a
+splitmix64 generator turns a seed into the whole run.
+
+* **Generator** (`gen.rs`, `supervisor.rs`): commands (start, stop, cancel; ids
+  `current`, `current-1`, `current+1`, unscoped) and, per start, one word of the C7.3
+  `Attempt` grammar. Every supervisor word ends with an explicit `OwnerClear` step
+  (followed by `CleanupFinished` for a sealed stop only); `cleanup_pending` is derived
+  from the model (owner set and phase `Stopping`/`Recovering`), never generated.
+* **Scheduler** (`run.rs`, `flights.rs`, `sup_task.rs`): one thread; T-holder flights,
+  D sections, the supervisor thread, each notification's bridge arm, the pipeline and
+  the ticker are separate actors. A D section is atomic; `Pre`, `PostDT` and `PostT`
+  effects are one step each, so another actor's D section can land between any two.
+  A blocked step changes nothing (a test compares the whole world). The README rules
+  above hold: a start can only be dropped between steps, at its smart-capture await.
+* **Checks** (`checks.rs`): SP1-SP4, SP6-SP10 after every step; PD signatures are
+  removed from a failure only when row and precondition match C7.1; C7.3 liveness at
+  the end of each run, after filtering L4/L6 violators.
+* **Seeds**: 10,000 in CI (well under 20 s); `PROPTEST_CASES=100000 cargo test -p
+  murmur-dictation-core --lib property::` raises it. `TRACE_SEED=<n> cargo test -p
+  murmur-dictation-core --lib property::tests::trace_one -- --nocapture` prints one run.
+
+What this layer does not cover: SP5 (structural), the shell's own locks and executor
+(the golden harness and the shell tests drive those through the 0a seams), and
+`FieldAdapter`. SP1 is checked on the model ledger (first claim wins by construction);
+SP3 checks the edge set, not the per-row C3 `from` sets (those are the decide
+functions' own inputs).

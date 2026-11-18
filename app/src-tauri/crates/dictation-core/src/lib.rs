@@ -29,3 +29,6 @@ pub mod start;
 pub mod state;
 pub mod status;
 pub mod stop;
+
+#[cfg(test)]
+mod property;

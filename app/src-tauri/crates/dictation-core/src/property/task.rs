@@ -1,0 +1,471 @@
+//! Tasks: the actors the scheduler sequences, the event log every step writes,
+//! and the interpreter of placed effects.
+//!
+//! **Atomicity.** A step is atomic. A D section (decide + its `In` effects) is
+//! one step; `Pre`, `PostDT` and `PostT` effects are one step each, so another
+//! actor's D section can land between any two of them (C7.5: "effects of class
+//! PostD_T / PostT interleave with other actors' D sections").
+
+use super::model::*;
+use crate::decision::{Decision, SiteId, Verdict};
+use crate::effects::{Effect, Placed, Placement, Terminal};
+use crate::inputs::GuardOrigin;
+use crate::status::{Status, TerminalOutcome};
+use std::collections::VecDeque;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Poll {
+    /// Nothing happened (the contract: a blocked step mutates nothing).
+    Blocked,
+    Progress,
+    Done,
+}
+
+/// What is known about a decision when it ran (every decision is logged).
+/// Fields are read through `Debug` in traces.
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub struct DecisionEv {
+    pub tid: TaskId,
+    pub site: SiteId,
+    pub row: &'static str,
+    pub verdict: Verdict,
+    /// The recording the input names.
+    pub input_rid: Rid,
+    pub origin: Option<GuardOrigin>,
+    pub current_before: Rid,
+    pub status_before: Status,
+    pub cleanup_pending: bool,
+    /// The owner attempt still has a notification that can restore `Idle`.
+    pub restorer_pending: bool,
+    pub transition: Option<(Status, Status)>,
+    /// Another task's cancel tail for this recording is between its D release and its end.
+    pub in_cancel_tail: bool,
+    /// A pipeline for the recording is running (H2).
+    pub pipeline_live: bool,
+    pub owner: Option<Rid>,
+    pub ended_by: Option<EndedBy>,
+    pub phase: Phase,
+    pub step: u32,
+}
+
+/// One effect applied to the world.
+/// Fields are read through `Debug` in traces.
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub struct EffectEv {
+    pub tid: TaskId,
+    pub row: &'static str,
+    pub site: SiteId,
+    pub at: Placement,
+    pub effect: Effect,
+    pub input_rid: Rid,
+    pub current: Rid,
+    pub status_before: Status,
+    pub status_after: Status,
+    /// `claim_terminal`'s answer, for `TERM`.
+    pub claim: Option<bool>,
+    /// `accepted(id)` had run when a `TERM` was applied.
+    pub accepted: bool,
+    pub step: u32,
+}
+
+/// Facts the detectors need that are not an effect or a decision.
+/// Fields are read through `Debug` in traces.
+#[allow(dead_code)]
+#[derive(Clone, Debug)]
+pub enum Note {
+    /// A `TakeInterrupted` ran: `found` says whether a capture was there.
+    Take {
+        tid: TaskId,
+        rid: Rid,
+        row: &'static str,
+        found: bool,
+        /// The task and row that took it earlier, if one did.
+        earlier: Option<(&'static str,)>,
+    },
+    /// A start future was dropped at an await point.
+    StartDropped {
+        rid: Rid,
+        registered: bool,
+        begun: bool,
+    },
+    /// A pipeline or stop task panicked: its guard's `Drop` ran.
+    TaskPanicked {
+        tid: TaskId,
+        rid: Rid,
+    },
+    /// A partial ticker task exited by a panic: `hide_on_ticker_exit` never ran.
+    TickerPanicked {
+        rid: Rid,
+    },
+    TickerExited {
+        rid: Rid,
+    },
+    /// The diagnostics `complete` of a `TERM` ran as its own step.
+    DiagnosticsCompleted {
+        rid: Rid,
+        by: TerminalOutcome,
+        first: bool,
+        claim_winner: Option<TerminalOutcome>,
+    },
+    /// A paste ran through the ownership fence.
+    Delivered {
+        rid: Rid,
+        owned: bool,
+    },
+    /// The supervisor's `OwnerClear` step ran.
+    OwnerCleared {
+        rid: Rid,
+    },
+    /// A supervisor notification was delivered (its arm returned).
+    Notified {
+        rid: Rid,
+        step: SupStep,
+    },
+}
+
+#[derive(Default, Debug)]
+pub struct StepOut {
+    pub decisions: Vec<DecisionEv>,
+    pub effects: Vec<EffectEv>,
+    pub notes: Vec<Note>,
+    /// Defects the step itself detected (a decision that differs by op status,
+    /// a decision that fails `validate`).
+    pub violations: Vec<String>,
+}
+
+impl StepOut {
+    pub fn clear(&mut self) {
+        self.decisions.clear();
+        self.effects.clear();
+        self.notes.clear();
+        self.violations.clear();
+    }
+}
+
+pub struct Cx<'a> {
+    pub w: &'a mut World,
+    pub out: &'a mut StepOut,
+    pub spawn: &'a mut Vec<Box<dyn Task>>,
+    pub tid: TaskId,
+    /// Results posted by a pipeline for the stop that awaits it.
+    pub mailbox: &'a mut Vec<(TaskId, PipelineReply)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipelineReply {
+    Ok(crate::inputs::PipelineTerminal),
+    Err,
+    /// The pipeline's task unwound: the stop task unwinds with it.
+    Panicked,
+}
+
+pub trait Task {
+    fn step(&mut self, cx: &mut Cx<'_>) -> Poll;
+    fn name(&self) -> &'static str;
+    /// A start future parked on an await point can be dropped there (D-S2-16:
+    /// never inside a span, only between polls).
+    fn droppable(&self) -> bool {
+        false
+    }
+    fn drop_now(&mut self, _cx: &mut Cx<'_>) {}
+}
+
+/// Where an effect runs and for whom.
+#[derive(Clone, Copy, Debug)]
+pub struct FxCtx {
+    pub tid: TaskId,
+    pub rid: Rid,
+    pub row: &'static str,
+    pub site: SiteId,
+}
+
+#[derive(Clone, Debug)]
+pub enum QItem {
+    Fx(FxCtx, Placed),
+    /// The second half of a split `TERM`: `dictation_diagnostics.complete`.
+    TermDiag(FxCtx, Terminal),
+    ReleaseT,
+}
+
+/// Record a decision; returns it for the caller.
+#[allow(clippy::too_many_arguments)]
+pub fn log_decision(
+    cx: &mut Cx<'_>,
+    site: SiteId,
+    decision: &Decision,
+    input_rid: Rid,
+    origin: Option<GuardOrigin>,
+) {
+    if let Err(error) = decision.validate() {
+        cx.out
+            .violations
+            .push(format!("{}: invalid decision {error:?}", decision.row.0));
+    }
+    let w = &*cx.w;
+    let owner = w.sup.owner;
+    let restorer_pending = w.sup.pending_steps().any(|step| step.restores_idle())
+        || (w.sup.busy.as_ref().is_some_and(|step| step.restores_idle()) && !w.sup.busy_restored);
+    cx.out.decisions.push(DecisionEv {
+        tid: cx.tid,
+        site,
+        row: decision.row.0,
+        verdict: decision.verdict.clone(),
+        input_rid,
+        origin,
+        current_before: w.current_id,
+        status_before: w.status,
+        cleanup_pending: w.sup.cleanup_pending(w.current_id),
+        restorer_pending,
+        transition: decision.transition,
+        in_cancel_tail: w.cancel_tail.get(&input_rid).is_some_and(|t| *t != cx.tid),
+        pipeline_live: w.history.pipelines.contains(&input_rid),
+        owner,
+        ended_by: w.sup.attempt.as_ref().map(|a| a.ended_by),
+        phase: w.sup.phase(),
+        step: w.step,
+    });
+}
+
+/// Acquire the recording transition (T); `false` is a blocked step.
+pub fn acquire_t(cx: &mut Cx<'_>) -> bool {
+    if cx.w.t_holder.is_none() {
+        cx.w.t_holder = Some(cx.tid);
+        true
+    } else {
+        false
+    }
+}
+
+pub fn release_t(cx: &mut Cx<'_>) {
+    if cx.w.t_holder == Some(cx.tid) {
+        cx.w.t_holder = None;
+    }
+}
+
+/// Effects of a decision by placement.
+pub fn by_placement(decision: &Decision, at: Placement) -> Vec<Placed> {
+    decision
+        .effects
+        .iter()
+        .filter(|placed| placed.at == at)
+        .cloned()
+        .collect()
+}
+
+/// Apply one effect atomically. Returns `false` for the effects a flight
+/// handles itself (they cross to another actor): `CS`, `CP`, `CC`, `RS`, `PS`.
+pub fn apply(cx: &mut Cx<'_>, fx: &FxCtx, at: Placement, effect: &Effect) -> bool {
+    let before = cx.w.status;
+    let accepted = cx.w.ledger.accepted.contains(&fx.rid);
+    let mut claim = None;
+    match effect {
+        Effect::CaptureStart(_)
+        | Effect::CaptureStop(_)
+        | Effect::CaptureCancel { .. }
+        | Effect::SelfStop { .. }
+        | Effect::PipelineSpawn(_) => return false,
+        Effect::SetStatus(to) => cx.w.status = *to,
+        Effect::AllocId => {
+            // SP6: `next_recording_id` only under D+T.
+            debug_assert_eq!(cx.w.t_holder, Some(fx.tid), "ID+ without T");
+            cx.w.current_id += 1;
+        }
+        Effect::EmitStatus { status, .. } => {
+            if *status == Status::Idle {
+                *cx.w.idle_emits.entry(fx.rid).or_default() += 1;
+            }
+        }
+        Effect::Terminal(terminal) => {
+            claim = Some(cx.w.claim_terminal(fx.rid, *terminal, fx.row));
+            // `In` sections run both halves under D; the later placements split
+            // them (`QItem::TermDiag`), which is how the PD-11 window opens.
+            if at == Placement::In {
+                term_diag(cx, fx, *terminal);
+            }
+        }
+        Effect::AcceptTelemetry => {
+            cx.w.ledger.accepted.insert(fx.rid);
+        }
+        Effect::PerfRegister => {
+            cx.w.perf.registered.insert(fx.rid);
+        }
+        Effect::PerfBegin => {
+            if cx.w.perf.registered.contains(&fx.rid) {
+                cx.w.perf.begun.insert(fx.rid);
+            }
+        }
+        Effect::PerfAbort => {
+            if !cx.w.perf.begun.contains(&fx.rid) {
+                cx.w.perf.registered.remove(&fx.rid);
+                cx.w.perf.aborted.insert(fx.rid);
+            }
+        }
+        Effect::PerfComplete(complete) => cx.w.perf_complete(fx.rid, complete.outcome, fx.row),
+        Effect::PipelineGuardFinish(outcome) => cx.w.perf_complete(fx.rid, *outcome, fx.row),
+        Effect::ClearContext(id) => {
+            if cx.w.context_for == Some(id.0) {
+                cx.w.context_for = None;
+            }
+        }
+        Effect::SetContext(id) => cx.w.context_for = Some(id.0),
+        Effect::KeyboardProcessing(on) => cx.w.keyboard = *on,
+        Effect::MarkCancelled(id) => {
+            cx.w.cancelled_through = cx.w.cancelled_through.max(id.0);
+        }
+        Effect::StartSideTasks => {
+            if cx.w.register_ticker(fx.rid) {
+                let ticker = super::flights::Ticker::new(fx.rid);
+                // One ticker in six panics (PD-14): decided by the clock, so a seed
+                // reproduces it.
+                cx.spawn.push(Box::new(if cx.w.step % 6 == 3 {
+                    ticker.panicking()
+                } else {
+                    ticker
+                }));
+            }
+        }
+        Effect::TakeInterrupted { id, .. } => {
+            let earlier = cx.w.taken_by.get(&id.0).map(|row| (*row,));
+            let found = cx.w.take_interrupted(id.0, fx.row).is_some();
+            cx.out.notes.push(Note::Take {
+                tid: fx.tid,
+                rid: id.0,
+                row: fx.row,
+                found,
+                earlier,
+            });
+        }
+        // Observations and effects with no model state.
+        Effect::EmitEvent(_)
+        | Effect::Presentation { .. }
+        | Effect::TouchLastTranscription
+        | Effect::AxSnapshot(_)
+        | Effect::GestureAccepted
+        | Effect::PrepareCaptureClaimed
+        | Effect::PreviewHideClaim
+        | Effect::TakeStopStamps
+        | Effect::ModelPreparation
+        | Effect::ReleaseClaims
+        | Effect::TraceRequested
+        | Effect::Observe(_)
+        | Effect::ProductionCaptureFailure(_)
+        | Effect::SpeculativeConsume
+        | Effect::PipelineEnter(_)
+        | Effect::SmartDestinationEmit => {}
+    }
+    let step = cx.w.step;
+    cx.out.effects.push(EffectEv {
+        tid: fx.tid,
+        row: fx.row,
+        site: fx.site,
+        at,
+        effect: effect.clone(),
+        input_rid: fx.rid,
+        current: cx.w.current_id,
+        status_before: before,
+        status_after: cx.w.status,
+        claim,
+        accepted,
+        step,
+    });
+    true
+}
+
+/// The `In` effects of a decision, atomically (one D section).
+pub fn apply_in(cx: &mut Cx<'_>, fx: &FxCtx, decision: &Decision) {
+    for placed in by_placement(decision, Placement::In) {
+        let handled = apply(cx, fx, Placement::In, &placed.effect);
+        debug_assert!(handled, "an In effect crosses to another actor: {placed:?}");
+    }
+}
+
+/// Queue the effects of `at` for step-by-step execution.
+pub fn queue_phase(q: &mut VecDeque<QItem>, fx: FxCtx, decision: &Decision, at: Placement) {
+    for placed in by_placement(decision, at) {
+        q.push_back(QItem::Fx(fx, placed));
+    }
+}
+
+/// The second half of a split `TERM`.
+pub fn term_diag(cx: &mut Cx<'_>, fx: &FxCtx, terminal: Terminal) {
+    let first = !cx.w.ledger.diagnostics.contains_key(&fx.rid);
+    let claim_winner = cx.w.ledger.claimed.get(&fx.rid).map(|(o, _, _)| *o);
+    cx.w.diagnostics_complete(fx.rid, terminal.outcome);
+    cx.out.notes.push(Note::DiagnosticsCompleted {
+        rid: fx.rid,
+        by: terminal.outcome,
+        first,
+        claim_winner,
+    });
+}
+
+/// Consume a continuation: validate it, decide, retire it (`consume`). The
+/// decision is also made with the other op status: an `Unknown` token must take
+/// the same row with the same effects as an `Outstanding` one (SP7, C1.4.1
+/// rule 3), which is what a duplicate or late continuation relies on.
+pub fn consume(
+    cx: &mut Cx<'_>,
+    token: crate::decision::Continuation,
+    decide: impl Fn(crate::decision::OpStatus) -> Decision,
+) -> Decision {
+    use crate::decision::OpStatus;
+    let status = cx.w.op_status(token);
+    let decided = decide(status);
+    let other = decide(match status {
+        OpStatus::Outstanding => OpStatus::Unknown,
+        OpStatus::Unknown => OpStatus::Outstanding,
+    });
+    if other != decided {
+        cx.out.violations.push(format!(
+            "SP7: {} differs by op status ({:?} vs {:?})",
+            decided.row.0, decided.verdict, other.verdict
+        ));
+    }
+    cx.w.retire(token);
+    decided
+}
+
+/// The queue every flight drains one item per step, before it advances.
+pub trait Queued {
+    fn queue(&mut self) -> &mut VecDeque<QItem>;
+    /// An effect that crosses to another actor. `Err(())`: not yet (blocked).
+    fn cross(&mut self, cx: &mut Cx<'_>, fx: &FxCtx, effect: &Effect) -> Result<(), ()>;
+}
+
+pub fn is_cross(effect: &Effect) -> bool {
+    matches!(
+        effect,
+        Effect::CaptureStart(_)
+            | Effect::CaptureStop(_)
+            | Effect::CaptureCancel { .. }
+            | Effect::SelfStop { .. }
+            | Effect::PipelineSpawn(_)
+    )
+}
+
+/// One queued micro-step. `None`: the queue is empty.
+pub fn drain_one<F: Queued>(flight: &mut F, cx: &mut Cx<'_>) -> Option<Poll> {
+    let item = flight.queue().front().cloned()?;
+    match item {
+        QItem::ReleaseT => release_t(cx),
+        QItem::TermDiag(fx, terminal) => term_diag(cx, &fx, terminal),
+        QItem::Fx(fx, placed) => {
+            if is_cross(&placed.effect) {
+                if flight.cross(cx, &fx, &placed.effect).is_err() {
+                    return Some(Poll::Blocked);
+                }
+            } else {
+                apply(cx, &fx, placed.at, &placed.effect);
+                if let Effect::Terminal(terminal) = placed.effect {
+                    if placed.at != Placement::In {
+                        flight.queue().insert(1, QItem::TermDiag(fx, terminal));
+                    }
+                }
+            }
+        }
+    }
+    flight.queue().pop_front();
+    Some(Poll::Progress)
+}
