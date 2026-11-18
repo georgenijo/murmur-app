@@ -238,6 +238,22 @@ Output:
 The `build` shell function installs the result into `/Applications` and resets
 the stale Accessibility grant for you (see below).
 
+### Shadow soak build (temporary, issue #1154)
+
+The `dictation-shadow` feature catches its own panics, which needs
+`panic = "unwind"`, and the release profile aborts. `cargo build --release
+--features dictation-shadow` therefore stops at a `compile_error!`. Build a soak
+binary with the `shadow-soak` profile instead (it inherits `release` and only
+sets `panic = "unwind"`):
+
+```bash
+(cd app/src-tauri && cargo build --profile shadow-soak --features dictation-shadow)
+```
+
+Run it with `MURMUR_SHADOW=1`; see
+[log-viewer.md](features/log-viewer.md#dictation-shadow-mismatches) for the files
+it writes.
+
 ## Logs
 
 Both build flavors write to `~/Library/Application Support/local-dictation/logs/`:

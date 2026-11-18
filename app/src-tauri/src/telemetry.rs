@@ -50,6 +50,37 @@ macro_rules! hunt {
     };
 }
 
+/// Marks one dictation shadow capture site (appendix C8.4 step 6):
+/// `shadow_site!(issue = <number>)`, where the issue tracks the removal of shadow
+/// mode. It expands to nothing without the `dictation-shadow` feature, so a default
+/// build contains no trace of a site; with it, to a check that the number is an
+/// integer literal. `scripts/check_shadow_sites.py` (the CI `policy` job) lists
+/// every site and fails when one has no issue number.
+///
+/// ```no_run
+/// ui_lib::shadow_site!(issue = 1154);
+/// ```
+///
+/// Anything but `issue = <literal>` is a compile error:
+///
+/// ```compile_fail
+/// ui_lib::shadow_site!();
+/// ```
+#[cfg(feature = "dictation-shadow")]
+#[macro_export]
+macro_rules! shadow_site {
+    (issue = $issue:literal $(,)?) => {
+        const _: u64 = $issue;
+    };
+}
+
+/// See the `dictation-shadow` variant: empty in a default build.
+#[cfg(not(feature = "dictation-shadow"))]
+#[macro_export]
+macro_rules! shadow_site {
+    (issue = $issue:literal $(,)?) => {};
+}
+
 /// A structured event emitted to the frontend and stored in the ring buffer.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppEvent {
@@ -82,7 +113,7 @@ fn log_directory_for(data_root: &Path, identifier: &str) -> PathBuf {
     data_root.join(directory).join("logs")
 }
 
-fn logs_dir() -> Option<PathBuf> {
+pub(crate) fn logs_dir() -> Option<PathBuf> {
     LOG_DIRECTORY
         .get()
         .cloned()
@@ -209,13 +240,22 @@ impl TauriEmitterLayer {
         // Debug and trace are local-only: no events.jsonl (so the shipper never
         // sees them), no ring buffer or Events tab, no capture-health input.
         if *meta.level() > tracing::Level::INFO {
-            let (summary, data) = local_log_payload(&stream, event);
+            // A malformed shadow record is rejected whole, before any summary is
+            // formatted: nothing of it reaches `app.log`.
+            let Some((summary, data)) = local_log_payload(&stream, event) else {
+                return;
+            };
             let line = local_log_line(&timestamp, &level, &stream, &summary, &data);
             let _ = self.local_log.clone().write_all(line.as_bytes());
             return;
         }
 
-        let (summary, data) = sanitized_event_payload(&stream, event, cfg!(debug_assertions));
+        // A malformed shadow record is rejected whole: no summary, no capture-health
+        // input, no ring buffer, window or `events.jsonl` line.
+        let Some((summary, data)) = sanitized_event_payload(&stream, event, cfg!(debug_assertions))
+        else {
+            return;
+        };
 
         let app_event = AppEvent {
             timestamp,
@@ -278,19 +318,35 @@ fn local_log_line(
 /// strings and anything outside a schema's allowlist are dropped. Events without
 /// an allowlisted summary keep their message, with key identity redacted, which
 /// is what `app.log` has always held for info lines.
-fn local_log_payload(stream: &str, event: &tracing::Event<'_>) -> (String, serde_json::Value) {
+///
+/// `None` when the event is a malformed shadow mismatch record: the sanitizer drops
+/// those whole, and the caller rejects the event before any summary is formatted.
+fn local_log_payload(
+    stream: &str,
+    event: &tracing::Event<'_>,
+) -> Option<(String, serde_json::Value)> {
     let mut visitor = JsonVisitor::new();
     event.record(&mut visitor);
     let message = visitor.message;
+    let was_shadow_mismatch = is_dictation_shadow_mismatch_event(&visitor.fields);
     let mut data = serde_json::Value::Object(visitor.fields);
     sanitize_event_data(stream, &mut data, false);
+    if rejected_by_sanitizer(was_shadow_mismatch, &data) {
+        return None;
+    }
     let summary = sanitized_summary(stream, message.clone(), &data, false);
     let summary = if summary == "Structured event" {
         key_identity::bounded_summary(stream, message.unwrap_or_default())
     } else {
         summary
     };
-    (summary, data)
+    Some((summary, data))
+}
+
+/// A shadow mismatch record the sanitizer emptied (a missing, malformed or
+/// out-of-range field) is rejected, not logged as an empty event.
+fn rejected_by_sanitizer(was_shadow_mismatch: bool, data: &serde_json::Value) -> bool {
+    was_shadow_mismatch && data.as_object().is_none_or(serde_json::Map::is_empty)
 }
 
 /// Collect an event's fields and apply the structured-event privacy boundary.
@@ -299,13 +355,19 @@ fn sanitized_event_payload(
     stream: &str,
     event: &tracing::Event<'_>,
     debug_build: bool,
-) -> (String, serde_json::Value) {
+) -> Option<(String, serde_json::Value)> {
     let mut visitor = JsonVisitor::new();
     event.record(&mut visitor);
+    let was_shadow_mismatch = is_dictation_shadow_mismatch_event(&visitor.fields);
     let mut data = serde_json::Value::Object(visitor.fields);
     sanitize_event_data(stream, &mut data, debug_build);
+    // Rejected before the summary: a debug build reuses the caller's message for an
+    // event it does not recognise, and a rejected record must not reach that path.
+    if rejected_by_sanitizer(was_shadow_mismatch, &data) {
+        return None;
+    }
     let summary = sanitized_summary(stream, visitor.message, &data, debug_build);
-    (summary, data)
+    Some((summary, data))
 }
 
 /// Enforce the structured-event privacy boundary independently of call-site
@@ -380,6 +442,10 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "system.main_thread_stack" => Some("system.main_thread_stack"),
         "system.main_thread_rates" => Some("system.main_thread_rates"),
         "pipeline.dictation_stage_gaps" => Some("pipeline.dictation_stage_gaps"),
+        // Content-free by construction: three numbers (C8.4). The arm is compiled
+        // in every build; only a build with `dictation-shadow` and MURMUR_SHADOW=1
+        // ever emits it.
+        "pipeline.dictation_shadow_mismatch" => Some("pipeline.dictation_shadow_mismatch"),
         "homophone_context.backoff_entered" => Some("homophone_context.backoff_entered"),
         "homophone_context.backoff_exited" => Some("homophone_context.backoff_exited"),
         "homophone_context.prewarm_requested" => Some("homophone_context.prewarm_requested"),
@@ -714,6 +780,57 @@ fn sanitize_dictation_stage_gaps_event(data: &mut serde_json::Map<String, serde_
         | "tail_us" => value.as_u64().is_some(),
         _ => false,
     });
+}
+
+fn is_dictation_shadow_mismatch_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("pipeline.dictation_shadow_mismatch")
+}
+
+/// A shadow mismatch names where it happened with three small numbers: the site,
+/// the C3 row's ordinal and the comparison level. No string, no recording id, no
+/// content. Keep that exact schema in every build (the event is only emitted by
+/// `dictation-shadow` builds, but its registry arm and this schema are not gated).
+///
+/// The three fields are validated **together**: all present, each a number in its
+/// documented range. A record that fails any check is dropped whole (emptied),
+/// never partly kept, so a partial or out-of-range event cannot reach a log sink.
+fn sanitize_dictation_shadow_mismatch_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    let field = |name: &str| data.get(name).and_then(serde_json::Value::as_u64);
+    let valid = match (field("site_id"), field("input_kind"), field("diff_kind")) {
+        (Some(site), Some(kind), Some(diff)) => {
+            is_valid_dictation_shadow_mismatch(site, kind, diff)
+        }
+        _ => false,
+    };
+    if !valid {
+        data.clear();
+        return;
+    }
+    data.retain(|key, _| {
+        matches!(
+            key.as_str(),
+            "event_code" | "site_id" | "input_kind" | "diff_kind"
+        )
+    });
+}
+
+/// Largest C3 row ordinal the mismatch event may carry (`RowId::ordinal`, a
+/// registry test pins that every row fits).
+pub(crate) const SHADOW_MAX_INPUT_KIND: u64 = 9_999;
+
+/// The documented value ranges of the shadow mismatch event: a C0.3 site code, a
+/// row ordinal and a `diff_kind` of 1 to 9 (appendix C8.3).
+pub(crate) fn is_valid_dictation_shadow_mismatch(
+    site_id: u64,
+    input_kind: u64,
+    diff_kind: u64,
+) -> bool {
+    murmur_dictation_core::decision::SiteId::ALL
+        .iter()
+        .any(|site| u64::from(site.code()) == site_id)
+        && input_kind <= SHADOW_MAX_INPUT_KIND
+        && (1..=9).contains(&diff_kind)
 }
 
 /// Main-thread diagnostics carry only static labels, ids, monotonic
@@ -1854,6 +1971,7 @@ fn sanitized_summary(
     } else if data.as_object().is_some_and(|map| {
         is_main_thread_watch_event(map)
             || is_dictation_stage_gaps_event(map)
+            || is_dictation_shadow_mismatch_event(map)
             || is_vad_stream_outcome_event(map)
             || is_stream_reuse_outcome_event(map)
     }) {
@@ -2247,6 +2365,10 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     }
     if is_dictation_stage_gaps_event(obj) {
         sanitize_dictation_stage_gaps_event(obj);
+        return;
+    }
+    if is_dictation_shadow_mismatch_event(obj) {
+        sanitize_dictation_shadow_mismatch_event(obj);
         return;
     }
     if is_dictation_terminal_event(obj) {
@@ -2792,12 +2914,32 @@ pub fn flush_on_exit() {
     );
 }
 
+/// Whether the panic hook may flush the live event writer. A panic the dictation
+/// shadow's comparison thread catches is its own: it must not enqueue a flush on the
+/// writer the live app uses (D-S2c-2 c). Without the `dictation-shadow` feature this
+/// is always `true`, so a default build behaves exactly as before.
+#[cfg(not(feature = "dictation-shadow"))]
+pub(crate) const fn live_flush_allowed() -> bool {
+    true
+}
+
+#[cfg(feature = "dictation-shadow")]
+use crate::dictation_shadow::on_comparison_thread;
+
+#[cfg(feature = "dictation-shadow")]
+pub(crate) fn live_flush_allowed() -> bool {
+    !on_comparison_thread()
+}
+
 /// Chain a panic hook that flushes the log tail. A release build aborts on
 /// panic, so `app.log` is flushed too; a dev build unwinds and keeps logging.
 fn install_panic_flush() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         previous(info);
+        if !live_flush_allowed() {
+            return;
+        }
         if let Some(writer) = EVENT_WRITER.get() {
             writer.flush(std::time::Duration::from_millis(500));
         }
@@ -3039,7 +3181,9 @@ mod tests {
                 _: tracing_subscriber::layer::Context<'_, S>,
             ) {
                 let stream = event.metadata().target();
-                let (summary, data) = local_log_payload(stream, event);
+                let Some((summary, data)) = local_log_payload(stream, event) else {
+                    return;
+                };
                 let level = event.metadata().level().to_string();
                 self.0
                     .lock()
@@ -4833,6 +4977,152 @@ mod tests {
             assert_eq!(invalid.as_object().unwrap().len(), 2);
             assert_eq!(invalid["vad_us"], 1);
         }
+    }
+
+    /// The shadow mismatch event is three numbers, in a debug and a release build
+    /// and in a build without the `dictation-shadow` feature: its registry arm and
+    /// its schema are not gated (appendix C8.4 steps 1-4).
+    #[test]
+    fn shadow_event_schema_numeric_in_every_build() {
+        for debug_build in [true, false] {
+            let mut event = serde_json::json!({
+                "event_code": "pipeline.dictation_shadow_mismatch",
+                "site_id": 216,
+                "input_kind": 1,
+                "diff_kind": 2,
+                "recording_id": 12,
+                "row": "R216.1",
+                "text": "SENTINEL_TRANSCRIPT",
+                "path": "/Users/private/SENTINEL",
+                "message": "SENTINEL",
+            });
+            sanitize_event_data("pipeline", &mut event, debug_build);
+            let object = event.as_object().unwrap();
+            let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["diff_kind", "event_code", "input_kind", "site_id"]);
+            assert_eq!(event["site_id"], 216);
+            assert_eq!(event["input_kind"], 1);
+            assert_eq!(event["diff_kind"], 2);
+            assert!(!serde_json::to_string(&event).unwrap().contains("SENTINEL"));
+            assert_eq!(
+                sanitized_summary(
+                    "pipeline",
+                    Some("mismatch SENTINEL".into()),
+                    &event,
+                    debug_build
+                ),
+                "pipeline.dictation_shadow_mismatch"
+            );
+
+            // A string where a number belongs drops the whole record, not just
+            // the bad field.
+            let mut invalid = serde_json::json!({
+                "event_code": "pipeline.dictation_shadow_mismatch",
+                "site_id": "SENTINEL",
+                "input_kind": -4,
+                "diff_kind": 9,
+            });
+            sanitize_event_data("pipeline", &mut invalid, debug_build);
+            assert!(invalid.as_object().unwrap().is_empty(), "{invalid}");
+        }
+        // The registry arm is compiled in every build.
+        assert_eq!(
+            canonical_event_code("pipeline.dictation_shadow_mismatch"),
+            Some("pipeline.dictation_shadow_mismatch")
+        );
+    }
+
+    /// Review fix (Sol 6.2 minor 2): a malformed shadow record is dropped whole by
+    /// the sanitizer both log sinks run. `diff_kind = 256`, a missing field, a
+    /// string, `0`, an unknown site and an oversized row ordinal all fail it.
+    #[test]
+    fn shadow_sanitizer_drops_out_of_range_and_partial_records_whole() {
+        let code = "pipeline.dictation_shadow_mismatch";
+        let bad = [
+            serde_json::json!({"event_code":code,"site_id":216,"input_kind":1,"diff_kind":256}),
+            serde_json::json!({"event_code":code,"site_id":216,"input_kind":1,"diff_kind":10}),
+            serde_json::json!({"event_code":code,"site_id":216,"input_kind":1}),
+            serde_json::json!({"event_code":code,"site_id":216,"diff_kind":2}),
+            serde_json::json!({"event_code":code,"input_kind":1,"diff_kind":2}),
+            serde_json::json!({"event_code":code,"site_id":216,"input_kind":"x","diff_kind":2}),
+            serde_json::json!({"event_code":code,"site_id":216,"input_kind":1,"diff_kind":0}),
+            serde_json::json!({"event_code":code,"site_id":1,"input_kind":1,"diff_kind":2}),
+            serde_json::json!({"event_code":code,"site_id":216,"input_kind":10000,"diff_kind":2}),
+        ];
+        for debug_build in [true, false] {
+            for event in &bad {
+                let mut event = event.clone();
+                sanitize_event_data("pipeline", &mut event, debug_build);
+                assert!(event.as_object().unwrap().is_empty(), "{event}");
+            }
+            let mut good =
+                serde_json::json!({"event_code":code,"site_id":216,"input_kind":1,"diff_kind":9});
+            sanitize_event_data("pipeline", &mut good, debug_build);
+            assert_eq!(good.as_object().unwrap().len(), 4, "{good}");
+        }
+    }
+
+    /// Review fix (Sol 6.2 minor 3, D-S2c-2 g): a malformed shadow record is rejected
+    /// **as an event** by both log paths: the debug-line path (`app.log`) and the
+    /// structured-event path (ring buffer, window, `events.jsonl`). Clearing the
+    /// fields but letting the event through (`diff_kind = 256`) left an empty record
+    /// behind.
+    #[test]
+    fn shadow_sanitizer_rejects_the_whole_malformed_event_on_both_paths() {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::layer::{Context, SubscriberExt};
+        use tracing_subscriber::Layer;
+
+        #[derive(Default)]
+        struct Outcomes(Arc<Mutex<Vec<(bool, bool)>>>);
+        impl<S: tracing::Subscriber> Layer<S> for Outcomes {
+            fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+                let stream = event.metadata().target();
+                let local = local_log_payload(stream, event).is_some();
+                let structured = sanitized_event_payload(stream, event, true).is_some();
+                self.0.lock().unwrap().push((local, structured));
+            }
+        }
+
+        let outcomes = Outcomes::default();
+        let seen = Arc::clone(&outcomes.0);
+        let subscriber = tracing_subscriber::registry().with(outcomes);
+        tracing::subscriber::with_default(subscriber, || {
+            let code = "pipeline.dictation_shadow_mismatch";
+            // Out of range, missing, unknown site: rejected whole.
+            tracing::info!(target: "pipeline", event_code = code, site_id = 216_u64, input_kind = 1_u64, diff_kind = 256_u64);
+            tracing::debug!(target: "pipeline", event_code = code, site_id = 216_u64, input_kind = 1_u64, diff_kind = 256_u64);
+            tracing::info!(target: "pipeline", event_code = code, site_id = 216_u64, input_kind = 1_u64);
+            tracing::info!(target: "pipeline", event_code = code, site_id = 1_u64, input_kind = 1_u64, diff_kind = 2_u64);
+            // A well-formed one passes, and so does an unrelated event.
+            tracing::info!(target: "pipeline", event_code = code, site_id = 216_u64, input_kind = 1_u64, diff_kind = 2_u64);
+            tracing::info!(target: "pipeline", event_code = "pipeline.stage_timing", total_ms = 3_u64);
+        });
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 6);
+        for (n, (local, structured)) in seen.iter().take(4).enumerate() {
+            assert!(
+                !local && !structured,
+                "malformed event {n} got through: {seen:?}"
+            );
+        }
+        assert_eq!(seen[4], (true, true), "a well-formed record passes");
+        assert!(
+            seen[5].0 || seen[5].1,
+            "an unrelated event is untouched: {seen:?}"
+        );
+    }
+
+    /// Every C3 row ordinal fits the event's documented `input_kind` range.
+    #[test]
+    fn shadow_input_kind_range_covers_every_row_ordinal() {
+        let largest = murmur_dictation_core::rows::C3_ROWS
+            .iter()
+            .map(|(row, _)| u64::from(murmur_dictation_core::decision::RowId(row).ordinal()))
+            .max()
+            .unwrap();
+        assert!(largest <= SHADOW_MAX_INPUT_KIND, "{largest}");
     }
 
     #[test]

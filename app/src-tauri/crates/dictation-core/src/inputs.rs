@@ -53,6 +53,17 @@ pub struct SmartAutoSel {
     pub handle: Handle,
 }
 
+/// Why Smart Auto's resolve failed, as a typed, heap-free code (D-S2c-2 b). The
+/// resolve's own text is shell-owned: the core never reads it, only replies "with
+/// the resolve's text" (`ErrText::SmartAuto`), and the shell supplies the string it
+/// kept. A plain code keeps `StartInput` free of heap memory, so the shadow can
+/// capture it by value on the live path without allocating or freeing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SmartAutoFailure {
+    /// The selection was refused or could not be made.
+    ResolveFailed,
+}
+
 /// C2.4 `StartInput` (site 101).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartInput {
@@ -77,7 +88,7 @@ pub struct StartInput {
     /// the blockers and status step passed).
     pub cleanup_pending: Option<bool>,
     /// Answer to `NeedObservation(SmartAutoSelection)`.
-    pub smart_auto_result: Option<Result<SmartAutoSel, String>>,
+    pub smart_auto_result: Option<Result<SmartAutoSel, SmartAutoFailure>>,
 }
 
 impl StartInput {
@@ -586,6 +597,31 @@ impl Input {
 
 #[cfg(test)]
 mod tests {
+    /// D-S2c-2 b: the shadow captures an `Input` by value on the live thread, and a
+    /// rejected message is freed there. No input may own heap memory, so none of
+    /// these types may name `String`, `Vec`, `Box`, `Rc`, `Arc` or a map. Production
+    /// text only (this module and the comments are cut off).
+    #[test]
+    fn inputs_own_no_heap_memory() {
+        let production = include_str!("inputs.rs");
+        let production = production
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap()
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for token in [
+            "String", "Vec<", "Box<", "Rc<", "Arc<", "HashMap", "BTreeMap", "Cow<", "PathBuf",
+        ] {
+            assert!(
+                !production.contains(token),
+                "inputs.rs names `{token}`: an input must own no heap memory"
+            );
+        }
+    }
+
     use super::*;
 
     fn start() -> StartInput {

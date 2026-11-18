@@ -166,7 +166,7 @@ pub(super) fn render_reply(
         Reply::Transcription { .. } | Reply::Ok => {
             unreachable!("a start never replies with a transcription or a bare Ok")
         }
-        Reply::Err(ErrText::Shell) => {
+        Reply::Err(ErrText::Shell | ErrText::SmartAuto) => {
             Err(shell_error.expect("a shell error reply carries its text"))
         }
         Reply::Err(other) => Err(other
@@ -624,6 +624,7 @@ pub(super) fn release_and_reply(
     slots: &StartSlots,
     decision: Decision,
     recording_id: u64,
+    smart_auto_error: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let ports = StartPorts::new(host, state, slots, Some(recording_id));
     run_phase(
@@ -632,5 +633,5 @@ pub(super) fn release_and_reply(
         None,
         recording_id,
     );
-    reply_of(&decision, None)
+    reply_of(&decision, smart_auto_error)
 }

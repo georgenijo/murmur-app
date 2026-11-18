@@ -44,6 +44,26 @@ mod dictation_diagnostics;
 mod dictation_diagnostics_contract;
 #[allow(dead_code)]
 mod dictation_executor;
+// Stage 2c shadow mode (appendix C8): only in builds with the `dictation-shadow`
+// feature, and active only with MURMUR_SHADOW=1. Removal: #1154.
+//
+// The shadow catches its own panics so they can never reach the live path, and
+// `catch_unwind` does nothing under `panic = "abort"` (the release profile): a bug
+// in the comparison would then abort the app. The feature therefore refuses to build
+// there. Native soak builds use `cargo build --profile shadow-soak --features
+// dictation-shadow` (inherits `release`, `panic = "unwind"`). Pinned by
+// `dictation_shadow_policy_tests`.
+#[cfg(all(feature = "dictation-shadow", panic = "abort"))]
+compile_error!(
+    "the `dictation-shadow` feature needs `panic = \"unwind\"`: build it with \
+     `--profile shadow-soak` (or a debug/test profile), not the release profile"
+);
+#[cfg(feature = "dictation-shadow")]
+mod dictation_shadow;
+#[cfg(all(test, not(feature = "dictation-shadow")))]
+mod dictation_shadow_default_tests;
+#[cfg(test)]
+mod dictation_shadow_policy_tests;
 mod dictation_telemetry;
 mod dock_watch;
 pub mod evaluation;
@@ -104,9 +124,13 @@ mod vocab;
 mod vocabulary_alias;
 mod window_state;
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(all(test, feature = "dictation-shadow"))))]
 #[global_allocator]
 static ALLOCATOR: alloc::RustZoneAllocator = alloc::RustZoneAllocator;
+
+// The lib's own test binary built with the shadow feature installs a counting
+// wrapper over this allocator instead (`dictation_shadow::alloc_probe`), for the
+// shadow's no-allocation test.
 
 /// Current Rust heap usage in megabytes (from macOS malloc zone stats).
 #[cfg(target_os = "macos")]
@@ -473,6 +497,8 @@ pub fn run() {
         .setup(|app| {
             window_state::initialize(app.handle())?;
             telemetry::init(app.handle().clone());
+            #[cfg(feature = "dictation-shadow")]
+            dictation_shadow::start();
             // After telemetry and Tauri's event loop. Off unless the Diagnostics
             // setting or MURMUR_MAIN_THREAD_WATCH arms it; then it observes every
             // main-thread busy span and labels the app's own main-thread work.
@@ -755,6 +781,8 @@ pub fn run() {
                     state.meetings.shutdown(_app_handle);
                     state.meeting_suggestions.shutdown();
                 }
+                #[cfg(feature = "dictation-shadow")]
+                dictation_shadow::finish_on_exit();
                 // Last: write out the log tail.
                 telemetry::flush_on_exit();
             }
