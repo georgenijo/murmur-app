@@ -102,18 +102,29 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
         // Issue the commands that are due.
         while pending.front().is_some_and(|(at, _)| *at <= clock) {
             let (_, cmd) = pending.pop_front().expect("checked above");
-            // The frontend suppresses the stop IPC while the status it holds is
-            // `Recovering` (`useRecordingState.ts` `handleStop`: it only presents
-            // "Microphone cleanup is still in progress"), so a user stop issued then is not
-            // a step a user can take (D-S2b-13 (c)). A stop issued earlier and still in
-            // flight when the status turns `Recovering` is: it is already a flight.
-            if matches!(cmd, Cmd::Stop { .. }) && w.status == Status::Recovering {
+            // Stops follow their caller (D-S2b-15 (c)). A frontend-gated caller (the main
+            // window, the hold and toggle hotkeys, the overlay, the silence auto-stop)
+            // sends no stop while the status it observed is `Recovering`
+            // (`useRecordingState.ts` `handleStop` only presents "Microphone cleanup is
+            // still in progress"), so that schedule does not exist. The observed status is
+            // the shell's status at the issue step. The `stop_native_recording` IPC has no
+            // such guard and keeps every schedule, as does the supervisor's `Interrupted`
+            // auto-stop (a flight, not a command). A stop issued earlier and still in
+            // flight when the status turns `Recovering` is already a flight.
+            if matches!(cmd, Cmd::Stop { via_ipc: false, .. }) && w.status == Status::Recovering {
                 if let Some(trace) = checker.trace.as_mut() {
                     trace.push(format!(
-                        "{clock:>4} stop IPC suppressed (status Recovering)"
+                        "{clock:>4} frontend stop suppressed (observed status Recovering)"
                     ));
                 }
                 continue;
+            }
+            if matches!(cmd, Cmd::Stop { via_ipc: true, .. }) && w.status == Status::Recovering {
+                if let Some(trace) = checker.trace.as_mut() {
+                    trace.push(format!(
+                        "{clock:>4} unscoped stop IPC issued (status Recovering)"
+                    ));
+                }
             }
             let task: Box<dyn Task> = match cmd {
                 Cmd::Start {
@@ -122,7 +133,7 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
                     app_disabled,
                     smart,
                 } => Box::new(StartFlight::new(plan, blockers, app_disabled, smart)),
-                Cmd::Stop { id, cfg } => {
+                Cmd::Stop { id, cfg, .. } => {
                     Box::new(StopFlight::new(id.resolve(w.current_id), None, cfg))
                 }
                 Cmd::Cancel { id } => Box::new(CancelFlight::new(id.resolve(w.current_id))),

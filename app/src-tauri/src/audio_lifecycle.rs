@@ -5270,7 +5270,11 @@ mod tests {
                 .iter()
                 .any(|(_, event)| *event == AudioLifecycleEvent::Idle)
         });
-        assert!(!supervisor.public.owns(owner));
+        // The supervisor notifies `Idle` before it clears the owner, so wait for both
+        // observations: a thread switch between the two must not fail correct code.
+        wait_until("the owner is cleared after the Idle notification", || {
+            !supervisor.public.owns(owner)
+        });
         shutdown(&supervisor);
     }
 
@@ -7096,5 +7100,65 @@ mod tests {
             !supervisor.public.is_active()
         });
         shutdown(&supervisor);
+    }
+
+    /// D-S2b-15 (a): the query the admission and stop paths ask about a recording's owner.
+    /// A cleanup is pending only for the owner of the recording, and only while the public
+    /// phase is `Stopping` or `Recovering` (the model's `Sup::cleanup_pending`); the
+    /// recording query is true only for that owner in `Recording` (`Sup::audio_ready`).
+    /// A phase turned into another (`Stopping` for `Starting`, say) fails a row here.
+    #[test]
+    fn a_cleanup_is_pending_only_for_the_owner_while_stopping_or_recovering() {
+        let id = 9_991_001;
+        let _restore = set_public_for_test(PublicForTest::CleanupPending(id));
+        let public = &supervisor().public;
+        for (phase, pending, recording) in [
+            (PublicPhase::Idle, false, false),
+            (PublicPhase::Starting, false, false),
+            (PublicPhase::Recording, false, true),
+            (PublicPhase::Recovering, true, false),
+            (PublicPhase::Stopping, true, false),
+        ] {
+            public.set_phase(phase);
+            assert_eq!(
+                is_dictation_cleanup_pending(id),
+                pending,
+                "cleanup pending in {phase:?}"
+            );
+            assert_eq!(
+                is_dictation_recording(id),
+                recording,
+                "recording in {phase:?}"
+            );
+            assert!(
+                !is_dictation_cleanup_pending(id + 1),
+                "another id, {phase:?}"
+            );
+            assert!(!is_dictation_recording(id + 1), "another id, {phase:?}");
+        }
+    }
+
+    /// D-S2b-15 (a): `take_interrupted_dictation` is destructive and per recording: the
+    /// first call takes the preserved capture, the next finds nothing, and another
+    /// recording's id never finds it (the model's `Sup::take_interrupted`, R201.1 and
+    /// R201.5).
+    #[test]
+    fn a_taken_interrupted_capture_is_gone_for_the_next_stop() {
+        let id = 9_991_002;
+        insert_interrupted_dictation_for_test(
+            id,
+            InterruptedCapture {
+                samples: vec![0.0; 4],
+                reason: "test".to_string(),
+                duration_ms: 1,
+            },
+        );
+        assert!(take_interrupted_dictation(id + 1).is_none());
+        let taken = take_interrupted_dictation(id).expect("the preserved capture");
+        assert_eq!(taken.samples.len(), 4);
+        assert!(
+            take_interrupted_dictation(id).is_none(),
+            "taking is destructive"
+        );
     }
 }

@@ -22,27 +22,21 @@ const CI_BUDGET: Duration = Duration::from_secs(20);
 /// all, so every witness is produced by the run itself: there is no pinned exception to
 /// the converse check, and a witness that drifted away fails it.
 ///
-/// * 11,139: PD-24 through R209.3 (the user's `Cancel{User}` after the start's receiver
-///   timeout), the shell test's own arm.
-/// * 12,625: PD-19's refused auto-stop (the capture stays in the store, no stop in
-///   `Recovering` is user-reachable).
-/// * 20,726: PD-19 through a dropped start (no context was ever installed).
-/// * 31,937: PD-22 with the cancel completing performance (R211.2, R205.5).
-/// * 33,078: PD-22 with the stop's failure tail completing performance (R211.2, R203.2).
-/// * 41,947: PD-19 through `TerminationUnconfirmed`.
-/// * 51,233: PD-24 through R209.5 (an environmental recovery, `SystemWake`).
-/// * 80,068: PD-21 with a short stop (R206.2, R203.4).
-const FIXED_SEEDS: [u64; 8] = [
-    11_139, 12_625, 20_726, 31_937, 33_078, 41_947, 51_233, 80_068,
-];
+/// * 15,632: PD-22 with the cancel completing performance (R211.2, R205.5).
+/// * 43,329: PD-19 through a dropped start (no context was ever installed).
+/// * 176,140: PD-21 with a short stop (R206.2, R203.4).
+/// * 1,769,144: PD-19's refused auto-stop (the capture stays in the store and no ordinary
+///   control sends the stop that would take it; D-S2b-15 (c), (d)). It is rare because the
+///   unscoped stop IPC, one in four generated stops, takes the capture when it lands.
+const FIXED_SEEDS: [u64; 4] = [15_632, 43_329, 176_140, 1_769_144];
 
 /// PD-18's witnesses, one seed per instance (C7.5): the first seed of the fixed
 /// range that ends stuck in `Recovering` through that instance, with the generation's
 /// own evidence (R101.12 in the gap after its last restorer).
 const PD18_SEEDS: [(&str, u64); 3] = [
-    ("(a) S12", 936),
-    ("(b) Idle-arm tail", 77),
-    ("(c) unsealed stop", 661),
+    ("(a) S12", 169),
+    ("(b) Idle-arm tail", 312),
+    ("(c) unsealed stop", 1_759),
 ];
 
 /// A witness of one of PD-19..PD-24: the PD, the seed that takes it, the matched
@@ -63,77 +57,77 @@ struct Witness {
 const FINDING_SEEDS: [Witness; 14] = [
     Witness {
         pd: 19,
-        seed: 41_947,
+        seed: 9_652,
         split: None,
         shell_test: Some("pd19_termination_unconfirmed_after_retained_pcm_leaves_recovering"),
         sig: None,
     },
     Witness {
         pd: 19,
-        seed: 20_726,
+        seed: 43_329,
         split: None,
         shell_test: Some("pd19_a_dropped_start_and_a_retained_runtime_failure_leave_recovering"),
         sig: None,
     },
     Witness {
         pd: 19,
-        seed: 12_625,
+        seed: 1_769_144,
         split: None,
         shell_test: Some("pd19_a_refused_auto_stop_leaves_the_capture_and_recovering"),
         sig: None,
     },
     Witness {
         pd: 20,
-        seed: 905,
+        seed: 127,
         split: Some(("R205.5", "R203.5")),
         shell_test: Some("pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree"),
         sig: None,
     },
     Witness {
         pd: 21,
-        seed: 80_068,
+        seed: 176_140,
         split: Some(("R206.2", "R203.4")),
         shell_test: Some("pd21_timed_out_cancel_then_a_short_stop_disagree"),
         sig: None,
     },
     Witness {
         pd: 21,
-        seed: 276,
+        seed: 39,
         split: Some(("R206.2", "R209.4")),
         shell_test: Some("pd21_timed_out_cancel_and_the_late_recovery_disagree"),
         sig: None,
     },
     Witness {
         pd: 22,
-        seed: 33_078,
+        seed: 3_125,
         split: Some(("R211.2", "R203.2")),
         shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance"),
         sig: None,
     },
     Witness {
         pd: 22,
-        seed: 31_937,
+        seed: 15_632,
         split: Some(("R211.2", "R205.5")),
         shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_cancel_completes_performance"),
         sig: None,
     },
     Witness {
         pd: 23,
-        seed: 445,
+        seed: 286,
         split: Some(("R207.3", "R203.5")),
         shell_test: Some("pd23_superseded_terminal_and_an_empty_stop_no_speech_disagree"),
         sig: None,
     },
     Witness {
         pd: 23,
-        seed: 363,
+        seed: 74,
         split: Some(("R207.3", "R203.1")),
         shell_test: Some("pd23_superseded_terminal_and_a_refused_stop_failed_disagree"),
         sig: None,
     },
     Witness {
         pd: 23,
-        seed: 37,
+        seed: 76,
         split: Some(("R207.3", "R205.5")),
         shell_test: Some("pd23_superseded_terminal_and_a_cancel_of_processing_cancelled_disagree"),
         sig: None,
@@ -143,14 +137,14 @@ const FINDING_SEEDS: [Witness; 14] = [
     // the claim, so it has no shell fixture; it stays allowlisted (D-S2b-13 (e)).
     Witness {
         pd: 23,
-        seed: 481,
+        seed: 537,
         split: Some(("R207.3", "R204b.6")),
         shell_test: None,
         sig: Some(2),
     },
     Witness {
         pd: 24,
-        seed: 11_139,
+        seed: 3_946,
         split: Some(("R102.3", "R209.3")),
         shell_test: Some(
             "pd24_start_timeout_terminal_and_the_users_cancel_arm_performance_outcome_disagree",
@@ -159,7 +153,7 @@ const FINDING_SEEDS: [Witness; 14] = [
     },
     Witness {
         pd: 24,
-        seed: 51_233,
+        seed: 8_419,
         split: Some(("R102.3", "R209.5")),
         shell_test: Some(
             "pd24_start_timeout_terminal_and_an_environmental_recovery_arm_performance_outcome_disagree",
@@ -1665,9 +1659,9 @@ fn pd19_is_witnessed_with_its_whole_story() {
     // One seed per entry: `TerminationUnconfirmed`, a dropped start, the refused auto-stop
     // that leaves the capture in the store (no user-accessible recovery).
     for (seed, entries) in [
-        (41_947, [1, 0, 0]),
-        (20_726, [0, 1, 0]),
-        (12_625, [0, 0, 1]),
+        (9_652, [1, 0, 0]),
+        (43_329, [0, 1, 0]),
+        (1_769_144, [0, 0, 1]),
     ] {
         let report = run_seed(seed);
         assert!(report.hits.pd[19] > 0, "{seed}: {:?}", report.hits);
@@ -1675,6 +1669,36 @@ fn pd19_is_witnessed_with_its_whole_story() {
         assert_eq!(report.hits.pd18, [0, 0, 0]);
         assert!(report.violations.is_empty(), "{:?}", report.violations);
     }
+}
+
+/// D-S2b-15 (c): stops follow their caller. A frontend-gated stop issued while the status
+/// is `Recovering` is dropped, and the unscoped `stop_native_recording` IPC keeps the
+/// schedule. Both occur in the seeded runs, and the IPC's stop in `Recovering` is a
+/// flight that runs (a run that issues one still passes every property).
+#[test]
+fn stops_follow_their_caller() {
+    let (mut suppressed, mut unscoped) = (0, 0);
+    for seed in 0..3_000 {
+        let (report, trace) = run_seed_with(seed, true);
+        assert!(
+            report.violations.is_empty(),
+            "{seed}: {:?}",
+            report.violations
+        );
+        suppressed += trace
+            .iter()
+            .filter(|line| line.contains("frontend stop suppressed"))
+            .count();
+        unscoped += trace
+            .iter()
+            .filter(|line| line.contains("unscoped stop IPC issued"))
+            .count();
+    }
+    assert!(suppressed > 0, "no frontend stop was ever suppressed");
+    assert!(
+        unscoped > 0,
+        "no unscoped stop IPC was ever issued in Recovering"
+    );
 }
 
 /// Mutation check on the harness's own scheduler: a blocked step must change
@@ -1688,11 +1712,6 @@ fn a_blocked_step_changes_nothing() {
 }
 
 // ------------------------------------------------------------ the supervisor mirror
-
-/// `audio_lifecycle.rs` and `audio.rs`, read at build time so a citation that drifts
-/// fails.
-const LIFECYCLE_SOURCE: &str = include_str!("../../../../src/audio_lifecycle.rs");
-const AUDIO_SOURCE: &str = include_str!("../../../../src/audio.rs");
 
 /// The mirror-table key of every message, worker event and supervisor step of the
 /// model. The matches are exhaustive: a new variant does not compile until it names a
@@ -1872,94 +1891,25 @@ fn an_immediate_reply_is_a_step_after_the_acceptance_and_can_miss_its_receiver()
     );
 }
 
-/// D-S2b-9 (a): every modeled step cites the `audio_lifecycle.rs` function and lines it
-/// mirrors, and the citation is true: the function is declared above the lines, the
-/// lines lie inside it, and the cited lines contain the fragment of source the row
-/// says it mirrors. Every message, worker event and supervisor step has a row.
+/// D-S2b-9 (a): every message, worker event and supervisor step of the model has a row in
+/// the mirror table. The rows themselves are checked against the source in the app crate
+/// (`src/audio_lifecycle_mirror_tests.rs`, D-S2b-15): the function, the lines and the
+/// fragments as tokens, and the whole-file pins.
 #[test]
-fn the_supervisor_mirror_cites_the_real_source() {
-    let top_level_fn = |line: &str| {
-        let is_fn = line.starts_with("fn ")
-            || line.starts_with("pub fn ")
-            || line.starts_with("pub(crate) fn ");
-        is_fn
-            .then(|| {
-                let after = line.split("fn ").nth(1)?;
-                Some(after.split(['(', '<']).next()?.trim().to_string())
-            })
-            .flatten()
-    };
-    for row in super::supervisor::MIRROR {
-        let lines: Vec<&str> = match row.file {
-            "audio_lifecycle.rs" => LIFECYCLE_SOURCE.lines().collect(),
-            "audio.rs" => AUDIO_SOURCE.lines().collect(),
-            other => panic!("{}: unknown source file {other}", row.step),
-        };
-        let (first, last) = (row.lines.0 as usize, row.lines.1 as usize);
-        assert!(
-            1 <= first && first <= last && last <= lines.len(),
-            "{}: lines {first}-{last} are outside the source",
-            row.step
-        );
-        // The function enclosing the first cited line.
-        let decl = (0..first)
-            .rev()
-            .find(|index| top_level_fn(lines[*index]).is_some())
-            .unwrap_or_else(|| panic!("{}: no function encloses line {first}", row.step));
-        assert_eq!(
-            top_level_fn(lines[decl]).as_deref(),
-            Some(row.function),
-            "{}: line {first} is in `{}` (declared at {}), not `{}`",
-            row.step,
-            top_level_fn(lines[decl]).unwrap_or_default(),
-            decl + 1,
-            row.function
-        );
-        let end = (decl..lines.len())
-            .find(|index| lines[*index] == "}")
-            .map_or(lines.len(), |index| index + 1);
-        assert!(
-            last <= end,
-            "{}: lines {first}-{last} run past the end of `{}` (line {end})",
-            row.step,
-            row.function
-        );
-        let cited = lines[first - 1..last].join("\n");
-        assert!(
-            cited.contains(row.needle),
-            "{}: lines {first}-{last} of `{}` do not contain `{}`",
-            row.step,
-            row.function,
-            row.needle
-        );
-        for guard in row.guards {
-            assert!(
-                cited.contains(guard),
-                "{}: the guard `{guard}` is not in lines {first}-{last} of `{}`: the model \
-                 mirrors a condition the source no longer has",
-                row.step,
-                row.function
-            );
-        }
-        if let Some(test) = row.real_test {
-            assert!(
-                LIFECYCLE_SOURCE.contains(&format!("fn {test}(")),
-                "{}: the real-supervisor test `{test}` does not exist in audio_lifecycle.rs",
-                row.step
-            );
-        }
-        assert!(
-            !row.what.is_empty(),
-            "{}: the row says what the model does",
-            row.step
-        );
-    }
+fn every_modeled_step_has_a_mirror_row() {
     for key in mirror_keys() {
         assert!(
             super::supervisor::MIRROR
                 .iter()
                 .any(|row| row.step.starts_with(key)),
             "the model step `{key}` has no mirror row"
+        );
+    }
+    for row in super::supervisor::MIRROR {
+        assert!(
+            !row.what.is_empty(),
+            "{}: the row says what the model does",
+            row.step
         );
     }
 }

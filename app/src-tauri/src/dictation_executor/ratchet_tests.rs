@@ -300,6 +300,7 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// silent miss (D-S2-17). Paths are relative to `src/`; every entry follows the
 /// naming convention ([`follows_test_naming`]) and exists (guard tests).
 const TEST_ONLY_FILES: &[&str] = &[
+    "audio_lifecycle_mirror_tests.rs",
     "capture_preview_handoff_tests.rs",
     "capture_speculative_tests.rs",
     "capture_standby_tests.rs",
@@ -323,6 +324,7 @@ const TEST_ONLY_FILES: &[&str] = &[
     "meeting_store/search_tests.rs",
     "release_tail_tests.rs",
     "stream_reuse_tests.rs",
+    "token_pin_tests.rs",
     "vad_stream_tests.rs",
 ];
 

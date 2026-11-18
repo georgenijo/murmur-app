@@ -39,9 +39,17 @@ pub enum Cmd {
         app_disabled: bool,
         smart: bool,
     },
+    /// A user stop. `via_ipc` marks the caller that bypasses the frontend: the registered
+    /// `stop_native_recording` IPC (callable from any local window, with no `Recovering`
+    /// guard, `lib.rs:290`, `recording.rs:7317`). Every other caller (the main window, the
+    /// hold and toggle hotkeys, the overlay, the silence auto-stop) gates on the status the
+    /// frontend observed and sends no stop while it holds `Recovering`
+    /// (`useRecordingState.ts` `handleStop`). The supervisor's `Interrupted` auto-stop is
+    /// not generated: it is a flight the supervisor starts, and it keeps every schedule.
     Stop {
         id: IdVar,
         cfg: StopCfg,
+        via_ipc: bool,
     },
     Cancel {
         id: IdVar,
@@ -249,6 +257,7 @@ pub fn scenario(rng: &mut Rng) -> Scenario {
                 Cmd::Stop {
                     id: id_var(rng),
                     cfg: stop_cfg(rng),
+                    via_ipc: rng.chance(1, 4),
                 },
             ));
         }

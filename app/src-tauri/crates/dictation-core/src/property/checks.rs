@@ -906,9 +906,11 @@ impl Checker {
         match w.status {
             Status::Idle => {}
             // A preserved capture nobody took is not an exemption: the stop that could
-            // take it is the user's IPC in `Recovering`, which the frontend suppresses
-            // (D-S2b-13 (c)). The run is stuck, and the generation's own evidence decides
-            // whether it is PD-19.
+            // take it is not one an ordinary control sends in `Recovering` (the frontend
+            // suppresses it; D-S2b-13 (c), D-S2b-15 (c)). A run in which the unscoped
+            // `stop_native_recording` IPC does take it ends in `Idle` and never gets
+            // here; a run in which nothing does is stuck, and the generation's own
+            // evidence decides whether it is PD-19.
             Status::Recovering => match self.stranded_instance(current, w) {
                 Some(instance) => self.count_stranded(instance, current, w),
                 None => problems.push(format!(

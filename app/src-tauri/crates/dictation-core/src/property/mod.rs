@@ -4,7 +4,7 @@ mod c3;
 mod checks;
 mod flights;
 mod gen;
-mod mirror_pins;
+mod mirror_table;
 mod model;
 mod redeliver;
 mod rng;

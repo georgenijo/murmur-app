@@ -384,27 +384,35 @@ splitmix64 generator turns a seed into the whole run.
   `Attempt` grammar. Every supervisor word ends with an explicit `OwnerClear` step
   (followed by `CleanupFinished` for a sealed stop only); `cleanup_pending` is derived
   from the model (owner set and phase `Stopping`/`Recovering`), never generated.
-* **Supervisor mirror** (D-S2b-9 (a), `supervisor.rs`): `MIRROR` is a table in which every
-  modeled supervisor or client step cites the `audio_lifecycle.rs` function and line
-  range it mirrors, with a fragment of source that must appear there;
-  `the_supervisor_mirror_cites_the_real_source` reads the source and fails a row that
-  drifted, and a model step with no row. A row also pins the **guard expressions** of
-  the cited code (`guards`: each fragment must appear in the cited lines, so an inverted
-  `is_none()` or a dropped clause fails the mirror test) and may name a test of the real
-  supervisor that runs the behaviour (`real_test`: for the sealed reply,
-  `a_sealed_stop_reply_is_delivered_at_the_seal_before_worker_exit` in
-  `audio_lifecycle.rs`; the cancel row names `a_cancel_from_recording_stops_capture_and_answers_true`,
-  and `a_cancel_from_recovering_has_nothing_to_abandon` pins what production does from
-  `Recovering`). Guards one at a time did not converge (two review rounds, two different
-  uncited guards turned around), so **every cited function is pinned whole**
-  (`mirror_pins.rs`, D-S2b-13 (a)): `PINS` holds the FNV-1a hash of the function's
-  normalized token stream (whitespace and comments stripped; every comma and every
-  punctuation's spacing kept, the normalization of the #1152 ratchet), and any edit of a
-  cited function fails `the_mirrored_functions_are_pinned` until its pin is replaced. A
-  re-pin commit says the model step was re-checked against the new code
-  (`cargo test -p murmur-dictation-core print_current_pins -- --ignored --nocapture`
-  prints the table). The test also fails when a pinned function calls a function of the
-  file that is neither pinned nor listed in `NOT_MODELED` with its reason. A command (start, stop and cancel alike, each with its own
+* **Supervisor mirror** (D-S2b-9 (a), `mirror_table.rs`): `MIRROR` is a table in which
+  every modeled supervisor or client step (and every helper the model mirrors:
+  `is_dictation_cleanup_pending`, `is_dictation_recording`, `take_interrupted_dictation`,
+  `PublicState::owns` and the rest of the public-state accessors) cites the
+  `audio_lifecycle.rs` function and line range it mirrors, with a fragment of source that
+  must appear there, the **guard expressions** of the cited code (`guards`) and, where one
+  exists, a test of the real supervisor that runs the behaviour (`real_test`: for the sealed
+  reply `a_sealed_stop_reply_is_delivered_at_the_seal_before_worker_exit`; for cancel
+  `a_cancel_from_recording_stops_capture_and_answers_true` and
+  `a_cancel_from_recovering_has_nothing_to_abandon`; for the queries
+  `a_cleanup_is_pending_only_for_the_owner_while_stopping_or_recovering` and
+  `a_taken_interrupted_capture_is_gone_for_the_next_stop`). This crate checks that every
+  message, worker event, timer and supervisor step of the model has a row
+  (`every_modeled_step_has_a_mirror_row`). **The pins and the citation checks live in the
+  app crate** (D-S2b-15), in `src/audio_lifecycle_mirror_tests.rs`, which includes
+  `mirror_table.rs` by path (so the table the harness runs is the table checked) and
+  parses the source with `syn`: every production function, method, constant and static of
+  `audio_lifecycle.rs` has its **own pin** (`LIFECYCLE_PINS`: the FNV-1a hash of the item's
+  normalized token stream), so any edit, addition or removal fails
+  `every_production_item_of_audio_lifecycle_is_pinned` and names the item until its pin is
+  updated. The normalization is the shell ratchet's (`src/token_pin_tests.rs`, shared:
+  `proc_macro2` tokens, token kinds, punctuation spacing and commas kept, only whitespace and
+  comments stripped), so a comment-only edit passes and a one-token edit fails. The
+  citations are matched as token sequences within the cited lines (`span-locations`), so a
+  comment inside a cited expression does not hide it. A re-pin commit says the model step
+  was re-checked against the change (`cargo test --lib print_current_pins -- --ignored
+  --nocapture` in the app crate prints the tables). Every function a cited function calls is
+  cited by a row or listed in `NOT_MODELED` with the reason it is outside the model.
+  The core crate has no hand-written lexer and no dependency. A command (start, stop and cancel alike, each with its own
   receiver deadline) has five events: the client's enqueue (never blocked by a busy
   supervisor), the supervisor's acceptance, the reply at its production point (a stop's
   at the seal or the worker's exit, a cancel's when handled), the receiver's timeout and
@@ -479,8 +487,14 @@ splitmix64 generator turns a seed into the whole run.
     still in the store. There is no exemption for a preserved capture nobody took: the stop
     that could take it is the user's in `Recovering`, which the frontend suppresses
     (`useRecordingState.ts` `handleStop`; `useRecordingState.test.tsx` "issues no stop or
-    cancel IPC while the status is recovering"), so the generator drops a stop it would
-    issue while the status is `Recovering` (a stop already in flight stays a flight). Only
+    cancel IPC while the status is recovering"), so the generator drops a stop a
+    frontend-gated caller (the main window, the hold and toggle hotkeys, the overlay, the
+    silence auto-stop) would issue while the status is `Recovering` (a stop already in
+    flight stays a flight). The registered `stop_native_recording` IPC has no such guard and
+    the supervisor's `Interrupted` auto-stop bypasses the frontend: both keep every
+    schedule (D-S2b-15 (c)); a run in which the unscoped IPC takes the retained capture ends
+    in `Idle`, and one in which nothing does is PD-19's third entry (ordinary controls leave
+    the app stuck; only the unscoped IPC recovers it, D-S2b-15 (d)). Only
     the recording whose attempt awaits a stop or a cancel may stay `Recording` (L4), and
     only a dropped start's own recording may stay `Starting` or `Recording`.
   There is no "known findings" set: a behaviour outside the allowlist fails
@@ -494,11 +508,10 @@ splitmix64 generator turns a seed into the whole run.
   (D-S2b-9 (b)): each injected notification or reply cites its production sender and
   state, uses the production strings, and the test asserts the exact replies, statuses
   and ledger outcomes.
-* **Seeds**: 10,000 in CI (about a second and a half, budget 20 s): `0..9,992` and eight
-  fixed seeds (`FIXED_SEEDS`: 11,139, 12,625, 20,726, 31,937, 33,078, 41,947, 51,233,
-  80,068) that take the PD-24 (R209.3 and R209.5), PD-19 (refused auto-stop, dropped
-  start, `TerminationUnconfirmed`), PD-22 and PD-21 (short stop) entries no seed of the
-  plain range takes, so the converse check (every PD and every signature row is
+* **Seeds**: 10,000 in CI (about a second and a half, budget 20 s): `0..9,996` and four
+  fixed seeds (`FIXED_SEEDS`: 15,632, 43,329, 176,140, 1,769,144) that take the PD-22
+  (cancel), PD-19 (dropped start and refused auto-stop) and PD-21 (short stop) entries no
+  seed of the plain range takes, so the converse check (every PD and every signature row is
   witnessed) has no pinned exception. `PROPTEST_CASES=300000 cargo test -p
   murmur-dictation-core --lib property::` raises it. `TRACE_SEED=<n> cargo test -p
   murmur-dictation-core --lib property::tests::trace_one -- --nocapture` prints one run.
