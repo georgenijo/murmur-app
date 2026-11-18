@@ -4,6 +4,7 @@
 //! The shell owns every lock scope. Nothing here takes D or T.
 
 pub(crate) mod adapter;
+pub(crate) mod executor;
 
 pub(crate) use adapter::FieldAdapter;
 

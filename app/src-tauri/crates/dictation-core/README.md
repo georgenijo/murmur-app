@@ -263,3 +263,13 @@ Stage 2a decide functions keep that rule:
 3. A partial `Occupancy` is valid input: unread facts are `Default` (quiet), which
    no check treats as a refusal, so evaluating after each group is equivalent to
    the old lazy chain.
+4. Every family PR's row tests include the op-status parity half of
+   `unknown_op_runs_site_stale_rule`: each continuation-consuming row yields
+   identical effects for `Outstanding` and `Unknown` (Stage 2a PR 0 pins the shell
+   protocol, `CoreHistoryLock::consume`, with a stand-in site rule).
+5. The executor (`dictation_executor::executor`, Stage 2a PR 0) is called from the
+   shell at each site's own boundaries: `Executor::run(phase)` per placement, the
+   shell awaiting any `Awaiting` effect and re-entering through `resume` and the
+   next decide. A family PR lowers `STATUS_WRITE_SITES_BASELINE` /
+   `TERMINAL_EMIT_SITES_BASELINE` in `dictation_executor/ratchet_tests.rs` as it
+   moves its sites behind `ST` / `TERM`.

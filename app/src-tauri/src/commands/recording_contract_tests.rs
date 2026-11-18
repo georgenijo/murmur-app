@@ -1293,3 +1293,898 @@ mod field_adapter_contract {
         assert_eq!(round_trip.core, PersistedCore::default());
     }
 }
+
+// ------------------------- Stage 2a PR 0: the executor skeleton (C4.1, C4.2)
+//
+// Driven with fake ports and a real `AppState` (so the field effects commit
+// through the real adapter). No production path calls the executor yet.
+
+mod executor_contract {
+    use crate::core_history::ContinuationGuard;
+    use crate::dictation_admission::core_status;
+    use crate::dictation_context::DictationContextSnapshot;
+    use crate::dictation_executor::executor::{
+        decide_guarded, in_core, AwaitedEffect, AwaitedOutcome, CoreEntry, Executor, ExecutorError,
+        PhaseCtx, PhaseReport, PortFailure, PortResult, Ports, WitnessOutcome,
+    };
+    use crate::state::{AppState, DictationStatus};
+    use crate::MutexExt;
+    use murmur_dictation_core::decision::{
+        ContKind, ContinuationSpec, Decision, InvalidKind, OpStatus, RowId, Verdict,
+    };
+    use murmur_dictation_core::effects::{
+        AxMode, Cond, Effect, EventKind, Placed, Placement, PresentationKind, Terminal,
+    };
+    use murmur_dictation_core::ids::RecordingId;
+    use murmur_dictation_core::status::{ErrCode, Status, TerminalOutcome};
+    use std::cell::{Cell, RefCell};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::rc::Rc;
+    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use Placement::{In, PostDT, PostT, Pre};
+
+    /// Recording lock state seen from inside a port call.
+    #[derive(Clone, Copy, Debug)]
+    struct Probe {
+        code: &'static str,
+        d_free: bool,
+        t_free: bool,
+        history_held: bool,
+    }
+
+    /// An inline `Rust` listener that runs under an emit (C4.2).
+    type EmitListener = Box<dyn Fn(&FakePorts)>;
+
+    struct FakePorts {
+        app: AppState,
+        log: RefCell<Vec<&'static str>>,
+        probes: RefCell<Vec<Probe>>,
+        fail_emits: Cell<bool>,
+        speculative: Cell<bool>,
+        panic_at: Cell<Option<&'static str>>,
+        on_emit: RefCell<Option<EmitListener>>,
+    }
+
+    impl FakePorts {
+        fn new() -> Self {
+            Self {
+                app: AppState::default(),
+                log: RefCell::new(Vec::new()),
+                probes: RefCell::new(Vec::new()),
+                fail_emits: Cell::new(false),
+                speculative: Cell::new(false),
+                panic_at: Cell::new(None),
+                on_emit: RefCell::new(None),
+            }
+        }
+
+        fn hit(&self, effect: &Effect) {
+            let code = effect.code();
+            self.probes.borrow_mut().push(Probe {
+                code,
+                d_free: self.app.dictation.try_lock().is_ok(),
+                t_free: self.app.recording_transition.try_lock().is_ok(),
+                history_held: crate::core_history::is_held_on_this_thread(),
+            });
+            self.log.borrow_mut().push(code);
+            if self.panic_at.get() == Some(code) {
+                panic!("injected panic in {code}");
+            }
+        }
+
+        fn log(&self) -> Vec<&'static str> {
+            self.log.borrow().clone()
+        }
+    }
+
+    impl Ports for FakePorts {
+        fn app_state(&self) -> &AppState {
+            &self.app
+        }
+        fn speculative_flowing(&self) -> bool {
+            self.speculative.get()
+        }
+        fn context_snapshot(&self, _id: RecordingId) -> Option<Arc<DictationContextSnapshot>> {
+            None
+        }
+        fn emit(&self, effect: &Effect) -> PortResult {
+            self.hit(effect);
+            if let Some(listener) = self.on_emit.borrow().as_ref() {
+                listener(self);
+            }
+            if self.fail_emits.get() {
+                Err(PortFailure)
+            } else {
+                Ok(())
+            }
+        }
+        fn trace(&self, effect: &Effect) -> PortResult {
+            self.hit(effect);
+            Ok(())
+        }
+        fn terminal(&self, effect: &Effect) -> PortResult {
+            self.hit(effect);
+            Ok(())
+        }
+        fn perf(&self, effect: &Effect) -> PortResult {
+            self.hit(effect);
+            Ok(())
+        }
+        fn keyboard(&self, effect: &Effect) -> PortResult {
+            self.hit(effect);
+            Ok(())
+        }
+        fn claims(&self, effect: &Effect) -> PortResult {
+            self.hit(effect);
+            Ok(())
+        }
+        fn blocking(&self, effect: &Effect) -> PortResult {
+            self.hit(effect);
+            Ok(())
+        }
+        fn detached(&self, effect: &Effect) -> PortResult {
+            self.hit(effect);
+            Ok(())
+        }
+    }
+
+    fn at(placement: Placement, effect: Effect) -> Placed {
+        Placed::new(placement, effect)
+    }
+
+    fn decision(row: &'static str, effects: Vec<Placed>) -> Decision {
+        let transition = effects.iter().find_map(|placed| match placed.effect {
+            Effect::SetStatus(to) => Some((Status::Idle, to)),
+            _ => None,
+        });
+        Decision {
+            verdict: Verdict::Applied,
+            transition,
+            effects,
+            continuation: None,
+            reply: None,
+            row: RowId(row),
+        }
+    }
+
+    /// An R101.15-shaped start decision (C3.1): `ID+ GA PCC TRQ ST AX` under D,
+    /// then the post-D effects ending in `CS`, then `KB` after T.
+    fn start_decision() -> Decision {
+        let rid = RecordingId(1);
+        decision(
+            "R101.15",
+            vec![
+                at(In, Effect::AllocId),
+                at(In, Effect::GestureAccepted),
+                at(In, Effect::PrepareCaptureClaimed),
+                at(In, Effect::TraceRequested),
+                at(In, Effect::SetStatus(Status::Starting)),
+                at(In, Effect::AxSnapshot(AxMode::Accept)),
+                at(PostDT, Effect::SpeculativeConsume),
+                at(PostDT, Effect::EmitEvent(EventKind::GenStarted)),
+                at(
+                    PostDT,
+                    Effect::EmitStatus {
+                        status: Status::Starting,
+                        cond: Cond::UnlessSpeculativeFlowing,
+                    },
+                ),
+                at(PostDT, Effect::PerfRegister),
+                at(PostDT, Effect::CaptureStart(rid)),
+                at(PostT, Effect::KeyboardProcessing(false)),
+            ],
+        )
+    }
+
+    /// A decision with effects in every placement.
+    fn four_phase_decision() -> Decision {
+        decision(
+            "R999.1",
+            vec![
+                at(Pre, Effect::ClearContext(RecordingId(1))),
+                at(
+                    Pre,
+                    Effect::TakeInterrupted {
+                        id: RecordingId(1),
+                        mode: murmur_dictation_core::effects::TakeMode::Dispose,
+                    },
+                ),
+                at(In, Effect::SetStatus(Status::Idle)),
+                at(In, Effect::KeyboardProcessing(false)),
+                at(
+                    PostDT,
+                    Effect::Terminal(Terminal::new(
+                        TerminalOutcome::Superseded,
+                        ErrCode::StaleOwner,
+                    )),
+                ),
+                at(PostDT, Effect::PerfAbort),
+                at(PostT, Effect::KeyboardProcessing(true)),
+            ],
+        )
+    }
+
+    /// Run `phase` with the shell holding D exactly for `In`, as the family PRs
+    /// will: the executor only ever sees the guard's contents.
+    fn run_phase(ports: &FakePorts, exec: &mut Executor<'_>, phase: Placement) -> PhaseReport {
+        if phase == In {
+            let mut guard = ports.app.dictation.lock_or_recover();
+            let mut ctx = PhaseCtx {
+                dictation: Some(&mut guard),
+                recording_id: 1,
+            };
+            exec.run(phase, &mut ctx)
+        } else {
+            let mut ctx = PhaseCtx {
+                dictation: None,
+                recording_id: 1,
+            };
+            exec.run(phase, &mut ctx)
+        }
+    }
+
+    fn executor_source() -> String {
+        let source = include_str!("../dictation_executor/executor.rs");
+        source
+            .split("#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("production half")
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Live and persisted M1/M2 agree (C1.4.2, X6).
+    fn assert_core_equals_live(ports: &FakePorts, context: &str) {
+        let dictation = ports.app.dictation.lock_or_recover();
+        assert_eq!(
+            dictation.core.status(),
+            core_status(dictation.status),
+            "{context}: M1"
+        );
+        assert_eq!(
+            dictation.core.current_id(),
+            RecordingId(ports.app.recording_id.load(Ordering::SeqCst)),
+            "{context}: M2"
+        );
+    }
+
+    /// `executor_phase_order`: the shell runs `Pre`, `In`, `PostDT`, `PostT`; each
+    /// `run` executes exactly its placement, in returned order; an out-of-order or
+    /// skipped phase runs nothing.
+    #[test]
+    fn executor_phase_order() {
+        let ports = FakePorts::new();
+        let mut exec = Executor::new(&ports, four_phase_decision(), false).expect("valid");
+        // Skipping `Pre` and `In` is refused and runs nothing.
+        assert_eq!(
+            run_phase(&ports, &mut exec, PostDT),
+            PhaseReport::Invalid(InvalidKind::Impossible(RowId("R999.1")))
+        );
+        assert!(ports.log().is_empty());
+
+        let mut seen = 0;
+        for (phase, expected) in [
+            (Pre, vec!["TI"]),
+            (In, vec!["KB"]),
+            (PostDT, vec!["TERM", "PA"]),
+            (PostT, vec!["KB"]),
+        ] {
+            assert_eq!(run_phase(&ports, &mut exec, phase), PhaseReport::Done);
+            let log = ports.log();
+            assert_eq!(&log[seen..], &expected[..], "{phase:?}");
+            seen = log.len();
+        }
+        let codes: Vec<&str> = exec.witness().iter().map(|w| w.code).collect();
+        assert_eq!(
+            codes,
+            ["CX-", "TI", "ST", "KB", "TERM", "PA", "KB"],
+            "returned order"
+        );
+        let indexes: Vec<usize> = exec.witness().iter().map(|w| w.index).collect();
+        assert_eq!(indexes, [0, 1, 2, 3, 4, 5, 6]);
+        assert!(exec.is_finished());
+        // The `ST` committed through the adapter.
+        assert_eq!(
+            ports.app.dictation.lock_or_recover().status,
+            DictationStatus::Idle
+        );
+
+        // A phase earlier than the last one run is refused and runs nothing.
+        assert_eq!(
+            run_phase(&ports, &mut exec, In),
+            PhaseReport::Invalid(InvalidKind::Impossible(RowId("R999.1")))
+        );
+        assert_eq!(ports.log().len(), seen);
+
+        // `ST` outside `In` has no guard to write through: refused, not run.
+        let ports = FakePorts::new();
+        let mut exec = Executor::new(&ports, four_phase_decision(), false).expect("valid");
+        assert_eq!(run_phase(&ports, &mut exec, Pre), PhaseReport::Done);
+        let mut no_guard = PhaseCtx {
+            dictation: None,
+            recording_id: 1,
+        };
+        assert!(matches!(
+            exec.run(In, &mut no_guard),
+            PhaseReport::Invalid(InvalidKind::Impossible(_))
+        ));
+    }
+
+    /// `awaited_effect_is_last_in_phase`: an Awaited effect (`CS` on the
+    /// kept-preview path, `PS`) must be the last of its placement; `run` returns
+    /// `Awaiting` instead of running it and runs nothing after it.
+    #[test]
+    fn awaited_effect_is_last_in_phase() {
+        let ports = FakePorts::new();
+        // Rejected when the decision is handed over.
+        for (what, effects, kept) in [
+            (
+                "CS kept-preview then another PDT effect",
+                vec![
+                    at(PostDT, Effect::CaptureStart(RecordingId(1))),
+                    at(PostDT, Effect::PerfAbort),
+                ],
+                true,
+            ),
+            (
+                "PS then another PDT effect",
+                vec![
+                    at(PostDT, Effect::PipelineSpawn(RecordingId(1))),
+                    at(PostDT, Effect::PerfAbort),
+                ],
+                false,
+            ),
+        ] {
+            let result = Executor::new(&ports, decision("R000.1", effects), kept);
+            assert_eq!(
+                result.err(),
+                Some(ExecutorError::AwaitedNotLast { index: 0 }),
+                "{what}"
+            );
+        }
+        // Allowed: the direct `CS` is Blocking and may be followed; an Awaited
+        // effect may be followed by a *later* placement.
+        assert!(Executor::new(
+            &ports,
+            decision(
+                "R000.2",
+                vec![
+                    at(PostDT, Effect::CaptureStart(RecordingId(1))),
+                    at(PostDT, Effect::PerfAbort),
+                ],
+            ),
+            false,
+        )
+        .is_ok());
+        assert!(Executor::new(
+            &ports,
+            decision(
+                "R000.3",
+                vec![
+                    at(PostDT, Effect::PipelineSpawn(RecordingId(1))),
+                    at(PostT, Effect::KeyboardProcessing(false)),
+                ],
+            ),
+            false,
+        )
+        .is_ok());
+        // A structurally invalid decision is refused too (C2.1).
+        let mut bad = start_decision();
+        bad.transition = None;
+        assert!(matches!(
+            Executor::new(&ports, bad, false).err(),
+            Some(ExecutorError::Decision(_))
+        ));
+
+        // `run` executes everything before the awaited effect, returns
+        // `Awaiting`, and runs nothing after it, not even in later calls.
+        let mut exec = Executor::new(&ports, start_decision(), true).expect("valid");
+        assert_eq!(run_phase(&ports, &mut exec, In), PhaseReport::Done);
+        let report = run_phase(&ports, &mut exec, PostDT);
+        assert_eq!(
+            report,
+            PhaseReport::Awaiting(AwaitedEffect {
+                index: 10,
+                effect: Effect::CaptureStart(RecordingId(1)),
+            })
+        );
+        assert_eq!(
+            ports.log(),
+            ["GA", "PCC", "TRQ", "AX", "SPEC", "EV", "EM", "PR"],
+            "everything before `CS` ran, `CS` and `KB` did not"
+        );
+        // While awaiting, nothing else runs.
+        assert!(matches!(
+            run_phase(&ports, &mut exec, PostT),
+            PhaseReport::Invalid(InvalidKind::Impossible(_))
+        ));
+        assert_eq!(ports.log().len(), 8);
+    }
+
+    /// `awaited_effect_resumes_as_continuation`: the shell awaits the effect,
+    /// `IN_CORE` is not held across the await, `resume` records the outcome, and
+    /// the continuation re-enters as an ordinary input (validate, decide, retire)
+    /// of the same flight before the later phases run.
+    #[test]
+    fn awaited_effect_resumes_as_continuation() {
+        let ports = FakePorts::new();
+        let history = &ports.app.core_history;
+        let mut owner = ContinuationGuard::register(
+            history,
+            ContinuationSpec {
+                recording_id: RecordingId(1),
+                kind: ContKind::CaptureStart,
+            },
+        );
+        let mut exec = Executor::new(&ports, start_decision(), true).expect("valid");
+        assert_eq!(run_phase(&ports, &mut exec, In), PhaseReport::Done);
+        let PhaseReport::Awaiting(awaited) = run_phase(&ports, &mut exec, PostDT) else {
+            panic!("`CS` on the kept-preview path is awaited");
+        };
+        assert_eq!(awaited.effect, Effect::CaptureStart(RecordingId(1)));
+        assert!(!in_core(), "IN_CORE is never held across an await");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async {
+            // The shell awaits the port's future here, holding no D and no
+            // `core_history`; the thread-local flag is clear.
+            tokio::task::yield_now().await;
+            assert!(!in_core());
+            assert!(
+                CoreEntry::enter().is_ok(),
+                "another entry may run meanwhile"
+            );
+            assert!(!crate::core_history::is_held_on_this_thread());
+        });
+        assert!(!in_core(), "the probe entry released the flag");
+
+        assert_eq!(exec.resume(AwaitedOutcome::Completed), PhaseReport::Done);
+        let last = *exec.witness().last().expect("witness");
+        assert_eq!(
+            (last.index, last.code, last.outcome),
+            (10, "CS", WitnessOutcome::Resumed(AwaitedOutcome::Completed))
+        );
+        assert!(!ports.log().contains(&"CS"), "the executor never ran it");
+
+        // The continuation input is built in straight-line code and decided as
+        // an ordinary input: the op is still outstanding until it consumes it.
+        let effects = owner.consume(|status| {
+            assert_eq!(status, OpStatus::Outstanding);
+            decide_guarded(|| decision("R102.1", Vec::new()))
+        });
+        assert_eq!(effects.verdict, Verdict::Applied);
+        assert_eq!(history.outstanding_ops(), 0, "consumed exactly once");
+
+        // The rest of the flight continues after the resume.
+        assert_eq!(run_phase(&ports, &mut exec, PostT), PhaseReport::Done);
+        assert_eq!(ports.log().last(), Some(&"KB"));
+        assert!(exec.is_finished());
+
+        // A resume with nothing awaited is refused; a failed await is recorded.
+        assert!(matches!(
+            exec.resume(AwaitedOutcome::Completed),
+            PhaseReport::Invalid(InvalidKind::Impossible(_))
+        ));
+        let mut exec = Executor::new(&ports, start_decision(), true).expect("valid");
+        run_phase(&ports, &mut exec, In);
+        run_phase(&ports, &mut exec, PostDT);
+        assert_eq!(exec.resume(AwaitedOutcome::Failed), PhaseReport::Done);
+        assert_eq!(
+            exec.witness().last().map(|w| w.outcome),
+            Some(WitnessOutcome::Resumed(AwaitedOutcome::Failed))
+        );
+    }
+
+    /// `executor_never_locks`: D and T are never acquired by the executor (a
+    /// fake port probes both at every effect), `core_history` is never touched,
+    /// and the executor never calls a decide function.
+    #[test]
+    fn executor_never_locks() {
+        let ports = FakePorts::new();
+        let mut exec = Executor::new(&ports, four_phase_decision(), false).expect("valid");
+        let acquisitions = ports.app.core_history.acquisitions();
+        for phase in [Pre, In, PostDT, PostT] {
+            assert_eq!(run_phase(&ports, &mut exec, phase), PhaseReport::Done);
+        }
+        let mut exec = Executor::new(&ports, start_decision(), false).expect("valid");
+        for phase in [In, PostDT, PostT] {
+            assert_eq!(run_phase(&ports, &mut exec, phase), PhaseReport::Done);
+        }
+        assert_eq!(
+            ports.app.core_history.acquisitions(),
+            acquisitions,
+            "the executor never takes core_history"
+        );
+        let probes = ports.probes.borrow();
+        assert!(!probes.is_empty());
+        let mut in_phase_probes = 0;
+        for probe in probes.iter() {
+            assert!(probe.t_free, "{}: T is never taken", probe.code);
+            assert!(
+                !probe.history_held,
+                "{}: no effect under core_history",
+                probe.code
+            );
+        }
+        // `KB` under D (the shell holds it, so a probe sees it busy) and outside D
+        // (free): D is held exactly by the shell and by nobody else.
+        for probe in probes.iter() {
+            if probe.code == "GA" || probe.code == "PCC" {
+                assert!(!probe.d_free, "{}: runs under the shell's D", probe.code);
+                in_phase_probes += 1;
+            }
+            if matches!(
+                probe.code,
+                "SPEC" | "EV" | "EM" | "PR" | "CS" | "TERM" | "PA"
+            ) {
+                assert!(probe.d_free, "{}: runs with D released", probe.code);
+            }
+        }
+        assert!(in_phase_probes >= 2);
+        drop(probes);
+
+        // Structure: no lock of any kind and no decide call in the executor.
+        let source = executor_source();
+        for forbidden in [
+            ".lock(",
+            "lock_or_recover",
+            "try_lock",
+            "recording_transition",
+            "dictation.lock",
+            "app_state().dictation",
+            "core_history.",
+            ".reg(",
+            "ret_if_matches",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "executor.rs must not contain `{forbidden}`"
+            );
+        }
+        let decide_call = regex::Regex::new(r"\bdecide_\w+\s*\(").expect("regex");
+        for found in decide_call.find_iter(&source) {
+            assert!(
+                found.as_str().starts_with("decide_guarded"),
+                "the executor must not call a decide function: {}",
+                found.as_str()
+            );
+        }
+    }
+
+    fn nested_decision() -> Decision {
+        decision("R888.1", vec![at(PostDT, Effect::PerfAbort)])
+    }
+
+    /// `reentrancy_refused`: a listener that runs inline under an `In` emit tries
+    /// to re-enter the core. A nested decide, entry and `run` each return
+    /// `Invalid(Reentrant)` with no effects; the outer flight is unaffected and
+    /// the flag clears afterwards.
+    #[test]
+    fn reentrancy_refused() {
+        let ports = FakePorts::new();
+        let nested_runs = Rc::new(Cell::new(0));
+        let nested_counter = Rc::clone(&nested_runs);
+        *ports.on_emit.borrow_mut() = Some(Box::new(move |p: &FakePorts| {
+            let nested = decide_guarded(|| panic!("a nested decide must never run"));
+            assert_eq!(nested.verdict, Verdict::Invalid(InvalidKind::Reentrant));
+            assert!(nested.effects.is_empty());
+            assert!(nested.transition.is_none() && nested.continuation.is_none());
+            assert_eq!(CoreEntry::enter().err(), Some(InvalidKind::Reentrant));
+            let mut inner = Executor::new(p, nested_decision(), false).expect("valid");
+            let mut ctx = PhaseCtx {
+                dictation: None,
+                recording_id: 1,
+            };
+            assert_eq!(
+                inner.run(PostDT, &mut ctx),
+                PhaseReport::Invalid(InvalidKind::Reentrant)
+            );
+            assert_eq!(
+                inner.resume(AwaitedOutcome::Completed),
+                PhaseReport::Invalid(InvalidKind::Reentrant)
+            );
+            assert!(inner.witness().is_empty(), "no effects ran");
+            nested_counter.set(nested_counter.get() + 1);
+            assert!(!p.log().contains(&"PA"), "the nested effect never ran");
+        }));
+        // The nested attempt happens during an `In` emit, with the shell holding D.
+        let outer = decision(
+            "R777.1",
+            vec![
+                at(
+                    In,
+                    Effect::EmitStatus {
+                        status: Status::Idle,
+                        cond: Cond::Always,
+                    },
+                ),
+                at(PostDT, Effect::PerfAbort),
+            ],
+        );
+        let mut exec = Executor::new(&ports, outer, false).expect("valid");
+        assert_eq!(run_phase(&ports, &mut exec, In), PhaseReport::Done);
+        assert_eq!(nested_runs.get(), 1, "the listener ran inline");
+        assert_eq!(run_phase(&ports, &mut exec, PostDT), PhaseReport::Done);
+        assert_eq!(ports.log(), ["EM", "PA"]);
+        assert!(!in_core(), "the flag clears when the outer span ends");
+        // A later, ordinary decide works.
+        let fresh = decide_guarded(nested_decision);
+        assert_eq!(fresh.verdict, Verdict::Applied);
+    }
+
+    /// `reentrancy_refused_before_lock`: the nested entry attempts no D, T or
+    /// `core_history` lock. The shell holds D on this very thread (a `std`
+    /// mutex: a second `lock` would deadlock), the nested entries return, and the
+    /// `core_history` acquisition count does not move. The check is the first
+    /// statement of every entry.
+    #[test]
+    fn reentrancy_refused_before_lock() {
+        let ports = FakePorts::new();
+        let before_nested = Rc::new(Cell::new(0u64));
+        let after_nested = Rc::new(Cell::new(0u64));
+        let held_on_entry = Rc::new(Cell::new(false));
+        let (before_probe, after_probe, held_probe) = (
+            Rc::clone(&before_nested),
+            Rc::clone(&after_nested),
+            Rc::clone(&held_on_entry),
+        );
+        *ports.on_emit.borrow_mut() = Some(Box::new(move |p: &FakePorts| {
+            before_probe.set(p.app.core_history.acquisitions());
+            held_probe.set(p.app.dictation.try_lock().is_err());
+            let _ = decide_guarded(nested_decision);
+            let _ = CoreEntry::enter().err();
+            let mut inner = Executor::new(p, nested_decision(), false).expect("valid");
+            let mut ctx = PhaseCtx {
+                dictation: None,
+                recording_id: 1,
+            };
+            let _ = inner.run(PostDT, &mut ctx);
+            let _ = inner.resume(AwaitedOutcome::Failed);
+            after_probe.set(p.app.core_history.acquisitions());
+        }));
+        let outer = decision(
+            "R777.2",
+            vec![at(
+                In,
+                Effect::EmitStatus {
+                    status: Status::Idle,
+                    cond: Cond::Always,
+                },
+            )],
+        );
+        let mut exec = Executor::new(&ports, outer, false).expect("valid");
+        // Hold T as well: a nested attempt at either lock cannot have succeeded.
+        let transition = ports
+            .app
+            .recording_transition
+            .try_lock()
+            .expect("T is free");
+        assert_eq!(run_phase(&ports, &mut exec, In), PhaseReport::Done);
+        drop(transition);
+        assert!(
+            held_on_entry.get(),
+            "the shell held D during the nested entry"
+        );
+        assert_eq!(
+            before_nested.get(),
+            after_nested.get(),
+            "the nested entries took no core_history lock"
+        );
+
+        // Structure: `enter()` is the first statement of every entry point.
+        let source = executor_source();
+        for entry in [
+            "pub(crate) fn run(",
+            "pub(crate) fn resume(",
+            "pub(crate) fn decide_guarded(",
+        ] {
+            let start = source.find(entry).unwrap_or_else(|| panic!("{entry}"));
+            let body = &source[start..];
+            let first_statement = body[body.find('{').expect("body") + 1..]
+                .trim_start()
+                .lines()
+                .next()
+                .expect("first line");
+            let head: String = body.lines().skip(1).take(3).collect::<Vec<_>>().join(" ");
+            assert!(
+                first_statement.contains("CoreEntry::enter()")
+                    || head.contains("CoreEntry::enter()"),
+                "{entry}: the re-entrancy check must come first, found `{first_statement}`"
+            );
+            let enter_at = body.find("CoreEntry::enter()").expect("enter");
+            for lock_like in ["assert_not_held", "ports.", "self.ports", "app_state"] {
+                if let Some(pos) = body.find(lock_like) {
+                    assert!(
+                        enter_at < pos,
+                        "{entry}: `{lock_like}` precedes the entry check"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Drive `decision` through `In` and `PostDT` with a panic injected at `code`;
+    /// returns the executor's witness codes.
+    fn drive_with_panic(
+        ports: &FakePorts,
+        code: &'static str,
+        kept_preview: bool,
+    ) -> Vec<&'static str> {
+        ports.panic_at.set(Some(code));
+        let mut exec = Executor::new(ports, start_decision(), kept_preview).expect("valid");
+        let before = ports.app.dictation.lock_or_recover().core;
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            run_phase(ports, &mut exec, In);
+            run_phase(ports, &mut exec, PostDT);
+            run_phase(ports, &mut exec, PostT);
+        }));
+        let payload = outcome.expect_err("the injected panic unwinds through the executor");
+        let message = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .unwrap_or_default();
+        assert!(message.contains(code), "{message}");
+        // The executor did not catch it, and left no flag or lock behind.
+        assert!(!in_core(), "{code}: IN_CORE cleared by the unwind");
+        assert!(!crate::core_history::is_held_on_this_thread());
+        // Released by the unwind (a `std` mutex is poisoned by it, and
+        // `lock_or_recover` recovers, as in production).
+        assert!(
+            ports.app.dictation.try_lock_or_recover().is_some(),
+            "{code}: D released by the unwind"
+        );
+        let _ = before;
+        exec.witness().iter().map(|w| w.code).collect()
+    }
+
+    /// `panic_partial_application` (X5): a panic in any effect unwinds through
+    /// the executor; effects before it ran and committed their own field, effects
+    /// after it did not run.
+    #[test]
+    fn panic_partial_application() {
+        let full = [
+            "ID+", "GA", "PCC", "TRQ", "ST", "AX", "SPEC", "EV", "EM", "PR", "CS", "KB",
+        ];
+        for code in [
+            "GA", "PCC", "TRQ", "AX", "SPEC", "EV", "EM", "PR", "CS", "KB",
+        ] {
+            let ports = FakePorts::new();
+            let witnessed = drive_with_panic(&ports, code, false);
+            let panicked_at = full.iter().position(|c| *c == code).expect(code);
+            assert_eq!(
+                witnessed,
+                &full[..panicked_at],
+                "{code}: effects before it applied, it and the rest did not"
+            );
+            assert_eq!(
+                ports.log().last(),
+                Some(&code),
+                "{code}: the panicking port was the last to run"
+            );
+            assert_core_equals_live(&ports, code);
+            // Each field shows exactly "effects before the panic applied".
+            let st_ran = panicked_at > full.iter().position(|c| *c == "ST").unwrap();
+            let dictation = ports.app.dictation.lock_or_recover();
+            assert_eq!(
+                dictation.status,
+                if st_ran {
+                    DictationStatus::Starting
+                } else {
+                    DictationStatus::Idle
+                },
+                "{code}"
+            );
+            assert_eq!(
+                ports.app.recording_id.load(Ordering::SeqCst),
+                1,
+                "{code}: ID+ ran first"
+            );
+        }
+        // The test above is the proof that the executor does not `catch_unwind`
+        // (it would have returned a report instead of unwinding).
+    }
+
+    /// `panic_before_st_leaves_core_equal_live` (X6): a panic in `GA`, `PCC` or
+    /// `TRQ` before `ST` of an R101.15-shaped list, and in the `EM` after it,
+    /// leaves the persisted core equal to live for M1 and M2, in the same partial
+    /// state as today. Nothing commits at decide time.
+    #[test]
+    fn panic_before_st_leaves_core_equal_live() {
+        // The decision exists but nothing has committed: decide mutates nothing.
+        let ports = FakePorts::new();
+        let _decision = decide_guarded(start_decision);
+        {
+            let dictation = ports.app.dictation.lock_or_recover();
+            assert_eq!(dictation.core, Default::default());
+            assert_eq!(ports.app.recording_id.load(Ordering::SeqCst), 0);
+        }
+        for code in ["GA", "PCC", "TRQ"] {
+            let ports = FakePorts::new();
+            drive_with_panic(&ports, code, false);
+            assert_core_equals_live(&ports, code);
+            let dictation = ports.app.dictation.lock_or_recover();
+            // `ID+` (the first effect) committed M2 in both places; `ST` did not run.
+            assert_eq!(dictation.core.current_id(), RecordingId(1), "{code}");
+            assert_eq!(ports.app.recording_id.load(Ordering::SeqCst), 1, "{code}");
+            assert_eq!(dictation.core.status(), Status::Idle, "{code}");
+            assert_eq!(dictation.status, DictationStatus::Idle, "{code}");
+        }
+        // In the `EM` after `ST`: both show `Starting`.
+        let ports = FakePorts::new();
+        drive_with_panic(&ports, "EM", false);
+        assert_core_equals_live(&ports, "EM");
+        let dictation = ports.app.dictation.lock_or_recover();
+        assert_eq!(dictation.core.status(), Status::Starting);
+        assert_eq!(dictation.status, DictationStatus::Starting);
+        assert_eq!(dictation.core.current_id(), RecordingId(1));
+    }
+
+    /// `emit_result_gates_pres`: a failing emit suppresses the paired `PRES`
+    /// (`P-emit-ok`) and not the effects after it; a successful emit lets it run.
+    #[test]
+    fn emit_result_gates_pres() {
+        let list = |paired: u8| {
+            decision(
+                "R999.9",
+                vec![
+                    at(
+                        PostDT,
+                        Effect::EmitStatus {
+                            status: Status::Recovering,
+                            cond: Cond::Always,
+                        },
+                    ),
+                    at(
+                        PostDT,
+                        Effect::Presentation {
+                            kind: PresentationKind::CleanupInProgress,
+                            cond: Cond::EmitOk(paired),
+                        },
+                    ),
+                    at(PostDT, Effect::KeyboardProcessing(false)),
+                ],
+            )
+        };
+        for (fails, expected, pres) in [
+            (true, vec!["EM", "KB"], WitnessOutcome::Skipped),
+            (false, vec!["EM", "PRES", "KB"], WitnessOutcome::Ran),
+        ] {
+            let ports = FakePorts::new();
+            ports.fail_emits.set(fails);
+            let mut exec = Executor::new(&ports, list(0), false).expect("valid");
+            assert_eq!(run_phase(&ports, &mut exec, PostDT), PhaseReport::Done);
+            assert_eq!(ports.log(), expected, "emit failing: {fails}");
+            let outcomes: Vec<WitnessOutcome> = exec.witness().iter().map(|w| w.outcome).collect();
+            assert_eq!(
+                outcomes[0],
+                if fails {
+                    WitnessOutcome::Failed
+                } else {
+                    WitnessOutcome::Ran
+                }
+            );
+            assert_eq!(outcomes[1], pres);
+            assert_eq!(
+                *outcomes.last().expect("kb"),
+                WitnessOutcome::Ran,
+                "later effects run"
+            );
+        }
+        // The shell predicate `P-spec-flowing` skips `EM(starting)` the same way.
+        let ports = FakePorts::new();
+        ports.speculative.set(true);
+        let mut exec = Executor::new(&ports, start_decision(), false).expect("valid");
+        run_phase(&ports, &mut exec, In);
+        run_phase(&ports, &mut exec, PostDT);
+        assert!(
+            !ports.log().contains(&"EM"),
+            "EM(starting) skipped while flowing"
+        );
+        assert!(ports.log().contains(&"PR"));
+    }
+}
