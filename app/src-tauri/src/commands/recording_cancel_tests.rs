@@ -778,7 +778,7 @@ fn tail_state(world: &Arc<World>, id: u64) -> String {
     let trace = world.trace();
     let emitted = |needle: &str| trace.iter().any(|line| line.starts_with(needle));
     format!(
-        "status={status} context={} cancelled={} terminal={} kb_processing={} idle_emitted={} cancelled_emitted={}",
+        "status={status} context={} cancelled={} terminal={} kb_processing={} idle_emitted={} cancelled_emitted={} transition={}",
         if state.app_state.active_context(id).is_some() {
             "present"
         } else {
@@ -789,6 +789,12 @@ fn tail_state(world: &Arc<World>, id: u64) -> String {
         keyboard::is_processing(),
         emitted("emit recording-status-changed \"idle\""),
         emitted("emit recording-cancelled"),
+        // The cancel's own thread holds T at the barriers from `ST` through `EV`.
+        if state.app_state.recording_transition.try_lock().is_err() {
+            "held"
+        } else {
+            "free"
+        },
     )
 }
 
@@ -837,6 +843,20 @@ fn the_processing_cancel_tail_runs_in_r205_5_order() {
         "R205.5's effect order: {seen:#?}"
     );
     let state = |index: usize| seen[index].1.as_str();
+    // R205.5's transition-lock boundary: T is held from `ST` through `EV`, so a newer
+    // start cannot publish `starting` before this cancel's trailing `idle`, and it is
+    // released only before `PT:PC`.
+    for (index, (code, state)) in seen.iter().enumerate() {
+        let expected = if index < 7 {
+            "transition=held"
+        } else {
+            "transition=free"
+        };
+        assert!(
+            state.ends_with(expected),
+            "T must be {expected} at {code} (R205.5 releases it before PT:PC): {state}"
+        );
+    }
     // Each effect has not run at its own barrier and every earlier one has.
     assert!(
         state(0).starts_with(
@@ -902,7 +922,7 @@ fn a_new_start_stays_blocked_until_the_cancels_trailing_idle_is_emitted() {
         body: |w| {
             w.install_context(3);
             w.knobs().cold_start = ColdStart::ReadyBeforeContext;
-            let parked = w.cancel_parked_before("EM");
+            let mut parked = w.cancel_parked_before("EM");
             parked.wait_parked();
             w.note("the cancel is parked just before its trailing idle emit");
             let mut start = w.start();

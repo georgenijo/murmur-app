@@ -127,6 +127,68 @@ pub(super) fn complete_joining<T>(future: &mut Fut<T>) -> T {
     }
 }
 
+/// How long a helper thread may take to reach its barrier or to finish. A scenario
+/// that exceeds it fails, instead of blocking until CI kills the process.
+const HELPER_BOUND: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Wait for a helper thread to signal that it reached its barrier. A helper that
+/// finishes first (its panic, or a return that skipped the barrier) or a wait past
+/// [`HELPER_BOUND`] fails the scenario at once, and a helper's panic is re-raised on
+/// the scenario's thread. The arrival sender lives in a hook the world keeps, so a
+/// helper that panics before the barrier never disconnects the channel: the finished
+/// thread is what is checked.
+pub(super) fn await_arrival<T>(
+    entered: &std::sync::mpsc::Receiver<()>,
+    thread: &std::thread::JoinHandle<T>,
+    what: &str,
+) -> Result<(), HelperEnded> {
+    let deadline = std::time::Instant::now() + HELPER_BOUND;
+    loop {
+        match entered.recv_timeout(std::time::Duration::from_millis(5)) {
+            Ok(()) => return Ok(()),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Err(HelperEnded),
+        }
+        if thread.is_finished() {
+            // A signal sent just before it finished still counts.
+            return entered.try_recv().map_err(|_| HelperEnded);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}: the helper did not reach its barrier within {HELPER_BOUND:?}"
+        );
+    }
+}
+
+/// A helper thread ended before it reached its barrier.
+pub(super) struct HelperEnded;
+
+/// Fail the scenario because `thread` ended without arriving: re-raise its panic, or
+/// name the early return.
+pub(super) fn helper_failed<T>(thread: std::thread::JoinHandle<T>, what: &str) -> ! {
+    match thread.join() {
+        Err(payload) => std::panic::resume_unwind(payload),
+        Ok(_) => panic!("{what}: the helper returned without reaching its barrier"),
+    }
+}
+
+/// Join a helper that has been released, bounded by [`HELPER_BOUND`]; a helper's
+/// panic is re-raised here.
+pub(super) fn join_bounded<T>(thread: std::thread::JoinHandle<T>, what: &str) -> T {
+    let deadline = std::time::Instant::now() + HELPER_BOUND;
+    while !thread.is_finished() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{what}: the helper did not finish within {HELPER_BOUND:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    match thread.join() {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RUNTIME.get_or_init(|| {
@@ -392,6 +454,16 @@ impl World {
     /// are mid-commit, so the equality is read only when D is free, the same rule
     /// `sample` uses; the counter is checked regardless.)
     fn assert_persisted_core(&self, at: &str) {
+        self.assert_no_new_divergence(at);
+        let state = self.state();
+        let Some(dictation) = state.app_state.dictation.try_lock_or_recover() else {
+            return;
+        };
+        self.assert_core_equals_live(&state.app_state, &dictation, at);
+    }
+
+    /// `FieldAdapter` has counted no divergence since this run began.
+    fn assert_no_new_divergence(&self, at: &str) {
         let divergences = crate::dictation_executor::adapter::core_divergences();
         assert!(
             divergences <= self.divergence_baseline,
@@ -399,14 +471,19 @@ impl World {
              (a write to dictation.status or the recording id bypassed the adapter)",
             divergences - self.divergence_baseline
         );
-        let state = self.state();
-        let Some(dictation) = state.app_state.dictation.try_lock_or_recover() else {
-            return;
-        };
+    }
+
+    /// The persisted M1/M2 equal the live status and recording id, read under the
+    /// dictation lock the caller holds.
+    fn assert_core_equals_live(
+        &self,
+        app_state: &AppState,
+        dictation: &crate::state::DictationState,
+        at: &str,
+    ) {
         let live_status = crate::dictation_admission::core_status(dictation.status);
-        let live_id = murmur_dictation_core::ids::RecordingId(
-            state.app_state.recording_id.load(Ordering::SeqCst),
-        );
+        let live_id =
+            murmur_dictation_core::ids::RecordingId(app_state.recording_id.load(Ordering::SeqCst));
         assert!(
             dictation.core.status() == live_status && dictation.core.current_id() == live_id,
             "persisted-core invariant: persisted M1/M2 ({:?}, {:?}) differ from live ({:?}, {:?}) at `{at}`",
@@ -831,19 +908,29 @@ impl World {
 
     /// A fixture poke: a scenario writes the live status itself, to put an end state in
     /// order or to stand in for another entry's write. It is not a production path, so
-    /// the persisted core is re-seeded with it, and the persisted-core invariant keeps
-    /// meaning "no *production* write bypassed the adapter".
+    /// the persisted M1 is updated with it. It never forgives an earlier violation: the
+    /// divergence counter and both persisted fields are checked against live, under the
+    /// dictation lock, *before* the poke changes anything, and only the field the
+    /// fixture means to change is updated (M2 is left exactly as it was).
     pub(super) fn poke_status(&self, status: DictationStatus) {
         let state = self.state();
         let mut dictation = state.app_state.dictation.lock_or_recover();
+        self.assert_no_new_divergence("poke_status");
+        self.assert_core_equals_live(&state.app_state, &dictation, "poke_status");
         dictation.status = status;
-        crate::dictation_executor::FieldAdapter::seed_core(&state.app_state, &mut dictation);
+        dictation
+            .core
+            .set_status(crate::dictation_admission::core_status(status));
     }
 
-    /// [`World::poke_status`] for the recording id (M2).
+    /// [`World::poke_status`] for the recording id (M2). The only way to set the
+    /// persisted id is the adapter's seeder, which also re-reads M1: M1 has just been
+    /// checked equal to live, so that changes nothing but M2.
     pub(super) fn poke_recording_id(&self, id: u64) {
         let state = self.state();
         let mut dictation = state.app_state.dictation.lock_or_recover();
+        self.assert_no_new_divergence("poke_recording_id");
+        self.assert_core_equals_live(&state.app_state, &dictation, "poke_recording_id");
         state.app_state.recording_id.store(id, Ordering::SeqCst);
         crate::dictation_executor::FieldAdapter::seed_core(&state.app_state, &mut dictation);
     }
@@ -1133,9 +1220,9 @@ impl World {
                 ));
             })
         });
-        if entered_rx.recv().is_err() {
-            // The owner check refused: the operation never ran.
-            let _ = thread.join();
+        if await_arrival(&entered_rx, &thread, "delivery").is_err() {
+            // The owner check refused: the operation never ran (a panic is re-raised).
+            join_bounded(thread, "delivery");
             self.push(format!("delivery {recording_id}: refused, not the owner"));
             return false;
         }
@@ -1149,11 +1236,8 @@ impl World {
     pub(super) fn finish_delivery(&self, cancel: ConcurrentCancel) -> Result<(), String> {
         let delivery = locked(&self.delivery).take().expect("a parked delivery");
         let _ = delivery.release.send(());
-        let reply = cancel.thread.join().expect("the cancel thread panicked");
-        let delivered = delivery
-            .thread
-            .join()
-            .expect("the delivery thread panicked");
+        let reply = join_bounded(cancel.thread, "the concurrent cancel");
+        let delivered = join_bounded(delivery.thread, "the parked delivery");
         self.push(format!(
             "delivery returned {}",
             if delivered.is_some() { "Some" } else { "None" }
@@ -1204,7 +1288,7 @@ impl World {
             complete_joining(&mut cancel)
         });
         ParkedCancel {
-            thread,
+            thread: Some(thread),
             parked: parked_rx,
             release,
         }
@@ -1213,23 +1297,31 @@ impl World {
 
 /// A cancel parked at an executor barrier (see [`World::cancel_parked_before`]).
 pub(super) struct ParkedCancel {
-    thread: std::thread::JoinHandle<Result<(), String>>,
+    /// `None` once joined. A cancel still parked when the scenario unwinds is released
+    /// by the sender dropping with this struct, so it never outlives the test blocked.
+    thread: Option<std::thread::JoinHandle<Result<(), String>>>,
     parked: std::sync::mpsc::Receiver<()>,
     release: std::sync::mpsc::Sender<()>,
 }
 
 impl ParkedCancel {
     /// Block until the cancel has reached its barrier.
-    pub(super) fn wait_parked(&self) {
-        self.parked
-            .recv()
-            .expect("the cancel finished without reaching its barrier");
+    pub(super) fn wait_parked(&mut self) {
+        if await_arrival(
+            &self.parked,
+            self.thread.as_ref().expect("a live thread"),
+            "cancel",
+        )
+        .is_err()
+        {
+            helper_failed(self.thread.take().expect("a live thread"), "cancel");
+        }
     }
 
     /// Let the cancel run on and return its reply.
-    pub(super) fn release_and_join(self) -> Result<(), String> {
+    pub(super) fn release_and_join(mut self) -> Result<(), String> {
         let _ = self.release.send(());
-        self.thread.join().expect("the cancel thread panicked")
+        join_bounded(self.thread.take().expect("a live thread"), "cancel")
     }
 }
 

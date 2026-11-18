@@ -37,9 +37,13 @@ python3 scripts/c13_3_mutations.py --all --check            # edits still apply;
 python3 scripts/c13_3_mutations.py --family stop --dry-run  # print edits and commands
 ```
 
-Each row ends `CAUGHT` (a test failed, the expected result), `SURVIVED` (every command
-passed: the check lost its teeth) or `INVALID` (the mutation did not compile, so it
-proves nothing). The exit status is 1 for `SURVIVED` or `INVALID`.
+Every command of a row runs. A command is `CAUGHT` only when cargo reported a failed
+test that the command names (one of its filter arguments, or any test when it has
+none). It is `INVALID` when no verdict can be drawn: a compile error, a cargo
+infrastructure failure (no test result at all, as when a dependency download fails),
+zero tests run, a crash, or a failure in tests the row does not name. A row is
+`INVALID` if any command is, else `CAUGHT` if any command is, else `SURVIVED` (the
+check lost its teeth). The exit status is 1 for `SURVIVED` or `INVALID`.
 
 A cutover PR records, per row, the failing test name and the first failing
 assertion. After a cutover moves the code a row edits, update that row's `old` and
@@ -48,5 +52,6 @@ assertion. After a cutover moves the code a row edits, update that row's `old` a
 ## CI
 
 CI does not run these rows, because each one is a full cargo test run.
-`tests/test_c13_3_mutations.py` covers the script's argument parsing, row selection
-and the row-file schema, and never starts cargo.
+`tests/test_c13_3_mutations.py` covers the script's argument parsing, row selection,
+the row-file schema and the verdict rules (on fixed cargo output and a simulated
+cargo), and never starts cargo.

@@ -113,6 +113,123 @@ class RowFileTests(unittest.TestCase):
                     mutations.validate_row(broken, path)
 
 
+CMD = ["cargo", "test", "--lib", "--", "--test-threads=1", "bug216_stop_queued", "golden_s01"]
+CORE_CMD = ["cargo", "test", "-p", "murmur-dictation-core"]
+FAILING = (
+    "running 2 tests\n"
+    "test commands::recording::bug_replay_tests::bug216_stop_queued_behind_start ... FAILED\n"
+    "test commands::recording::golden_tests::golden_s01_stop_during_start ... ok\n"
+    "test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 2188 filtered out; finished in 0.02s\n"
+    "error: test failed, to rerun pass `--lib`\n"
+)
+PASSING = "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 2188 filtered out; finished in 0.01s\n"
+
+
+class VerdictTests(unittest.TestCase):
+    """What a command's output says about a mutation. Fixed output only; no cargo."""
+
+    def test_a_named_failing_test_is_caught(self):
+        self.assertEqual(mutations.classify_command(CMD, 101, FAILING), "CAUGHT")
+
+    def test_passing_tests_are_a_survivor(self):
+        self.assertEqual(mutations.classify_command(CMD, 0, PASSING), "PASSED")
+
+    def test_a_cargo_infrastructure_failure_is_invalid_not_caught(self):
+        for output in (
+            "error: failed to download `serde v1.0.0`\n\nCaused by:\n  network failure\n",
+            "error: failed to get `tauri` as a dependency of package `ui`\n",
+            "",
+            "error: linker `cc` not found\n",
+        ):
+            self.assertEqual(mutations.classify_command(CMD, 101, output), "INVALID", output)
+
+    def test_a_compile_error_is_invalid(self):
+        output = "error[E0425]: cannot find value `x`\nerror: could not compile `ui` (lib test)\n"
+        self.assertEqual(mutations.classify_command(CMD, 101, output), "INVALID")
+
+    def test_zero_tests_run_is_invalid_whatever_the_exit_status(self):
+        none = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2190 filtered out\n"
+        self.assertEqual(mutations.classify_command(CMD, 0, none), "INVALID")
+        self.assertEqual(mutations.classify_command(CMD, 101, none), "INVALID")
+
+    def test_a_failure_the_row_does_not_name_is_invalid(self):
+        other = FAILING.replace("bug216_stop_queued_behind_start", "unrelated_thing")
+        self.assertEqual(mutations.classify_command(CMD, 101, other), "INVALID")
+
+    def test_a_crash_with_no_failed_test_is_invalid(self):
+        crashed = PASSING + "error: test failed, to rerun pass `--lib`\n\nCaused by:\n  process didn't exit successfully (signal: 9, SIGKILL)\n"
+        self.assertEqual(mutations.classify_command(CMD, 101, crashed), "INVALID")
+
+    def test_a_command_without_filters_accepts_any_failed_test(self):
+        self.assertEqual(mutations.command_filters(CORE_CMD), [])
+        self.assertEqual(mutations.command_filters(CMD), ["bug216_stop_queued", "golden_s01"])
+        self.assertEqual(mutations.classify_command(CORE_CMD, 101, FAILING), "CAUGHT")
+
+    def test_a_row_is_caught_only_if_no_command_is_invalid(self):
+        self.assertEqual(mutations.row_verdict(["CAUGHT", "PASSED"]), "CAUGHT")
+        self.assertEqual(mutations.row_verdict(["PASSED", "PASSED"]), "SURVIVED")
+        self.assertEqual(mutations.row_verdict(["CAUGHT", "INVALID"]), "INVALID")
+        self.assertEqual(mutations.row_verdict(["INVALID", "CAUGHT"]), "INVALID")
+
+
+class RunRowTests(unittest.TestCase):
+    """`run_row` with a simulated cargo: the edit is applied, judged and always undone."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        crate = self.root / "app/src-tauri/src"
+        crate.mkdir(parents=True)
+        self.source = crate / "a.rs"
+        self.source.write_text("fn a() { let keep = 1; }\n")
+        self.row = {
+            "name": "r",
+            "family": "stop",
+            "bug": "#1",
+            "description": "d",
+            "edits": [["src/a.rs", "keep = 1", "keep = 2"]],
+            "cmds": [CMD, CORE_CMD],
+        }
+
+    def run_with(self, results):
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, self.source.read_text()))
+            code, output = results[len(calls) - 1]
+            return mutations.subprocess.CompletedProcess(cmd, code, output, "")
+
+        with mock.patch.object(mutations.subprocess, "run", side_effect=fake_run), mock.patch.object(
+            mutations, "git_dirty", return_value=False
+        ), contextlib.redirect_stdout(io.StringIO()):
+            verdict = mutations.run_row(self.row, self.root, False, False)
+        return verdict, calls
+
+    def test_a_cargo_infrastructure_failure_is_reported_invalid(self):
+        down = "error: failed to download `serde v1.0.0`\n"
+        verdict, calls = self.run_with([(101, down), (101, down)])
+        self.assertEqual(verdict, "INVALID")
+        self.assertEqual(len(calls), 2, "every command of the row runs")
+        self.assertEqual(self.source.read_text(), "fn a() { let keep = 1; }\n", "the edit is undone")
+
+    def test_the_edit_is_applied_while_cargo_runs(self):
+        verdict, calls = self.run_with([(101, FAILING), (0, PASSING)])
+        self.assertEqual(verdict, "CAUGHT")
+        self.assertTrue(all("keep = 2" in text for _, text in calls))
+        self.assertEqual(self.source.read_text(), "fn a() { let keep = 1; }\n")
+
+    def test_an_infrastructure_failure_in_a_later_command_still_invalidates_the_row(self):
+        verdict, _ = self.run_with([(101, FAILING), (101, "error: failed to download `x`\n")])
+        self.assertEqual(verdict, "INVALID")
+
+    def test_main_exits_nonzero_for_an_invalid_row(self):
+        with mock.patch.object(mutations, "run_row", return_value="INVALID"), contextlib.redirect_stdout(
+            io.StringIO()
+        ):
+            self.assertEqual(mutations.main(["--row", "M216-stop-queued-behind-start"]), 1)
+
+
 class NoProcessTests(unittest.TestCase):
     def test_listing_and_checking_never_run_a_process(self):
         with mock.patch.object(mutations.subprocess, "run", side_effect=AssertionError("ran a process")):

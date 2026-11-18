@@ -3,9 +3,13 @@
 
 Each row in `scripts/c13_3_mutations/*.json` is one source edit that reverts a
 historical fix, or mutates the named C3 row, `admit` check or executor effect, plus
-the cargo commands that must then fail. A row is CAUGHT when a command fails with a
-test failure, SURVIVED when every command passes, and INVALID when a command
-stopped on a compile error (a mutation that does not build proves nothing).
+the cargo commands that must then fail. Every command of a row runs. A command is
+CAUGHT only when cargo reported a failed test that the command names (one of its
+filter arguments, or any test when it has none), PASSED when tests ran and none
+failed, and INVALID otherwise: a compile error, a cargo infrastructure failure
+(no test result at all), zero tests run, or a failure in tests the row does not name.
+A row is INVALID if any command is INVALID, else CAUGHT if any command is CAUGHT,
+else SURVIVED.
 
     python3 scripts/c13_3_mutations.py --list
     python3 scripts/c13_3_mutations.py --family stop
@@ -179,6 +183,51 @@ def plan_edits(row: dict, root: Path) -> list[tuple[Path, str, str, str]]:
     return planned
 
 
+FAILED_TEST = re.compile(r"^test (\S+) \.\.\. FAILED$", re.MULTILINE)
+TEST_RESULT = re.compile(r"^test result: \w+\. (\d+) passed; (\d+) failed;", re.MULTILINE)
+
+
+def command_filters(cmd: list[str]) -> list[str]:
+    """The test-name filters of a `cargo test` command: its positional arguments."""
+    filters = []
+    skip_value = False
+    for arg in cmd[2:]:  # after `cargo test`
+        if skip_value:
+            skip_value = False
+        elif arg in ("-p", "--package"):
+            skip_value = True
+        elif not arg.startswith("-"):
+            filters.append(arg)
+    return filters
+
+
+def classify_command(cmd: list[str], returncode: int, output: str) -> str:
+    """CAUGHT, PASSED or INVALID for one command's result (see the module docstring)."""
+    if BUILD_ERROR.search(output):
+        return "INVALID"
+    results = [(int(passed), int(failed)) for passed, failed in TEST_RESULT.findall(output)]
+    if not results:
+        return "INVALID"  # cargo never ran a test binary: infrastructure, not a verdict
+    ran = sum(passed + failed for passed, failed in results)
+    if ran == 0:
+        return "INVALID"  # the filters matched nothing
+    failed_tests = FAILED_TEST.findall(output)
+    if returncode == 0:
+        return "INVALID" if failed_tests else "PASSED"
+    if not failed_tests:
+        return "INVALID"  # a non-zero exit with no failed test (a crash, a kill, a timeout)
+    filters = command_filters(cmd)
+    if filters and not any(name_part in test for test in failed_tests for name_part in filters):
+        return "INVALID"  # something failed, but not a test this row names
+    return "CAUGHT"
+
+
+def row_verdict(command_verdicts: list[str]) -> str:
+    if "INVALID" in command_verdicts:
+        return "INVALID"
+    return "CAUGHT" if "CAUGHT" in command_verdicts else "SURVIVED"
+
+
 def run_row(row: dict, root: Path, check_only: bool, dry_run: bool) -> str:
     """Run one row and return CAUGHT, SURVIVED, INVALID, APPLIES or DRY."""
     planned = plan_edits(row, root)
@@ -199,20 +248,20 @@ def run_row(row: dict, root: Path, check_only: bool, dry_run: bool) -> str:
         for path, text, old, new in planned:
             originals.setdefault(path, text)
             path.write_text(path.read_text().replace(old, new))
-        verdict = "SURVIVED"
+        verdicts = []
         for cmd in row["cmds"]:
             result = subprocess.run(
                 cmd, cwd=root / CARGO_DIR, env=env, capture_output=True, text=True
             )
             output = result.stdout + result.stderr
-            print(f"  $ {' '.join(cmd)} -> exit {result.returncode}")
-            if result.returncode != 0:
+            verdict = classify_command(cmd, result.returncode, output)
+            verdicts.append(verdict)
+            print(f"  $ {' '.join(cmd)} -> exit {result.returncode}: {verdict}")
+            if verdict != "PASSED":
                 for line in output.splitlines():
                     if re.search(r"^test .* FAILED|^error(\[|:)|panicked at", line):
                         print("   ", line)
-                verdict = "INVALID" if BUILD_ERROR.search(output) else "CAUGHT"
-                break
-        return verdict
+        return row_verdict(verdicts)
     finally:
         for path, text in originals.items():
             path.write_text(text)

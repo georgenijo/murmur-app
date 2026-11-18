@@ -400,9 +400,12 @@ impl ParkedStop {
             let mut stop = thread_world.stop(None);
             complete_joining(&mut stop)
         });
-        entered_rx
-            .recv()
-            .expect("the stop reached the supervisor's capture stop");
+        // The arrival sender sits in a hook the world keeps, so a helper that panics
+        // before the barrier (a persisted-core assertion, say) never disconnects it:
+        // watch the thread, and re-raise its panic here.
+        if await_arrival(&entered_rx, &thread, "the parked stop").is_err() {
+            helper_failed(thread, "the parked stop");
+        }
         world.note("the stop is in the capture stop, T released");
         Self {
             thread,
@@ -415,7 +418,7 @@ impl ParkedStop {
     /// stop does after the supervisor's reply runs to its end before this returns.
     fn finish(self) -> StopReply {
         let _ = self.release.send(());
-        self.thread.join().expect("the stop thread panicked")
+        join_bounded(self.thread, "the parked stop")
     }
 
     /// A hook body that finishes the stop and files its reply in `reply`.
@@ -876,7 +879,9 @@ fn idle_at_cx_minus(world: &Arc<World>, then: impl FnOnce() + 'static) {
 
 fn the_stop_receive_expired(world: &Arc<World>) -> ParkedStop {
     recording(world);
-    world.knobs().stop_result = Err(STOP_RECEIVE_TIMEOUT);
+    // The 12 s receive expired: the client's own error, not the supervisor's reply, so
+    // an ownership change before the fake answers cannot mask it.
+    world.knobs().stop_transport_failure = Some(STOP_RECEIVE_TIMEOUT);
     let stop = ParkedStop::start(world);
     assert_eq!(status(world), DictationStatus::Processing);
     stop
@@ -1003,9 +1008,9 @@ fn pd24_start_timeout_claims_inside_the_recovering_arms_tail(
         thread_world.reply("start", &reply);
         reply
     });
-    entered_rx
-        .recv()
-        .expect("the start reached the supervisor's capture start");
+    if await_arrival(&entered_rx, &start, "the parked start").is_err() {
+        helper_failed(start, "the parked start");
+    }
     world.note("the start waits in the supervisor call; its 2 s receive is the one that expires");
     // `handle_start` accepted it and has not answered (`1481-1588`).
     world.accepted_start(1);
@@ -1015,7 +1020,7 @@ fn pd24_start_timeout_claims_inside_the_recovering_arms_tail(
         // The receiver expired: the start thread returns `SupervisorUnavailable` and
         // runs R102 now, inside the arm's tail.
         let _ = release.send(());
-        let result = start.join().expect("the start thread panicked");
+        let result = join_bounded(start, "the parked start");
         *filed
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(result);

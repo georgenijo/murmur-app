@@ -1152,3 +1152,51 @@ fn the_persisted_core_invariant_holds_for_real_entries_and_fixture_pokes() {
         w.note("pokes keep persisted equal to live");
     }));
 }
+
+/// A fixture poke never forgives an earlier violation. A rogue write to the live
+/// recording id, followed by the end-state `poke_status`, must still fail: the poke
+/// checks both persisted fields and the divergence counter before it changes
+/// anything, and updates only M1.
+#[test]
+fn a_fixture_poke_does_not_erase_an_earlier_recording_id_divergence() {
+    let message = panic_text(|w| {
+        w.state().app_state.recording_id.store(9, Ordering::SeqCst);
+        w.poke_status(DictationStatus::Idle);
+    });
+    assert!(
+        message.contains("persisted M1/M2 (Idle, RecordingId(0)) differ from live (Idle, RecordingId(9)) at `poke_status`"),
+        "{message}"
+    );
+}
+
+/// The same for a rogue status write ahead of a recording-id poke.
+#[test]
+fn a_fixture_poke_does_not_erase_an_earlier_status_divergence() {
+    let message = panic_text(|w| {
+        w.state().app_state.dictation.lock_or_recover().status = DictationStatus::Processing;
+        w.poke_recording_id(4);
+    });
+    assert!(
+        message.contains("differ from live (Processing, RecordingId(0)) at `poke_recording_id`"),
+        "{message}"
+    );
+}
+
+/// A poke changes only its own field: poking the status leaves the persisted id as it
+/// was, so a later id divergence stays visible.
+#[test]
+fn a_status_poke_leaves_the_persisted_recording_id_alone() {
+    run_sub_run(&sub("status poke", |w| {
+        w.poke_status(DictationStatus::Recovering);
+        let state = w.state();
+        let dictation = state.app_state.dictation.lock_or_recover();
+        assert_eq!(
+            dictation.core.status(),
+            murmur_dictation_core::status::Status::Recovering
+        );
+        assert_eq!(
+            dictation.core.current_id(),
+            murmur_dictation_core::ids::RecordingId(0)
+        );
+    }));
+}
