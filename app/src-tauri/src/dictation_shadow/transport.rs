@@ -25,6 +25,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::Arc;
 
+use murmur_dictation_core::decision::SiteId;
 use murmur_dictation_core::effects::Placement;
 
 use super::ring::{Rejection, Ring};
@@ -36,9 +37,38 @@ use super::types::{
 /// The queue's capacity (C8.2, D-S2c-1 a).
 pub(crate) const QUEUE_CAPACITY: usize = 256;
 
-/// Per-site loss counters: sites are numbered below this. Slot `0` counts the losses
-/// nobody could attribute (a message with no site, or a site out of range).
-pub(crate) const SITE_SLOTS: usize = 1024;
+/// Sites with a loss counter of their own: one per registered site (`SiteId::ALL`).
+/// Slot `0` counts the losses nobody could attribute (no site, or a code the registry
+/// does not know), so the counters are `SITE_COUNT + 1` and a registered site always
+/// has its own.
+pub(crate) const SITE_COUNT: usize = SiteId::ALL.len();
+
+/// The largest registered site code.
+const MAX_SITE_CODE: usize = {
+    let mut max = 0;
+    let mut i = 0;
+    while i < SITE_COUNT {
+        let code = SiteId::ALL[i].code() as usize;
+        if code > max {
+            max = code;
+        }
+        i += 1;
+    }
+    max
+};
+
+/// Site code to counter slot (`1 + its place in the registry`; `0` = not registered),
+/// built at compile time from `SiteId::ALL`, so a new site is attributed without
+/// touching this file and the producer's lookup is one array read.
+static SITE_SLOT: [u8; MAX_SITE_CODE + 1] = {
+    let mut table = [0_u8; MAX_SITE_CODE + 1];
+    let mut i = 0;
+    while i < SITE_COUNT {
+        table[SiteId::ALL[i].code() as usize] = (i + 1) as u8;
+        i += 1;
+    }
+    table
+};
 
 /// The recorder id counter starts here, so a `RecorderId` can never be mistaken for
 /// a header `seq` (which starts at 1): they are different namespaces by construction.
@@ -53,8 +83,9 @@ pub(crate) struct Transport {
     /// message can be published, so a consumer that reads a later message sees it
     /// (D-S2c-3 b).
     lost: AtomicU64,
-    /// `lost` by the site of the decision whose flight lost it; slot `0` is the
-    /// unattributed rest. A fixed array, allocated once.
+    /// `lost` by the site of the decision whose flight lost it, indexed by
+    /// [`SITE_SLOT`]; slot `0` is the unattributed rest. A fixed array, allocated
+    /// once.
     sites: Box<[AtomicU64]>,
     /// The part of the rejected pushes that was contention (a slot in flight or a
     /// lost race) rather than a full queue.
@@ -77,7 +108,7 @@ impl Transport {
         Arc::new(Self {
             queue: Ring::new(capacity),
             lost: AtomicU64::new(0),
-            sites: (0..SITE_SLOTS).map(|_| AtomicU64::new(0)).collect(),
+            sites: (0..=SITE_COUNT).map(|_| AtomicU64::new(0)).collect(),
             contended: AtomicU64::new(0),
             overflow: AtomicU64::new(0),
             seq: AtomicU64::new(1),
@@ -92,6 +123,11 @@ impl Transport {
     /// The consumer's side: the next queued message.
     pub(crate) fn pop(&self) -> Option<ShadowMsg> {
         self.queue.pop()
+    }
+
+    /// The ring's capacity.
+    pub(crate) fn capacity(&self) -> usize {
+        self.queue.capacity()
     }
 
     /// Messages claimed and not yet consumed, published or not.
@@ -141,13 +177,17 @@ impl Transport {
         self.lost.load(Ordering::Acquire)
     }
 
-    /// Losses by site, so far: `each(site, count)` for every site with a loss. Slot
-    /// `0` (unattributed) is reported as site `0`.
+    /// Losses by site, so far: `each(site code, count)` for every registered site
+    /// with a loss, and `each(0, count)` for the unattributed rest.
     pub(crate) fn lost_by_site(&self, mut each: impl FnMut(u16, u64)) {
         for (slot, count) in self.sites.iter().enumerate() {
             let count = count.load(Ordering::Acquire);
             if count > 0 {
-                each(u16::try_from(slot).unwrap_or(0), count);
+                let code = slot
+                    .checked_sub(1)
+                    .and_then(|index| SiteId::ALL.get(index))
+                    .map_or(0, |site| site.code());
+                each(code, count);
             }
         }
     }
@@ -201,8 +241,9 @@ impl Transport {
     /// One message lost: the site's counter, then the global one (`Release`), so a
     /// consumer that sees the global count sees the site's.
     fn lose(&self, site: u16) {
-        let slot = usize::from(site);
-        let slot = if slot < SITE_SLOTS { slot } else { 0 };
+        let slot = SITE_SLOT
+            .get(usize::from(site))
+            .map_or(0, |slot| usize::from(*slot));
         self.sites[slot].fetch_add(1, Ordering::Release);
         self.lost.fetch_add(1, Ordering::Release);
     }
@@ -347,6 +388,10 @@ impl ShadowRecorder {
         self.seq_taken.store(true, Ordering::Relaxed);
         ShadowTicket {
             seq,
+            epoch: self
+                .transport
+                .as_ref()
+                .map_or(0, |transport| transport.lost.load(Ordering::Acquire)),
             recorder: self,
             sent: false,
         }
@@ -402,6 +447,8 @@ impl Drop for ShadowRecorder {
 /// the loss from its `Drop` if the thread unwinds between D release and `submit`.
 pub(crate) struct ShadowTicket<'a> {
     seq: u64,
+    /// `lost` when the ticket was taken: one atomic load.
+    epoch: u64,
     recorder: &'a ShadowRecorder,
     sent: bool,
 }
@@ -447,7 +494,7 @@ pub(crate) enum Mark {
 /// Submit the header right after D is released and before the first `PostDT` effect
 /// (C8.2): one `push`, no lock, never blocks. The header's `seq` and `rec` must be
 /// the ticket's and its recorder's.
-pub(crate) fn submit(mut ticket: ShadowTicket<'_>, header: ShadowHeader) {
+pub(crate) fn submit(mut ticket: ShadowTicket<'_>, mut header: ShadowHeader) {
     debug_assert_eq!(
         header.seq, ticket.seq,
         "a header is submitted under its own ticket"
@@ -456,6 +503,7 @@ pub(crate) fn submit(mut ticket: ShadowTicket<'_>, header: ShadowHeader) {
         header.rec, ticket.recorder.rec,
         "a header names its ticket's recorder"
     );
+    header.epoch = ticket.epoch;
     ticket.sent = true;
     ticket
         .recorder

@@ -330,6 +330,17 @@ fn the_final_summary_is_written_after_bounded_attempts_with_what_was_left() {
 }
 
 #[test]
+fn the_thread_loop_only_drains_with_a_budget() {
+    // Sol round 5, minor 2: every drain the thread makes, at shutdown or not, takes a
+    // bounded number of messages, so the stop flag is read between them.
+    let module = super::policy::production_source(include_str!("../mod.rs"));
+    let body = super::policy::function_body(&module, "pub(crate) fn run(");
+    assert!(body.contains("drain_up_to("), "{body}");
+    assert!(!body.contains(".drain("), "an unbounded drain: {body}");
+    assert!(body.contains("DRAIN_BUDGET_RINGS"));
+}
+
+#[test]
 fn the_summary_file_carries_no_ids() {
     // Recording ids appear in no key or value: run a flight whose recording id is
     // an unmistakable number and look for it in the document.

@@ -189,14 +189,14 @@ fn a_reset_drops_the_windows_and_the_deferred_credits_that_depended_on_what_it_g
     h.feed(&ready_while_recording(2, 2, duplicate));
     transport.lose_for_test(216);
     h.comparator.drain(&transport);
-    h.feed(&pipeline_success(3, 3));
+    h.feed(&at_epoch(pipeline_success(3, 3), 1));
     assert_eq!(credited_count(&h, 4), 0, "{:?}", h.stats().pd_witness);
 
     let mut h = harness();
     h.feed(&short_idle(1, 1));
     transport.lose_for_test(216);
     h.comparator.drain(&transport);
-    h.feed(&start_during_cleanup(2, 2));
+    h.feed(&at_epoch(start_during_cleanup(2, 2), 1));
     assert_eq!(credited_count(&h, 18), 0, "{:?}", h.stats().pd_witness);
 }
 

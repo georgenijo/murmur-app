@@ -68,9 +68,17 @@ pub(crate) struct Stats {
     /// Open records evicted past the 64-record cap.
     pub lost_open: u64,
     /// Flights given up because a message was lost (or a header gap was seen with no
-    /// counted loss): the staged batch and every open or held record, counted once
-    /// per flight (D-S2c-3 b).
+    /// counted loss): the staged batch, every open or held record, and a header that
+    /// took its ticket before the loss, counted once per flight (D-S2c-3 b,
+    /// Sol round 5, major 1).
     pub abandoned_by_loss: u64,
+    /// Flights given up because the comparison itself panicked (`shadow_panic`): the
+    /// panic can leave a record half applied, so everything open is given up, as for
+    /// a loss.
+    pub abandoned_by_panic: u64,
+    /// Messages of a flight that was already given up, closed or evicted: dropped
+    /// before they reach any record or cache.
+    pub late_message_discarded: u64,
     /// Headers that arrived after a reset moved the sequence past them: discarded,
     /// never applied.
     pub late_header_discarded: u64,
@@ -147,6 +155,8 @@ impl Stats {
             "dropped_unavailable": self.dropped_unavailable,
             "lost_open": self.lost_open,
             "abandoned_by_loss": self.abandoned_by_loss,
+            "abandoned_by_panic": self.abandoned_by_panic,
+            "late_message_discarded": self.late_message_discarded,
             "late_header_discarded": self.late_header_discarded,
             "unverifiable": self.unverifiable,
             "unconsumed": self.unconsumed,

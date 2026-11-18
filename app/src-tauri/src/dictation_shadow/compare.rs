@@ -352,6 +352,9 @@ struct Record {
     later_tickers: Vec<(usize, bool)>,
     last_idx: [Option<usize>; 4],
     h1_registered: u8,
+    /// The `K:Pipeline` registration this record validated, until the comparator
+    /// takes it into its cache.
+    registered: Option<(RecordingId, OperationId)>,
     /// The token the input carried and its validated status: the full H1 token whose
     /// retirement the row requires (D-S2c-2 d).
     token: Option<(Continuation, OpStatus)>,
@@ -442,6 +445,7 @@ impl Record {
             later_tickers,
             last_idx: [None; 4],
             h1_registered: 0,
+            registered: None,
             h1_retired: false,
             h2_needed,
             h2_registered: false,
@@ -704,6 +708,9 @@ impl Record {
                     });
                     let first = self.h1_registered == 0;
                     self.h1_registered = self.h1_registered.saturating_add(1);
+                    if wanted && first && op.cont == ContKind::Pipeline {
+                        self.registered = Some((op.recording_id, op.op));
+                    }
                     wanted && first
                 }
                 (HistoryTable::H1, HistoryAction::Retired { matched }) => match self.token {
@@ -1002,7 +1009,14 @@ impl Comparator {
     /// Take everything the live side has queued, one staged batch at a time. Returns
     /// whether anything was applied or given up.
     pub(crate) fn drain(&mut self, transport: &Transport) -> bool {
-        self.drain_with(transport, |_| {})
+        self.drain_up_to(transport, usize::MAX)
+    }
+
+    /// [`Comparator::drain`] that takes at most about `budget` messages (it stops
+    /// after the batch that reaches it), so a ring that is refilled as fast as it is
+    /// emptied cannot keep the caller from looking at its stop flag (Sol round 5, minor 2).
+    pub(crate) fn drain_up_to(&mut self, transport: &Transport, budget: usize) -> bool {
+        self.drain_with(transport, budget, |_| {})
     }
 
     /// [`Comparator::drain`] with a seam, `popped(n)`, that runs after the `n`th
@@ -1018,9 +1032,11 @@ impl Comparator {
     pub(crate) fn drain_with(
         &mut self,
         transport: &Transport,
+        budget: usize,
         mut popped: impl FnMut(usize),
     ) -> bool {
         let mut progressed = false;
+        let mut taken = 0_usize;
         loop {
             let mut batch = std::mem::take(&mut self.staging);
             batch.clear();
@@ -1032,6 +1048,7 @@ impl Comparator {
                 popped(batch.len());
             }
             let full = batch.len() == STAGE_CAPACITY;
+            taken = taken.saturating_add(batch.len());
             let lost = transport.lost();
             let unavailable = self.fold_counters(transport, lost);
             if lost != self.seen_lost || unavailable {
@@ -1045,7 +1062,7 @@ impl Comparator {
             }
             batch.clear();
             self.staging = batch;
-            if !full {
+            if !full || taken >= budget {
                 return progressed;
             }
         }
@@ -1080,19 +1097,20 @@ impl Comparator {
                 }
             });
         }
-        self.abandon(batch);
+        let flights = self.abandon(batch);
+        self.stats.abandoned_by_loss += flights;
     }
 
     /// Give up the staged batch and every open, held or waiting record: counted once
     /// per flight (`abandoned_by_loss`), remembered as closed so a late message of it
     /// is dropped, and with every cache that depended on them forgotten. The sequence
     /// resynchronises on the next header.
-    fn abandon(&mut self, batch: &[ShadowMsg]) {
+    fn abandon(&mut self, batch: &[ShadowMsg]) -> u64 {
         let mut flights: BTreeSet<RecorderId> = batch.iter().map(ShadowMsg::rec).collect();
         flights.extend(self.records.keys().copied());
         flights.extend(self.held.keys().copied());
         flights.extend(self.pending.values().map(|header| header.rec));
-        self.stats.abandoned_by_loss += u64::try_from(flights.len()).unwrap_or(u64::MAX);
+        let count = u64::try_from(flights.len()).unwrap_or(u64::MAX);
         for rec in flights {
             self.remember_closed(rec);
         }
@@ -1104,14 +1122,27 @@ impl Comparator {
         self.pd_pending.clear();
         self.pipeline_ops.clear();
         self.resync = true;
+        count
     }
 
     /// Apply one message. The shadow's own panics are caught per header.
+    ///
+    /// A panic can leave a record half applied, so it is a loss like any other: every
+    /// open, held or waiting record is given up and nothing partially applied is
+    /// compared afterwards (Sol round 5).
     fn apply(&mut self, msg: ShadowMsg) {
+        let rec = msg.rec();
         let outcome = catch_unwind(AssertUnwindSafe(|| self.handle_msg(msg)));
         if outcome.is_err() {
             self.stats.shadow_panic += 1;
+            self.remember_closed(rec);
+            self.reset_after_panic();
         }
+    }
+
+    fn reset_after_panic(&mut self) {
+        let flights = self.abandon(&[]);
+        self.stats.abandoned_by_panic += flights;
     }
 
     pub(crate) fn handle_msg(&mut self, msg: ShadowMsg) {
@@ -1133,6 +1164,15 @@ impl Comparator {
     // ------------------------------------------------------------- ordering
 
     fn on_header(&mut self, header: ShadowHeader) {
+        if header.epoch < self.seen_lost {
+            // The flight took its ticket before a loss the last reset acknowledged:
+            // one of its messages may be the lost one, and the reset could not see
+            // the flight (its header was still in the ring or behind an unpublished
+            // slot). Given up, with whatever it sends afterwards (Sol round 5, major 1).
+            self.stats.abandoned_by_loss += 1;
+            self.remember_closed(header.rec);
+            return;
+        }
         let seq = header.seq;
         if std::mem::take(&mut self.resync) {
             self.next_seq = seq;
@@ -1153,7 +1193,8 @@ impl Comparator {
         if self.pending.len() > MAX_PENDING_HEADERS {
             // More than 64 later headers wait on one open gap. Without a counted loss
             // that cannot happen; if it does, it is a loss like any other (D-S2c-3 d).
-            self.abandon(&[]);
+            let flights = self.abandon(&[]);
+            self.stats.abandoned_by_loss += flights;
         }
     }
 
@@ -1199,6 +1240,7 @@ impl Comparator {
                 self.stats.shadow_panic += 1;
                 self.report(site, row, DiffKind::ShadowPanic, &ids);
                 self.forget(header.rec);
+                self.reset_after_panic();
                 return;
             }
         };
@@ -1215,9 +1257,6 @@ impl Comparator {
 
         self.core.commit(&decision);
         let post = self.core.post();
-        for live in header.live_ops.iter() {
-            self.note_pipeline_registration(live);
-        }
         let mut record = Record::new(&header, decision);
         record.owner_op = record
             .owner_finish
@@ -1226,6 +1265,7 @@ impl Comparator {
             record.mismatched = true;
             self.report(site, row, diff, &ids);
         }
+        self.note_pipeline_registration(&mut record);
 
         // Messages that arrived before the header attach now.
         let held = self.held.remove(&header.rec).unwrap_or_default();
@@ -1267,13 +1307,13 @@ impl Comparator {
     // ------------------------------------------------------------- messages
 
     /// Remember the operation an H1 `K:Pipeline` registration drew, by recording: the
-    /// owner's full token, which its finish must retire.
-    fn note_pipeline_registration(&mut self, op: &LiveOp) {
-        if op.table == HistoryTable::H1
-            && op.action == HistoryAction::Registered
-            && op.cont == ContKind::Pipeline
-        {
-            self.pipeline_ops.insert(op.recording_id.0, op.op);
+    /// owner's full token, which its finish must retire. Only a registration the
+    /// admitted record itself validated (the decision asked for it, once) is taken, so
+    /// a message of an abandoned or unadmitted flight never reaches the cache
+    /// (Sol round 5, major 2).
+    fn note_pipeline_registration(&mut self, record: &mut Record) {
+        if let Some((recording, op)) = record.registered.take() {
+            self.pipeline_ops.insert(recording.0, op);
             while self.pipeline_ops.len() > MAX_REMEMBERED_IDS {
                 self.pipeline_ops.pop_first();
             }
@@ -1281,12 +1321,10 @@ impl Comparator {
     }
 
     fn route(&mut self, rec: RecorderId, msg: ShadowMsg) {
-        if let ShadowMsg::History { op, .. } = &msg {
-            self.note_pipeline_registration(op);
-        }
         if self.closed.contains(&rec) {
-            // A late message of a flight already closed, abandoned or given up:
-            // the comparison is over.
+            // A late message of a flight already closed, abandoned or given up: the
+            // comparison is over, and it reaches no cache.
+            self.stats.late_message_discarded += 1;
             return;
         }
         let Some(mut record) = self.records.remove(&rec) else {
@@ -1338,6 +1376,7 @@ impl Comparator {
                 self.report(site, row, diff, &ids);
             }
         }
+        self.note_pipeline_registration(&mut record);
         if closing {
             if record.mismatched {
                 // Reported already.

@@ -707,6 +707,14 @@ pub(super) fn retarget(msg: ShadowMsg, to: RecorderId) -> ShadowMsg {
     }
 }
 
+/// The flight as one whose ticket was taken when the transport's `lost` count was
+/// `epoch` (the comparator admits a header only if its epoch is at least the count it
+/// last acknowledged).
+pub(super) fn at_epoch(mut flight: Flight, epoch: u64) -> Flight {
+    flight.header.epoch = epoch;
+    flight
+}
+
 pub(super) fn local_transport(capacity: usize) -> Arc<Transport> {
     Transport::new(capacity)
 }

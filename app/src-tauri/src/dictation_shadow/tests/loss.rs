@@ -45,7 +45,7 @@ fn a_loss_between_two_messages_of_one_batch_discards_the_batch() {
     submit_header(&recorder, &flight);
     send_later(&recorder, &flight);
     let mut h = harness();
-    h.comparator.drain_with(&transport, |taken| {
+    h.comparator.drain_with(&transport, usize::MAX, |taken| {
         if taken == 1 {
             transport.lose_for_test(flight.header.site_id);
         }
@@ -127,10 +127,10 @@ fn a_header_waiting_behind_a_gap_and_its_held_close_are_given_up() {
     h.comparator.drain(&transport);
     assert_eq!(h.stats().abandoned_by_loss, 1, "{:?}", h.stats());
     // The next header resynchronises, whatever its seq.
-    h.feed(&short_idle(40, 40));
+    h.feed(&at_epoch(short_idle(40, 40), 1));
     assert_eq!(h.stats().compared, 2, "{:?}", h.stats());
     // A header the reset moved the sequence past is discarded, not applied.
-    h.feed(&short_idle(39, 39));
+    h.feed(&at_epoch(short_idle(39, 39), 1));
     assert_eq!(h.stats().late_header_discarded, 1);
     assert_eq!(h.stats().compared, 2);
     assert_eq!(h.stats().mismatched_root, 0);
@@ -153,7 +153,7 @@ fn a_reset_forgets_every_cache_that_depended_on_the_flights_it_gave_up() {
     h.feed(&pipeline_start(1, 1));
     transport.lose_for_test(216);
     h.comparator.drain(&transport);
-    h.feed(&exit());
+    h.feed(&at_epoch(exit(), 1));
     assert_eq!(h.stats().matched, 1, "only the start: {:?}", h.stats());
     assert_eq!(h.stats().unverifiable, 1, "{:?}", h.stats());
     assert_eq!(h.stats().mismatched_root, 0);
@@ -164,14 +164,14 @@ fn losses_are_counted_by_site_and_never_filed_under_site_zero() {
     let transport = default_transport();
     transport.lose_for_test(216);
     transport.lose_for_test(216);
-    transport.lose_for_test(237);
+    transport.lose_for_test(2041);
     transport.lose_for_test(0);
     transport.lose_for_test(60_000);
     let mut h = harness();
     h.comparator.drain(&transport);
     let by_site = &h.stats().lost_by_site;
     assert_eq!(by_site.get(&216), Some(&2), "{by_site:?}");
-    assert_eq!(by_site.get(&237), Some(&1));
+    assert_eq!(by_site.get(&2041), Some(&1));
     assert_eq!(by_site.get(&0), None, "site 0 is never a key");
     assert_eq!(
         h.stats().loss_unattributed,
@@ -250,7 +250,7 @@ fn a_ticket_dropped_without_a_submit_is_a_loss_not_a_pre_abandonment() {
         "past D entry, not a Pre abandonment"
     );
     // The next header is not stuck behind the lost position.
-    h.feed(&idle_for(2, 2, 41));
+    h.feed(&at_epoch(idle_for(2, 2, 41), 1));
     assert_eq!(h.stats().compared, 1);
 }
 
@@ -333,37 +333,10 @@ fn a_recorder_without_a_transport_is_a_loss_like_any_other() {
 }
 
 #[test]
-fn a_batch_is_at_most_the_staging_capacity_and_each_is_checked_on_its_own() {
-    // More messages than one batch holds: the loss lands in the second batch only, so
-    // the first is processed and the second given up.
-    let transport = local_transport(256);
-    let recorders: Vec<ShadowRecorder> = (0..100).map(|_| transport.recorder()).collect();
-    let flights: Vec<Flight> = (0..100).map(|n| idle_for(0, 0, 100 + n)).collect();
-    for (recorder, flight) in recorders.iter().zip(&flights) {
-        submit_header(recorder, flight);
-        send_later(recorder, flight);
-    }
-    let mut h = harness();
-    let mut batch = 0;
-    h.comparator.drain_with(&transport, |taken| {
-        if taken == 1 {
-            batch += 1;
-            if batch == 2 {
-                transport.lose_for_test(216);
-            }
-        }
-    });
-    assert!(h.stats().matched > 0, "the first batch was compared");
-    assert!(h.stats().abandoned_by_loss > 0, "the second was given up");
-    assert!(h.stats().matched + h.stats().abandoned_by_loss <= 100);
-    let _: &Transport = &transport;
-}
-
-#[test]
 fn a_late_message_of_a_given_up_flight_is_dropped_not_held() {
-    // The flights given up by a reset are remembered, so what they send afterwards is
-    // dropped. If it were held instead, those 64 flights and the 36 open ones that
-    // follow would overflow the 64-record cap and evict real ones (`lost_open`).
+    // Every flight a reset gives up is remembered as closed, whether its header was in
+    // the staged batch or still in the ring (older epoch, discarded when it arrives),
+    // so what it sends afterwards is dropped and counted, never held or applied.
     let transport = local_transport(1024);
     let flights: Vec<Flight> = (0..100).map(|n| idle_for(0, 0, 100 + n)).collect();
     let recorders: Vec<ShadowRecorder> = flights.iter().map(|_| transport.recorder()).collect();
@@ -372,25 +345,32 @@ fn a_late_message_of_a_given_up_flight_is_dropped_not_held() {
     }
     let mut h = harness();
     let mut lost = false;
-    h.comparator.drain_with(&transport, |taken| {
+    h.comparator.drain_with(&transport, usize::MAX, |taken| {
         if taken == 1 && !lost {
             lost = true;
             transport.lose_for_test(216);
         }
     });
+    assert_eq!(h.stats().compared, 0, "{:?}", h.stats());
     assert_eq!(
         h.stats().abandoned_by_loss,
-        64,
-        "one batch: {:?}",
+        100,
+        "64 staged, 36 older-epoch headers discarded: {:?}",
         h.stats()
     );
-    assert_eq!(h.stats().compared, 36, "the next batch was compared");
+    let later: usize = flights.iter().map(|flight| flight.later.len()).sum();
     for (recorder, flight) in recorders.iter().zip(&flights) {
         send_later(recorder, flight);
     }
     h.comparator.drain(&transport);
+    assert_eq!(
+        h.stats().late_message_discarded,
+        later as u64,
+        "{:?}",
+        h.stats()
+    );
     assert_eq!(h.stats().lost_open, 0, "{:?}", h.stats());
-    assert_eq!(h.stats().matched, 36, "{:?}", h.stats());
+    assert_eq!(h.stats().matched, 0);
     assert!(h.events().is_empty(), "{:?}", h.events());
 }
 
@@ -411,4 +391,292 @@ fn the_header_of_an_evicted_flight_is_discarded_not_compared_without_its_witness
     assert_eq!(h.stats().late_header_discarded, 1, "{:?}", h.stats());
     assert_eq!(h.stats().compared, 1, "only seq 1 was compared");
     assert!(h.events().is_empty(), "{:?}", h.events());
+}
+
+/// `flight`'s later messages through the real producer path, except that the first
+/// witness is lost (counted as a rejected push would be) instead of sent.
+fn send_later_losing_first_witness(
+    transport: &Transport,
+    recorder: &ShadowRecorder,
+    flight: &Flight,
+) {
+    let mut lost = false;
+    for msg in flight.later.clone() {
+        match msg {
+            ShadowMsg::Witness { .. } if !lost => {
+                lost = true;
+                transport.lose_for_test(flight.header.site_id);
+            }
+            ShadowMsg::Witness {
+                idx,
+                placement,
+                effect,
+                ..
+            } => witness(recorder, idx, placement, effect),
+            ShadowMsg::Cond { pred, taken, .. } => mark(recorder, Mark::Cond { pred, taken }),
+            ShadowMsg::Mirror { mirror, .. } => mark(recorder, Mark::Mirror(mirror)),
+            ShadowMsg::Ticker { gate, .. } => mark(recorder, Mark::Ticker(gate)),
+            ShadowMsg::History { op, .. } => mark(recorder, Mark::History(op)),
+            ShadowMsg::Reply { kind, .. } => mark(recorder, Mark::Reply(kind)),
+            ShadowMsg::Close { .. } => recorder.finish(),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert!(lost, "the flight has a witness to lose");
+}
+
+#[test]
+fn a_header_still_in_the_ring_behind_the_staged_batch_is_not_admitted_after_the_reset() {
+    // Sol round 5, major 1 (staging boundary). A faithful R205.5 header sits behind
+    // more than one batch of other messages and loses an effect witness. The first
+    // batch sees the loss and is given up, acknowledging the new count; the header is
+    // only popped in the next batch. Without the ticket epoch it was admitted and its
+    // close reported a false `EffectSet`.
+    let transport = local_transport(256);
+    let filler = transport.recorder();
+    for _ in 0..64 {
+        mark(&filler, Mark::Reply(ReplyKind::Ok));
+    }
+    let flight = cancel(0, 0);
+    let recorder = transport.recorder();
+    submit_header(&recorder, &flight);
+    send_later_losing_first_witness(&transport, &recorder, &flight);
+    let mut h = harness();
+    h.comparator.drain(&transport);
+    assert_eq!(h.stats().compared, 0, "{:?}", h.stats());
+    assert!(h.events().is_empty(), "{:?}", h.events());
+    assert_eq!(h.stats().mismatched_root, 0);
+    assert_eq!(h.stats().matched, 0);
+    assert_eq!(h.stats().abandoned_by_loss, 2, "{:?}", h.stats());
+    assert_eq!(pd_16(&h), 0);
+    drop(filler);
+}
+
+#[test]
+fn a_header_hidden_by_an_unpublished_slot_during_the_reset_is_not_admitted_after_it() {
+    // Sol round 5, major 1 (unpublished head slot). A producer reserved the head slot
+    // and was paused, so the consumer could not read the flight's header behind it
+    // while it acknowledged the flight's own lost witness. When the slot is published
+    // the header is popped: it took its ticket before the loss and must not be
+    // compared.
+    let transport = local_transport(256);
+    let paused = transport.reserve_for_test();
+    let flight = cancel(0, 0);
+    let recorder = transport.recorder();
+    submit_header(&recorder, &flight);
+    send_later_losing_first_witness(&transport, &recorder, &flight);
+    let mut h = harness();
+    h.comparator.drain(&transport);
+    assert_eq!(h.stats().compared, 0, "nothing is readable behind the slot");
+    assert_eq!(transport.reserved_unpublished(), 1);
+    transport.publish_for_test(
+        paused,
+        ShadowMsg::PreAbandoned {
+            rec: crate::dictation_shadow::types::RecorderId(1),
+        },
+    );
+    h.comparator.drain(&transport);
+    assert_eq!(h.stats().compared, 0, "{:?}", h.stats());
+    assert!(h.events().is_empty(), "{:?}", h.events());
+    assert_eq!(h.stats().matched, 0);
+    assert_eq!(h.stats().abandoned_by_loss, 1, "{:?}", h.stats());
+    assert_eq!(
+        h.stats().late_message_discarded,
+        flight.later.len() as u64 - 1
+    );
+}
+
+#[test]
+fn a_flight_whose_ticket_came_after_the_loss_is_admitted() {
+    // The epoch only turns away flights older than the loss: one whose ticket was
+    // taken afterwards compares normally, and the ticket's epoch is the `lost` count
+    // at that moment.
+    let transport = local_transport(256);
+    transport.lose_for_test(216);
+    transport.lose_for_test(216);
+    let mut h = harness();
+    h.comparator.drain(&transport);
+    assert_eq!(h.stats().abandoned_by_loss, 0, "the loss is acknowledged");
+    let flight = cancel(0, 0);
+    let recorder = transport.recorder();
+    submit_header(&recorder, &flight);
+    send_later(&recorder, &flight);
+    h.comparator.drain(&transport);
+    assert_eq!(h.stats().abandoned_by_loss, 0, "{:?}", h.stats());
+    assert_eq!(h.stats().matched, 1, "{:?}", h.stats());
+    let flight = cancel(0, 0);
+    let recorder = transport.recorder();
+    submit_header(&recorder, &flight);
+    let Some(ShadowMsg::Header(header)) = transport.pop() else {
+        panic!("a header")
+    };
+    assert_eq!(header.epoch, 2, "the count when the ticket was taken");
+}
+
+#[test]
+fn an_abandoned_or_unadmitted_flight_cannot_repopulate_the_registration_cache() {
+    // Sol round 5, major 2. A flight given up by a reset sends an H1 registration for
+    // a substituted operation id; a pipeline finish then retires that id. If the
+    // registration reached the cache the finish closed clean.
+    use crate::dictation_shadow::types::{HistoryAction, HistoryTable, LiveOp, RecorderId};
+    use murmur_dictation_core::decision::ContKind;
+    use murmur_dictation_core::ids::OperationId;
+    let forged = |rec: RecorderId| ShadowMsg::History {
+        rec,
+        op: LiveOp {
+            table: HistoryTable::H1,
+            action: HistoryAction::Registered,
+            cont: ContKind::Pipeline,
+            recording_id: RID,
+            op: OperationId(9_999),
+        },
+    };
+    let substituted_exit = |seq: u64, epoch: u64| {
+        let mut exit = pipeline_exit(seq, 9, Status::Processing, RID, RID);
+        for live in exit.header.live_ops.iter_mut() {
+            if live.table == HistoryTable::H1
+                && matches!(live.action, HistoryAction::Retired { .. })
+            {
+                live.op = OperationId(9_999);
+            }
+        }
+        at_epoch(exit, epoch)
+    };
+
+    // 1. The flight was abandoned: its late message is dropped before the cache.
+    let transport = default_transport();
+    let mut h = harness();
+    let abandoned = short_idle(1, 1);
+    h.feed_header(&abandoned);
+    transport.lose_for_test(216);
+    h.comparator.drain(&transport);
+    h.send(forged(abandoned.header.rec));
+    assert_eq!(h.stats().late_message_discarded, 1);
+    h.feed(&substituted_exit(2, 1));
+    assert_eq!(h.stats().matched, 0, "{:?}", h.stats());
+    assert_eq!(h.stats().unverifiable, 1, "{:?}", h.stats());
+
+    // 2. The flight never had an admitted header: the message is only held, and a
+    // held message reaches no cache.
+    let mut h = harness();
+    h.send(forged(RecorderId(777)));
+    h.feed(&substituted_exit(1, 0));
+    assert_eq!(h.stats().matched, 0, "{:?}", h.stats());
+    assert_eq!(h.stats().unverifiable, 1, "{:?}", h.stats());
+
+    // 3. A registration the admitted record did not ask for is not validated.
+    let mut h = harness();
+    let mut idle = short_idle(1, 1);
+    idle.later.insert(0, forged(idle.header.rec));
+    h.feed(&idle);
+    h.feed(&substituted_exit(2, 0));
+    assert_eq!(h.stats().unverifiable, 1, "{:?}", h.stats());
+    assert_eq!(
+        h.stats().matched,
+        0,
+        "the idle flight mismatched: {:?}",
+        h.stats()
+    );
+}
+
+#[test]
+fn every_registered_site_has_its_own_loss_counter() {
+    // Sol round 5, minor 1: the counters are indexed from the registry, so each of the
+    // sites (2021, 2041 and 2042 included) is attributed and none lands in slot 0.
+    use murmur_dictation_core::decision::SiteId;
+    let transport = default_transport();
+    for site in SiteId::ALL {
+        let recorder = transport.recorder();
+        recorder.enter_pre();
+        drop(recorder.ticket(site.code()));
+    }
+    let mut h = harness();
+    h.comparator.drain(&transport);
+    for site in SiteId::ALL {
+        assert_eq!(
+            h.stats().lost_by_site.get(&site.code()),
+            Some(&1),
+            "{site:?} ({}) was not attributed: {:?}",
+            site.code(),
+            h.stats()
+        );
+    }
+    assert_eq!(h.stats().lost_by_site.len(), SiteId::ALL.len());
+    assert_eq!(h.stats().loss_unattributed, 0);
+}
+
+#[test]
+fn a_caught_comparator_panic_gives_up_everything_open() {
+    // A panic inside the comparison can leave a record half applied, so it is handled
+    // like a loss: what is open is given up and never compared afterwards. The event
+    // sink panics on the second flight's mismatch, in the middle of applying it.
+    let transport = local_transport(256);
+    let open = cancel(0, 0);
+    let recorder = transport.recorder();
+    submit_header(&recorder, &open);
+    let mut broken = short_idle(0, 0);
+    broken.header.live_post_d.status = Status::Recording;
+    let other = transport.recorder();
+    submit_header(&other, &broken);
+    send_later(&recorder, &open);
+    let mut comparator = crate::dictation_shadow::compare::Comparator::new(
+        Box::new(|core, input, now| core.handle(input, now)),
+        Box::new(|_| panic!("the sink panics")),
+        Box::new(|| 0),
+    );
+    comparator.drain(&transport);
+    let stats = &comparator.stats;
+    assert_eq!(stats.shadow_panic, 1, "{stats:?}");
+    assert_eq!(stats.abandoned_by_panic, 1, "the open R205.5: {stats:?}");
+    assert_eq!(stats.matched, 0, "{stats:?}");
+    assert_eq!(
+        stats.pd_witness.get(&16).copied().unwrap_or(0),
+        0,
+        "nothing partially applied is credited"
+    );
+    assert!(stats.late_message_discarded > 0);
+}
+
+#[test]
+fn a_decider_panic_gives_up_everything_open_too() {
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let mut h = harness();
+    h.comparator = crate::dictation_shadow::compare::Comparator::new(
+        Box::new(move |core, input, now| {
+            let call = calls.fetch_add(1, Ordering::SeqCst) + 1;
+            assert!(call != 2, "the decider panics on the second header");
+            core.handle(input, now)
+        }),
+        Box::new(|_| {}),
+        Box::new(|| 0),
+    );
+    let open = cancel(1, 1);
+    h.feed_header(&open);
+    h.feed(&short_idle(2, 2));
+    assert_eq!(h.stats().shadow_panic, 1, "{:?}", h.stats());
+    assert_eq!(h.stats().abandoned_by_panic, 1, "{:?}", h.stats());
+    h.feed_later(&open);
+    assert_eq!(h.stats().matched, 0, "{:?}", h.stats());
+    assert_eq!(pd_16(&h), 0);
+}
+
+#[test]
+fn a_drain_with_a_budget_stops_even_if_the_ring_is_refilled_as_fast_as_it_empties() {
+    // Sol round 5, minor 2: a producer that refills the ring on every pop kept one
+    // drain going forever. With a budget it stops after the batch that reaches it.
+    let transport = local_transport(256);
+    let rec = transport.recorder();
+    mark(&rec, Mark::Reply(ReplyKind::Ok));
+    let mut h = harness();
+    let mut popped = 0_usize;
+    h.comparator.drain_with(&transport, 100, |_| {
+        popped += 1;
+        mark(&rec, Mark::Reply(ReplyKind::Ok));
+    });
+    assert!(popped >= 100, "it took at least the budget: {popped}");
+    assert!(popped < 100 + 64, "and stopped at the next batch: {popped}");
+    assert!(
+        transport.unconsumed() > 0,
+        "the ring was still being refilled"
+    );
 }

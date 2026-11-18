@@ -85,6 +85,12 @@ const EXIT_WAIT: Duration = Duration::from_secs(2);
 /// then reports what was left instead of waiting for it.
 const SHUTDOWN_DRAIN_ATTEMPTS: u32 = 3;
 
+/// Messages one drain takes, as a multiple of the ring's capacity, before the thread
+/// looks at its stop flag again. A ring refilled as fast as it is emptied would
+/// otherwise keep a drain, and so the final summary, from ever finishing (Sol round 5,
+/// minor 2).
+const DRAIN_BUDGET_RINGS: usize = 4;
+
 /// Name of the comparison thread (C8.3).
 pub(crate) const THREAD_NAME: &str = "murmur-dictation-shadow";
 
@@ -259,7 +265,8 @@ pub(crate) fn run(
         // Read the stop flag *before* draining: every message pushed before the
         // request was made is then in the queue this pass drains.
         let stop = control.shutdown.load(Ordering::Acquire);
-        let progressed = comparator.drain(transport);
+        let budget = transport.capacity() * DRAIN_BUDGET_RINGS;
+        let progressed = comparator.drain_up_to(transport, budget);
         if stop {
             // Bounded: a slot a producer reserved and never published stops the
             // consumer at it, and the final summary must still be written.
@@ -268,7 +275,7 @@ pub(crate) fn run(
                     break;
                 }
                 std::thread::sleep(poll);
-                comparator.drain(transport);
+                comparator.drain_up_to(transport, budget);
             }
             comparator.stats.unconsumed = transport.unconsumed() as u64;
             comparator.stats.reserved_unpublished = transport.reserved_unpublished() as u64;

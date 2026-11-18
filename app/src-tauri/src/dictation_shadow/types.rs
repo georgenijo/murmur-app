@@ -354,6 +354,11 @@ impl ReplyKind {
 pub(crate) struct ShadowHeader {
     /// Taken at the existing decision boundary; **is** D order. Not the recorder id.
     pub seq: u64,
+    /// The transport's `lost` count when the ticket was taken, set by `submit`. After
+    /// a reset the comparator admits only a header whose epoch is at least the count
+    /// it acknowledged: an older flight may have lost a message the reset could not
+    /// see (Sol round 5, major 1).
+    pub epoch: u64,
     /// The flight's recorder, created before `run(Pre)`.
     pub rec: RecorderId,
     /// The C0.3 site number the live path took (`2041` for 204a).
@@ -405,6 +410,7 @@ impl ShadowHeader {
     ) -> Self {
         Self {
             seq,
+            epoch: 0,
             rec,
             site_id,
             row,
