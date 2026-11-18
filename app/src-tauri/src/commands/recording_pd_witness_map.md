@@ -41,12 +41,12 @@ completeness test reads only the Stage 0b sources). The harness allowlists each 
 its first seed (`FINDING_SEEDS` in the core crate's `property/tests.rs`); the PD text is in the errata's
 "Defects found during the refactor".
 
-- **PD-19** (seed 8147): `f4_interrupted_over_8000_with_a_refused_auto_stop_leaves_recovering`.
-- **PD-20** (seed 949, R205.5 / R203.5): `f1_cancel_terminal_and_a_short_stop_performance_outcome_disagree`.
-- **PD-21** (seed 127, R206.2 / R203.4; seed 161, R206.2 / R209.4): `f2_failed_capture_cancel_terminal_and_a_short_stop_performance_outcome_disagree` and `f2_timed_out_capture_cancel_terminal_and_the_late_recovery_performance_outcome_disagree`.
-- **PD-22** (seed 2883, R211.2 / R203.2; seed 3517, R211.2 / R205.5): `f3_superseded_terminal_and_a_failed_stop_performance_outcome_disagree` and `f3_superseded_terminal_and_a_cancels_performance_outcome_disagree` (both with an undelivered stop: a sealed stop notifies `CleanupFinished`, never `Idle`).
+- **PD-19** (seed 9514): `pd19_termination_unconfirmed_after_retained_pcm_leaves_recovering`.
+- **PD-20** (seed 398, R205.5 / R203.5): `pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree`.
+- **PD-21** (seed 75012, R206.2 / R203.4; seed 178, R206.2 / R209.4): `pd21_timed_out_cancel_then_a_short_stop_disagree` and `pd21_timed_out_cancel_and_the_late_recovery_disagree` (the cancel's receive expires with the request still queued).
+- **PD-22** (seed 23598, R211.2 / R203.2; seed 22641, R211.2 / R205.5): `pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance` and `pd22_expired_stop_idle_supersedes_and_the_cancel_completes_performance` (the stop's 12 s receive expired, so the worker exit's `Idle` is the only reachable one: a sealed stop notifies `CleanupFinished`, never `Idle`).
 
-Each sequence is production-reachable (D-S2b-7 (c)); the fixtures assert the actual replies. The other
+Each sequence is production-reachable (D-S2b-7 (c)). The fixtures drive the Stage 0b fake host, so every supervisor notification and reply they inject cites the production sender and state (`audio_lifecycle.rs` lines, D-S2b-9 (b)); they assert the exact replies, statuses and ledger outcomes. The other
 combinations of the SP4(b) signature table are the same two-ledger race through other rows; the model
 witnesses them (`every_preserved_defect_is_witnessed` fails on a signature that never occurs) and no
 shell test pins them.

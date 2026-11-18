@@ -15,9 +15,7 @@
 //! reads the shell's own state) is structural and enforced by the #1152 ratchet, and
 //! file admission is a unit test of the admission crate.
 
-use crate::decision::{Decision, SiteId};
 use crate::effects::Effect;
-use crate::rows::C3_ROWS;
 use crate::status::Status;
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -60,10 +58,17 @@ fn parse(text: &str) -> Result<BTreeMap<String, FixtureRow>, String> {
         let (Some(row), Some(statuses), Some(alternatives)) =
             (cells.next(), cells.next(), cells.next())
         else {
-            return Err(format!("line {}: expected `row | statuses | alternatives`", number + 1));
+            return Err(format!(
+                "line {}: expected `row | statuses | alternatives`",
+                number + 1
+            ));
         };
-        let statuses = (statuses != "*")
-            .then(|| statuses.split(',').map(|s| s.trim().to_string()).collect::<Vec<_>>());
+        let statuses = (statuses != "*").then(|| {
+            statuses
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect::<Vec<_>>()
+        });
         let alternatives = alternatives
             .split(" / ")
             .map(|alternative| {
@@ -79,7 +84,10 @@ fn parse(text: &str) -> Result<BTreeMap<String, FixtureRow>, String> {
                     }
                     _ => Subject::Either,
                 };
-                let tokens: Vec<String> = words.filter(|word| *word != "-").map(String::from).collect();
+                let tokens: Vec<String> = words
+                    .filter(|word| *word != "-")
+                    .map(String::from)
+                    .collect();
                 Alternative { subject, tokens }
             })
             .collect::<Vec<_>>();
@@ -134,7 +142,10 @@ fn token_matches(pattern: &str, observed: &str) -> bool {
     }
     // `TERM:outcome/code` compares the two halves; `ST:from>to` and the rest compare whole.
     let (patterns, observed): (Vec<&str>, Vec<&str>) = match kind {
-        "TERM" => (args.split('/').collect(), observed_args.split('/').collect()),
+        "TERM" => (
+            args.split('/').collect(),
+            observed_args.split('/').collect(),
+        ),
         _ => (vec![args], vec![observed_args]),
     };
     patterns.len() == observed.len()
@@ -184,11 +195,15 @@ pub fn check_decision(
             ));
         }
     }
-    let applicable = fixture_row.alternatives.iter().filter(|alternative| match alternative.subject {
-        Subject::Fresh => !stale,
-        Subject::Stale => stale,
-        Subject::Either => true,
-    });
+    let applicable =
+        fixture_row
+            .alternatives
+            .iter()
+            .filter(|alternative| match alternative.subject {
+                Subject::Fresh => !stale,
+                Subject::Stale => stale,
+                Subject::Either => true,
+            });
     if applicable
         .clone()
         .any(|alternative| multiset_matches(&alternative.tokens, &observed))
@@ -202,23 +217,7 @@ pub fn check_decision(
     ))
 }
 
-/// The decision form of [`check_decision`].
-pub fn check(decision: &Decision, status: Status, stale: bool) -> Result<(), String> {
-    let effects: Vec<Effect> = decision.effects.iter().map(|p| p.effect.clone()).collect();
-    check_decision(decision.row.0, status, stale, &effects)
-}
-
 /// The rows of the fixture, for the coverage test.
 pub fn fixture_rows() -> Vec<&'static str> {
     fixture().keys().map(String::as_str).collect()
-}
-
-/// The statuses a fixture row reads (`None`: any).
-pub fn fixture_statuses(row: &str) -> Option<Option<Vec<String>>> {
-    fixture().get(row).map(|r| r.statuses.clone())
-}
-
-/// The site that owns a fixture row.
-pub fn site_of(row: &str) -> Option<SiteId> {
-    C3_ROWS.iter().find(|(id, _)| *id == row).map(|(_, site)| *site)
 }

@@ -534,11 +534,6 @@ impl World {
 
     // ------------------------------------------- the supervisor thread
 
-    /// The supervisor thread is inside a handler or an arm: it takes no message.
-    pub fn sup_busy(&self) -> bool {
-        self.sup.busy.is_some() || !self.sup.handling.is_empty()
-    }
-
     /// The supervisor takes the next message off its channel and handles it
     /// (`handle_message`): the state it changes at once is set here, the
     /// notifications and answers that follow are the `handling` steps.
@@ -703,7 +698,8 @@ impl World {
             WorkerEv::RuntimeFailed => {
                 if matches!(phase, Phase::Starting | Phase::Recording) {
                     self.mark_recover_end();
-                    self.sup.handling = self.begin_recovery(AudioCancelReason::RuntimeFailure, false);
+                    self.sup.handling =
+                        self.begin_recovery(AudioCancelReason::RuntimeFailure, false);
                 }
             }
             WorkerEv::TerminationUnconfirmed => {
@@ -711,7 +707,8 @@ impl World {
                     self.report_cleanup_stalled();
                 } else {
                     self.mark_recover_end();
-                    self.sup.handling = self.begin_recovery(AudioCancelReason::RuntimeFailure, true);
+                    self.sup.handling =
+                        self.begin_recovery(AudioCancelReason::RuntimeFailure, true);
                 }
             }
             WorkerEv::RecordingSealed => {
@@ -824,9 +821,7 @@ impl World {
     /// was handled.
     pub fn sup_timer(&mut self, coin: bool) -> Option<bool> {
         let queue_empty = self.sup.queue.is_empty();
-        let Some(attempt) = self.sup.attempt.as_ref() else {
-            return None;
-        };
+        let attempt = self.sup.attempt.as_ref()?;
         self.sup.handling_rid = attempt.rid;
         let phase = attempt.phase;
         let end = attempt.plan.end;
@@ -844,7 +839,14 @@ impl World {
         }
         let pending = match phase {
             Phase::Starting => {
-                (live && matches!(end, End::Recover { reason: AudioCancelReason::HardDeadline, .. }))
+                (live
+                    && matches!(
+                        end,
+                        End::Recover {
+                            reason: AudioCancelReason::HardDeadline,
+                            ..
+                        }
+                    ))
                     || connecting
             }
             Phase::Stopping | Phase::Recovering => stalled,
@@ -868,7 +870,8 @@ impl World {
                         if let Some(attempt) = self.sup.attempt.as_mut() {
                             attempt.ended_by = EndedBy::Recover { interrupted: None };
                         }
-                        let steps = self.begin_recovery(AudioCancelReason::HardDeadline, init_failed);
+                        let steps =
+                            self.begin_recovery(AudioCancelReason::HardDeadline, init_failed);
                         self.sup.handling = steps;
                         return Some(true);
                     }

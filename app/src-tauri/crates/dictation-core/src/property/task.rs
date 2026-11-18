@@ -233,7 +233,6 @@ pub fn log_decision(
             .violations
             .push(format!("{}: invalid decision {error:?}", decision.row.0));
     }
-    let w = &*cx.w;
     // SP3 / C3 (D-S2b-9 (d)): the decision's whole effect list is one allowed outcome
     // of its row in the hand-transcribed fixture.
     let stripped = std::mem::take(&mut cx.out.stripped);
@@ -242,7 +241,9 @@ pub fn log_decision(
         .chain(decision.effects.iter().map(|placed| placed.effect.clone()))
         .collect();
     let w = &*cx.w;
-    if let Err(message) = c3::check_decision(decision.row.0, w.status, input_rid != w.current_id, &whole) {
+    if let Err(message) =
+        c3::check_decision(decision.row.0, w.status, input_rid != w.current_id, &whole)
+    {
         cx.out.violations.push(message);
     }
     let owner = w.sup.owner;

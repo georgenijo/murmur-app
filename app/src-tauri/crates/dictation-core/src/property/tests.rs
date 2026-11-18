@@ -67,13 +67,13 @@ const FINDING_SEEDS: [Witness; 7] = [
         pd: 22,
         seed: 23598,
         split: Some(("R211.2", "R203.2")),
-        shell_test: None,
+        shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance"),
     },
     Witness {
         pd: 22,
         seed: 22641,
         split: Some(("R211.2", "R205.5")),
-        shell_test: None,
+        shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_cancel_completes_performance"),
     },
     Witness {
         pd: 12,
@@ -508,7 +508,10 @@ fn the_c3_fixture_lists_every_c3_row_once() {
 fn the_c3_fixture_fails_the_r211_2_mutants_and_a_duplicate_terminal() {
     use super::c3::check_decision as check;
     let superseded = || terminal(TerminalOutcome::Superseded, ErrCode::StaleOwner);
-    assert_eq!(check("R211.2", Status::Idle, false, &[superseded()]), Ok(()));
+    assert_eq!(
+        check("R211.2", Status::Idle, false, &[superseded()]),
+        Ok(())
+    );
 
     // Mutant A: claims `Success` instead of `Superseded`.
     let success = check(
@@ -525,7 +528,10 @@ fn the_c3_fixture_fails_the_r211_2_mutants_and_a_duplicate_terminal() {
         false,
         &[superseded(), Effect::SetStatus(Status::Idle)],
     );
-    assert!(write.unwrap_err().contains("ST:Idle>Idle"), "extra Idle write");
+    assert!(
+        write.unwrap_err().contains("ST:Idle>Idle"),
+        "extra Idle write"
+    );
     // Mutant C: an identical second terminal (the old snapshot accepted it).
     let twice = check("R211.2", Status::Idle, false, &[superseded(), superseded()]);
     assert!(twice.is_err(), "a duplicate terminal must fail");
@@ -1452,6 +1458,11 @@ fn the_supervisor_mirror_cites_the_real_source() {
             row.step,
             row.function,
             row.needle
+        );
+        assert!(
+            !row.what.is_empty(),
+            "{}: the row says what the model does",
+            row.step
         );
     }
     for key in mirror_keys() {

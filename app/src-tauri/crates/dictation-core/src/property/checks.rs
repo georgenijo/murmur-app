@@ -6,7 +6,7 @@
 
 use super::model::*;
 use super::task::*;
-use crate::effects::{Effect, PerfOutcome, Placement};
+use crate::effects::{Effect, PerfOutcome};
 use crate::status::{ErrCode, Status, TerminalOutcome};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -694,7 +694,6 @@ impl Checker {
         let claim = w.ledger.ctx[&rid];
         let completion = w.perf.ctx[&rid];
         let tries = &w.ledger.tries[&rid];
-        let lost_later = tries.iter().any(|t| !t.won && t.step > claim.step);
         let claim_current = claim.input_rid == claim.current;
         match pre {
             Pre::LiveClaimThenPerf => claim_current && claim.step < completion.step,
