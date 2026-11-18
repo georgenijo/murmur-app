@@ -1564,7 +1564,9 @@ struct EventsModule {
 fn parse_events_module(sources: &[(String, String)]) -> EventsModule {
     let mut events = EventsModule::default();
     events.problems.extend(check_events_declaration(sources));
-    events.problems.extend(check_crate_roots(sources));
+    events
+        .problems
+        .extend(check_crate_roots(sources, MAIN_RS_HASH));
     let Some((_, source)) = sources.iter().find(|(file, _)| file == EVENTS_FILE) else {
         events
             .problems
@@ -1668,12 +1670,17 @@ fn check_events_declaration(sources: &[(String, String)]) -> Vec<String> {
 /// scanned (the walk covers `src/` only).
 const KNOWN_CRATE_ROOTS: [&str; 2] = ["lib.rs", "main.rs"];
 
+/// D-S2b-18 (a): `src/main.rs` is pinned whole by its normalized token hash (the wrapper
+/// pins' normalization). Any edit fails until it is re-reviewed (it may only call into
+/// `ui_lib::..`) and re-pinned. The token checks below stay as diagnostics.
+const MAIN_RS_HASH: u64 = 0xca0b8d635cac3929;
+
 /// A crate root other than `lib.rs` may only call into `ui_lib::..`: no `mod` item, no
 /// `macro_rules!`, no emitter identifier and no `crate::events` path, anywhere in its
 /// tokens. A root that is not in `KNOWN_CRATE_ROOTS` (any file under `src/bin/`) fails.
 /// Otherwise a startup module could declare its own `events` and emit through
 /// `crate::events::NAME` while the scan read the library's harmless value.
-fn check_crate_roots(sources: &[(String, String)]) -> Vec<String> {
+fn check_crate_roots(sources: &[(String, String)], main_rs_hash: u64) -> Vec<String> {
     use proc_macro2::TokenTree;
     fn scan(tokens: proc_macro2::TokenStream, file: &str, problems: &mut Vec<String>) {
         let tokens: Vec<TokenTree> = tokens.into_iter().collect();
@@ -1687,6 +1694,7 @@ fn check_crate_roots(sources: &[(String, String)]) -> Vec<String> {
                         && matches!(tokens.get(at + 3), Some(TokenTree::Ident(i)) if plain(i) == EVENTS_MODULE);
                     if name == "mod"
                         || name == "macro_rules"
+                        || name == "include"
                         || is_emit_api_name(&name)
                         || crate_events
                     {
@@ -1716,25 +1724,57 @@ fn check_crate_roots(sources: &[(String, String)]) -> Vec<String> {
                 file,
                 &mut problems,
             );
+            let hash = token_hash(&parsed);
+            if file == "main.rs" && hash != main_rs_hash {
+                problems.push(format!(
+                    "{file}: was edited: its token hash is {hash:#018x}, pinned {main_rs_hash:#018x}. \
+                     Re-review it (it may only call into `ui_lib::..`) and re-pin MAIN_RS_HASH."
+                ));
+            }
         }
     }
     problems
 }
 
-/// Round 8: `Cargo.toml` declares no production target the ratchet does not know: no
-/// `[[bin]]` section and no `[lib]` path other than `src/lib.rs`.
+/// D-S2b-18 (b): `Cargo.toml` (parsed as TOML) declares exactly the production targets
+/// the ratchet knows: one lib, `ui_lib`, at its default path, and one bin, `src/main.rs`.
+/// No other `[[bin]]`, no non-default `path` and (checked on the source list) no
+/// `src/bin/`. Examples, integration tests and the build script are not production
+/// roots.
 fn manifest_root_problems(manifest: &str) -> Vec<String> {
+    let table: toml::Table = match manifest.parse() {
+        Ok(table) => table,
+        Err(error) => return vec![format!("Cargo.toml does not parse: {error}")],
+    };
     let mut problems = Vec::new();
-    let mut section = String::new();
-    for line in manifest.lines().map(str::trim) {
-        if line.starts_with('[') {
-            section = line.trim_matches(|c| c == '[' || c == ']').to_string();
-            if line.starts_with("[[bin]]") {
-                problems.push("Cargo.toml: a [[bin]] target is an unknown crate root".to_string());
+    match table.get("lib") {
+        Some(toml::Value::Table(lib)) => {
+            if lib.get("name").and_then(toml::Value::as_str) != Some("ui_lib") {
+                problems.push("Cargo.toml: [lib] name must be `ui_lib`".to_string());
             }
-        } else if section == "lib" && line.starts_with("path") && !line.contains("\"src/lib.rs\"") {
-            problems.push(format!("Cargo.toml: [lib] {line} is an unknown crate root"));
+            if lib
+                .get("path")
+                .is_some_and(|path| path.as_str() != Some("src/lib.rs"))
+            {
+                problems.push("Cargo.toml: [lib] has a non-default `path`".to_string());
+            }
         }
+        _ => problems.push("Cargo.toml: the [lib] table is missing".to_string()),
+    }
+    match table.get("bin") {
+        None => {}
+        Some(toml::Value::Array(bins)) if bins.len() == 1 => {
+            let bin = bins[0].as_table();
+            let get = |key: &str| {
+                bin.and_then(|bin| bin.get(key))
+                    .and_then(toml::Value::as_str)
+            };
+            if get("path") != Some("src/main.rs") || get("name").is_some_and(|name| name != "ui") {
+                problems
+                    .push("Cargo.toml: the only [[bin]] must be `ui` at `src/main.rs`".to_string());
+            }
+        }
+        Some(_) => problems.push("Cargo.toml: more than one [[bin]] target".to_string()),
     }
     problems
 }
@@ -2914,6 +2954,28 @@ fn a_second_crate_root_with_its_own_events_module_fails_the_status_ratchet() {
     ] {
         reject(sources_with("main.rs", main_call, plant), plant);
     }
+    // Round 9: startup code moved to `src/desktop.rs` and loaded with `include!`: the
+    // compiler puts its items (an `events` module, an emit) in the executable crate,
+    // while the scan reads the file as part of the library.
+    let mut included = sources_with(
+        "main.rs",
+        main_call,
+        "    include!(\"desktop.rs\");\n    ui_lib::run()\n",
+    );
+    included.push((
+        "desktop.rs".to_string(),
+        "mod events { pub const MAIN_THREAD_WATCH_STATUS_EVENT: &str = \"recording-status-changed\"; }\n\
+         fn startup(app: &tauri::AppHandle) { let _ = app.emit(crate::events::MAIN_THREAD_WATCH_STATUS_EVENT, 1); }\n"
+            .to_string(),
+    ));
+    reject(included, "include!");
+    // `main.rs` is pinned whole: any edit fails, even one the token checks allow.
+    let error = the_status_ratchet_rejects(&sources_with(
+        "main.rs",
+        main_call,
+        "    ui_lib::quiet();\n    ui_lib::run()\n",
+    ));
+    assert!(error.contains("main.rs: was edited"), "{error}");
     let mut with_bin = raw_production_sources();
     with_bin.push((
         "bin/tool.rs".to_string(),
@@ -2921,7 +2983,7 @@ fn a_second_crate_root_with_its_own_events_module_fails_the_status_ratchet() {
     ));
     reject(with_bin, "an unknown bin root");
     // The real `main.rs` only calls into `ui_lib::..` and passes.
-    assert!(check_crate_roots(&raw_production_sources()).is_empty());
+    assert!(check_crate_roots(&raw_production_sources(), MAIN_RS_HASH).is_empty());
 }
 
 #[test]
@@ -2930,11 +2992,35 @@ fn the_manifest_declares_no_unknown_production_target() {
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
             .expect("Cargo.toml");
     assert_eq!(manifest_root_problems(&manifest), Vec::<String>::new());
-    assert!(!manifest_root_problems("[[bin]]\nname = \"x\"\npath = \"src/x.rs\"\n").is_empty());
-    assert!(
-        !manifest_root_problems("[lib]\nname = \"ui_lib\"\npath = \"src/other.rs\"\n").is_empty()
-    );
-    assert!(manifest_root_problems("[lib]\nname = \"ui_lib\"\npath = \"src/lib.rs\"\n").is_empty());
+    let lib = "[lib]\nname = \"ui_lib\"\n";
+    let bad = |manifest: &str| !manifest_root_problems(manifest).is_empty();
+    // Valid Cargo syntax the old line scan missed (round 9): spaces in the header, a
+    // trailing comment after a header.
+    assert!(bad(&format!(
+        "{lib}[[ bin ]]\nname = \"desktop\"\npath = \"src/desktop.rs\"\n"
+    )));
+    assert!(bad(&format!(
+        "{lib}[[bin]]\nname = \"x\"\npath = \"src/x.rs\"\n"
+    )));
+    assert!(bad(
+        "[lib]  # comment\nname = \"ui_lib\"\npath = \"src/other.rs\"\n"
+    ));
+    assert!(bad("[lib]\nname = \"ui_lib\"\npath = \"src/other.rs\"\n"));
+    assert!(bad("[ lib ]\nname = \"ui_lib\"\npath = 'src/other.rs'\n"));
+    assert!(bad(
+        "lib = { name = \"ui_lib\", path = \"src/other.rs\" }\n"
+    ));
+    assert!(bad(&format!("bin = [{{ name = \"a\", path = \"src/a.rs\" }}, {{ name = \"b\", path = \"src/b.rs\" }}]\n{lib}")));
+    assert!(bad("[lib]\nname = \"other\"\n"));
+    assert!(bad("[package]\nname = \"ui\"\n"));
+    assert!(bad("[lib\n"));
+    // The accepted forms: the default path, and the one `ui` bin at `src/main.rs`.
+    assert!(!bad(
+        "[lib]  # the library\nname = \"ui_lib\"\npath = \"src/lib.rs\"\n"
+    ));
+    assert!(!bad(&format!(
+        "{lib}[[ bin ]]\nname = \"ui\"\npath = \"src/main.rs\"\n"
+    )));
 }
 
 /// Round-3 probe 5: `OwnedJsonEmit::emit_json` remapped an event through an unpinned
