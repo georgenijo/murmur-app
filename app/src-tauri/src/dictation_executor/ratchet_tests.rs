@@ -1245,7 +1245,8 @@ fn mentions_status_literal(tokens: proc_macro2::TokenStream) -> bool {
 /// `cfg_attr` mentions `path` (its target is never reviewable).
 fn path_attr_value(attrs: &[syn::Attribute]) -> Option<String> {
     attrs.iter().find_map(|attr| {
-        if attr.path().is_ident("path") {
+        let name = attr.path().get_ident().map(plain);
+        if name.as_deref() == Some("path") {
             return Some(match &attr.meta {
                 syn::Meta::NameValue(syn::MetaNameValue {
                     value:
@@ -1260,7 +1261,7 @@ fn path_attr_value(attrs: &[syn::Attribute]) -> Option<String> {
         }
         match &attr.meta {
             syn::Meta::List(list)
-                if attr.path().is_ident("cfg_attr")
+                if name.as_deref() == Some("cfg_attr")
                     && token_idents(list.tokens.clone())
                         .iter()
                         .any(|name| name == "path") =>
@@ -1456,6 +1457,7 @@ struct EventsModule {
 fn parse_events_module(sources: &[(String, String)]) -> EventsModule {
     let mut events = EventsModule::default();
     events.problems.extend(check_events_declaration(sources));
+    events.problems.extend(check_crate_roots(sources));
     let Some((_, source)) = sources.iter().find(|(file, _)| file == EVENTS_FILE) else {
         events
             .problems
@@ -1542,13 +1544,90 @@ fn check_events_declaration(sources: &[(String, String)]) -> Vec<String> {
         ));
     }
     if only.attrs.iter().any(|attr| {
-        ["cfg", "cfg_attr", "path"]
-            .iter()
-            .any(|name| attr.path().is_ident(name))
+        attr.path()
+            .get_ident()
+            .is_some_and(|ident| ["cfg", "cfg_attr", "path"].contains(&plain(ident).as_str()))
     }) {
         problems.push(format!(
             "lib.rs: `mod {EVENTS_MODULE};` carries a `cfg`, `cfg_attr` or `path` attribute"
         ));
+    }
+    problems
+}
+
+/// Round 8: every production crate root. The ratchet validates `src/lib.rs` (its
+/// `events` module is the one `crate::events` resolves against) and knows `src/main.rs`.
+/// Build scripts, examples and integration tests are not production roots and are not
+/// scanned (the walk covers `src/` only).
+const KNOWN_CRATE_ROOTS: [&str; 2] = ["lib.rs", "main.rs"];
+
+/// A crate root other than `lib.rs` may only call into `ui_lib::..`: no `mod` item, no
+/// `macro_rules!`, no emitter identifier and no `crate::events` path, anywhere in its
+/// tokens. A root that is not in `KNOWN_CRATE_ROOTS` (any file under `src/bin/`) fails.
+/// Otherwise a startup module could declare its own `events` and emit through
+/// `crate::events::NAME` while the scan read the library's harmless value.
+fn check_crate_roots(sources: &[(String, String)]) -> Vec<String> {
+    use proc_macro2::TokenTree;
+    fn scan(tokens: proc_macro2::TokenStream, file: &str, problems: &mut Vec<String>) {
+        let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+        for (at, token) in tokens.iter().enumerate() {
+            match token {
+                TokenTree::Ident(ident) => {
+                    let name = plain(ident);
+                    let crate_events = name == "crate"
+                        && matches!(tokens.get(at + 1), Some(TokenTree::Punct(p)) if p.as_char() == ':')
+                        && matches!(tokens.get(at + 2), Some(TokenTree::Punct(p)) if p.as_char() == ':')
+                        && matches!(tokens.get(at + 3), Some(TokenTree::Ident(i)) if plain(i) == EVENTS_MODULE);
+                    if name == "mod"
+                        || name == "macro_rules"
+                        || is_emit_api_name(&name)
+                        || crate_events
+                    {
+                        problems.push(format!(
+                            "{file}: a crate root other than lib.rs may only call into `ui_lib::..`, found `{}`",
+                            if crate_events { "crate::events" } else { &name }
+                        ));
+                    }
+                }
+                TokenTree::Group(group) => scan(group.stream(), file, problems),
+                _ => {}
+            }
+        }
+    }
+    let mut problems = Vec::new();
+    for (file, source) in sources {
+        if file.starts_with("bin/") {
+            problems.push(format!(
+                "{file}: an unknown production crate root (known: {KNOWN_CRATE_ROOTS:?})"
+            ));
+        }
+        if file == "main.rs" || file.starts_with("bin/") {
+            let parsed =
+                syn::parse_file(source).unwrap_or_else(|error| panic!("parse {file}: {error}"));
+            scan(
+                quote::ToTokens::to_token_stream(&parsed),
+                file,
+                &mut problems,
+            );
+        }
+    }
+    problems
+}
+
+/// Round 8: `Cargo.toml` declares no production target the ratchet does not know: no
+/// `[[bin]]` section and no `[lib]` path other than `src/lib.rs`.
+fn manifest_root_problems(manifest: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut section = String::new();
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with('[') {
+            section = line.trim_matches(|c| c == '[' || c == ']').to_string();
+            if line.starts_with("[[bin]]") {
+                problems.push("Cargo.toml: a [[bin]] target is an unknown crate root".to_string());
+            }
+        } else if section == "lib" && line.starts_with("path") && !line.contains("\"src/lib.rs\"") {
+            problems.push(format!("Cargo.toml: [lib] {line} is an unknown crate root"));
+        }
     }
     problems
 }
@@ -2660,6 +2739,10 @@ fn a_replaced_or_duplicated_events_module_fails_the_status_ratchet() {
     lib("#[cfg(target_os = \"macos\")]\nmod events;\n");
     lib("#[cfg_attr(target_os = \"macos\", path = \"other.rs\")]\nmod events;\n");
     lib("#[path = \"other.rs\"]\nmod events;\n");
+    // Raw-spelled attribute names are the same attributes.
+    lib("#[r#path = \"alternate_events.rs\"]\nmod events;\n");
+    lib("#[r#cfg(target_os = \"macos\")]\nmod events;\n");
+    lib("#[r#cfg_attr(target_os = \"macos\", r#path = \"other.rs\")]\nmod events;\n");
     // An inline module, a duplicate declaration, a second `pub mod`, no declaration.
     lib("mod events { pub const NAME: &str = \"x\"; }\n");
     lib("mod events;\nmod events;\n");
@@ -2674,6 +2757,77 @@ fn a_replaced_or_duplicated_events_module_fails_the_status_ratchet() {
         let sources = sources_with("lib.rs", "mod events;\n", ok);
         assert!(check_events_declaration(&sources).is_empty(), "{ok}");
     }
+}
+
+/// Round 8: `crate::events` is resolved against `src/lib.rs`, so no other production
+/// crate root may declare an `events` module (or any module), emit, or use a
+/// `crate::events` path. Sol's probe: a startup `desktop_entry` module declares
+/// `events` and `main.rs` re-exports it; its callback emits the status event through
+/// `crate::events::MAIN_THREAD_WATCH_STATUS_EVENT`.
+#[test]
+fn a_second_crate_root_with_its_own_events_module_fails_the_status_ratchet() {
+    let main_call = "    ui_lib::run()\n";
+    let reject = |sources: Vec<(String, String)>, what: &str| {
+        let error = the_status_ratchet_rejects(&sources);
+        assert!(
+            error.contains("main.rs") || error.contains("bin/"),
+            "{what}: {error}"
+        );
+    };
+    // Inline: `main.rs` declares `events` and emits through it.
+    reject(
+        sources_with(
+            "main.rs",
+            main_call,
+            "    mod events { pub const MAIN_THREAD_WATCH_STATUS_EVENT: &str = \"recording-status-changed\"; }\n\
+             \x20   fn startup(app: &tauri::AppHandle) { let _ = app.emit(crate::events::MAIN_THREAD_WATCH_STATUS_EVENT, 1); }\n    ui_lib::run()\n",
+        ),
+        "inline",
+    );
+    // Out of line: `main.rs` declares `desktop_entry` and re-exports its `events`.
+    let mut out_of_line = sources_with(
+        "main.rs",
+        main_call,
+        "    ui_lib::run()\n}\nmod desktop_entry;\npub use desktop_entry::events;\nfn unused() {\n",
+    );
+    out_of_line.push((
+        "desktop_entry/mod.rs".to_string(),
+        "pub mod events { pub const MAIN_THREAD_WATCH_STATUS_EVENT: &str = \"recording-status-changed\"; }\n\
+         pub fn startup(app: &tauri::AppHandle) { let _ = app.emit(crate::events::MAIN_THREAD_WATCH_STATUS_EVENT, 1); }\n"
+            .to_string(),
+    ));
+    reject(out_of_line, "out of line");
+    // Each forbidden element alone, and an unknown root.
+    for plant in [
+        "    mod startup {}\n    ui_lib::run()\n",
+        "    macro_rules! m { () => {}; }\n    ui_lib::run()\n",
+        "    let _ = ui_lib::x().emit(\"x\", 1);\n    ui_lib::run()\n",
+        "    let _ = crate::events::AUDIO_LEVEL_EVENT;\n    ui_lib::run()\n",
+        "    w!(crate::events::AUDIO_LEVEL_EVENT);\n    ui_lib::run()\n",
+    ] {
+        reject(sources_with("main.rs", main_call, plant), plant);
+    }
+    let mut with_bin = raw_production_sources();
+    with_bin.push((
+        "bin/tool.rs".to_string(),
+        "fn main() { ui_lib::run() }\n".to_string(),
+    ));
+    reject(with_bin, "an unknown bin root");
+    // The real `main.rs` only calls into `ui_lib::..` and passes.
+    assert!(check_crate_roots(&raw_production_sources()).is_empty());
+}
+
+#[test]
+fn the_manifest_declares_no_unknown_production_target() {
+    let manifest =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+            .expect("Cargo.toml");
+    assert_eq!(manifest_root_problems(&manifest), Vec::<String>::new());
+    assert!(!manifest_root_problems("[[bin]]\nname = \"x\"\npath = \"src/x.rs\"\n").is_empty());
+    assert!(
+        !manifest_root_problems("[lib]\nname = \"ui_lib\"\npath = \"src/other.rs\"\n").is_empty()
+    );
+    assert!(manifest_root_problems("[lib]\nname = \"ui_lib\"\npath = \"src/lib.rs\"\n").is_empty());
 }
 
 /// Round-3 probe 5: `OwnedJsonEmit::emit_json` remapped an event through an unpinned
