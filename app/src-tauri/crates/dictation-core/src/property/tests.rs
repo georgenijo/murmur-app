@@ -1804,6 +1804,83 @@ fn the_main_window_guards_its_stop_and_the_overlay_does_not() {
     assert_eq!(w.windows[MAIN_WINDOW].observed, Status::Idle);
 }
 
+/// Drive a stop flight alone to completion over `w` (no other actor runs): every step must
+/// progress or finish, and it must finish within a bounded number of steps.
+fn drive_stop_flight(w: &mut World, flight: super::flights::StopFlight) {
+    let mut flight = flight;
+    let mut out = StepOut::default();
+    let mut spawned: Vec<Box<dyn Task>> = Vec::new();
+    let mut mailbox = Vec::new();
+    for step in 0..200 {
+        w.step = step;
+        out.clear();
+        let poll = flight.step(&mut Cx {
+            w,
+            out: &mut out,
+            spawn: &mut spawned,
+            tid: 3,
+            mailbox: &mut mailbox,
+        });
+        match poll {
+            Poll::Done => return,
+            Poll::Progress => {}
+            Poll::Blocked => panic!("the stop flight blocked at step {step}"),
+        }
+    }
+    panic!("the stop flight did not finish");
+}
+
+/// #1167 review: the guard is cleared by the *flight* finishing, not by a model helper. A
+/// main-window stop the shell refuses (the status is `Recovering`) finishes without any
+/// `Idle` event; its `handleStop` `finally` must still clear `isStoppingRef`. This drives the
+/// real `StopFlight` and delivers no status: it fails if `Ts::Finish` stops clearing it.
+#[test]
+fn a_finished_main_window_stop_flight_clears_its_guard() {
+    use super::flights::{StopCfg, StopFlight};
+    let cfg = StopCfg {
+        panic_after_cp: false,
+        pipeline: super::flights::PipelineCfg {
+            work: 0,
+            end: super::flights::PipelineEnd::Err,
+        },
+    };
+    let new_world = || {
+        let mut w = World::new();
+        w.status = Status::Recovering;
+        w.current_id = 1;
+        w
+    };
+    let mut w = new_world();
+    w.window_stop_sent(MAIN_WINDOW);
+    assert!(w.windows[MAIN_WINDOW].stop_in_flight);
+    drive_stop_flight(
+        &mut w,
+        StopFlight::new(None, None, cfg).with_window(MAIN_WINDOW),
+    );
+    assert!(
+        !w.windows[MAIN_WINDOW].stop_in_flight,
+        "the finished flight did not clear the guard"
+    );
+    // The shell refused it: no `Idle` was emitted, so only the flight's finish can have cleared it.
+    assert!(w
+        .windows
+        .iter()
+        .all(|view| !view.inbox.contains(&Status::Idle)));
+    // A stop from the IPC or the auto-stop belongs to no window and leaves the guard alone.
+    let mut w = new_world();
+    w.windows[MAIN_WINDOW].stop_in_flight = true;
+    drive_stop_flight(&mut w, StopFlight::new(None, None, cfg));
+    assert!(w.windows[MAIN_WINDOW].stop_in_flight);
+    // The overlay has no guard: its flight clears nothing and sets nothing.
+    let mut w = new_world();
+    w.window_stop_sent(OVERLAY_WINDOW);
+    drive_stop_flight(
+        &mut w,
+        StopFlight::new(None, None, cfg).with_window(OVERLAY_WINDOW),
+    );
+    assert!(!w.windows[OVERLAY_WINDOW].stop_in_flight);
+}
+
 /// #1167, seed 1454 (the issue's seed): the main window's second stop at step 36 is held back
 /// by `isStoppingRef` before either flight runs. The overlay, with no guard, can send two.
 #[test]
