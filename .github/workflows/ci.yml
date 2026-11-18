@@ -102,12 +102,14 @@ jobs:
           python3 scripts/validate_reference_docs.py
           python3 scripts/validate_markdown_links.py
           python3 scripts/check_hunt_sites.py
+          python3 scripts/check_shadow_sites.py
           # This is the full set of self-contained Python unittest-style tests.
           # tests/test_murmur_canary.py is pytest-based and runs separately below.
           python3 -m unittest \
             tests/test_reference_docs.py \
             tests/test_markdown_links.py \
             tests/test_hunt_sites.py \
+            tests/test_shadow_sites.py \
             tests/test_release_artifacts.py \
             tests/test_release_version.py \
             tests/test_release_start.py \

@@ -50,6 +50,37 @@ macro_rules! hunt {
     };
 }
 
+/// Marks one dictation shadow capture site (appendix C8.4 step 6):
+/// `shadow_site!(issue = <number>)`, where the issue tracks the removal of shadow
+/// mode. It expands to nothing without the `dictation-shadow` feature, so a default
+/// build contains no trace of a site; with it, to a check that the number is an
+/// integer literal. `scripts/check_shadow_sites.py` (the CI `policy` job) lists
+/// every site and fails when one has no issue number.
+///
+/// ```no_run
+/// ui_lib::shadow_site!(issue = 1154);
+/// ```
+///
+/// Anything but `issue = <literal>` is a compile error:
+///
+/// ```compile_fail
+/// ui_lib::shadow_site!();
+/// ```
+#[cfg(feature = "dictation-shadow")]
+#[macro_export]
+macro_rules! shadow_site {
+    (issue = $issue:literal $(,)?) => {
+        const _: u64 = $issue;
+    };
+}
+
+/// See the `dictation-shadow` variant: empty in a default build.
+#[cfg(not(feature = "dictation-shadow"))]
+#[macro_export]
+macro_rules! shadow_site {
+    (issue = $issue:literal $(,)?) => {};
+}
+
 /// A structured event emitted to the frontend and stored in the ring buffer.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AppEvent {
@@ -82,7 +113,7 @@ fn log_directory_for(data_root: &Path, identifier: &str) -> PathBuf {
     data_root.join(directory).join("logs")
 }
 
-fn logs_dir() -> Option<PathBuf> {
+pub(crate) fn logs_dir() -> Option<PathBuf> {
     LOG_DIRECTORY
         .get()
         .cloned()
@@ -380,6 +411,10 @@ pub(crate) fn canonical_event_code(value: &str) -> Option<&'static str> {
         "system.main_thread_stack" => Some("system.main_thread_stack"),
         "system.main_thread_rates" => Some("system.main_thread_rates"),
         "pipeline.dictation_stage_gaps" => Some("pipeline.dictation_stage_gaps"),
+        // Content-free by construction: three numbers (C8.4). The arm is compiled
+        // in every build; only a build with `dictation-shadow` and MURMUR_SHADOW=1
+        // ever emits it.
+        "pipeline.dictation_shadow_mismatch" => Some("pipeline.dictation_shadow_mismatch"),
         "homophone_context.backoff_entered" => Some("homophone_context.backoff_entered"),
         "homophone_context.backoff_exited" => Some("homophone_context.backoff_exited"),
         "homophone_context.prewarm_requested" => Some("homophone_context.prewarm_requested"),
@@ -712,6 +747,23 @@ fn sanitize_dictation_stage_gaps_event(data: &mut serde_json::Map<String, serde_
         | "pipeline_return_us"
         | "idle_status_emit_us"
         | "tail_us" => value.as_u64().is_some(),
+        _ => false,
+    });
+}
+
+fn is_dictation_shadow_mismatch_event(data: &serde_json::Map<String, serde_json::Value>) -> bool {
+    data.get("event_code").and_then(serde_json::Value::as_str)
+        == Some("pipeline.dictation_shadow_mismatch")
+}
+
+/// A shadow mismatch names where it happened with three small numbers: the site,
+/// the C3 row's ordinal and the comparison level. No string, no recording id, no
+/// content. Keep that exact schema in every build (the event is only emitted by
+/// `dictation-shadow` builds, but its registry arm and this schema are not gated).
+fn sanitize_dictation_shadow_mismatch_event(data: &mut serde_json::Map<String, serde_json::Value>) {
+    data.retain(|key, value| match key.as_str() {
+        "event_code" => true,
+        "site_id" | "input_kind" | "diff_kind" => value.as_u64().is_some(),
         _ => false,
     });
 }
@@ -1854,6 +1906,7 @@ fn sanitized_summary(
     } else if data.as_object().is_some_and(|map| {
         is_main_thread_watch_event(map)
             || is_dictation_stage_gaps_event(map)
+            || is_dictation_shadow_mismatch_event(map)
             || is_vad_stream_outcome_event(map)
             || is_stream_reuse_outcome_event(map)
     }) {
@@ -2247,6 +2300,10 @@ fn sanitize_event_data(stream: &str, data: &mut serde_json::Value, debug_build: 
     }
     if is_dictation_stage_gaps_event(obj) {
         sanitize_dictation_stage_gaps_event(obj);
+        return;
+    }
+    if is_dictation_shadow_mismatch_event(obj) {
+        sanitize_dictation_shadow_mismatch_event(obj);
         return;
     }
     if is_dictation_terminal_event(obj) {
@@ -4833,6 +4890,60 @@ mod tests {
             assert_eq!(invalid.as_object().unwrap().len(), 2);
             assert_eq!(invalid["vad_us"], 1);
         }
+    }
+
+    /// The shadow mismatch event is three numbers, in a debug and a release build
+    /// and in a build without the `dictation-shadow` feature: its registry arm and
+    /// its schema are not gated (appendix C8.4 steps 1-4).
+    #[test]
+    fn shadow_event_schema_numeric_in_every_build() {
+        for debug_build in [true, false] {
+            let mut event = serde_json::json!({
+                "event_code": "pipeline.dictation_shadow_mismatch",
+                "site_id": 216,
+                "input_kind": 1,
+                "diff_kind": 2,
+                "recording_id": 12,
+                "row": "R216.1",
+                "text": "SENTINEL_TRANSCRIPT",
+                "path": "/Users/private/SENTINEL",
+                "message": "SENTINEL",
+            });
+            sanitize_event_data("pipeline", &mut event, debug_build);
+            let object = event.as_object().unwrap();
+            let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            assert_eq!(keys, ["diff_kind", "event_code", "input_kind", "site_id"]);
+            assert_eq!(event["site_id"], 216);
+            assert_eq!(event["input_kind"], 1);
+            assert_eq!(event["diff_kind"], 2);
+            assert!(!serde_json::to_string(&event).unwrap().contains("SENTINEL"));
+            assert_eq!(
+                sanitized_summary(
+                    "pipeline",
+                    Some("mismatch SENTINEL".into()),
+                    &event,
+                    debug_build
+                ),
+                "pipeline.dictation_shadow_mismatch"
+            );
+
+            // A string where a number belongs is dropped, not passed through.
+            let mut invalid = serde_json::json!({
+                "event_code": "pipeline.dictation_shadow_mismatch",
+                "site_id": "SENTINEL",
+                "input_kind": -4,
+                "diff_kind": 9,
+            });
+            sanitize_event_data("pipeline", &mut invalid, debug_build);
+            assert_eq!(invalid.as_object().unwrap().len(), 2);
+            assert_eq!(invalid["diff_kind"], 9);
+        }
+        // The registry arm is compiled in every build.
+        assert_eq!(
+            canonical_event_code("pipeline.dictation_shadow_mismatch"),
+            Some("pipeline.dictation_shadow_mismatch")
+        );
     }
 
     #[test]

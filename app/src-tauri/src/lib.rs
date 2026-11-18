@@ -41,6 +41,12 @@ mod dictation_diagnostics;
 mod dictation_diagnostics_contract;
 #[allow(dead_code)]
 mod dictation_executor;
+// Stage 2c shadow mode (appendix C8): only in builds with the `dictation-shadow`
+// feature, and active only with MURMUR_SHADOW=1. Removal: #1154.
+#[cfg(feature = "dictation-shadow")]
+mod dictation_shadow;
+#[cfg(all(test, not(feature = "dictation-shadow")))]
+mod dictation_shadow_default_tests;
 mod dictation_telemetry;
 mod dock_watch;
 pub mod evaluation;
@@ -466,6 +472,8 @@ pub fn run() {
         .setup(|app| {
             window_state::initialize(app.handle())?;
             telemetry::init(app.handle().clone());
+            #[cfg(feature = "dictation-shadow")]
+            dictation_shadow::start();
             // After telemetry and Tauri's event loop. Off unless the Diagnostics
             // setting or MURMUR_MAIN_THREAD_WATCH arms it; then it observes every
             // main-thread busy span and labels the app's own main-thread work.
@@ -748,6 +756,8 @@ pub fn run() {
                     state.meetings.shutdown(_app_handle);
                     state.meeting_suggestions.shutdown();
                 }
+                #[cfg(feature = "dictation-shadow")]
+                dictation_shadow::write_summary_on_exit();
                 // Last: write out the log tail.
                 telemetry::flush_on_exit();
             }

@@ -169,6 +169,18 @@ clip was decoded: `inactive`, `no_commit`, `decode_error`, `overlap_mismatch`,
 sanitized in every build; no audio, text or paths. The preview tick outcome
 `stop_pending` marks a tick skipped because the stop gesture had begun (for every dictation, whatever the setting).
 
+`pipeline.dictation_shadow_mismatch` (`warn`) reports that the dictation shadow
+comparison found a difference between what the extracted core decides and what
+the live path did. It carries three numbers and nothing else: `site_id`,
+`input_kind` (the C3 row's ordinal) and `diff_kind` (1-9, the first level that
+differed). It is emitted only by a build with the `dictation-shadow` Cargo
+feature running with `MURMUR_SHADOW=1`, rate limited to one per
+(site, input_kind, diff_kind) per 60 seconds and 50 per session. Its registry
+arm and exact schema are compiled and sanitized in every build. Counters are in
+`dictation-shadow-summary.json` (see
+[log-viewer.md](../features/log-viewer.md#dictation-shadow-mismatches)). Removal
+is tracked in issue #1154.
+
 The weekly reliability contract is opt-in per request through numeric
 `slo_contract: 1` on `pipeline.dictation_requested`; older requests never enter
 an SLO denominator. Its supporting records are exact-schema sanitized in every
