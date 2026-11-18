@@ -347,6 +347,9 @@ pub(crate) struct Executor<'a> {
     noted_mirror: Option<crate::dictation_shadow::types::MirrorWitness>,
     #[cfg(feature = "dictation-shadow")]
     noted_ticker: Option<super::shadow::TickerNote>,
+    /// The one `speculative_flowing` read the conditional being recorded judged by.
+    #[cfg(feature = "dictation-shadow")]
+    noted_flowing: Option<bool>,
 }
 
 /// An executor parked across an `.await`: everything but the (non-`Send`) ports
@@ -387,6 +390,8 @@ impl Suspended {
             noted_mirror: None,
             #[cfg(feature = "dictation-shadow")]
             noted_ticker: None,
+            #[cfg(feature = "dictation-shadow")]
+            noted_flowing: None,
         }
     }
 }
@@ -429,6 +434,8 @@ impl<'a> Executor<'a> {
             noted_mirror: None,
             #[cfg(feature = "dictation-shadow")]
             noted_ticker: None,
+            #[cfg(feature = "dictation-shadow")]
+            noted_flowing: None,
         })
     }
 
@@ -571,6 +578,7 @@ impl<'a> Executor<'a> {
         use crate::dictation_shadow::types::EffectResult;
         let mirror = self.noted_mirror.take();
         let ticker = self.noted_ticker.take();
+        let flowing = self.noted_flowing.take();
         if !self.shadow.is_active() {
             return;
         }
@@ -603,10 +611,11 @@ impl<'a> Executor<'a> {
                 ..
             }
         ) {
+            // The read the conditional itself made (one `Observed` per conditional, each
+            // holding that conditional's own value); a read here only if it made none.
+            let read = flowing.unwrap_or_else(|| self.ports.speculative_flowing());
             self.shadow.observed_read(
-                crate::dictation_shadow::types::ObservedFact::SpeculativeFlowing(
-                    self.ports.speculative_flowing(),
-                ),
+                crate::dictation_shadow::types::ObservedFact::SpeculativeFlowing(read),
             );
         }
         self.shadow.effect(super::shadow::Noted {
@@ -799,7 +808,15 @@ impl<'a> Executor<'a> {
             },
             // ---- emits and the traces paired with them
             Effect::EmitStatus { cond, .. } => {
-                if *cond == Cond::UnlessSpeculativeFlowing && ports.speculative_flowing() {
+                let flowing = *cond == Cond::UnlessSpeculativeFlowing && {
+                    let read = ports.speculative_flowing();
+                    #[cfg(feature = "dictation-shadow")]
+                    {
+                        self.noted_flowing = Some(read);
+                    }
+                    read
+                };
+                if flowing {
                     self.record(index, effect, WitnessOutcome::Skipped);
                 } else {
                     let result = match ctx.dictation.as_deref() {
@@ -824,7 +841,14 @@ impl<'a> Executor<'a> {
                         .flatten()
                         .unwrap_or(false),
                     Cond::Always => true,
-                    Cond::UnlessSpeculativeFlowing => !ports.speculative_flowing(),
+                    Cond::UnlessSpeculativeFlowing => {
+                        let read = ports.speculative_flowing();
+                        #[cfg(feature = "dictation-shadow")]
+                        {
+                            self.noted_flowing = Some(read);
+                        }
+                        !read
+                    }
                 };
                 if paired_ok {
                     let result = ports.trace(effect);
