@@ -27,6 +27,7 @@ const CI_BUDGET: Duration = Duration::from_secs(20);
 /// converse check, and a witness that drifted away fails it. Each is the first seed of a
 /// 3,000,000-seed sweep that takes the witness.
 ///
+/// * 10,724: PD-18 (c), the unsealed stop.
 /// * 11,125: PD-19 through `TerminationUnconfirmed`.
 /// * 18,279: PD-24 through the environmental recovery arm (R102.3, R209.5).
 /// * 22,704: PD-22 against the cancel's own `TERM` (R211.2, R205.5).
@@ -36,7 +37,7 @@ const CI_BUDGET: Duration = Duration::from_secs(20);
 ///   control sends the stop that would take it; D-S2b-15 (c), (d)). It is rare because the
 ///   unscoped stop IPC, one in four generated stops, takes the capture when it lands, and
 ///   a window sends no stop that it has not seen `Recording` for.
-const FIXED_SEEDS: [u64; 6] = [11_125, 18_279, 22_704, 23_985, 244_103, 377_529];
+const FIXED_SEEDS: [u64; 7] = [10_724, 11_125, 18_279, 22_704, 23_985, 244_103, 377_529];
 
 /// PD-18's witnesses, one seed per instance (C7.5): the first seed of the fixed
 /// range that ends stuck in `Recovering` through that instance, with the generation's
@@ -175,6 +176,20 @@ const FINDING_SEEDS: [Witness; 14] = [
 fn seed_list() -> Vec<u64> {
     let fixed = FIXED_SEEDS.len() as u64;
     (0..DEFAULT_SEEDS - fixed).chain(FIXED_SEEDS).collect()
+}
+
+/// Every seed a regular (non-ignored) test runs by number goes through this: it asserts the
+/// seed is one of the gated [`seed_list`] seeds and returns it, so a regular test can never
+/// fail on a seed the 10,000-seed gate does not cover (D-S2b-19 (a)). Exploratory and ignored
+/// sweeps are exempt; the `TRACE_SEED` diagnostic is not a test.
+fn gated(seed: u64) -> u64 {
+    static GATE: OnceLock<std::collections::BTreeSet<u64>> = OnceLock::new();
+    let gate = GATE.get_or_init(|| seed_list().into_iter().collect());
+    assert!(
+        gate.contains(&seed),
+        "seed {seed} is outside the gated {DEFAULT_SEEDS} seeds: add it to FIXED_SEEDS or use another"
+    );
+    seed
 }
 
 /// The deep sweep's seeds: `0..n` plus the fixed seeds beyond it.
@@ -390,7 +405,7 @@ fn every_preserved_defect_is_witnessed() {
 #[test]
 fn pd18_has_one_seed_per_instance() {
     for (index, (name, seed)) in PD18_SEEDS.iter().enumerate() {
-        let report = run_seed(*seed);
+        let report = run_seed(gated(*seed));
         assert!(
             report.hits.pd18[index] > 0,
             "seed {seed} no longer ends stuck through PD-18 {name}: {:?}",
@@ -406,7 +421,7 @@ fn pd18_has_one_seed_per_instance() {
 #[test]
 fn pd19_to_pd24_have_pinned_seeds() {
     for witness in &FINDING_SEEDS {
-        let report = run_seed(witness.seed);
+        let report = run_seed(gated(witness.seed));
         assert!(
             report.hits.pd[usize::from(witness.pd)] > 0,
             "seed {} no longer takes PD-{} (shell witness {:?}): {:?}",
@@ -438,7 +453,8 @@ fn pd19_to_pd24_have_pinned_seeds() {
 
 #[test]
 fn a_seed_is_one_run() {
-    for seed in [0u64, 59, 886, 4903, 9_993] {
+    for seed in [0u64, 59, 886, 4903, 9_992] {
+        let seed = gated(seed);
         let (first, first_trace) = run_seed_with(seed, true);
         let (second, second_trace) = run_seed_with(seed, true);
         assert_eq!(
@@ -1693,7 +1709,7 @@ fn pd19_is_witnessed_with_its_whole_story() {
         (23_985, [0, 1, 0]),
         (377_529, [0, 0, 1]),
     ] {
-        let report = run_seed(seed);
+        let report = run_seed(gated(seed));
         assert!(report.hits.pd[19] > 0, "{seed}: {:?}", report.hits);
         assert_eq!(report.hits.pd19, entries, "{seed}: {:?}", report.hits);
         assert_eq!(report.hits.pd18, [0, 0, 0]);
@@ -1711,7 +1727,7 @@ fn pd19_is_witnessed_with_its_whole_story() {
 fn stops_follow_their_caller() {
     let (mut suppressed, mut not_sent, mut stale, mut unscoped) = (0, 0, 0, 0);
     for seed in 0..5_000 {
-        let (report, trace) = run_seed_with(seed, true);
+        let (report, trace) = run_seed_with(gated(seed), true);
         assert!(
             report.violations.is_empty(),
             "{seed}: {:?}",
@@ -1860,11 +1876,7 @@ fn two_windows_can_disagree_about_the_status() {
 #[test]
 fn the_windows_disagree_in_the_seeded_runs() {
     const WITNESS: u64 = 839;
-    assert!(
-        seed_list().contains(&WITNESS),
-        "the witness is inside the gated seeds"
-    );
-    let (report, trace) = run_seed_with(WITNESS, true);
+    let (report, trace) = run_seed_with(gated(WITNESS), true);
     assert!(
         report.violations.is_empty(),
         "{WITNESS}: {:?}",
@@ -1884,7 +1896,7 @@ fn the_windows_disagree_in_the_seeded_runs() {
 #[test]
 fn a_blocked_step_changes_nothing() {
     for seed in 0..300u64 {
-        let report = run_seed_strict(seed);
+        let report = run_seed_strict(gated(seed));
         assert!(report.steps > 0);
     }
 }

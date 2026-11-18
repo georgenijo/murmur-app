@@ -526,8 +526,8 @@ splitmix64 generator turns a seed into the whole run.
   state, uses the production strings, and the test asserts the exact replies, statuses
   and ledger outcomes.
 * **Seeds**: 10,000 in CI (about a second and a half, budget 20 s), fixed whatever the
-  environment says: `0..9,994` and six fixed seeds (`FIXED_SEEDS`: 11,125, 18,279, 22,704,
-  23,985, 244,103, 377,529) that take the PD-19 (`TerminationUnconfirmed`, dropped start,
+  environment says: `0..9,993` and seven fixed seeds (`FIXED_SEEDS`: 10,724, 11,125, 18,279,
+  22,704, 23,985, 244,103, 377,529) that take the PD-18 (unsealed stop), PD-19 (`TerminationUnconfirmed`, dropped start,
   refused auto-stop), PD-24 (environmental recovery), PD-22 (against the cancel's own
   `TERM`) and PD-21 (short stop) entries no seed of the plain range takes, so the converse
   check (every PD and every signature row is witnessed) has no pinned exception. The deeper
