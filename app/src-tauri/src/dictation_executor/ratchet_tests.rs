@@ -767,6 +767,15 @@ impl SiteFinder<'_> {
                     chain.push(syn::ext::IdentExt::unraw(&ident).to_string())
                 }
                 TokenTree::Punct(punct) if punct.as_char() == ':' => {}
+                // A string literal inside a macro's tokens (`emit!("event", ..)`):
+                // offered to `is_target` as its quoted text, which no identifier
+                // path equals.
+                TokenTree::Literal(literal) => {
+                    flush(self, &mut chain);
+                    if (self.is_target)(&[literal.to_string()]) {
+                        self.hit();
+                    }
+                }
                 TokenTree::Group(group) => {
                     flush(self, &mut chain);
                     self.scan_tokens(group.stream());
@@ -1033,6 +1042,14 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         syn::visit::visit_expr_method_call(self, call);
     }
 
+    /// A string literal in an expression (the event name of an `emit(..)`), offered
+    /// to `is_target` as its quoted text.
+    fn visit_lit_str(&mut self, literal: &'ast syn::LitStr) {
+        if (self.is_target)(&[format!("{:?}", literal.value())]) {
+            self.hit();
+        }
+    }
+
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
         self.scan_tokens(mac.tokens.clone());
         syn::visit::visit_macro(self, mac);
@@ -1123,6 +1140,148 @@ fn terminal_emit_callers_are_exactly_the_allowlisted_functions() {
         TERMINAL_EMIT_SITES_BASELINE,
         "the allowlist and the baseline constant agree"
     );
+}
+
+// ------------------------------------------------ SP5: status emits (D-S2b-3)
+
+/// The quoted event name SP5 pins.
+const STATUS_EVENT: &str = "\"recording-status-changed\"";
+
+fn is_status_event_literal(segments: &[String]) -> bool {
+    segments.len() == 1 && segments[0] == STATUS_EVENT
+}
+
+/// SP5 (appendix C7.2, C13.3 #117): every production occurrence of the
+/// `recording-status-changed` event name, pinned per enclosing function:
+/// `(file relative to src, qualified enclosing fn, occurrences)`. The walk is the
+/// D-S2-17 fail-closed one (`raw_production_sources`: every `src/**/*.rs` file
+/// except the declared test-only ones), so a status emit planted in any other file
+/// (the #117 shape: `commands/models.rs`) fails. The set is:
+///
+/// * the executor's own `EM` effect ports (`*_ports.rs`), the sanctioned emitters;
+/// * two **listeners** that only subscribe to the event name (`initialize` of
+///   `smart_auto_probe.rs` and `meeting_suggestions.rs`), not emits;
+/// * four idle emits the shell still passes as closures to the legacy parse and
+///   pipeline-idle finishers (`recording.rs`), the `204a` / `204b` / `302` tails
+///   that run under the executor's decisions: pinned so they can only go down.
+///
+/// A new occurrence anywhere else must go through the executor's `EM` effect.
+const STATUS_EMIT_ALLOWLIST: [(&str, &str, usize); 10] = [
+    // The legacy idle emits (two parse-failure closures and the 204b tail in
+    // `process_audio_inner`, the stop's 204b tail): decided by site 204/302.
+    ("commands/recording.rs", "process_audio_inner", 3),
+    ("commands/recording.rs", "stop_native_recording_admitted", 1),
+    // The executor's `EM` effect ports.
+    (
+        "commands/recording/cancel_ports.rs",
+        "<CancelPorts<'_> as Ports>::emit",
+        1,
+    ),
+    (
+        "commands/recording/lifecycle_ports.rs",
+        "<LifecyclePorts<'_,R> as Ports>::emit",
+        1,
+    ),
+    (
+        "commands/recording/process_audio_ports.rs",
+        "<ProcessAudioPorts<'_> as Ports>::emit",
+        1,
+    ),
+    (
+        "commands/recording/ready_ports.rs",
+        "<ReadyPorts<'_,R> as Ports>::emit",
+        1,
+    ),
+    (
+        "commands/recording/start_ports.rs",
+        "<StartPorts<'_> as Ports>::emit",
+        1,
+    ),
+    (
+        "commands/recording/stop_ports.rs",
+        "<StopPorts<'_> as Ports>::emit",
+        1,
+    ),
+    // Listeners, not emits.
+    ("meeting_suggestions.rs", "initialize", 1),
+    ("smart_auto_probe.rs", "initialize", 1),
+];
+
+/// Every occurrence of the status event name in the production code of `sources`.
+fn status_event_sites(sources: &[(String, String)]) -> Vec<(String, String, usize)> {
+    let mut counts: std::collections::BTreeMap<(String, String), usize> =
+        std::collections::BTreeMap::new();
+    for (file, source) in sources {
+        for function in call_scopes(source, false, &is_status_event_literal) {
+            *counts.entry((file.clone(), function)).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .map(|((file, function), n)| (file, function, n))
+        .collect()
+}
+
+fn check_status_event_sites(
+    found: &[(String, String, usize)],
+    allowed: &[(&str, &str, usize)],
+) -> Result<(), String> {
+    let mut want: Vec<(String, String, usize)> = allowed
+        .iter()
+        .map(|(file, function, n)| (file.to_string(), function.to_string(), *n))
+        .collect();
+    want.sort();
+    if found == want.as_slice() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the `recording-status-changed` sites changed (SP5).\n  found:   {found:?}\n  allowed: {want:?}\n\
+             A status emit outside the executor's `EM` effect is not allowed; moving a legacy \
+             emit behind the executor lowers its entry in STATUS_EMIT_ALLOWLIST."
+        ))
+    }
+}
+
+#[test]
+fn status_events_are_emitted_only_by_the_allowlisted_functions() {
+    let sources = raw_production_sources();
+    let found = status_event_sites(&sources);
+    if let Err(message) = check_status_event_sites(&found, &STATUS_EMIT_ALLOWLIST) {
+        panic!("{message}");
+    }
+}
+
+#[test]
+fn a_planted_status_emit_in_models_rs_fails_the_status_ratchet() {
+    let mut sources = raw_production_sources();
+    // The #117 shape: a status emit on the VAD download path.
+    sources.push((
+        "commands/models.rs".to_string(),
+        "async fn ensure_vad_model(app: &AppHandle) { let _ = app.emit(\"recording-status-changed\", \"processing\"); }"
+            .to_string(),
+    ));
+    let found = status_event_sites(&sources);
+    let error = check_status_event_sites(&found, &STATUS_EMIT_ALLOWLIST)
+        .expect_err("a planted emit must fail");
+    assert!(error.contains("commands/models.rs") && error.contains("ensure_vad_model"));
+    // The same emit written inside a macro is seen too, and a `cfg(test)` one is not.
+    for (source, expected) in [
+        ("fn f(a: &A) { emit!(a, \"recording-status-changed\"); }", 1),
+        (
+            "#[cfg(test)] fn f(a: &A) { a.emit(\"recording-status-changed\", 1); }",
+            0,
+        ),
+        ("fn f() { let n = \"recording-status-changedx\"; }", 0),
+    ] {
+        assert_eq!(
+            status_event_sites(&[("x.rs".to_string(), source.to_string())])
+                .iter()
+                .map(|(_, _, n)| n)
+                .sum::<usize>(),
+            expected,
+            "{source}"
+        );
+    }
 }
 
 /// The one function allowed to call `PersistedCore::new` (decision D-S1-5 a).

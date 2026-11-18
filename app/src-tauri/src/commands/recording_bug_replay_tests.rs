@@ -469,26 +469,56 @@ fn s05(world: &Arc<World>) {
 /// performance class was claimed it is in `M(T)` (C7.4; `Superseded`, PD-4 and
 /// PD-5 are exempt and none of these scenarios produces one).
 ///
-/// Limit: a second winning claim with the *same* outcome and code as the first
-/// does not change the ledger and is not seen; the revert below changes it in
-/// scenario 5 (`PipelineFailure`, then the stop's own failure).
+/// Each scenario also asserts its exact terminal outcome and error code (the one
+/// its golden records, D-S2b-1), so a fallback path that claims a different code
+/// after a dropped `TERM` is seen. Limit: a second winning claim with the *same*
+/// outcome and code as the first does not change the ledger and is not seen.
 ///
 /// Revert: remove the once-only claim in `DictationTelemetry::claim_terminal`
 /// (`if attempt.terminal.is_some() { return false; }`). Mutation: drop `TERM` from
 /// R102.2 or make R211.3's `TERM` conditional.
 #[test]
 fn bug535_exactly_one_terminal() {
-    let scenarios: [Scenario; 7] = [
-        ("3a interruption, auto-stop transcribes", s03a),
-        ("3b interruption, the user stop wins", s03b),
-        ("4a short interruption", s04a),
-        ("5 timed-out stop, supervisor Idle", s05),
-        ("12a failure ack first", s12a),
-        ("12b supervisor failure first", s12b),
-        ("12c start timeout", s12c),
+    // (title, body, the terminal the golden trace records for id 1: outcome/code)
+    let scenarios: [(&str, fn(&Arc<World>), &str); 7] = [
+        (
+            "3a interruption, auto-stop transcribes",
+            s03a,
+            "RuntimeInterruption/StreamInvalidated",
+        ),
+        (
+            "3b interruption, the user stop wins",
+            s03b,
+            "RuntimeInterruption/StreamInvalidated",
+        ),
+        (
+            "4a short interruption",
+            s04a,
+            "RuntimeInterruption/RuntimeFailure",
+        ),
+        (
+            "5 timed-out stop, supervisor Idle",
+            s05,
+            "PipelineFailure/RuntimeFailure",
+        ),
+        (
+            "12a failure ack first",
+            s12a,
+            "CaptureInitFailure/RuntimeFailure",
+        ),
+        (
+            "12b supervisor failure first",
+            s12b,
+            "CaptureInitFailure/BackendError",
+        ),
+        (
+            "12c start timeout",
+            s12c,
+            "UserCancelledStarting/CancelledStarting",
+        ),
     ];
     for _ in 0..repeat_count() {
-        for (title, body) in scenarios {
+        for (title, body, expected) in scenarios {
             let lines = run_sub_run(&sub(title, body));
             // Every scenario accepts id 1. A second claim that overwrites the
             // ledger shows as a second `~ terminal 1` line (the harness samples
@@ -503,6 +533,13 @@ fn bug535_exactly_one_terminal() {
                 1,
                 "{title}: id {id} must have exactly one terminal, got {outcomes:?}\n{}",
                 lines.join("\n")
+            );
+            // D-S2b-1: the exact outcome and error code the golden trace records,
+            // so a fallback path that claims a different code is not mistaken for
+            // the row's own terminal.
+            assert_eq!(
+                outcomes[0], expected,
+                "{title}: id {id} terminal outcome/code differs from the golden"
             );
             // M(T): the performance class the winning terminal is compatible with.
             let terminal = outcomes[0].split('/').next().unwrap_or_default();
