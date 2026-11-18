@@ -18,9 +18,12 @@
 //!   persisted value without an effect commit, so only the seeding adapter may
 //!   call it (decision D-S1-5 a).
 //!
-//! The scan sees **production code only**: comments, string and char literals
-//! are blanked, `#[cfg(test)]` items are removed, and files that are test-only
-//! modules (`#[cfg(test)] mod x;`, with or without `#[path]`) are skipped.
+//! The scan sees **production code only**: `#[cfg(test)]` items are removed and
+//! files that are test-only modules (`#[cfg(test)] mod x;`, with or without
+//! `#[path]`) are skipped. The per-function call-site checks parse real Rust
+//! syntax (`syn`) and name each caller by its qualified identity (module path,
+//! `impl` type, fn names), so same-named functions in sibling modules or impls
+//! differ; the textual checks blank comments and literals first.
 
 use regex::Regex;
 use std::collections::HashSet;
@@ -41,7 +44,8 @@ const STATUS_WRITE_SITES_BASELINE: usize = 0;
 const TERMINAL_EMIT_SITES_BASELINE: usize = 6;
 
 /// The functions that may still call `emit_dictation_terminal*(`, with the number
-/// of calls each makes: `(file relative to src, enclosing fn, calls)`. The sum is
+/// of calls each makes: `(file relative to src, qualified enclosing fn, calls)`
+/// (module path, `impl` type, then fn names, joined by `::`). The sum is
 /// [`TERMINAL_EMIT_SITES_BASELINE`]. Moving a site behind `TERM` lowers its entry;
 /// a call in any other function, or more calls in one, fails.
 const TERMINAL_EMIT_ALLOWLIST: [(&str, &str, usize); 6] = [
@@ -50,10 +54,22 @@ const TERMINAL_EMIT_ALLOWLIST: [(&str, &str, usize); 6] = [
     // The stop's own inline terminal: not yet behind `TERM`.
     ("commands/recording.rs", "stop_native_recording_admitted", 1),
     // The four families' `TERM` ports: the executor's terminal effect.
-    ("commands/recording/cancel_ports.rs", "terminal", 1),
-    ("commands/recording/lifecycle_ports.rs", "terminal", 1),
-    ("commands/recording/start_ports.rs", "terminal", 1),
-    ("commands/recording/stop_ports.rs", "terminal", 1),
+    (
+        "commands/recording/cancel_ports.rs",
+        "CancelPorts::terminal",
+        1,
+    ),
+    (
+        "commands/recording/lifecycle_ports.rs",
+        "LifecyclePorts::terminal",
+        1,
+    ),
+    (
+        "commands/recording/start_ports.rs",
+        "StartPorts::terminal",
+        1,
+    ),
+    ("commands/recording/stop_ports.rs", "StopPorts::terminal", 1),
 ];
 
 // ------------------------------------------------------------------ scanner
@@ -309,8 +325,18 @@ fn test_only_files(files: &[(PathBuf, String)]) -> HashSet<PathBuf> {
     skipped
 }
 
-/// Every `src/**/*.rs` file as `(path relative to src, production code)`.
+/// Every `src/**/*.rs` file as `(path relative to src, production code)`, with
+/// comments and literals blanked and `#[cfg(test)]` items removed.
 fn production_sources() -> Vec<(String, String)> {
+    raw_production_sources()
+        .into_iter()
+        .map(|(relative, text)| (relative, production_code(&text)))
+        .collect()
+}
+
+/// Every non-test-module `src/**/*.rs` file as `(path relative to src, raw source)`,
+/// for the syntax-aware scanner (it skips `#[cfg(test)]` items itself).
+fn raw_production_sources() -> Vec<(String, String)> {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut paths = Vec::new();
     rust_files(&src, &mut paths);
@@ -332,7 +358,7 @@ fn production_sources() -> Vec<(String, String)> {
                 .expect("under src")
                 .to_string_lossy()
                 .replace('\\', "/");
-            (relative, production_code(&text))
+            (relative, text)
         })
         .collect()
 }
@@ -476,73 +502,239 @@ fn status_write_and_terminal_call_sites_only_go_down() {
     }
 }
 
-/// The innermost function whose body lexically contains byte offset `at` of `code`
-/// (comments and literals already blanked), or `""` at file scope or in a
-/// non-function block (a closure in a `const`, an `impl` item list).
-///
-/// Walks the braces: `fn name` arms a pending body, the next `{` outside the
-/// signature's parentheses and brackets opens it, a `;` first (a declaration without
-/// a body) disarms it, and every `}` closes the innermost block. The last textual
-/// `fn` before a call is not its enclosing function: a closure placed at file
-/// scope right after a function would otherwise be credited to that function.
-fn enclosing_function(code: &str, at: usize) -> String {
-    let function = Regex::new(r"\bfn\s+(\w+)").expect("regex");
-    let mut heads = function
-        .captures_iter(&code[..at])
-        .map(|found| {
-            let whole = found.get(0).expect("match");
-            (whole.start(), whole.end(), found[1].to_string())
-        })
-        .peekable();
-    let bytes = &code.as_bytes()[..at];
-    let mut blocks: Vec<Option<String>> = Vec::new();
-    let mut pending: Option<String> = None;
-    let mut open_signature = 0_i32;
-    let mut i = 0;
-    while i < bytes.len() {
-        if let Some((start, end, name)) = heads.peek() {
-            if i == *start {
-                pending = Some(name.clone());
-                open_signature = 0;
-                i = *end;
-                heads.next();
-                continue;
-            }
-        }
-        match bytes[i] {
-            b'(' | b'[' if pending.is_some() => open_signature += 1,
-            b')' | b']' if pending.is_some() => open_signature -= 1,
-            b';' if open_signature == 0 => pending = None,
-            b'{' if open_signature == 0 => blocks.push(pending.take()),
-            b'{' => blocks.push(None),
-            b'}' => {
-                blocks.pop();
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    blocks
-        .into_iter()
-        .rev()
-        .flatten()
-        .next()
-        .unwrap_or_default()
+// ------------------------------------------------ syntax-aware call-site scanner
+
+/// Where a call lives: the qualified identity of its enclosing function, built from
+/// real Rust syntax: inline module path, the `impl` / `trait` type, then the `fn`
+/// names (`a::b::Type::method`, nested functions append). A call outside any
+/// function body (a `const` / `static` initializer) is `<const NAME>` / `<static
+/// NAME>` under its module path. Two functions with the same name in different
+/// modules or impls have different identities, and a closure belongs to the
+/// function that contains it.
+struct SiteFinder<'m> {
+    scope: Vec<String>,
+    include_cfg_test: bool,
+    is_target: &'m dyn Fn(&[String]) -> bool,
+    hits: Vec<String>,
 }
 
-/// `(file, enclosing fn, calls)` of every `emit_dictation_terminal*(` call in
-/// `sources` (the definitions are not calls), sorted.
+impl SiteFinder<'_> {
+    fn hit(&mut self) {
+        self.hits.push(self.scope.join("::"));
+    }
+
+    /// Calls written inside a macro invocation's tokens (`name(..)` or `a::b(..)`):
+    /// the macro's arguments are not parsed as expressions.
+    fn scan_tokens(&mut self, tokens: proc_macro2::TokenStream) {
+        use proc_macro2::TokenTree;
+        let mut chain: Vec<String> = Vec::new();
+        for token in tokens {
+            match token {
+                TokenTree::Ident(ident) => chain.push(ident.to_string()),
+                TokenTree::Punct(punct) if punct.as_char() == ':' => {}
+                TokenTree::Group(group) => {
+                    if group.delimiter() == proc_macro2::Delimiter::Parenthesis
+                        && !chain.is_empty()
+                        && (self.is_target)(&chain)
+                    {
+                        self.hit();
+                    }
+                    chain.clear();
+                    self.scan_tokens(group.stream());
+                }
+                _ => chain.clear(),
+            }
+        }
+    }
+
+    fn skip(&self, attrs: &[syn::Attribute]) -> bool {
+        !self.include_cfg_test && attrs.iter().any(is_cfg_test)
+    }
+
+    fn within(&mut self, segment: String, walk: impl FnOnce(&mut Self)) {
+        self.scope.push(segment);
+        walk(self);
+        self.scope.pop();
+    }
+}
+
+/// `#[cfg(test)]` (also `cfg(all(test, ..))`; `cfg(not(test))` is production).
+fn is_cfg_test(attr: &syn::Attribute) -> bool {
+    if !attr.path().is_ident("cfg") {
+        return false;
+    }
+    let syn::Meta::List(list) = &attr.meta else {
+        return false;
+    };
+    let text = list.tokens.to_string();
+    let words: Vec<&str> = text
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .collect();
+    words.contains(&"test") && !words.contains(&"not")
+}
+
+fn type_name(ty: &syn::Type) -> String {
+    match ty {
+        syn::Type::Path(path) => path
+            .path
+            .segments
+            .last()
+            .map_or_else(|| "_".to_string(), |segment| segment.ident.to_string()),
+        syn::Type::Reference(reference) => type_name(&reference.elem),
+        _ => "_".to_string(),
+    }
+}
+
+impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if self.skip(&item.attrs) {
+            return;
+        }
+        self.within(item.ident.to_string(), |this| {
+            syn::visit::visit_item_mod(this, item)
+        });
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        if self.skip(&item.attrs) {
+            return;
+        }
+        self.within(type_name(&item.self_ty), |this| {
+            syn::visit::visit_item_impl(this, item)
+        });
+    }
+
+    fn visit_item_trait(&mut self, item: &'ast syn::ItemTrait) {
+        if self.skip(&item.attrs) {
+            return;
+        }
+        self.within(item.ident.to_string(), |this| {
+            syn::visit::visit_item_trait(this, item)
+        });
+    }
+
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        if self.skip(&item.attrs) {
+            return;
+        }
+        self.within(item.sig.ident.to_string(), |this| {
+            syn::visit::visit_item_fn(this, item)
+        });
+    }
+
+    fn visit_impl_item_fn(&mut self, item: &'ast syn::ImplItemFn) {
+        if self.skip(&item.attrs) {
+            return;
+        }
+        self.within(item.sig.ident.to_string(), |this| {
+            syn::visit::visit_impl_item_fn(this, item)
+        });
+    }
+
+    fn visit_trait_item_fn(&mut self, item: &'ast syn::TraitItemFn) {
+        if self.skip(&item.attrs) {
+            return;
+        }
+        self.within(item.sig.ident.to_string(), |this| {
+            syn::visit::visit_trait_item_fn(this, item)
+        });
+    }
+
+    fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
+        if self.skip(&item.attrs) {
+            return;
+        }
+        self.within(format!("<const {}>", item.ident), |this| {
+            syn::visit::visit_item_const(this, item)
+        });
+    }
+
+    fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
+        if self.skip(&item.attrs) {
+            return;
+        }
+        self.within(format!("<static {}>", item.ident), |this| {
+            syn::visit::visit_item_static(this, item)
+        });
+    }
+
+    fn visit_impl_item_const(&mut self, item: &'ast syn::ImplItemConst) {
+        if self.skip(&item.attrs) {
+            return;
+        }
+        self.within(format!("<const {}>", item.ident), |this| {
+            syn::visit::visit_impl_item_const(this, item)
+        });
+    }
+
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if let syn::Expr::Path(path) = &*call.func {
+            let segments: Vec<String> = path
+                .path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect();
+            if (self.is_target)(&segments) {
+                self.hit();
+            }
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        if (self.is_target)(&[call.method.to_string()]) {
+            self.hit();
+        }
+        syn::visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        self.scan_tokens(mac.tokens.clone());
+        syn::visit::visit_macro(self, mac);
+    }
+}
+
+/// The enclosing-function identity of every call `is_target` accepts in `source`
+/// (parsed as a Rust file; one entry per call).
+fn call_scopes(
+    source: &str,
+    include_cfg_test: bool,
+    is_target: &dyn Fn(&[String]) -> bool,
+) -> Vec<String> {
+    use syn::visit::Visit;
+    let file = syn::parse_file(source).unwrap_or_else(|error| panic!("parse a source: {error}"));
+    let mut finder = SiteFinder {
+        scope: Vec::new(),
+        include_cfg_test,
+        is_target,
+        hits: Vec::new(),
+    };
+    finder.visit_file(&file);
+    finder.hits
+}
+
+/// `emit_dictation_terminal*(` (a call, a method call, or inside a macro's tokens).
+fn is_terminal_emit(segments: &[String]) -> bool {
+    segments
+        .last()
+        .is_some_and(|name| name.starts_with("emit_dictation_terminal"))
+}
+
+/// `PersistedCore::new(`.
+fn is_persisted_core_new(segments: &[String]) -> bool {
+    segments.ends_with(&["PersistedCore".to_string(), "new".to_string()])
+}
+
+/// `(file, qualified enclosing fn, calls)` of every `emit_dictation_terminal*(` call
+/// in the production code of `sources` (`(file, raw Rust source)`; the definitions
+/// are not calls, `#[cfg(test)]` items are skipped), sorted.
 fn terminal_emit_callers(sources: &[(String, String)]) -> Vec<(String, String, usize)> {
-    let call = Regex::new(r"\bemit_dictation_terminal\w*\s*\(").expect("regex");
     let mut counts: std::collections::BTreeMap<(String, String), usize> =
         std::collections::BTreeMap::new();
-    for (file, code) in sources {
-        for m in call.find_iter(code) {
-            if code[..m.start()].trim_end().ends_with("fn") {
-                continue; // the definition
-            }
-            let enclosing = enclosing_function(code, m.start());
-            *counts.entry((file.clone(), enclosing)).or_default() += 1;
+    for (file, source) in sources {
+        for function in call_scopes(source, false, &is_terminal_emit) {
+            *counts.entry((file.clone(), function)).or_default() += 1;
         }
     }
     counts
@@ -576,7 +768,7 @@ fn check_terminal_emit_callers(
 /// alone would let a `TERM` call be swapped for an inline emit elsewhere.
 #[test]
 fn terminal_emit_callers_are_exactly_the_allowlisted_functions() {
-    let sources = production_sources();
+    let sources = raw_production_sources();
     let callers = terminal_emit_callers(&sources);
     if let Err(message) = check_terminal_emit_callers(&callers, &TERMINAL_EMIT_ALLOWLIST) {
         panic!("{message}");
@@ -590,26 +782,24 @@ fn terminal_emit_callers_are_exactly_the_allowlisted_functions() {
 
 /// The one function allowed to call `PersistedCore::new` (decision D-S1-5 a).
 const SEEDING_FILE: &str = "dictation_executor/adapter.rs";
-const SEEDING_FN: &str = "seed_core";
+const SEEDING_FN: &str = "FieldAdapter::seed_core";
 
-/// Every `PersistedCore::new` in `sources` (comments and literals already
-/// blanked) as `(file, line, enclosing fn)`.
-fn persisted_core_new_callers(sources: &[(String, String)]) -> Vec<(String, usize, String)> {
-    let needle = Regex::new(r"\bPersistedCore\s*::\s*new\b").expect("regex");
+/// Every `PersistedCore::new` in `sources` (`(file, raw Rust source)`, test code
+/// included) as `(file, qualified enclosing fn)`.
+fn persisted_core_new_callers(sources: &[(String, String)]) -> Vec<(String, String)> {
     let mut callers = Vec::new();
-    for (file, code) in sources {
-        for m in needle.find_iter(code) {
-            let enclosing = enclosing_function(code, m.start());
-            callers.push((file.clone(), line_of(code, m.start()), enclosing));
+    for (file, source) in sources {
+        for function in call_scopes(source, true, &is_persisted_core_new) {
+            callers.push((file.clone(), function));
         }
     }
     callers
 }
 
 /// `Ok` iff there is exactly one caller and it is `SEEDING_FN` in `SEEDING_FILE`.
-fn check_single_seeder(callers: &[(String, usize, String)]) -> Result<(), String> {
+fn check_single_seeder(callers: &[(String, String)]) -> Result<(), String> {
     match callers {
-        [(file, _, function)] if file == SEEDING_FILE && function == SEEDING_FN => Ok(()),
+        [(file, function)] if file == SEEDING_FILE && function == SEEDING_FN => Ok(()),
         _ => Err(format!(
             "PersistedCore::new must have exactly one caller, `{SEEDING_FN}` in {SEEDING_FILE} \
              (it replaces the whole persisted value without an effect commit); found: {callers:?}"
@@ -631,7 +821,7 @@ fn persisted_core_new_has_one_caller() {
     let sources: Vec<(String, String)> = paths
         .iter()
         .map(|path| {
-            let code = blank_comments_and_literals(&std::fs::read_to_string(path).expect("read"));
+            let code = std::fs::read_to_string(path).expect("read");
             let relative = path
                 .strip_prefix(&src)
                 .expect("under src")
@@ -727,27 +917,36 @@ fn test_only_module_files_are_skipped() {
 /// another adapter method, or twice inside the seeder.
 #[test]
 fn scanner_flags_an_extra_persisted_core_new_inside_the_adapter() {
-    let adapter = |code: &str| vec![(SEEDING_FILE.to_string(), production_code(code))];
+    let adapter = |code: &str| vec![(SEEDING_FILE.to_string(), code.to_string())];
     let check =
         |sources: &[(String, String)]| check_single_seeder(&persisted_core_new_callers(sources));
-    let seeder = "fn seed_core(a: &A) { d.core = PersistedCore::new(s, i); }";
+    let seeder = "impl FieldAdapter { fn seed_core(a: &A) { d.core = PersistedCore::new(s, i); } }";
     assert_eq!(check(&adapter(seeder)), Ok(()));
     // The shape that used to pass: a second constructor call in another method.
     let in_other_method = format!(
-        "{seeder} fn alloc_id(a: &A) {{ d.core = PersistedCore::new(s, RecordingId(id)); }}"
+        "{seeder} impl FieldAdapter {{ fn alloc_id(a: &A) {{ d.core = PersistedCore::new(s, RecordingId(id)); }} }}"
     );
     assert!(check(&adapter(&in_other_method)).is_err());
     // The only call in the wrong method.
-    assert!(check(&adapter("fn alloc_id() { PersistedCore::new(s, i); }")).is_err());
+    assert!(check(&adapter(
+        "impl FieldAdapter { fn alloc_id() { PersistedCore::new(s, i); } }"
+    ))
+    .is_err());
+    // A same-named `seed_core` on another type or at file scope is not the seeder.
+    assert!(check(&adapter(
+        "impl Other { fn seed_core() { PersistedCore::new(s, i); } }"
+    ))
+    .is_err());
+    assert!(check(&adapter("fn seed_core() { PersistedCore::new(s, i); }")).is_err());
     // Two calls inside the seeder itself.
-    let twice = "fn seed_core() { PersistedCore::new(a, b); PersistedCore::new(c, d); }";
+    let twice = "impl FieldAdapter { fn seed_core() { PersistedCore::new(a, b); PersistedCore::new(c, d); } }";
     assert!(check(&adapter(twice)).is_err());
     // Another file.
     let mut elsewhere = adapter(seeder);
-    elsewhere.push(("commands/recording.rs".into(), production_code(seeder)));
+    elsewhere.push(("commands/recording.rs".into(), seeder.to_string()));
     assert!(check(&elsewhere).is_err());
     // No caller at all.
-    assert!(check(&adapter("fn seed_core() {}")).is_err());
+    assert!(check(&adapter("impl FieldAdapter { fn seed_core() {} }")).is_err());
     // A comment or a string mentioning it is not a caller.
     assert_eq!(
         check(&adapter(&format!(
@@ -768,8 +967,8 @@ fn scanner_flags_a_swapped_terminal_emit() {
     ];
     let sources = |a: &str, b: &str| {
         vec![
-            ("commands/a.rs".to_string(), production_code(a)),
-            ("commands/b.rs".to_string(), production_code(b)),
+            ("commands/a.rs".to_string(), a.to_string()),
+            ("commands/b.rs".to_string(), b.to_string()),
         ]
     };
     let check = |sources: &[(String, String)]| {
@@ -810,13 +1009,13 @@ fn scanner_flags_a_swapped_terminal_emit() {
     assert_eq!(check(&quiet), Ok(()));
 }
 
-/// The enclosing function is the lexical body, not the last `fn` before the call: a
-/// forwarding call moved into a closure at file scope right after the allowed
-/// function, or into a block after it, is not credited to that function.
+/// The enclosing function is resolved from real syntax, not text position: a call is
+/// credited to the function whose body contains it, and a function's identity is
+/// qualified by its module path and `impl` type.
 #[test]
-fn scanner_attributes_a_call_to_its_lexical_function() {
+fn scanner_attributes_a_call_to_its_qualified_function() {
     let callers =
-        |code: &str| terminal_emit_callers(&[("commands/a.rs".to_string(), production_code(code))]);
+        |code: &str| terminal_emit_callers(&[("commands/a.rs".to_string(), code.to_string())]);
     let only = |function: &str, calls: usize| {
         vec![("commands/a.rs".to_string(), function.to_string(), calls)]
     };
@@ -824,20 +1023,20 @@ fn scanner_attributes_a_call_to_its_lexical_function() {
         callers("fn terminal() { emit_dictation_terminal(a); }"),
         only("terminal", 1)
     );
-    // A closure in a file-scope item right after the allowed function.
+    // A closure in a file-scope item right after the allowed function is that item's.
     assert_eq!(
         callers(
             "fn terminal() { work(); }\n\
              static FORWARD: fn(u8) = |a| { emit_dictation_terminal(a); };"
         ),
-        only("", 1)
+        only("<static FORWARD>", 1)
     );
     assert_eq!(
         callers(
             "fn terminal() { work(); }\n\
              const FORWARD: &dyn Fn(u8) = &|a| { emit_dictation_terminal(a); };"
         ),
-        only("", 1)
+        only("<const FORWARD>", 1)
     );
     // Nested items: the innermost function owns its call; the outer keeps its own.
     assert_eq!(
@@ -845,22 +1044,91 @@ fn scanner_attributes_a_call_to_its_lexical_function() {
             "fn outer() { fn inner() { emit_dictation_terminal(a); } emit_dictation_terminal(b); }"
         ),
         vec![
-            ("commands/a.rs".to_string(), "inner".to_string(), 1),
             ("commands/a.rs".to_string(), "outer".to_string(), 1),
+            ("commands/a.rs".to_string(), "outer::inner".to_string(), 1),
         ]
     );
-    // A closure inside a function stays in that function; signatures with braces-free
-    // generics, arrays and `where` clauses, and bodiless declarations, do not confuse it.
+    // A closure inside a method stays in that method; signatures with generics, arrays
+    // and `where` clauses, and bodiless trait declarations, do not confuse it.
     assert_eq!(
         callers(
             "trait T { fn decl(&self, a: [u8; 3]); }\n\
              impl X { fn run<F>(f: F, a: [u8; 3]) -> u8 where F: Fn() { let c = || { emit_dictation_terminal(a); }; 0 } }"
         ),
-        only("run", 1)
+        only("X::run", 1)
     );
-    // After the function ends, a call in an `impl` block item is at no function.
+    // An `impl` associated const is at no function.
     assert_eq!(
         callers("fn terminal() {}\nimpl X { const C: u8 = { emit_dictation_terminal(a); 1 }; }"),
-        only("", 1)
+        only("X::<const C>", 1)
+    );
+    // Test code is not production; a macro's tokens and method calls are scanned.
+    assert_eq!(
+        callers(
+            "#[cfg(test)] mod tests { fn terminal() { emit_dictation_terminal(a); } }\n\
+             fn run() { log!(\"x\", emit_dictation_terminal(b)); s.emit_dictation_terminal_x(c); }"
+        ),
+        only("run", 2)
+    );
+}
+
+/// Sol minor (#1151): a same-named function in a sibling module is a different
+/// function. The allowed `terminal` in module `ports` must not excuse a `terminal`
+/// in `other`; a last-textual-name or last-`fn` scan credits both to `terminal`.
+#[test]
+fn scanner_tells_same_named_functions_in_sibling_modules_apart() {
+    let allowed = [("commands/a.rs", "ports::terminal", 1)];
+    let check = |code: &str| {
+        check_terminal_emit_callers(
+            &terminal_emit_callers(&[("commands/a.rs".to_string(), code.to_string())]),
+            &allowed,
+        )
+    };
+    let good = "mod ports { pub fn terminal() { emit_dictation_terminal(a); } }\n\
+                mod other { pub fn terminal() {} }";
+    assert_eq!(check(good), Ok(()));
+    // The same call moved into the sibling module's same-named function.
+    let moved = "mod ports { pub fn terminal() {} }\n\
+                 mod other { pub fn terminal() { emit_dictation_terminal(a); } }";
+    assert!(check(moved).is_err());
+    // Same-named method on two impl types.
+    let methods = "impl A { fn terminal(&self) { emit_dictation_terminal(a); } }\n\
+                   impl B { fn terminal(&self) {} }";
+    assert!(
+        check(methods).is_err(),
+        "`A::terminal` is not `ports::terminal`"
+    );
+    assert_eq!(
+        terminal_emit_callers(&[("commands/a.rs".to_string(), methods.to_string())]),
+        vec![("commands/a.rs".to_string(), "A::terminal".to_string(), 1)]
+    );
+}
+
+/// Sol minor (#1151): a `const` expression in a return type holds braces before the
+/// body. The call inside the real body is still credited to `terminal`, and a call
+/// in the const expression of a signature belongs to its function too.
+#[test]
+fn scanner_handles_a_const_expression_in_a_return_type() {
+    let callers =
+        |code: &str| terminal_emit_callers(&[("commands/a.rs".to_string(), code.to_string())]);
+    let only = |function: &str, calls: usize| {
+        vec![("commands/a.rs".to_string(), function.to_string(), calls)]
+    };
+    assert_eq!(
+        callers("fn terminal() -> [u8; { 2 + 2 }] { emit_dictation_terminal(a); [0; 4] }"),
+        only("terminal", 1)
+    );
+    // A following function is not swallowed by the braces in the previous signature.
+    assert_eq!(
+        callers(
+            "fn terminal() -> [u8; { 4 }] { [0; 4] }\n\
+             fn other() { emit_dictation_terminal(a); }"
+        ),
+        only("other", 1)
+    );
+    // A const block expression in a signature is inside that function's identity.
+    assert_eq!(
+        callers("fn terminal() -> [u8; { emit_dictation_terminal(a); 4 }] { [0; 4] }"),
+        only("terminal", 1)
     );
 }
