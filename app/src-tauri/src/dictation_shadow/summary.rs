@@ -23,6 +23,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{json, Map, Value};
 
+use super::types::TickerSkipReason;
+
 /// The summary's file name, in the log directory.
 pub(crate) const SUMMARY_FILE: &str = "dictation-shadow-summary.json";
 
@@ -39,6 +41,9 @@ pub(crate) struct RowStats {
     pub compared: u64,
     pub mismatched: u64,
     pub pd_witness: u64,
+    /// `PostDT:SD` spawns that returned before the gate, by reason code - 1
+    /// ([`TickerSkipReason`]); recorded, never compared with the core (D-S2c-6).
+    pub ticker_skipped: [u64; TickerSkipReason::ALL.len()],
 }
 
 /// Every counter of C8.4 step 5, plus the loss counters of D-S2c-3.
@@ -65,7 +70,8 @@ pub(crate) struct Stats {
     /// Messages of recorders created before the transport was published (the first
     /// enabled startup): counted, never queued, never blocking.
     pub dropped_unavailable: u64,
-    /// Open records evicted past the 64-record cap.
+    /// Open records evicted past the 64-record cap. Each is closed `unverifiable`, so
+    /// it is also counted there (D-S2c-5 b).
     pub lost_open: u64,
     /// Flights given up because a message was lost (or a header gap was seen with no
     /// counted loss): the staged batch, every open or held record, and a header that
@@ -88,7 +94,7 @@ pub(crate) struct Stats {
     pub unverifiable: u64,
     /// Recorders the comparison saw open: every one is closed exactly once, by one of
     /// `matched`, `closed_mismatched`, `unverifiable`, `abandoned_by_loss`,
-    /// `abandoned_by_panic`, `abandoned_pre_d`, `skipped_incomplete` or `lost_open`,
+    /// `abandoned_by_panic`, `abandoned_pre_d` or `skipped_incomplete`,
     /// or is still open (D-S2c-4 b).
     pub opened: u64,
     /// Flights that closed with a mismatch already reported (a close kind of its own,
@@ -140,7 +146,6 @@ impl Stats {
             + self.abandoned_by_panic
             + self.abandoned_pre_d
             + self.skipped_incomplete
-            + self.lost_open
     }
 
     /// The summary document. Numbers only.
@@ -149,12 +154,23 @@ impl Stats {
             .per_row
             .iter()
             .map(|((site, row), stats)| {
+                // One counter per closed reason code, keyed by the code.
+                let ticker_skipped: Map<String, Value> = TickerSkipReason::ALL
+                    .iter()
+                    .map(|reason| {
+                        (
+                            reason.code().to_string(),
+                            json!(stats.ticker_skipped[reason.index()]),
+                        )
+                    })
+                    .collect();
                 (
                     format!("{site}.{row}"),
                     json!({
                         "compared": stats.compared,
                         "mismatched": stats.mismatched,
                         "pd_witness": stats.pd_witness,
+                        "ticker_skipped": ticker_skipped,
                     }),
                 )
             })

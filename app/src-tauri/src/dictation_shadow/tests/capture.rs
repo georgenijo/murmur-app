@@ -19,7 +19,7 @@ use crate::dictation_shadow::transport::{
 };
 use crate::dictation_shadow::types::{
     CondWitness, LiveOp, MirrorField, MirrorValue, MirrorWitness, PredId, Projection, ReplyKind,
-    ShadowHeader, ShadowMsg, TickerGate, WitnessedEffect, PRE_CAPACITY,
+    ShadowHeader, ShadowMsg, TickerGate, TickerSkipReason, WitnessedEffect, PRE_CAPACITY,
 };
 use crate::dictation_shadow::{run, Control, POLL_INTERVAL};
 
@@ -86,6 +86,12 @@ fn produce_one_flight(transport: &Arc<crate::dictation_shadow::transport::Transp
     mark(&recorder, Mark::Reply(ReplyKind::Ok));
     mark(
         &recorder,
+        Mark::TickerSkipped {
+            reason: TickerSkipReason::NoContext,
+        },
+    );
+    mark(
+        &recorder,
         Mark::Cond {
             pred: PredId::EmitOk(0),
             taken: true,
@@ -125,8 +131,9 @@ fn shadow_capture_takes_no_lock_allocates_nothing() {
     assert_eq!(frees, 0, "the drop path freed");
     assert!(full.lost() > 0);
     // Nothing was lost to the measurement: the messages the queue took are intact.
-    // A flight is five messages: header, witness, conditional mark, reply mark, close.
-    assert_eq!(pop_all(&transport).len(), 8 * 5);
+    // A flight is six messages: header, witness, reply mark, ticker-skipped mark,
+    // conditional mark, close.
+    assert_eq!(pop_all(&transport).len(), 8 * 6);
 }
 
 #[test]
