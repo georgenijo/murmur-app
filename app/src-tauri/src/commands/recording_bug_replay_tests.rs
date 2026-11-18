@@ -329,9 +329,10 @@ fn s12d(world: &Arc<World>) {
 }
 
 /// #388 / PR #392, the core-owned part (`66dd78d7`, supervisor-only): any
-/// grammar-legal sequence over a start ends in `Idle`. Scenario 12(a)(b)(c):
-/// `InitializationFailed` then `Idle` after a failed ack, the same before the
-/// ack, and the 2 s start timeout over a supervisor `Cancel{User}`. After each,
+/// grammar-legal sequence over a start ends in `Idle`. Scenario 12(a)(b)(c)
+/// plus (d): `InitializationFailed` then `Idle` after a failed ack, the same
+/// before the ack, the 2 s start timeout over a supervisor `Cancel{User}`, and a
+/// supervisor `Idle` over a `Recovering` attempt. After each,
 /// status is `Idle` with the keyboard gate and the context cleared and exactly
 /// one terminal claimed for the id.
 ///
