@@ -7,6 +7,9 @@ mod audio_decode;
 mod audio_graph_snapshot;
 mod audio_inventory;
 mod audio_lifecycle;
+// Stage 2b-1: the whole-file pins and citations of the property harness's supervisor mirror.
+#[cfg(test)]
+mod audio_lifecycle_mirror_tests;
 // `pub` so the headless benchmark runner (tests/headless_benchmark.rs) can
 // call `benchmark::run` directly with a mock AppHandle; not part of any
 // stable external API.
@@ -90,6 +93,9 @@ mod state;
 mod stop_gesture;
 mod stream_reuse;
 pub mod telemetry;
+// Stage 2b-1: the token normalization of the source pins (shared with the shell ratchet).
+#[cfg(test)]
+mod token_pin_tests;
 pub mod transcriber;
 mod transcript_transform;
 mod vad;
