@@ -21,60 +21,71 @@ const CI_BUDGET: Duration = Duration::from_secs(20);
 /// range that ends stuck in `Recovering` through that instance, with the generation's
 /// own evidence (R101.12 in the gap after its last restorer).
 const PD18_SEEDS: [(&str, u64); 3] = [
-    ("(a) S12", 746),
-    ("(b) Idle-arm tail", 109),
-    ("(c) unsealed stop", 166),
+    ("(a) S12", 113),
+    ("(b) Idle-arm tail", 7),
+    ("(c) unsealed stop", 9120),
 ];
 
 /// A witness of one of PD-19..PD-22: the PD, the seed that takes it, the matched
 /// split `(terminal row, performance row)` where the PD is an SP4(b) split, and the
 /// shell test that reproduces the sequence (`recording_harness_findings_tests.rs`,
-/// D-S2b-5 and D-S2b-7).
+/// D-S2b-5, D-S2b-7 and D-S2b-9 (b)). A `None` shell test is PROVISIONAL "reachable
+/// by source inspection": its fixture is pending and the model witness stands alone.
 struct Witness {
     pd: u8,
     seed: u64,
     split: Option<(&'static str, &'static str)>,
-    shell_test: &'static str,
+    shell_test: Option<&'static str>,
 }
 
-const FINDING_SEEDS: [Witness; 6] = [
+const FINDING_SEEDS: [Witness; 7] = [
     Witness {
         pd: 19,
-        seed: 8147,
+        seed: 9514,
         split: None,
-        shell_test: "f4_interrupted_over_8000_with_a_refused_auto_stop_leaves_recovering",
+        shell_test: Some("pd19_termination_unconfirmed_after_retained_pcm_leaves_recovering"),
     },
     Witness {
         pd: 20,
-        seed: 949,
+        seed: 398,
         split: Some(("R205.5", "R203.5")),
-        shell_test: "f1_cancel_terminal_and_a_short_stop_performance_outcome_disagree",
+        shell_test: Some("pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree"),
     },
     Witness {
         pd: 21,
-        seed: 127,
+        seed: 75012,
         split: Some(("R206.2", "R203.4")),
-        shell_test: "f2_failed_capture_cancel_terminal_and_a_short_stop_performance_outcome_disagree",
+        shell_test: Some("pd21_timed_out_cancel_then_a_short_stop_disagree"),
     },
     Witness {
         pd: 21,
-        seed: 161,
+        seed: 178,
         split: Some(("R206.2", "R209.4")),
-        shell_test: "f2_timed_out_capture_cancel_terminal_and_the_late_recovery_performance_outcome_disagree",
+        shell_test: Some("pd21_timed_out_cancel_and_the_late_recovery_disagree"),
     },
     Witness {
         pd: 22,
-        seed: 2883,
+        seed: 23598,
         split: Some(("R211.2", "R203.2")),
-        shell_test: "f3_superseded_terminal_and_a_failed_stop_performance_outcome_disagree",
+        shell_test: None,
     },
     Witness {
         pd: 22,
-        seed: 3517,
+        seed: 22641,
         split: Some(("R211.2", "R205.5")),
-        shell_test: "f3_superseded_terminal_and_a_cancels_performance_outcome_disagree",
+        shell_test: None,
+    },
+    Witness {
+        pd: 12,
+        seed: 144624,
+        split: Some(("R201.1", "R204b.6")),
+        shell_test: None,
     },
 ];
+
+/// Signatures too rare for 10,000 seeds (PD-12's stale-stop split, PD-22): each is
+/// pinned to a seed that takes it, so the allowlist entry cannot rot.
+const RARE_SIGNATURES: [(usize, u64); 2] = [(6, 144_624), (7, 22_641)];
 
 fn seeds() -> u64 {
     std::env::var("PROPTEST_CASES")
@@ -212,28 +223,28 @@ fn every_preserved_defect_is_witnessed() {
     if summary.seeds < DEFAULT_SEEDS {
         return; // a short local run does not owe every witness
     }
+    let pinned = |pd: usize| FINDING_SEEDS.iter().any(|w| usize::from(w.pd) == pd);
     let missing: Vec<usize> = (1..=22)
-        .filter(|pd| *pd != 17 && summary.pd[*pd].0 == 0)
+        .filter(|pd| *pd != 17 && summary.pd[*pd].0 == 0 && !pinned(*pd))
         .collect();
     assert!(missing.is_empty(), "PDs never witnessed: {missing:?}");
     let stale: Vec<_> = SIGNATURES
         .iter()
         .zip(&summary.sig)
-        .filter(|(_, seen)| seen.0 == 0)
-        .map(|(signature, _)| (signature.pd, signature.pre))
+        .enumerate()
+        .filter(|(row, (_, seen))| seen.0 == 0 && !RARE_SIGNATURES.iter().any(|(r, _)| r == row))
+        .map(|(_, (signature, _))| (signature.pd, signature.pre))
         .collect();
     assert!(
         stale.is_empty(),
         "signature rows never witnessed: {stale:?}"
     );
-    for witness in &FINDING_SEEDS {
-        if let Some(pair) = witness.split {
-            assert!(
-                summary.pairs.contains_key(&pair),
-                "PD-{}: the split {pair:?} was never matched",
-                witness.pd
-            );
-        }
+    for (row, seed) in RARE_SIGNATURES {
+        assert!(
+            run_seed(seed).hits.sig[row] > 0,
+            "seed {seed} no longer takes signature {row} ({:?})",
+            SIGNATURES[row].pre
+        );
     }
     assert_eq!(
         summary.pd[17].0, 0,
@@ -265,7 +276,7 @@ fn pd19_to_pd22_have_pinned_seeds() {
         let report = run_seed(witness.seed);
         assert!(
             report.hits.pd[usize::from(witness.pd)] > 0,
-            "seed {} no longer takes PD-{} (shell witness {}): {:?}",
+            "seed {} no longer takes PD-{} (shell witness {:?}): {:?}",
             witness.seed,
             witness.pd,
             witness.shell_test,
@@ -631,6 +642,15 @@ struct Split {
     perf_own_tail: bool,
     /// A later claim by another path that lost.
     lost_later: Option<&'static str>,
+    /// The cancel task whose tail was open at the claim, at the lost claim and at the
+    /// performance completion (the window's identity).
+    claim_tail: Option<TaskId>,
+    lost_tail: Option<TaskId>,
+    perf_tail: Option<TaskId>,
+    /// A second ticker spawned for the recording after R207.3's claim.
+    second_ticker: bool,
+    /// R207.3's `SD` ran after the recording left `Recording`: no ticker, by the gate.
+    ticker_gated: bool,
 }
 
 impl Split {
@@ -645,7 +665,12 @@ impl Split {
             perf_step: 9,
             perf_other_tail: true,
             perf_own_tail: false,
-            lost_later: Some("R203.pre"),
+            lost_later: Some("R205.5"),
+            claim_tail: Some(7),
+            lost_tail: Some(7),
+            perf_tail: Some(7),
+            second_ticker: false,
+            ticker_gated: false,
         }
     }
 
@@ -665,6 +690,11 @@ impl Split {
             perf_other_tail: true,
             perf_own_tail: false,
             lost_later: None,
+            claim_tail: Some(7),
+            lost_tail: None,
+            perf_tail: Some(7),
+            second_ticker: false,
+            ticker_gated: false,
         }
     }
 
@@ -680,6 +710,20 @@ impl Split {
             perf_other_tail: false,
             perf_own_tail: false,
             lost_later: None,
+            claim_tail: None,
+            lost_tail: None,
+            perf_tail: None,
+            second_ticker: true,
+            ticker_gated: false,
+        }
+    }
+
+    fn pd12() -> Self {
+        Self {
+            terminal: (TerminalOutcome::Superseded, ErrCode::StaleOwner, "R201.1"),
+            claim_status: Status::Idle,
+            claim_current: false,
+            ..Self::pd4()
         }
     }
 
@@ -696,14 +740,16 @@ impl Split {
             input_rid: 1,
             current,
             status_before: self.claim_status,
-            other_cancel_tail: false,
+            other_cancel_tail: self.claim_tail.is_some() && !self.own_tail,
             own_cancel_tail: self.own_tail,
+            tail: self.claim_tail,
         };
         assert!(w.claim_terminal(1, Terminal::new(outcome, code), row, claim));
         if let Some(lost) = self.lost_later {
             let late = Won {
                 row: lost,
                 step: self.claim_step + 1,
+                tail: self.lost_tail,
                 ..claim
             };
             assert!(!w.claim_terminal(
@@ -722,9 +768,17 @@ impl Split {
             status_before: Status::Idle,
             other_cancel_tail: self.perf_other_tail,
             own_cancel_tail: self.perf_own_tail,
+            tail: self.perf_tail,
         };
         w.perf_complete(1, perf, perf_row, completion);
         let mut checker = Checker::default();
+        checker.r207_3_side_tasks.insert(1);
+        if self.second_ticker {
+            checker.second_ticker.insert(1);
+        }
+        if self.ticker_gated {
+            checker.ticker_gated.insert(1);
+        }
         checker.sp4b(&w, 1);
         checker
     }
@@ -747,6 +801,7 @@ fn an_sp4b_split_needs_its_full_signature() {
             "PD-22 without a cancel tail open at the completion",
             Split {
                 perf_other_tail: false,
+                perf_tail: None,
                 ..Split::pd22()
             },
             None,
@@ -755,6 +810,30 @@ fn an_sp4b_split_needs_its_full_signature() {
             "PD-22 without the real path's later claim being lost",
             Split {
                 lost_later: None,
+                ..Split::pd22()
+            },
+            None,
+        ),
+        (
+            "PD-22 whose Idle claim fell outside any cancel tail",
+            Split {
+                claim_tail: None,
+                ..Split::pd22()
+            },
+            None,
+        ),
+        (
+            "PD-22 whose losing claim fell in another cancel's tail",
+            Split {
+                lost_tail: Some(8),
+                ..Split::pd22()
+            },
+            None,
+        ),
+        (
+            "PD-22 whose losing claim is not the cancel's own TERM",
+            Split {
+                lost_later: Some("R203.pre"),
                 ..Split::pd22()
             },
             None,
@@ -796,6 +875,40 @@ fn an_sp4b_split_needs_its_full_signature() {
             Split {
                 own_tail: false,
                 ..Split::pd20a()
+            },
+            None,
+        ),
+        (
+            "PD-4 without its second ticker and without the gate refusing it",
+            Split {
+                second_ticker: false,
+                ..Split::pd4()
+            },
+            None,
+        ),
+        (
+            "PD-4's claim half: the ticker gate refused after the recording moved on",
+            Split {
+                second_ticker: false,
+                ticker_gated: true,
+                ..Split::pd4()
+            },
+            Some(4),
+        ),
+        (
+            "PD-4 whose recording then ends in another class",
+            Split {
+                perf: (PerfOutcome::Failed, "R213.2"),
+                ..Split::pd4()
+            },
+            Some(4),
+        ),
+        ("PD-12 in full", Split::pd12(), Some(12)),
+        (
+            "PD-12 for the current recording",
+            Split {
+                claim_current: true,
+                ..Split::pd12()
             },
             None,
         ),
@@ -866,6 +979,7 @@ fn an_sp4b_split_is_checked_at_the_prefix_where_both_outcomes_exist() {
         status_before: Status::Idle,
         other_cancel_tail: false,
         own_cancel_tail: false,
+        tail: None,
     };
     w.claim_terminal(
         1,
@@ -1160,7 +1274,7 @@ fn a_stuck_recovering_run_needs_the_generations_own_pd18_or_pd19_evidence() {
 /// The seeded runs witness PD-19 with the whole story, so the evidence is real.
 #[test]
 fn pd19_is_witnessed_with_its_whole_story() {
-    let report = run_seed(8147);
+    let report = run_seed(9514);
     assert!(report.hits.pd[19] > 0, "{:?}", report.hits);
     assert_eq!(report.hits.pd18, [0, 0, 0]);
 }
@@ -1172,5 +1286,180 @@ fn a_blocked_step_changes_nothing() {
     for seed in 0..300u64 {
         let report = run_seed_strict(seed);
         assert!(report.steps > 0);
+    }
+}
+
+// ------------------------------------------------------------ the supervisor mirror
+
+/// `audio_lifecycle.rs` and `audio.rs`, read at build time so a citation that drifts
+/// fails.
+const LIFECYCLE_SOURCE: &str = include_str!("../../../../src/audio_lifecycle.rs");
+const AUDIO_SOURCE: &str = include_str!("../../../../src/audio.rs");
+
+/// The mirror-table key of every message, worker event and supervisor step of the
+/// model. The matches are exhaustive: a new variant does not compile until it names a
+/// row, and the test below requires that row to exist.
+fn mirror_keys() -> Vec<&'static str> {
+    use super::supervisor::StartAnswer;
+    let _ = StartAnswer::Started;
+    let step = |step: SupStep| match step {
+        SupStep::Accepted => "SupStep::Accepted",
+        SupStep::StillConnecting => "Timer::StillConnecting",
+        SupStep::Ready => "SupStep::Ready",
+        SupStep::RecoveryStalled => "SupStep::RecoveryStalled",
+        SupStep::Recovering(_) => "SupStep::Recovering",
+        SupStep::InitFailed { .. } => "SupStep::InitFailed",
+        SupStep::Interrupted(_) => "SupStep::Interrupted",
+        SupStep::Idle => "SupStep::Idle",
+        SupStep::ClearOwner => "SupStep::ClearOwner",
+        SupStep::CleanupFinished => "SupStep::CleanupFinished",
+        SupStep::Answer => "SupStep::Answer",
+        SupStep::CancelAnswer(_) => "SupStep::CancelAnswer",
+        SupStep::StopAnswer(_) => "SupStep::StopAnswer",
+    };
+    let worker = |ev: WorkerEv| match ev {
+        WorkerEv::FirstBuffer => "WorkerEv::FirstBuffer",
+        WorkerEv::RuntimeFailed => "WorkerEv::RuntimeFailed",
+        WorkerEv::TerminationUnconfirmed => "WorkerEv::TerminationUnconfirmed",
+        WorkerEv::InitFailed => "WorkerEv::InitFailed",
+        WorkerEv::RecordingSealed => "WorkerEv::RecordingSealed",
+        WorkerEv::ThreadExited => "WorkerEv::ThreadExited",
+    };
+    let message = |msg: &Msg| match msg {
+        Msg::Start { .. } => "Msg::Start (client enqueue)",
+        Msg::Stop { .. } => "Msg::Stop (client enqueue)",
+        Msg::Cancel { .. } => "Msg::Cancel (client enqueue)",
+        Msg::Worker { .. } => "supervisor loop",
+    };
+    let mut keys = vec![
+        step(SupStep::Accepted),
+        step(SupStep::StillConnecting),
+        step(SupStep::Ready),
+        step(SupStep::RecoveryStalled),
+        step(SupStep::Recovering(crate::status::AudioCancelReason::User)),
+        step(SupStep::InitFailed {
+            recovery: None,
+            crash: false,
+        }),
+        step(SupStep::Interrupted(0)),
+        step(SupStep::Idle),
+        step(SupStep::ClearOwner),
+        step(SupStep::CleanupFinished),
+        step(SupStep::Answer),
+        step(SupStep::CancelAnswer(0)),
+        step(SupStep::StopAnswer(0)),
+    ];
+    for ev in [
+        WorkerEv::FirstBuffer,
+        WorkerEv::RuntimeFailed,
+        WorkerEv::TerminationUnconfirmed,
+        WorkerEv::InitFailed,
+        WorkerEv::RecordingSealed,
+        WorkerEv::ThreadExited,
+    ] {
+        keys.push(worker(ev));
+    }
+    for msg in [
+        Msg::Start {
+            rid: 0,
+            plan: Box::new(external_attempt_plan()),
+        },
+        Msg::Stop { rid: 0, tid: 0 },
+        Msg::Cancel {
+            rid: 0,
+            tid: None,
+            reason: crate::status::AudioCancelReason::User,
+            starting_only: false,
+        },
+        Msg::Worker {
+            rid: 0,
+            ev: WorkerEv::ThreadExited,
+        },
+    ] {
+        keys.push(message(&msg));
+    }
+    keys
+}
+
+fn external_attempt_plan() -> AttemptPlan {
+    AttemptPlan {
+        kind: StartKind::Live,
+        connecting: false,
+        ready: true,
+        stalled: false,
+        end: End::External,
+        stop_delivery: Delivery::Sealed,
+        stop_samples: 0,
+    }
+}
+
+/// D-S2b-9 (a): every modeled step cites the `audio_lifecycle.rs` function and lines it
+/// mirrors, and the citation is true: the function is declared above the lines, the
+/// lines lie inside it, and the cited lines contain the fragment of source the row
+/// says it mirrors. Every message, worker event and supervisor step has a row.
+#[test]
+fn the_supervisor_mirror_cites_the_real_source() {
+    let top_level_fn = |line: &str| {
+        let is_fn = line.starts_with("fn ")
+            || line.starts_with("pub fn ")
+            || line.starts_with("pub(crate) fn ");
+        is_fn
+            .then(|| {
+                let after = line.split("fn ").nth(1)?;
+                Some(after.split(['(', '<']).next()?.trim().to_string())
+            })
+            .flatten()
+    };
+    for row in super::supervisor::MIRROR {
+        let lines: Vec<&str> = match row.file {
+            "audio_lifecycle.rs" => LIFECYCLE_SOURCE.lines().collect(),
+            "audio.rs" => AUDIO_SOURCE.lines().collect(),
+            other => panic!("{}: unknown source file {other}", row.step),
+        };
+        let (first, last) = (row.lines.0 as usize, row.lines.1 as usize);
+        assert!(
+            1 <= first && first <= last && last <= lines.len(),
+            "{}: lines {first}-{last} are outside the source",
+            row.step
+        );
+        // The function enclosing the first cited line.
+        let decl = (0..first)
+            .rev()
+            .find(|index| top_level_fn(lines[*index]).is_some())
+            .unwrap_or_else(|| panic!("{}: no function encloses line {first}", row.step));
+        assert_eq!(
+            top_level_fn(lines[decl]).as_deref(),
+            Some(row.function),
+            "{}: line {first} is in `{}` (declared at {}), not `{}`",
+            row.step,
+            top_level_fn(lines[decl]).unwrap_or_default(),
+            decl + 1,
+            row.function
+        );
+        let end = (decl..lines.len())
+            .find(|index| lines[*index] == "}")
+            .map_or(lines.len(), |index| index + 1);
+        assert!(
+            last <= end,
+            "{}: lines {first}-{last} run past the end of `{}` (line {end})",
+            row.step,
+            row.function
+        );
+        let cited = lines[first - 1..last].join("\n");
+        assert!(
+            cited.contains(row.needle),
+            "{}: lines {first}-{last} of `{}` do not contain `{}`",
+            row.step,
+            row.function,
+            row.needle
+        );
+    }
+    for key in mirror_keys() {
+        assert!(
+            super::supervisor::MIRROR
+                .iter()
+                .any(|row| row.step.starts_with(key)),
+            "the model step `{key}` has no mirror row"
+        );
     }
 }

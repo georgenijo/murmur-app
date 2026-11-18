@@ -66,6 +66,17 @@ pub enum Pre {
     /// a later claim of the real path was lost, and a cancel's tail was open when
     /// performance completed.
     SupervisorIdleWon,
+    /// PD-4: the claim was for the current recording and a **second ticker** spawned
+    /// for it after the claim; the recording's own path completed performance later.
+    SecondTickerThenPerf,
+    /// PD-4's claim half: the claim and the order as above, but the second ticker was
+    /// refused because the recording had left `Recording` (or its id was no longer
+    /// current) when R207.3's `SD` ran: the ticker's own gate (`q_ticker_may_register`),
+    /// not an absent `SD`.
+    TickerGatedThenPerf,
+    /// PD-12: a stale stop claimed `Superseded` for an older recording (its input was
+    /// not the current one) before that recording's own path completed performance.
+    StaleClaimThenPerf,
 }
 
 /// The performance completions a signature admits.
@@ -117,14 +128,29 @@ pub struct Signature {
 
 const SUPERSEDED: (TerminalOutcome, ErrCode) = (TerminalOutcome::Superseded, ErrCode::StaleOwner);
 
-pub const SIGNATURES: [Signature; 6] = [
-    // PD-4: R207.3 on a live `Recording`; whatever the recording's own path completes.
+pub const SIGNATURES: [Signature; 8] = [
+    // PD-4 (C7.1): R207.3 on a live `Recording` claims `Superseded/StaleOwner` (its
+    // specified terminal), the wrapper's `SD` spawns a **second ticker** for the same
+    // id, and the recording's own path completes performance later. C7.1 names
+    // `Success` as the outcome the live recording reaches; the recording can instead
+    // end in any other class (a stop of silence, a crash), and the disagreement is the
+    // same defect, so the performance class is not narrowed. The claim, the status,
+    // the ticker and the order are all required.
     Signature {
         pd: 4,
         terminal: &[("R207.3", SUPERSEDED.0, SUPERSEDED.1)],
         claim_status: &[Status::Recording],
         perf: PerfSet::Any(ALL_PERF),
-        pre: Pre::LiveClaimThenPerf,
+        pre: Pre::SecondTickerThenPerf,
+    },
+    // PD-4, claim half: the same claim and status, and R207.3's `SD` ran but the ticker
+    // gate refused (the recording had already left `Recording`).
+    Signature {
+        pd: 4,
+        terminal: &[("R207.3", SUPERSEDED.0, SUPERSEDED.1)],
+        claim_status: &[Status::Recording],
+        perf: PerfSet::Any(ALL_PERF),
+        pre: Pre::TickerGatedThenPerf,
     },
     // PD-5: R207.2 / R209.2 on the current id in `Idle`, `Recovering` or `Processing`
     // (the statuses C3 lists for those rows).
@@ -202,6 +228,15 @@ pub const SIGNATURES: [Signature; 6] = [
         ]),
         pre: Pre::FailedCancelPort,
     },
+    // PD-12 (C7.1): the stale-id stop (R201.1) emits `Superseded` for an older id that
+    // is still finishing; its own path completes performance with another outcome.
+    Signature {
+        pd: 12,
+        terminal: &[("R201.1", SUPERSEDED.0, SUPERSEDED.1)],
+        claim_status: ALL_STATUSES,
+        perf: PerfSet::Any(ALL_PERF),
+        pre: Pre::StaleClaimThenPerf,
+    },
     // PD-22: the supervisor `Idle` (R211.2) won `Superseded` for a finished current id.
     Signature {
         pd: 22,
@@ -226,8 +261,6 @@ struct Gen {
     /// its owner was still cleaning up: a context-less stop (R202.3), or the stop's
     /// pipeline guard (R204a).
     stop_idle: bool,
-    /// R201.6: the (auto) stop was refused, nothing to take.
-    stop_refused: bool,
     /// `Interrupted` of 8,000 samples or more ended the generation.
     long_interrupt: bool,
 }
@@ -247,6 +280,15 @@ pub struct Checker {
     /// Recordings whose pipeline or stop task panicked (PD-13).
     panicked_ids: BTreeSet<Rid>,
     pub steps_checked: u32,
+    /// Recordings for which a second ticker spawned after R207.3's claim (PD-4).
+    pub(super) second_ticker: BTreeSet<Rid>,
+    /// Recordings whose R207.3 `SD` ran after the recording left `Recording`: the
+    /// ticker gate refused, so no second ticker exists (PD-4's claim half).
+    pub(super) ticker_gated: BTreeSet<Rid>,
+    /// Recordings whose R207.3 `SD` ran (the second ticker, if any, exists by then).
+    pub(super) r207_3_side_tasks: BTreeSet<Rid>,
+    /// Recordings whose SP4(b) split waits for R207.3's `SD` to run.
+    sp4b_deferred: BTreeSet<Rid>,
     /// How many of `World::registry_faults` were already reported.
     faults_seen: usize,
     /// A readable event trace (for reproducing a seed by hand).
@@ -340,11 +382,13 @@ impl Checker {
         for e in &out.effects {
             // PD-4's defining behaviour: after R207.3 claimed `Superseded` for the live
             // recording, its side tasks spawned a second ticker for the same id.
-            if e.row == "R207.3"
-                && matches!(e.effect, Effect::StartSideTasks)
-                && w.tickers.get(&e.input_rid).copied().unwrap_or(0) >= 2
-            {
-                self.hit(&mut hits, 4, e.row, e.input_rid);
+            if e.row == "R207.3" && matches!(e.effect, Effect::StartSideTasks) {
+                self.r207_3_side_tasks.insert(e.input_rid);
+                if w.tickers.get(&e.input_rid).copied().unwrap_or(0) >= 2 {
+                    self.second_ticker.insert(e.input_rid);
+                } else if e.status_before != Status::Recording || e.current != e.input_rid {
+                    self.ticker_gated.insert(e.input_rid);
+                }
             }
             self.check_effect(e, &hits);
         }
@@ -357,7 +401,7 @@ impl Checker {
                 matches!(
                     e.effect,
                     Effect::Terminal(_) | Effect::PerfComplete(_) | Effect::PipelineGuardFinish(_)
-                )
+                ) || (e.row == "R207.3" && matches!(e.effect, Effect::StartSideTasks))
             })
             .map(|e| e.input_rid)
             .collect();
@@ -458,9 +502,6 @@ impl Checker {
         }
         if d.in_cancel_tail && is_supervisor_site(d.site) {
             self.hit(hits, 16, row, rid);
-        }
-        if row == "R201.6" {
-            self.gens.entry(rid).or_default().stop_refused = true;
         }
         if row == "R101.12" && d.cleanup_pending && !d.restorer_pending && !d.pipeline_live {
             let stranded = d.current_before;
@@ -577,9 +618,18 @@ impl Checker {
         else {
             return;
         };
-        if perf_class_allowed(*outcome, *perf) || !self.sp4b_done.insert(rid) {
+        if perf_class_allowed(*outcome, *perf) || self.sp4b_done.contains(&rid) {
             return;
         }
+        // PD-4 needs its second ticker: R207.3's `SD` is the claim's own `PostDT` step,
+        // so while it is still to run the split is not judged yet (it is, at that step,
+        // or fails at the end of the run).
+        if *terminal_row == "R207.3" && !self.r207_3_side_tasks.contains(&rid) {
+            self.sp4b_deferred.insert(rid);
+            return;
+        }
+        self.sp4b_deferred.remove(&rid);
+        self.sp4b_done.insert(rid);
         let claim = w.ledger.ctx[&rid];
         let completion = w.perf.ctx[&rid];
         if std::env::var("DUMP_SP4B").is_ok() && !self.would_match(w, rid) {
@@ -634,11 +684,13 @@ impl Checker {
                 .contains(&(*terminal_row, *outcome, *code))
                 && signature.claim_status.contains(&claim.status_before)
                 && signature.perf.admits(perf_row, *perf)
-                && Self::precondition(signature.pre, w, rid)
+                && self.precondition(signature.pre, w, rid)
         })
     }
 
-    fn precondition(pre: Pre, w: &World, rid: Rid) -> bool {
+    fn precondition(&self, pre: Pre, w: &World, rid: Rid) -> bool {
+        let second_ticker = self.second_ticker.contains(&rid);
+        let ticker_gated = self.ticker_gated.contains(&rid);
         let claim = w.ledger.ctx[&rid];
         let completion = w.perf.ctx[&rid];
         let tries = &w.ledger.tries[&rid];
@@ -659,11 +711,29 @@ impl Checker {
             }
             Pre::FailedCancelPort => claim_current,
             Pre::SupervisorIdleWon => {
+                // One window: the winning `Idle` claim, the named losing claim (the
+                // cancel's own `TERM`, R205.5) and the performance completion all fall
+                // in the tail of the same cancel.
                 claim_current
-                    && lost_later
                     && claim.step < completion.step
-                    && (completion.own_cancel_tail || completion.other_cancel_tail)
+                    && claim.other_cancel_tail
+                    && claim.tail.is_some_and(|tail| {
+                        completion.tail == Some(tail)
+                            && tries.iter().any(|t| {
+                                t.row == "R205.5"
+                                    && !t.won
+                                    && t.step > claim.step
+                                    && t.tail == Some(tail)
+                            })
+                    })
             }
+            Pre::SecondTickerThenPerf => {
+                claim_current && claim.step < completion.step && second_ticker
+            }
+            Pre::TickerGatedThenPerf => {
+                claim_current && claim.step < completion.step && ticker_gated
+            }
+            Pre::StaleClaimThenPerf => !claim_current && claim.step < completion.step,
         }
     }
 
@@ -671,6 +741,11 @@ impl Checker {
     /// exemption needs is the recording's own (never a whole run's).
     pub fn on_end(&mut self, w: &World, quiescent_tasks: &[&'static str]) {
         self.sp4a(w);
+        for rid in std::mem::take(&mut self.sp4b_deferred) {
+            self.fail(format!(
+                "SP4(b): id {rid}: R207.3's claim split from performance and its side tasks never ran"
+            ));
+        }
         if w.partial_lease.is_some() {
             self.fail(format!(
                 "SP10: the lease {:?} was never released",
@@ -736,14 +811,14 @@ impl Checker {
         let _ = w;
         match instance {
             Instance::Long => {
-                // PD-19: the user's stop took the capture before `Interrupted`
-                // (its `TakeInterrupted`, R201.5), the stop path wrote `Idle` (R202.3 or the R204a guard), the owner was
-                // still recovering when a start took R101.12, and the auto-stop was
-                // refused (R201.6).
-                (gen.long_interrupt
-                    && gen.taken_by == Some("R201.5")
-                    && gen.stop_idle
-                    && gen.stop_refused)
+                // PD-19: a stop took the preserved capture (its `TakeInterrupted`,
+                // R201.5; the user's stop in the store-then-notify gap, or the arm's own
+                // auto-stop), the stop path wrote `Idle` (R202.3 or the R204a guard)
+                // while the owner was still recovering, and a start took R101.12 before
+                // the owner cleared. The arm's auto-stop is refused (R201.6) in the
+                // user-stop variant; when the auto-stop is the one that took the capture
+                // there is nothing to refuse.
+                (gen.long_interrupt && gen.taken_by == Some("R201.5") && gen.stop_idle)
                     .then_some(Instance::Long)
             }
             other => Some(other),

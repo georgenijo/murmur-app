@@ -177,6 +177,9 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
             break;
         }
         for task in spawned {
+            if let Some(trace) = checker.trace.as_mut() {
+                trace.push(format!("{clock:>4} spawn t{next_tid} {}", task.name()));
+            }
             slots.push(Slot {
                 tid: next_tid,
                 task,

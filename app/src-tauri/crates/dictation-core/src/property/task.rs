@@ -262,7 +262,18 @@ pub fn log_decision(
         in_cancel_tail: w.cancel_tail.get(&input_rid).is_some_and(|t| *t != cx.tid),
         pipeline_live: w.history.pipelines.contains(&input_rid),
         owner,
-        ended_by: w.sup.attempt.as_ref().map(|a| a.ended_by),
+        // The owner's attempt, or how it ended once `finish_attempt` took it (its
+        // notifications and the owner clear are still to come).
+        ended_by: w.sup.attempt.as_ref().map(|a| a.ended_by).or_else(|| {
+            owner.and_then(|rid| {
+                w.sup
+                    .finished
+                    .iter()
+                    .rev()
+                    .find(|(finished, _)| *finished == rid)
+                    .map(|(_, ended)| *ended)
+            })
+        }),
         phase: w.sup.phase(),
         step: w.step,
     });
