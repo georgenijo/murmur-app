@@ -262,7 +262,8 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
             "          components: clippy, rustfmt\n",
             "        run: cd app/src-tauri && cargo fmt --all -- --check\n\n",
             "        run: cd app/src-tauri && cargo clippy --workspace --all-targets -- -D warnings\n",
-            "          --binaries-metadata target/ci-test-binaries.json -E 'kind(lib)'\n",
+            "          -E 'kind(lib) | binary(c13_3_bug_replays)'\n",
+            "          --test c13_3_bug_replays\n",
             "          tool: cargo-nextest@0.9.150\n",
         ):
             with self.subTest(policy=old.strip()):
@@ -440,6 +441,7 @@ class WorkflowPolicyMutationTests(unittest.TestCase):
         tests = (
             "          cargo nextest list --workspace\n"
             "          --lib --bin murmur-capture-helper --test topology_watch\n"
+            "          --test c13_3_bug_replays\n"
             "          --message-format json --list-type binaries-only > target/ci-test-binaries.json &&\n"
             "          cargo metadata --format-version 1 > target/ci-cargo-metadata.json\n"
         )
