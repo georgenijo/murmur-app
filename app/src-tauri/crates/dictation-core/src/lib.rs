@@ -19,6 +19,7 @@ pub mod admission;
 pub mod cancel;
 pub mod decision;
 pub mod effects;
+pub mod handle;
 pub mod ids;
 pub mod inputs;
 pub mod lifecycle;
