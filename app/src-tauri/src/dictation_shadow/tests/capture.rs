@@ -621,3 +621,165 @@ fn the_counting_allocator_sees_frees_too() {
     assert_eq!(allocations, 0);
     assert!(frees >= 1, "the hook did not see the free");
 }
+
+/// Stage 2c-2: the producer-cost probe at the **live capture sites'** API
+/// (`dictation_executor::shadow::Flight`), the one every site in `commands/` goes
+/// through. For every input family in every status, the decision is taken outside the
+/// measurement and then replayed through the flight exactly as a site does: recorder
+/// before `Pre`, buffered `Pre` witnesses, the observed fact, the header at the
+/// decision, the `In` witnesses, `seal` (the `seq`), `submit`, the later witnesses,
+/// `finish`. The thread allocates and frees nothing; the transport's own counters
+/// show the messages were really produced.
+#[test]
+fn the_live_capture_sites_allocate_and_free_nothing() {
+    use crate::dictation_executor::shadow::{view_projection, Flight, Noted};
+    use crate::dictation_shadow::types::{EffectResult, ObservedFact};
+
+    struct Disarm;
+    impl Drop for Disarm {
+        fn drop(&mut self) {
+            crate::dictation_shadow::set_test_transport(None);
+        }
+    }
+
+    let transport = default_transport();
+    crate::dictation_shadow::set_test_transport(Some(Arc::clone(&transport)));
+    let _disarm = Disarm;
+    let mut flights = 0_u64;
+    let mut messages = 0_usize;
+    // Warm anything lazy outside the measurement.
+    drop(Flight::begin());
+    for status in Status::ALL {
+        for current in [RID, RecordingId(2), RecordingId::NONE] {
+            let core = view(status, current);
+            for input in every_input_family() {
+                let decision = core.handle(input.clone(), NOW);
+                let projection = view_projection(&core);
+                let reply = decision.reply.clone();
+                let ((), allocations, frees) = count_heap_calls(|| {
+                    let mut flight = Flight::begin();
+                    flight.enter_pre();
+                    flight.observed(ObservedFact::SpeculativeFlowing(true));
+                    let note = |flight: &mut Flight, index: usize, at: Placement| {
+                        flight.effect(Noted {
+                            index,
+                            placement: at,
+                            effect: &decision.effects[index].effect,
+                            taken: true,
+                            result: EffectResult::Ran,
+                            mirror: None,
+                            ticker: None,
+                        });
+                    };
+                    for (index, placed) in decision.effects.iter().enumerate() {
+                        if placed.at == Placement::Pre {
+                            note(&mut flight, index, Placement::Pre);
+                        }
+                    }
+                    flight.decided(
+                        input.clone(),
+                        projection,
+                        NOW,
+                        decision.row,
+                        reply.as_ref(),
+                        decision.effects.len(),
+                    );
+                    for (index, placed) in decision.effects.iter().enumerate() {
+                        if placed.at == Placement::In {
+                            note(&mut flight, index, Placement::In);
+                        }
+                    }
+                    let sealed = flight.seal(Some(projection));
+                    sealed.submit();
+                    for (index, placed) in decision.effects.iter().enumerate() {
+                        if matches!(placed.at, Placement::PostDT | Placement::PostT) {
+                            note(&mut flight, index, placed.at);
+                        }
+                    }
+                    flight.finish();
+                });
+                assert_eq!(allocations, 0, "a live capture site allocated");
+                assert_eq!(frees, 0, "a live capture site freed");
+                flights += 1;
+                // Drain outside the measurement, so the queue never fills and the
+                // accept path is the one measured.
+                let drained = pop_all(&transport).len();
+                assert!(drained >= 2, "the flight produced no messages");
+                messages += drained;
+            }
+        }
+    }
+    assert!(flights >= 100, "{flights}");
+    assert_eq!(transport.lost(), 0, "{messages} messages, none lost");
+    // And with the queue full: the drop path is two counters, nothing else.
+    let full = local_transport(2);
+    crate::dictation_shadow::set_test_transport(Some(Arc::clone(&full)));
+    let core = view(Status::Recording, RID);
+    let input = Input::CancelRequest(CancelInput { expected: None });
+    let decision = core.handle(input.clone(), NOW);
+    let projection = view_projection(&core);
+    let ((), allocations, frees) = count_heap_calls(|| {
+        for _ in 0..4 {
+            let mut flight = Flight::begin();
+            flight.enter_pre();
+            flight.decided(
+                input.clone(),
+                projection,
+                NOW,
+                decision.row,
+                decision.reply.as_ref(),
+                decision.effects.len(),
+            );
+            flight.seal(None).submit();
+            flight.finish();
+        }
+    });
+    assert_eq!(allocations, 0, "the drop path allocated");
+    assert_eq!(frees, 0, "the drop path freed");
+    assert!(full.lost() > 0);
+}
+
+#[test]
+fn the_live_capture_module_names_no_lock_box_channel_or_wake() {
+    // The production text of the module every live site goes through: no lock, no
+    // allocation, no wait, no wake, no environment read, no thread.
+    let source = super::policy::production_source(include_str!(
+        "../../dictation_executor/shadow.rs"
+    ));
+    for token in [
+        "Mutex",
+        "RwLock",
+        ".lock(",
+        "Condvar",
+        "Barrier",
+        "mpsc",
+        "Box::new",
+        "Box<",
+        "Vec<",
+        "vec!",
+        "String",
+        "format!",
+        "to_string",
+        "to_vec",
+        "Arc::new",
+        "Rc::new",
+        "unpark",
+        "notify",
+        "sleep",
+        ".recv",
+        ".wait(",
+        ".join(",
+        "thread::",
+        "thread_local",
+        "env::var",
+        "println!",
+        "eprintln!",
+        "SystemTime",
+        "Instant::now",
+    ] {
+        assert!(
+            !source.contains(token),
+            "the live capture module names `{token}`"
+        );
+    }
+}

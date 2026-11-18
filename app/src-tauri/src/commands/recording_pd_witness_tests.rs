@@ -981,3 +981,40 @@ fn every_family_pd_is_witnessed_by_the_shadow() {
         totals.pd_witness
     );
 }
+
+/// C8.7 at the live sites, over every golden: each header is submitted with D free
+/// (`shadow.submit`, a `try_lock` on D), and each blocking effect that the goldens
+/// reach (`PE(Vad)` of R203.9, the cold `supervisor.start`) runs only after its header
+/// was compared. The probe is installed by `run_sub_run_observed`, which fails the
+/// sub-run on a violation; here the evidence that the probe saw the points at all
+/// (a probe that never fires proves nothing).
+#[cfg(feature = "dictation-shadow")]
+#[test]
+fn headers_leave_d_and_precede_blocking_effects_at_every_live_site() {
+    use super::golden_tests as g;
+    use crate::dictation_shadow::replay;
+    replay::reset_site_totals();
+    g::golden_s01_stop_during_start();
+    g::golden_s02_cancel_in_each_phase();
+    g::golden_s03_interruption_of_8000_samples_or_more();
+    g::golden_s04_interruption_under_8000_samples();
+    g::golden_s05_timeout_teardown();
+    g::golden_s06_stale_stop();
+    g::golden_s07_meeting_conflict();
+    g::golden_s08_preview_handoff();
+    g::golden_s09_supervisor_idle_during_processing();
+    g::golden_s10_ready_vs_context_rendezvous();
+    g::golden_s11_idle_on_a_finished_recording();
+    g::golden_s12_start_failure_vs_initialization_failed();
+    let site = replay::site_totals();
+    eprintln!("SITE PROBE: {site:?}");
+    assert!(site.violations.is_empty(), "{:?}", site.violations);
+    assert!(site.submits > 0, "no header submission was probed");
+    for point in ["stop.perf_enter_vad", "supervisor.start"] {
+        assert!(
+            site.blocking_points.get(point).copied().unwrap_or(0) > 0,
+            "the goldens never reached `{point}`: {:?}",
+            site.blocking_points
+        );
+    }
+}

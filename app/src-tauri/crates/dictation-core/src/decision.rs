@@ -24,9 +24,10 @@ impl RowId {
         let Some((_, tail)) = self.0.split_once('.') else {
             return 0;
         };
-        let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
-        let base = digits.parse::<u16>().unwrap_or(0);
-        let step = match tail[digits.len()..].chars().next() {
+        // No allocation: the shadow's live capture reads this under D (Stage 2c-2).
+        let digits = tail.bytes().take_while(u8::is_ascii_digit).count();
+        let base = tail[..digits].parse::<u16>().unwrap_or(0);
+        let step = match tail[digits..].chars().next() {
             Some(letter @ 'a'..='e') => u16::from(letter as u8 - b'a') + 1,
             Some('r') => 6,
             _ => 0,

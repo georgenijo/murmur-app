@@ -139,6 +139,15 @@ pub(crate) fn set_test_transport(transport: Option<Arc<Transport>>) {
         .unwrap_or_else(std::sync::PoisonError::into_inner) = transport;
 }
 
+/// Test builds: the transport of the replay in progress, if any.
+#[cfg(test)]
+pub(crate) fn test_transport() -> Option<Arc<Transport>> {
+    TEST_TRANSPORT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
 /// Allocate and publish the process-wide transport. **Runs on the comparison
 /// thread**: the ring and the counters are allocated and initialised there, never on
 /// the thread that started the app (D-S2c-3 minor 2).

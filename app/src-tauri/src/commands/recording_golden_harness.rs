@@ -549,6 +549,10 @@ impl World {
     }
 
     fn fire(&self, label: &str) {
+        #[cfg(feature = "dictation-shadow")]
+        if label == "supervisor.start" {
+            crate::dictation_shadow::replay::blocking_point("supervisor.start");
+        }
         let (inline, hook) = {
             let mut hooks = locked(&self.hooks);
             let mut take = |key: &str| {
@@ -1675,9 +1679,23 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
         seen.status = Some(sub_run.setup.status);
         seen.id = state.app_state.recording_id.load(Ordering::SeqCst);
     }
+    // C8.7 at the site: every header is submitted with D free, and a blocking effect
+    // runs only after its header was compared.
+    #[cfg(feature = "dictation-shadow")]
+    let probe = {
+        let probed = Arc::clone(&world);
+        crate::dictation_shadow::replay::SiteProbe::install(move || {
+            !matches!(
+                probed.state().app_state.dictation.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            )
+        })
+    };
     (sub_run.body)(&world);
     let lines = world.finish();
     observe(&world);
+    #[cfg(feature = "dictation-shadow")]
+    drop(probe);
     reset_process_globals();
     // Everything the run drove is dropped before the replay ends, so a flight that
     // did not finish has reported its abandonment.
@@ -1687,6 +1705,13 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
     {
         let report = replay.end();
         report.assert_clean(sub_run.title);
+        let site = crate::dictation_shadow::replay::site_totals();
+        assert!(
+            site.violations.is_empty(),
+            "{}: a capture site broke a C8.7 order: {:?}",
+            sub_run.title,
+            site.violations
+        );
     }
     lines
 }
