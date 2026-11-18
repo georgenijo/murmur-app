@@ -34,6 +34,22 @@ today, which is the defect. A fix PR deletes the PD row and its witness together
 | PD-18 (b) | Start in the Idle-arm tail leaves `Recovering` | `pd18bc_start_in_the_teardown_tail_leaves_recovering` | Stage 1 test (also a 2b property witness) |
 | PD-18 (c) | Start after an unsealed delivered stop leaves `Recovering` | `pd18bc_start_in_the_teardown_tail_leaves_recovering` (with a sealed-stop control that restores Idle) | Stage 1 test (also a 2b property witness) |
 
+## Defects found by the property harness (D-S2b-5)
+
+Shell characterization witnesses in `recording_harness_findings_tests.rs` (not in the table above: the
+completeness test reads only the Stage 0b sources). The harness allowlists each exact signature and pins
+its first seed (`FINDING_SEEDS` in the core crate's `property/tests.rs`); the PD text is in the errata's
+"Defects found during the refactor".
+
+- **PD-19** (seed 633): `f4_interrupted_over_8000_with_a_refused_auto_stop_leaves_recovering`.
+- **PD-20** (seed 470, R205.5 / R203.7): `f1_cancel_terminal_and_a_short_stop_performance_outcome_disagree`.
+- **PD-21** (seed 42, R206.2 / R203.6): `f2_failed_capture_cancel_terminal_and_a_short_stop_performance_outcome_disagree`.
+- **PD-22** (seed 331, R211.2 / R205.5; seed 4265, R211.2 / R203.2): `f3_superseded_terminal_and_a_cancels_performance_outcome_disagree` and `f3_superseded_terminal_and_a_failed_stop_performance_outcome_disagree`.
+
+The other rows of the PD-20..PD-22 signature table are the same two-ledger race through other rows; the
+model witnesses them (`every_preserved_defect_is_witnessed` fails on a row that never occurs) and no
+shell test pins them.
+
 ## C4.9 contract tests
 
 Implemented now (`recording_contract_tests.rs`), against today's shell:

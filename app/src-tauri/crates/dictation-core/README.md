@@ -391,7 +391,15 @@ splitmix64 generator turns a seed into the whole run.
   above hold: a start can only be dropped between steps, at its smart-capture await.
 * **Checks** (`checks.rs`): SP1-SP4, SP6-SP10 after every step; PD signatures are
   removed from a failure only when row and precondition match C7.1; C7.3 liveness at
-  the end of each run, after filtering L4/L6 violators.
+  the end of each run, after filtering L4/L6 violators. There is no "known findings"
+  set: a behaviour outside the allowlist fails `seeds_hold_the_properties`.
+* **Layer** (D-S2b-4): the harness runs the real `decide_*` functions over a model
+  world, not the shell. Its fidelity is guarded by D-S2b-5: a behaviour it finds that
+  C7.1 does not allowlist counts as a product behaviour only after a shell test
+  reproduces it. PD-19..PD-22 were found this way
+  (`src/commands/recording_harness_findings_tests.rs`, pinned seeds in
+  `FINDING_SEEDS`); PD-20..PD-22 are allowlisted by exact `(terminal row, performance
+  row)` pairs (`SIGNATURES`), and a pair outside the table is an SP4(b) failure.
 * **Seeds**: 10,000 in CI (well under 20 s); `PROPTEST_CASES=100000 cargo test -p
   murmur-dictation-core --lib property::` raises it. `TRACE_SEED=<n> cargo test -p
   murmur-dictation-core --lib property::tests::trace_one -- --nocapture` prints one run.

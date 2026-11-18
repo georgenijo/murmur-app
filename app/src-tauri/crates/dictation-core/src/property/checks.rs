@@ -28,70 +28,46 @@ pub enum Instance {
     /// An unsealed delivered stop.
     C,
     /// An `Interrupted` end of 8,000 samples or more whose spawned stop is refused
-    /// (R201.6): the appendix names no such instance (a finding).
+    /// (R201.6): PD-19, its own row (decision D-S2b-5), not an instance of PD-18.
     Other,
 }
 
 #[derive(Debug, Default, Clone)]
 pub struct RunHits {
     /// Occurrences per PD number (index 0 unused).
-    pub pd: [u32; 19],
+    pub pd: [u32; 23],
     /// PD-18 instances of runs that ended stuck in `Recovering` (a, b, c).
-    pub pd18: [u32; 4],
-    /// Behaviours the C7.1 allowlist does not name (F-1..F-3, index 1..3): see
-    /// [`Finding`]. They are counted here and are **not** accepted silently: the
-    /// suite reports each one and pins the known set.
-    pub findings: [u32; 4],
+    pub pd18: [u32; 3],
+    /// Occurrences per [`SIGNATURES`] row.
+    pub sig: [u32; SIGNATURES.len()],
 }
 
-/// A violation of a property that no C7.1 row covers, reproduced by the harness
-/// and classified by its exact signature. Each is a candidate preserved defect
-/// (or a spec gap in C7.2's `Exempt` column) awaiting George's decision; none is
-/// fixed here (test-only PR).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Finding {
-    /// F-1: the cancel at `Processing` (R205.5) and another completing path split the
-    /// terminal and the performance outcome between them (SP4(b)).
-    CancelTailSplit,
-    /// F-2: a failed capture cancel's `TERM(PipelineFailure)` (R206.2) wins while the
-    /// recording goes on and a later path completes performance (SP4(b)).
-    FailedCancelTerminal,
-    /// F-3: a supervisor `Idle` for a finished current id emits the winning
-    /// `Superseded` (R211.2, PD-2) while another path completes performance (SP4(b)).
-    SupersededWinner,
-}
-
-impl Finding {
-    pub fn id(self) -> &'static str {
-        match self {
-            Self::CancelTailSplit => "F-1",
-            Self::FailedCancelTerminal => "F-2",
-            Self::SupersededWinner => "F-3",
-        }
-    }
-
-    fn index(self) -> usize {
-        match self {
-            Self::CancelTailSplit => 1,
-            Self::FailedCancelTerminal => 2,
-            Self::SupersededWinner => 3,
-        }
-    }
-
-    /// The signature: the row that won the terminal claim and the row that completed
-    /// performance first.
-    fn classify(terminal_row: &str, perf_row: &str) -> Option<Self> {
-        if terminal_row == "R211.2" {
-            Some(Self::SupersededWinner)
-        } else if terminal_row == "R206.2" {
-            Some(Self::FailedCancelTerminal)
-        } else if terminal_row == "R205.5" || perf_row == "R205.5" {
-            Some(Self::CancelTailSplit)
-        } else {
-            None
-        }
-    }
-}
+/// PD-20..PD-22 (D-S2b-5): the terminal claim (`claim_terminal`) and the performance
+/// completion (`complete`) are two separate first-wins ledgers, so two paths racing
+/// for one recording can win one each, and the terminal and the performance outcome
+/// then disagree (SP4(b)). The signature is exact: the PD, the row that won the
+/// terminal and the row that completed performance first. A pair that is not in
+/// this table is an SP4(b) failure, not a new PD.
+///
+/// * PD-20: the cancel at `Processing` (R205.5) is one of the two.
+/// * PD-21: a failed capture cancel's `TERM(PipelineFailure)` (R206.2) won while the
+///   recording went on.
+/// * PD-22: a supervisor `Idle` for a finished current id won `Superseded` (R211.2).
+pub const SIGNATURES: [(u8, &str, &str); 13] = [
+    (20, "R205.5", "R203.2"),
+    (20, "R205.5", "R203.5"),
+    (20, "R205.5", "R203.7"),
+    (20, "R205.5", "R204b.6"),
+    (20, "R205.5", "R213.2"),
+    (20, "R203.pre", "R205.5"),
+    (20, "R213.2", "R205.5"),
+    (21, "R206.2", "R203.4"),
+    (21, "R206.2", "R203.6"),
+    (21, "R206.2", "R203.7"),
+    (21, "R206.2", "R204b.6"),
+    (22, "R211.2", "R203.2"),
+    (22, "R211.2", "R205.5"),
+];
 
 #[derive(Debug, Default)]
 pub struct Checker {
@@ -361,21 +337,29 @@ impl Checker {
             problems.push(format!("status {:?} at the end", w.status));
         }
         if stuck_recovering {
-            // PD-18: one witness per instance the run took.
-            let mut seen = [false; 4];
+            // PD-18: one witness per instance the run took; PD-19 is the run that
+            // took the `Other` one.
+            let mut seen = [false; 3];
+            let mut other = false;
             for instance in &self.pd18_candidates {
-                let index = match instance {
-                    Instance::A => 0,
-                    Instance::B => 1,
-                    Instance::C => 2,
-                    Instance::Other => 3,
-                };
-                if !seen[index] {
-                    seen[index] = true;
+                match instance {
+                    Instance::A => seen[0] = true,
+                    Instance::B => seen[1] = true,
+                    Instance::C => seen[2] = true,
+                    Instance::Other => other = true,
+                }
+            }
+            for (index, taken) in seen.iter().enumerate() {
+                if *taken {
                     self.hits.pd18[index] += 1;
                 }
             }
-            self.hits.pd[18] += 1;
+            if seen.iter().any(|taken| *taken) {
+                self.hits.pd[18] += 1;
+            }
+            if other {
+                self.hits.pd[19] += 1;
+            }
         }
         for rid in &w.ledger.accepted {
             if !w.ledger.claimed.contains_key(rid)
@@ -414,8 +398,14 @@ impl Checker {
                 let exempt = [4u8, 5, 11, 13].iter().any(|pd| self.pd_touched(*pd, *rid));
                 if !perf_class_allowed(*outcome, *perf) && !exempt {
                     let terminal_row = w.ledger.claimed[rid].2;
-                    match Finding::classify(terminal_row, perf_row) {
-                        Some(finding) => self.hits.findings[finding.index()] += 1,
+                    match SIGNATURES
+                        .iter()
+                        .position(|(_, t, p)| *t == terminal_row && *p == *perf_row)
+                    {
+                        Some(row) => {
+                            self.hits.pd[usize::from(SIGNATURES[row].0)] += 1;
+                            self.hits.sig[row] += 1;
+                        }
                         None => self.fail(format!(
                             "SP4(b): terminal {outcome:?} by {terminal_row} but performance {perf:?} by {perf_row}"
                         )),

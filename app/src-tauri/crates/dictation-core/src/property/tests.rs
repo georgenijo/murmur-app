@@ -1,13 +1,13 @@
 //! The property suite (C7.5): 10,000 fixed seeds, the per-PD converse witness, the
-//! PD-18 instance seeds, the findings pin, determinism, and unit tests of the
-//! checker itself (a checker that cannot fail proves nothing).
+//! PD-18 instance seeds, the PD-19..PD-22 witness seeds, determinism, and unit
+//! tests of the checker itself (a checker that cannot fail proves nothing).
 
-use super::checks::{Checker, Finding};
+use super::checks::{Checker, SIGNATURES};
 use super::model::*;
 use super::run::{run_seed, run_seed_strict, run_seed_with, RunReport};
 use super::task::*;
 use crate::decision::{SiteId, Verdict};
-use crate::effects::{Effect, Placement};
+use crate::effects::{Effect, PerfOutcome, Placement};
 use crate::status::Status;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -24,6 +24,32 @@ const PD18_SEEDS: [(&str, u64); 3] = [
     ("(c) unsealed stop", 2318),
 ];
 
+/// PD-19..PD-22's witnesses (D-S2b-5): the first seed of the fixed range that
+/// takes each row, and the shell test that reproduces it
+/// (`recording_harness_findings_tests.rs`).
+const FINDING_SEEDS: [(u8, u64, &str); 4] = [
+    (
+        19,
+        633,
+        "f4_interrupted_over_8000_with_a_refused_auto_stop_leaves_recovering",
+    ),
+    (
+        20,
+        470,
+        "f1_cancel_terminal_and_a_short_stop_performance_outcome_disagree",
+    ),
+    (
+        21,
+        42,
+        "f2_failed_capture_cancel_terminal_and_a_short_stop_performance_outcome_disagree",
+    ),
+    (
+        22,
+        331,
+        "f3_superseded_terminal_and_a_cancels_performance_outcome_disagree",
+    ),
+];
+
 fn seeds() -> u64 {
     std::env::var("PROPTEST_CASES")
         .ok()
@@ -38,7 +64,7 @@ struct Summary {
     failing: Vec<(u64, Vec<String>)>,
     pd: Vec<(u32, Option<u64>)>,
     pd18: Vec<(u32, Option<u64>)>,
-    findings: Vec<(u32, Option<u64>)>,
+    sig: Vec<(u32, Option<u64>)>,
     liveness_checked: u64,
     liveness_filtered: u64,
     steps: u64,
@@ -50,9 +76,9 @@ fn summary() -> &'static Summary {
         let n = seeds();
         let mut summary = Summary {
             seeds: n,
-            pd: vec![(0, None); 19],
-            pd18: vec![(0, None); 4],
-            findings: vec![(0, None); 4],
+            pd: vec![(0, None); 23],
+            pd18: vec![(0, None); 3],
+            sig: vec![(0, None); SIGNATURES.len()],
             ..Summary::default()
         };
         let started = Instant::now();
@@ -76,10 +102,10 @@ fn summary() -> &'static Summary {
                     summary.pd18[instance].1.get_or_insert(seed);
                 }
             }
-            for (finding, count) in report.hits.findings.iter().enumerate() {
+            for (row, count) in report.hits.sig.iter().enumerate() {
                 if *count > 0 {
-                    summary.findings[finding].0 += count;
-                    summary.findings[finding].1.get_or_insert(seed);
+                    summary.sig[row].0 += count;
+                    summary.sig[row].1.get_or_insert(seed);
                 }
             }
             if !report.violations.is_empty() {
@@ -95,20 +121,22 @@ fn summary() -> &'static Summary {
             summary.liveness_checked,
             summary.liveness_filtered
         );
-        for pd in 1..=18 {
+        for pd in 1..=22 {
             eprintln!(
                 "property: PD-{pd}: {} occurrences, first at seed {:?}",
                 summary.pd[pd].0, summary.pd[pd].1
             );
         }
         eprintln!(
-            "property: PD-18 stuck runs (a, b, c, other): {:?}",
+            "property: PD-18 stuck runs (a, b, c): {:?}",
             summary.pd18
         );
-        eprintln!(
-            "property: findings F-1..F-3: {:?}",
-            &summary.findings[1..]
-        );
+        for (row, (pd, terminal, perf)) in SIGNATURES.iter().enumerate() {
+            eprintln!(
+                "property: PD-{pd} {terminal} -> {perf}: {} occurrences, first at seed {:?}",
+                summary.sig[row].0, summary.sig[row].1
+            );
+        }
         summary
     })
 }
@@ -145,18 +173,29 @@ fn ten_thousand_seeds_fit_the_ci_budget() {
 }
 
 /// The converse (C7.0, C7.5): every PD signature occurs at least once in the
-/// seeds, so an allowlist entry cannot rot. PD-17 is latent (no production
-/// schedule) and has no witness; PD-18 has one per instance (next test).
+/// seeds, so an allowlist entry cannot rot, and so does every row of the PD-20..22
+/// signature table. PD-17 is latent (no production schedule) and has no witness;
+/// PD-18 has one per instance (a later test).
 #[test]
 fn every_preserved_defect_is_witnessed() {
     let summary = summary();
     if summary.seeds < DEFAULT_SEEDS {
         return; // a short local run does not owe every witness
     }
-    let missing: Vec<usize> = (1..=18)
+    let missing: Vec<usize> = (1..=22)
         .filter(|pd| *pd != 17 && summary.pd[*pd].0 == 0)
         .collect();
     assert!(missing.is_empty(), "PDs never witnessed: {missing:?}");
+    let stale: Vec<_> = SIGNATURES
+        .iter()
+        .zip(&summary.sig)
+        .filter(|(_, seen)| seen.0 == 0)
+        .map(|(signature, _)| signature)
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "signature rows never witnessed: {stale:?}"
+    );
     assert_eq!(
         summary.pd[17].0, 0,
         "PD-17 is latent: no schedule reaches it"
@@ -178,31 +217,53 @@ fn pd18_has_one_seed_per_instance() {
     }
 }
 
-/// The behaviours C7.1 does not name. They are not accepted: the suite reports each
-/// one and pins the known set, so a change that adds, removes or silently absorbs
-/// one fails here and is read by a person (see the PR body and the report).
+/// PD-19..PD-22 each have a pinned seed, and the shell test that reproduces the
+/// behaviour is named beside it (D-S2b-5). There is no "known findings" set: a
+/// behaviour outside C7.1 fails `seeds_hold_the_properties`.
 #[test]
-fn unlisted_findings_are_exactly_the_known_set() {
-    let summary = summary();
-    if summary.seeds < DEFAULT_SEEDS {
-        return;
-    }
-    for finding in [
-        Finding::CancelTailSplit,
-        Finding::FailedCancelTerminal,
-        Finding::SupersededWinner,
-    ] {
-        let index: usize = finding.id()[2..].parse().unwrap();
+fn pd19_to_pd22_have_one_seed_each() {
+    for (pd, seed, shell_test) in FINDING_SEEDS {
+        let report = run_seed(seed);
         assert!(
-            summary.findings[index].0 > 0,
-            "{} no longer occurs; the finding was fixed or the generator changed",
-            finding.id()
+            report.hits.pd[usize::from(pd)] > 0,
+            "seed {seed} no longer takes PD-{pd} (shell witness {shell_test}): {:?}",
+            report.hits
         );
+        assert!(report.violations.is_empty(), "{:?}", report.violations);
     }
-    assert!(
-        summary.pd18[3].0 > 0,
-        "F-4 (PD-18 variant: Interrupted >= 8,000 whose spawned stop is refused) no longer occurs"
-    );
+}
+
+/// The signature table is the allowlist for SP4(b): a terminal and a performance
+/// outcome that disagree through any other pair of rows fail the seed.
+#[test]
+fn an_sp4b_split_outside_the_signature_table_fails() {
+    use crate::status::{ErrCode, TerminalOutcome};
+    for (terminal_row, perf_row, listed) in [
+        ("R205.5", "R203.7", true),
+        ("R205.5", "R999.1", false),
+        ("R999.1", "R203.7", false),
+    ] {
+        let mut w = World::new();
+        w.ledger.accepted.insert(1);
+        w.ledger.claimed.insert(
+            1,
+            (
+                TerminalOutcome::UserCancelledProcessing,
+                ErrCode::None,
+                terminal_row,
+            ),
+        );
+        w.perf.outcome.insert(1, (PerfOutcome::NoSpeech, perf_row));
+        let mut checker = Checker::default();
+        checker.on_end(&w, &[]);
+        let failed = checker.violations.iter().any(|v| v.starts_with("SP4(b)"));
+        assert_eq!(
+            failed, !listed,
+            "{terminal_row} / {perf_row}: {:?}",
+            checker.violations
+        );
+        assert_eq!(checker.hits.pd[20] > 0, listed);
+    }
 }
 
 #[test]
