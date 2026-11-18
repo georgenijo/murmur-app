@@ -1,0 +1,24 @@
+{
+ "name": "M117b-PM-effect-emits-status",
+ "family": "start",
+ "bug": "#117",
+ "description": "The PM (model preparation) effect port emits a processing status.",
+ "edits": [
+  [
+   "src/commands/recording/start_ports.rs",
+   "                let tail = self.tail.ok_or(PortFailure)?;\n                self.host.spawn_model_preparation(",
+   "                let tail = self.tail.ok_or(PortFailure)?;\n                let _ = self.host.emit_json(\"recording-status-changed\", serde_json::json!(\"processing\"));\n                self.host.spawn_model_preparation("
+  ]
+ ],
+ "cmds": [
+  [
+   "cargo",
+   "test",
+   "--lib",
+   "--",
+   "--test-threads=1",
+   "bug117",
+   "golden_"
+  ]
+ ]
+}

@@ -154,6 +154,32 @@ pub(crate) fn claim(gesture_token: Option<&str>) -> SpeculativeClaim {
     }
 }
 
+/// A flowing key-down capture, for the start family's speculative-flow tests: marks
+/// capture `id` as retaining PCM on the process-global supervisor's public state (the
+/// fact `speculative_capture_is_flowing` reads) until dropped. Nothing is sent to the
+/// supervisor thread.
+#[cfg(test)]
+pub(crate) struct FlowingForTest;
+
+#[cfg(test)]
+pub(crate) fn mark_flowing_for_test(id: u64) -> FlowingForTest {
+    super::supervisor()
+        .public
+        .flowing_speculative
+        .store(id, std::sync::atomic::Ordering::SeqCst);
+    FlowingForTest
+}
+
+#[cfg(test)]
+impl Drop for FlowingForTest {
+    fn drop(&mut self) {
+        super::supervisor()
+            .public
+            .flowing_speculative
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

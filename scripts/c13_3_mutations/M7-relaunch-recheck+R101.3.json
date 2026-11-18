@@ -1,0 +1,36 @@
+{
+ "name": "M7-relaunch-recheck+R101.3",
+ "family": "admission",
+ "bug": "bb66238b",
+ "description": "The MeetingPostClaim relaunch recheck and the R101.3 relaunch_committed refusal never refuse.",
+ "edits": [
+  [
+   "crates/dictation-core/src/admission.rs",
+   "        refuse_if(\n            o.relaunch_recheck == Some(true),\n            RefusalCode::MeetingRestarting,\n        )",
+   "        refuse_if(false, RefusalCode::MeetingRestarting)"
+  ],
+  [
+   "crates/dictation-core/src/admission.rs",
+   "        name: \"relaunch_committed\",\n        eval: |o| refuse_if(o.relaunch_committed, RefusalCode::BusyRestarting),",
+   "        name: \"relaunch_committed\",\n        eval: |_o| refuse_if(false, RefusalCode::BusyRestarting),"
+  ]
+ ],
+ "cmds": [
+  [
+   "cargo",
+   "test",
+   "-p",
+   "murmur-dictation-core"
+  ],
+  [
+   "cargo",
+   "test",
+   "--lib",
+   "--",
+   "--test-threads=1",
+   "bug_relaunch",
+   "a_committed_relaunch_refuses",
+   "a_committed_permission_relaunch"
+  ]
+ ]
+}

@@ -934,7 +934,7 @@ fn a_panic_in_the_guards_in_effects_leaves_no_history_entry() {
             assert_history_empty(w, "after a panic in the guard's In effects");
             // The panicking recording left Processing behind (nothing wrote Idle):
             // put the scenario's end state in order for the golden runner.
-            w.state().app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
+            w.poke_status(DictationStatus::Idle);
         },
     });
 }
@@ -1109,7 +1109,7 @@ fn a_panic_in_pe_vad_leaves_processing_because_the_guard_was_disarmed_first() {
             );
             assert_history_empty(w, "after a panic in PE(Vad)");
             // Put the scenario's end state in order for the golden runner.
-            w.state().app_state.dictation.lock_or_recover().status = DictationStatus::Idle;
+            w.poke_status(DictationStatus::Idle);
             crate::dictation_executor::FieldAdapter::clear_context(&w.state().app_state, 1);
         },
     });
@@ -1709,5 +1709,81 @@ fn the_panicked_finish_report_is_registered_and_content_free() {
                 );
             },
         })
+    });
+}
+
+// ------------------------------------------- pre-cutover: the owned auto-stop handoff
+
+/// An interrupted capture of 9,000 samples, as golden scenario 3 builds it, with the
+/// bridge keeping the `AutoStop` owner it registers.
+fn interrupted_with_a_carried_owner(w: &Arc<World>) {
+    w.knobs().carry_auto_stop_owner = true;
+    recording(w);
+    w.runtime_failure(1);
+    w.finish_interrupted(1, 9_000);
+    assert_eq!(
+        w.auto_stop_requests(),
+        vec![1],
+        "the bridge scheduled the auto-stop"
+    );
+}
+
+/// R215.2 `RS`: the bridge registers an `AutoStop` op for the interrupted recording
+/// and production moves its owner into the spawned stop, which consumes it at admission
+/// (C1.4.1 rule 4). The fake no longer drops that owner: it is carried into the stop,
+/// and the test asserts its generation (the recording it belongs to), that it is
+/// outstanding until the stop is admitted, and that it is retired by then (#1160,
+/// lifecycle).
+#[test]
+fn an_auto_stop_carries_its_real_owner_into_the_stop_and_the_op_retires_at_admission() {
+    use murmur_dictation_core::decision::ContKind;
+    use murmur_dictation_core::ids::RecordingId;
+    run_sub_run(&SubRun {
+        title: "owned auto-stop",
+        setup: Setup::idle(),
+        body: |w| {
+            interrupted_with_a_carried_owner(w);
+            let history = &w.state().app_state.core_history;
+            assert_eq!(history.outstanding_ops(), 1, "the registered AutoStop op");
+            w.close_gate("pipeline");
+            let (token, mut stop) = w.owned_auto_stop(1);
+            assert_eq!(token.recording_id, RecordingId(1), "its generation");
+            assert_eq!(token.kind, ContKind::AutoStop);
+            assert!(history.is_outstanding(token), "outstanding until admission");
+            // The stop takes T, consumes the owner at admission, and parks in the pipeline.
+            assert!(poll_once(&mut stop).is_pending());
+            assert!(
+                !history.is_outstanding(token),
+                "the owner was consumed at stop admission, while the stop is still running"
+            );
+            // The one op left is the stop's own `K:Pipeline`, registered after admission.
+            assert_eq!(history.outstanding_ops(), 1);
+            w.open_gate("pipeline");
+            let reply = complete(&mut stop);
+            w.reply("auto-stop", &reply);
+            assert!(reply.is_ok(), "{reply:?}");
+            w.release_owner_clear();
+            assert_eq!(history.outstanding_ops(), 0, "nothing left outstanding");
+        },
+    });
+}
+
+/// A spawned auto-stop that never runs drops its owner, and `Drop` retires the op
+/// (a task that is cancelled, never polled or panics cannot leave it outstanding).
+#[test]
+fn an_auto_stop_that_never_runs_retires_its_owner_when_dropped() {
+    run_sub_run(&SubRun {
+        title: "dropped auto-stop",
+        setup: Setup::idle(),
+        body: |w| {
+            interrupted_with_a_carried_owner(w);
+            let history = &w.state().app_state.core_history;
+            let (token, stop) = w.owned_auto_stop(1);
+            assert!(history.is_outstanding(token));
+            drop(stop);
+            assert!(!history.is_outstanding(token), "Drop retired the op");
+            assert_eq!(history.outstanding_ops(), 0);
+            w.release_owner_clear();
+        },
     });
 }

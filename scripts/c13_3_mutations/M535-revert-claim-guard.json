@@ -1,0 +1,25 @@
+{
+ "name": "M535-revert-claim-guard",
+ "family": "lifecycle",
+ "bug": "#535 / PR #563",
+ "description": "Remove the once-only terminal claim guard in DictationTelemetry.",
+ "edits": [
+  [
+   "src/dictation_telemetry.rs",
+   "        if attempt.terminal.is_some() {\n            return false;\n        }\n",
+   ""
+  ]
+ ],
+ "cmds": [
+  [
+   "cargo",
+   "test",
+   "--lib",
+   "--",
+   "--test-threads=1",
+   "bug535",
+   "terminal_can_only_be_claimed_once",
+   "golden_"
+  ]
+ ]
+}

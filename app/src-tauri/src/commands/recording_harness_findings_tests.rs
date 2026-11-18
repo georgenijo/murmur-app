@@ -582,6 +582,108 @@ fn a_queued_stop_after_the_owner_was_replaced_is_refused() {
     ));
 }
 
+/// #1162, reply precedence. A stop queued behind another recording's start meets the
+/// replacement owner while the fixture has also scripted a supervisor refusal: the
+/// supervisor checks ownership first, so the reply is `Audio owner changed before
+/// stop`, not the scripted error.
+#[test]
+fn a_scripted_supervisor_reply_never_masks_a_replaced_owner() {
+    repeat(&sub(
+        "a scripted refusal meets a replaced owner",
+        |world: &Arc<World>| {
+            recording(world);
+            world.knobs().stop_result = Err(REFUSED_STOP_IN_RECOVERY);
+            let stop = ParkedStop::start(world);
+            world.replace_owner(2);
+            let reply = stop.finish();
+            world.reply("stop", &reply);
+            assert_eq!(reply, Err("Audio owner changed before stop".to_string()));
+            let trace = world.trace();
+            assert!(
+                trace
+                    .iter()
+                    .any(|line| line == "supervisor.stop_owner_changed 1 owner=2"),
+                "{trace:#?}"
+            );
+        },
+    ));
+}
+
+/// #1162, reply precedence, the other half: a transport failure (the receive expired)
+/// is the caller's own error, so it is returned whatever the owner is, and the
+/// supervisor's ownership check is never reached.
+#[test]
+fn a_transport_failure_is_returned_whatever_the_owner_is() {
+    repeat(&sub(
+        "a transport failure meets a replaced owner",
+        |world: &Arc<World>| {
+            recording(world);
+            world.knobs().stop_transport_failure = Some(STOP_RECEIVE_TIMEOUT);
+            let stop = ParkedStop::start(world);
+            world.replace_owner(2);
+            let reply = stop.finish();
+            world.reply("stop", &reply);
+            assert_eq!(reply, Err(STOP_RECEIVE_TIMEOUT.to_string()));
+            assert!(
+                !world
+                    .trace()
+                    .iter()
+                    .any(|line| line.starts_with("supervisor.stop_owner_changed")),
+                "the ownership check was not consulted"
+            );
+        },
+    ));
+}
+
+/// #1162, replacement phase. Production installs the new attempt in `Starting` and
+/// leaves that phase alone when it refuses the stale stop, so a cleanup query for the
+/// replacement owner stays `false`. The replacement lands before the stop reaches the
+/// supervisor (at the last port before the capture stop), so the refusal is the only
+/// thing that could move the phase.
+#[test]
+fn a_replacement_owner_is_installed_starting_and_the_refused_stop_preserves_it() {
+    repeat(&sub(
+        "the replacement owner's phase",
+        |world: &Arc<World>| {
+            recording(world);
+            world.knobs().stop_result = Ok(0);
+            let replacer = Arc::clone(world);
+            world.on("keyboard.stop_gesture_take_for", move || {
+                replacer.replace_owner(2);
+                assert_eq!(
+                    replacer.dictation_owner_phase(2),
+                    Some(Phase::Starting),
+                    "the replacement is installed in Starting, not in the old attempt's phase"
+                );
+            });
+            let reply = stop_reply(world, None);
+            assert_eq!(reply, Err("Audio owner changed before stop".to_string()));
+            assert_eq!(
+                world.dictation_owner_phase(2),
+                Some(Phase::Starting),
+                "the refusal leaves the replacement's phase unchanged"
+            );
+            let trace = world.trace();
+            let replaced = trace
+                .iter()
+                .position(|line| line == "supervisor.replace_owner 2")
+                .expect("the owner was replaced");
+            assert!(
+                trace[replaced..]
+                    .iter()
+                    .any(|line| line == "supervisor.stop_owner_changed 1 owner=2"),
+                "the stop reached the supervisor after the replacement: {trace:#?}"
+            );
+            assert!(
+                !trace[replaced..]
+                    .iter()
+                    .any(|line| line.starts_with("supervisor.set_phase")),
+                "the refused stop moved no phase: {trace:#?}"
+            );
+        },
+    ));
+}
+
 // ------------------------------------------------------------------ PD-21
 //
 // The pinned signature is the pair of rows PD-21 splits, harness seed 273,164 (R206.2 /

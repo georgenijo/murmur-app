@@ -263,11 +263,7 @@ fn stale_start_continuation(world: &Arc<World>) {
     world.close_gate("smart_capture");
     let mut start = world.start();
     assert!(poll_once(&mut start).is_pending());
-    world
-        .state()
-        .app_state
-        .recording_id
-        .store(2, Ordering::SeqCst);
+    world.poke_recording_id(2);
     world.note("the recording id advanced while the start was parked");
     world.open_gate("smart_capture");
     let reply = complete(&mut start);

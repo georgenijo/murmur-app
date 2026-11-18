@@ -1,0 +1,29 @@
+{
+ "name": "M388a-R211.4+R211.6-noop",
+ "family": "lifecycle",
+ "bug": "#388",
+ "description": "R211.4 (Starting) and R211.6 (Recovering) return Continue with no effects.",
+ "edits": [
+  [
+   "crates/dictation-core/src/lifecycle.rs",
+   "Status::Starting => \"R211.4\",",
+   "Status::Starting => return decision(Verdict::Continue, None, vec![], \"R211.4\"),"
+  ],
+  [
+   "crates/dictation-core/src/lifecycle.rs",
+   "Status::Recovering => \"R211.6\",",
+   "Status::Recovering => return decision(Verdict::Continue, None, vec![], \"R211.6\"),"
+  ]
+ ],
+ "cmds": [
+  [
+   "cargo",
+   "test",
+   "--lib",
+   "--",
+   "--test-threads=1",
+   "bug388",
+   "golden_"
+  ]
+ ]
+}

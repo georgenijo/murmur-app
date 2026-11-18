@@ -1,0 +1,29 @@
+{
+ "name": "M117-revert-vad-emits",
+ "family": "process_audio",
+ "bug": "#117",
+ "description": "Restore the downloading-vad and processing status emits in ensure_vad_model (the #117 revert).",
+ "edits": [
+  [
+   "src/commands/models.rs",
+   "    tracing::info!(target: \"system\", \"VAD model not found, downloading...\");\n",
+   "    tracing::info!(target: \"system\", \"VAD model not found, downloading...\");\n    let _ = tauri::Emitter::emit(app_handle, \"recording-status-changed\", \"downloading-vad\");\n"
+  ],
+  [
+   "src/commands/models.rs",
+   "vad::VAD_MODEL_FILENAME, received);\n    Ok(())",
+   "vad::VAD_MODEL_FILENAME, received);\n    let _ = tauri::Emitter::emit(app_handle, \"recording-status-changed\", \"processing\");\n    Ok(())"
+  ]
+ ],
+ "cmds": [
+  [
+   "cargo",
+   "test",
+   "--lib",
+   "--",
+   "--test-threads=1",
+   "bug117",
+   "sp5_models"
+  ]
+ ]
+}

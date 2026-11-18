@@ -224,6 +224,15 @@ pub(super) struct Knobs {
     pub(super) smart_auto: Option<Result<crate::microphone_auto::SmartAutoSelection, String>>,
     /// The `smart-destination-selected` emit fails.
     pub(super) smart_destination_emit_error: bool,
+    /// The bridge keeps the registered `AutoStop` owner it schedules instead of
+    /// dropping it, for [`World::owned_auto_stop`] to carry into the stop (R215.2
+    /// `RS`; the lifecycle bridge's production closure moves it into the stop).
+    pub(super) carry_auto_stop_owner: bool,
+    /// A stop whose reply never comes from the supervisor: the receive timed out or
+    /// the channel closed. Production returns it whatever the owner is, so it is
+    /// separate from `stop_result`, which is the supervisor's own reply and is applied
+    /// only after the supervisor's ownership check.
+    pub(super) stop_transport_failure: Option<&'static str>,
 }
 
 impl Default for Knobs {
@@ -242,6 +251,8 @@ impl Default for Knobs {
             pipeline_finish_panics: false,
             smart_auto: None,
             smart_destination_emit_error: false,
+            carry_auto_stop_owner: false,
+            stop_transport_failure: None,
         }
     }
 }
@@ -272,7 +283,7 @@ impl AudioLifecycleEventScript {
 // ---------------------------------------------------------- fake audio
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Phase {
+pub(super) enum Phase {
     Idle,
     Starting,
     Recording,
@@ -327,12 +338,20 @@ pub(super) struct World {
     knobs: StdMutex<Knobs>,
     supervisor: StdMutex<Supervisor>,
     auto_stops: StdMutex<Vec<u64>>,
+    /// `AutoStop` owners the bridge handed over while `carry_auto_stop_owner` is set.
+    auto_stop_owners: StdMutex<Vec<(u64, crate::core_history::ContinuationGuard)>>,
     delivery: StdMutex<Option<Delivery>>,
     /// Smart Auto resolves the start asked its host for.
     smart_auto_resolves: std::sync::atomic::AtomicUsize,
     /// How many times the publish asked for its side tasks (`SD`): a counter, not
     /// a trace line, so no recorded golden changes.
     side_task_spawns: std::sync::atomic::AtomicUsize,
+    /// `core_divergences()` when this run began. The persisted-core invariant
+    /// (#1160, Opus seat) is that it never grows during a run: a path that writes
+    /// `dictation.status` or the recording id without the `FieldAdapter` would
+    /// otherwise stay green until the lifecycle cutover starts reading M1 from
+    /// `PersistedCore`.
+    divergence_baseline: u64,
 }
 
 /// A delivery operation parked inside the production ownership fence.
@@ -358,10 +377,44 @@ impl World {
             knobs: StdMutex::new(Knobs::default()),
             supervisor: StdMutex::new(Supervisor::default()),
             auto_stops: StdMutex::new(Vec::new()),
+            auto_stop_owners: StdMutex::new(Vec::new()),
             delivery: StdMutex::new(None),
             smart_auto_resolves: std::sync::atomic::AtomicUsize::new(0),
             side_task_spawns: std::sync::atomic::AtomicUsize::new(0),
+            divergence_baseline: crate::dictation_executor::adapter::core_divergences(),
         })
+    }
+
+    /// The persisted-core invariant, checked at every trace line and at the end of
+    /// a run: `FieldAdapter` has counted no new divergence since the run began, and
+    /// whenever D is free the persisted M1/M2 equal the live `status` and
+    /// `recording_id`. (With D held, the live and persisted writes of one effect
+    /// are mid-commit, so the equality is read only when D is free, the same rule
+    /// `sample` uses; the counter is checked regardless.)
+    fn assert_persisted_core(&self, at: &str) {
+        let divergences = crate::dictation_executor::adapter::core_divergences();
+        assert!(
+            divergences <= self.divergence_baseline,
+            "persisted-core invariant: FieldAdapter counted {} new divergence(s) at `{at}` \
+             (a write to dictation.status or the recording id bypassed the adapter)",
+            divergences - self.divergence_baseline
+        );
+        let state = self.state();
+        let Some(dictation) = state.app_state.dictation.try_lock_or_recover() else {
+            return;
+        };
+        let live_status = crate::dictation_admission::core_status(dictation.status);
+        let live_id = murmur_dictation_core::ids::RecordingId(
+            state.app_state.recording_id.load(Ordering::SeqCst),
+        );
+        assert!(
+            dictation.core.status() == live_status && dictation.core.current_id() == live_id,
+            "persisted-core invariant: persisted M1/M2 ({:?}, {:?}) differ from live ({:?}, {:?}) at `{at}`",
+            dictation.core.status(),
+            dictation.core.current_id(),
+            live_status,
+            live_id
+        );
     }
 
     fn listen_to_the_bridge(self: &Arc<Self>) {
@@ -392,8 +445,10 @@ impl World {
     /// last line. A change is sampled at the next boundary the trace has, so
     /// its position relative to the lines around it is a causal fact.
     pub(super) fn push(&self, entry: impl Into<String>) {
+        let entry = entry.into();
+        self.assert_persisted_core(&entry);
         self.sample();
-        locked(&self.log).push(entry.into());
+        locked(&self.log).push(entry);
     }
 
     pub(super) fn note(&self, text: &str) {
@@ -487,6 +542,7 @@ impl World {
             "a delivery is still holding the ownership fence"
         );
         self.sample();
+        self.assert_persisted_core("end of run");
         let state = self.state();
         let status = state.app_state.dictation.lock_or_recover().status;
         let context = (1..=MAX_ID)
@@ -683,6 +739,57 @@ impl World {
         })
     }
 
+    /// A start that carries a Fn/Globe gesture token, so it claims the speculative
+    /// capture bound to that token (`audio_lifecycle::speculative::bind`).
+    pub(super) fn start_with_gesture(
+        self: &Arc<Self>,
+        token: &str,
+    ) -> Fut<Result<serde_json::Value, String>> {
+        let world = Arc::clone(self);
+        let token = token.to_string();
+        Box::pin(async move {
+            let host = Host(Arc::clone(&world));
+            let state = world.state();
+            start_native_recording_inner(&host, state.inner(), None, None, None, Some(token)).await
+        })
+    }
+
+    /// The self-dispatched stop of an interrupted capture, carrying the real `AutoStop`
+    /// owner the bridge registered (R215.2 `RS`), as production's spawned task does.
+    /// Returns the owner's token, for its generation and retirement, with the stop.
+    /// Needs `carry_auto_stop_owner`.
+    pub(super) fn owned_auto_stop(
+        self: &Arc<Self>,
+        recording_id: u64,
+    ) -> (
+        murmur_dictation_core::decision::Continuation,
+        Fut<Result<serde_json::Value, String>>,
+    ) {
+        let owner = {
+            let mut owners = locked(&self.auto_stop_owners);
+            let at = owners
+                .iter()
+                .position(|(id, _)| *id == recording_id)
+                .expect("the bridge handed over an AutoStop owner for this recording");
+            owners.remove(at).1
+        };
+        let token = owner.token();
+        let world = Arc::clone(self);
+        let stop: Fut<Result<serde_json::Value, String>> = Box::pin(async move {
+            let host = Host(Arc::clone(&world));
+            let state = world.state();
+            stop_native_recording_admitted(
+                &host,
+                state.inner(),
+                Some(recording_id),
+                audio_lifecycle::DictationStopTrigger::Other,
+                Some(owner),
+            )
+            .await
+        });
+        (token, stop)
+    }
+
     pub(super) fn cancel(self: &Arc<Self>, expected: Option<u64>) -> Fut<Result<(), String>> {
         let world = Arc::clone(self);
         Box::pin(async move {
@@ -720,6 +827,25 @@ impl World {
             recording_id,
             resolve_recording_context(&state.app_state, destination),
         );
+    }
+
+    /// A fixture poke: a scenario writes the live status itself, to put an end state in
+    /// order or to stand in for another entry's write. It is not a production path, so
+    /// the persisted core is re-seeded with it, and the persisted-core invariant keeps
+    /// meaning "no *production* write bypassed the adapter".
+    pub(super) fn poke_status(&self, status: DictationStatus) {
+        let state = self.state();
+        let mut dictation = state.app_state.dictation.lock_or_recover();
+        dictation.status = status;
+        crate::dictation_executor::FieldAdapter::seed_core(&state.app_state, &mut dictation);
+    }
+
+    /// [`World::poke_status`] for the recording id (M2).
+    pub(super) fn poke_recording_id(&self, id: u64) {
+        let state = self.state();
+        let mut dictation = state.app_state.dictation.lock_or_recover();
+        state.app_state.recording_id.store(id, Ordering::SeqCst);
+        crate::dictation_executor::FieldAdapter::seed_core(&state.app_state, &mut dictation);
     }
 
     /// An attempt the telemetry ledger accepted earlier, with no terminal yet.
@@ -766,13 +892,20 @@ impl World {
         ));
         let ends_the_attempt = matches!(event, AudioLifecycleEvent::Idle);
         let deliver = move || {
-            handle_audio_lifecycle_and_ready_tasks(
+            handle_audio_lifecycle_events(
                 self.app.clone(),
                 recording_id,
                 event,
-                |_, recording_id| {
+                |_, recording_id, owner| {
                     self.push(format!("bridge.auto_stop_scheduled {recording_id}"));
                     locked(&self.auto_stops).push(recording_id);
+                    // Production moves the registered `AutoStop` owner into the spawned
+                    // stop. Unless a scenario carries it, it drops here, retired, as
+                    // the closure returns.
+                    let carry = self.knobs().carry_auto_stop_owner;
+                    if carry {
+                        locked(&self.auto_stop_owners).push((recording_id, owner));
+                    }
                 },
                 |app, recording_id, register| {
                     // The two spawns `handle_audio_lifecycle` makes for a `Ready`.
@@ -932,6 +1065,9 @@ impl World {
     /// queued: the supervisor installed a new attempt (`handle_start`, `set_owner`).
     pub(super) fn replace_owner(&self, recording_id: u64) {
         self.set_owner(Some(recording_id));
+        // Production installs the new attempt in `Starting` (`handle_start`); the
+        // replaced attempt's phase does not carry over to it.
+        locked(&self.supervisor).phase = Some(Phase::Starting);
         self.push(format!("supervisor.replace_owner {recording_id}"));
     }
 
@@ -1038,9 +1174,62 @@ impl World {
         }
     }
 
-    fn dictation_owner_phase(&self, recording_id: u64) -> Option<Phase> {
+    /// The fake supervisor's phase when `recording_id` owns it.
+    pub(super) fn dictation_owner_phase(&self, recording_id: u64) -> Option<Phase> {
         let supervisor = locked(&self.supervisor);
         (supervisor.owner == Some(recording_id)).then(|| supervisor.phase())
+    }
+}
+
+impl World {
+    /// Run a cancel on its own thread and park it just before the executor runs the
+    /// effect whose legend code is `code` (`EM`, `TERM`, ...): the thread blocks at that
+    /// barrier, holding whatever locks the cancel holds there, until
+    /// [`ParkedCancel::release_and_join`].
+    pub(super) fn cancel_parked_before(self: &Arc<Self>, code: &'static str) -> ParkedCancel {
+        let (parked, parked_rx) = std::sync::mpsc::channel::<()>();
+        let (release, release_rx) = std::sync::mpsc::channel::<()>();
+        let world = Arc::clone(self);
+        let thread = std::thread::spawn(move || {
+            let _runtime = runtime().enter();
+            let _barrier = crate::barrier_hook::install(move |point| {
+                if point == code {
+                    let _ = parked.send(());
+                    // A scenario that panics first drops `release`: the cancel then
+                    // runs on instead of hanging the test.
+                    let _ = release_rx.recv();
+                }
+            });
+            let mut cancel = world.cancel(None);
+            complete_joining(&mut cancel)
+        });
+        ParkedCancel {
+            thread,
+            parked: parked_rx,
+            release,
+        }
+    }
+}
+
+/// A cancel parked at an executor barrier (see [`World::cancel_parked_before`]).
+pub(super) struct ParkedCancel {
+    thread: std::thread::JoinHandle<Result<(), String>>,
+    parked: std::sync::mpsc::Receiver<()>,
+    release: std::sync::mpsc::Sender<()>,
+}
+
+impl ParkedCancel {
+    /// Block until the cancel has reached its barrier.
+    pub(super) fn wait_parked(&self) {
+        self.parked
+            .recv()
+            .expect("the cancel finished without reaching its barrier");
+    }
+
+    /// Let the cancel run on and return its reply.
+    pub(super) fn release_and_join(self) -> Result<(), String> {
+        let _ = self.release.send(());
+        self.thread.join().expect("the cancel thread panicked")
     }
 }
 
@@ -1133,33 +1322,53 @@ impl SupervisorPort for World {
         _released_at: Option<std::time::Instant>,
     ) -> Result<Vec<f32>, String> {
         self.push(format!("supervisor.stop {recording_id} {trigger:?}"));
-        self.set_phase(Phase::Stopping);
+        // The supervisor handles the `Stop` message against whatever attempt exists
+        // then, and moves its own attempt to `Stopping` only when that attempt is the
+        // one being stopped. A stop that finds another recording's attempt is refused
+        // and leaves that attempt's phase alone.
+        let replaced = matches!(
+            locked(&self.supervisor).owner,
+            Some(current) if current != recording_id
+        );
+        if !replaced {
+            self.set_phase(Phase::Stopping);
+        }
         self.fire("supervisor.stop");
-        let (result, unsealed) = {
+        let (result, unsealed, transport_failure) = {
             let knobs = self.knobs();
-            (knobs.stop_result, knobs.stop_unsealed)
+            (
+                knobs.stop_result,
+                knobs.stop_unsealed,
+                knobs.stop_transport_failure,
+            )
         };
-        // The supervisor handles the `Stop` message against whatever attempt exists then
-        // (`audio_lifecycle.rs:1235-1245`). With no attempt (the owner was cleared) it
-        // answers `Ok(Vec::new())` at once: nothing is sealed, so no `CleanupFinished`
-        // follows and no owner clear is pending. With another recording's attempt (the
-        // owner was replaced) it refuses: `Audio owner changed before stop`.
-        if result.is_ok() {
-            let owner = locked(&self.supervisor).owner;
-            match owner {
-                Some(current) if current == recording_id => {}
-                None => {
-                    self.push(format!(
-                        "supervisor.stop_after_owner_clear {recording_id} samples=0"
-                    ));
-                    return Ok(Vec::new());
-                }
-                Some(other) => {
-                    self.push(format!(
-                        "supervisor.stop_owner_changed {recording_id} owner={other}"
-                    ));
-                    return Err("Audio owner changed before stop".to_string());
-                }
+        // A transport failure (the 12 s receive expired, the channel closed) is the
+        // caller's own error: the supervisor's ownership check and scripted replies
+        // are not consulted, and it is returned whatever the owner is.
+        if let Some(error) = transport_failure {
+            return Err(error.to_string());
+        }
+        // Reply precedence (production, `audio_lifecycle.rs:1235-1245`): the owner is
+        // checked first, so a scripted supervisor reply (a recovery refusal, a stop
+        // timeout the supervisor itself reports) never masks "Audio owner changed".
+        // With no attempt (the owner was cleared) it answers `Ok(Vec::new())` at once:
+        // nothing is sealed, so no `CleanupFinished` follows and no owner clear is
+        // pending. With another recording's attempt (the owner was replaced) it refuses:
+        // `Audio owner changed before stop`.
+        let owner = locked(&self.supervisor).owner;
+        match owner {
+            Some(current) if current == recording_id => {}
+            None => {
+                self.push(format!(
+                    "supervisor.stop_after_owner_clear {recording_id} samples=0"
+                ));
+                return Ok(Vec::new());
+            }
+            Some(other) => {
+                self.push(format!(
+                    "supervisor.stop_owner_changed {recording_id} owner={other}"
+                ));
+                return Err("Audio owner changed before stop".to_string());
             }
         }
         match result {
@@ -1704,7 +1913,12 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
     app_state
         .recording_id
         .store(sub_run.setup.recording_id, Ordering::SeqCst);
-    app_state.dictation.lock_or_recover().status = sub_run.setup.status;
+    {
+        // The persisted core starts equal to live, as the shell seeds it.
+        let mut dictation = app_state.dictation.lock_or_recover();
+        dictation.status = sub_run.setup.status;
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
+    }
     let app = tauri::test::mock_builder()
         .manage(test_state(app_state))
         .build(tauri::test::mock_context(tauri::test::noop_assets()))

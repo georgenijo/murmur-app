@@ -1,0 +1,30 @@
+{
+ "name": "M535a-R102.2-drop-TERM",
+ "family": "start",
+ "bug": "#535 / PR #563",
+ "description": "R102.2 (start failure) drops its TERM effect.",
+ "edits": [
+  [
+   "crates/dictation-core/src/start.rs",
+   "    effects.push(terminal(\n        At::In,\n        TerminalOutcome::CaptureInitFailure,\n        ErrCode::RuntimeFailure,\n    ));\n    with_reply(decision(verdict, transition, effects, row), reply)",
+   "    if transition != Some((Status::Starting, Status::Idle)) {\n        effects.push(terminal(\n            At::In,\n            TerminalOutcome::CaptureInitFailure,\n            ErrCode::RuntimeFailure,\n        ));\n    }\n    with_reply(decision(verdict, transition, effects, row), reply)"
+  ]
+ ],
+ "cmds": [
+  [
+   "cargo",
+   "test",
+   "-p",
+   "murmur-dictation-core"
+  ],
+  [
+   "cargo",
+   "test",
+   "--lib",
+   "--",
+   "--test-threads=1",
+   "bug535",
+   "golden_"
+  ]
+ ]
+}

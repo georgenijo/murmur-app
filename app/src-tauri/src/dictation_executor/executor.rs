@@ -520,6 +520,10 @@ impl<'a> Executor<'a> {
     ) -> Result<(), InvalidKind> {
         let ports = self.ports;
         let impossible = InvalidKind::Impossible(self.decision.row);
+        // Test builds: a point before every Sync, Blocking or Detached effect, named
+        // by its legend code, where a test observes the effects' exact order.
+        #[cfg(test)]
+        crate::barrier_hook::at(effect.code());
         match effect {
             // ---- field effects: committed through the adapter (C1.4.2)
             Effect::SetStatus(to) => {
