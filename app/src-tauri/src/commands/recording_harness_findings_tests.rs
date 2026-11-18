@@ -583,17 +583,25 @@ fn a_queued_stop_after_the_owner_was_replaced_is_refused() {
 }
 
 // ------------------------------------------------------------------ PD-21
-// Harness seed 273,164 (R206.2 / R203.4; 244,103 before #1159 changed the draws). The cancel of a `Recording` dictation
-// (R205.4) releases T for its capture cancel; before its `Cancel` reaches the
-// supervisor's queue a stop lands (R201.8), takes T, and its `Stop` is enqueued
-// first. The supervisor is busy, so the cancel's 2 s receive expires with the request
-// still queued (`audio_lifecycle.rs:3353-3363`): the client gets
-// [`CANCEL_RECEIVE_TIMEOUT`] and R206.2 claims the terminal as `PipelineFailure`.
-// The supervisor then handles the queue in order: the `Stop` first (`Recording ->
-// Stopping`, `1229-1280`), whose reply is the sealed capture at the worker's exit; the
-// late `Cancel` finds `Stopping` and answers `Ok(false)` with no notification
-// (`1301-1330`, `should_abandon` is false). The stop's capture is empty at status
-// Processing (R203.4): its terminal loses and it completes performance as `NoSpeech`.
+//
+// The pinned signature is the pair of rows PD-21 splits, harness seed 273,164 (R206.2 /
+// R203.4; 244,103 before #1159 changed the draws): a cancel's receive timeout makes
+// R206.2 claim the terminal as `PipelineFailure` (`CANCEL_RECEIVE_TIMEOUT`,
+// `audio_lifecycle.rs:3353-3363`), and a stop's R203.4 later completes performance as
+// `NoSpeech` over an empty capture at `Processing`, its terminal having lost the claim.
+//
+// This fixture does not replay that seed's order, and the seed does not replay the
+// fixture's. Seed 273,164 reaches R206.2 (step 83) *before* the stop's R201.8 (step 96).
+// The fixture's causal sequence is the one that makes the stop's reply empty: the cancel of
+// a `Recording` dictation (R205.4) releases T for its capture cancel; before its `Cancel`
+// reaches the supervisor's queue a stop lands (R201.8), takes T, and its `Stop` is enqueued
+// first. The supervisor is busy, so the cancel's 2 s receive expires with the request still
+// queued and R206.2 claims the terminal. The worker then fails at runtime, the capture is
+// stored and the owner clears, and the auto-stop is refused at `Processing` (R201.2). Only
+// then does the parked `Stop` reach the supervisor: it has no attempt and no owner, so the
+// reply is an empty vector, not sealed, with no `CleanupFinished` (`1235-1238`); the late
+// `Cancel` answers `Ok(false)` with no notification (`1301-1330`, `should_abandon` is
+// false). That empty reply is what R203.4 completes as `NoSpeech`.
 
 fn pd21_timed_out_cancel_then_a_stop_that_wins_capture(world: &Arc<World>) {
     recording(world);

@@ -65,14 +65,40 @@ fn window_ready(w: &World) -> bool {
     w.windows.iter().any(|window| !window.inbox.is_empty())
 }
 
+fn window_name(index: usize) -> &'static str {
+    if index == MAIN_WINDOW {
+        "main"
+    } else {
+        "overlay"
+    }
+}
+
+/// What the scheduler boundary a delivery ran at was about to issue, as the trace names it:
+/// a due stop is named with its caller, so a test can tell whose stop the delivery preceded.
+fn due_label(cmd: &Cmd) -> String {
+    match cmd {
+        Cmd::Stop {
+            caller: StopCaller::Window(index),
+            ..
+        } => format!("stop from the {} window", window_name(*index)),
+        Cmd::Stop {
+            caller: StopCaller::Ipc,
+            ..
+        } => "stop from the IPC".to_string(),
+        Cmd::Start { .. } => "start".to_string(),
+        Cmd::Cancel { .. } => "cancel".to_string(),
+    }
+}
+
 /// One ready window receives its next status event. A delivery is a step of the schedule
-/// that changes no shell state: no model time, no actor weight.
+/// that changes no shell state: no model time, no actor weight. `before_command` names the
+/// due command it ran ahead of, when it ran at a due-command boundary.
 fn deliver_next(
     w: &mut World,
     rng: &mut Rng,
     checker: &mut Checker,
     clock: u32,
-    before_command: bool,
+    before_command: Option<String>,
 ) {
     let ready: Vec<usize> = (0..w.windows.len())
         .filter(|window| !w.windows[*window].inbox.is_empty())
@@ -82,15 +108,10 @@ fn deliver_next(
     if let Some(trace) = checker.trace.as_mut() {
         trace.push(format!(
             "{clock:>4} {} window receives {status:?}{}",
-            if window == MAIN_WINDOW {
-                "main"
-            } else {
-                "overlay"
-            },
-            if before_command {
-                " (before the due command)"
-            } else {
-                ""
+            window_name(window),
+            match &before_command {
+                Some(label) => format!(" (before the due {label})"),
+                None => String::new(),
             }
         ));
     }
@@ -145,7 +166,8 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
             // competes again, so the loop ends: each delivery consumes a queued event and
             // only actors add events.
             if window_ready(&w) && rng.chance(1, 2) {
-                deliver_next(&mut w, &mut rng, &mut checker, clock, true);
+                let label = due_label(&pending.front().expect("checked above").1);
+                deliver_next(&mut w, &mut rng, &mut checker, clock, Some(label));
                 continue;
             }
             let (_, cmd) = pending.pop_front().expect("checked above");
@@ -162,17 +184,25 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
             // two windows can disagree. The `stop_native_recording` IPC has no such gate
             // and keeps every schedule, as does the supervisor's `Interrupted` auto-stop
             // (a flight, not a command). A stop issued earlier and still in flight when
-            // the status turns `Recovering` is already a flight.
+            // the status turns `Recovering` is already a flight. The main window also
+            // keeps `handleStop`'s in-flight guard and local `Processing` write (#1167):
+            // once it has sent a stop it sends no second one until the IPC returns or it
+            // receives `Idle`, and it shows `Processing` until an event moves it. The
+            // overlay has neither (`useRecordingControls.ts`), so it can send twice.
             if let Cmd::Stop { caller, .. } = &cmd {
-                let window_name = |index: usize| {
-                    if index == MAIN_WINDOW {
-                        "main"
-                    } else {
-                        "overlay"
-                    }
-                };
                 match *caller {
                     StopCaller::Window(index) => {
+                        // The main window's `handleStop` returns first when its own stop is
+                        // still in flight (`isStoppingRef`, #1167); the overlay has no guard.
+                        if w.windows[index].stop_in_flight {
+                            if let Some(trace) = checker.trace.as_mut() {
+                                trace.push(format!(
+                                    "{clock:>4} frontend stop not sent ({} window has a stop in flight)",
+                                    window_name(index)
+                                ));
+                            }
+                            continue;
+                        }
                         let observed = w.windows[index].observed;
                         if observed != Status::Recording {
                             if let Some(trace) = checker.trace.as_mut() {
@@ -212,6 +242,9 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
                                 ));
                             }
                         }
+                        // The main window now shows `Processing` and holds its guard until
+                        // the IPC returns.
+                        w.window_stop_sent(index);
                     }
                     StopCaller::Ipc => {
                         if w.status == Status::Recovering {
@@ -231,7 +264,13 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
                     app_disabled,
                     smart,
                 } => Box::new(StartFlight::new(plan, blockers, app_disabled, smart)),
-                Cmd::Stop { cfg, .. } => Box::new(StopFlight::new(None, None, cfg)),
+                Cmd::Stop { cfg, caller } => {
+                    let flight = StopFlight::new(None, None, cfg);
+                    Box::new(match caller {
+                        StopCaller::Window(index) => flight.with_window(index),
+                        StopCaller::Ipc => flight,
+                    })
+                }
                 Cmd::Cancel { id } => Box::new(CancelFlight::new(id.resolve(w.current_id))),
             };
             slots.push(Slot {
@@ -248,7 +287,7 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
         // before a stop is issued). It is not a shell step: it changes no shell state, so
         // it takes no model time and no actor's weight.
         if window_ready(&w) && rng.chance(1, 3) {
-            deliver_next(&mut w, &mut rng, &mut checker, clock, false);
+            deliver_next(&mut w, &mut rng, &mut checker, clock, None);
             continue;
         }
 

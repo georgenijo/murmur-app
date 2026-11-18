@@ -17,6 +17,14 @@ use std::time::{Duration, Instant};
 /// (D-S2b-18): the CI gate is one fixed set. A deeper sweep is the ignored
 /// [`the_deep_sweep_holds_the_properties`].
 const DEFAULT_SEEDS: u64 = 10_000;
+
+// Witness seeds for the delivery/stop competition (#1159, #1167), re-pinned by sweeping.
+// Seed 147 (the pre-#1167 pin) is the overlay's delivery-first witness: its stop is the
+// overlay's, not the main window's.
+const MAIN_DELIVERY_FIRST: u64 = 176;
+const OVERLAY_DELIVERY_FIRST: u64 = 147;
+const MAIN_STOP_FIRST: u64 = 473;
+const OVERLAY_STOP_FIRST: u64 = 169;
 /// The deep sweep's default size; `DEEP_SWEEP_SEEDS` sets another.
 const DEEP_SWEEP_SEEDS: u64 = 300_000;
 const CI_BUDGET: Duration = Duration::from_secs(20);
@@ -1731,7 +1739,7 @@ fn pd19_is_witnessed_with_its_whole_story() {
 /// every property holds in each.
 #[test]
 fn stops_follow_their_caller() {
-    let (mut suppressed, mut not_sent, mut stale, mut unscoped) = (0, 0, 0, 0);
+    let (mut suppressed, mut not_sent, mut stale, mut unscoped, mut in_flight) = (0, 0, 0, 0, 0);
     for seed in 0..5_000 {
         let (report, trace) = run_seed_with(gated(seed), true);
         assert!(
@@ -1744,6 +1752,7 @@ fn stops_follow_their_caller() {
         not_sent += count("frontend stop not sent (");
         stale += count("frontend stop issued on a stale observation");
         unscoped += count("unscoped stop IPC issued");
+        in_flight += count("window has a stop in flight");
     }
     assert!(
         suppressed > 0,
@@ -1758,6 +1767,141 @@ fn stops_follow_their_caller() {
         unscoped > 0,
         "no unscoped stop IPC was ever issued in Recovering"
     );
+    assert!(
+        in_flight > 0,
+        "no main-window stop was ever held back by its in-flight guard"
+    );
+}
+
+/// #1167: the main window's `handleStop` sets `isStoppingRef` and writes `Processing` to its
+/// own status before it awaits the IPC (`useRecordingState.ts`), clears the guard when the
+/// IPC returns (`finally`) and when it receives `Idle`. The overlay keeps neither
+/// (`useRecordingControls.ts`).
+#[test]
+fn the_main_window_guards_its_stop_and_the_overlay_does_not() {
+    let mut w = World::new();
+    apply_effect(&mut w, 1, "R101.15", Effect::SetStatus(Status::Recording));
+    apply_effect(&mut w, 1, "R101.15", emit(Status::Recording));
+    assert_eq!(deliver(&mut w, MAIN_WINDOW), Poll::Progress);
+    assert_eq!(deliver(&mut w, OVERLAY_WINDOW), Poll::Progress);
+    // The overlay sends a stop: no guard, no local status.
+    w.window_stop_sent(OVERLAY_WINDOW);
+    assert!(!w.windows[OVERLAY_WINDOW].stop_in_flight);
+    assert_eq!(w.windows[OVERLAY_WINDOW].observed, Status::Recording);
+    // The main window sends one: the guard and `Processing` are set before any flight runs.
+    w.window_stop_sent(MAIN_WINDOW);
+    assert!(w.windows[MAIN_WINDOW].stop_in_flight);
+    assert_eq!(w.windows[MAIN_WINDOW].observed, Status::Processing);
+    // The IPC returns: `finally` clears the guard; the local status stays until an event.
+    w.window_stop_returned(MAIN_WINDOW);
+    assert!(!w.windows[MAIN_WINDOW].stop_in_flight);
+    assert_eq!(w.windows[MAIN_WINDOW].observed, Status::Processing);
+    // Receiving `Idle` also clears it, while the IPC is still in flight.
+    w.window_stop_sent(MAIN_WINDOW);
+    apply_effect(&mut w, 1, "R203.6", emit(Status::Idle));
+    assert_eq!(deliver(&mut w, MAIN_WINDOW), Poll::Progress);
+    assert!(!w.windows[MAIN_WINDOW].stop_in_flight);
+    assert_eq!(w.windows[MAIN_WINDOW].observed, Status::Idle);
+}
+
+/// Drive a stop flight alone to completion over `w` (no other actor runs): every step must
+/// progress or finish, and it must finish within a bounded number of steps.
+fn drive_stop_flight(w: &mut World, flight: super::flights::StopFlight) {
+    let mut flight = flight;
+    let mut out = StepOut::default();
+    let mut spawned: Vec<Box<dyn Task>> = Vec::new();
+    let mut mailbox = Vec::new();
+    for step in 0..200 {
+        w.step = step;
+        out.clear();
+        let poll = flight.step(&mut Cx {
+            w,
+            out: &mut out,
+            spawn: &mut spawned,
+            tid: 3,
+            mailbox: &mut mailbox,
+        });
+        match poll {
+            Poll::Done => return,
+            Poll::Progress => {}
+            Poll::Blocked => panic!("the stop flight blocked at step {step}"),
+        }
+    }
+    panic!("the stop flight did not finish");
+}
+
+/// #1167 review: the guard is cleared by the *flight* finishing, not by a model helper. A
+/// main-window stop the shell refuses (the status is `Recovering`) finishes without any
+/// `Idle` event; its `handleStop` `finally` must still clear `isStoppingRef`. This drives the
+/// real `StopFlight` and delivers no status: it fails if `Ts::Finish` stops clearing it.
+#[test]
+fn a_finished_main_window_stop_flight_clears_its_guard() {
+    use super::flights::{StopCfg, StopFlight};
+    let cfg = StopCfg {
+        panic_after_cp: false,
+        pipeline: super::flights::PipelineCfg {
+            work: 0,
+            end: super::flights::PipelineEnd::Err,
+        },
+    };
+    let new_world = || {
+        let mut w = World::new();
+        w.status = Status::Recovering;
+        w.current_id = 1;
+        w
+    };
+    let mut w = new_world();
+    w.window_stop_sent(MAIN_WINDOW);
+    assert!(w.windows[MAIN_WINDOW].stop_in_flight);
+    drive_stop_flight(
+        &mut w,
+        StopFlight::new(None, None, cfg).with_window(MAIN_WINDOW),
+    );
+    assert!(
+        !w.windows[MAIN_WINDOW].stop_in_flight,
+        "the finished flight did not clear the guard"
+    );
+    // The shell refused it: no `Idle` was emitted, so only the flight's finish can have cleared it.
+    assert!(w
+        .windows
+        .iter()
+        .all(|view| !view.inbox.contains(&Status::Idle)));
+    // A stop from the IPC or the auto-stop belongs to no window and leaves the guard alone.
+    let mut w = new_world();
+    w.windows[MAIN_WINDOW].stop_in_flight = true;
+    drive_stop_flight(&mut w, StopFlight::new(None, None, cfg));
+    assert!(w.windows[MAIN_WINDOW].stop_in_flight);
+    // The overlay has no guard: its flight clears nothing and sets nothing.
+    let mut w = new_world();
+    w.window_stop_sent(OVERLAY_WINDOW);
+    drive_stop_flight(
+        &mut w,
+        StopFlight::new(None, None, cfg).with_window(OVERLAY_WINDOW),
+    );
+    assert!(!w.windows[OVERLAY_WINDOW].stop_in_flight);
+}
+
+/// #1167, seed 1454 (the issue's seed): the main window's second stop at step 36 is held back
+/// by `isStoppingRef` before either flight runs. The overlay, with no guard, can send two.
+#[test]
+fn a_second_main_window_stop_waits_for_the_first() {
+    let (report, trace) = run_seed_with(gated(1_454), true);
+    assert!(report.violations.is_empty(), "{:?}", report.violations);
+    let sent = trace
+        .iter()
+        .position(|line| line.contains("frontend stop sent (main window shows Recording)"))
+        .expect("the main window sends a stop");
+    assert!(
+        trace[sent + 1].contains("frontend stop not sent (main window has a stop in flight)"),
+        "{trace:#?}"
+    );
+    let (_, overlay) = run_seed_with(gated(33), true);
+    let count = |needle: &str| overlay.iter().filter(|line| line.contains(needle)).count();
+    assert!(
+        count("frontend stop sent (overlay window") >= 2,
+        "{overlay:#?}"
+    );
+    assert_eq!(count("window has a stop in flight"), 0);
 }
 
 fn deliver(w: &mut World, window: usize) -> Poll {
@@ -1876,12 +2020,12 @@ fn two_windows_can_disagree_about_the_status() {
 
 /// D-S2b-18 (3) in the seeded runs: a window sends a stop on `Recording` after the shell
 /// entered `Recovering` while the other window has already received `Recovering` (and would
-/// send none). One cursor could not represent both. The witness is pinned at seed 205,
-/// inside the fixed 10,000-seed set; the regular suite asserts nothing beyond that gate
+/// send none). One cursor could not represent both. The witness is pinned at seed 2,386
+/// (re-pinned from 205 by #1167, inside the 10,000-seed gate); the regular suite asserts nothing beyond that gate
 /// (D-S2b-19 (a)).
 #[test]
 fn the_windows_disagree_in_the_seeded_runs() {
-    const WITNESS: u64 = 205;
+    const WITNESS: u64 = 2_386;
     let (report, trace) = run_seed_with(gated(WITNESS), true);
     assert!(
         report.violations.is_empty(),
@@ -1897,65 +2041,152 @@ fn the_windows_disagree_in_the_seeded_runs() {
     );
 }
 
+/// Delivery-first at a scheduler boundary (#1159, #1167): `window` receives `Recording` at the
+/// boundary of its *own* due stop, with only more deliveries before that same stop at that
+/// boundary, and then sends it. A delivery before another window's stop, or before a due
+/// start or cancel, does not count.
+fn delivery_first(trace: &[String], window: &str) -> bool {
+    let before = format!("(before the due stop from the {window} window)");
+    let received = format!("{window} window receives Recording {before}");
+    let sent = format!("frontend stop sent ({window} window shows Recording)");
+    (0..trace.len())
+        .filter(|at| trace[*at].contains(&received))
+        .any(|at| {
+            trace[at + 1..]
+                .iter()
+                .find(|line| !line.contains(&before))
+                .is_some_and(|line| line.contains(&sent))
+        })
+}
+
+/// Stop-first at a scheduler boundary (#1159, #1167): the due stop from `window` runs while
+/// `Recording` is still queued for that window, so it shows `Starting` and sends nothing,
+/// and that window did not receive `Recording` between the emit and the dropped stop. The
+/// other window may have: only the caller's own delivery is what the stop ran ahead of.
+fn stop_first(trace: &[String], window: &str) -> bool {
+    let dropped = format!(
+        "frontend stop not sent ({window} window shows Starting) while Recording is still queued for it"
+    );
+    let own_receive = format!("{window} window receives Recording");
+    (0..trace.len())
+        .filter(|at| trace[*at].contains(&dropped))
+        .any(|at| {
+            trace[..at]
+                .iter()
+                .rposition(|line| line.contains("fx R104.2 In EmitStatus { status: Recording"))
+                .is_some_and(|emit| {
+                    !trace[emit..at]
+                        .iter()
+                        .any(|line| line.contains(&own_receive))
+                })
+        })
+}
+
 /// #1159, D-S2b-19 (c): at a scheduler boundary a due command and a ready delivery compete,
 /// and the run's RNG picks the order, so production's two orders are both explored. This
-/// is the delivery-first side: the window receives `Recording` and only then sends its stop
-/// (the model used to run the due stop first and drop it). Pinned at seed 147.
+/// is the delivery-first side: the caller's window receives `Recording` at the boundary of
+/// its own due stop and only then sends it (the model used to run the due stop first and drop
+/// it). Matching the caller and the boundary (#1167) keeps another window's delivery, or one
+/// before a due start, from satisfying it. Both windows are pinned.
 #[test]
 fn a_ready_delivery_can_run_before_a_due_stop() {
-    const WITNESS: u64 = 147;
-    let (report, trace) = run_seed_with(gated(WITNESS), true);
-    assert!(
-        report.violations.is_empty(),
-        "{WITNESS}: {:?}",
-        report.violations
-    );
-    let delivered_then_sent = trace.windows(3).any(|lines| {
-        lines[0].contains("window receives Recording (before the due command)")
-            && lines[1..]
-                .iter()
-                .any(|line| line.contains("frontend stop sent ("))
-    });
-    assert!(
-        delivered_then_sent,
-        "seed {WITNESS} no longer delivers `Recording` before its due stop: {trace:#?}"
-    );
+    for (window, seed) in [
+        ("main", MAIN_DELIVERY_FIRST),
+        ("overlay", OVERLAY_DELIVERY_FIRST),
+    ] {
+        let (report, trace) = run_seed_with(gated(seed), true);
+        assert!(
+            report.violations.is_empty(),
+            "{seed}: {:?}",
+            report.violations
+        );
+        assert!(
+            delivery_first(&trace, window),
+            "seed {seed} no longer delivers `Recording` to the {window} window before its own due stop: {trace:#?}"
+        );
+    }
 }
 
 /// The stop-first side of the same competition, the shape of the issue's seed 473: R104.2
-/// emits `Recording` at step 30 and the due stop runs before the window receives it, so the
-/// window still shows `Starting` and sends nothing. Pinned at seed 473.
+/// emits `Recording` and the caller's due stop runs before its window receives it, so the
+/// window still shows `Starting` and sends nothing. The other window receiving `Recording`
+/// first does not change that, so a trace where only the other window received it is
+/// accepted (#1167). Both windows are pinned.
 #[test]
 fn a_due_stop_can_run_before_a_ready_delivery() {
-    const WITNESS: u64 = 473;
-    let (report, trace) = run_seed_with(gated(WITNESS), true);
-    assert!(
-        report.violations.is_empty(),
-        "{WITNESS}: {:?}",
-        report.violations
-    );
-    let emit = trace
-        .iter()
-        .position(|line| line.contains("fx R104.2 In EmitStatus { status: Recording"))
-        .expect("R104.2 emits Recording");
-    let dropped = trace
-        .iter()
-        .position(|line| line.contains("frontend stop not sent (main window shows Starting) while Recording is still queued for it"))
-        .expect("the stop ran ahead of the delivery");
-    assert!(emit < dropped, "{trace:#?}");
-    assert!(
-        !trace[emit..dropped]
+    for (window, seed) in [("main", MAIN_STOP_FIRST), ("overlay", OVERLAY_STOP_FIRST)] {
+        let (report, trace) = run_seed_with(gated(seed), true);
+        assert!(
+            report.violations.is_empty(),
+            "{seed}: {:?}",
+            report.violations
+        );
+        assert!(
+            stop_first(&trace, window),
+            "seed {seed} no longer runs the {window} window's due stop before its `Recording` delivery: {trace:#?}"
+        );
+    }
+}
+
+/// The matchers name the caller and the boundary: each rejects the mismatch it was written
+/// to reject (#1167, seed 828: the main window received `Recording` and the overlay sent a
+/// stop on its earlier delivery) and accepts the valid trace the old stop-first check rejected.
+#[test]
+fn the_ordering_matchers_name_their_caller_and_boundary() {
+    let lines = |lines: &[&str]| {
+        lines
             .iter()
-            .any(|line| line.contains("window receives Recording")),
-        "the main window received Recording before the stop: {trace:#?}"
-    );
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+    };
+    // Main receives at a boundary of the overlay's stop; the overlay sends on an earlier
+    // delivery: neither window's delivery-first holds.
+    let mismatched = lines(&[
+        "   9 overlay window receives Recording",
+        "  37 main window receives Recording (before the due stop from the overlay window)",
+        "  37 frontend stop sent (overlay window shows Recording)",
+    ]);
+    assert!(!delivery_first(&mismatched, "main"));
+    assert!(!delivery_first(&mismatched, "overlay"));
+    // A delivery before a due start is not a delivery before the stop.
+    let other_command = lines(&[
+        "  37 main window receives Recording (before the due start)",
+        "  37 frontend stop sent (main window shows Recording)",
+    ]);
+    assert!(!delivery_first(&other_command, "main"));
+    let matched = lines(&[
+        "  37 overlay window receives Recording (before the due stop from the main window)",
+        "  37 main window receives Recording (before the due stop from the main window)",
+        "  37 frontend stop sent (main window shows Recording)",
+    ]);
+    assert!(delivery_first(&matched, "main"));
+    // Only the overlay received `Recording` first: the main window's stop still ran ahead of
+    // its own delivery.
+    let overlay_only = lines(&[
+        "  30 t3   fx R104.2 In EmitStatus { status: Recording, cond: Always } rid=1 Recording->Recording claim=None",
+        "  31 overlay window receives Recording",
+        "  32 frontend stop not sent (main window shows Starting) while Recording is still queued for it",
+    ]);
+    assert!(stop_first(&overlay_only, "main"));
+    assert!(!stop_first(&overlay_only, "overlay"));
+    let main_received = lines(&[
+        "  30 t3   fx R104.2 In EmitStatus { status: Recording, cond: Always } rid=1 Recording->Recording claim=None",
+        "  31 main window receives Recording",
+        "  32 frontend stop not sent (main window shows Starting) while Recording is still queued for it",
+    ]);
+    assert!(!stop_first(&main_received, "main"));
 }
 
 /// The competition draws only when a command and a delivery are both ready, and it is part
 /// of the seed: the same seed gives the same order.
 #[test]
 fn the_competition_is_deterministic_per_seed() {
-    for seed in [147u64, 473] {
+    for seed in [
+        MAIN_DELIVERY_FIRST,
+        OVERLAY_DELIVERY_FIRST,
+        MAIN_STOP_FIRST,
+        OVERLAY_STOP_FIRST,
+    ] {
         let seed = gated(seed);
         let (_, first) = run_seed_with(seed, true);
         let (_, second) = run_seed_with(seed, true);

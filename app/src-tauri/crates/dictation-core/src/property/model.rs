@@ -464,6 +464,11 @@ pub const OVERLAY_WINDOW: usize = 1;
 pub struct WindowView {
     pub observed: Status,
     pub inbox: std::collections::VecDeque<Status>,
+    /// The main window's `isStoppingRef` (`useRecordingState.ts`): set by a stop gesture that
+    /// reaches the IPC, cleared when that IPC returns and when the window receives `Idle`
+    /// (#1167). Only the main window has it; the overlay's click handlers keep no such guard
+    /// (`useRecordingControls.ts`), so this stays `false` for the overlay.
+    pub stop_in_flight: bool,
 }
 
 impl WindowView {
@@ -471,6 +476,11 @@ impl WindowView {
     fn receive(&mut self) -> Status {
         if let Some(status) = self.inbox.pop_front() {
             self.observed = status;
+            // `recording-status-changed` handler: "If idle arrived externally (e.g. Escape
+            // cancel), unblock handleStop" (`useRecordingState.ts`).
+            if status == Status::Idle {
+                self.stop_in_flight = false;
+            }
         }
         self.observed
     }
@@ -526,6 +536,30 @@ impl World {
     /// schedule of its own); returns the status it now shows.
     pub fn deliver_status(&mut self, window: usize) -> Status {
         self.windows[window].receive()
+    }
+
+    /// The main window's `handleStop` passes its guard and sends the stop IPC (#1167): it sets
+    /// `isStoppingRef` and writes `Processing` to its own status *before* it awaits the IPC
+    /// (`useRecordingState.ts` `handleStop`: `isStoppingRef.current = true`, then
+    /// `statusRef.current = 'processing'; setStatus('processing')`). The overlay keeps no
+    /// guard and writes no local status (`useRecordingControls.ts`: it awaits
+    /// `stop_native_recording` and "status will sync via event"), so it changes nothing.
+    pub fn window_stop_sent(&mut self, window: usize) {
+        if window == MAIN_WINDOW {
+            let view = &mut self.windows[MAIN_WINDOW];
+            view.stop_in_flight = true;
+            view.observed = Status::Processing;
+        }
+    }
+
+    /// The stop IPC a window sent has returned: `handleStop`'s `finally` clears
+    /// `isStoppingRef`. Its tail then writes the reply's status only while the window still
+    /// shows `Processing`; that write is not modelled: the window keeps `Processing` until
+    /// an event moves it, so it sends no further stop in the interval.
+    pub fn window_stop_returned(&mut self, window: usize) {
+        if window == MAIN_WINDOW {
+            self.windows[MAIN_WINDOW].stop_in_flight = false;
+        }
     }
 
     pub fn new() -> Self {
