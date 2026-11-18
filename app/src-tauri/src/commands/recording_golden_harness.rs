@@ -375,6 +375,12 @@ impl World {
         }
     }
 
+    /// The mock app handle the world runs on (additive: the #117 replay hands it to
+    /// the real `ensure_vad_model`).
+    pub(super) fn app_handle(&self) -> MockHandle {
+        self.app.clone()
+    }
+
     pub(super) fn state(&self) -> tauri::State<'_, State> {
         self.app.state::<State>()
     }

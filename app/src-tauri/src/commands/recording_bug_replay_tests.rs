@@ -619,20 +619,24 @@ fn sp5_models_rs_emits_no_recording_status() {
     );
 }
 
+/// The scratch models directory of the #117 replay (runs are serialized).
+fn bug117_models_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("murmur-bug117-{}", std::process::id()))
+}
+
 /// #117 (`25677eca`): the first-run VAD download re-emitted `processing` after
-/// `IdleGuard` had written Idle and left the app stuck. The pipeline completes,
-/// `IdleGuard` writes Idle and the supervisor finishes the sealed stop; nothing
-/// emits a status after the final `idle`, and the emitted sequence is exactly the
-/// legal one (so an executor `PM` / `SD` effect that emitted a status would show).
+/// `IdleGuard` had written Idle and left the app stuck. The pipeline starts
+/// `ensure_vad_model` as a fire-and-forget task when the model is missing; here the
+/// real `ensure_vad_model` runs against the world's app handle with a fake download
+/// (`vad::test_seam`, test builds only) parked in `stream_download`. The stop
+/// completes, `IdleGuard` writes Idle, the supervisor finishes the sealed stop, and
+/// only then is the download released: the real completion path (validate, rename,
+/// cleanup) runs after the final idle. Nothing may emit a status after that idle, and
+/// the final status is Idle.
 ///
-/// `ensure_vad_model` itself needs a real `tauri::AppHandle` and the network
-/// (`stream_download` has no seam), so the production emit is caught by the
-/// source ratchet half of this test ([`sp5_models_rs_emits_no_recording_status`]'s
-/// check, run here so a revert fails the named test).
-///
-/// Revert: `git revert 25677eca` (the `downloading-vad` and `processing` emits
-/// in `ensure_vad_model`). Mutation: an executor `PM` / `SD` effect, or the VAD
-/// completion path, emits a status.
+/// Revert: `git revert 25677eca` (the `downloading-vad` and `processing` emits in
+/// `ensure_vad_model`; they sat in the completion path). Mutation: any status emit in
+/// the completion path, however spelled (`concat!("recording-status-", "changed")`).
 #[test]
 fn bug117_no_status_emit_after_final_idle() {
     let source = models_rs_production_source();
@@ -641,16 +645,47 @@ fn bug117_no_status_emit_after_final_idle() {
         "commands/models.rs must not emit recording-status-changed (#117 revert)"
     );
     for _ in 0..repeat_count() {
+        let _ = std::fs::remove_dir_all(bug117_models_dir());
         let lines = run_sub_run(&sub("117 no status emit after the final idle", |w| {
+            let seam = crate::vad::test_seam::install(&bug117_models_dir());
             recording(w);
+            // The pipeline's fire-and-forget VAD install, on the world's handle.
+            let handle = w.app_handle();
+            let install = std::thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime")
+                    .block_on(super::super::models::ensure_vad_model(&handle))
+            });
+            seam.wait_parked();
+            w.note("the VAD install is parked in its download");
             w.knobs().stop_result = Ok(16_000);
             stopped(w, "stop", None);
             assert_eq!(status(w), DictationStatus::Idle);
+            w.finish_sealed_stop(1);
+            w.note("IdleGuard wrote Idle and the supervisor finished the stop: the download completes now");
+            seam.release();
+            let installed = install.join().expect("the VAD install thread");
+            assert_eq!(installed, Ok(()), "the real completion path succeeds");
+            assert!(
+                crate::vad::vad_model_exists(),
+                "the completion path installed the model"
+            );
+            w.note("the VAD install completed");
+            assert_eq!(status(w), DictationStatus::Idle);
         }));
+        let _ = std::fs::remove_dir_all(bug117_models_dir());
+        let completed = position(&lines, "# the VAD install completed");
         let last_idle = lines
             .iter()
             .rposition(|l| l == IDLE_EMIT)
             .expect("the run ends with an idle emit");
+        assert!(
+            last_idle < completed,
+            "the download completes after the final idle:\n{}",
+            lines.join("\n")
+        );
         let later: Vec<&String> = lines[last_idle + 1..]
             .iter()
             .filter(|l| l.starts_with("emit recording-status-changed "))

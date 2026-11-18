@@ -199,8 +199,8 @@ fn install_kind_code(kind: InstallKind) -> &'static str {
     }
 }
 
-fn emit_download_progress(
-    app_handle: &tauri::AppHandle,
+fn emit_download_progress<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
     context: DownloadProgressContext<'_>,
     received: u64,
     total: u64,
@@ -1310,12 +1310,14 @@ fn classify_archive_unpack_error(error: std::io::Error) -> ParakeetInstallError 
 /// Ensure the VAD model is present, downloading it if necessary.
 /// This is the fallback for users who have a transcription model but not the
 /// VAD model (e.g. upgrade from a pre-VAD version or manual model install).
-pub(crate) async fn ensure_vad_model(app_handle: &tauri::AppHandle) -> Result<(), String> {
+pub(crate) async fn ensure_vad_model<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
+) -> Result<(), String> {
     ensure_vad_model_with_progress(app_handle, None).await
 }
 
-async fn ensure_vad_model_with_progress(
-    app_handle: &tauri::AppHandle,
+async fn ensure_vad_model_with_progress<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
     progress_context: Option<DownloadProgressContext<'_>>,
 ) -> Result<(), String> {
     let fallback = Cancellation::default();
@@ -1376,13 +1378,18 @@ async fn ensure_vad_model_with_progress(
 }
 
 /// Stream a file download with progress events. Returns total bytes received.
-async fn stream_download(
-    app_handle: &tauri::AppHandle,
+async fn stream_download<R: tauri::Runtime>(
+    app_handle: &tauri::AppHandle<R>,
     url: &str,
     dest: &std::path::Path,
     progress_context: Option<DownloadProgressContext<'_>>,
     staging_bytes: u64,
 ) -> Result<u64, String> {
+    // Test builds only: a fake VAD download (see `vad::test_seam`).
+    #[cfg(test)]
+    if let Some(result) = crate::vad::test_seam::fake_download(url, dest).await {
+        return result;
+    }
     let fallback = Cancellation::default();
     let cancel = progress_context
         .map(|context| context.cancel)
