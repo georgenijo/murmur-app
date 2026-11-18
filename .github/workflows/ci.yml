@@ -319,13 +319,17 @@ jobs:
           --example murmur-eval &&
           cargo nextest list --workspace
           --lib --bin murmur-capture-helper --test topology_watch
+          --test c13_3_bug_replays
           --message-format json --list-type binaries-only > target/ci-test-binaries.json &&
           cargo metadata --format-version 1 > target/ci-cargo-metadata.json
 
       - name: Run tests
         if: needs.changes.outputs.verified != 'true'
-        # kind(lib) covers app and protocol crate unit tests. The capture helper
-        # is bin-only, so its tests stay in the following dedicated step.
+        # kind(lib) covers app and protocol crate unit tests. binary(c13_3_bug_replays)
+        # adds the dictation-core integration test holding the seven C13.3 bug
+        # replays; it is a separate test target, so kind(lib) alone skips it.
+        # The capture helper is bin-only, so its tests stay in the following
+        # dedicated step.
         # nextest gives every test its own process, so tests that share process
         # state stay as isolated as `cargo test -- --test-threads=1` kept them,
         # while the suite uses every core. The golden scenarios get a per-test
@@ -334,7 +338,8 @@ jobs:
         run: >-
           cd app/src-tauri &&
           cargo nextest run --cargo-metadata target/ci-cargo-metadata.json
-          --binaries-metadata target/ci-test-binaries.json -E 'kind(lib)'
+          --binaries-metadata target/ci-test-binaries.json
+          -E 'kind(lib) | binary(c13_3_bug_replays)'
           --config-file ../../.github/nextest-golden.toml
 
       - name: Run golden dictation scenarios 100 times
