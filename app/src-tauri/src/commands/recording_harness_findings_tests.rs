@@ -34,14 +34,16 @@ fn audio_recovering() -> Result<serde_json::Value, String> {
 }
 
 // ------------------------------------------------------------------ F-4
-// Harness seed 633. An `Interrupted` end of 8,000 samples or more, after
+// Harness seed 8147. An `Interrupted` end of 8,000 samples or more, after
 // `Recovering{RuntimeFailure}` and `InitializationFailed(recovery_reason =
-// RuntimeFailure)` (which clears the context). The supervisor stores the
-// preserved capture; a user stop lands before the `Interrupted` notification, takes
-// the capture (R201.7) and, with no context, writes Idle (R202.3, PD-3) while the
-// owner is still `Recovering`; a start then reads cleanup pending and takes R101.12
+// RuntimeFailure)` (which clears the context). `finish_attempt` stores the preserved
+// capture and only then notifies `Interrupted` (`audio_lifecycle.rs:2417-2432`), so
+// a user stop on another thread can land in between: it takes the capture (R201.5),
+// and with no context writes Idle (R202.3, PD-3) while the owner is still
+// `Recovering`; a start then reads cleanup pending and takes R101.12
 // (`Idle -> Recovering`, old id). The `Interrupted` arm schedules the auto-stop
 // (R215.2); it finds `Recovering` and no capture (R201.6) and restores nothing.
+// Every later command is refused or answered as asserted below.
 
 fn f4_user_stop_then_start_before_interrupted(world: &Arc<World>) {
     recording(world);
@@ -63,7 +65,7 @@ fn f4_user_stop_then_start_before_interrupted(world: &Arc<World>) {
         },
     );
     world.note("the capture is stored; Interrupted has not been notified yet");
-    // The user stop takes the capture, finds no context and writes Idle.
+    // The user stop takes the capture (R201.5), finds no context and writes Idle.
     let reply = stop_reply(world, None);
     assert!(
         matches!(&reply, Err(error) if error.contains("Missing dictation context")),
@@ -102,7 +104,11 @@ fn nothing_restores_idle(world: &Arc<World>) {
         1
     );
     assert_eq!(stop_reply(world, None), audio_recovering());
-    cancelled(world, "cancel");
+    let mut cancel = world.cancel(None);
+    let reply = complete(&mut cancel);
+    world.reply_unit("cancel", &reply);
+    assert_eq!(reply, Ok(()), "a cancel answers Ok and changes nothing");
+    assert_eq!(status(world), DictationStatus::Recovering);
     assert_eq!(start_reply(world), audio_recovering());
     assert_eq!(status(world), DictationStatus::Recovering);
     let trace = world.trace();
@@ -307,13 +313,67 @@ fn f2_failed_capture_cancel_terminal_and_a_short_stop_performance_outcome_disagr
     ));
 }
 
+// The other way a capture cancel fails: the client's 2 s wait times out (`Err`) while
+// the supervisor still handles the queued `Cancel{User}`: `begin_recovery` publishes
+// `Recovering{User}` afterwards (`audio_lifecycle.rs:1332-1336`). R206.2 has
+// already claimed the terminal as `PipelineFailure`; the late `Recovering{User}` arm
+// (R209.4) completes performance as `Cancelled` (model: R206.2 / R209.x).
+
+fn f2_timed_out_cancel_then_the_supervisor_recovers(world: &Arc<World>) {
+    recording(world);
+    world.knobs().cancel_result = Err("timed out");
+    let mut cancel = world.cancel(None);
+    let reply = complete(&mut cancel);
+    world.reply_unit("cancel", &reply);
+    assert_eq!(reply, Err("timed out".to_string()));
+    assert_eq!(
+        terminal(world, 1),
+        Some((
+            DictationTerminalOutcome::PipelineFailure,
+            DictationErrorCode::RuntimeFailure
+        ))
+    );
+    assert_eq!(perf_claim(1), None, "no performance outcome yet");
+    world.notify(
+        1,
+        AudioLifecycleEvent::Recovering {
+            reason: AudioCancelReason::User,
+        },
+    );
+    assert_eq!(
+        terminal(world, 1),
+        Some((
+            DictationTerminalOutcome::PipelineFailure,
+            DictationErrorCode::RuntimeFailure
+        )),
+        "the supervisor's terminal lost the claim"
+    );
+    assert!(
+        matches!(perf_claim(1), Some(RunOutcomeV1::Cancelled { .. })),
+        "{:?}",
+        perf_claim(1)
+    );
+}
+
+#[test]
+fn f2_timed_out_capture_cancel_terminal_and_the_late_recovery_performance_outcome_disagree() {
+    repeat(&sub(
+        "F-2 / PD-21: a capture cancel times out, then the supervisor recovers (R206.2, R209.4)",
+        f2_timed_out_cancel_then_the_supervisor_recovers,
+    ));
+}
+
 // ------------------------------------------------------------------ F-3
-// Harness seed 331. A cancel at `Processing` runs R205.5 and, in its tail at `CX-`
-// (D released, status already Idle, the id still current, the cancel's own `TERM`
-// not yet run), the supervisor's `Idle` for that recording arrives: R211.2 claims
-// the terminal as `Superseded` (PD-2). The cancel's `TERM` loses, and its
-// `PT:PC(Cancelled)` completes performance: the terminal says superseded, the
-// performance record says cancelled.
+// Harness seed 2883 (R211.2 / R203.2, and R211.2 / R205.5 from the same family). A
+// stop is in its capture stop with T released and its capture fails. A failed
+// capture stop is the supervisor's *undelivered* stop (`audio_lifecycle.rs`
+// 2366-2372): the stop gets `Err` and the supervisor notifies `Idle` (a sealed stop
+// notifies `CleanupFinished`, never `Idle`). A cancel at `Processing` runs R205.5; at
+// its tail's `CX-` (D released, status already Idle, the id still current, the
+// cancel's own `TERM` not yet run) the supervisor's `Idle` for that recording is
+// handled: R211.2 claims the terminal as `Superseded` (PD-2). The stop's
+// `Err` reply was queued before that `Idle`, so the stop thread consuming it after
+// the `Idle` is a schedule the supervisor's own order allows.
 
 fn idle_at_cx_minus(world: &Arc<World>, then: impl FnOnce() + 'static) {
     let supervisor = Arc::clone(world);
@@ -331,17 +391,29 @@ fn idle_at_cx_minus(world: &Arc<World>, then: impl FnOnce() + 'static) {
     drop(barrier);
 }
 
-fn f3_supervisor_idle_before_the_cancel_terminal(world: &Arc<World>) {
+/// The cancel runs to its end first: its `PT:PC(Cancelled)` wins performance before
+/// the stop's failure tail is released. The terminal says superseded, the
+/// performance record says cancelled.
+fn f3_cancel_wins_performance_before_the_stops_failure_tail(world: &Arc<World>) {
     recording(world);
-    world.knobs().stop_result = Ok(16_000);
-    world.close_gate("pipeline");
-    let mut stop = world.stop(None);
-    assert!(poll_once(&mut stop).is_pending());
-    world.note("the stop is in the pipeline; status is Processing");
+    world.knobs().stop_result = Err("capture failed");
+    let stop = ParkedStop::start(world);
+    assert_eq!(status(world), DictationStatus::Processing);
     idle_at_cx_minus(world, || {});
-    world.open_gate("pipeline");
-    let reply = complete(&mut stop);
+    assert_eq!(
+        terminal(world, 1).map(|(outcome, _)| outcome),
+        Some(DictationTerminalOutcome::Superseded),
+        "the supervisor's Idle claimed the terminal before the cancel's TERM"
+    );
+    assert!(
+        matches!(perf_claim(1), Some(RunOutcomeV1::Cancelled { .. })),
+        "{:?}",
+        perf_claim(1)
+    );
+    // Now the stop's failure tail: its terminal and its performance completion both lose.
+    let reply = stop.finish();
     world.reply("stop", &reply);
+    assert!(reply.is_err(), "{reply:?}");
     assert_eq!(status(world), DictationStatus::Idle);
     assert_eq!(
         terminal(world, 1).map(|(outcome, _)| outcome),
@@ -357,16 +429,14 @@ fn f3_supervisor_idle_before_the_cancel_terminal(world: &Arc<World>) {
 #[test]
 fn f3_superseded_terminal_and_a_cancels_performance_outcome_disagree() {
     repeat(&sub(
-        "F-3 / PD-22: a supervisor Idle before a cancel's terminal claim (R211.2, R205.5)",
-        f3_supervisor_idle_before_the_cancel_terminal,
+        "F-3 / PD-22: an undelivered stop's Idle before a cancel's terminal claim; the cancel completes performance (R211.2, R205.5)",
+        f3_cancel_wins_performance_before_the_stops_failure_tail,
     ));
 }
 
-// The same race with a stop in its capture stop (T released) whose capture then
-// fails: R203.2 completes performance as `Failed` before the cancel's `PT:PC`
-// (first seed 4265, R211.2 / R203.2).
-
-fn f3_supervisor_idle_with_a_failing_stop(world: &Arc<World>) {
+/// The stop's failure tail is released inside the cancel's tail: R203.2 completes
+/// performance as `Failed` before the cancel's `PT:PC`.
+fn f3_stops_failure_tail_wins_performance(world: &Arc<World>) {
     recording(world);
     world.knobs().stop_result = Err("capture failed");
     let stop = ParkedStop::start(world);
@@ -395,7 +465,7 @@ fn f3_supervisor_idle_with_a_failing_stop(world: &Arc<World>) {
 #[test]
 fn f3_superseded_terminal_and_a_failed_stop_performance_outcome_disagree() {
     repeat(&sub(
-        "F-3 / PD-22: a supervisor Idle before a cancel's terminal claim, a failing stop (R211.2, R203.2)",
-        f3_supervisor_idle_with_a_failing_stop,
+        "F-3 / PD-22: an undelivered stop's Idle before a cancel's terminal claim; the stop's failure tail completes performance (R211.2, R203.2)",
+        f3_stops_failure_tail_wins_performance,
     ));
 }

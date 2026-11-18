@@ -383,29 +383,61 @@ splitmix64 generator turns a seed into the whole run.
   `Attempt` grammar. Every supervisor word ends with an explicit `OwnerClear` step
   (followed by `CleanupFinished` for a sealed stop only); `cleanup_pending` is derived
   from the model (owner set and phase `Stopping`/`Recovering`), never generated.
+* **Supervisor fidelity** (D-S2b-7 (b), `supervisor.rs`, `sup_task.rs`): the model may
+  not invent or exclude a schedule. The worker's own end (a recovery, a crash, a failed
+  open) is a pending end that a stop or a cancel command can still win until the
+  supervisor takes it; the start's answer, a cancel's answer (after `begin_recovery`
+  returned) and the attempt's results are steps of their own; `finish_attempt` is one
+  uninterrupted group; `RecoveryStalled` is notified only while stopping or recovering; a
+  cancel client's timeout is its own outcome (`CancelMode::Timeout`: `Err` while the
+  supervisor still handles the cancel).
 * **Scheduler** (`run.rs`, `flights.rs`, `sup_task.rs`): one thread; T-holder flights,
-  D sections, the supervisor thread, each notification's bridge arm, the pipeline and
-  the ticker are separate actors. A D section is atomic; `Pre`, `PostDT` and `PostT`
-  effects are one step each, so another actor's D section can land between any two.
-  A blocked step changes nothing (a test compares the whole world). The README rules
-  above hold: a start can only be dropped between steps, at its smart-capture await.
-* **Checks** (`checks.rs`): SP1-SP4, SP6-SP10 after every step; PD signatures are
-  removed from a failure only when row and precondition match C7.1; C7.3 liveness at
-  the end of each run, after filtering L4/L6 violators. There is no "known findings"
-  set: a behaviour outside the allowlist fails `seeds_hold_the_properties`.
-* **Layer** (D-S2b-4): the harness runs the real `decide_*` functions over a model
-  world, not the shell. Its fidelity is guarded by D-S2b-5: a behaviour it finds that
-  C7.1 does not allowlist counts as a product behaviour only after a shell test
-  reproduces it. PD-19..PD-22 were found this way
-  (`src/commands/recording_harness_findings_tests.rs`, pinned seeds in
-  `FINDING_SEEDS`); PD-20..PD-22 are allowlisted by exact `(terminal row, performance
-  row)` pairs (`SIGNATURES`), and a pair outside the table is an SP4(b) failure.
+  D sections, the supervisor thread, each notification's bridge arm, the pipeline, the
+  partial ticker (which takes and drops the partial-decode lease) and a task per
+  duplicate or late token delivery (`redeliver.rs`) are separate actors. A D section is
+  atomic; `Pre`, `PostDT` and `PostT` effects are one step each, so another actor's D
+  section can land between any two. A blocked step changes nothing (a test compares the
+  whole world). The README rules above hold: a start can only be dropped between steps,
+  at its smart-capture await.
+* **Checks** (`checks.rs`, `c3.rs`): SP1-SP4, SP6-SP10 after every step.
+  * *C3 effect table* (`c3.rs`): every status write, terminal and performance completion
+    is checked against the `(row, from -> to)`, `(row, outcome, code)` and
+    `(row, outcome)` C3 lists for the row, so a row that grows an extra write or claims
+    another outcome fails even when its decision stays valid. SP2 for terminals: under D
+    a stale input claims only what the row lists for a stale input.
+  * *SP4(b) signatures*: a terminal and a performance outcome that disagree are judged
+    at the step where the second one arrives. The split leaves the failure set only when
+    one signature matches in full: the PD, the terminal rows with outcome and code, the
+    statuses the claim saw, the performance outcome class (or exact rows) and a causal
+    precondition read from what each winner recorded (`Won`: the cancel's tail open, the
+    order of the winners, a later claim lost). No PD exempts a whole recording.
+  * *SP10*: the partial-decode lease changes only by its holder's own acquire and drop,
+    and is released by the end of the run.
+  * *C7.3 liveness* is evaluated for every run from per-generation evidence, never by
+    filtering a run: a stuck `Recovering` needs the stranded recording's own PD-18
+    instance or PD-19 story (capture taken by the user's stop, the stop path's `Idle`,
+    R101.12 in the gap, the refused auto-stop); only the recording whose attempt awaits a
+    stop or a cancel may stay `Recording` (L4), and only a dropped start's own recording
+    may stay `Starting` or `Recording`.
+  There is no "known findings" set: a behaviour outside the allowlist fails
+  `seeds_hold_the_properties`.
+* **Layer** (D-S2b-4, D-S2b-7 (c)): the harness runs the real `decide_*` functions over
+  a model world, not the shell. Where a model witness and a production-reachable shell
+  fixture disagree, the fixture wins and the model is fixed. PD-19..PD-22 were found
+  this way (`src/commands/recording_harness_findings_tests.rs`, pinned seeds in
+  `FINDING_SEEDS`, each beside its shell test); PD-4 counts only after its defining
+  behaviour (the second ticker).
 * **Seeds**: 10,000 in CI (well under 20 s); `PROPTEST_CASES=100000 cargo test -p
   murmur-dictation-core --lib property::` raises it. `TRACE_SEED=<n> cargo test -p
   murmur-dictation-core --lib property::tests::trace_one -- --nocapture` prints one run.
+  `DUMP_C3=1` prints every status write, terminal and performance completion, to
+  regenerate the C3 table after a core row changes; `DUMP_SP4B=1` prints the context
+  of every split no signature matches.
 
 What this layer does not cover: SP5 (structural), the shell's own locks and executor
 (the golden harness and the shell tests drive those through the 0a seams), and
-`FieldAdapter`. SP1 is checked on the model ledger (first claim wins by construction);
-SP3 checks the edge set, not the per-row C3 `from` sets (those are the decide
-functions' own inputs).
+`FieldAdapter`. SP1 is checked on the model ledger (first claim wins by construction).
+A duplicate or late token delivery runs the site's decision in the later world (SP7:
+the same row for a retired token as for an outstanding one) and may retire nothing; its
+own effects do not run, because in the shell a token has one consumer, the flight that
+registered it.

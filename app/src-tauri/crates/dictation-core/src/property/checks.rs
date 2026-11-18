@@ -1,11 +1,14 @@
 //! The prefix check (SP1-SP10 after every step), the preserved-defect detectors
 //! (C7.1: an allowlisted violation is removed from the failure set only when its
-//! signature matches exactly) and the end-of-run liveness check (C7.3).
+//! full signature matches: the winning effects, the outcome classes and the causal
+//! precondition, D-S2b-7 (a)) and the end-of-run liveness check (C7.3), which reads
+//! per-generation evidence instead of exempting whole runs.
 
+use super::c3;
 use super::model::*;
 use super::task::*;
-use crate::effects::Effect;
-use crate::status::{Status, TerminalOutcome};
+use crate::effects::{Effect, PerfOutcome, Placement};
+use crate::status::{ErrCode, Status, TerminalOutcome};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// A preserved defect occurrence seen in one step.
@@ -27,9 +30,9 @@ pub enum Instance {
     B,
     /// An unsealed delivered stop.
     C,
-    /// An `Interrupted` end of 8,000 samples or more whose spawned stop is refused
-    /// (R201.6): PD-19, its own row (decision D-S2b-5), not an instance of PD-18.
-    Other,
+    /// An `Interrupted` end of 8,000 samples or more: PD-19 when its own evidence
+    /// is complete (decision D-S2b-5), never an instance of PD-18.
+    Long,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -40,34 +43,195 @@ pub struct RunHits {
     pub pd18: [u32; 3],
     /// Occurrences per [`SIGNATURES`] row.
     pub sig: [u32; SIGNATURES.len()],
+    /// Occurrences per matched split `(terminal row, performance row)`.
+    pub pairs: BTreeMap<(&'static str, &'static str), u32>,
 }
 
-/// PD-20..PD-22 (D-S2b-5): the terminal claim (`claim_terminal`) and the performance
-/// completion (`complete`) are two separate first-wins ledgers, so two paths racing
-/// for one recording can win one each, and the terminal and the performance outcome
-/// then disagree (SP4(b)). The signature is exact: the PD, the row that won the
-/// terminal and the row that completed performance first. A pair that is not in
-/// this table is an SP4(b) failure, not a new PD.
-///
-/// * PD-20: the cancel at `Processing` (R205.5) is one of the two.
-/// * PD-21: a failed capture cancel's `TERM(PipelineFailure)` (R206.2) won while the
-///   recording went on.
-/// * PD-22: a supervisor `Idle` for a finished current id won `Superseded` (R211.2).
-pub const SIGNATURES: [(u8, &str, &str); 13] = [
-    (20, "R205.5", "R203.2"),
-    (20, "R205.5", "R203.5"),
-    (20, "R205.5", "R203.7"),
-    (20, "R205.5", "R204b.6"),
-    (20, "R205.5", "R213.2"),
-    (20, "R203.pre", "R205.5"),
-    (20, "R213.2", "R205.5"),
-    (21, "R206.2", "R203.4"),
-    (21, "R206.2", "R203.6"),
-    (21, "R206.2", "R203.7"),
-    (21, "R206.2", "R204b.6"),
-    (22, "R211.2", "R203.2"),
-    (22, "R211.2", "R205.5"),
+/// What a signature's causal precondition requires of the two winners. Every
+/// variant reads the ledger context the winners recorded (`Won`), never the row names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pre {
+    /// PD-4, PD-5: the claim was for the current recording, in the status the row's
+    /// C3 line lists, and the recording's own path completed performance later.
+    LiveClaimThenPerf,
+    /// PD-20 (a): the cancel's claim won (its tail open); another path completed
+    /// performance during the tail, before the cancel's own `PC`.
+    CancelClaimedFirst,
+    /// PD-20 (b): another path claimed the terminal first, the cancel's own claim was
+    /// lost, and the cancel's tail still completed performance `Cancelled`.
+    CancelPerfAfterLostClaim,
+    /// PD-21: the cancel port's failure claimed `PipelineFailure` for the current
+    /// recording, which then ended through a path with its own outcome.
+    FailedCancelPort,
+    /// PD-22: the supervisor's `Idle` claimed `Superseded` for a finished current id,
+    /// a later claim of the real path was lost, and a cancel's tail was open when
+    /// performance completed.
+    SupervisorIdleWon,
+}
+
+/// The performance completions a signature admits.
+#[derive(Clone, Copy, Debug)]
+pub enum PerfSet {
+    /// Any path's completion C3 lists (the effect check already pins each row's own
+    /// outcome), with one of these outcome classes.
+    Any(&'static [PerfOutcome]),
+    /// Exactly these `(row, outcome)` completions.
+    Only(&'static [(&'static str, PerfOutcome)]),
+}
+
+impl PerfSet {
+    fn admits(&self, row: &str, outcome: PerfOutcome) -> bool {
+        match self {
+            Self::Any(classes) => classes.contains(&outcome),
+            Self::Only(pairs) => pairs.iter().any(|(r, o)| *r == row && *o == outcome),
+        }
+    }
+}
+
+const ALL_PERF: &[PerfOutcome] = &[
+    PerfOutcome::Failed,
+    PerfOutcome::Cancelled,
+    PerfOutcome::NoSpeech,
+    PerfOutcome::Completed,
 ];
+
+const ALL_STATUSES: &[Status] = &[
+    Status::Idle,
+    Status::Starting,
+    Status::Recording,
+    Status::Recovering,
+    Status::Processing,
+];
+
+/// One allowlisted SP4(b) split (C7.1): the PD it belongs to, the terminal winners
+/// (row, outcome, code) with the statuses the claim saw, the performance winners and
+/// the causal precondition. All must match for the split to leave the failure set; a
+/// pair outside the table is an SP4(b) failure.
+#[derive(Clone, Copy, Debug)]
+pub struct Signature {
+    pub pd: u8,
+    pub terminal: &'static [(&'static str, TerminalOutcome, ErrCode)],
+    pub claim_status: &'static [Status],
+    pub perf: PerfSet,
+    pub pre: Pre,
+}
+
+const SUPERSEDED: (TerminalOutcome, ErrCode) = (TerminalOutcome::Superseded, ErrCode::StaleOwner);
+
+pub const SIGNATURES: [Signature; 6] = [
+    // PD-4: R207.3 on a live `Recording`; whatever the recording's own path completes.
+    Signature {
+        pd: 4,
+        terminal: &[("R207.3", SUPERSEDED.0, SUPERSEDED.1)],
+        claim_status: &[Status::Recording],
+        perf: PerfSet::Any(ALL_PERF),
+        pre: Pre::LiveClaimThenPerf,
+    },
+    // PD-5: R207.2 / R209.2 on the current id in `Idle`, `Recovering` or `Processing`
+    // (the statuses C3 lists for those rows).
+    Signature {
+        pd: 5,
+        terminal: &[
+            ("R207.2", SUPERSEDED.0, SUPERSEDED.1),
+            ("R209.2", SUPERSEDED.0, SUPERSEDED.1),
+        ],
+        claim_status: &[Status::Idle, Status::Recovering, Status::Processing],
+        perf: PerfSet::Any(ALL_PERF),
+        pre: Pre::LiveClaimThenPerf,
+    },
+    // PD-20 (a): the cancel at `Processing` (R205.5) claimed; the stop or pipeline
+    // completed performance during the cancel's tail.
+    Signature {
+        pd: 20,
+        terminal: &[(
+            "R205.5",
+            TerminalOutcome::UserCancelledProcessing,
+            ErrCode::CancelledProcessing,
+        )],
+        claim_status: &[Status::Idle],
+        perf: PerfSet::Any(&[
+            PerfOutcome::Failed,
+            PerfOutcome::NoSpeech,
+            PerfOutcome::Completed,
+        ]),
+        pre: Pre::CancelClaimedFirst,
+    },
+    // PD-20 (b): another path claimed first; the cancel's `PC(Cancelled)` completed
+    // performance.
+    Signature {
+        pd: 20,
+        terminal: &[
+            (
+                "R203.pre",
+                TerminalOutcome::TooShort,
+                ErrCode::BelowMinimumDuration,
+            ),
+            ("R203.pre", TerminalOutcome::NoSpeech, ErrCode::EmptyAudio),
+            (
+                "R203.pre",
+                TerminalOutcome::StopFailure,
+                ErrCode::StopFinalizationFailed,
+            ),
+            (
+                "R204b.5",
+                TerminalOutcome::PipelineFailure,
+                ErrCode::TranscriptionFailed,
+            ),
+            (
+                "R213.2",
+                TerminalOutcome::CaptureInitFailure,
+                ErrCode::BackendError,
+            ),
+        ],
+        claim_status: ALL_STATUSES,
+        perf: PerfSet::Only(&[("R205.5", PerfOutcome::Cancelled)]),
+        pre: Pre::CancelPerfAfterLostClaim,
+    },
+    // PD-21: R206.2, the failed capture cancel's `TERM(PipelineFailure)`.
+    Signature {
+        pd: 21,
+        terminal: &[(
+            "R206.2",
+            TerminalOutcome::PipelineFailure,
+            ErrCode::RuntimeFailure,
+        )],
+        claim_status: ALL_STATUSES,
+        perf: PerfSet::Any(&[
+            PerfOutcome::Cancelled,
+            PerfOutcome::NoSpeech,
+            PerfOutcome::Completed,
+        ]),
+        pre: Pre::FailedCancelPort,
+    },
+    // PD-22: the supervisor `Idle` (R211.2) won `Superseded` for a finished current id.
+    Signature {
+        pd: 22,
+        terminal: &[("R211.2", SUPERSEDED.0, SUPERSEDED.1)],
+        claim_status: &[Status::Idle],
+        perf: PerfSet::Only(&[
+            ("R203.2", PerfOutcome::Failed),
+            ("R205.5", PerfOutcome::Cancelled),
+        ]),
+        pre: Pre::SupervisorIdleWon,
+    },
+];
+
+/// Evidence one recording (generation) left for the end-of-run checks.
+#[derive(Debug, Default, Clone)]
+struct Gen {
+    /// R101.12 taken after the generation's last restorer and before its owner cleared.
+    gap: Option<Instance>,
+    /// The row that took the preserved capture.
+    taken_by: Option<&'static str>,
+    /// The user's stop path (R202 / R203 / R204) wrote `Idle` for the generation while
+    /// its owner was still cleaning up: a context-less stop (R202.3), or the stop's
+    /// pipeline guard (R204a).
+    stop_idle: bool,
+    /// R201.6: the (auto) stop was refused, nothing to take.
+    stop_refused: bool,
+    /// `Interrupted` of 8,000 samples or more ended the generation.
+    long_interrupt: bool,
+}
 
 #[derive(Debug, Default)]
 pub struct Checker {
@@ -75,21 +239,27 @@ pub struct Checker {
     pub hits: RunHits,
     /// Recordings each PD touched, for the end-of-run checks.
     pd_ids: BTreeMap<u8, BTreeSet<Rid>>,
-    /// R101.12 decisions taken after the last restorer, by instance.
-    pd18_candidates: Vec<Instance>,
+    gens: BTreeMap<Rid, Gen>,
+    sp4b_done: BTreeSet<Rid>,
     prev_current: Rid,
-    prev_ticker: Rid,
-    /// A start future was dropped / a task panicked (liveness exemptions).
-    pub dropped: bool,
+    prev_lease: Option<(Rid, TaskId)>,
     /// Recordings whose start future was dropped at its await.
     dropped_ids: BTreeSet<Rid>,
-    pub panicked: bool,
+    /// Recordings whose pipeline or stop task panicked (PD-13).
+    panicked_ids: BTreeSet<Rid>,
     pub steps_checked: u32,
     /// A readable event trace (for reproducing a seed by hand).
     pub trace: Option<Vec<String>>,
 }
 
-const SP2_EXEMPT: [u8; 5] = [1, 4, 5, 7, 16];
+const SP2_EXEMPT: [u8; 4] = [1, 5, 7, 16];
+
+/// `DUMP_C3=1`: print every status write, terminal and performance completion, to
+/// regenerate the C3 table after the core's rows change.
+fn dump_c3() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("DUMP_C3").is_ok())
+}
 
 fn edge_allowed(from: Status, to: Status) -> bool {
     use Status::*;
@@ -164,12 +334,37 @@ impl Checker {
                     self.hit(&mut hits, 10, e.row, e.input_rid);
                 }
             }
+            self.note_effect(e, w);
         }
         for note in &out.notes {
-            self.detect_note(w, note, &mut hits);
+            self.detect_note(note, &mut hits);
         }
         for e in &out.effects {
+            // PD-4's defining behaviour: after R207.3 claimed `Superseded` for the live
+            // recording, its side tasks spawned a second ticker for the same id.
+            if e.row == "R207.3"
+                && matches!(e.effect, Effect::StartSideTasks)
+                && w.tickers.get(&e.input_rid).copied().unwrap_or(0) >= 2
+            {
+                self.hit(&mut hits, 4, e.row, e.input_rid);
+            }
             self.check_effect(e, &hits);
+        }
+        self.check_lease(w, out);
+        // SP4(b) at the prefix where both outcomes exist.
+        let touched: BTreeSet<Rid> = out
+            .effects
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.effect,
+                    Effect::Terminal(_) | Effect::PerfComplete(_) | Effect::PipelineGuardFinish(_)
+                )
+            })
+            .map(|e| e.input_rid)
+            .collect();
+        for rid in touched {
+            self.sp4b(w, rid);
         }
         // SP6: ids.
         if w.current_id < self.prev_current {
@@ -185,11 +380,6 @@ impl Checker {
                 w.cancelled_through, w.current_id
             ));
         }
-        // SP10: the partial-decode lease is never released.
-        if w.ticker_started < self.prev_ticker {
-            self.fail("SP10: ticker_started was lowered".into());
-        }
-        self.prev_ticker = w.ticker_started;
         // SP1: the ledger.
         for (rid, wins) in &w.ledger.wins {
             if *wins > 1 || !w.ledger.accepted.contains(rid) {
@@ -199,6 +389,40 @@ impl Checker {
         // SP7 high-water values are diagnostics, not limits.
     }
 
+    /// SP10: the partial-decode lease changes only by its holder's own acquire and
+    /// drop. No decision or effect of a step (a terminal, a cancel, an `IdleGuard`
+    /// finish, a `CX-`) releases it, and a second ticker's `try_begin` is refused
+    /// while it is held.
+    fn check_lease(&mut self, w: &World, out: &StepOut) {
+        let mut expected = self.prev_lease;
+        for note in &out.notes {
+            if let Note::Lease { rid, tid, acquire } = note {
+                if *acquire {
+                    if expected.is_some() {
+                        self.fail(format!(
+                            "SP10: ticker {tid} for id {rid} took the lease while {expected:?} held it"
+                        ));
+                    }
+                    expected = Some((*rid, *tid));
+                } else {
+                    if expected != Some((*rid, *tid)) {
+                        self.fail(format!(
+                            "SP10: ticker {tid} for id {rid} dropped a lease it does not hold ({expected:?})"
+                        ));
+                    }
+                    expected = None;
+                }
+            }
+        }
+        if w.partial_lease != expected {
+            self.fail(format!(
+                "SP10: the lease changed from {expected:?} to {:?} outside its holder's acquire or drop",
+                w.partial_lease
+            ));
+        }
+        self.prev_lease = w.partial_lease;
+    }
+
     fn detect_decision(&mut self, d: &DecisionEv, hits: &mut Vec<Hit>) {
         let row = d.row;
         let rid = d.input_rid;
@@ -206,7 +430,6 @@ impl Checker {
         match row {
             "R216.3" | "R216.4" | "R216.5" => self.hit(hits, 1, row, rid),
             "R211.2" => self.hit(hits, 2, row, rid),
-            "R207.3" => self.hit(hits, 4, row, rid),
             "R207.2" | "R209.2" => self.hit(hits, 5, row, rid),
             "R211.3" => self.hit(hits, 7, row, rid),
             "R103.2" => self.hit(hits, 8, row, rid),
@@ -238,43 +461,67 @@ impl Checker {
         if d.in_cancel_tail && is_supervisor_site(d.site) {
             self.hit(hits, 16, row, rid);
         }
+        if row == "R201.6" {
+            self.gens.entry(rid).or_default().stop_refused = true;
+        }
         if row == "R101.12" && d.cleanup_pending && !d.restorer_pending && !d.pipeline_live {
+            let stranded = d.current_before;
             let instance = match d.ended_by {
                 Some(EndedBy::Recover {
                     interrupted: Some(samples),
                 }) if samples < crate::lifecycle::AUTO_TRANSCRIBE_MIN_SAMPLES => Instance::A,
                 Some(EndedBy::Recover {
                     interrupted: Some(_),
-                }) => Instance::Other,
+                }) => {
+                    self.gens.entry(stranded).or_default().long_interrupt = true;
+                    Instance::Long
+                }
                 Some(EndedBy::Stop(Delivery::Unsealed)) => Instance::C,
                 _ => Instance::B,
             };
-            self.pd18_candidates.push(instance);
+            self.gens.entry(stranded).or_default().gap = Some(instance);
         }
     }
 
-    fn detect_note(&mut self, _w: &World, note: &Note, hits: &mut Vec<Hit>) {
+    /// Effects that leave evidence for a generation's liveness.
+    fn note_effect(&mut self, e: &EffectEv, w: &World) {
+        if let Effect::SetStatus(Status::Idle) = e.effect {
+            let stop_family = ["R202", "R203", "R204"]
+                .iter()
+                .any(|family| e.row.starts_with(family));
+            if stop_family && w.sup.cleanup_pending(e.input_rid) {
+                self.gens.entry(e.input_rid).or_default().stop_idle = true;
+            }
+        }
+    }
+
+    fn detect_note(&mut self, note: &Note, hits: &mut Vec<Hit>) {
         match note {
             Note::Take {
-                found: false,
-                earlier: Some(_),
+                found,
+                earlier,
                 rid,
                 row,
                 ..
-            } => self.hit(hits, 15, row, *rid),
+            } => {
+                if *found {
+                    self.gens.entry(*rid).or_default().taken_by = Some(row);
+                } else if earlier.is_some() {
+                    self.hit(hits, 15, row, *rid);
+                }
+            }
             Note::StartDropped {
                 rid,
                 registered,
                 begun,
             } => {
-                self.dropped = true;
                 self.dropped_ids.insert(*rid);
                 if *registered && !*begun {
                     self.hit(hits, 9, "R101.15", *rid);
                 }
             }
             Note::TaskPanicked { rid, .. } => {
-                self.panicked = true;
+                self.panicked_ids.insert(*rid);
                 self.hit(hits, 13, "R204a.6", *rid);
             }
             Note::TickerPanicked { rid } => self.hit(hits, 14, "SD", *rid),
@@ -297,34 +544,201 @@ impl Checker {
     }
 
     fn check_effect(&mut self, e: &EffectEv, hits: &[Hit]) {
-        if let Effect::SetStatus(to) = e.effect {
-            // SP3: the edge set.
-            if !edge_allowed(e.status_before, to) {
+        let stale = e.input_rid != e.current;
+        if dump_c3() {
+            match &e.effect {
+                Effect::SetStatus(to) => {
+                    eprintln!("C3 {} ST {:?}->{:?}", e.row, e.status_before, to)
+                }
+                Effect::Terminal(t) => eprintln!(
+                    "C3 {} TERM {:?}/{:?} at={} stale={stale}",
+                    e.row,
+                    t.outcome,
+                    t.code,
+                    e.at.label()
+                ),
+                Effect::PerfComplete(c) => eprintln!("C3 {} PC {:?}", e.row, c.outcome),
+                Effect::PipelineGuardFinish(o) => eprintln!("C3 {} PGF {:?}", e.row, o),
+                _ => {}
+            }
+        }
+        match &e.effect {
+            Effect::SetStatus(to) => {
+                // SP3: the edge set, then C3's `(row, from, to)`.
+                if !edge_allowed(e.status_before, *to) {
+                    self.fail(format!(
+                        "SP3: {} wrote {:?} -> {:?}",
+                        e.row, e.status_before, to
+                    ));
+                } else if !c3::status_write_listed(e.row, e.status_before, *to) {
+                    self.fail(format!(
+                        "SP3: {} wrote {:?} -> {:?}, which C3 does not list for the row",
+                        e.row, e.status_before, to
+                    ));
+                }
+                // SP2: a stale input never changes the current recording's status.
+                if stale && !Self::exempt(hits, &SP2_EXEMPT, e.row) {
+                    self.fail(format!(
+                        "SP2: {} (input {}) wrote {:?} while current is {}",
+                        e.row, e.input_rid, to, e.current
+                    ));
+                }
+            }
+            Effect::Terminal(terminal) => {
+                // SP2 (terminals): a stale input claims only what C3 lists for a stale
+                // input of the row, and every terminal is one the row may claim.
+                // Only a terminal under D is stale in SP2's sense: the id read at the
+                // decision is the id the effect sees. Later placements may run after
+                // another start allocated an id.
+                let under_d = (e.at == Placement::In).then_some(stale);
+                if !c3::terminal_listed(e.row, terminal.outcome, terminal.code, under_d) {
+                    self.fail(format!(
+                        "C3: {} claimed {:?}/{:?} for {} input {}, which C3 does not list",
+                        e.row,
+                        terminal.outcome,
+                        terminal.code,
+                        if stale { "a stale" } else { "the current" },
+                        e.input_rid
+                    ));
+                }
+            }
+            Effect::PerfComplete(complete) if !c3::perf_listed(e.row, complete.outcome, true) => {
                 self.fail(format!(
-                    "SP3: {} wrote {:?} -> {:?}",
-                    e.row, e.status_before, to
+                    "C3: {} completed performance {:?}, which C3 does not list",
+                    e.row, complete.outcome
                 ));
             }
-            // SP2: a stale input never changes the current recording's status.
-            if e.input_rid != e.current && !Self::exempt(hits, &SP2_EXEMPT, e.row) {
+            Effect::PipelineGuardFinish(outcome) if !c3::perf_listed(e.row, *outcome, false) => {
                 self.fail(format!(
-                    "SP2: {} (input {}) wrote {:?} while current is {}",
-                    e.row, e.input_rid, to, e.current
+                    "C3: {} finished the pipeline guard with {:?}, which C3 does not list",
+                    e.row, outcome
                 ));
+            }
+            _ => {}
+        }
+    }
+
+    fn pd_touched(&self, pd: u8, rid: Rid) -> bool {
+        self.pd_ids.get(&pd).is_some_and(|ids| ids.contains(&rid))
+    }
+
+    /// SP4(b), at the prefix where the terminal and the performance outcome of `rid`
+    /// both exist: a disagreement fails unless one signature of the table matches in
+    /// full (the PD's rows, outcomes and causal precondition).
+    pub(super) fn sp4b(&mut self, w: &World, rid: Rid) {
+        let (Some((outcome, code, terminal_row)), Some((perf, perf_row))) =
+            (w.ledger.claimed.get(&rid), w.perf.outcome.get(&rid))
+        else {
+            return;
+        };
+        if perf_class_allowed(*outcome, *perf) || !self.sp4b_done.insert(rid) {
+            return;
+        }
+        let claim = w.ledger.ctx[&rid];
+        let completion = w.perf.ctx[&rid];
+        if std::env::var("DUMP_SP4B").is_ok() && !self.would_match(w, rid) {
+            eprintln!(
+                "SP4B {terminal_row} {outcome:?}/{code:?} st={:?} stale={} cur={} tail(other={},own={}) step={} | {perf_row} {perf:?} st={:?} stale={} tail(other={},own={}) step={} tries={:?}",
+                claim.status_before,
+                claim.input_rid != claim.current,
+                claim.current,
+                claim.other_cancel_tail,
+                claim.own_cancel_tail,
+                claim.step,
+                completion.status_before,
+                completion.input_rid != completion.current,
+                completion.other_cancel_tail,
+                completion.own_cancel_tail,
+                completion.step,
+                w.ledger.tries[&rid].iter().map(|t| (t.row, t.won)).collect::<Vec<_>>()
+            );
+        }
+        let matched = self.matching(w, rid);
+        match matched {
+            Some(index) => {
+                self.hits.pd[usize::from(SIGNATURES[index].pd)] += 1;
+                self.hits.sig[index] += 1;
+                *self
+                    .hits
+                    .pairs
+                    .entry((terminal_row, perf_row))
+                    .or_default() += 1;
+                self.pd_ids
+                    .entry(SIGNATURES[index].pd)
+                    .or_default()
+                    .insert(rid);
+            }
+            None => self.fail(format!(
+                "SP4(b): id {rid}: terminal {outcome:?}/{code:?} by {terminal_row} but performance {perf:?} by {perf_row} (no signature matches in full)"
+            )),
+        }
+    }
+
+    fn would_match(&self, w: &World, rid: Rid) -> bool {
+        self.matching(w, rid).is_some()
+    }
+
+    fn matching(&self, w: &World, rid: Rid) -> Option<usize> {
+        let (outcome, code, terminal_row) = w.ledger.claimed.get(&rid)?;
+        let (perf, perf_row) = w.perf.outcome.get(&rid)?;
+        let claim = w.ledger.ctx.get(&rid)?;
+        SIGNATURES.iter().position(|signature| {
+            signature
+                .terminal
+                .contains(&(*terminal_row, *outcome, *code))
+                && signature.claim_status.contains(&claim.status_before)
+                && signature.perf.admits(perf_row, *perf)
+                && Self::precondition(signature.pre, w, rid)
+        })
+    }
+
+    fn precondition(pre: Pre, w: &World, rid: Rid) -> bool {
+        let claim = w.ledger.ctx[&rid];
+        let completion = w.perf.ctx[&rid];
+        let tries = &w.ledger.tries[&rid];
+        let lost_later = tries.iter().any(|t| !t.won && t.step > claim.step);
+        let claim_current = claim.input_rid == claim.current;
+        match pre {
+            Pre::LiveClaimThenPerf => claim_current && claim.step < completion.step,
+            Pre::CancelClaimedFirst => {
+                claim.own_cancel_tail
+                    && completion.other_cancel_tail
+                    && claim.step < completion.step
+            }
+            Pre::CancelPerfAfterLostClaim => {
+                completion.own_cancel_tail
+                    && tries
+                        .iter()
+                        .any(|t| t.row == completion.row && !t.won && t.step > claim.step)
+            }
+            Pre::FailedCancelPort => claim_current,
+            Pre::SupervisorIdleWon => {
+                claim_current
+                    && lost_later
+                    && claim.step < completion.step
+                    && (completion.own_cancel_tail || completion.other_cancel_tail)
             }
         }
     }
 
-    /// End-of-run: SP4 (outcome agreement), liveness (C7.3) and the converse of the
-    /// L4-L6 filter. Returns `true` when the run was filtered out of the liveness
-    /// check (a recording nobody stops, a panicking pipeline, a dropped start).
-    pub fn on_end(&mut self, w: &World, quiescent_tasks: &[&'static str]) -> bool {
-        self.sp4(w);
-        let l4 = w.sup.attempt.as_ref().is_some_and(|a| a.awaiting_external);
-        let filtered = l4 || self.panicked;
-        if filtered {
-            return true;
+    /// End-of-run: SP4(a) and liveness (C7.3), per generation. The evidence each
+    /// exemption needs is the recording's own (never a whole run's).
+    pub fn on_end(&mut self, w: &World, quiescent_tasks: &[&'static str]) {
+        self.sp4a(w);
+        if w.partial_lease.is_some() {
+            self.fail(format!(
+                "SP10: the lease {:?} was never released",
+                w.partial_lease
+            ));
         }
+        let current = w.current_id;
+        // L4: a recording nobody stops. Only that recording may stay open.
+        let open_l4: Option<Rid> = w
+            .sup
+            .attempt
+            .as_ref()
+            .filter(|a| a.awaiting_external)
+            .map(|a| a.rid);
         let mut problems: Vec<String> = Vec::new();
         if !quiescent_tasks.is_empty() {
             problems.push(format!("tasks never finished: {quiescent_tasks:?}"));
@@ -332,84 +746,89 @@ impl Checker {
         if w.t_holder.is_some() {
             problems.push("T is still held".into());
         }
-        let stuck_recovering = w.status == Status::Recovering && !self.pd18_candidates.is_empty();
-        if w.status != Status::Idle && !(stuck_recovering || self.dropped) {
-            problems.push(format!("status {:?} at the end", w.status));
-        }
-        if stuck_recovering {
-            // PD-18: one witness per instance the run took; PD-19 is the run that
-            // took the `Other` one.
-            let mut seen = [false; 3];
-            let mut other = false;
-            for instance in &self.pd18_candidates {
-                match instance {
-                    Instance::A => seen[0] = true,
-                    Instance::B => seen[1] = true,
-                    Instance::C => seen[2] = true,
-                    Instance::Other => other = true,
-                }
-            }
-            for (index, taken) in seen.iter().enumerate() {
-                if *taken {
-                    self.hits.pd18[index] += 1;
-                }
-            }
-            if seen.iter().any(|taken| *taken) {
-                self.hits.pd[18] += 1;
-            }
-            if other {
-                self.hits.pd[19] += 1;
-            }
+        match w.status {
+            Status::Idle => {}
+            Status::Recovering => match self.stranded_instance(current, w) {
+                Some(instance) => self.count_stranded(instance),
+                None => problems.push(format!(
+                    "status Recovering at the end for id {current} without PD-18/PD-19 evidence"
+                )),
+            },
+            Status::Starting | Status::Recording
+                if open_l4 == Some(current) || self.dropped_ids.contains(&current) => {}
+            other => problems.push(format!("status {other:?} at the end")),
         }
         for rid in &w.ledger.accepted {
             if !w.ledger.claimed.contains_key(rid)
                 && !self.pd_touched(13, *rid)
                 && !self.dropped_ids.contains(rid)
+                && open_l4 != Some(*rid)
             {
                 problems.push(format!("id {rid} accepted but never claimed"));
             }
         }
-        if !w.history.ops.is_empty() {
-            problems.push(format!("ops unresolved: {:?}", w.history.ops));
+        for (op, (rid, kind)) in &w.history.ops {
+            if open_l4 != Some(*rid) && !self.dropped_ids.contains(rid) {
+                problems.push(format!("op {op} ({kind:?}) of id {rid} unresolved"));
+            }
         }
-        if !w.history.pipelines.is_empty() {
-            problems.push(format!("pipelines unresolved: {:?}", w.history.pipelines));
+        for rid in &w.history.pipelines {
+            if open_l4 != Some(*rid) {
+                problems.push(format!("pipeline of id {rid} unresolved"));
+            }
         }
         for problem in problems {
             self.fail(format!("liveness: {problem}"));
         }
-        false
     }
 
-    fn pd_touched(&self, pd: u8, rid: Rid) -> bool {
-        self.pd_ids.get(&pd).is_some_and(|ids| ids.contains(&rid))
+    /// The PD-18 instance or PD-19 the generation `rid` ended stuck in `Recovering`
+    /// through, with the generation's own evidence.
+    fn stranded_instance(&self, rid: Rid, w: &World) -> Option<Instance> {
+        let gen = self.gens.get(&rid)?;
+        let instance = gen.gap?;
+        let _ = w;
+        match instance {
+            Instance::Long => {
+                // PD-19: the user's stop took the capture before `Interrupted`
+                // (its `TakeInterrupted`, R201.5), the stop path wrote `Idle` (R202.3 or the R204a guard), the owner was
+                // still recovering when a start took R101.12, and the auto-stop was
+                // refused (R201.6).
+                (gen.long_interrupt
+                    && gen.taken_by == Some("R201.5")
+                    && gen.stop_idle
+                    && gen.stop_refused)
+                    .then_some(Instance::Long)
+            }
+            other => Some(other),
+        }
     }
 
-    fn sp4(&mut self, w: &World) {
+    fn count_stranded(&mut self, instance: Instance) {
+        match instance {
+            Instance::A => {
+                self.hits.pd18[0] += 1;
+                self.hits.pd[18] += 1;
+            }
+            Instance::B => {
+                self.hits.pd18[1] += 1;
+                self.hits.pd[18] += 1;
+            }
+            Instance::C => {
+                self.hits.pd18[2] += 1;
+                self.hits.pd[18] += 1;
+            }
+            Instance::Long => self.hits.pd[19] += 1,
+        }
+    }
+
+    fn sp4a(&mut self, w: &World) {
         for (rid, (outcome, _, _)) in &w.ledger.claimed {
             if let Some(diag) = w.ledger.diagnostics.get(rid) {
                 if diag != outcome && !self.pd_touched(11, *rid) {
                     self.fail(format!(
                         "SP4(a): id {rid} claimed {outcome:?} but diagnostics took {diag:?}"
                     ));
-                }
-            }
-            if let Some((perf, perf_row)) = w.perf.outcome.get(rid) {
-                let exempt = [4u8, 5, 11, 13].iter().any(|pd| self.pd_touched(*pd, *rid));
-                if !perf_class_allowed(*outcome, *perf) && !exempt {
-                    let terminal_row = w.ledger.claimed[rid].2;
-                    match SIGNATURES
-                        .iter()
-                        .position(|(_, t, p)| *t == terminal_row && *p == *perf_row)
-                    {
-                        Some(row) => {
-                            self.hits.pd[usize::from(SIGNATURES[row].0)] += 1;
-                            self.hits.sig[row] += 1;
-                        }
-                        None => self.fail(format!(
-                            "SP4(b): terminal {outcome:?} by {terminal_row} but performance {perf:?} by {perf_row}"
-                        )),
-                    }
                 }
             }
         }
@@ -432,6 +851,3 @@ fn is_supervisor_site(site: crate::decision::SiteId) -> bool {
             | SupInterruptedShortIdle
     )
 }
-
-#[allow(dead_code)]
-fn _outcome_is_used(_: TerminalOutcome) {}

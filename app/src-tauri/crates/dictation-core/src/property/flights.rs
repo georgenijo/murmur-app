@@ -157,8 +157,7 @@ impl Queued for StartFlight {
     fn cross(&mut self, cx: &mut Cx<'_>, _fx: &FxCtx, effect: &Effect) -> Result<(), ()> {
         match effect {
             Effect::CaptureStart(id) => {
-                let answer = cx.w.sup_start(id.0, self.plan.clone()).map_err(|_| ())?;
-                self.answer = Some(answer);
+                cx.w.sup_start(id.0, self.plan.clone()).map_err(|_| ())?;
                 Ok(())
             }
             other => unreachable!("a start flight does not run {other:?}"),
@@ -288,9 +287,11 @@ impl Task for StartFlight {
                 }
             }
             Ss::WaitAck => {
-                if !cx.w.sup.ack_ready(self.rid) {
+                // The supervisor's response (`SupStep::Answer`, or a refusal).
+                let Some(answer) = cx.w.sup.start_answer(self.rid) else {
                     return Poll::Blocked;
-                }
+                };
+                self.answer = Some(answer);
                 self.st = if matches!(self.answer, Some(super::supervisor::StartAnswer::Started)) {
                     Ss::Site102
                 } else {
@@ -309,18 +310,23 @@ impl Task for StartFlight {
             Ss::Site102 => {
                 // R102.1 (D-less): the capture started.
                 let token = self.cap.expect("a started capture has its token");
-                let facts = cx.w.facts();
-                let decision = consume(cx, token, |op_status| {
-                    core_start::decide_start_capture_result_nolock(
-                        facts,
-                        CaptureResultInput {
-                            token,
-                            op_status,
-                            result: CaptureResult::Ok,
-                        },
-                        at,
-                    )
-                });
+                let decision = consume(
+                    cx,
+                    token,
+                    SiteId::StartCaptureResult,
+                    self.rid,
+                    move |w, op_status| {
+                        core_start::decide_start_capture_result_nolock(
+                            w.facts(),
+                            CaptureResultInput {
+                                token,
+                                op_status,
+                                result: CaptureResult::Ok,
+                            },
+                            at,
+                        )
+                    },
+                );
                 self.cap = None;
                 log_decision(cx, SiteId::StartCaptureResult, &decision, self.rid, None);
                 if let Some(spec) = decision.continuation {
@@ -338,19 +344,24 @@ impl Task for StartFlight {
                     Some(super::supervisor::StartAnswer::Failed(error)) => error,
                     _ => CaptureErr::Other,
                 };
-                let view = cx.w.view();
                 let rid = self.rid;
-                let decision = consume(cx, token, |op_status| {
-                    core_start::decide_start_capture_result(
-                        &view,
-                        CaptureResultInput {
-                            token,
-                            op_status,
-                            result: CaptureResult::Err(error.clone()),
-                        },
-                        at,
-                    )
-                })
+                let decision = consume(
+                    cx,
+                    token,
+                    SiteId::StartCaptureResult,
+                    rid,
+                    move |w, op_status| {
+                        core_start::decide_start_capture_result(
+                            &w.view(),
+                            CaptureResultInput {
+                                token,
+                                op_status,
+                                result: CaptureResult::Err(error.clone()),
+                            },
+                            at,
+                        )
+                    },
+                )
                 .after_pre();
                 self.cap = None;
                 log_decision(cx, SiteId::StartCaptureResult, &decision, rid, None);
@@ -385,14 +396,19 @@ impl Task for StartFlight {
             }
             Ss::D103 => {
                 let token = self.ctx.expect("a started capture has its context token");
-                let view = cx.w.view();
-                let decision = consume(cx, token, |op_status| {
-                    core_start::decide_start_context(
-                        &view,
-                        StartContextInput { token, op_status },
-                        at,
-                    )
-                });
+                let decision = consume(
+                    cx,
+                    token,
+                    SiteId::StartContext,
+                    self.rid,
+                    move |w, op_status| {
+                        core_start::decide_start_context(
+                            &w.view(),
+                            StartContextInput { token, op_status },
+                            at,
+                        )
+                    },
+                );
                 self.ctx = None;
                 log_decision(cx, SiteId::StartContext, &decision, self.rid, None);
                 if let Some(spec) = decision.continuation {
@@ -420,22 +436,22 @@ impl Task for StartFlight {
                 } else {
                     // R104.1 (D-less).
                     let token = self.ready.expect("the context install registered it");
-                    let facts = cx.w.facts();
                     let rid = self.rid;
-                    let decision = consume(cx, token, |op_status| {
-                        core_start::decide_ready_publish_nolock(
-                            facts,
-                            crate::inputs::ReadyPublishInput {
-                                token,
-                                op_status,
-                                rid: RecordingId(rid),
-                                audio_ready: false,
-                                context_present: None,
-                                context_ready_at: at,
-                            },
-                            at,
-                        )
-                    });
+                    let decision =
+                        consume(cx, token, SiteId::ReadyPublish, rid, move |w, op_status| {
+                            core_start::decide_ready_publish_nolock(
+                                w.facts(),
+                                crate::inputs::ReadyPublishInput {
+                                    token,
+                                    op_status,
+                                    rid: RecordingId(rid),
+                                    audio_ready: false,
+                                    context_present: None,
+                                    context_ready_at: at,
+                                },
+                                at,
+                            )
+                        });
                     self.ready = None;
                     log_decision(cx, SiteId::ReadyPublish, &decision, self.rid, None);
                     self.st = Ss::FlightEnd;
@@ -443,32 +459,32 @@ impl Task for StartFlight {
             }
             Ss::D104 => {
                 let token = self.ready.expect("the context install registered it");
-                let view = cx.w.view();
                 let rid = self.rid;
-                let context_for = cx.w.context_for;
-                let decision = consume(cx, token, |op_status| {
-                    let mut input = crate::inputs::ReadyPublishInput {
-                        token,
-                        op_status,
-                        rid: RecordingId(rid),
-                        audio_ready: true,
-                        context_present: None,
-                        context_ready_at: at,
-                    };
-                    let mut rounds = 0;
-                    loop {
-                        let decision = core_start::decide_ready_publish(&view, input, at);
-                        rounds += 1;
-                        match decision.verdict {
-                            Verdict::NeedObservation(ObsKind::ContextPresence { id })
-                                if rounds == 1 =>
-                            {
-                                input.context_present = Some(context_for == Some(id.0));
+                let decision =
+                    consume(cx, token, SiteId::ReadyPublish, rid, move |w, op_status| {
+                        let view = w.view();
+                        let mut input = crate::inputs::ReadyPublishInput {
+                            token,
+                            op_status,
+                            rid: RecordingId(rid),
+                            audio_ready: true,
+                            context_present: None,
+                            context_ready_at: at,
+                        };
+                        let mut rounds = 0;
+                        loop {
+                            let decision = core_start::decide_ready_publish(&view, input, at);
+                            rounds += 1;
+                            match decision.verdict {
+                                Verdict::NeedObservation(ObsKind::ContextPresence { id })
+                                    if rounds == 1 =>
+                                {
+                                    input.context_present = Some(w.context_for == Some(id.0));
+                                }
+                                _ => break decision,
                             }
-                            _ => break decision,
                         }
-                    }
-                });
+                    });
                 self.ready = None;
                 log_decision(cx, SiteId::ReadyPublish, &decision, self.rid, None);
                 let ctx = fx(cx, self.rid, decision.row.0, SiteId::ReadyPublish);
@@ -537,6 +553,8 @@ pub struct StopFlight {
     pipeline_op: Option<Continuation>,
     cp: Option<Result<usize, ()>>,
     cc: Option<Result<bool, ()>>,
+    /// The capture cancel's answer is the supervisor's `CancelAnswer` step.
+    cc_pending: bool,
     reply: Option<PipelineReply>,
     panicked: bool,
 }
@@ -557,6 +575,7 @@ impl StopFlight {
             pipeline_op: None,
             cp: None,
             cc: None,
+            cc_pending: false,
             reply: None,
             panicked: false,
         }
@@ -604,7 +623,10 @@ impl Queued for StopFlight {
                 Ok(())
             }
             Effect::CaptureCancel { id, .. } => {
-                self.cc = Some(cx.w.sup_cancel(id.0).map_err(|_| ())?);
+                match cx.w.sup_cancel(id.0).map_err(|_| ())? {
+                    super::supervisor::CancelReply::Now(result) => self.cc = Some(result),
+                    super::supervisor::CancelReply::Pending => self.cc_pending = true,
+                }
                 Ok(())
             }
             Effect::PipelineSpawn(id) => {
@@ -676,7 +698,9 @@ impl Task for StopFlight {
                     log_decision(cx, SiteId::StopRequest, &decision, stale, None);
                     let ctx = fx(cx, stale, decision.row.0, SiteId::StopRequest);
                     queue_phase(&mut self.q, ctx, &decision, Placement::Pre);
-                    release_t(cx);
+                    // The shell holds T through `Pre` and the return (recording.rs
+                    // 7500): the release is queued behind the effects.
+                    self.q.push_back(QItem::ReleaseT);
                     self.st = Ts::Finish;
                 } else {
                     self.input = Some(input);
@@ -729,22 +753,35 @@ impl Task for StopFlight {
                 }
             }
             Ts::Site206 => {
-                let token = self.op.take().expect("R201.4 registered K:CaptureCancel");
-                let result = self.cc.expect("R201.4's capture cancel ran");
                 let rid = self.rid;
-                let decision = consume(cx, token, |op_status| {
-                    core_cancel::decide_cancel_capture_result_nolock(
-                        crate::state::LockFreeFacts::default(),
-                        CancelCaptureResultInput {
-                            token,
-                            op_status,
-                            rid: RecordingId(rid),
-                            result,
-                            origin: CancelOrigin::Stop,
-                        },
-                        at,
-                    )
-                });
+                let Some(result) = self.cc.or_else(|| {
+                    self.cc_pending
+                        .then(|| cx.w.sup.cancel_answers.get(&rid).copied())
+                        .flatten()
+                }) else {
+                    // The client waits for the supervisor's answer.
+                    return Poll::Blocked;
+                };
+                let token = self.op.take().expect("R201.4 registered K:CaptureCancel");
+                let decision = consume(
+                    cx,
+                    token,
+                    SiteId::CancelCaptureResult,
+                    self.rid,
+                    move |_, op_status| {
+                        core_cancel::decide_cancel_capture_result_nolock(
+                            crate::state::LockFreeFacts::default(),
+                            CancelCaptureResultInput {
+                                token,
+                                op_status,
+                                rid: RecordingId(rid),
+                                result,
+                                origin: CancelOrigin::Stop,
+                            },
+                            at,
+                        )
+                    },
+                );
                 log_decision(cx, SiteId::CancelCaptureResult, &decision, self.rid, None);
                 let ctx = fx(cx, self.rid, decision.row.0, SiteId::CancelCaptureResult);
                 queue_phase(&mut self.q, ctx, &decision, Placement::PostT);
@@ -757,20 +794,25 @@ impl Task for StopFlight {
                 let interrupted_error = self.interrupted.map(|_| ErrCode::StreamInvalidated);
                 let rid = self.rid;
                 if present {
-                    let facts = cx.w.facts();
-                    let decision = consume(cx, token, |op_status| {
-                        core_stop::decide_stop_context_nolock(
-                            facts,
-                            StopContextInput {
-                                token,
-                                op_status,
-                                rid: RecordingId(rid),
-                                context_present: true,
-                                interrupted_error,
-                            },
-                            at,
-                        )
-                    });
+                    let decision = consume(
+                        cx,
+                        token,
+                        SiteId::StopContextNoLock,
+                        rid,
+                        move |w, op_status| {
+                            core_stop::decide_stop_context_nolock(
+                                w.facts(),
+                                StopContextInput {
+                                    token,
+                                    op_status,
+                                    rid: RecordingId(rid),
+                                    context_present: true,
+                                    interrupted_error,
+                                },
+                                at,
+                            )
+                        },
+                    );
                     self.op = None;
                     log_decision(cx, SiteId::StopContextNoLock, &decision, rid, None);
                     if let Some(spec) = decision.continuation {
@@ -793,12 +835,11 @@ impl Task for StopFlight {
             }
             Ts::D202 => {
                 let token = self.op.expect("an accepted stop registered K:StopContext");
-                let view = cx.w.view();
                 let rid = self.rid;
                 let interrupted_error = self.interrupted.map(|_| ErrCode::StreamInvalidated);
-                let decision = consume(cx, token, |op_status| {
+                let decision = consume(cx, token, SiteId::StopContext, rid, move |w, op_status| {
                     core_stop::decide_stop_context(
-                        &view,
+                        &w.view(),
                         StopContextInput {
                             token,
                             op_status,
@@ -855,14 +896,19 @@ impl Task for StopFlight {
                 if matches!(result, Ok(n) if n >= core_stop::MIN_RECORDING_SAMPLES) {
                     // R203.9/.10 (D-less): the pipeline starts whatever status and
                     // id are now. H2 reg and H1 reg `op_pl` come with it.
-                    let facts = cx.w.facts();
-                    let decision = consume(cx, token, |op_status| {
-                        core_stop::decide_stop_capture_result_nolock(
-                            facts,
-                            StopCaptureResultInput { op_status, ..probe },
-                            at,
-                        )
-                    });
+                    let decision = consume(
+                        cx,
+                        token,
+                        SiteId::StopCaptureResult,
+                        rid,
+                        move |w, op_status| {
+                            core_stop::decide_stop_capture_result_nolock(
+                                w.facts(),
+                                StopCaptureResultInput { op_status, ..probe },
+                                at,
+                            )
+                        },
+                    );
                     self.stop = None;
                     log_decision(cx, SiteId::StopCaptureResult, &decision, rid, None);
                     if let Some(spec) = decision.continuation {
@@ -916,19 +962,24 @@ impl Task for StopFlight {
                     Some(Ok(n)) => StopCaptureResult::Samples { n, interrupted },
                     _ => StopCaptureResult::Err,
                 };
-                let view = cx.w.view();
-                let decision = consume(cx, token, |op_status| {
-                    core_stop::decide_stop_capture_result(
-                        &view,
-                        StopCaptureResultInput {
-                            token,
-                            op_status,
-                            rid: RecordingId(rid),
-                            result: capture,
-                        },
-                        at,
-                    )
-                })
+                let decision = consume(
+                    cx,
+                    token,
+                    SiteId::StopCaptureResult,
+                    rid,
+                    move |w, op_status| {
+                        core_stop::decide_stop_capture_result(
+                            &w.view(),
+                            StopCaptureResultInput {
+                                token,
+                                op_status,
+                                rid: RecordingId(rid),
+                                result: capture,
+                            },
+                            at,
+                        )
+                    },
+                )
                 .after_pre();
                 self.stop = None;
                 log_decision(
@@ -1035,6 +1086,7 @@ pub struct CancelFlight {
     rid: Rid,
     op: Option<Continuation>,
     cc: Option<Result<bool, ()>>,
+    cc_pending: bool,
     tail: bool,
 }
 
@@ -1047,6 +1099,7 @@ impl CancelFlight {
             rid: 0,
             op: None,
             cc: None,
+            cc_pending: false,
             tail: false,
         }
     }
@@ -1060,7 +1113,10 @@ impl Queued for CancelFlight {
     fn cross(&mut self, cx: &mut Cx<'_>, _fx: &FxCtx, effect: &Effect) -> Result<(), ()> {
         match effect {
             Effect::CaptureCancel { id, .. } => {
-                self.cc = Some(cx.w.sup_cancel(id.0).map_err(|_| ())?);
+                match cx.w.sup_cancel(id.0).map_err(|_| ())? {
+                    super::supervisor::CancelReply::Now(result) => self.cc = Some(result),
+                    super::supervisor::CancelReply::Pending => self.cc_pending = true,
+                }
                 Ok(())
             }
             other => unreachable!("a cancel does not run {other:?}"),
@@ -1126,22 +1182,36 @@ impl Task for CancelFlight {
                 };
             }
             Cs::Site206 => {
-                let token = self.op.take().expect("R205.4 registered K:CaptureCancel");
-                let result = self.cc.expect("R205.4's capture cancel ran");
                 let rid = self.rid;
-                let decision = consume(cx, token, |op_status| {
-                    core_cancel::decide_cancel_capture_result_nolock(
-                        crate::state::LockFreeFacts::default(),
-                        CancelCaptureResultInput {
-                            token,
-                            op_status,
-                            rid: RecordingId(rid),
-                            result,
-                            origin: CancelOrigin::Cancel,
-                        },
-                        at,
-                    )
-                });
+                let Some(result) = self.cc.or_else(|| {
+                    self.cc_pending
+                        .then(|| cx.w.sup.cancel_answers.get(&rid).copied())
+                        .flatten()
+                }) else {
+                    // The client waits until `begin_recovery` returned and the
+                    // supervisor answered (recording.rs 8285, audio_lifecycle 1332).
+                    return Poll::Blocked;
+                };
+                let token = self.op.take().expect("R205.4 registered K:CaptureCancel");
+                let decision = consume(
+                    cx,
+                    token,
+                    SiteId::CancelCaptureResult,
+                    rid,
+                    move |_, op_status| {
+                        core_cancel::decide_cancel_capture_result_nolock(
+                            crate::state::LockFreeFacts::default(),
+                            CancelCaptureResultInput {
+                                token,
+                                op_status,
+                                rid: RecordingId(rid),
+                                result,
+                                origin: CancelOrigin::Cancel,
+                            },
+                            at,
+                        )
+                    },
+                );
                 log_decision(cx, SiteId::CancelCaptureResult, &decision, rid, None);
                 let ctx = fx(cx, rid, decision.row.0, SiteId::CancelCaptureResult);
                 queue_phase(&mut self.q, ctx, &decision, Placement::PostT);
@@ -1341,6 +1411,8 @@ pub struct Ticker {
     rid: Rid,
     loops: u8,
     panics: bool,
+    /// This ticker holds the partial-decode lease (a decode is running).
+    holding: bool,
 }
 
 impl Ticker {
@@ -1350,12 +1422,26 @@ impl Ticker {
             rid,
             loops: (rid % 3) as u8,
             panics: false,
+            holding: false,
         }
     }
 
     pub fn panicking(mut self) -> Self {
         self.panics = true;
         self
+    }
+
+    /// The lease guard's `Drop`: the only release (SP10).
+    fn drop_lease(&mut self, cx: &mut Cx<'_>) {
+        if self.holding {
+            self.holding = false;
+            cx.w.partial_lease = None;
+            cx.out.notes.push(Note::Lease {
+                rid: self.rid,
+                tid: cx.tid,
+                acquire: false,
+            });
+        }
     }
 }
 
@@ -1367,8 +1453,22 @@ impl Task for Ticker {
     fn step(&mut self, cx: &mut Cx<'_>) -> Poll {
         if self.loops > 0 {
             self.loops -= 1;
+            // One partial decode per loop: `try_begin` is a CAS that a second ticker
+            // for the same recording (PD-4) loses while the first decodes.
+            if self.holding {
+                self.drop_lease(cx);
+            } else if cx.w.partial_lease.is_none() {
+                cx.w.partial_lease = Some((self.rid, cx.tid));
+                self.holding = true;
+                cx.out.notes.push(Note::Lease {
+                    rid: self.rid,
+                    tid: cx.tid,
+                    acquire: true,
+                });
+            }
             return Poll::Progress;
         }
+        self.drop_lease(cx);
         if self.panics {
             cx.out.notes.push(Note::TickerPanicked { rid: self.rid });
         } else {

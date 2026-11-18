@@ -41,13 +41,14 @@ completeness test reads only the Stage 0b sources). The harness allowlists each 
 its first seed (`FINDING_SEEDS` in the core crate's `property/tests.rs`); the PD text is in the errata's
 "Defects found during the refactor".
 
-- **PD-19** (seed 633): `f4_interrupted_over_8000_with_a_refused_auto_stop_leaves_recovering`.
-- **PD-20** (seed 470, R205.5 / R203.7): `f1_cancel_terminal_and_a_short_stop_performance_outcome_disagree`.
-- **PD-21** (seed 42, R206.2 / R203.6): `f2_failed_capture_cancel_terminal_and_a_short_stop_performance_outcome_disagree`.
-- **PD-22** (seed 331, R211.2 / R205.5; seed 4265, R211.2 / R203.2): `f3_superseded_terminal_and_a_cancels_performance_outcome_disagree` and `f3_superseded_terminal_and_a_failed_stop_performance_outcome_disagree`.
+- **PD-19** (seed 8147): `f4_interrupted_over_8000_with_a_refused_auto_stop_leaves_recovering`.
+- **PD-20** (seed 949, R205.5 / R203.5): `f1_cancel_terminal_and_a_short_stop_performance_outcome_disagree`.
+- **PD-21** (seed 127, R206.2 / R203.4; seed 161, R206.2 / R209.4): `f2_failed_capture_cancel_terminal_and_a_short_stop_performance_outcome_disagree` and `f2_timed_out_capture_cancel_terminal_and_the_late_recovery_performance_outcome_disagree`.
+- **PD-22** (seed 2883, R211.2 / R203.2; seed 3517, R211.2 / R205.5): `f3_superseded_terminal_and_a_failed_stop_performance_outcome_disagree` and `f3_superseded_terminal_and_a_cancels_performance_outcome_disagree` (both with an undelivered stop: a sealed stop notifies `CleanupFinished`, never `Idle`).
 
-The other rows of the PD-20..PD-22 signature table are the same two-ledger race through other rows; the
-model witnesses them (`every_preserved_defect_is_witnessed` fails on a row that never occurs) and no
+Each sequence is production-reachable (D-S2b-7 (c)); the fixtures assert the actual replies. The other
+combinations of the SP4(b) signature table are the same two-ledger race through other rows; the model
+witnesses them (`every_preserved_defect_is_witnessed` fails on a signature that never occurs) and no
 shell test pins them.
 
 ## C4.9 contract tests

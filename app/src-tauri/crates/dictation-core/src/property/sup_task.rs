@@ -20,11 +20,13 @@ pub struct SupTask;
 impl World {
     /// Retire the attempt once every step ran and nothing waits for a command.
     pub fn sup_finish_if_done(&mut self) {
-        let done = self
-            .sup
-            .attempt
-            .as_ref()
-            .is_some_and(|a| a.prefix.is_empty() && a.end.is_empty() && !a.awaiting_external);
+        let done = self.sup.attempt.as_ref().is_some_and(|a| {
+            a.prefix.is_empty()
+                && a.begin.is_empty()
+                && a.finish.is_empty()
+                && a.pending_end.is_none()
+                && !a.awaiting_external
+        });
         if done && self.sup.busy.is_none() {
             let attempt = self.sup.attempt.take().expect("checked above");
             self.sup.finished.push((attempt.rid, attempt.ended_by));
@@ -39,6 +41,11 @@ impl Task for SupTask {
 
     fn step(&mut self, cx: &mut Cx<'_>) -> Poll {
         cx.w.sup_finish_if_done();
+        if cx.w.sup.can_begin_end() {
+            // The worker's own end happens (a `begin_recovery` or a thread exit).
+            cx.w.sup_begin_pending_end();
+            return Poll::Progress;
+        }
         let Some(step) = cx.w.sup.next_step() else {
             return Poll::Blocked;
         };
@@ -50,10 +57,14 @@ impl Task for SupTask {
                 .rid;
         {
             let attempt = cx.w.sup.attempt.as_mut().expect("a step has an attempt");
-            if attempt.prefix.front() == Some(&step) {
+            if !attempt.prefix.is_empty() {
                 attempt.prefix.pop_front();
+            } else if !attempt.begin.is_empty() {
+                attempt.begin.pop_front();
             } else {
-                attempt.end.pop_front();
+                attempt.finish.pop_front();
+                // `finish_attempt` is one group: no command runs until it ends.
+                attempt.finishing = !attempt.finish.is_empty();
             }
         }
         match step {
@@ -64,10 +75,26 @@ impl Task for SupTask {
                 cx.out.notes.push(Note::OwnerCleared { rid });
                 cx.w.sup_finish_if_done();
             }
+            SupStep::Answer => {
+                // `request.response.send(Ok(()))` after `Accepted` (1589-1596): a
+                // step of its own; an earlier `Cancelled` answer stands.
+                cx.w.sup
+                    .start_answers
+                    .entry(rid)
+                    .or_insert(super::supervisor::StartAnswer::Started);
+                cx.w.sup_finish_if_done();
+            }
+            SupStep::CancelAnswer => {
+                // `response.send(Ok(cancelled))`, after `begin_recovery` returned.
+                cx.w.sup.cancel_answers.insert(rid, Ok(true));
+                cx.w.sup_finish_if_done();
+            }
             other => {
                 match other {
                     SupStep::Ready => cx.w.sup.phase = Some(Phase::Recording),
                     SupStep::Recovering(_) => cx.w.sup.phase = Some(Phase::Recovering),
+                    // `report_cleanup_stalled`: `set_phase(Recovering)`, once.
+                    SupStep::RecoveryStalled => cx.w.sup.phase = Some(Phase::Recovering),
                     SupStep::Interrupted(samples) => {
                         cx.w.preserved.insert(rid, Preserved { samples });
                     }
@@ -199,15 +226,6 @@ impl Task for Bridge {
             Bs::Finish => {
                 cx.w.sup.busy = None;
                 cx.w.sup.busy_restored = false;
-                if let Some(attempt) = cx.w.sup.attempt.as_mut() {
-                    if attempt.rid == rid {
-                        match self.step {
-                            SupStep::Accepted => attempt.accepted_delivered = true,
-                            SupStep::Idle => attempt.fail_delivered = true,
-                            _ => {}
-                        }
-                    }
-                }
                 cx.out.notes.push(Note::Notified {
                     rid,
                     step: self.step,
@@ -334,7 +352,9 @@ impl Bridge {
                 apply_in(cx, &ctx, &decision);
                 cx.w.sup.busy_restored = true;
             }
-            SupStep::ClearOwner => unreachable!("OwnerClear is not a notification"),
+            SupStep::ClearOwner | SupStep::Answer | SupStep::CancelAnswer => {
+                unreachable!("{:?} is not a notification", self.step)
+            }
         }
         self.st = Bs::Finish;
     }

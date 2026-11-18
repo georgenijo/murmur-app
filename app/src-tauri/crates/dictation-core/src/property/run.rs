@@ -44,7 +44,6 @@ pub struct RunReport {
     pub violations: Vec<String>,
     pub hits: RunHits,
     pub steps: u32,
-    pub filtered: bool,
 }
 
 pub fn run_seed(seed: u64) -> RunReport {
@@ -195,7 +194,7 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
         .filter(|slot| !slot.daemon)
         .map(|slot| slot.task.name())
         .collect();
-    let filtered = checker.on_end(&w, &stuck);
+    checker.on_end(&w, &stuck);
     let lines = checker.trace.take().unwrap_or_default();
     (
         RunReport {
@@ -203,7 +202,6 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
             violations: std::mem::take(&mut checker.violations),
             hits: checker.hits.clone(),
             steps,
-            filtered,
         },
         lines,
     )

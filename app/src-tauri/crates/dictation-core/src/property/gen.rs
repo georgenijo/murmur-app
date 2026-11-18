@@ -106,7 +106,6 @@ pub fn plan(rng: &mut Rng) -> AttemptPlan {
             End::Recover {
                 reason,
                 init_failed: rng.chance(1, 4),
-                stalled: rng.below(2) as u8,
                 interrupted: (reason == AudioCancelReason::RuntimeFailure && rng.chance(3, 4))
                     .then(|| rng.pick(&[2_000, 7_999, 8_000, 12_000])),
             }
@@ -125,7 +124,11 @@ pub fn plan(rng: &mut Rng) -> AttemptPlan {
             _ => Delivery::Undelivered,
         },
         stop_samples: rng.pick(&[0, 3_000, 4_799, 4_800, 9_000, 20_000]),
-        cancel_err: rng.chance(1, 12),
+        cancel: match rng.weighted(&[22, 1, 1]) {
+            0 => CancelMode::Normal,
+            1 => CancelMode::Unavailable,
+            _ => CancelMode::Timeout,
+        },
     }
 }
 

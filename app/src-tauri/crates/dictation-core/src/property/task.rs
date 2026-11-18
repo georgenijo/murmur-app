@@ -102,6 +102,12 @@ pub enum Note {
     TickerExited {
         rid: Rid,
     },
+    /// A ticker took (`acquire`) or dropped the partial-decode lease.
+    Lease {
+        rid: Rid,
+        tid: TaskId,
+        acquire: bool,
+    },
     /// The diagnostics `complete` of a `TERM` ran as its own step.
     DiagnosticsCompleted {
         rid: Rid,
@@ -278,7 +284,8 @@ pub fn apply(cx: &mut Cx<'_>, fx: &FxCtx, at: Placement, effect: &Effect) -> boo
             }
         }
         Effect::Terminal(terminal) => {
-            claim = Some(cx.w.claim_terminal(fx.rid, *terminal, fx.row));
+            let ctx = cx.w.won(fx.rid, fx.tid, fx.row);
+            claim = Some(cx.w.claim_terminal(fx.rid, *terminal, fx.row, ctx));
             // `In` sections run both halves under D; the later placements split
             // them (`QItem::TermDiag`), which is how the PD-11 window opens.
             if at == Placement::In {
@@ -302,8 +309,14 @@ pub fn apply(cx: &mut Cx<'_>, fx: &FxCtx, at: Placement, effect: &Effect) -> boo
                 cx.w.perf.aborted.insert(fx.rid);
             }
         }
-        Effect::PerfComplete(complete) => cx.w.perf_complete(fx.rid, complete.outcome, fx.row),
-        Effect::PipelineGuardFinish(outcome) => cx.w.perf_complete(fx.rid, *outcome, fx.row),
+        Effect::PerfComplete(complete) => {
+            let ctx = cx.w.won(fx.rid, fx.tid, fx.row);
+            cx.w.perf_complete(fx.rid, complete.outcome, fx.row, ctx);
+        }
+        Effect::PipelineGuardFinish(outcome) => {
+            let ctx = cx.w.won(fx.rid, fx.tid, fx.row);
+            cx.w.perf_complete(fx.rid, *outcome, fx.row, ctx);
+        }
         Effect::ClearContext(id) => {
             if cx.w.context_for == Some(id.0) {
                 cx.w.context_for = None;
@@ -401,22 +414,32 @@ pub fn term_diag(cx: &mut Cx<'_>, fx: &FxCtx, terminal: Terminal) {
     });
 }
 
+/// Builds the decision a site takes for a token in the world it is delivered to.
+pub type Build = std::rc::Rc<dyn Fn(&World, crate::decision::OpStatus) -> Decision>;
+
 /// Consume a continuation: validate it, decide, retire it (`consume`). The
 /// decision is also made with the other op status: an `Unknown` token must take
 /// the same row with the same effects as an `Outstanding` one (SP7, C1.4.1
-/// rule 3), which is what a duplicate or late continuation relies on.
+/// rule 3). A duplicate or late delivery of the token is then scheduled as its own
+/// task (`Redeliver`) for some of the tokens, so the site decides again, later, in
+/// whatever world it finds (D-S2b-7 (e)).
 pub fn consume(
     cx: &mut Cx<'_>,
     token: crate::decision::Continuation,
-    decide: impl Fn(crate::decision::OpStatus) -> Decision,
+    site: SiteId,
+    rid: Rid,
+    build: impl Fn(&World, crate::decision::OpStatus) -> Decision + 'static,
 ) -> Decision {
     use crate::decision::OpStatus;
     let status = cx.w.op_status(token);
-    let decided = decide(status);
-    let other = decide(match status {
-        OpStatus::Outstanding => OpStatus::Unknown,
-        OpStatus::Unknown => OpStatus::Outstanding,
-    });
+    let decided = build(cx.w, status);
+    let other = build(
+        cx.w,
+        match status {
+            OpStatus::Outstanding => OpStatus::Unknown,
+            OpStatus::Unknown => OpStatus::Outstanding,
+        },
+    );
     if other != decided {
         cx.out.violations.push(format!(
             "SP7: {} differs by op status ({:?} vs {:?})",
@@ -424,6 +447,18 @@ pub fn consume(
         ));
     }
     cx.w.retire(token);
+    // One token in four is delivered again: soon (a duplicate) or after a few steps
+    // (a late one). The choice is a function of the token, so a seed reproduces it.
+    let mix = token.op.0.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 40;
+    if mix.is_multiple_of(4) {
+        cx.spawn.push(Box::new(super::redeliver::Redeliver::new(
+            token,
+            site,
+            rid,
+            std::rc::Rc::new(build),
+            (mix / 4 % 6) as u8,
+        )));
+    }
     decided
 }
 
