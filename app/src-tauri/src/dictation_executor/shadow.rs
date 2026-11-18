@@ -40,6 +40,7 @@
 //! moment.
 
 use std::cell::{Cell, RefCell};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use murmur_dictation_core::decision::RowId;
 use murmur_dictation_core::effects::{Cond, Effect, Placement};
@@ -50,8 +51,8 @@ use murmur_dictation_core::replies::Reply;
 use crate::dictation_shadow::transport::{self, Mark, PreCapture, ShadowRecorder, ShadowTicket};
 use crate::dictation_shadow::types::{
     CondWitness, EffectResult, Inline, LiveOp, MirrorField, MirrorWitness, ObservedFact, PredId,
-    Projection, ReplyKind, ShadowHeader, TickerGate, WitnessedEffect, OBSERVED_CAPACITY,
-    OPS_CAPACITY,
+    Projection, ReplyKind, ShadowHeader, TickerGate, TickerSkipReason, WitnessedEffect,
+    OBSERVED_CAPACITY, OPS_CAPACITY,
 };
 
 /// Messages a flight can hold until its header is submitted: a prefix that runs ahead
@@ -82,7 +83,40 @@ pub(crate) struct Noted<'a> {
     /// The live-field write the effect made, before and after.
     pub mirror: Option<MirrorWitness>,
     /// The ticker registration attempt an `SD` made.
-    pub ticker: Option<TickerGate>,
+    pub ticker: Option<TickerNote>,
+}
+
+/// What an `SD` that ran tells the flight about its ticker (D-S2c-6): the gate it
+/// asked, or why its spawner returned before asking. Never both.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TickerNote {
+    Gate(TickerGate),
+    Skipped(TickerSkipReason),
+}
+
+/// The reason a spawner returned before the gate, packed with its recording id
+/// (`id << 2 | reason`; `0` is none). The spawner and the executor that ran its `SD`
+/// can be on different threads (the lifecycle bridge delivers on its own), so the
+/// correlation is by recording id, in one atomic: no lock, no thread-local.
+static TICKER_SKIP: AtomicU64 = AtomicU64::new(0);
+
+/// A `StartSideTasks` spawner returned before asking the gate.
+pub(crate) fn note_ticker_skip(recording_id: u64, reason: TickerSkipReason) {
+    TICKER_SKIP.store(
+        (recording_id << 2) | u64::from(reason.code()),
+        Ordering::Release,
+    );
+}
+
+/// The skip noted for `recording_id`, if any; clears the slot either way.
+pub(crate) fn take_ticker_skip(recording_id: u64) -> Option<TickerSkipReason> {
+    let packed = TICKER_SKIP.swap(0, Ordering::AcqRel);
+    if packed == 0 || packed >> 2 != recording_id {
+        return None;
+    }
+    TickerSkipReason::ALL
+        .into_iter()
+        .find(|reason| u64::from(reason.code()) == packed & 0b11)
 }
 
 struct Live {
@@ -324,7 +358,7 @@ impl Flight {
                                     }
                                 }
                             }
-                            if let (true, Some(gate)) = (in_d, noted.ticker) {
+                            if let (true, Some(TickerNote::Gate(gate))) = (in_d, noted.ticker) {
                                 header.add_in_ticker(gate);
                             }
                         }
@@ -376,8 +410,14 @@ impl Flight {
                     if let Some(mirror) = noted.mirror {
                         live.later(Later::Mark(Mark::Mirror(mirror)));
                     }
-                    if let Some(gate) = noted.ticker {
-                        live.later(Later::Mark(Mark::Ticker(gate)));
+                    match noted.ticker {
+                        Some(TickerNote::Gate(gate)) => {
+                            live.later(Later::Mark(Mark::Ticker(gate)));
+                        }
+                        Some(TickerNote::Skipped(reason)) => {
+                            live.later(Later::Mark(Mark::TickerSkipped { reason }));
+                        }
+                        None => {}
                     }
                 }
             }

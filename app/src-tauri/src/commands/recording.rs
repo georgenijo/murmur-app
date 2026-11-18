@@ -2,6 +2,8 @@ use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent, Audio
 use crate::core_history::ContinuationGuard;
 use crate::dictation_context::{self, DictationContextSnapshot, ResolverInputs};
 use crate::dictation_diagnostics::DictationCaptureCompletion;
+#[cfg(feature = "dictation-shadow")]
+use crate::dictation_shadow::types::TickerSkipReason;
 use crate::dictation_telemetry::{DictationErrorCode, DictationTerminalOutcome};
 use crate::microphone_auto::SmartAutoRequest;
 use crate::model_runtime::{self, PreparationReason};
@@ -354,12 +356,23 @@ fn spawn_dictation_partial_ticker(
     register: impl FnOnce() -> bool,
 ) {
     let Some(context) = app.state::<State>().app_state.active_context(recording_id) else {
+        // The shadow witnesses that this `SD` spawned no ticker (D-S2c-6).
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_executor::shadow::note_ticker_skip(
+            recording_id,
+            TickerSkipReason::NoContext,
+        );
         return;
     };
     let model = &context.transcription.model_name;
     let whisper = transcriber::whisper::supports_live_preview(model);
     if !whisper && !transcriber::is_coreml_model(model) {
         emit_dictation_partial_tick(recording_id, "unsupported_model", 0);
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_executor::shadow::note_ticker_skip(
+            recording_id,
+            TickerSkipReason::NoLivePreview,
+        );
         return;
     }
     if !register() {

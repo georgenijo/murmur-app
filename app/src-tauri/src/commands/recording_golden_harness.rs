@@ -40,6 +40,10 @@ use super::dictation_host::{
 };
 use super::tests::test_state;
 use super::*;
+#[cfg(feature = "dictation-shadow")]
+use crate::dictation_shadow::replay as shadow_replay;
+#[cfg(feature = "dictation-shadow")]
+use crate::dictation_shadow::types::TickerSkipReason;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -551,7 +555,7 @@ impl World {
     fn fire(&self, label: &str) {
         #[cfg(feature = "dictation-shadow")]
         if label == "supervisor.start" {
-            crate::dictation_shadow::replay::blocking_point("supervisor.start");
+            shadow_replay::blocking_point("supervisor.start");
         }
         let (inline, hook) = {
             let mut hooks = locked(&self.hooks);
@@ -784,12 +788,22 @@ impl World {
                     // context and a model that supports a live preview.
                     let state = app.state::<State>();
                     let Some(context) = state.app_state.active_context(recording_id) else {
+                        #[cfg(feature = "dictation-shadow")]
+                        crate::dictation_executor::shadow::note_ticker_skip(
+                            recording_id,
+                            TickerSkipReason::NoContext,
+                        );
                         return;
                     };
                     let model = &context.transcription.model_name;
                     if !transcriber::whisper::supports_live_preview(model)
                         && !transcriber::is_coreml_model(model)
                     {
+                        #[cfg(feature = "dictation-shadow")]
+                        crate::dictation_executor::shadow::note_ticker_skip(
+                            recording_id,
+                            TickerSkipReason::NoLivePreview,
+                        );
                         return;
                     }
                     let registered = register();
@@ -1472,12 +1486,22 @@ impl DictationHost for Host {
                 world.side_task_spawns.fetch_add(1, Ordering::SeqCst);
                 let state = app.state::<State>();
                 let Some(context) = state.app_state.active_context(recording_id) else {
+                    #[cfg(feature = "dictation-shadow")]
+                    crate::dictation_executor::shadow::note_ticker_skip(
+                        recording_id,
+                        TickerSkipReason::NoContext,
+                    );
                     return;
                 };
                 let model = &context.transcription.model_name;
                 if !transcriber::whisper::supports_live_preview(model)
                     && !transcriber::is_coreml_model(model)
                 {
+                    #[cfg(feature = "dictation-shadow")]
+                    crate::dictation_executor::shadow::note_ticker_skip(
+                        recording_id,
+                        TickerSkipReason::NoLivePreview,
+                    );
                     return;
                 }
                 let registered = register();
@@ -1660,7 +1684,7 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
     reset_process_globals();
     // E7: the real shell runs against the real comparator, on this thread.
     #[cfg(feature = "dictation-shadow")]
-    let replay = crate::dictation_shadow::replay::Replay::begin();
+    let replay = shadow_replay::Replay::begin();
     let app_state = AppState::default();
     app_state
         .recording_id
@@ -1684,7 +1708,7 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
     #[cfg(feature = "dictation-shadow")]
     let probe = {
         let probed = Arc::clone(&world);
-        crate::dictation_shadow::replay::SiteProbe::install(move || {
+        shadow_replay::SiteProbe::install(move || {
             !matches!(
                 probed.state().app_state.dictation.try_lock(),
                 Err(std::sync::TryLockError::WouldBlock)
@@ -1705,7 +1729,7 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
     {
         let report = replay.end();
         report.assert_clean(sub_run.title);
-        let site = crate::dictation_shadow::replay::site_totals();
+        let site = shadow_replay::site_totals();
         assert!(
             site.violations.is_empty(),
             "{}: a capture site broke a C8.7 order: {:?}",

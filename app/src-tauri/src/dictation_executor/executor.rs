@@ -339,7 +339,7 @@ pub(crate) struct Executor<'a> {
     #[cfg(feature = "dictation-shadow")]
     noted_mirror: Option<crate::dictation_shadow::types::MirrorWitness>,
     #[cfg(feature = "dictation-shadow")]
-    noted_ticker: Option<crate::dictation_shadow::types::TickerGate>,
+    noted_ticker: Option<super::shadow::TickerNote>,
 }
 
 /// An executor parked across an `.await`: everything but the (non-`Send`) ports
@@ -846,7 +846,15 @@ impl<'a> Executor<'a> {
                 };
                 #[cfg(feature = "dictation-shadow")]
                 if *effect == Effect::StartSideTasks {
-                    self.noted_ticker = ports.take_ticker_gate();
+                    // The gate if the spawner asked for it; otherwise the reason it
+                    // returned before asking (D-S2c-6): exactly one of the two.
+                    self.noted_ticker = ports
+                        .take_ticker_gate()
+                        .map(super::shadow::TickerNote::Gate)
+                        .or_else(|| {
+                            super::shadow::take_ticker_skip(ctx.recording_id)
+                                .map(super::shadow::TickerNote::Skipped)
+                        });
                 }
                 self.record_port(index, effect, result);
             }
