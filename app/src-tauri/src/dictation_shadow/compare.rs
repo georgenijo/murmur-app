@@ -37,14 +37,14 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use murmur_dictation_core::decision::{Continuation, Decision, OpStatus, Verdict};
-use murmur_dictation_core::effects::{Cond, Effect, Placement};
+use murmur_dictation_core::decision::{ContKind, Continuation, Decision, OpStatus, Verdict};
+use murmur_dictation_core::effects::{Cond, Effect, PerfOutcome, Placement};
 use murmur_dictation_core::ids::{Now, RecordingId};
 use murmur_dictation_core::inputs::Input;
 use murmur_dictation_core::state::{DictationCore, LiveObs, PersistedCore};
 use murmur_dictation_core::status::Status;
 
-use super::pd::{credited, PdEvidence};
+use super::pd::{awaiting_outcome, credited, PdEvidence};
 use super::summary::Stats;
 use super::transport::Transport;
 use super::types::{
@@ -274,7 +274,7 @@ fn subject_ids(header: &ShadowHeader) -> Vec<RecordingId> {
 }
 
 /// The token and validated status an input carries, if it carries one.
-fn input_token(input: &Input) -> Option<(Continuation, OpStatus)> {
+pub(crate) fn input_token(input: &Input) -> Option<(Continuation, OpStatus)> {
     match input {
         Input::StartCaptureResult(i) => Some((i.token, i.op_status)),
         Input::StartContext(i) => Some((i.token, i.op_status)),
@@ -284,6 +284,21 @@ fn input_token(input: &Input) -> Option<(Continuation, OpStatus)> {
         Input::CancelCaptureResult(i) => Some((i.token, i.op_status)),
         _ => None,
     }
+}
+
+/// The recording whose pipeline a decision registers in H2: the rows that return
+/// `K:Pipeline` (R203.9, R203.10, R301.5). The same continuation is the H1 operation
+/// and the H2 registration, so the row declares both (D-S2c-2 d).
+fn decision_pipeline(decision: &Decision) -> Option<RecordingId> {
+    decision
+        .continuation
+        .filter(|spec| spec.kind == ContKind::Pipeline)
+        .map(|spec| spec.recording_id)
+}
+
+/// The retirement names the very token the input carried: recording, kind and op.
+fn same_token(op: &LiveOp, token: &Continuation) -> bool {
+    op.recording_id == token.recording_id && op.cont == token.kind && op.op == token.op
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -333,8 +348,20 @@ struct Record {
     later_tickers: Vec<(usize, bool)>,
     last_idx: [Option<usize>; 4],
     h1_registered: u8,
-    h2_registered: Vec<RecordingId>,
+    /// The token the input carried and its validated status: the full H1 token whose
+    /// retirement the row requires (D-S2c-2 d).
     token: Option<(Continuation, OpStatus)>,
+    /// The input's token was retired, exactly once, with the outcome its status says.
+    h1_retired: bool,
+    /// The recording whose pipeline the row registers in H2 (`K:Pipeline`: R203.9,
+    /// R203.10, R301.5), if it does.
+    h2_needed: Option<RecordingId>,
+    h2_registered: bool,
+    /// The recording the decision's `SD` targets: the input's recording id, else the
+    /// current id at the effect (the start's freshly allocated one).
+    side_target: Option<RecordingId>,
+    /// A `PipelineGuardFinish(Completed)` ran: the successful performance outcome.
+    perf_success: bool,
     reply: Option<ReplyKind>,
     /// Some comparison reported a mismatch for this record.
     mismatched: bool,
@@ -382,6 +409,7 @@ impl Record {
                 before
             })
             .collect();
+        let h2_needed = decision_pipeline(&decision);
         Self {
             site_id: header.site_id,
             row: header.row,
@@ -402,7 +430,11 @@ impl Record {
             later_tickers,
             last_idx: [None; 4],
             h1_registered: 0,
-            h2_registered: Vec::new(),
+            h1_retired: false,
+            h2_needed,
+            h2_registered: false,
+            side_target: header.input.recording_id(),
+            perf_success: false,
             token: input_token(&header.input),
             reply: None,
             mismatched: false,
@@ -420,7 +452,17 @@ impl Record {
             .collect()
     }
 
+    fn note_ran(&mut self, idx: usize) {
+        if matches!(
+            self.decision.effects[idx].effect,
+            Effect::PipelineGuardFinish(PerfOutcome::Completed)
+        ) {
+            self.perf_success = true;
+        }
+    }
+
     fn mark_ran(&mut self, idx: usize, result: EffectResult) {
+        self.note_ran(idx);
         self.slots[idx] = Slot::Ran;
         self.ran
             .push((self.decision.effects[idx].effect.code(), result));
@@ -450,6 +492,12 @@ impl Record {
                 }
             }
         }
+    }
+
+    /// The ticker attempt was for the recording the decision's `SD` (decided effect
+    /// `j`) targets: the input's recording id, else the id current at that effect.
+    fn target_matches(&self, j: usize, gate: &TickerGate) -> bool {
+        gate.id == self.side_target.unwrap_or(self.state_before[j].1)
     }
 
     /// CP1 over the header's `Pre` and `In` lists. Effects are matched across
@@ -529,6 +577,7 @@ impl Record {
         for (a, (g, witnessed)) in flat.iter().enumerate() {
             match matched[a] {
                 Some(j) => {
+                    self.note_ran(j);
                     self.ran
                         .push((self.decision.effects[j].effect.code(), witnessed.result));
                     if let EffectResult::Emitted { ok } = witnessed.result {
@@ -547,15 +596,11 @@ impl Record {
                 None => diffs[*g].push(DiffKind::EffectSet),
             }
         }
-        for (g, group) in groups.iter().enumerate() {
-            // A decided effect of this group that nothing matched is missing.
-            if self
-                .decided_indices(*group)
-                .into_iter()
-                .any(|j| self.slots[j] == Slot::Pending)
-            {
-                diffs[g].push(DiffKind::EffectSet);
-            }
+        // A decided `Pre` / `In` effect that nothing in the header matched is **not**
+        // classified here (D-S2c-2 g): the live path may have run it later, and a
+        // later witness then reports it as `Placement`. It stays pending, and is a
+        // missing effect (`EffectSet`) only when the record closes completed.
+        for g in 0..groups.len() {
             if in_order[g].windows(2).any(|pair| pair[1] < pair[0]) {
                 diffs[g].push(DiffKind::EffectOrder);
             }
@@ -604,8 +649,14 @@ impl Record {
         } else {
             for (&j, gate) in in_sd.iter().zip(&gates) {
                 // Under D the gate reads the state the decision itself just wrote.
+                // The attempt must be for the recording the decision's `SD` targets
+                // before its outcome means anything (D-S2c-2 f).
                 let (status, current) = self.state_before[j];
-                if !gate_consistent(gate) || gate.status != status || gate.current_id != current {
+                if !self.target_matches(j, gate)
+                    || !gate_consistent(gate)
+                    || gate.status != status
+                    || gate.current_id != current
+                {
                     diffs[1].push(DiffKind::PostState);
                 }
             }
@@ -614,8 +665,19 @@ impl Record {
         diffs
     }
 
-    /// The H1 / H2 operations of the decision, against the decision and the input's
-    /// own token. Returns every failing level (always `Continuation`).
+    /// The H1 / H2 operations of the decision, against what the row declares
+    /// (D-S2c-2 d). Returns every failing level (always `Continuation`).
+    ///
+    /// * H1 registration: exactly one, of the decided continuation (kind and
+    ///   recording), whose token the shadow replays;
+    /// * H1 retirement: the input's own token, in full (recording, kind and op),
+    ///   exactly once, and found exactly when the input says it was outstanding;
+    /// * H2 registration: only for a `K:Pipeline` row, once, for the decided recording;
+    /// * H2 retirement: must have found the pipeline, and names a recording the
+    ///   decision is about.
+    ///
+    /// Presence (a missing operation) is judged by [`Record::missing_history`] at the
+    /// boundary where the operation is due.
     fn check_history<'a>(&mut self, ops: impl Iterator<Item = &'a LiveOp>) -> Vec<DiffKind> {
         let mut diffs = Vec::new();
         for op in ops {
@@ -628,38 +690,43 @@ impl Record {
                     self.h1_registered = self.h1_registered.saturating_add(1);
                     wanted && first
                 }
-                (HistoryTable::H1, HistoryAction::Retired { matched }) => {
-                    // The token the input carried decides what the retirement
-                    // must have found.
-                    match self.token {
-                        Some((token, status)) if token.op == op.op => {
-                            matched == (status == OpStatus::Outstanding)
-                        }
-                        _ => true,
+                (HistoryTable::H1, HistoryAction::Retired { matched }) => match self.token {
+                    Some((token, status)) if same_token(op, &token) => {
+                        let first = !self.h1_retired;
+                        self.h1_retired = true;
+                        first && matched == (status == OpStatus::Outstanding)
                     }
-                }
+                    // Another operation's retirement (the pipeline's own, an
+                    // owner's drop): not the row's token, nothing to compare.
+                    _ => true,
+                },
                 (HistoryTable::H2, HistoryAction::Registered) => {
-                    let allowed = self
-                        .decision
-                        .effects
-                        .iter()
-                        .filter(|p| p.effect == Effect::PipelineSpawn(op.recording_id))
-                        .count();
-                    let used = self
-                        .h2_registered
-                        .iter()
-                        .filter(|id| **id == op.recording_id)
-                        .count();
-                    self.h2_registered.push(op.recording_id);
-                    used < allowed
+                    let wanted = self.h2_needed == Some(op.recording_id);
+                    let first = !self.h2_registered;
+                    self.h2_registered = true;
+                    wanted && first
                 }
-                (HistoryTable::H2, HistoryAction::Retired { matched }) => matched,
+                (HistoryTable::H2, HistoryAction::Retired { matched }) => {
+                    matched && self.ids.contains(&op.recording_id)
+                }
             };
             if !ok {
                 diffs.push(DiffKind::Continuation);
             }
         }
         diffs
+    }
+
+    /// An operation the row requires that nobody reported. At the header: the
+    /// input's H1 retirement (it happens before the decision is taken, so the header
+    /// carries it). At a completed close: the H2 registration (a `K:Pipeline` row
+    /// registers it right after the decision or when it spawns).
+    fn missing_history(&self, completed_close: bool) -> bool {
+        if completed_close {
+            self.h2_needed.is_some() && !self.h2_registered
+        } else {
+            self.token.is_some() && !self.h1_retired
+        }
     }
 
     /// CP2: one effect that ran after D, against the decided effect at its index.
@@ -746,7 +813,7 @@ impl Record {
 
     /// CP3: a ticker attempt after D (`PostDT:SD`), against the gate's own inputs.
     fn on_ticker(&mut self, gate: &TickerGate) -> Option<DiffKind> {
-        let Some((_, consumed)) = self
+        let Some(&mut (j, ref mut consumed)) = self
             .later_tickers
             .iter_mut()
             .find(|(_, consumed)| !*consumed)
@@ -755,7 +822,8 @@ impl Record {
         };
         *consumed = true;
         self.tickers.push(*gate);
-        (!gate_consistent(gate)).then_some(DiffKind::PostState)
+        // After release too, the attempt must be for the decision's target first.
+        (!self.target_matches(j, gate) || !gate_consistent(gate)).then_some(DiffKind::PostState)
     }
 
     /// CP4: the flight closed.
@@ -780,6 +848,9 @@ impl Record {
                         .any(|(i, consumed)| !consumed && self.slots[*i] == Slot::Ran))
             {
                 diffs.push(DiffKind::EffectSet);
+            }
+            if !self.mismatched && self.missing_history(true) {
+                diffs.push(DiffKind::Continuation);
             }
             if expected_reply != self.reply {
                 diffs.push(DiffKind::Reply);
@@ -826,6 +897,9 @@ pub(crate) struct Comparator {
     signatures: BTreeMap<u64, Vec<(u16, u16, u8)>>,
     /// Rows that closed clean, by the recording that was current (PD windows).
     clean_rows: BTreeMap<u64, Vec<&'static str>>,
+    /// Preserved defects witnessed except for the recording's later successful
+    /// performance outcome (PD-4): `(pd, site, row)` by recording id.
+    pd_pending: BTreeMap<u64, Vec<(u8, u16, u16)>>,
     event_last_ms: HashMap<(u16, u16, u8), u64>,
     events_sent: u64,
     pub(crate) stats: Stats,
@@ -850,6 +924,7 @@ impl Comparator {
             last_subject: Vec::new(),
             signatures: BTreeMap::new(),
             clean_rows: BTreeMap::new(),
+            pd_pending: BTreeMap::new(),
             event_last_ms: HashMap::new(),
             events_sent: 0,
             stats: Stats::default(),
@@ -887,6 +962,7 @@ impl Comparator {
         let dropped = transport.take_dropped();
         let overflow = transport.take_overflow();
         self.stats.dropped += dropped;
+        self.stats.dropped_contended += transport.take_contended();
         self.stats.witness_overflow += overflow;
         seen |= dropped > 0 || overflow > 0;
         let unattributed = transport.take_loss_overflow();
@@ -965,7 +1041,10 @@ impl Comparator {
     fn lose_position(&mut self) {
         self.stats.lost_gap += 1;
         let before = self.last_subject.clone();
-        self.taint(&before);
+        // The record the neighbour before the gap opened may still be open: it is
+        // invalidated here, where the taint is applied, so it cannot close clean or
+        // earn preserved-defect credit (D-S2c-2 e).
+        self.taint_and_invalidate(&before);
         self.taint_next = true;
         self.next_seq += 1;
     }
@@ -996,39 +1075,59 @@ impl Comparator {
         }
     }
 
-    /// An attributed loss: invalidate what it affects, taint the ids it names, and
-    /// leave a lost header's position to be skipped in `seq` order.
+    /// Taint `ids` and invalidate every open record about one of them: it is
+    /// closed unchecked, never clean, and earns no preserved-defect credit.
+    fn taint_and_invalidate(&mut self, ids: &[RecordingId]) {
+        self.taint(ids);
+        let mut invalidated = 0;
+        for record in self.records.values_mut() {
+            if !record.skipped && record.subject.iter().any(|id| ids.contains(id)) {
+                record.skipped = true;
+                invalidated += 1;
+            }
+        }
+        self.stats.invalidated += invalidated;
+    }
+
+    /// An attributed loss: invalidate what it affects, taint the ids it names, and,
+    /// when the lost thing was a header, leave its position to be skipped in `seq`
+    /// order. The loss is counted under the site the *recorder* kept (a lost witness
+    /// is attributed like a lost header); a loss with no site is unattributed, never
+    /// counted under site `0`.
     pub(crate) fn on_loss(&mut self, loss: LossEntry) {
         let rec = RecorderId(loss.rec);
-        let site = if loss.site != 0 {
-            u16::try_from(loss.site).unwrap_or(0)
-        } else {
-            self.records.get(&rec).map_or(0, |record| record.site_id)
-        };
-        *self.stats.lost_by_site.entry(site).or_default() += 1;
-        let ids: Vec<RecordingId> = loss
+        match u16::try_from(loss.site) {
+            Ok(site) if site != 0 => *self.stats.lost_by_site.entry(site).or_default() += 1,
+            _ => self.stats.loss_unattributed += 1,
+        }
+        let mut ids: Vec<RecordingId> = loss
             .ids
             .iter()
             .filter(|id| **id != 0)
             .map(|id| RecordingId(*id))
             .collect();
-        self.taint(&ids);
-        // Every open record that shares an id with what was lost is affected.
-        for record in self.records.values_mut() {
-            if record.subject.iter().any(|id| ids.contains(id)) {
-                record.skipped = true;
-            }
-        }
+        // The lost flight's own record is affected whatever the loss named.
         if let Some(record) = self.records.get(&rec) {
-            let subject = record.subject.clone();
-            self.taint(&subject);
-            self.stats.invalidated += 1;
+            ids.extend(record.subject.iter().copied());
+        }
+        self.taint_and_invalidate(&ids);
+        // Its header may still be waiting behind a gap: it can never be compared, so
+        // its position is given up here (in `seq` order, like a lost header's).
+        let waiting = self
+            .pending
+            .iter()
+            .find(|(_, header)| header.rec == rec)
+            .map(|(seq, _)| *seq);
+        if let Some(seq) = waiting {
+            self.pending.remove(&seq);
+            self.stats.late_header_discarded += 1;
+            self.lost_seqs.insert(seq);
         }
         self.forget(rec);
-        if loss.seq != 0 && loss.seq >= self.next_seq {
+        if loss.header && loss.seq != 0 && loss.seq >= self.next_seq {
             self.lost_seqs.insert(loss.seq);
-            self.drain_ready();
         }
+        self.drain_ready();
     }
 
     /// The loss log itself overflowed: nothing says which records were affected, so
@@ -1036,7 +1135,10 @@ impl Comparator {
     pub(crate) fn on_unattributed_loss(&mut self, count: u64) {
         self.stats.loss_unattributed += count;
         for record in self.records.values_mut() {
-            record.skipped = true;
+            if !record.skipped {
+                record.skipped = true;
+                self.stats.invalidated += 1;
+            }
         }
         for header in self.pending.values_mut() {
             header.overflowed = true;
@@ -1053,7 +1155,9 @@ impl Comparator {
         let subject = subject_ids(&header);
         let fresh = is_fresh_generation(&header);
         if std::mem::take(&mut self.taint_next) && !fresh {
-            self.taint(&subject);
+            // The neighbour after a lost position: records still open about it are
+            // invalidated here too.
+            self.taint_and_invalidate(&subject);
         }
         let skipped = subject.iter().any(|id| self.tainted.contains(&id.0));
         let ids = header_ids(&header);
@@ -1135,6 +1239,9 @@ impl Comparator {
             in_d.push(DiffKind::PostState);
         }
         in_d.extend(record.check_history(header.live_ops.iter()));
+        if record.missing_history(false) {
+            in_d.push(DiffKind::Continuation);
+        }
         // A decided continuation needs exactly one registration, whose token the
         // shadow replays (it never draws an id).
         if record.decision.continuation.is_some()
@@ -1229,12 +1336,31 @@ impl Comparator {
             row: record.row_name,
             ran: &record.ran,
             tickers: &record.tickers,
+            recording: record.side_target.unwrap_or(record.pre_id),
             completed,
             prior_rows: &prior,
         };
         for pd in credited(&evidence) {
-            *self.stats.pd_witness.entry(pd).or_default() += 1;
-            self.stats.row(record.site_id, record.row).pd_witness += 1;
+            self.credit(pd, record.site_id, record.row);
+        }
+        // A defect that also needs the recording's later successful performance
+        // outcome waits for it.
+        if completed {
+            for pd in awaiting_outcome(&evidence) {
+                let waiting = self.pd_pending.entry(evidence.recording.0).or_default();
+                waiting.push((pd, record.site_id, record.row));
+            }
+            while self.pd_pending.len() > MAX_REMEMBERED_IDS {
+                self.pd_pending.pop_first();
+            }
+        }
+        // This record's own successful outcome settles what waited on its recording.
+        if completed && record.perf_success {
+            for id in &record.ids {
+                for (pd, site, row) in self.pd_pending.remove(&id.0).unwrap_or_default() {
+                    self.credit(pd, site, row);
+                }
+            }
         }
         if completed && !record.pre_id.is_none() {
             let rows = self.clean_rows.entry(record.pre_id.0).or_default();
@@ -1246,6 +1372,11 @@ impl Comparator {
                 self.clean_rows.pop_first();
             }
         }
+    }
+
+    fn credit(&mut self, pd: u8, site: u16, row: u16) {
+        *self.stats.pd_witness.entry(pd).or_default() += 1;
+        self.stats.row(site, row).pd_witness += 1;
     }
 
     /// A message whose header has not arrived: held, at most 32 per recorder.

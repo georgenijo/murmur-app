@@ -59,8 +59,11 @@ pub(crate) struct Stats {
     /// Decisions not compared because a capture list overflowed: the header was
     /// incomplete.
     pub skipped_incomplete: u64,
-    /// Messages the queue could not take (queue full).
+    /// Messages the ring could not take: full, a slot still in flight, or a lost race.
     pub dropped: u64,
+    /// The part of `dropped` that was contention (a slot in flight or a lost race),
+    /// not a full ring.
+    pub dropped_contended: u64,
     /// Header positions that never produced a header: a gap declared lost after
     /// more than 64 later headers, or a lost header known by its `seq`.
     pub lost_gap: u64,
@@ -85,7 +88,8 @@ pub(crate) struct Stats {
     pub shadow_panic: u64,
     /// Mismatch events the rate limit suppressed (C8.4 step 4).
     pub events_suppressed: u64,
-    /// Losses by the site they were attributed to (`0` = unknown), for E4.
+    /// Losses by the site they were attributed to, for E4. Never keyed `0`: a loss
+    /// with no site is counted in `loss_unattributed` instead.
     pub lost_by_site: BTreeMap<u16, u64>,
     /// By `(site_id, row ordinal)`.
     pub per_row: BTreeMap<(u16, u16), RowStats>,
@@ -132,6 +136,7 @@ impl Stats {
             "skipped_tainted": self.skipped_tainted,
             "skipped_incomplete": self.skipped_incomplete,
             "dropped": self.dropped,
+            "dropped_contended": self.dropped_contended,
             "lost_gap": self.lost_gap,
             "lost_open": self.lost_open,
             "invalidated": self.invalidated,

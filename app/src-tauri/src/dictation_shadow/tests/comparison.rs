@@ -94,14 +94,57 @@ fn shadow_pre_effect_omitted_is_effectset() {
             // The omitted effect's mirror is omitted with it.
             flight.header.pre_mirrors.clear();
         }
-        // The header alone decides it: `Pre` is compared at CP1, not left for the
-        // close to notice an effect that never showed up.
-        h.feed_header(&flight);
+        // A `Pre` effect the header does not list stays pending until the record
+        // closes (a later witness may show it ran at another placement, D-S2c-2 g);
+        // at the completed close it was never witnessed anywhere: `EffectSet`.
+        h.feed(&flight);
         let event = h.only_event();
         assert_eq!(event.diff_kind, DiffKind::EffectSet.code(), "{name}");
         assert_eq!(event.site_id, flight.header.site_id, "{name}");
         assert_eq!(event.input_kind, flight.header.row, "{name}");
         assert_eq!(h.stats().mismatched_root, 1, "{name}");
+    }
+}
+
+#[test]
+fn a_pre_effect_that_ran_at_another_placement_is_placement_not_a_missing_effect() {
+    // Sol 6.2 minor 2 (D-S2c-2 g): R216.1's `Pre:TERM` ran under D (`In`) or after the
+    // release (`PostDT`). Classified at the header it was "missing" (`EffectSet`)
+    // for the `PostDT` move and `Placement` for `In`; the decided effect stays
+    // pending until the record closes, and the witness that shows where it ran
+    // decides the code: always `Placement`.
+    for (name, to) in [("In", Placement::In), ("PostDT", Placement::PostDT)] {
+        let mut h = harness();
+        let mut flight = short_idle(1, 1);
+        let at = flight
+            .header
+            .pre_effects
+            .iter()
+            .position(|w| matches!(w.effect, Effect::Terminal(_)))
+            .unwrap();
+        let moved = flight.header.pre_effects.remove(at);
+        let decided = flight
+            .decision
+            .effects
+            .iter()
+            .position(|p| matches!(p.effect, Effect::Terminal(_)))
+            .unwrap();
+        match to {
+            Placement::In => assert!(flight.header.in_d_effects.push(moved)),
+            _ => flight.later.insert(
+                0,
+                ShadowMsg::Witness {
+                    rec: flight.header.rec,
+                    idx: u16::try_from(decided).unwrap(),
+                    placement: Placement::PostDT,
+                    effect: moved,
+                },
+            ),
+        }
+        h.feed(&flight);
+        let event = h.only_event();
+        assert_eq!(event.diff_kind, DiffKind::Placement.code(), "to {name}");
+        assert_eq!(h.stats().mismatched_root, 1, "to {name}");
     }
 }
 
@@ -911,6 +954,58 @@ fn a_ticker_attempt_after_d_is_compared_too() {
     flight.later.insert(0, ShadowMsg::Ticker { rec, gate });
     h.feed(&flight);
     assert_eq!(h.only_event().diff_kind, DiffKind::EffectSet.code());
+}
+
+#[test]
+fn a_ticker_call_for_the_wrong_generation_is_compared_under_d_and_after_release() {
+    // Sol 6.2 major 6 (D-S2c-2 f): the gate's own inputs were checked, but not that
+    // the ticker was asked for the recording the decision's `SD` targets. A gate
+    // whose requested id is the previous generation's, with every other field
+    // consistent (so its own `registered` agrees), used to pass.
+    let previous = RecordingId(RID.0 - 1);
+    // Under D (R104.2 `In:SD`).
+    let mut h = harness();
+    let mut flight = ready_publish(1, 1, murmur_dictation_core::decision::OpStatus::Outstanding);
+    let mut gate = *flight.header.in_d_tickers.get(0).unwrap();
+    gate.id = previous;
+    gate.registered = gate.expected();
+    flight.header.in_d_tickers.clear();
+    flight.header.in_d_tickers.push(gate);
+    h.feed(&flight);
+    let event = h.only_event();
+    assert_eq!(event.diff_kind, DiffKind::PostState.code(), "{event:?}");
+    assert_eq!(h.stats().matched, 0);
+
+    // After release (R207.3's `PostDT:SD`, a `Ticker` message).
+    let mut h = harness();
+    let mut flight = ready_while_recording(
+        1,
+        1,
+        Live {
+            ticker_before: RID,
+            ..Live::default()
+        },
+    );
+    for msg in &mut flight.later {
+        if let ShadowMsg::Ticker { gate, .. } = msg {
+            gate.id = previous;
+            gate.registered = gate.expected();
+        }
+    }
+    h.feed(&flight);
+    let event = h.only_event();
+    assert_eq!(event.diff_kind, DiffKind::PostState.code(), "{event:?}");
+    assert_eq!(h.stats().matched, 0);
+
+    // The faithful ones stay clean.
+    let mut h = harness();
+    h.feed(&ready_publish(
+        1,
+        1,
+        murmur_dictation_core::decision::OpStatus::Outstanding,
+    ));
+    h.feed(&ready_while_recording(2, 2, Live::default()));
+    assert_clean(&h);
 }
 
 #[test]

@@ -4,7 +4,8 @@
 //! [`CountingAllocator`] as the global allocator (`lib.rs`). It forwards every call
 //! to the allocator the app really uses (the macOS Rust-zone allocator, or the
 //! system one elsewhere) and, only on a thread that armed it through
-//! [`count_allocations`], counts allocation calls. The counters are const-initialised
+//! [`count_heap_calls`], counts allocation **and deallocation** calls (D-S2c-2 b: the
+//! live path must neither allocate nor free). The counters are const-initialised
 //! thread-locals without destructors, so reading them from inside the allocator
 //! cannot allocate or recurse, and other test threads never disturb a measurement.
 
@@ -19,6 +20,7 @@ static INNER: std::alloc::System = std::alloc::System;
 thread_local! {
     static ARMED: Cell<bool> = const { Cell::new(false) };
     static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+    static DEALLOCATIONS: Cell<u64> = const { Cell::new(0) };
 }
 
 /// Forwards to the app's allocator, counting allocation calls on an armed thread.
@@ -39,6 +41,14 @@ fn note() {
     });
 }
 
+fn note_free() {
+    let _ = ARMED.try_with(|armed| {
+        if armed.get() {
+            let _ = DEALLOCATIONS.try_with(|count| count.set(count.get() + 1));
+        }
+    });
+}
+
 // SAFETY: every method forwards unchanged to the allocator the app already uses; the
 // only addition is a counter update that performs no allocation.
 unsafe impl GlobalAlloc for CountingAllocator {
@@ -48,6 +58,7 @@ unsafe impl GlobalAlloc for CountingAllocator {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        note_free();
         unsafe { INNER.dealloc(ptr, layout) }
     }
 
@@ -65,9 +76,22 @@ unsafe impl GlobalAlloc for CountingAllocator {
 /// Run `f` and return its result with the number of allocation calls **this thread**
 /// made while it ran.
 pub(crate) fn count_allocations<R>(f: impl FnOnce() -> R) -> (R, u64) {
+    let (result, allocations, _) = count_heap_calls(f);
+    (result, allocations)
+}
+
+/// Run `f` and return its result with the allocation and the deallocation calls
+/// **this thread** made while it ran. Anything `f` drops is freed inside the
+/// measurement; the returned value is not.
+pub(crate) fn count_heap_calls<R>(f: impl FnOnce() -> R) -> (R, u64, u64) {
     ALLOCATIONS.with(|count| count.set(0));
+    DEALLOCATIONS.with(|count| count.set(0));
     ARMED.with(|armed| armed.set(true));
     let result = f();
     ARMED.with(|armed| armed.set(false));
-    (result, ALLOCATIONS.with(Cell::get))
+    (
+        result,
+        ALLOCATIONS.with(Cell::get),
+        DEALLOCATIONS.with(Cell::get),
+    )
 }

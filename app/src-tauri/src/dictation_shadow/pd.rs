@@ -16,11 +16,18 @@
 //!   PD-4);
 //! * a defect that needs two flights (PD-4 after the start's rendezvous, PD-18 after
 //!   an attempt's teardown) needs an earlier **clean** row of the same recording
-//!   (`prior`), so an ordinary short idle never credits PD-18 by itself.
+//!   (`prior`), so an ordinary short idle never credits PD-18 by itself;
+//! * PD-4 (D-S2c-2 g) needs three things for the **same recording**: the stale
+//!   terminal that *won* the ledger, the second ticker, and the later successful
+//!   performance outcome (`perf_success`). The first two are witnessed by the
+//!   `R207.3` record, the third by a later clean record, so the comparison keeps the
+//!   credit pending until that outcome is witnessed.
 //!
 //! PD-11, PD-14 and PD-17 are not row signatures (properties of an effect's
 //! implementation, or latent) and are not counted here. PD-1's row list drops
 //! R215.3: that row hands over to R216, where the unguarded write actually happens.
+
+use murmur_dictation_core::ids::RecordingId;
 
 use super::types::{EffectResult, TickerGate};
 
@@ -31,6 +38,8 @@ pub(crate) enum TermNeed {
     Any,
     /// The claim lost the ledger (`claim_terminal` returned `false`).
     Lost,
+    /// The claim won the ledger (`claim_terminal` returned `true`).
+    Won,
 }
 
 /// One PD signature: the row and what must have been witnessed for it.
@@ -43,8 +52,12 @@ pub(crate) struct PdDef {
     /// Effect codes that must not have run.
     pub absent: &'static [&'static str],
     pub term: TermNeed,
-    /// A second ticker registered for an id whose ticker already was.
+    /// A second ticker registered for an id whose ticker already was, for the
+    /// recording the row is about.
     pub ticker_duplicate: bool,
+    /// The credit also needs the recording's later successful performance outcome
+    /// (`PipelineGuardFinish(Completed)` in a later clean record).
+    pub perf_success: bool,
     /// At least one of these rows closed clean earlier for the same recording id.
     /// Empty: no earlier row is needed.
     pub prior: &'static [&'static str],
@@ -61,6 +74,7 @@ const fn def(pd: u8, row: &'static str, need: &'static [&'static str]) -> PdDef 
         absent: &[],
         term: TermNeed::Any,
         ticker_duplicate: false,
+        perf_success: false,
         prior: &[],
         abandoned: false,
     }
@@ -85,7 +99,9 @@ pub(crate) const PD_DEFS: &[PdDef] = &[
     def(3, "R202.3", &["KB", "EM"]),
     def(3, "R202.4", &["KB", "EM"]),
     PdDef {
+        term: TermNeed::Won,
         ticker_duplicate: true,
+        perf_success: true,
         prior: &["R104.2"],
         ..def(4, "R207.3", &["TERM", "SD"])
     },
@@ -135,6 +151,8 @@ pub(crate) struct PdEvidence<'a> {
     pub ran: &'a [(&'static str, EffectResult)],
     /// The ticker registration attempts that were captured.
     pub tickers: &'a [TickerGate],
+    /// The recording the row is about (its input's, else the one current).
+    pub recording: RecordingId,
     /// The flight completed (`true`) or was abandoned (`false`).
     pub completed: bool,
     /// Rows that closed clean earlier for the same recording id.
@@ -142,7 +160,8 @@ pub(crate) struct PdEvidence<'a> {
 }
 
 impl PdDef {
-    fn witnessed(&self, evidence: &PdEvidence<'_>) -> bool {
+    /// Everything but the later performance outcome was witnessed.
+    fn witnessed_but_outcome(&self, evidence: &PdEvidence<'_>) -> bool {
         if evidence.row != self.row || evidence.completed == self.abandoned {
             return false;
         }
@@ -150,19 +169,21 @@ impl PdDef {
         if !self.need.iter().all(|code| ran(code)) || self.absent.iter().any(|code| ran(code)) {
             return false;
         }
-        if self.term == TermNeed::Lost
-            && !evidence
+        let claimed = |won: bool| {
+            evidence
                 .ran
                 .iter()
-                .any(|(c, r)| *c == "TERM" && *r == EffectResult::Claimed { won: false })
+                .any(|(c, r)| *c == "TERM" && *r == EffectResult::Claimed { won })
+        };
+        if (self.term == TermNeed::Lost && !claimed(false))
+            || (self.term == TermNeed::Won && !claimed(true))
         {
             return false;
         }
         if self.ticker_duplicate
-            && !evidence
-                .tickers
-                .iter()
-                .any(|gate| gate.registered && gate.ticker_before == gate.id)
+            && !evidence.tickers.iter().any(|gate| {
+                gate.registered && gate.ticker_before == gate.id && gate.id == evidence.recording
+            })
         {
             return false;
         }
@@ -174,11 +195,22 @@ impl PdDef {
     }
 }
 
-/// The PDs this evidence credits (each at most once per record).
+/// The PDs this evidence credits now (each at most once per record): the ones whose
+/// whole definition was witnessed, with no later outcome still owed.
 pub(crate) fn credited(evidence: &PdEvidence<'_>) -> Vec<u8> {
+    collect(evidence, false)
+}
+
+/// The PDs witnessed except for the later successful performance outcome they also
+/// need (PD-4). The comparison keeps them pending for the recording.
+pub(crate) fn awaiting_outcome(evidence: &PdEvidence<'_>) -> Vec<u8> {
+    collect(evidence, true)
+}
+
+fn collect(evidence: &PdEvidence<'_>, awaiting: bool) -> Vec<u8> {
     let mut pds: Vec<u8> = PD_DEFS
         .iter()
-        .filter(|def| def.witnessed(evidence))
+        .filter(|def| def.perf_success == awaiting && def.witnessed_but_outcome(evidence))
         .map(|def| def.pd)
         .collect();
     pds.sort_unstable();

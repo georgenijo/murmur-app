@@ -21,4 +21,5 @@ mod loss;
 mod output;
 mod pd_credit;
 mod policy;
+mod ring;
 mod wrong_slot;

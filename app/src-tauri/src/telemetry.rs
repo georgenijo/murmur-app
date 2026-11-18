@@ -240,13 +240,22 @@ impl TauriEmitterLayer {
         // Debug and trace are local-only: no events.jsonl (so the shipper never
         // sees them), no ring buffer or Events tab, no capture-health input.
         if *meta.level() > tracing::Level::INFO {
-            let (summary, data) = local_log_payload(&stream, event);
+            // A malformed shadow record is rejected whole, before any summary is
+            // formatted: nothing of it reaches `app.log`.
+            let Some((summary, data)) = local_log_payload(&stream, event) else {
+                return;
+            };
             let line = local_log_line(&timestamp, &level, &stream, &summary, &data);
             let _ = self.local_log.clone().write_all(line.as_bytes());
             return;
         }
 
-        let (summary, data) = sanitized_event_payload(&stream, event, cfg!(debug_assertions));
+        // A malformed shadow record is rejected whole: no summary, no capture-health
+        // input, no ring buffer, window or `events.jsonl` line.
+        let Some((summary, data)) = sanitized_event_payload(&stream, event, cfg!(debug_assertions))
+        else {
+            return;
+        };
 
         let app_event = AppEvent {
             timestamp,
@@ -309,19 +318,35 @@ fn local_log_line(
 /// strings and anything outside a schema's allowlist are dropped. Events without
 /// an allowlisted summary keep their message, with key identity redacted, which
 /// is what `app.log` has always held for info lines.
-fn local_log_payload(stream: &str, event: &tracing::Event<'_>) -> (String, serde_json::Value) {
+///
+/// `None` when the event is a malformed shadow mismatch record: the sanitizer drops
+/// those whole, and the caller rejects the event before any summary is formatted.
+fn local_log_payload(
+    stream: &str,
+    event: &tracing::Event<'_>,
+) -> Option<(String, serde_json::Value)> {
     let mut visitor = JsonVisitor::new();
     event.record(&mut visitor);
     let message = visitor.message;
+    let was_shadow_mismatch = is_dictation_shadow_mismatch_event(&visitor.fields);
     let mut data = serde_json::Value::Object(visitor.fields);
     sanitize_event_data(stream, &mut data, false);
+    if rejected_by_sanitizer(was_shadow_mismatch, &data) {
+        return None;
+    }
     let summary = sanitized_summary(stream, message.clone(), &data, false);
     let summary = if summary == "Structured event" {
         key_identity::bounded_summary(stream, message.unwrap_or_default())
     } else {
         summary
     };
-    (summary, data)
+    Some((summary, data))
+}
+
+/// A shadow mismatch record the sanitizer emptied (a missing, malformed or
+/// out-of-range field) is rejected, not logged as an empty event.
+fn rejected_by_sanitizer(was_shadow_mismatch: bool, data: &serde_json::Value) -> bool {
+    was_shadow_mismatch && data.as_object().is_none_or(serde_json::Map::is_empty)
 }
 
 /// Collect an event's fields and apply the structured-event privacy boundary.
@@ -330,13 +355,19 @@ fn sanitized_event_payload(
     stream: &str,
     event: &tracing::Event<'_>,
     debug_build: bool,
-) -> (String, serde_json::Value) {
+) -> Option<(String, serde_json::Value)> {
     let mut visitor = JsonVisitor::new();
     event.record(&mut visitor);
+    let was_shadow_mismatch = is_dictation_shadow_mismatch_event(&visitor.fields);
     let mut data = serde_json::Value::Object(visitor.fields);
     sanitize_event_data(stream, &mut data, debug_build);
+    // Rejected before the summary: a debug build reuses the caller's message for an
+    // event it does not recognise, and a rejected record must not reach that path.
+    if rejected_by_sanitizer(was_shadow_mismatch, &data) {
+        return None;
+    }
     let summary = sanitized_summary(stream, visitor.message, &data, debug_build);
-    (summary, data)
+    Some((summary, data))
 }
 
 /// Enforce the structured-event privacy boundary independently of call-site
@@ -2883,12 +2914,32 @@ pub fn flush_on_exit() {
     );
 }
 
+/// Whether the panic hook may flush the live event writer. A panic the dictation
+/// shadow's comparison thread catches is its own: it must not enqueue a flush on the
+/// writer the live app uses (D-S2c-2 c). Without the `dictation-shadow` feature this
+/// is always `true`, so a default build behaves exactly as before.
+#[cfg(not(feature = "dictation-shadow"))]
+pub(crate) const fn live_flush_allowed() -> bool {
+    true
+}
+
+#[cfg(feature = "dictation-shadow")]
+use crate::dictation_shadow::on_comparison_thread;
+
+#[cfg(feature = "dictation-shadow")]
+pub(crate) fn live_flush_allowed() -> bool {
+    !on_comparison_thread()
+}
+
 /// Chain a panic hook that flushes the log tail. A release build aborts on
 /// panic, so `app.log` is flushed too; a dev build unwinds and keeps logging.
 fn install_panic_flush() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         previous(info);
+        if !live_flush_allowed() {
+            return;
+        }
         if let Some(writer) = EVENT_WRITER.get() {
             writer.flush(std::time::Duration::from_millis(500));
         }
@@ -3130,7 +3181,9 @@ mod tests {
                 _: tracing_subscriber::layer::Context<'_, S>,
             ) {
                 let stream = event.metadata().target();
-                let (summary, data) = local_log_payload(stream, event);
+                let Some((summary, data)) = local_log_payload(stream, event) else {
+                    return;
+                };
                 let level = event.metadata().level().to_string();
                 self.0
                     .lock()
@@ -5008,6 +5061,57 @@ mod tests {
             sanitize_event_data("pipeline", &mut good, debug_build);
             assert_eq!(good.as_object().unwrap().len(), 4, "{good}");
         }
+    }
+
+    /// Review fix (Sol 6.2 minor 3, D-S2c-2 g): a malformed shadow record is rejected
+    /// **as an event** by both log paths: the debug-line path (`app.log`) and the
+    /// structured-event path (ring buffer, window, `events.jsonl`). Clearing the
+    /// fields but letting the event through (`diff_kind = 256`) left an empty record
+    /// behind.
+    #[test]
+    fn shadow_sanitizer_rejects_the_whole_malformed_event_on_both_paths() {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::layer::{Context, SubscriberExt};
+        use tracing_subscriber::Layer;
+
+        #[derive(Default)]
+        struct Outcomes(Arc<Mutex<Vec<(bool, bool)>>>);
+        impl<S: tracing::Subscriber> Layer<S> for Outcomes {
+            fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+                let stream = event.metadata().target();
+                let local = local_log_payload(stream, event).is_some();
+                let structured = sanitized_event_payload(stream, event, true).is_some();
+                self.0.lock().unwrap().push((local, structured));
+            }
+        }
+
+        let outcomes = Outcomes::default();
+        let seen = Arc::clone(&outcomes.0);
+        let subscriber = tracing_subscriber::registry().with(outcomes);
+        tracing::subscriber::with_default(subscriber, || {
+            let code = "pipeline.dictation_shadow_mismatch";
+            // Out of range, missing, unknown site: rejected whole.
+            tracing::info!(target: "pipeline", event_code = code, site_id = 216_u64, input_kind = 1_u64, diff_kind = 256_u64);
+            tracing::debug!(target: "pipeline", event_code = code, site_id = 216_u64, input_kind = 1_u64, diff_kind = 256_u64);
+            tracing::info!(target: "pipeline", event_code = code, site_id = 216_u64, input_kind = 1_u64);
+            tracing::info!(target: "pipeline", event_code = code, site_id = 1_u64, input_kind = 1_u64, diff_kind = 2_u64);
+            // A well-formed one passes, and so does an unrelated event.
+            tracing::info!(target: "pipeline", event_code = code, site_id = 216_u64, input_kind = 1_u64, diff_kind = 2_u64);
+            tracing::info!(target: "pipeline", event_code = "pipeline.stage_timing", total_ms = 3_u64);
+        });
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 6);
+        for (n, (local, structured)) in seen.iter().take(4).enumerate() {
+            assert!(
+                !local && !structured,
+                "malformed event {n} got through: {seen:?}"
+            );
+        }
+        assert_eq!(seen[4], (true, true), "a well-formed record passes");
+        assert!(
+            seen[5].0 || seen[5].1,
+            "an unrelated event is untouched: {seen:?}"
+        );
     }
 
     /// Every C3 row ordinal fits the event's documented `input_kind` range.

@@ -10,7 +10,9 @@
 use super::*;
 use crate::decision::{Continuation, OpStatus, SiteId};
 use crate::ids::OperationId;
-use crate::inputs::{GestureObs, Origin, SmartAutoSel, SpeculativeObs, StartContextInput};
+use crate::inputs::{
+    GestureObs, Origin, SmartAutoFailure, SmartAutoSel, SpeculativeObs, StartContextInput,
+};
 use crate::rows::rows_of_site;
 use crate::state::LiveObs;
 
@@ -379,26 +381,22 @@ fn r101_13_smart_auto_without_a_result_asks_for_the_selection_before_mutating() 
 }
 
 #[test]
-fn r101_14_a_failed_smart_auto_resolve_refuses_with_its_text_and_burns_no_id() {
+fn r101_14_a_failed_smart_auto_resolve_refuses_with_the_shells_text_and_burns_no_id() {
     let mut input = start();
     input.device = DeviceSel::SmartAuto;
-    input.smart_auto_result = Some(Err("no input device".to_string()));
+    input.smart_auto_result = Some(Err(SmartAutoFailure::ResolveFailed));
     let decided = d_101(Status::Idle, input);
     assert_eq!(decided.row.0, "R101.14");
     assert_eq!(
         decided.verdict,
+        // The resolve's text is the shell's; the core's verdict only says it failed.
         Verdict::Refused(Refusal::Admission(RefusalCode::SmartAutoFailed(
-            "no input device".to_string()
+            String::new()
         )))
     );
     assert_eq!(decided.transition, None);
     assert_eq!(tags(&decided), ["PT:REL"]);
-    assert_eq!(
-        decided.reply,
-        Some(Reply::Err(ErrText::SmartAuto(
-            "no input device".to_string()
-        )))
-    );
+    assert_eq!(decided.reply, Some(Reply::Err(ErrText::SmartAuto)));
 }
 
 #[test]
@@ -522,7 +520,7 @@ fn every_refusal_row_releases_the_claims_after_the_transition_guard() {
     rows.push(d_101(Status::Idle, app));
     let mut smart = start();
     smart.device = DeviceSel::SmartAuto;
-    smart.smart_auto_result = Some(Err("x".to_string()));
+    smart.smart_auto_result = Some(Err(SmartAutoFailure::ResolveFailed));
     rows.push(d_101(Status::Idle, smart));
     for decided in rows {
         assert_eq!(decided.effects.last().map(tag).as_deref(), Some("PT:REL"));
@@ -574,7 +572,7 @@ fn every_start_request_row_is_produced_by_some_input() {
     let mut smart = start();
     smart.device = DeviceSel::SmartAuto;
     note(d_101(Status::Idle, smart.clone()));
-    smart.smart_auto_result = Some(Err("e".to_string()));
+    smart.smart_auto_result = Some(Err(SmartAutoFailure::ResolveFailed));
     note(d_101(Status::Idle, smart));
     let expected: std::collections::BTreeSet<&str> = rows_of_site(SiteId::StartRequest).collect();
     assert_eq!(seen, expected);

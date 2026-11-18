@@ -22,10 +22,12 @@
 //!
 //! * [`types`] the messages (`ShadowHeader`, `ShadowMsg`) and their vocabulary, all
 //!   by-value and heap-free;
-//! * [`transport`] the live side: the preallocated lock-free queue (256), the loss
-//!   log, the flight-owned [`transport::ShadowRecorder`], the header
+//! * [`ring`] the in-crate bounded ring (Vyukov-style, one consumer) whose
+//!   `try_push` makes exactly one attempt: no loop, backoff or yield;
+//! * [`transport`] the live side: the preallocated ring (256), the loss log, the
+//!   flight-owned [`transport::ShadowRecorder`], the header
 //!   [`transport::ShadowTicket`] and `witness` / `mark` / `submit`, each a single
-//!   `push`: no allocation, no lock, no channel, no waker;
+//!   `try_push`: no allocation, no free, no lock, no channel, no waker;
 //! * [`compare`] the `murmur-dictation-shadow` thread's comparison (CP1-CP4,
 //!   `diff_kind` 1-9, attributed loss, cascade control) and [`pd`] the preserved
 //!   defects it credits;
@@ -44,6 +46,7 @@
 
 pub(crate) mod compare;
 pub(crate) mod pd;
+pub(crate) mod ring;
 pub(crate) mod summary;
 pub(crate) mod transport;
 pub(crate) mod types;
@@ -53,7 +56,7 @@ pub(crate) mod alloc_probe;
 #[cfg(test)]
 mod tests;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
@@ -144,28 +147,64 @@ impl Control {
     }
 }
 
+thread_local! {
+    /// Set at the start of the comparison thread and never cleared: the app-wide
+    /// panic hook reads it to keep a panic the shadow caught off the live event
+    /// writer (D-S2c-2 c).
+    static COMPARISON_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the calling thread is the comparison thread. The app's panic hook skips
+/// its live-writer flush for a panic raised there.
+pub(crate) fn on_comparison_thread() -> bool {
+    COMPARISON_THREAD
+        .try_with(std::cell::Cell::get)
+        .unwrap_or(false)
+}
+
 /// Spawn the comparison thread, once. A no-op unless shadow mode is active.
+///
+/// **This only spawns.** Everything that touches the file system (the log directory
+/// lookup, creating and truncating the mismatch file, the summary) happens inside
+/// the thread, so a slow disk can never delay the caller (app setup): D-S2c-2 c.
 pub(crate) fn start() {
     if !enabled() || STARTED.set(()).is_err() {
         return;
     }
-    let transport = Arc::clone(transport());
-    let directory = crate::telemetry::logs_dir();
-    let sink = file_sink(directory.as_deref());
     // A thread that cannot start leaves capture a no-op (the queue just fills and
     // counts drops); nothing is logged, because nothing of the shadow passes
     // through `tracing`.
-    let _ = std::thread::Builder::new()
+    let _ = spawn_thread(
+        Arc::clone(transport()),
+        &CONTROL,
+        POLL_INTERVAL,
+        crate::telemetry::logs_dir,
+    );
+}
+
+/// Spawn the comparison thread. `directory` runs **on that thread**, first, and
+/// names where the mismatch file and the summary go; the spawn itself returns
+/// without touching the file system.
+pub(crate) fn spawn_thread(
+    transport: Arc<Transport>,
+    control: &'static Control,
+    poll: Duration,
+    directory: impl FnOnce() -> Option<PathBuf> + Send + 'static,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
         .name(THREAD_NAME.into())
         .spawn(move || {
+            COMPARISON_THREAD.with(|flag| flag.set(true));
+            let directory = directory();
+            let sink = file_sink(directory.as_deref());
             run(
                 &transport,
                 Comparator::production(sink),
                 directory.as_deref(),
-                &CONTROL,
-                POLL_INTERVAL,
+                control,
+                poll,
             );
-        });
+        })
 }
 
 /// The numeric, file-only sink of the mismatch event (D-S2c-1 b): it is written by

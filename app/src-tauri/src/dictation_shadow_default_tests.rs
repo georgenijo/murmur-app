@@ -34,12 +34,14 @@ fn shadow_off_by_default() {
         .next()
         .unwrap();
     assert!(
-        features.contains("dictation-shadow = [\"dep:crossbeam-queue\"]"),
-        "the feature enables only the optional queue dependency"
+        features
+            .lines()
+            .any(|line| line.trim() == "dictation-shadow = []"),
+        "the feature is a plain switch: it pulls in no dependency"
     );
     assert!(
-        manifest.contains("crossbeam-queue = { version = \"0.3\", optional = true }"),
-        "the queue dependency is optional, so a default build does not compile it"
+        !manifest.contains("crossbeam-queue"),
+        "the shadow's ring is in-crate; no queue dependency (D-S2c-2 a)"
     );
     for line in features
         .lines()

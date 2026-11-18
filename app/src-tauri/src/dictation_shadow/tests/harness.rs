@@ -10,7 +10,9 @@ use murmur_dictation_core::effects::{Cond, Effect, Placement};
 use murmur_dictation_core::ids::{Now, OperationId, RecordingId};
 use murmur_dictation_core::inputs::{
     CancelInput, CaptureErr, CaptureResult, CaptureResultInput, DeviceSel, GestureObs, Input,
-    Origin, ReadyPublishInput, SpeculativeObs, StartInput, StopInput, SupervisorEvent,
+    Origin, PipelineIdleEmitInput, PipelineResult, PipelineTerminal, PostKind,
+    ProcessAudioStartInput, ReadyPublishInput, SpeculativeObs, StartInput, StopCaptureResult,
+    StopCaptureResultInput, StopInput, SupervisorEvent,
 };
 use murmur_dictation_core::state::{DictationCore, LiveObs};
 use murmur_dictation_core::status::{Status, StopTrigger};
@@ -254,6 +256,7 @@ pub(super) fn flight_with(
             context_for: core.context_for,
         },
     };
+    let carried_token = crate::dictation_shadow::compare::input_token(&input);
     let mut header = ShadowHeader::new(
         seq,
         rec_id,
@@ -264,6 +267,19 @@ pub(super) fn flight_with(
         NOW,
     );
     header.add_observed(ObservedFact::SpeculativeFlowing(live.spec_flowing));
+    // The continuation input retires its own token before the decision is taken
+    // (`ret_if_matches`): the full token, found exactly when it was outstanding.
+    if let Some((token, status)) = carried_token {
+        header.add_op(LiveOp {
+            table: HistoryTable::H1,
+            action: HistoryAction::Retired {
+                matched: status == OpStatus::Outstanding,
+            },
+            cont: token.kind,
+            recording_id: token.recording_id,
+            op: token.op,
+        });
+    }
     if let Some(spec) = decision.continuation {
         header.add_op(LiveOp {
             table: HistoryTable::H1,
@@ -272,6 +288,16 @@ pub(super) fn flight_with(
             recording_id: spec.recording_id,
             op: OperationId(1_000 + seq),
         });
+        // `K:Pipeline` also registers the pipeline in H2 (`PipelineOwner::register`).
+        if spec.kind == ContKind::Pipeline {
+            header.add_op(LiveOp {
+                table: HistoryTable::H2,
+                action: HistoryAction::Registered,
+                cont: spec.kind,
+                recording_id: spec.recording_id,
+                op: OperationId(2_000 + seq),
+            });
+        }
     }
     let mut later = Vec::new();
     for (idx, placed) in decision.effects.iter().enumerate() {
@@ -499,6 +525,56 @@ pub(super) fn ready_publish(seq: u64, rec: u64, op_status: OpStatus) -> Flight {
     )
 }
 
+/// R204b.6: the stop command's pipeline returned successfully for `RID`:
+/// `PDT:TERM(Success)` and `PGF(Completed)`, the recording's successful outcome.
+pub(super) fn pipeline_success(seq: u64, rec: u64) -> Flight {
+    flight(
+        seq,
+        rec,
+        view(Status::Processing, RID),
+        Input::PipelineIdleEmit(PipelineIdleEmitInput {
+            rid: RID,
+            kind: PostKind::StopPost,
+            result: Some(PipelineResult::Ok(PipelineTerminal::Success)),
+            interrupted: None,
+            char_count: 0,
+        }),
+    )
+}
+
+/// R203.9: the stop's capture returned a long recording: `PDT:PE(Vad), PS`, the
+/// `K:Pipeline` continuation (and its H2 registration). Retires `K:CaptureStop`.
+pub(super) fn pipeline_start(seq: u64, rec: u64) -> Flight {
+    flight(
+        seq,
+        rec,
+        view(Status::Processing, RID),
+        Input::StopCaptureResult(StopCaptureResultInput {
+            token: token(ContKind::CaptureStop, 700),
+            op_status: OpStatus::Outstanding,
+            rid: RID,
+            result: StopCaptureResult::Samples {
+                n: 1_000_000,
+                interrupted: None,
+            },
+        }),
+    )
+}
+
+/// R301.5: the accepted import: `In:ID+, ST, AX`, `PT:KB, EV, EM`, and `K:Pipeline`
+/// (with its H2 registration). No token to retire.
+pub(super) fn import_start(seq: u64, rec: u64) -> Flight {
+    flight(
+        seq,
+        rec,
+        view(Status::Idle, RecordingId(RID.0 - 1)),
+        Input::ProcessAudioStart(ProcessAudioStartInput {
+            occupancy: Occupancy::default(),
+            benchmark_running: Some(false),
+        }),
+    )
+}
+
 /// R207.3: the supervisor's `Ready` arrives for a recording that is already
 /// `Recording` (PD-4): `In:TERM(Superseded)`, and the wrapper's `SD` again.
 pub(super) fn ready_while_recording(seq: u64, rec: u64, live: Live) -> Flight {
@@ -574,7 +650,7 @@ pub(super) fn default_transport() -> Arc<Transport> {
 /// `recorder` (the transport assigns `seq`). Returns the assigned `seq`.
 pub(super) fn submit_header(recorder: &ShadowRecorder, flight: &Flight) -> u64 {
     recorder.enter_pre();
-    let ticket = recorder.ticket();
+    let ticket = recorder.ticket(flight.header.site_id);
     let seq = ticket.seq();
     let mut header = flight.header.clone();
     header.seq = seq;

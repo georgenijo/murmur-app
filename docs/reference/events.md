@@ -176,7 +176,7 @@ the live path did. It carries three numbers and nothing else: `site_id`,
 differed). It is emitted only by a build with the `dictation-shadow` Cargo
 feature running with `MURMUR_SHADOW=1`, rate limited to one per
 (site, input_kind, diff_kind) per 60 seconds and 50 per session. The shadow
-writes each record to `dictation-shadow-events.jsonl` in the log directory from
+writes each record to `dictation-shadow-events.jsonl` in the log directory (opened by the comparison thread itself) from
 its own thread and never through `tracing`, so the record does not reach the
 in-app log buffer or a window. The registry arm and exact schema are compiled
 and sanitized in every build, and the sanitizer drops a record whole when any of

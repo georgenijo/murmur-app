@@ -18,7 +18,9 @@ use crate::dictation_shadow::summary::{
     write_summary, EventFile, Stats, EVENTS_FILE, EVENT_CODE, SUMMARY_FILE,
 };
 use crate::dictation_shadow::transport::QUEUE_CAPACITY;
-use crate::dictation_shadow::{file_sink, run, Control};
+use crate::dictation_shadow::{
+    file_sink, on_comparison_thread, run, spawn_thread, Control, THREAD_NAME,
+};
 
 fn scratch(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("murmur-shadow-{name}-{}", std::process::id()));
@@ -306,4 +308,116 @@ fn shadow_summary_cadence_and_thread_name_are_the_documented_ones() {
     assert_eq!(MAX_HELD_PER_REC, 32);
     assert_eq!(EVENT_WINDOW_MS, 60_000);
     assert_eq!(MAX_EVENTS_PER_SESSION, 50);
+}
+
+#[test]
+fn start_only_spawns_and_the_file_is_opened_on_the_comparison_thread() {
+    // D-S2c-2 c: a slow disk must never delay the caller. The directory lookup is a
+    // closure the thread runs; here it blocks until released, and `spawn_thread`
+    // must already have returned, with nothing created yet.
+    let dir = scratch("spawn-only");
+    let (release, gate) = std::sync::mpsc::channel::<()>();
+    let (entered, on_thread) = std::sync::mpsc::channel::<(Option<String>, bool)>();
+    let control: &'static Control = Box::leak(Box::new(Control::new()));
+    let transport = default_transport();
+    let started = std::time::Instant::now();
+    let thread = spawn_thread(transport, control, Duration::from_millis(5), {
+        let dir = dir.clone();
+        move || {
+            let name = std::thread::current().name().map(str::to_owned);
+            entered.send((name, on_comparison_thread())).unwrap();
+            gate.recv().unwrap();
+            Some(dir)
+        }
+    })
+    .expect("the thread spawns");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "spawn waited for the directory lookup"
+    );
+    assert!(
+        !dir.join(EVENTS_FILE).exists(),
+        "the caller created the file"
+    );
+    let (name, flagged) = on_thread.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        name.as_deref(),
+        Some(THREAD_NAME),
+        "the lookup ran off-thread"
+    );
+    assert!(flagged, "the thread is marked for the panic hook");
+    assert!(!on_comparison_thread(), "the caller is not marked");
+    assert!(
+        !dir.join(EVENTS_FILE).exists(),
+        "still blocked: no file yet"
+    );
+    release.send(()).unwrap();
+    control.request_shutdown();
+    assert!(control.wait_finished(Duration::from_secs(10)));
+    thread.join().unwrap();
+    assert!(dir.join(EVENTS_FILE).exists(), "the thread opened the file");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_start_function_has_no_file_system_work() {
+    let module = super::policy::production_source(include_str!("../mod.rs"));
+    let body = super::policy::function_body(&module, "pub(crate) fn start(");
+    for token in [
+        "EventFile",
+        "file_sink",
+        "create_dir",
+        "File::",
+        "fs::",
+        "logs_dir()",
+        "write_summary",
+        "OpenOptions",
+    ] {
+        assert!(
+            !body.contains(token),
+            "`start` touches the file system: `{token}`"
+        );
+    }
+    // The thread body does it, in order: directory first, then the sink.
+    let spawn = super::policy::function_body(&module, "pub(crate) fn spawn_thread(");
+    let directory = spawn
+        .find("directory()")
+        .expect("the lookup runs in the thread");
+    let sink = spawn
+        .find("file_sink(")
+        .expect("the sink opens in the thread");
+    assert!(directory < sink);
+}
+
+#[test]
+fn the_panic_hook_skips_the_live_flush_on_the_comparison_thread() {
+    // Off the comparison thread the hook flushes as it always did.
+    assert!(crate::telemetry::live_flush_allowed());
+    // On it, a panic is the shadow's own and must not touch the live writer.
+    let control: &'static Control = Box::leak(Box::new(Control::new()));
+    let (seen, result) = std::sync::mpsc::channel::<bool>();
+    let thread = spawn_thread(
+        default_transport(),
+        control,
+        Duration::from_millis(5),
+        move || {
+            seen.send(crate::telemetry::live_flush_allowed()).unwrap();
+            None
+        },
+    )
+    .unwrap();
+    assert!(!result.recv_timeout(Duration::from_secs(5)).unwrap());
+    control.request_shutdown();
+    assert!(control.wait_finished(Duration::from_secs(10)));
+    thread.join().unwrap();
+    // And the hook consults it before it touches the writer.
+    let telemetry = super::policy::production_source(include_str!("../../telemetry.rs"));
+    let hook = super::policy::function_body(&telemetry, "fn install_panic_flush(");
+    let gate = hook
+        .find("live_flush_allowed()")
+        .expect("the hook asks first");
+    let writer = hook
+        .find("EVENT_WRITER")
+        .expect("the hook flushes the writer");
+    assert!(gate < writer, "the flush must come after the check");
 }

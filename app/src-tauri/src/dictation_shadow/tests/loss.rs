@@ -18,6 +18,7 @@ fn lost_header(rec: u64, seq: u64, site: u64, ids: [u64; 3]) -> LossEntry {
         seq,
         site,
         ids,
+        header: true,
     }
 }
 
@@ -77,19 +78,19 @@ fn a_dropped_witness_invalidates_its_open_record_instead_of_a_root_mismatch() {
 
 #[test]
 fn a_header_the_queue_dropped_is_attributed_to_its_recorder_seq_and_site() {
-    // A queue of 1 that nobody drains: the second header is rejected and the loss
+    // A queue of 2 that nobody drains: the third header is rejected and the loss
     // entry carries its recorder, its `seq`, its site and the ids it named.
-    let transport = local_transport(1);
+    let transport = local_transport(2);
     let first = transport.recorder();
     let second = transport.recorder();
-    let flight_a = idle_for(0, 0, 11);
-    let flight_b = idle_for(0, 0, 22);
-    submit_header(&first, &flight_a);
-    let lost_seq = submit_header(&second, &flight_b);
+    let third = transport.recorder();
+    submit_header(&first, &idle_for(0, 0, 11));
+    submit_header(&second, &idle_for(0, 0, 44));
+    let lost_seq = submit_header(&third, &idle_for(0, 0, 22));
     let mut h = harness();
     drain(&mut h.comparator, &transport);
     assert_eq!(h.stats().dropped, 1);
-    assert_eq!(h.stats().compared, 1, "only the first header arrived");
+    assert_eq!(h.stats().compared, 2, "only the first two headers arrived");
     assert_eq!(
         h.stats().lost_gap,
         1,
@@ -101,13 +102,13 @@ fn a_header_the_queue_dropped_is_attributed_to_its_recorder_seq_and_site() {
         "{:?}",
         h.stats()
     );
-    assert_eq!(lost_seq, 2);
+    assert_eq!(lost_seq, 3);
     // The ids the lost header named are tainted: recording 22 is skipped, 33 is not.
-    h.feed(&idle_for(3, 3, 22));
-    h.feed(&idle_for(4, 4, 33));
+    h.feed(&idle_for(4, 4, 22));
+    h.feed(&idle_for(5, 5, 33));
     assert_eq!(h.stats().skipped_tainted, 1);
     assert_eq!(h.stats().mismatched_root, 0);
-    drop((first, second));
+    drop((first, second, third));
 }
 
 #[test]
@@ -199,24 +200,28 @@ fn an_open_record_that_shares_an_id_with_a_lost_header_is_invalidated() {
 
 #[test]
 fn the_loss_log_overflowing_invalidates_every_open_record() {
-    // Queue of 1 and a loss log of 1: the second and third headers are rejected and
-    // only the first loss fits, so the second one cannot be attributed.
-    let transport = crate::dictation_shadow::transport::Transport::new(1, 1);
+    // Queue of 2 and a loss log of 2: the last three headers are rejected and only
+    // the first two losses fit, so the third one cannot be attributed.
+    let transport = crate::dictation_shadow::transport::Transport::new(2, 2);
     let first = transport.recorder();
     let (second, third) = (transport.recorder(), transport.recorder());
+    let (fourth, fifth) = (transport.recorder(), transport.recorder());
     submit_header(&first, &idle_for(0, 0, 11));
     submit_header(&second, &idle_for(0, 0, 22));
     submit_header(&third, &idle_for(0, 0, 33));
+    submit_header(&fourth, &idle_for(0, 0, 44));
+    submit_header(&fifth, &idle_for(0, 0, 55));
     let mut h = harness();
     drain(&mut h.comparator, &transport);
-    assert_eq!(h.stats().dropped, 2);
+    assert_eq!(h.stats().dropped, 3);
     assert_eq!(h.stats().loss_unattributed, 1);
-    // The open record of the surviving header is no longer trusted.
+    // The open records of the surviving headers are no longer trusted.
     first.finish();
+    second.finish();
     drain(&mut h.comparator, &transport);
     assert_eq!(h.stats().matched, 0);
     assert_eq!(h.stats().mismatched_root, 0);
-    drop((first, second, third));
+    drop((first, second, third, fourth, fifth));
 }
 
 #[test]
@@ -224,13 +229,20 @@ fn a_ticket_dropped_without_a_submit_is_a_loss_not_a_pre_abandonment() {
     let transport = default_transport();
     let recorder = transport.recorder();
     recorder.enter_pre();
-    let ticket = recorder.ticket();
+    let ticket = recorder.ticket(216);
     assert_eq!(ticket.seq(), 1);
     drop(ticket);
     drop(recorder);
     let mut h = harness();
     drain(&mut h.comparator, &transport);
     assert_eq!(h.stats().lost_gap, 1);
+    assert_eq!(
+        h.stats().lost_by_site.get(&216),
+        Some(&1),
+        "the dropped ticket keeps its site: {:?}",
+        h.stats()
+    );
+    assert_eq!(h.stats().lost_by_site.get(&0), None, "never site 0");
     assert_eq!(
         h.stats().abandoned_pre_d,
         0,
@@ -274,4 +286,94 @@ fn a_full_queue_never_blocks_and_counts_each_drop() {
     }
     assert_eq!(losses, 6, "each drop names its recorder");
     let _ = (RecorderId(0), RecordingId(0));
+}
+
+fn pd_16(h: &Harness) -> u64 {
+    h.stats().pd_witness.get(&16).copied().unwrap_or(0)
+}
+
+#[test]
+fn a_gap_invalidates_the_records_open_at_the_position_it_was_applied() {
+    // Sol 6.2 major 5 (D-S2c-2 e): an open R205.5 (the flight of PD-16) whose header
+    // came *before* a lost ticket was still matched, and credited PD-16, when its
+    // later messages closed it. A gap says something between two headers is missing;
+    // every record open at that position is no longer a full comparison.
+    let flight = cancel(1, 1);
+    let mut h = harness();
+    h.feed_header(&flight);
+    // Control: left alone, the flight closes clean and credits PD-16.
+    let mut control = harness();
+    control.feed(&flight);
+    assert_eq!(control.stats().matched, 1);
+    assert_eq!(pd_16(&control), 1, "{:?}", control.stats().pd_witness);
+
+    // The ticket after it was lost, and a later header is applied past the gap.
+    h.comparator.on_loss(lost_header(9, 2, 216, [0; 3]));
+    h.feed(&idle_for(3, 3, 41));
+    assert_eq!(h.stats().lost_gap, 1);
+    h.feed_later(&flight);
+    assert_eq!(h.stats().matched, 0, "{:?}", h.stats());
+    assert_eq!(h.stats().invalidated, 1, "{:?}", h.stats());
+    assert_eq!(pd_16(&h), 0, "an invalidated record credits nothing");
+    assert_eq!(h.stats().mismatched_root, 0);
+}
+
+#[test]
+fn a_dropped_witness_keeps_its_recorders_site_and_seq_never_site_zero() {
+    // Sol 6.2 major 5, second probe: a witness dropped while its header was still
+    // queued landed in site 0 (the recorder's site was not known to the loss entry).
+    let transport = local_transport(2);
+    let recorder = transport.recorder();
+    let flight = cancel(0, 0);
+    let seq = submit_header(&recorder, &flight);
+    // The queue holds the header and one witness; the next witness is dropped.
+    let mut witnesses = flight
+        .later
+        .iter()
+        .filter(|m| matches!(m, ShadowMsg::Witness { .. }))
+        .cloned();
+    for msg in witnesses.by_ref().take(3) {
+        let ShadowMsg::Witness {
+            idx,
+            placement,
+            effect,
+            ..
+        } = msg
+        else {
+            unreachable!()
+        };
+        crate::dictation_shadow::transport::witness(&recorder, idx, placement, effect);
+    }
+    assert_eq!(transport.take_dropped(), 2, "two witnesses did not fit");
+    let first = transport.pop_loss().expect("a loss entry");
+    assert_eq!(first.site, u64::from(flight.header.site_id), "{first:?}");
+    assert_eq!(first.seq, seq, "the loss keeps the recorder's header seq");
+    assert!(!first.header, "it was a witness, not a header");
+    let mut h = harness();
+    h.comparator.on_loss(first);
+    while let Some(loss) = transport.pop_loss() {
+        h.comparator.on_loss(loss);
+    }
+    h.comparator.drain(&transport);
+    assert_eq!(
+        h.stats().lost_by_site.get(&flight.header.site_id),
+        Some(&2),
+        "{:?}",
+        h.stats()
+    );
+    assert_eq!(
+        h.stats().lost_by_site.get(&0),
+        None,
+        "site 0 is never a key"
+    );
+    assert_eq!(h.stats().loss_unattributed, 0);
+    drop(recorder);
+}
+
+#[test]
+fn a_loss_with_no_known_site_is_counted_unattributed_not_filed_under_zero() {
+    let mut h = harness();
+    h.comparator.on_loss(lost_header(9, 1, 0, [0; 3]));
+    assert_eq!(h.stats().lost_by_site.get(&0), None);
+    assert_eq!(h.stats().loss_unattributed, 1);
 }

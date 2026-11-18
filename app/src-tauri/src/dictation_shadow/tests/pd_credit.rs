@@ -100,9 +100,11 @@ fn pd_18_needs_a_clean_teardown_row_before_the_start() {
 }
 
 #[test]
-fn pd_4_needs_the_rendezvous_and_a_second_ticker() {
+fn pd_4_needs_the_rendezvous_a_second_ticker_and_the_later_success() {
     // R104.2 completes the rendezvous (and registers the ticker), then the late
-    // `Ready` for the same recording re-registers it: the duplicate ticker is PD-4.
+    // `Ready` for the same recording wins a stale terminal and re-registers the
+    // ticker: the duplicate. PD-4 is credited only once the recording's later
+    // successful performance outcome (`PGF(Completed)`) is witnessed (D-S2c-2 g).
     let duplicate = Live {
         ticker_before: RID,
         ..Live::default()
@@ -111,11 +113,20 @@ fn pd_4_needs_the_rendezvous_and_a_second_ticker() {
     h.feed(&ready_publish(1, 1, OpStatus::Outstanding));
     h.feed(&ready_while_recording(2, 2, duplicate));
     assert_clean(&h);
+    assert_eq!(
+        credited_count(&h, 4),
+        0,
+        "the outcome has not been witnessed yet: {:?}",
+        h.stats().pd_witness
+    );
+    h.feed(&pipeline_success(3, 3));
+    assert_clean(&h);
     assert_eq!(credited_count(&h, 4), 1, "{:?}", h.stats().pd_witness);
 
     // Without the rendezvous before it, it is not.
     let mut h = harness();
     h.feed(&ready_while_recording(1, 1, duplicate));
+    h.feed(&pipeline_success(2, 2));
     assert_clean(&h);
     assert_eq!(credited_count(&h, 4), 0);
 
@@ -123,8 +134,25 @@ fn pd_4_needs_the_rendezvous_and_a_second_ticker() {
     let mut h = harness();
     h.feed(&ready_publish(1, 1, OpStatus::Outstanding));
     h.feed(&ready_while_recording(2, 2, Live::default()));
+    h.feed(&pipeline_success(3, 3));
     assert_clean(&h);
     assert_eq!(credited_count(&h, 4), 0);
+
+    // A losing terminal claim is not the defect: the stale terminal did not win.
+    let mut h = harness();
+    h.feed(&ready_publish(1, 1, OpStatus::Outstanding));
+    h.feed(&ready_while_recording(
+        2,
+        2,
+        Live {
+            ticker_before: RID,
+            term_won: false,
+            ..Live::default()
+        },
+    ));
+    h.feed(&pipeline_success(3, 3));
+    assert_clean(&h);
+    assert_eq!(credited_count(&h, 4), 0, "a losing claim credits nothing");
 }
 
 #[test]
@@ -223,6 +251,7 @@ fn credit_needs_defining_effects_results_and_windows() {
         row: "R102.2",
         ran: &ran,
         tickers: &[],
+        recording: RID,
         completed: true,
         prior_rows: &[],
     };
@@ -245,6 +274,7 @@ fn an_effect_the_definition_says_must_be_absent_denies_the_credit() {
         row: "R204a.6",
         ran: &none,
         tickers: &[],
+        recording: RID,
         completed: true,
         prior_rows: &[],
     };
@@ -281,6 +311,7 @@ fn abandonment_decides_which_flights_a_definition_applies_to() {
         row: "R101.15",
         ran: &pr,
         tickers: &[],
+        recording: RID,
         completed: true,
         prior_rows: &[],
     };
@@ -303,6 +334,7 @@ fn abandonment_decides_which_flights_a_definition_applies_to() {
         row: "R216.1",
         ran: &idle,
         tickers: &[],
+        recording: RID,
         completed: true,
         prior_rows: &[],
     };

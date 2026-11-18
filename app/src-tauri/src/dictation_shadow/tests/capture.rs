@@ -12,7 +12,7 @@ use murmur_dictation_core::lifecycle::short_idle_pre_effects;
 use murmur_dictation_core::status::Status;
 
 use super::harness::*;
-use crate::dictation_shadow::alloc_probe::count_allocations;
+use crate::dictation_shadow::alloc_probe::{count_allocations, count_heap_calls};
 use crate::dictation_shadow::compare::Comparator;
 use crate::dictation_shadow::transport::{
     mark, submit, witness, Mark, ShadowRecorder, QUEUE_CAPACITY,
@@ -47,7 +47,7 @@ fn produce_one_flight(transport: &Arc<crate::dictation_shadow::transport::Transp
         after: MirrorValue::Slot(None),
     });
     let pre = recorder.take_pre();
-    let ticket = recorder.ticket();
+    let ticket = recorder.ticket(216);
     let projection = Projection {
         status: Status::Processing,
         current_id: rid,
@@ -105,22 +105,24 @@ fn shadow_capture_takes_no_lock_allocates_nothing() {
     // Warm the thread (any one-time lazy state) outside the measurement.
     produce_one_flight(&transport);
     while transport.pop().is_some() {}
-    let ((), allocations) = count_allocations(|| {
+    let ((), allocations, frees) = count_heap_calls(|| {
         for _ in 0..8 {
             produce_one_flight(&transport);
         }
     });
     assert_eq!(allocations, 0, "the producer path allocated");
+    assert_eq!(frees, 0, "the producer path freed");
 
     // The same with the queue full: a rejected message costs a counter, a loss entry,
-    // and no allocation.
-    let full = local_transport(1);
-    let ((), allocations) = count_allocations(|| {
+    // and neither an allocation nor a free (the rejected message is dropped inside).
+    let full = local_transport(2);
+    let ((), allocations, frees) = count_heap_calls(|| {
         for _ in 0..4 {
             produce_one_flight(&full);
         }
     });
     assert_eq!(allocations, 0, "the drop path allocated");
+    assert_eq!(frees, 0, "the drop path freed");
     assert!(full.take_dropped() > 0);
     // Nothing was lost to the measurement: the messages the queue took are intact.
     // A flight is five messages: header, witness, conditional mark, reply mark, close.
@@ -177,7 +179,7 @@ fn the_capture_path_source_has_no_lock_box_channel_or_wake() {
             "transport.rs names `{token}` outside cfg(test)"
         );
     }
-    assert!(super::policy::function_body(&transport, "fn push(").contains("self.queue.push("));
+    assert!(super::policy::function_body(&transport, "fn push(").contains("self.queue.try_push("));
     // The synchronous dispatch and its mutex exist only under cfg(test): the raw
     // source has them, the production text does not.
     let raw = include_str!("../transport.rs");
@@ -202,7 +204,7 @@ fn shadow_sync_mode_compares_on_the_calling_thread() {
         assert!(recorder.pre_conditional(cond.pred, cond.taken));
     }
     let pre = recorder.take_pre();
-    let ticket = recorder.ticket();
+    let ticket = recorder.ticket(216);
     let mut header = flight.header.clone();
     header.seq = ticket.seq();
     header.rec = recorder.id();
@@ -224,7 +226,7 @@ fn shadow_recorder_exists_before_pre() {
     let mut recorder = transport.recorder();
     let id = recorder.id();
     assert!(recorder.pre_effect(WitnessedEffect::ran(Effect::PerfAbort)));
-    let ticket = recorder.ticket();
+    let ticket = recorder.ticket(216);
     assert_ne!(id.0, ticket.seq(), "a recorder id is not a seq");
     assert_eq!(ticket.rec(), id);
     drop(ticket);
@@ -232,8 +234,8 @@ fn shadow_recorder_exists_before_pre() {
     // recorder id follows creation.
     let first = transport.recorder();
     let second = transport.recorder();
-    let late = second.ticket();
-    let early_after = first.ticket();
+    let late = second.ticket(216);
+    let early_after = first.ticket(216);
     assert!(first.id() < second.id());
     assert!(
         late.seq() < early_after.seq(),
@@ -518,7 +520,7 @@ fn shadow_pre_abandoned_requires_entry_into_run_pre() {
     );
     // No seq was consumed: the next ticket continues the sequence.
     let next = transport.recorder();
-    assert_eq!(next.ticket().seq(), 1);
+    assert_eq!(next.ticket(216).seq(), 1);
 
     let mut h = harness();
     h.feed_header(&short_idle(1, 1));
@@ -547,4 +549,73 @@ fn the_channel_capacity_and_documented_limits() {
     assert_eq!(crate::dictation_shadow::transport::LOSS_CAPACITY, 256);
     let _ = Ordering::SeqCst;
     let _ = (LiveOp::clone, MirrorField::ActiveContext);
+}
+
+/// A header whose input carries the typed Smart Auto failure, the one that used to
+/// own a `String` (D-S2c-2 b).
+fn smart_auto_header() -> ShadowHeader {
+    use murmur_dictation_core::inputs::SmartAutoFailure;
+    let mut flight = start(1, 1, Live::default());
+    let Input::StartRequest(input) = &mut flight.header.input else {
+        panic!("a start flight carries a StartInput");
+    };
+    input.smart_auto_result = Some(Err(SmartAutoFailure::ResolveFailed));
+    flight.header
+}
+
+#[test]
+fn a_rejected_smart_auto_header_allocates_and_frees_nothing() {
+    // Accepted: the header with the typed failure is moved into the ring.
+    let transport = default_transport();
+    let header = smart_auto_header();
+    let recorder = transport.recorder();
+    let ((), allocations, frees) = count_heap_calls(|| {
+        recorder.enter_pre();
+        let ticket = recorder.ticket(101);
+        let mut sent = header.clone();
+        sent.seq = ticket.seq();
+        sent.rec = ticket.rec();
+        submit(ticket, sent);
+    });
+    assert_eq!(
+        (allocations, frees),
+        (0, 0),
+        "accepting a header used the heap"
+    );
+    assert!(pop_all(&transport)
+        .iter()
+        .any(|m| matches!(m, ShadowMsg::Header(_))));
+
+    // Rejected: the ring is full, the header is handed back and dropped on the live
+    // thread, inside the measurement. A `String` in the input would be freed there.
+    let full = local_transport(2);
+    let other = full.recorder();
+    mark(&other, Mark::Reply(ReplyKind::Ok));
+    mark(&other, Mark::Reply(ReplyKind::Ok));
+    let recorder = full.recorder();
+    let header = smart_auto_header();
+    let ((), allocations, frees) = count_heap_calls(|| {
+        recorder.enter_pre();
+        let ticket = recorder.ticket(101);
+        let mut sent = header.clone();
+        sent.seq = ticket.seq();
+        sent.rec = ticket.rec();
+        submit(ticket, sent);
+    });
+    assert_eq!(
+        (allocations, frees),
+        (0, 0),
+        "rejecting a header allocated or freed on the live thread"
+    );
+    assert!(full.take_dropped() >= 1);
+    drop(header);
+}
+
+#[test]
+fn the_counting_allocator_sees_frees_too() {
+    // The measurement can fail: a `String` dropped inside it is one free.
+    let owned = String::from("x");
+    let ((), allocations, frees) = count_heap_calls(|| drop(owned));
+    assert_eq!(allocations, 0);
+    assert!(frees >= 1, "the hook did not see the free");
 }
