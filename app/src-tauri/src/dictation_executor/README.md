@@ -84,8 +84,9 @@ macro could expand to a module declaration that loads a file outside the walk
 
 ## How the probes plant their edits
 
-Every test reads `src/` from the filesystem when it starts (`raw_production_sources`);
-reads are cheap, parsing is not. A probe takes an owned copy of those sources with one
+Every test reads `src/` from the filesystem when it starts, through the one loader
+`raw_production_sources_in(&src_root())` (there is no wrapper, and the stale-source
+probe calls the same loader with a temp dir); reads are cheap, parsing is not. A probe takes an owned copy of those sources with one
 file replaced or added (`sources_with`, `models_with`, a `push`); nothing is written to
 `src/`. `event_sites` caches each file's scan (`scan_file_cached`) keyed by its path, its
 exact bytes and the events module's constants, so a file is parsed once per process for
