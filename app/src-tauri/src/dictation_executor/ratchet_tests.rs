@@ -28,13 +28,13 @@ const DIRECT_WRITE_BASELINE: [(&str, usize); 4] = [("M1", 0), ("M2", 0), ("M3", 
 /// `transition_dictation_status(` call sites in production code (the 15 status
 /// writes of plan §1; the definition is not counted). Lowered by each family PR
 /// that moves its sites behind the executor's `ST` effect.
-const STATUS_WRITE_SITES_BASELINE: usize = 10;
+const STATUS_WRITE_SITES_BASELINE: usize = 6;
 
 /// `emit_dictation_terminal*(` call sites in production code (the 23 terminal
 /// emits, plus the one forward inside `emit_dictation_terminal` itself, which
 /// the plan's 23 does not count: 24). Lowered by each family PR that moves its
 /// sites behind `TERM`.
-const TERMINAL_EMIT_SITES_BASELINE: usize = 14;
+const TERMINAL_EMIT_SITES_BASELINE: usize = 9;
 
 // ------------------------------------------------------------------ scanner
 

@@ -81,6 +81,10 @@ impl CoreEntry {
 impl Drop for CoreEntry {
     fn drop(&mut self) {
         IN_CORE.with(|flag| flag.set(false));
+        // Test builds: the outermost entry ends here; work it deferred must have a
+        // drain guard around it (D-S2-4, D-S2-8).
+        #[cfg(test)]
+        crate::commands::recording::assert_deferred_work_has_a_drain();
     }
 }
 
@@ -191,6 +195,13 @@ pub(crate) trait Ports {
     fn context_snapshot(&self, id: RecordingId) -> Option<Arc<DictationContextSnapshot>>;
     /// `EM`, `EV`, `SDE` (Sync). The result gates a paired `PRES`.
     fn emit(&self, effect: &Effect) -> PortResult;
+    /// An `EM` that runs in `In`, with the D guard's contents in hand: today's
+    /// `IdleGuard::finish` hands its `on_idle` closure the held `DictationState`
+    /// (Stage 2a-2, site 204a). Defaults to [`Ports::emit`], so only a port that
+    /// needs D's contents overrides it.
+    fn emit_under_d(&self, effect: &Effect, _dictation: &DictationState) -> PortResult {
+        self.emit(effect)
+    }
     /// `PRES`, `TRQ` (Sync traces).
     fn trace(&self, effect: &Effect) -> PortResult;
     /// `TERM` (Sync claim; the persist is a Detached sub-step).
@@ -307,6 +318,40 @@ pub(crate) struct Executor<'a> {
     id_mismatches: u32,
 }
 
+/// An executor parked across an `.await`: everything but the (non-`Send`) ports
+/// borrow. The shell drops its ports and executor before the await, then
+/// [`Suspended::reattach`]es fresh ports and resumes with the actual outcome
+/// (Stage 2a-2: the pipeline cursor survives the pipeline await).
+pub(crate) struct Suspended {
+    decision: Decision,
+    kept_preview: bool,
+    cursor: usize,
+    last_phase: Option<Placement>,
+    awaiting: Option<usize>,
+    witness: Vec<Witness>,
+    emit_ok: Vec<Option<bool>>,
+    bound_recording_id: Option<u64>,
+    id_mismatches: u32,
+}
+
+impl Suspended {
+    /// Rebuild the executor over `ports`, exactly where it was parked.
+    pub(crate) fn reattach(self, ports: &dyn Ports) -> Executor<'_> {
+        Executor {
+            ports,
+            decision: self.decision,
+            kept_preview: self.kept_preview,
+            cursor: self.cursor,
+            last_phase: self.last_phase,
+            awaiting: self.awaiting,
+            witness: self.witness,
+            emit_ok: self.emit_ok,
+            bound_recording_id: self.bound_recording_id,
+            id_mismatches: self.id_mismatches,
+        }
+    }
+}
+
 impl<'a> Executor<'a> {
     /// Hand a decision to the executor. Fails if its structure is wrong, or if an
     /// Awaited effect is not the last of its placement (C4.1a). `kept_preview`
@@ -403,6 +448,22 @@ impl<'a> Executor<'a> {
         PhaseReport::Done
     }
 
+    /// Park the executor (its cursor and witness) so the shell can drop the
+    /// ports and await. See [`Suspended`].
+    pub(crate) fn suspend(self) -> Suspended {
+        Suspended {
+            decision: self.decision,
+            kept_preview: self.kept_preview,
+            cursor: self.cursor,
+            last_phase: self.last_phase,
+            awaiting: self.awaiting,
+            witness: self.witness,
+            emit_ok: self.emit_ok,
+            bound_recording_id: self.bound_recording_id,
+            id_mismatches: self.id_mismatches,
+        }
+    }
+
     /// What the executor did so far, in order.
     pub(crate) fn witness(&self) -> &[Witness] {
         &self.witness
@@ -493,7 +554,10 @@ impl<'a> Executor<'a> {
                 if *cond == Cond::UnlessSpeculativeFlowing && ports.speculative_flowing() {
                     self.record(index, effect, WitnessOutcome::Skipped);
                 } else {
-                    let result = ports.emit(effect);
+                    let result = match ctx.dictation.as_deref() {
+                        Some(dictation) => ports.emit_under_d(effect, dictation),
+                        None => ports.emit(effect),
+                    };
                     self.emit_ok[index] = Some(result.is_ok());
                     self.record_port(index, effect, result);
                 }
