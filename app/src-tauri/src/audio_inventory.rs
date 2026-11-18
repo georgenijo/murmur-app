@@ -30,7 +30,6 @@ const INITIAL_REFRESH_WAIT: Duration = Duration::from_secs(8);
 const MAX_DEVICE_COUNT: usize = 256;
 const MAX_DEVICE_ID_BYTES: usize = 4_096;
 const MAX_DEVICE_NAME_BYTES: usize = 512;
-const INVENTORY_EVENT: &str = "audio-input-inventory-changed";
 #[cfg(target_os = "macos")]
 const MAX_CONSECUTIVE_WATCH_FAILURES: usize = 3;
 #[cfg(target_os = "macos")]
@@ -359,8 +358,8 @@ fn emit_inventory(snapshot: &AudioInputInventorySnapshot) {
     crate::smart_auto_probe::inventory_changed();
     let app_handle = app_handle_slot().lock_or_recover().clone();
     if let Some(app_handle) = app_handle {
-        let _ = app_handle.emit_to("main", INVENTORY_EVENT, snapshot.clone());
-        let _ = app_handle.emit_to("overlay", INVENTORY_EVENT, snapshot.clone());
+        let _ = app_handle.emit_to("main", crate::events::INVENTORY_EVENT, snapshot.clone());
+        let _ = app_handle.emit_to("overlay", crate::events::INVENTORY_EVENT, snapshot.clone());
         let _ = app_handle.emit("smart-auto-microphone-changed", ());
     }
 }

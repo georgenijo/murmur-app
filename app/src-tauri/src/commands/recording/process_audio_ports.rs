@@ -16,18 +16,39 @@ use crate::state::AppState;
 use std::sync::Arc;
 use tauri::Emitter;
 
-/// An owned `emit_json` (see [`ImportedAudioHost::idle_emitter`]).
-pub(super) type OwnedJsonEmit =
-    Box<dyn Fn(&str, serde_json::Value) -> Result<(), HostEmitError> + Send + 'static>;
+/// The parse-failure idle emit, owned (an `AppHandle` clone inside), for a finish
+/// deferred inside a core span (D-S2-7). It carries **no event parameter**: it emits
+/// exactly the idle status event, fixed where it is built
+/// ([`ImportedAudioHost::idle_emitter`]); this forwarding body is pinned by the SP5
+/// ratchet, so nothing can be sent through it but that one emit.
+pub(super) struct OwnedIdleEmit(BoxedIdleEmit);
+
+type BoxedIdleEmit = Box<dyn Fn() -> Result<(), HostEmitError> + Send + 'static>;
+
+impl OwnedIdleEmit {
+    pub(super) fn new(emit: impl Fn() -> Result<(), HostEmitError> + Send + 'static) -> Self {
+        Self(Box::new(emit))
+    }
+
+    pub(super) fn emit_idle(&self) -> Result<(), HostEmitError> {
+        (self.0)()
+    }
+}
 
 /// What the legacy `process_audio` needs from the application handle.
 pub(super) trait ImportedAudioHost: Send + Sync + 'static {
-    /// `AppHandle::emit` for an already serialized payload.
-    fn emit_json(&self, event: &str, payload: serde_json::Value) -> Result<(), HostEmitError>;
-    /// An [`Self::emit_json`] that owns what it needs (an `AppHandle` clone), for the
-    /// idle emit of a parse-failure finish: a finish deferred inside a core span
-    /// carries its emit as data and makes it at the drain (D-S2-7).
-    fn idle_emitter(&self) -> OwnedJsonEmit;
+    /// `AppHandle::emit` for an already serialized payload. Named apart from
+    /// `DictationHost::emit_json` so the SP5 ratchet can tell the two destinations
+    /// (and their declared events) apart.
+    fn emit_import_json(
+        &self,
+        event: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), HostEmitError>;
+    /// The idle status emit of a parse-failure finish, owning what it needs (an
+    /// `AppHandle` clone): a finish deferred inside a core span carries its emit as
+    /// data and makes it at the drain (D-S2-7).
+    fn idle_emitter(&self) -> OwnedIdleEmit;
     /// `microphone_preview::transition_after_stopping_preview`.
     fn transition<'a>(
         &'a self,
@@ -76,16 +97,20 @@ impl TauriImportHost {
 }
 
 impl ImportedAudioHost for TauriImportHost {
-    fn emit_json(&self, event: &str, payload: serde_json::Value) -> Result<(), HostEmitError> {
+    fn emit_import_json(
+        &self,
+        event: &str,
+        payload: serde_json::Value,
+    ) -> Result<(), HostEmitError> {
         self.app
             .emit(event, payload)
             .map_err(|e| HostEmitError(e.to_string()))
     }
 
-    fn idle_emitter(&self) -> OwnedJsonEmit {
+    fn idle_emitter(&self) -> OwnedIdleEmit {
         let app = self.app.clone();
-        Box::new(move |event, payload| {
-            app.emit(event, payload)
+        OwnedIdleEmit::new(move || {
+            app.emit("recording-status-changed", serde_json::json!("idle"))
                 .map_err(|e| HostEmitError(e.to_string()))
         })
     }
@@ -325,14 +350,14 @@ impl Ports for ProcessAudioPorts<'_> {
         match effect {
             Effect::EmitEvent(EventKind::GenStarted) => self
                 .host
-                .emit_json(
+                .emit_import_json(
                     "dictation-generation-started",
                     serde_json::json!({ "recordingId": self.recording_id.get() }),
                 )
                 .map_err(|_| PortFailure),
             Effect::EmitStatus { status, .. } => self
                 .host
-                .emit_json(
+                .emit_import_json(
                     "recording-status-changed",
                     serde_json::json!(status.as_str()),
                 )

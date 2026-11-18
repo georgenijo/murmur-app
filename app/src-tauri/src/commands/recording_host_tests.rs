@@ -17,6 +17,7 @@
 //! and by `call_kinds_match_the_trait_declarations` (a trait method with no
 //! `Call` fails). `every_port_is_reached_in_two_scenarios` then asserts the
 //! full ordered trace of every scenario and that each `Call` is reached by two.
+#![cfg(test)]
 
 use super::dictation_host::{
     HostEmitError, HostFuture, KeyboardPort, PerformancePort, SmartDestinationPort, SupervisorPort,

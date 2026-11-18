@@ -183,6 +183,11 @@ struct LifecycleState {
 #[derive(Debug, Default)]
 pub(crate) struct DictationTelemetry {
     inner: Mutex<LifecycleState>,
+    /// Test builds only: every *successful* `claim_terminal` per id, in order. An
+    /// observer, never read by production code (the #535 replay counts claims, not
+    /// ledger changes).
+    #[cfg(test)]
+    successful_claims: Mutex<HashMap<u64, Vec<(DictationTerminalOutcome, DictationErrorCode)>>>,
 }
 
 impl DictationTelemetry {
@@ -217,7 +222,26 @@ impl DictationTelemetry {
             return false;
         }
         attempt.terminal = Some((outcome, error_code));
+        #[cfg(test)]
+        self.successful_claims
+            .lock_or_recover()
+            .entry(recording_id)
+            .or_default()
+            .push((outcome, error_code));
         true
+    }
+
+    /// Test builds only: the successful terminal claims for `recording_id`, in order.
+    #[cfg(test)]
+    pub(crate) fn successful_claims_for_test(
+        &self,
+        recording_id: u64,
+    ) -> Vec<(DictationTerminalOutcome, DictationErrorCode)> {
+        self.successful_claims
+            .lock_or_recover()
+            .get(&recording_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     #[cfg(test)]
