@@ -501,8 +501,29 @@ fn s05(world: &Arc<World>) {
     stopped(world, "stop", None);
 }
 
+/// 4d (PD-18 a): a start takes the dictation lock after S12 wrote Idle and before its
+/// tail, and again after the owner is cleared; id 1 still ends with one terminal.
+fn s04d(world: &Arc<World>) {
+    recording(world);
+    world.runtime_failure(1);
+    let between = Arc::clone(world);
+    world.on_s12_tail(move || {
+        between.note("S12 wrote Idle and released D; its tail has not run; a start takes D");
+        let mut start = between.start();
+        let reply = complete(&mut start);
+        between.reply("start", &reply);
+    });
+    world.finish_interrupted(1, 6_000);
+    world.note("the bridge returned; the supervisor is held before clearing its owner");
+    world.release_owner_clear();
+    world.note("owner cleared; the supervisor has nothing more to notify");
+    let mut again = world.start();
+    let reply = complete(&mut again);
+    world.reply("start again", &reply);
+}
+
 /// #535 / PR #563 (`ddf2b6a1`, `80747cd4`): every dictation attempt reaches a
-/// terminal exactly once and correlatably. Runs scenarios 3 (a, b, c), 4 (a, b), 5
+/// terminal exactly once and correlatably. Runs scenarios 3 (a, b, c), 4 (a, b, d), 5
 /// and 12 (a, b, c) and asserts the **terminal claims**, not the ledger: a test-only
 /// observer in `DictationTelemetry::claim_terminal` records every *successful*
 /// claim per id (it adds no trace line, so no golden changes), and each scenario
@@ -521,7 +542,7 @@ fn s05(world: &Arc<World>) {
 #[test]
 fn bug535_exactly_one_terminal() {
     // (title, body, the terminal the golden trace records for id 1: outcome/code)
-    let scenarios: [TerminalScenario; 9] = [
+    let scenarios: [TerminalScenario; 10] = [
         (
             "3a interruption, auto-stop transcribes",
             s03a,
@@ -545,6 +566,11 @@ fn bug535_exactly_one_terminal() {
         (
             "4b short interruption, a user stop between the check and the idle write",
             s04b,
+            "RuntimeInterruption/RuntimeFailure",
+        ),
+        (
+            "4d start before the owner is cleared",
+            s04d,
             "RuntimeInterruption/RuntimeFailure",
         ),
         (
@@ -685,6 +711,105 @@ fn sp5_models_rs_emits_no_recording_status() {
     );
 }
 
+/// The real `ensure_vad_model` on a worker thread (the pipeline starts it as a
+/// fire-and-forget task), against a fake download (`vad::test_seam`) parked until
+/// released. Dropping it releases the download and joins the worker, so a failing
+/// assertion in a replay never leaves a parked thread behind.
+struct VadInstall {
+    seam: crate::vad::test_seam::Installed,
+    worker: Option<std::thread::JoinHandle<Result<(), String>>>,
+}
+
+/// The longest a replay waits for the install to park before it fails.
+const VAD_PARK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+impl VadInstall {
+    fn start(world: &Arc<World>, models_dir: &std::path::Path) -> Self {
+        let seam = crate::vad::test_seam::install(models_dir);
+        let handle = world.app_handle();
+        let worker = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime")
+                .block_on(super::super::models::ensure_vad_model(&handle))
+        });
+        Self {
+            seam,
+            worker: Some(worker),
+        }
+    }
+
+    /// `Ok` when the install parked in its download; `Err` when it finished first (its
+    /// result) or did not park in time.
+    fn wait_parked(&mut self) -> Result<(), String> {
+        use crate::vad::test_seam::Parked;
+        let worker = self.worker.as_ref().expect("the worker");
+        match self
+            .seam
+            .wait_parked(|| worker.is_finished(), VAD_PARK_TIMEOUT)
+        {
+            Parked::Arrived => Ok(()),
+            Parked::WorkerFinished => Err(format!(
+                "the VAD install finished before it parked: {:?}",
+                self.finish()
+            )),
+            Parked::TimedOut => Err("the VAD install never parked in its download".to_string()),
+        }
+    }
+
+    /// Release the download and return the install's result.
+    fn finish(&mut self) -> Result<(), String> {
+        self.seam.release();
+        match self.worker.take() {
+            Some(worker) => worker.join().expect("the VAD install thread"),
+            None => Err("the VAD install was already collected".to_string()),
+        }
+    }
+}
+
+impl Drop for VadInstall {
+    fn drop(&mut self) {
+        if self.worker.is_some() {
+            let _ = self.finish();
+        }
+    }
+}
+
+/// A regular file standing where the models directory's parent should be.
+fn bug117_blocker_file() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("murmur-bug117-blocker-{}", std::process::id()))
+}
+
+/// The #117 replay must not hang when the install fails before it parks (a models
+/// directory that cannot be created: here its parent is a regular file, as with
+/// `TMPDIR` pointing at a file). The wait reports the early completion, promptly and
+/// with the install's own error.
+#[test]
+fn bug117_a_failed_install_returns_promptly() {
+    let blocker = bug117_blocker_file();
+    std::fs::write(&blocker, b"not a directory").expect("write the blocker file");
+    let started = std::time::Instant::now();
+    let reports = std::sync::Mutex::new(None);
+    run_sub_run_observed(&sub("117 install fails before parking", |_| {}), &|w| {
+        let mut install = VadInstall::start(w, &bug117_blocker_file().join("models"));
+        *reports.lock().unwrap() = Some(install.wait_parked());
+    });
+    let _ = std::fs::remove_file(&blocker);
+    let report = reports.lock().unwrap().take().expect("the observer ran");
+    let error = report.expect_err("an install that cannot create its directory never parks");
+    assert!(
+        error.contains("finished before it parked")
+            && error.contains("Failed to create models directory"),
+        "{error}"
+    );
+    assert!(
+        started.elapsed() < VAD_PARK_TIMEOUT / 2,
+        "the failure path returned in {:?}, not by timeout",
+        started.elapsed()
+    );
+}
+
 /// The scratch models directory of the #117 replay (runs are serialized).
 fn bug117_models_dir() -> std::path::PathBuf {
     std::env::temp_dir().join(format!("murmur-bug117-{}", std::process::id()))
@@ -713,26 +838,19 @@ fn bug117_no_status_emit_after_final_idle() {
     for _ in 0..repeat_count() {
         let _ = std::fs::remove_dir_all(bug117_models_dir());
         let lines = run_sub_run(&sub("117 no status emit after the final idle", |w| {
-            let seam = crate::vad::test_seam::install(&bug117_models_dir());
             recording(w);
             // The pipeline's fire-and-forget VAD install, on the world's handle.
-            let handle = w.app_handle();
-            let install = std::thread::spawn(move || {
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("runtime")
-                    .block_on(super::super::models::ensure_vad_model(&handle))
-            });
-            seam.wait_parked();
+            let mut install = VadInstall::start(w, &bug117_models_dir());
+            install
+                .wait_parked()
+                .expect("the install parks in its download");
             w.note("the VAD install is parked in its download");
             w.knobs().stop_result = Ok(16_000);
             stopped(w, "stop", None);
             assert_eq!(status(w), DictationStatus::Idle);
             w.finish_sealed_stop(1);
             w.note("IdleGuard wrote Idle and the supervisor finished the stop: the download completes now");
-            seam.release();
-            let installed = install.join().expect("the VAD install thread");
+            let installed = install.finish();
             assert_eq!(installed, Ok(()), "the real completion path succeeds");
             assert!(
                 crate::vad::vad_model_exists(),

@@ -361,6 +361,14 @@ pub(crate) mod test_seam {
         )
     }
 
+    /// How a [`Installed::wait_parked`] ended.
+    #[derive(Debug, PartialEq, Eq)]
+    pub(crate) enum Parked {
+        Arrived,
+        WorkerFinished,
+        TimedOut,
+    }
+
     /// Installed for one test run; removes the fake on drop.
     pub(crate) struct Installed(Arc<Fake>);
 
@@ -377,9 +385,31 @@ pub(crate) mod test_seam {
     }
 
     impl Installed {
-        /// Block until the fake download is parked (the install path reached it).
-        pub(crate) fn wait_parked(&self) {
-            while !self.0.parked.load(Ordering::SeqCst) {
+        /// Wait until the fake download is parked (the install path reached it), the
+        /// worker has finished without reaching it (`finished`), or `timeout` passes.
+        /// A failed install (a models directory that cannot be created) never parks,
+        /// so the wait must not depend on arrival alone.
+        pub(crate) fn wait_parked(
+            &self,
+            finished: impl Fn() -> bool,
+            timeout: std::time::Duration,
+        ) -> Parked {
+            let deadline = std::time::Instant::now() + timeout;
+            loop {
+                if self.0.parked.load(Ordering::SeqCst) {
+                    return Parked::Arrived;
+                }
+                if finished() {
+                    // The worker may have parked just before finishing.
+                    return if self.0.parked.load(Ordering::SeqCst) {
+                        Parked::Arrived
+                    } else {
+                        Parked::WorkerFinished
+                    };
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Parked::TimedOut;
+                }
                 std::thread::yield_now();
             }
         }
