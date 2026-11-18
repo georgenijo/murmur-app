@@ -36,12 +36,15 @@
 //!
 //! The comparison thread polls the queue on a fixed 5 ms sleep, owns the comparator
 //! (no lock), and on a clean exit makes a bounded number of drain attempts before it
-//! writes the final summary, which reports what the ring still held. The capture sites that feed it (each marked
-//! `shadow_site!(issue = 1154)`) arrive in Stage 2c-2; until then nothing in the shell
-//! sends a message, and the only callers are the startup hook and the clean-exit hook
-//! in `lib.rs`. Removal is tracked in #1154.
+//! writes the final summary, which reports what the ring still held.
+//!
+//! The capture sites (Stage 2c-2) are in the shell, each marked
+//! `shadow_site!(issue = 1154)` and compiled only with the feature: they reach this
+//! module through `dictation_executor::shadow::Flight`, which is carried with the
+//! decision's executor, never found by thread. The native soak is described in
+//! `docs/testing/dictation-shadow-soak.md`. Removal is tracked in #1154.
 
-// The capture sites that use most of this arrive in Stage 2c-2.
+// Some of the producer API is used only by tests and by the sites of one family.
 #![allow(dead_code)]
 
 pub(crate) mod compare;
