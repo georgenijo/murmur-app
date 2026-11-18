@@ -18,7 +18,7 @@ use crate::inputs::{
     StopCaptureResultInput, StopContextInput, StopInput,
 };
 use crate::start as core_start;
-use crate::status::{ErrCode, Status, StopTrigger};
+use crate::status::{Status, StopTrigger};
 use crate::stop as core_stop;
 use std::collections::VecDeque;
 
@@ -160,7 +160,7 @@ impl Queued for StartFlight {
             Effect::CaptureStart(id) => {
                 // `send_start_request`: the client enqueues; a busy supervisor never
                 // blocks it (D-S2b-9 (a)).
-                cx.w.sup_send_start(id.0, self.plan.clone());
+                cx.w.sup_send_start(id.0, cx.tid, self.plan.clone());
                 Ok(())
             }
             other => unreachable!("a start flight does not run {other:?}"),
@@ -285,9 +285,19 @@ impl Task for StartFlight {
                 }
             }
             Ss::WaitAck => {
-                // The supervisor's response (`SupStep::Answer`, or a refusal).
-                let Some(answer) = cx.w.sup.start_answer(self.rid) else {
-                    return Poll::Blocked;
+                // The supervisor's response (`SupStep::StartAnswer`, a refusal), or
+                // the receiver's timeout (`await_start_response`, 3065-3079).
+                let answer = match cx.w.sup_poll_reply(cx.tid) {
+                    ReplyPoll::Waiting => return Poll::Progress,
+                    ReplyPoll::Ready(_) => {
+                        cx.w.sup
+                            .start_answer(self.rid)
+                            .expect("a delivered start response has its value")
+                    }
+                    ReplyPoll::TimedOut => {
+                        cx.w.sup_start_timed_out(self.rid, cx.tid);
+                        super::supervisor::StartAnswer::Failed(CaptureErr::Other)
+                    }
                 };
                 self.answer = Some(answer);
                 self.st = if matches!(self.answer, Some(super::supervisor::StartAnswer::Started)) {
@@ -593,7 +603,7 @@ impl StopFlight {
 fn meta_of(preserved: super::model::Preserved) -> InterruptedMeta {
     InterruptedMeta {
         samples: preserved.samples,
-        reason_code: ErrCode::StreamInvalidated,
+        reason_code: preserved.code,
         duration_ms: preserved.samples as u64 / 16,
     }
 }
@@ -761,7 +771,7 @@ impl Task for StopFlight {
                             self.cc = Some(Err(()));
                             Err(())
                         }
-                        ReplyPoll::Ready(ReplyVal::Stop(_)) => {
+                        ReplyPoll::Ready(ReplyVal::Stop(_) | ReplyVal::Start) => {
                             unreachable!("a cancel waits for a cancel reply")
                         }
                     },
@@ -795,7 +805,7 @@ impl Task for StopFlight {
                 // The `[pre]` context read with T held and no D (6000).
                 let present = cx.w.context_for == Some(self.rid);
                 let token = self.op.expect("an accepted stop registered K:StopContext");
-                let interrupted_error = self.interrupted.map(|_| ErrCode::StreamInvalidated);
+                let interrupted_error = self.interrupted.map(|preserved| preserved.code);
                 let rid = self.rid;
                 if present {
                     let decision = consume(
@@ -840,7 +850,7 @@ impl Task for StopFlight {
             Ts::D202 => {
                 let token = self.op.expect("an accepted stop registered K:StopContext");
                 let rid = self.rid;
-                let interrupted_error = self.interrupted.map(|_| ErrCode::StreamInvalidated);
+                let interrupted_error = self.interrupted.map(|preserved| preserved.code);
                 let decision = consume(cx, token, SiteId::StopContext, rid, move |w, op_status| {
                     core_stop::decide_stop_context(
                         &w.view(),
@@ -876,7 +886,7 @@ impl Task for StopFlight {
                             self.cp = Some(Err(()));
                             Err(())
                         }
-                        ReplyPoll::Ready(ReplyVal::Cancel(_)) => {
+                        ReplyPoll::Ready(ReplyVal::Cancel(_) | ReplyVal::Start) => {
                             unreachable!("a stop waits for a stop reply")
                         }
                     },
@@ -899,7 +909,7 @@ impl Task for StopFlight {
                 let token = self
                     .stop
                     .expect("the stop context registered K:CaptureStop");
-                let interrupted = self.interrupted.map(|_| ErrCode::StreamInvalidated);
+                let interrupted = self.interrupted.map(|preserved| preserved.code);
                 let rid = self.rid;
                 let capture = match result {
                     Err(()) => StopCaptureResult::Err,
@@ -928,6 +938,7 @@ impl Task for StopFlight {
                         },
                     );
                     self.stop = None;
+                    cx.out.input_code = interrupted;
                     log_decision(cx, SiteId::StopCaptureResult, &decision, rid, None);
                     if let Some(spec) = decision.continuation {
                         cx.w.history.pipelines.insert(rid);
@@ -974,7 +985,7 @@ impl Task for StopFlight {
                 let token = self
                     .stop
                     .expect("the stop context registered K:CaptureStop");
-                let interrupted = self.interrupted.map(|_| ErrCode::StreamInvalidated);
+                let interrupted = self.interrupted.map(|preserved| preserved.code);
                 let rid = self.rid;
                 let capture = match self.cp {
                     Some(Ok(n)) => StopCaptureResult::Samples { n, interrupted },
@@ -1000,6 +1011,7 @@ impl Task for StopFlight {
                 );
                 let decision = after_pre(cx, decision);
                 self.stop = None;
+                cx.out.input_code = interrupted;
                 log_decision(
                     cx,
                     SiteId::StopCaptureResult,
@@ -1064,7 +1076,7 @@ impl Task for StopFlight {
                         rid: RecordingId(rid),
                         kind: crate::inputs::PostKind::StopPost,
                         result: Some(result),
-                        interrupted: self.interrupted.map(|_| ErrCode::StreamInvalidated),
+                        interrupted: self.interrupted.map(|preserved| preserved.code),
                         char_count: usize::from(matches!(
                             result,
                             crate::inputs::PipelineResult::Ok(PipelineTerminal::Success)
@@ -1072,6 +1084,17 @@ impl Task for StopFlight {
                     },
                     at,
                 );
+                // R204b.5/.6: the terminal code is the interrupted capture's, else the
+                // pipeline's own no-speech code.
+                cx.out.input_code =
+                    self.interrupted
+                        .map(|preserved| preserved.code)
+                        .or(match result {
+                            crate::inputs::PipelineResult::Ok(PipelineTerminal::NoSpeech(code)) => {
+                                Some(code)
+                            }
+                            _ => None,
+                        });
                 log_decision(cx, SiteId::PipelineIdleEmit, &decision, rid, None);
                 let ctx = fx(cx, rid, decision.row.0, SiteId::PipelineIdleEmit);
                 queue_phase(&mut self.q, ctx, &decision, Placement::PostDT);
@@ -1208,7 +1231,7 @@ impl Task for CancelFlight {
                             self.cc = Some(Err(()));
                             Err(())
                         }
-                        ReplyPoll::Ready(ReplyVal::Stop(_)) => {
+                        ReplyPoll::Ready(ReplyVal::Stop(_) | ReplyVal::Start) => {
                             unreachable!("a cancel waits for a cancel reply")
                         }
                     },

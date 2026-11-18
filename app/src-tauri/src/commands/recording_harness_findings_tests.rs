@@ -187,6 +187,71 @@ fn pd19_termination_unconfirmed_after_retained_pcm_leaves_recovering() {
     ));
 }
 
+// PD-19, second entry (harness seed 37,591). The same defect with the context missing
+// for another reason: the start future was dropped at its await after the supervisor's
+// ack (PD-9, `smart_capture`), so no context was ever installed and the status stays
+// `Starting`. The worker then fails at runtime with 8,000 samples retained
+// (`Recovering{RuntimeFailure}`, `2630-2698`; the helper's exit stores the capture
+// before `Interrupted`, `2405-2432`). The user's stop takes the capture (R201.5), finds
+// no context and writes `Idle` while the owner is still `Recovering` (R202.3, PD-3);
+// a start reads cleanup pending and takes R101.12; `Interrupted` schedules the auto-stop,
+// which finds nothing to take. Nothing restores `Idle`.
+
+fn pd19_a_dropped_start_then_a_runtime_failure_with_retained_pcm(world: &Arc<World>) {
+    world.close_gate("smart_capture");
+    let mut start = world.start();
+    assert!(poll_once(&mut start).is_pending());
+    drop(start);
+    assert_eq!(status(world), DictationStatus::Starting);
+    // `begin_recovery(RuntimeFailure)` (`2630-2698`).
+    world.runtime_failure(1);
+    assert_eq!(status(world), DictationStatus::Recovering);
+    // The helper has exited with 8,000 samples retained: the capture is stored, and
+    // `Interrupted` has not been notified yet (`2405-2432`).
+    audio_lifecycle::insert_interrupted_dictation_for_test(
+        1,
+        audio_lifecycle::InterruptedCapture {
+            samples: vec![0.0; 8_000],
+            reason: "stream_invalidated".to_string(),
+            duration_ms: 8_000 / 16,
+        },
+    );
+    // The user stop takes the capture, finds no context and writes Idle.
+    assert_eq!(
+        stop_reply(world, None),
+        Err("Missing dictation context for recording 1".to_string())
+    );
+    assert_eq!(status(world), DictationStatus::Idle);
+    // A start takes D while the owner is still `Recovering`.
+    assert_eq!(start_reply(world), audio_recovering());
+    assert_eq!(status(world), DictationStatus::Recovering);
+    world.notify(
+        1,
+        AudioLifecycleEvent::Interrupted {
+            reason: AudioCancelReason::RuntimeFailure,
+            delivered_samples: 8_000,
+            duration_ms: 8_000 / 16,
+        },
+    );
+    world.hold_owner_clear(1);
+    assert_eq!(world.auto_stop_requests(), vec![1]);
+    assert_eq!(
+        stop_reply(world, Some(1)),
+        audio_recovering(),
+        "the auto-stop is refused: nothing to take"
+    );
+    world.release_owner_clear();
+    nothing_restores_idle(world);
+}
+
+#[test]
+fn pd19_a_dropped_start_and_a_retained_runtime_failure_leave_recovering() {
+    repeat(&sub(
+        "PD-19 (second entry): a dropped start, a runtime failure with retained PCM, a context-less user stop and a start",
+        pd19_a_dropped_start_then_a_runtime_failure_with_retained_pcm,
+    ));
+}
+
 // ------------------------------------------------------------ stop on a thread
 
 type StopReply = Result<serde_json::Value, String>;
@@ -274,9 +339,36 @@ fn perf_claim(id: u64) -> Option<RunOutcomeV1> {
 // as `NoSpeech`. The cancel's `PT:PC(Cancelled)` then loses the performance claim.
 // (R203.5 is the zero-sample row at status Idle; R203.7 is the short row, 1..4,799
 // samples, at Idle. The seed's split is R203.5, so the stop returns none.)
+//
+// Where the empty capture comes from (D-S2b-11 (g)): the recording is started by a
+// **preview handoff**. A Settings microphone test is kept, the confirmed dictation start
+// hands the running worker to dictation in place (`hand_preview_to`, `audio_lifecycle.rs:
+// 1719-1830`): it begins fresh PCM retention, so nothing the preview saw is retained
+// (`begin_handoff_retention`, 1732), and publishes `Accepted` and `Ready` (1802, 1807).
+// A stop that lands before the worker captured anything new has nothing to deliver. The
+// fixture drives that start through the host's `start_dictation_recording_after_preview`
+// port (the trace names it) and the stop's empty capture follows.
 
 fn pd20_stop_empty_path_between_cancel_tail_and_perf_complete(world: &Arc<World>) {
-    recording(world);
+    world.knobs().cold_start = ColdStart::ReadyBeforeContext;
+    world
+        .state()
+        .app_state
+        .microphone_preview
+        .claim(50)
+        .expect("a Settings microphone test is kept");
+    let mut start = world.start();
+    let reply = complete_joining(&mut start);
+    world.reply("start", &reply);
+    assert!(reply.is_ok(), "{reply:?}");
+    assert!(
+        world
+            .trace()
+            .iter()
+            .any(|line| line.starts_with("supervisor.start_after_preview 1 ")),
+        "the start was the preview handoff"
+    );
+    assert_eq!(status(world), DictationStatus::Recording);
     world.knobs().stop_result = Ok(0);
     let stop = ParkedStop::start(world);
     assert_eq!(status(world), DictationStatus::Processing);
@@ -547,5 +639,174 @@ fn pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance() {
     repeat(&sub(
         "PD-22: an expired stop's Idle before a cancel's terminal claim; the stop's failure tail completes performance (R211.2, R203.2)",
         pd22_stops_failure_tail_wins_performance,
+    ));
+}
+
+// ------------------------------------------------------------------ PD-24
+// Harness seeds 5058 (R102.3 / R209.5) and 11,139 (R102.3 / R209.3). The start call's
+// 2 s receiver expired while the supervisor was still handling the start
+// (`await_start_response`, `audio_lifecycle.rs:3065-3079`): the caller is revoked,
+// `Cancel{User}` is enqueued, and the call returns `SupervisorUnavailable`, so the start
+// thread runs R102 (a failure result). The supervisor then handles the `Cancel` (`1301-
+// 1337`): `begin_recovery(User)` sets the phase and notifies `Recovering{User}`, and
+// the bridge's R209.3 takes D (`Starting -> Recovering`) and runs its tail outside D. The
+// start thread's R102.3 takes D inside that tail, after `audio-recovery-started` and
+// before the arm's `PC`/`TERM`: it writes `Idle` and claims the terminal as
+// `CaptureInitFailure`; the arm's `PC(Cancelled)` then completes performance and its
+// `TERM` loses. C4.4 and T2 name this race; C7.1 lists no row for it.
+
+fn pd24_start_timeout_claims_inside_the_recovering_arms_tail(world: &Arc<World>) {
+    {
+        let mut knobs = world.knobs();
+        knobs.start_ack = Some(AudioStartError::SupervisorUnavailable);
+        knobs.accept_before_failing = false;
+    }
+    let (entered, entered_rx) = std::sync::mpsc::channel::<()>();
+    let (release, release_rx) = std::sync::mpsc::channel::<()>();
+    world.on("supervisor.start", move || {
+        let _ = entered.send(());
+        let _ = release_rx.recv();
+    });
+    let thread_world = Arc::clone(world);
+    let start = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a start thread runtime");
+        let _enter = runtime.enter();
+        let mut start = thread_world.start();
+        let reply = complete_joining(&mut start);
+        thread_world.reply("start", &reply);
+        reply
+    });
+    entered_rx
+        .recv()
+        .expect("the start reached the supervisor's capture start");
+    world.note("the start waits in the supervisor call; its 2 s receive is the one that expires");
+    // `handle_start` accepted it and has not answered (`1481-1588`).
+    world.accepted_start(1);
+    let reply: Arc<std::sync::Mutex<Option<StopReply>>> = Arc::new(std::sync::Mutex::new(None));
+    let filed = Arc::clone(&reply);
+    world.on("emit:audio-recovery-started", move || {
+        // The receiver expired: the start thread returns `SupervisorUnavailable` and
+        // runs R102 now, inside the arm's tail.
+        let _ = release.send(());
+        let result = start.join().expect("the start thread panicked");
+        *filed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(result);
+    });
+    // The queued `Cancel{User}` handled: `begin_recovery(User)` (`1301-1337`).
+    world.recovering(1, AudioCancelReason::User);
+    let reply = reply
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+        .expect("the hook finished the start");
+    assert_eq!(
+        reply,
+        Err("Audio lifecycle supervisor is unavailable".to_string())
+    );
+    assert_eq!(status(world), DictationStatus::Idle);
+    // The terminal says the capture failed to start; the performance record says the
+    // user cancelled.
+    assert_eq!(
+        terminal(world, 1),
+        Some((
+            DictationTerminalOutcome::CaptureInitFailure,
+            DictationErrorCode::RuntimeFailure
+        ))
+    );
+    assert!(
+        matches!(perf_claim(1), Some(RunOutcomeV1::Cancelled { .. })),
+        "{:?}",
+        perf_claim(1)
+    );
+}
+
+#[test]
+fn pd24_start_timeout_terminal_and_the_recovering_arms_performance_outcome_disagree() {
+    repeat(&sub(
+        "PD-24: the start's 2 s timeout claims CaptureInitFailure inside the supervisor's Recovering{User} arm (R102.3, R209.3)",
+        pd24_start_timeout_claims_inside_the_recovering_arms_tail,
+    ));
+}
+
+// ------------------------------------------------------------------ PD-23
+// Harness seeds 445 (R207.3 / R203.5), 1,328 (R207.3 / R203.2) and 2,103 (R207.3 /
+// R202.3). C8 (`s10c`, PD-4): the fake supervisor sets the phase to `Recording` and
+// holds before notifying `Ready`, the start's continuation publishes `Recording`, and
+// the held `Ready` is handled for a recording that is already `Recording`: R207.3
+// claims `Superseded/StaleOwner` for the live recording. PD-4 is the case where the
+// recording then completes `Success` after a second ticker spawned; PD-23 is the same
+// claim when the recording's own path ends another way. The recording's own path wins
+// no terminal and completes performance with its own outcome.
+
+fn pd23_c8_forced(world: &Arc<World>) {
+    world.knobs().cold_start = ColdStart::HoldBeforeReady;
+    start_reply(world).expect("the start returned");
+    assert_eq!(status(world), DictationStatus::Recording);
+    world.release_ready();
+    assert_eq!(terminal(world, 1), Some(SUPERSEDED));
+}
+
+/// The stop captured nothing: R203.5 completes performance as `NoSpeech`.
+fn pd23_an_empty_stop_completes_no_speech(world: &Arc<World>) {
+    world.knobs().stop_result = Ok(0);
+    pd23_c8_forced(world);
+    assert_eq!(stop_reply(world, None), empty_transcription());
+    assert_eq!(terminal(world, 1), Some(SUPERSEDED));
+    assert_eq!(perf_claim(1), Some(RunOutcomeV1::NoSpeech));
+}
+
+#[test]
+fn pd23_superseded_terminal_and_an_empty_stop_no_speech_disagree() {
+    repeat(&sub(
+        "PD-23: R207.3's Superseded for a live recording, then an empty stop completes NoSpeech (R207.3, R203.5)",
+        pd23_an_empty_stop_completes_no_speech,
+    ));
+}
+
+/// The stop's capture failed: R203.2 completes performance as `Failed`.
+fn pd23_a_failed_stop_completes_failed(world: &Arc<World>) {
+    world.knobs().stop_result = Err("scripted capture failure");
+    pd23_c8_forced(world);
+    let reply = stop_reply(world, None);
+    assert_eq!(reply, Err("scripted capture failure".to_string()));
+    assert_eq!(terminal(world, 1), Some(SUPERSEDED));
+    assert!(
+        matches!(perf_claim(1), Some(RunOutcomeV1::Failed { .. })),
+        "{:?}",
+        perf_claim(1)
+    );
+}
+
+#[test]
+fn pd23_superseded_terminal_and_a_failed_stop_failed_disagree() {
+    repeat(&sub(
+        "PD-23: R207.3's Superseded for a live recording, then a failed stop completes Failed (R207.3, R203.2)",
+        pd23_a_failed_stop_completes_failed,
+    ));
+}
+
+/// The user cancels the recording: the cancel's `PC` completes performance as
+/// `Cancelled`.
+fn pd23_a_cancel_completes_cancelled(world: &Arc<World>) {
+    pd23_c8_forced(world);
+    cancelled(world, "cancel");
+    // The attempt's own end: the worker joined and the supervisor sends `Idle`.
+    world.release_cancel_finish();
+    assert_eq!(terminal(world, 1), Some(SUPERSEDED));
+    assert!(
+        matches!(perf_claim(1), Some(RunOutcomeV1::Cancelled { .. })),
+        "{:?}",
+        perf_claim(1)
+    );
+}
+
+#[test]
+fn pd23_superseded_terminal_and_a_cancel_cancelled_disagree() {
+    repeat(&sub(
+        "PD-23: R207.3's Superseded for a live recording, then a cancel completes Cancelled",
+        pd23_a_cancel_completes_cancelled,
     ));
 }

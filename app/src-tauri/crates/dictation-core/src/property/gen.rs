@@ -129,8 +129,44 @@ pub fn plan(rng: &mut Rng) -> AttemptPlan {
             interrupted: None,
         };
     }
+    let fail = match (&kind, end) {
+        (StartKind::Fail, _) => rng.pick(&[
+            ErrCode::PermissionDenied,
+            ErrCode::DeviceUnavailable,
+            ErrCode::HostUnavailable,
+            ErrCode::BackendError,
+        ]),
+        (
+            _,
+            End::Recover {
+                reason: AudioCancelReason::RuntimeFailure,
+                init_failed: true,
+                ..
+            },
+        ) => ErrCode::TerminationUnconfirmed,
+        (
+            _,
+            End::Recover {
+                reason: AudioCancelReason::RuntimeFailure,
+                ..
+            },
+        ) => rng.pick(&[
+            ErrCode::StreamInvalidated,
+            ErrCode::BackendError,
+            ErrCode::DeviceUnavailable,
+        ]),
+        (
+            _,
+            End::Recover {
+                reason: AudioCancelReason::HardDeadline,
+                ..
+            },
+        ) => rng.pick(&[ErrCode::InitializationTimeout, ErrCode::FirstBufferTimeout]),
+        _ => ErrCode::BackendError,
+    };
     AttemptPlan {
         kind,
+        fail,
         connecting: rng.chance(1, 2),
         ready,
         stalled: rng.chance(1, 2),

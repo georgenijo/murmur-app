@@ -387,12 +387,21 @@ splitmix64 generator turns a seed into the whole run.
   modeled supervisor or client step cites the `audio_lifecycle.rs` function and line
   range it mirrors, with a fragment of source that must appear there;
   `the_supervisor_mirror_cites_the_real_source` reads the source and fails a row that
-  drifted, and a model step with no row. A command has five events: the client's
-  enqueue (never blocked by a busy supervisor), the supervisor's acceptance, the reply
-  at its production point (a stop's at the seal or the worker's exit, a cancel's when
-  handled; a stop with no attempt answers empty audio), the receiver's timeout and the
-  client's continuation. A notification fires only in a state where the cited code
-  sends it.
+  drifted, and a model step with no row. A row also pins the **guard expressions** of
+  the cited code (`guards`: each fragment must appear in the cited lines, so an inverted
+  `is_none()` or a dropped clause fails the mirror test) and may name a test of the real
+  supervisor that runs the behaviour (`real_test`: for the sealed reply,
+  `a_sealed_stop_reply_is_delivered_at_the_seal_before_worker_exit` in
+  `audio_lifecycle.rs`). A command (start, stop and cancel alike, each with its own
+  receiver deadline) has five events: the client's enqueue (never blocked by a busy
+  supervisor), the supervisor's acceptance, the reply at its production point (a stop's
+  at the seal or the worker's exit, a cancel's when handled), the receiver's timeout and
+  the client's continuation. An immediate refusal (a stop with no attempt or another
+  owner, a cancel with nothing to abandon, a start refused because its caller was
+  revoked or an attempt exists) is a step of its own after the acceptance, so the
+  receiver can expire between the two and the reply is then dropped. A start whose
+  receiver timed out revokes its caller and enqueues `Cancel{User}` (`await_start_response`).
+  A notification fires only in a state where the cited code sends it.
 * **Supervisor fidelity** (D-S2b-7 (b), `supervisor.rs`, `sup_task.rs`): the model may
   not invent or exclude a schedule. The worker's own end (a recovery, a crash, a failed
   open) is a pending end that a stop or a cancel command can still win until the
@@ -416,6 +425,11 @@ splitmix64 generator turns a seed into the whole run.
     each stale or valid input the model never reaches, must match one allowed outcome of
     its row with exactly those effects, each the stated number of times, so a row that
     grows an extra write, claims another outcome or emits a duplicate terminal fails. The
+    typed failure travels through the model (`AudioFailureKind` to its `ErrCode`), and a
+    row whose terminal code is the input's (R203.4-.8, R204b.5-.6, R213.2) is written
+    `@in`: the code must equal the exact code the harness gave that decision, with no
+    wildcard, so a row that rewrites it (`TerminationUnconfirmed` to `HostUnavailable`)
+    fails. The
     continuation-ID bound is checked at every registration. SP2 for terminals: under D a
     stale input claims only what the row lists for a stale input. SP5 stays structural
     (the #1152 ratchet) and file admission stays a unit test.
@@ -425,29 +439,39 @@ splitmix64 generator turns a seed into the whole run.
     the terminal rows with outcome and code, the statuses the claim saw, the performance
     outcome class (or exact rows) and a causal precondition read from what each winner
     recorded (`Won`: the cancel's tail open, the order of the winners, a later claim
-    lost). PD-4 needs its second ticker (or the gated claim) in the same window; PD-22
-    needs the winning `Idle` claim and the losing named claim in the same cancel tail.
+    lost). PD-4 is exactly its C7.1 definition (R207.3 on a live `Recording`, a second
+    ticker, `Success`); the same claim with another outcome is PD-23. PD-22 needs the
+    winning `Idle` claim and the losing named claim in the same cancel tail and is judged
+    when that tail closes, because the window's events land in either order. A claim whose
+    input named an older recording is outside SP4(b) (C7.4: "for stale ids `P` of the stale
+    id is unaffected"). No allowlist entry is widened to make a seed pass: a split no
+    signature covers is a finding to reproduce at the shell (PD-23, PD-24) or a model fix.
     No PD exempts a whole recording.
   * *SP10*: the partial-decode lease changes only by its holder's own acquire and drop,
     and is released by the end of the run.
   * *C7.3 liveness* is evaluated for every run from per-generation evidence, never by
     filtering a run: a stuck `Recovering` needs the stranded recording's own PD-18
     instance or PD-19 story (capture taken by the user's stop, the stop path's `Idle`,
-    R101.12 in the gap, the refused auto-stop); only the recording whose attempt awaits a
+    R101.12 in the gap, the refused auto-stop; a preserved capture nobody took is not
+    stuck, a later stop takes it); only the recording whose attempt awaits a
     stop or a cancel may stay `Recording` (L4), and only a dropped start's own recording
     may stay `Starting` or `Recording`.
   There is no "known findings" set: a behaviour outside the allowlist fails
   `seeds_hold_the_properties`.
 * **Layer** (D-S2b-4, D-S2b-7 (c)): the harness runs the real `decide_*` functions over
   a model world, not the shell. Where a model witness and a production-reachable shell
-  fixture disagree, the fixture wins and the model is fixed. PD-19..PD-22 were found
+  fixture disagree, the fixture wins and the model is fixed. PD-19..PD-24 were found
   this way (`src/commands/recording_harness_findings_tests.rs`, pinned seeds in
   `FINDING_SEEDS`, each beside its shell test). The shell fixtures drive the Stage 0b
   fake host, because the real supervisor has no test seam outside `audio_lifecycle.rs`
   (D-S2b-9 (b)): each injected notification or reply cites its production sender and
   state, uses the production strings, and the test asserts the exact replies, statuses
   and ledger outcomes.
-* **Seeds**: 10,000 in CI (well under 20 s); `PROPTEST_CASES=100000 cargo test -p
+* **Seeds**: 10,000 in CI (about a second and a half, budget 20 s): `0..9,995` and five
+  fixed seeds (`FIXED_SEEDS`: 10,232, 31,937, 33,078, 37,591, 80,068) that take the
+  PD-22, PD-24 (R209.3), PD-19 (dropped start) and PD-21 (short stop) entries no seed of
+  the plain range takes, so the converse check (every PD and every signature row is
+  witnessed) has no pinned exception. `PROPTEST_CASES=300000 cargo test -p
   murmur-dictation-core --lib property::` raises it. `TRACE_SEED=<n> cargo test -p
   murmur-dictation-core --lib property::tests::trace_one -- --nocapture` prints one run.
   `DUMP_SP4B=1` prints the context of every split no signature matches. A core row

@@ -11,7 +11,7 @@ use super::model::*;
 use crate::decision::{Decision, SiteId, Verdict};
 use crate::effects::{Effect, Placed, Placement, Terminal};
 use crate::inputs::GuardOrigin;
-use crate::status::{Status, TerminalOutcome};
+use crate::status::{ErrCode, Status, TerminalOutcome};
 use std::collections::VecDeque;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,11 +143,16 @@ pub struct StepOut {
     /// The effects the shell ran before the decide (`Pre` prefix) and stripped from the
     /// decision it logs next: the C3 check counts the whole list.
     pub stripped: Vec<Effect>,
+    /// The code the decision's input carries (an `AudioFailureKind` mapped to its
+    /// `ErrCode`, an interrupted capture's reason, a pipeline's no-speech code), which
+    /// C3's `@in` terminal codes must equal (D-S2b-11 (b)). Taken by `log_decision`.
+    pub input_code: Option<ErrCode>,
 }
 
 impl StepOut {
     pub fn clear(&mut self) {
         self.stripped.clear();
+        self.input_code = None;
         self.decisions.clear();
         self.effects.clear();
         self.notes.clear();
@@ -240,10 +245,15 @@ pub fn log_decision(
         .into_iter()
         .chain(decision.effects.iter().map(|placed| placed.effect.clone()))
         .collect();
+    let input_code = cx.out.input_code.take();
     let w = &*cx.w;
-    if let Err(message) =
-        c3::check_decision(decision.row.0, w.status, input_rid != w.current_id, &whole)
-    {
+    if let Err(message) = c3::check_decision(
+        decision.row.0,
+        w.status,
+        input_rid != w.current_id,
+        &whole,
+        input_code,
+    ) {
         cx.out.violations.push(message);
     }
     let owner = w.sup.owner;

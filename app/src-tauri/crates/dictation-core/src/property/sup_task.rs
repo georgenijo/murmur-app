@@ -72,13 +72,20 @@ impl Task for SupTask {
                 cx.w.sup.phase = None;
                 cx.out.notes.push(Note::OwnerCleared { rid });
             }
-            SupStep::Answer => {
-                // `request.response.send(Ok(()))` after `Accepted` (1589-1596): a
-                // step of its own; an earlier `Cancelled` answer stands.
-                cx.w.sup
-                    .start_answers
-                    .entry(rid)
-                    .or_insert(super::supervisor::StartAnswer::Started);
+            SupStep::StartAnswer(tid) => {
+                // `request.response.send(..)` (1589-1596, or a refusal 1402-1433): a
+                // step of its own, delivered only while the start caller still waits.
+                let answer =
+                    cx.w.sup
+                        .start_pending
+                        .remove(&tid)
+                        .expect("the acceptance decided this start's response");
+                if cx.w.send_reply_pub(tid, ReplyVal::Start) {
+                    cx.w.sup.start_answers.insert(rid, answer);
+                }
+            }
+            SupStep::Reply(tid, value) => {
+                cx.w.send_reply_pub(tid, value);
             }
             SupStep::CancelAnswer(tid) => {
                 // `response.send(Ok(cancelled))`, after `begin_recovery` returned.
@@ -91,7 +98,13 @@ impl Task for SupTask {
             other => {
                 if let SupStep::Interrupted(samples) = other {
                     // The capture goes to the store; the notification follows (2419-2438).
-                    cx.w.preserved.insert(rid, Preserved { samples });
+                    let code =
+                        cx.w.sup
+                            .finished_fail
+                            .get(&rid)
+                            .copied()
+                            .unwrap_or(ErrCode::RuntimeFailure);
+                    cx.w.preserved.insert(rid, Preserved { samples, code });
                 }
                 cx.w.sup.busy = Some(other);
                 cx.w.sup.busy_restored = false;
@@ -288,23 +301,20 @@ impl Bridge {
                 apply_in(cx, &ctx, &decision);
                 queue_phase(&mut self.q, ctx, &decision, Placement::PostDT);
             }
-            SupStep::InitFailed { recovery, crash } => {
+            SupStep::InitFailed { recovery, code } => {
                 let kind = Handle(0);
                 let decision = lc::decide_sup_init_failed_nolock(
                     cx.w.facts(),
                     lc::SupInitFailedInput {
                         rid: id,
                         kind,
-                        error_code: if crash {
-                            ErrCode::BackendError
-                        } else {
-                            ErrCode::HostUnavailable
-                        },
+                        error_code: code,
                         recovery_reason: recovery,
                     },
                     at,
                 );
                 let decision = after_prefix(cx, decision, &lc::init_failed_prefix(kind));
+                cx.out.input_code = Some(code);
                 log_decision(cx, SiteId::SupInitFailed, &decision, rid, None);
                 let ctx = self.ctx(cx, decision.row.0, SiteId::SupInitFailed);
                 queue_phase(&mut self.q, ctx, &decision, Placement::PostDT);
@@ -346,7 +356,8 @@ impl Bridge {
                 cx.w.sup.busy_restored = true;
             }
             SupStep::ClearOwner
-            | SupStep::Answer
+            | SupStep::StartAnswer(_)
+            | SupStep::Reply(..)
             | SupStep::CancelAnswer(_)
             | SupStep::StopAnswer(_) => {
                 unreachable!("{:?} is not a notification", self.step)

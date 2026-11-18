@@ -16,7 +16,7 @@
 //! file admission is a unit test of the admission crate.
 
 use crate::effects::Effect;
-use crate::status::Status;
+use crate::status::{ErrCode, Status};
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
@@ -178,11 +178,17 @@ fn multiset_matches(patterns: &[String], observed: &[String]) -> bool {
 
 /// Check a decision against its fixture row. `stale`: the input names a recording that
 /// is not the current one at the decision.
+///
+/// `input_code` is the code the decision's input carries (D-S2b-11 (b)): a terminal code
+/// the fixture writes as `@in` must equal it exactly, so a decision that rewrites the
+/// failure it was given (`TerminationUnconfirmed` -> `HostUnavailable`) fails. A row whose
+/// input carries no code never matches `@in`.
 pub fn check_decision(
     row: &str,
     status: Status,
     stale: bool,
     effects: &[Effect],
+    input_code: Option<ErrCode>,
 ) -> Result<(), String> {
     let Some(fixture_row) = fixture().get(row) else {
         return Err(format!("C3: row {row} is not in the C3 fixture"));
@@ -204,16 +210,23 @@ pub fn check_decision(
                 Subject::Stale => stale,
                 Subject::Either => true,
             });
+    let input = input_code.map_or_else(|| "@none".to_string(), |code| format!("{code:?}"));
+    let resolved = |tokens: &[String]| -> Vec<String> {
+        tokens
+            .iter()
+            .map(|token| token.replace("@in", &input))
+            .collect()
+    };
     if applicable
         .clone()
-        .any(|alternative| multiset_matches(&alternative.tokens, &observed))
+        .any(|alternative| multiset_matches(&resolved(&alternative.tokens), &observed))
     {
         return Ok(());
     }
     Err(format!(
-        "C3: {row} ({} input, status {status:?}) has the effects {observed:?}; C3 allows {:?}",
+        "C3: {row} ({} input, status {status:?}, input code {input}) has the effects {observed:?}; C3 allows {:?}",
         if stale { "stale" } else { "current" },
-        applicable.map(|a| a.tokens.clone()).collect::<Vec<_>>()
+        applicable.map(|a| resolved(&a.tokens)).collect::<Vec<_>>()
     ))
 }
 

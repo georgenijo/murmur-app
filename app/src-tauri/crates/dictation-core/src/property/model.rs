@@ -92,6 +92,11 @@ pub struct AttemptPlan {
     pub stop_delivery: Delivery,
     /// Samples a delivered stop returns.
     pub stop_samples: usize,
+    /// The typed failure the attempt's own end reports (the `AudioFailureKind` mapped
+    /// to its `ErrCode`, D-S2b-11 (b)): the worker's `InitFailed`, a runtime failure's
+    /// kind (`TerminationUnconfirmed` when `init_failed`), the hard deadline's timeout,
+    /// `BackendError` for a crash (`finish_attempt`'s default).
+    pub fail: ErrCode,
 }
 
 /// One step of the supervisor thread: a notification, or an internal step.
@@ -106,7 +111,9 @@ pub enum SupStep {
     Recovering(AudioCancelReason),
     InitFailed {
         recovery: Option<AudioCancelReason>,
-        crash: bool,
+        /// The typed failure (`from_audio_failure(kind)`), exactly what R213.2 must
+        /// report as the terminal code.
+        code: ErrCode,
     },
     /// The preserved capture goes to the store, then `Interrupted` is notified.
     Interrupted(usize),
@@ -115,8 +122,13 @@ pub enum SupStep {
     ClearOwner,
     CleanupFinished,
     /// The supervisor sends the start call's response (`Ok(())` after `Accepted`,
-    /// `audio_lifecycle.rs:1589-1596`): a step of its own, not a notification.
-    Answer,
+    /// `audio_lifecycle.rs:1589-1596`, or a refusal, `1402-1433`): a step of its
+    /// own, not a notification, and apart from the acceptance that decided it.
+    StartAnswer(TaskId),
+    /// An immediate response of a stop or a cancel (`Ok(Vec::new())`, an error,
+    /// `Ok(false)`: `audio_lifecycle.rs:1235-1242`, `1291-1298`, `1301-1330`), sent
+    /// by a step of its own after the message was accepted (D-S2b-11 (f)).
+    Reply(TaskId, ReplyVal),
     /// A cancel's response `Ok(true)`, after `begin_recovery` (and so its
     /// `Recovering{User}` notification) returned (`audio_lifecycle.rs:1332-1336`).
     CancelAnswer(TaskId),
@@ -156,6 +168,8 @@ pub enum WorkerEv {
 pub enum Msg {
     Start {
         rid: Rid,
+        /// The client task waiting on the start call's response.
+        tid: TaskId,
         plan: Box<AttemptPlan>,
     },
     Stop {
@@ -178,6 +192,8 @@ pub enum Msg {
 /// What a command's reply carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReplyVal {
+    /// The start call's response was sent (its value is in `Sup::start_answers`).
+    Start,
     Stop(Result<usize, ()>),
     Cancel(Result<bool, ()>),
 }
@@ -258,8 +274,19 @@ pub struct Sup {
     pub busy_restored: bool,
     /// Attempts that have ended and whose steps are all done, newest last.
     pub finished: Vec<(Rid, EndedBy)>,
+    /// The typed failure of each attempt that ended (`failure.kind` mapped to its code),
+    /// read when its preserved capture is stored.
+    pub finished_fail: BTreeMap<Rid, ErrCode>,
     /// The start calls' responses, once sent.
     pub start_answers: BTreeMap<Rid, super::supervisor::StartAnswer>,
+    /// The response the supervisor decided for a start at its acceptance and has not
+    /// sent yet (its `StartAnswer` step), by client task.
+    pub start_pending: BTreeMap<TaskId, super::supervisor::StartAnswer>,
+    /// The start callers whose `caller_alive` flag is false (their receiver timed
+    /// out, `audio_lifecycle.rs:3070`).
+    pub caller_dead: BTreeSet<TaskId>,
+    /// The recordings whose start call's receiver timed out (`await_start_response`).
+    pub timed_out_starts: BTreeSet<Rid>,
     /// The response channels of the commands in flight, by client task.
     pub replies: BTreeMap<TaskId, ReplyState>,
 }
@@ -343,6 +370,10 @@ impl Sup {
 #[derive(Clone, Copy, Debug)]
 pub struct Preserved {
     pub samples: usize,
+    /// The code of the attempt's failure (`failure.kind.as_str()` ->
+    /// `from_interruption_reason`, `audio_lifecycle.rs:2405-2432`): what the stop's
+    /// `RuntimeInterruption` terminal carries.
+    pub code: ErrCode,
 }
 
 /// What a first-wins ledger entry (the terminal claim, the performance completion)

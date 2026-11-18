@@ -15,8 +15,11 @@
 #   TERM:<outcome>/<code>
 #   PC:<outcome>     `complete_dictation_performance`
 #   PGF:<outcome>    the pipeline guard's own `finish`
-#   `|` lists alternatives inside one argument; `*` is the appendix's own "code" /
-#   "kind" / "result" cell (the code follows the input, e.g. `from_audio_failure(kind)`).
+#   `|` lists alternatives inside one argument. `@in` is the appendix's own "code" cell
+#   that follows the input (`from_audio_failure(kind)`, the interrupted capture's reason,
+#   the pipeline's no-speech code): it must equal, exactly, the code the harness gave the
+#   decision as input. There is no wildcard: a decision that rewrites the code it was
+#   given, or reports a code its input does not carry, fails (D-S2b-11 (b)).
 #
 # A decision matches an alternative only when it has exactly those effects, in any
 # order, each the stated number of times: a duplicate terminal or a second `ST`
@@ -89,17 +92,17 @@ R203.3b | Starting   | [stale] TERM:StopFailure/StopFinalizationFailed PC:Failed
 R203.3c | Recording  | [stale] TERM:StopFailure/StopFinalizationFailed PC:Failed
 R203.3d | Recovering | [stale] TERM:StopFailure/StopFinalizationFailed PC:Failed
 R203.3e | Processing | [stale] TERM:StopFailure/StopFinalizationFailed PC:Failed
-R203.4  | Processing | [fresh] TERM:NoSpeech/EmptyAudio ST:Processing>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/* ST:Processing>Idle PGF:NoSpeech
-R203.5  | Idle       | [fresh] TERM:NoSpeech/EmptyAudio ST:Idle>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/* ST:Idle>Idle PGF:NoSpeech
-R203.5r | Recovering | [fresh] TERM:NoSpeech/EmptyAudio ST:Recovering>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/* ST:Recovering>Idle PGF:NoSpeech
-R203.6  | Processing | [fresh] TERM:TooShort/BelowMinimumDuration ST:Processing>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/* ST:Processing>Idle PGF:NoSpeech
-R203.7  | Idle       | [fresh] TERM:TooShort/BelowMinimumDuration ST:Idle>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/* ST:Idle>Idle PGF:NoSpeech
-R203.7r | Recovering | [fresh] TERM:TooShort/BelowMinimumDuration ST:Recovering>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/* ST:Recovering>Idle PGF:NoSpeech
-R203.8a | Idle       | [stale] TERM:NoSpeech/EmptyAudio PGF:NoSpeech / [stale] TERM:TooShort/BelowMinimumDuration PGF:NoSpeech / [stale] TERM:RuntimeInterruption/* PGF:NoSpeech
-R203.8b | Starting   | [stale] TERM:NoSpeech/EmptyAudio PGF:NoSpeech / [stale] TERM:TooShort/BelowMinimumDuration PGF:NoSpeech / [stale] TERM:RuntimeInterruption/* PGF:NoSpeech
-R203.8c | Recording  | [stale] TERM:NoSpeech/EmptyAudio PGF:NoSpeech / [stale] TERM:TooShort/BelowMinimumDuration PGF:NoSpeech / [stale] TERM:RuntimeInterruption/* PGF:NoSpeech
-R203.8d | Recovering | [stale] TERM:NoSpeech/EmptyAudio PGF:NoSpeech / [stale] TERM:TooShort/BelowMinimumDuration PGF:NoSpeech / [stale] TERM:RuntimeInterruption/* PGF:NoSpeech
-R203.8e | Processing | [stale] TERM:NoSpeech/EmptyAudio PGF:NoSpeech / [stale] TERM:TooShort/BelowMinimumDuration PGF:NoSpeech / [stale] TERM:RuntimeInterruption/* PGF:NoSpeech
+R203.4  | Processing | [fresh] TERM:NoSpeech/EmptyAudio ST:Processing>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/@in ST:Processing>Idle PGF:NoSpeech
+R203.5  | Idle       | [fresh] TERM:NoSpeech/EmptyAudio ST:Idle>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/@in ST:Idle>Idle PGF:NoSpeech
+R203.5r | Recovering | [fresh] TERM:NoSpeech/EmptyAudio ST:Recovering>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/@in ST:Recovering>Idle PGF:NoSpeech
+R203.6  | Processing | [fresh] TERM:TooShort/BelowMinimumDuration ST:Processing>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/@in ST:Processing>Idle PGF:NoSpeech
+R203.7  | Idle       | [fresh] TERM:TooShort/BelowMinimumDuration ST:Idle>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/@in ST:Idle>Idle PGF:NoSpeech
+R203.7r | Recovering | [fresh] TERM:TooShort/BelowMinimumDuration ST:Recovering>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/@in ST:Recovering>Idle PGF:NoSpeech
+R203.8a | Idle       | [stale] TERM:NoSpeech/EmptyAudio PGF:NoSpeech / [stale] TERM:TooShort/BelowMinimumDuration PGF:NoSpeech / [stale] TERM:RuntimeInterruption/@in PGF:NoSpeech
+R203.8b | Starting   | [stale] TERM:NoSpeech/EmptyAudio PGF:NoSpeech / [stale] TERM:TooShort/BelowMinimumDuration PGF:NoSpeech / [stale] TERM:RuntimeInterruption/@in PGF:NoSpeech
+R203.8c | Recording  | [stale] TERM:NoSpeech/EmptyAudio PGF:NoSpeech / [stale] TERM:TooShort/BelowMinimumDuration PGF:NoSpeech / [stale] TERM:RuntimeInterruption/@in PGF:NoSpeech
+R203.8d | Recovering | [stale] TERM:NoSpeech/EmptyAudio PGF:NoSpeech / [stale] TERM:TooShort/BelowMinimumDuration PGF:NoSpeech / [stale] TERM:RuntimeInterruption/@in PGF:NoSpeech
+R203.8e | Processing | [stale] TERM:NoSpeech/EmptyAudio PGF:NoSpeech / [stale] TERM:TooShort/BelowMinimumDuration PGF:NoSpeech / [stale] TERM:RuntimeInterruption/@in PGF:NoSpeech
 R203.9  | *          | -
 R203.10 | *          | -
 
@@ -122,8 +125,8 @@ R204b.4b | Starting   | -
 R204b.4c | Recording  | -
 R204b.4d | Recovering | -
 R204b.4e | Processing | -
-R204b.5  | *          | TERM:PipelineFailure/TranscriptionFailed / TERM:RuntimeInterruption/*
-R204b.6  | *          | TERM:Success/None PGF:Completed / TERM:NoSpeech/* PGF:NoSpeech / TERM:UserCancelledProcessing/CancelledProcessing PGF:Cancelled / TERM:RuntimeInterruption/* PGF:*
+R204b.5  | *          | TERM:PipelineFailure/TranscriptionFailed / TERM:RuntimeInterruption/@in
+R204b.6  | *          | TERM:Success/None PGF:Completed / TERM:NoSpeech/@in PGF:NoSpeech / TERM:UserCancelledProcessing/CancelledProcessing PGF:Cancelled / TERM:RuntimeInterruption/@in PGF:Completed|NoSpeech|Cancelled
 
 R205.1 | *                  | -
 R205.2 | Idle               | -
@@ -167,7 +170,7 @@ R211.5 | Recording  | [fresh] TERM:PipelineFailure/RuntimeFailure PC:Failed ST:R
 R211.6 | Recovering | [fresh] TERM:PipelineFailure/RuntimeFailure PC:Failed ST:Recovering>Idle
 
 R213.1 | *          | [stale] TERM:Superseded/StaleOwner
-R213.2 | *          | [fresh] TERM:CaptureInitFailure/* PC:Failed / [fresh] TERM:RuntimeInterruption/* PC:Failed
+R213.2 | *          | [fresh] TERM:CaptureInitFailure/@in PC:Failed / [fresh] TERM:RuntimeInterruption/@in PC:Failed
 
 R214.1 | *          | [fresh] -
 R214.2 | *          | [stale] -

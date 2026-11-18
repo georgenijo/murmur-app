@@ -20,14 +20,12 @@
 //! by reading the cited lines.
 //!
 //! What is *not* modeled, and why: the speculative and standby phases (an optional
-//! feature the dictation commands never enter), the start call's own 2 s receiver
-//! timeout (`audio_lifecycle.rs:3049-3079`: it only adds an environment cancel, a
-//! message this model already sends), peek requests (no state change), the
+//! feature the dictation commands never enter), peek requests (no state change), the
 //! `StartupDiagnostic` notifications (no decision), probe permits.
 
 use super::model::*;
 use crate::inputs::CaptureErr;
-use crate::status::AudioCancelReason;
+use crate::status::{AudioCancelReason, ErrCode};
 use std::collections::VecDeque;
 
 /// One row of the mirror table.
@@ -47,6 +45,14 @@ pub struct Mirror {
     pub needle: &'static str,
     /// What the model does there.
     pub what: &'static str,
+    /// The guard expressions of the cited code, each a fragment that must appear in the
+    /// cited lines: a model step is only as faithful as the condition it runs under, so
+    /// a mutated guard (`is_none()` turned into `is_some()`, a dropped clause) fails the
+    /// mirror test as well as the real test below (D-S2b-11 (c)).
+    pub guards: &'static [&'static str],
+    /// A test of the real supervisor in `audio_lifecycle.rs` that pins the behaviour by
+    /// running it (the test must exist there).
+    pub real_test: Option<&'static str>,
 }
 
 /// The mirror table: model step -> `audio_lifecycle.rs` function and lines.
@@ -57,6 +63,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "send_start_request",
         lines: (3023, 3056),
+        guards: &[],
+        real_test: None,
         what: "the client sends the request and waits; never blocked by the supervisor",
     },
     Mirror {
@@ -65,6 +73,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_start",
         lines: (1425, 1433),
+        guards: &[],
+        real_test: None,
         what: "answers AlreadyStarting / AlreadyRecording / AudioRecovering by the attempt's own phase",
     },
     Mirror {
@@ -73,6 +83,11 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_start",
         lines: (1402, 1413),
+        guards: &[
+            "!request.caller_alive.load(Ordering::Acquire)",
+            "response.send(Err(AudioStartError::Cancelled))",
+        ],
+        real_test: None,
         what: "a dead caller or an invalid permit: response Err, no owner, no notification",
     },
     Mirror {
@@ -81,6 +96,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "run_supervisor",
         lines: (1148, 1160),
+        guards: &[],
+        real_test: None,
         what: "a queued handoff start with the app disabled: Err(Cancelled), then Idle, no Accepted",
     },
     Mirror {
@@ -89,6 +106,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_start",
         lines: (1481, 1546),
+        guards: &[],
+        real_test: None,
         what: "set_owner, set_phase(Starting), the attempt installed",
     },
     Mirror {
@@ -97,15 +116,39 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_start",
         lines: (1584, 1588),
+        guards: &[],
+        real_test: None,
         what: "notify(Accepted)",
     },
     Mirror {
-        step: "SupStep::Answer",
+        step: "SupStep::StartAnswer",
         needle: "response.send(Ok(()))",
         file: "audio_lifecycle.rs",
         function: "handle_start",
         lines: (1589, 1596),
-        what: "response.send(Ok(())) after Accepted (wait_until_ready is false for dictation)",
+        guards: &[],
+        real_test: None,
+        what: "response.send(Ok(())) after Accepted (wait_until_ready is false for dictation); a refusal's response is a step of its own too",
+    },
+    Mirror {
+        step: "SupStep::Reply",
+        needle: "response.send(Err(\"Audio owner changed",
+        file: "audio_lifecycle.rs",
+        function: "handle_message",
+        lines: (1239, 1242),
+        guards: &[],
+        real_test: None,
+        what: "an immediate stop or cancel response (Ok(Vec::new()), Err, Ok(false)), sent after the message was accepted",
+    },
+    Mirror {
+        step: "Msg::Start (client timeout / continuation)",
+        needle: "caller_alive.store(false",
+        file: "audio_lifecycle.rs",
+        function: "await_start_response",
+        lines: (3065, 3079),
+        guards: &[],
+        real_test: None,
+        what: "recv_timeout: a delivered response, or caller_alive=false then Cancel{owner, User, starting_only: false} with the response dropped, and SupervisorUnavailable",
     },
     Mirror {
         step: "Msg::Stop (client enqueue)",
@@ -113,6 +156,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "stop_with_trigger",
         lines: (3261, 3275),
+        guards: &[],
+        real_test: None,
         what: "the client sends Stop{owner} and waits STOP_RESPONSE_TIMEOUT; never blocked",
     },
     Mirror {
@@ -121,6 +166,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "stop_with_trigger",
         lines: (3276, 3287),
+        guards: &[],
+        real_test: None,
         what: "recv_timeout: a delivered reply, or the timeout error (the receiver is dropped)",
     },
     Mirror {
@@ -129,6 +176,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_message",
         lines: (1235, 1238),
+        guards: &[],
+        real_test: None,
         what: "an empty capture: response Ok(Vec::new()), not Err",
     },
     Mirror {
@@ -137,6 +186,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_message",
         lines: (1239, 1242),
+        guards: &[],
+        real_test: None,
         what: "response Err(owner changed)",
     },
     Mirror {
@@ -145,6 +196,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_message",
         lines: (1243, 1247),
+        guards: &[],
+        real_test: None,
         what: "begin_recovery(User), then response Ok(Vec::new()) (SupStep::StopAnswer)",
     },
     Mirror {
@@ -153,6 +206,11 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_message",
         lines: (1250, 1286),
+        guards: &[
+            "current.tail_deadline = Some(deadline)",
+            "current.stop_response = Some(response)",
+        ],
+        real_test: None,
         what: "phase Stopping, the tail deadline set, the response parked, set_phase(Stopping)",
     },
     Mirror {
@@ -161,6 +219,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_message",
         lines: (1291, 1298),
+        guards: &[],
+        real_test: None,
         what: "response Err(still recovering / already stopping)",
     },
     Mirror {
@@ -169,6 +229,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "cancel",
         lines: (3345, 3359),
+        guards: &[],
+        real_test: None,
         what: "the client sends Cancel{owner, reason} and waits 2 s; never blocked",
     },
     Mirror {
@@ -177,6 +239,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "cancel",
         lines: (3360, 3363),
+        guards: &[],
+        real_test: None,
         what: "recv_timeout: a delivered reply, or Err(did not acknowledge)",
     },
     Mirror {
@@ -185,6 +249,12 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_message",
         lines: (1301, 1337),
+        guards: &[
+            "let owner_matches = owner.is_none_or(|owner| owner == current.owner)",
+            "AttemptPhase::Starting",
+            "let _ = response.send(Ok(cancelled));",
+        ],
+        real_test: None,
         what: "should_abandon in Starting|Recording, begin_recovery, then response Ok(cancelled)",
     },
     Mirror {
@@ -193,6 +263,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "begin_recovery",
         lines: (2630, 2698),
+        guards: &[],
+        real_test: None,
         what: "phase Recovering, send_worker_stop, set_phase(Recovering), Recovering notification, failure report",
     },
     Mirror {
@@ -201,6 +273,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "begin_recovery",
         lines: (2683, 2689),
+        guards: &[],
+        real_test: None,
         what: "notify(Recovering{reason})",
     },
     Mirror {
@@ -209,6 +283,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_message",
         lines: (1335, 1336),
+        guards: &[],
+        real_test: None,
         what: "response.send(Ok(cancelled)) after begin_recovery returned",
     },
     Mirror {
@@ -217,6 +293,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_message",
         lines: (1244, 1245),
+        guards: &[],
+        real_test: None,
         what: "response.send(Ok(Vec::new())) after begin_recovery returned",
     },
     Mirror {
@@ -225,6 +303,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_worker_event",
         lines: (2134, 2205),
+        guards: &[],
+        real_test: None,
         what: "Starting -> Recording, set_phase(Recording), notify(Ready); a duplicate is ignored (2206-2215)",
     },
     Mirror {
@@ -233,6 +313,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_worker_event",
         lines: (2158, 2162),
+        guards: &[],
+        real_test: None,
         what: "notify(Ready)",
     },
     Mirror {
@@ -241,6 +323,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_worker_event",
         lines: (2217, 2235),
+        guards: &[],
+        real_test: None,
         what: "the failure is stored; the worker thread exits on its own",
     },
     Mirror {
@@ -249,6 +333,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_worker_event",
         lines: (2236, 2278),
+        guards: &[],
+        real_test: None,
         what: "Starting|Recording: begin_recovery(RuntimeFailure) with no failure report for a dictation",
     },
     Mirror {
@@ -257,6 +343,11 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_worker_event",
         lines: (2036, 2065),
+        guards: &[
+            "if current.phase == AttemptPhase::Stopping",
+            "AudioCancelReason::RuntimeFailure",
+        ],
+        real_test: None,
         what: "Stopping: report_cleanup_stalled; else begin_recovery(RuntimeFailure, Some(failure))",
     },
     Mirror {
@@ -265,6 +356,14 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_worker_event",
         lines: (2279, 2302),
+        guards: &[
+            "current.phase == AttemptPhase::Stopping",
+            "current.owner.dictation_id().is_some()",
+            "current.tail_deadline.is_none()",
+            "current.stop_response.is_some()",
+            "response.send(result).is_ok()",
+        ],
+        real_test: Some("a_sealed_stop_reply_is_delivered_at_the_seal_before_worker_exit"),
         what: "Stopping, no tail, response parked: take_samples, response.send, sealed_delivery = send ok",
     },
     Mirror {
@@ -273,6 +372,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_worker_event",
         lines: (2311, 2313),
+        guards: &[],
+        real_test: None,
         what: "finish_attempt",
     },
     Mirror {
@@ -281,6 +382,12 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "finish_attempt",
         lines: (2358, 2373),
+        guards: &[
+            "if finished.sealed_delivery",
+            "response.send(take_samples(&mut finished)).is_ok()",
+            "!response_delivered && !idle_after_clear",
+        ],
+        real_test: Some("sealed_delivery_overlaps_exit_but_retains_exclusive_owner_and_processing"),
         what: "deliver the parked response unless sealed; if not delivered, notify(Idle)",
     },
     Mirror {
@@ -289,6 +396,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "finish_attempt",
         lines: (2374, 2389),
+        guards: &[],
+        real_test: None,
         what: "report the failure (InitializationFailed), then notify(Idle)",
     },
     Mirror {
@@ -297,6 +406,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "finish_attempt",
         lines: (2390, 2403),
+        guards: &[],
+        real_test: None,
         what: "report BackendError (InitializationFailed), then notify(Idle)",
     },
     Mirror {
@@ -305,6 +416,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "finish_attempt",
         lines: (2404, 2456),
+        guards: &[],
+        real_test: None,
         what: "RuntimeFailure with samples: store the capture, then notify(Interrupted); else notify(Idle)",
     },
     Mirror {
@@ -313,6 +426,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "report_failure_once",
         lines: (2734, 2758),
+        guards: &[],
+        real_test: None,
         what: "notify(InitializationFailed{recovery_reason}), once",
     },
     Mirror {
@@ -321,6 +436,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "finish_attempt",
         lines: (2416, 2438),
+        guards: &[],
+        real_test: None,
         what: "the capture goes to the store (2419-2429), then notify(Interrupted) (2430-2438)",
     },
     Mirror {
@@ -329,6 +446,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "finish_attempt",
         lines: (2366, 2372),
+        guards: &[],
+        real_test: None,
         what: "notify(Idle)",
     },
     Mirror {
@@ -337,6 +456,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "finish_attempt",
         lines: (2458, 2462),
+        guards: &[],
+        real_test: None,
         what: "active = false, clear_owner, set_phase(Idle)",
     },
     Mirror {
@@ -345,6 +466,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "finish_attempt",
         lines: (2463, 2469),
+        guards: &[],
+        real_test: None,
         what: "notify(CleanupFinished) after the owner clear, for a sealed delivery",
     },
     Mirror {
@@ -353,6 +476,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_deadlines_at",
         lines: (2818, 2837),
+        guards: &[],
+        real_test: None,
         what: "the tail deadline: send_worker_stop (the worker then seals)",
     },
     Mirror {
@@ -361,6 +486,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_deadlines_at",
         lines: (2888, 2908),
+        guards: &[],
+        real_test: None,
         what: "Starting, once: notify(StillConnecting)",
     },
     Mirror {
@@ -369,6 +496,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_deadlines_at",
         lines: (2909, 2929),
+        guards: &[],
+        real_test: None,
         what: "Starting past the hard deadline: begin_recovery(HardDeadline, Some(failure))",
     },
     Mirror {
@@ -377,6 +506,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_deadlines_at",
         lines: (2930, 2941),
+        guards: &[],
+        real_test: None,
         what: "Stopping|Recovering past the guidance deadline: report_cleanup_stalled",
     },
     Mirror {
@@ -385,6 +516,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "report_cleanup_stalled",
         lines: (2944, 2963),
+        guards: &[],
+        real_test: None,
         what: "set_phase(Recovering), notify(RecoveryStalled), once",
     },
     Mirror {
@@ -393,6 +526,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "cancel_starting_for_environment_change",
         lines: (3322, 3330),
+        guards: &[],
+        real_test: None,
         what: "Cancel{owner: None, starting_only: true} with the response dropped",
     },
     Mirror {
@@ -401,6 +536,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "run_supervisor",
         lines: (721, 1174),
+        guards: &[],
+        real_test: None,
         what: "one message at a time; handle_deadlines_at on timeout, and before a message only for a tail",
     },
     Mirror {
@@ -409,6 +546,8 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio.rs",
         function: "spawn_capture_worker",
         lines: (3845, 3868),
+        guards: &[],
+        real_test: None,
         what: "after RuntimeFailed / InitFailed the worker returns and sends ThreadExited on its own",
     },
 ];
@@ -454,10 +593,28 @@ impl World {
     // ------------------------------------------------------ client events
 
     /// `send_start_request`: the client enqueues the start (`audio_lifecycle.rs:3035`).
-    pub fn sup_send_start(&mut self, rid: Rid, plan: AttemptPlan) {
+    pub fn sup_send_start(&mut self, rid: Rid, tid: TaskId, plan: AttemptPlan) {
+        let limit = reply_limit(tid, rid, 3);
+        self.sup
+            .replies
+            .insert(tid, ReplyState::Waiting { ticks: 0, limit });
         self.sup.queue.push_back(Msg::Start {
             rid,
+            tid,
             plan: Box::new(plan),
+        });
+    }
+
+    /// `await_start_response`'s timeout continuation (`3067-3078`): the caller flag
+    /// is revoked, then a `Cancel{owner}` with its response dropped is enqueued.
+    pub fn sup_start_timed_out(&mut self, rid: Rid, tid: TaskId) {
+        self.sup.caller_dead.insert(tid);
+        self.sup.timed_out_starts.insert(rid);
+        self.sup.queue.push_back(Msg::Cancel {
+            rid,
+            tid: None,
+            reason: AudioCancelReason::User,
+            starting_only: false,
         });
     }
 
@@ -546,7 +703,7 @@ impl World {
             | Msg::Worker { rid, .. } => *rid,
         };
         match message {
-            Msg::Start { rid, plan } => self.on_start(rid, *plan),
+            Msg::Start { rid, tid, plan } => self.on_start(rid, tid, *plan),
             Msg::Stop { rid, tid } => self.on_stop(rid, tid),
             Msg::Cancel {
                 rid,
@@ -558,7 +715,19 @@ impl World {
         }
     }
 
-    fn on_start(&mut self, rid: Rid, plan: AttemptPlan) {
+    /// The response of a start is decided here and sent by its own step.
+    fn answer_start(&mut self, tid: TaskId, answer: StartAnswer, then: Option<SupStep>) {
+        self.sup.start_pending.insert(tid, answer);
+        self.sup.handling = VecDeque::from([SupStep::StartAnswer(tid)]);
+        self.sup.handling.extend(then);
+    }
+
+    fn on_start(&mut self, rid: Rid, tid: TaskId, plan: AttemptPlan) {
+        if self.sup.caller_dead.contains(&tid) {
+            // `handle_start` 1402-1405: a revoked caller is refused with `Cancelled`.
+            self.answer_start(tid, StartAnswer::Failed(CaptureErr::Other), None);
+            return;
+        }
         if let Some(current) = &self.sup.attempt {
             // `handle_start` 1425-1433: by the attempt's own phase.
             let error = match current.phase {
@@ -566,28 +735,26 @@ impl World {
                 Phase::Recording | Phase::Idle => CaptureErr::Other,
                 Phase::Stopping | Phase::Recovering => CaptureErr::AudioRecovering,
             };
-            self.sup
-                .start_answers
-                .insert(rid, StartAnswer::Failed(error));
+            self.answer_start(tid, StartAnswer::Failed(error), None);
             return;
         }
         match plan.kind.clone() {
             StartKind::Reject(error) => {
-                self.sup
-                    .start_answers
-                    .insert(rid, StartAnswer::Failed(error));
+                self.answer_start(tid, StartAnswer::Failed(error), None);
             }
             StartKind::PendingCancelled => {
-                self.sup
-                    .start_answers
-                    .insert(rid, StartAnswer::Failed(CaptureErr::Other));
-                self.sup.handling = VecDeque::from([SupStep::Idle]);
+                self.answer_start(
+                    tid,
+                    StartAnswer::Failed(CaptureErr::Other),
+                    Some(SupStep::Idle),
+                );
             }
             StartKind::Fail | StartKind::Live => {
                 self.sup.owner = Some(rid);
                 self.sup.phase = Some(Phase::Starting);
                 self.sup.attempt = Some(Attempt::new(rid, plan));
-                self.sup.handling = VecDeque::from([SupStep::Accepted, SupStep::Answer]);
+                self.sup.start_pending.insert(tid, StartAnswer::Started);
+                self.sup.handling = VecDeque::from([SupStep::Accepted, SupStep::StartAnswer(tid)]);
             }
         }
     }
@@ -595,17 +762,17 @@ impl World {
     fn on_stop(&mut self, rid: Rid, tid: TaskId) {
         let Some(attempt) = self.sup.attempt.as_mut() else {
             // 1235-1238: no attempt, an empty capture.
-            self.send_reply(Some(tid), ReplyVal::Stop(Ok(0)));
+            self.sup.handling = VecDeque::from([SupStep::Reply(tid, ReplyVal::Stop(Ok(0)))]);
             return;
         };
         if attempt.rid != rid {
-            self.send_reply(Some(tid), ReplyVal::Stop(Err(())));
+            self.sup.handling = VecDeque::from([SupStep::Reply(tid, ReplyVal::Stop(Err(())))]);
             return;
         }
         match attempt.phase {
             Phase::Starting => {
                 attempt.ended_by = EndedBy::Cancel;
-                let mut steps = self.begin_recovery(AudioCancelReason::User, false);
+                let mut steps = self.begin_recovery(AudioCancelReason::User, None);
                 steps.push_back(SupStep::StopAnswer(tid));
                 self.sup.handling = steps;
             }
@@ -617,7 +784,7 @@ impl World {
                 self.sup.phase = Some(Phase::Stopping);
             }
             Phase::Recovering | Phase::Stopping | Phase::Idle => {
-                self.send_reply(Some(tid), ReplyVal::Stop(Err(())));
+                self.sup.handling = VecDeque::from([SupStep::Reply(tid, ReplyVal::Stop(Err(())))]);
             }
         }
     }
@@ -635,7 +802,10 @@ impl World {
                 && (!starting_only || attempt.phase == Phase::Starting)
         });
         if !abandon {
-            self.send_reply(tid, ReplyVal::Cancel(Ok(false)));
+            if let Some(tid) = tid {
+                self.sup.handling =
+                    VecDeque::from([SupStep::Reply(tid, ReplyVal::Cancel(Ok(false)))]);
+            }
             return;
         }
         if let Some(attempt) = self.sup.attempt.as_mut() {
@@ -645,7 +815,7 @@ impl World {
                 EndedBy::Recover { interrupted: None }
             };
         }
-        let mut steps = self.begin_recovery(reason, false);
+        let mut steps = self.begin_recovery(reason, None);
         if let Some(tid) = tid {
             steps.push_back(SupStep::CancelAnswer(tid));
         }
@@ -654,7 +824,11 @@ impl World {
 
     /// `begin_recovery` (`audio_lifecycle.rs:2630-2698`): the state it sets before
     /// its notification, and the steps that follow.
-    fn begin_recovery(&mut self, reason: AudioCancelReason, failure: bool) -> VecDeque<SupStep> {
+    fn begin_recovery(
+        &mut self,
+        reason: AudioCancelReason,
+        failure: Option<ErrCode>,
+    ) -> VecDeque<SupStep> {
         let Some(attempt) = self.sup.attempt.as_mut() else {
             return VecDeque::new();
         };
@@ -666,11 +840,11 @@ impl World {
         attempt.recovery_reason = Some(reason);
         self.sup.phase = Some(Phase::Recovering);
         let mut steps = VecDeque::from([SupStep::Recovering(reason)]);
-        if failure && !attempt.failure_reported {
+        if let Some(code) = failure.filter(|_| !attempt.failure_reported) {
             attempt.failure_reported = true;
             steps.push_back(SupStep::InitFailed {
                 recovery: Some(reason),
-                crash: false,
+                code,
             });
         }
         steps
@@ -699,16 +873,22 @@ impl World {
                 if matches!(phase, Phase::Starting | Phase::Recording) {
                     self.mark_recover_end();
                     self.sup.handling =
-                        self.begin_recovery(AudioCancelReason::RuntimeFailure, false);
+                        self.begin_recovery(AudioCancelReason::RuntimeFailure, None);
                 }
             }
             WorkerEv::TerminationUnconfirmed => {
                 if phase == Phase::Stopping {
                     self.report_cleanup_stalled();
                 } else {
-                    self.mark_recover_end();
-                    self.sup.handling =
-                        self.begin_recovery(AudioCancelReason::RuntimeFailure, true);
+                    // `begin_recovery` returns at once in `Recovering` (2640-2645): the
+                    // attempt then keeps the end it already has.
+                    if matches!(phase, Phase::Starting | Phase::Recording) {
+                        self.mark_recover_end();
+                    }
+                    self.sup.handling = self.begin_recovery(
+                        AudioCancelReason::RuntimeFailure,
+                        Some(ErrCode::TerminationUnconfirmed),
+                    );
                 }
             }
             WorkerEv::RecordingSealed => {
@@ -786,9 +966,15 @@ impl World {
             }
             Phase::Starting | Phase::Recording => {
                 if !attempt.failure_reported {
+                    // `failure.take().unwrap_or_else(BackendError)` (`2374-2389`): the
+                    // worker's own `InitFailed` kind, else a crash's `BackendError`.
                     steps.push_back(SupStep::InitFailed {
                         recovery: None,
-                        crash: attempt.phase == Phase::Recording,
+                        code: if attempt.plan.kind == StartKind::Fail {
+                            attempt.plan.fail
+                        } else {
+                            ErrCode::BackendError
+                        },
                     });
                 }
                 steps.push_back(SupStep::Idle);
@@ -810,6 +996,7 @@ impl World {
             Phase::Idle => {}
         }
         self.sup.finished.push((rid, attempt.ended_by));
+        self.sup.finished_fail.insert(rid, attempt.plan.fail);
         self.sup.handling = steps;
     }
 
@@ -870,8 +1057,11 @@ impl World {
                         if let Some(attempt) = self.sup.attempt.as_mut() {
                             attempt.ended_by = EndedBy::Recover { interrupted: None };
                         }
-                        let steps =
-                            self.begin_recovery(AudioCancelReason::HardDeadline, init_failed);
+                        let fail = self.sup.attempt.as_ref().map(|a| a.plan.fail);
+                        let steps = self.begin_recovery(
+                            AudioCancelReason::HardDeadline,
+                            fail.filter(|_| init_failed),
+                        );
                         self.sup.handling = steps;
                         return Some(true);
                     }
@@ -933,6 +1123,24 @@ impl World {
                 true
             }
             StartKind::Live => {
+                // Retained audio implies a delivered first buffer: the worker appends the
+                // PCM to the shared buffer and enqueues `FirstBuffer` before anything it
+                // later reports, on the same FIFO (`audio.rs`, the capture callback), so a
+                // runtime failure that preserved samples comes after `FirstBuffer`
+                // (D-S2b-11 (e)).
+                if matches!(
+                    plan_end,
+                    End::Recover {
+                        reason: AudioCancelReason::RuntimeFailure,
+                        interrupted: Some(_),
+                        ..
+                    }
+                ) && !worker.first_buffer
+                {
+                    worker.first_buffer = true;
+                    send(&mut self.sup.queue, WorkerEv::FirstBuffer);
+                    return true;
+                }
                 let may_end_first = coin;
                 if !worker.first_buffer && attempt.plan.ready && !may_end_first {
                     worker.first_buffer = true;

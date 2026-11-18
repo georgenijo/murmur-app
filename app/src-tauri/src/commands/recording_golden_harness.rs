@@ -861,6 +861,22 @@ impl World {
         self.notify(recording_id, AudioLifecycleEvent::Ready);
     }
 
+    /// A start the supervisor accepted whose response it has not sent yet:
+    /// `handle_start` installed the attempt, `set_owner`, `set_phase(Starting)`, then
+    /// `notify(Accepted)` (`audio_lifecycle.rs:1481-1588`).
+    pub(super) fn accepted_start(&self, recording_id: u64) {
+        self.set_owner(Some(recording_id));
+        self.set_phase(Phase::Starting);
+        self.notify(recording_id, AudioLifecycleEvent::Accepted);
+    }
+
+    /// `begin_recovery(reason)` of an attempt: `set_phase(Recovering)`, then
+    /// `notify(Recovering{reason})` (`audio_lifecycle.rs:2672-2689`).
+    pub(super) fn recovering(&self, recording_id: u64, reason: AudioCancelReason) {
+        self.set_phase(Phase::Recovering);
+        self.notify(recording_id, AudioLifecycleEvent::Recovering { reason });
+    }
+
     /// The worker failed at runtime: `Recovering{RuntimeFailure}`.
     pub(super) fn runtime_failure(&self, recording_id: u64) {
         self.set_phase(Phase::Recovering);

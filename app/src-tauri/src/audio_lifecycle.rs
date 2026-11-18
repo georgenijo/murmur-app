@@ -5135,6 +5135,87 @@ mod tests {
         }
     }
 
+    /// The seal guard of `handle_worker_event` (`RecordingSealed`: the phase is `Stopping`,
+    /// a dictation owner, no stop tail pending, a response parked) delivers the stop's
+    /// reply **at the seal, before the worker exits**: the worker thread is held in its
+    /// teardown, the reply has already arrived and the owner is still held in `Stopping`;
+    /// the exit then ends the attempt without a second reply and without `Idle`. The
+    /// property harness models exactly this ordering (`property/supervisor.rs`, the
+    /// `WorkerEv::RecordingSealed` mirror row names this test); a guard turned around
+    /// (`tail_deadline.is_none()` inverted, a dropped clause) delivers at the exit instead
+    /// and fails here at the first `recv_timeout`.
+    #[test]
+    fn a_sealed_stop_reply_is_delivered_at_the_seal_before_worker_exit() {
+        let teardown = Gate::closed();
+        let sink = Arc::new(RecordingSink::default());
+        let supervisor = spawn_supervisor(
+            Arc::new(SealedFactory {
+                teardown: teardown.clone(),
+                seal: true,
+            }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        let owner = AudioOwner::Dictation(710);
+        start(&supervisor, owner).recv().unwrap().unwrap();
+        wait_until("sealed worker ready", || {
+            supervisor.public.phase() == PublicPhase::Recording
+        });
+        let (response, result) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                released_at: None,
+                owner: Some(owner),
+                trigger: DictationStopTrigger::Toggle,
+                response,
+            })
+            .unwrap();
+        // The worker is held in its teardown, so nothing but the seal can have produced
+        // this reply, and the exit has not happened.
+        assert_eq!(
+            result
+                .recv_timeout(Duration::from_secs(1))
+                .expect("the sealed stop's reply arrives before the worker exits")
+                .unwrap(),
+            vec![0.25; 160]
+        );
+        assert_eq!(supervisor.public.phase(), PublicPhase::Stopping);
+        assert!(supervisor.public.owns(owner));
+        assert!(!sink
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, event)| matches!(
+                event,
+                AudioLifecycleEvent::Idle | AudioLifecycleEvent::CleanupFinished
+            )));
+        // The exit ends the attempt: cleanup is finished, no second reply, no `Idle`.
+        teardown.open();
+        wait_until("sealed worker joined", || {
+            supervisor.public.phase() == PublicPhase::Idle
+        });
+        assert!(!supervisor.public.owns(owner));
+        assert!(matches!(
+            result.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+        let events = sink.events.lock().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|(_, event)| *event == AudioLifecycleEvent::CleanupFinished)
+                .count(),
+            1
+        );
+        assert!(!events
+            .iter()
+            .any(|(_, event)| *event == AudioLifecycleEvent::Idle));
+        drop(events);
+        shutdown(&supervisor);
+    }
+
     #[test]
     fn sealed_delivery_overlaps_exit_but_retains_exclusive_owner_and_processing() {
         for seal in [false, true] {
