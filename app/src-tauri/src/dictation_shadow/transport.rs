@@ -31,9 +31,9 @@ use murmur_dictation_core::ids::RecordingId;
 
 use super::ring::{Rejection, Ring};
 use super::types::{
-    CondWitness, Inline, LiveOp, MirrorWitness, PredId, RecorderId, ReplyKind, ShadowHeader,
-    ShadowMsg, TickerGate, TickerSkipReason, WitnessedEffect, COND_CAPACITY, MIRROR_CAPACITY,
-    PRE_CAPACITY,
+    CondWitness, Inline, LiveOp, MirrorWitness, ObservedFact, PredId, RecorderId, ReplyKind,
+    ShadowHeader, ShadowMsg, TickerGate, TickerSkipReason, WitnessedEffect, COND_CAPACITY,
+    MIRROR_CAPACITY, PRE_CAPACITY,
 };
 
 /// The queue's capacity (C8.2, D-S2c-1 a).
@@ -485,6 +485,9 @@ pub(crate) enum Mark {
     Cond { pred: PredId, taken: bool },
     /// A live M-field written at effect time after D, before and after.
     Mirror(MirrorWitness),
+    /// A value the live path actually read (before the conditional that depends on
+    /// it): `SPEC` sends `SpeculativeFlowing` here.
+    Observed(ObservedFact),
     /// A ticker registration attempt after D.
     Ticker(TickerGate),
     /// A `PostDT:SD` whose spawner returned before the gate: no gate exists, and
@@ -550,6 +553,7 @@ pub(crate) fn mark(rec: &ShadowRecorder, mark: Mark) {
             rec: rec_id,
             mirror,
         },
+        Mark::Observed(fact) => ShadowMsg::Observed { rec: rec_id, fact },
         Mark::Ticker(gate) => ShadowMsg::Ticker { rec: rec_id, gate },
         Mark::TickerSkipped { target, reason } => ShadowMsg::TickerSkipped {
             rec: rec_id,

@@ -371,13 +371,14 @@ pub(super) fn flight_with(
                     } else {
                         assert!(header.pre_effects.push(witnessed));
                     }
+                    // Every live field an effect placed `Pre` / `In` wrote is in the
+                    // header (the context slot, the cancelled-through mark, the
+                    // keyboard flag).
                     if let Some(mirror) = mirror {
-                        if mirror.field == MirrorField::ActiveContext {
-                            if in_d {
-                                assert!(header.in_d_mirrors.push(mirror));
-                            } else {
-                                assert!(header.pre_mirrors.push(mirror));
-                            }
+                        if in_d {
+                            assert!(header.in_d_mirrors.push(mirror));
+                        } else {
+                            assert!(header.pre_mirrors.push(mirror));
                         }
                     }
                     if let (true, Some(gate)) = (in_d, gate) {
@@ -700,6 +701,7 @@ pub(super) fn retarget(msg: ShadowMsg, to: RecorderId) -> ShadowMsg {
         },
         ShadowMsg::Mirror { mirror, .. } => ShadowMsg::Mirror { rec: to, mirror },
         ShadowMsg::Ticker { gate, .. } => ShadowMsg::Ticker { rec: to, gate },
+        ShadowMsg::Observed { fact, .. } => ShadowMsg::Observed { rec: to, fact },
         ShadowMsg::TickerSkipped { target, reason, .. } => ShadowMsg::TickerSkipped {
             rec: to,
             target,
@@ -755,6 +757,7 @@ pub(super) fn send_later(recorder: &ShadowRecorder, flight: &Flight) {
             ShadowMsg::Cond { pred, taken, .. } => mark(recorder, Mark::Cond { pred, taken }),
             ShadowMsg::Mirror { mirror, .. } => mark(recorder, Mark::Mirror(mirror)),
             ShadowMsg::Ticker { gate, .. } => mark(recorder, Mark::Ticker(gate)),
+            ShadowMsg::Observed { fact, .. } => mark(recorder, Mark::Observed(fact)),
             ShadowMsg::TickerSkipped { target, reason, .. } => {
                 mark(recorder, Mark::TickerSkipped { target, reason });
             }

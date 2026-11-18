@@ -23,5 +23,6 @@ mod output;
 mod pd_credit;
 mod policy;
 mod ring;
+mod side_tasks;
 mod ticker_skip;
 mod wrong_slot;

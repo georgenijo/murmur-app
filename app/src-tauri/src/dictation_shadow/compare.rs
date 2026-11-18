@@ -39,8 +39,8 @@
 //!   `diff_kind` order, with `Pre` compared before `In`. Effects are matched across
 //!   placements, so an effect that ran in another placement than decided is
 //!   `Placement` (3), not a missing and an extra effect. Every conditional, mirror
-//!   and ticker attempt needs exactly one witness at a completed close. A `PostDT:SD`
-//!   needs exactly one of a `TickerGate` or a `TickerSkipped` (the spawner returned
+//!   and ticker attempt needs exactly one witness at a completed close. An `SD` (`In`
+//!   or `PostDT`) needs exactly one of a `TickerGate` or a `TickerSkipped` (the spawner returned
 //!   before the gate: no context recorded, or no live preview, D-S2c-6); neither, or
 //!   both, is `EffectSet`. A skip carries the recording the spawner was asked for and
 //!   is held to the decision's target like a gate (`PostState`); its reason is
@@ -214,11 +214,19 @@ fn mirror_field_of(effect: &Effect) -> Option<MirrorField> {
     }
 }
 
-/// Effects whose live-field write is captured in the header's mirror lists (the
-/// context slot, read inside the adapter's existing lock). `MC` and `KB` write after
-/// D and arrive as `Mirror` messages.
+/// Effects whose live-field write is captured in the header's mirror lists when they
+/// are placed `Pre` or `In` (the context slot, the cancelled-through mark and the
+/// keyboard flag, each as the port actually wrote it, read inside the adapter's
+/// existing lock or under D). The same effects placed `PostDT` / `PostT` arrive as
+/// `Mirror` messages.
 fn is_header_mirrored(effect: &Effect) -> bool {
-    matches!(effect, Effect::ClearContext(_) | Effect::SetContext(_))
+    matches!(
+        effect,
+        Effect::ClearContext(_)
+            | Effect::SetContext(_)
+            | Effect::MarkCancelled(_)
+            | Effect::KeyboardProcessing(_)
+    )
 }
 
 /// Whether the live field's value before and after an effect is the decided commit:
@@ -254,6 +262,14 @@ fn spec_flowing(observed: &[ObservedFact]) -> Option<bool> {
     observed.first().map(|fact| match fact {
         ObservedFact::SpeculativeFlowing(flowing) => *flowing,
     })
+}
+
+/// The value `SPEC` actually read, as an `Observed` message: the latest one wins over
+/// whatever the header observed (D-S2c-7 amendment).
+fn observed_flowing(fact: ObservedFact) -> bool {
+    match fact {
+        ObservedFact::SpeculativeFlowing(flowing) => flowing,
+    }
 }
 
 fn placement_index(placement: Placement) -> usize {
@@ -365,6 +381,9 @@ struct Record {
     ids: Vec<RecordingId>,
     decision: Decision,
     observed: Vec<ObservedFact>,
+    /// The latest `SpeculativeFlowing` an `Observed` message carried, which overrides
+    /// the header's value.
+    observed_later: Option<bool>,
     slots: Vec<Slot>,
     /// `Emitted{ok}` results by decided index: what `P-emit-ok(i)` reads.
     emit_ok: HashMap<usize, bool>,
@@ -379,7 +398,7 @@ struct Record {
     /// Decided `PostDT` / `PostT` effects that write a mirrored live field.
     later_mirrors: Vec<(usize, bool)>,
     /// Decided `PostDT` / `PostT` `SD` effects.
-    later_tickers: Vec<(usize, bool)>,
+    side_tickers: Vec<(usize, bool)>,
     last_idx: [Option<usize>; 4],
     h1_registered: u8,
     /// The `K:Pipeline` registration this record validated, until the comparator
@@ -441,11 +460,17 @@ impl Record {
             .filter(|(_, p)| later(p) && mirror_field_of(&p.effect).is_some())
             .map(|(i, _)| (i, false))
             .collect();
-        let later_tickers = decision
+        // Every decided `SD` is one open slot, in decision order: an `In:SD` is
+        // witnessed by the header's gate or by a `TickerSkipped` after the header
+        // (the spawner ran under D), a `PostDT:SD` by a `Ticker` or `TickerSkipped`
+        // message. Exactly one of the two per slot (D-S2c-6, D-S2c-7).
+        let side_tickers = decision
             .effects
             .iter()
             .enumerate()
-            .filter(|(_, p)| later(p) && p.effect == Effect::StartSideTasks)
+            .filter(|(_, p)| {
+                p.effect == Effect::StartSideTasks && (p.at == Placement::In || later(p))
+            })
             .map(|(i, _)| (i, false))
             .collect();
         let mut state = (header.pre.status, header.pre.current_id);
@@ -472,6 +497,7 @@ impl Record {
             slots: vec![Slot::Pending; decision.effects.len()],
             decision,
             observed: header.observed.to_vec(),
+            observed_later: None,
             emit_ok: HashMap::new(),
             state_before,
             ran: Vec::new(),
@@ -479,7 +505,7 @@ impl Record {
             later_conds,
             later_cond_cursor: 0,
             later_mirrors,
-            later_tickers,
+            side_tickers,
             last_idx: [None; 4],
             h1_registered: 0,
             registered: None,
@@ -535,10 +561,12 @@ impl Record {
     fn expected_taken(&self, cond: Cond) -> Expect {
         match cond {
             Cond::Always => Expect::Known(true),
-            Cond::UnlessSpeculativeFlowing => match spec_flowing(&self.observed) {
-                Some(flowing) => Expect::Known(!flowing),
-                None => Expect::Missing,
-            },
+            Cond::UnlessSpeculativeFlowing => {
+                match self.observed_later.or_else(|| spec_flowing(&self.observed)) {
+                    Some(flowing) => Expect::Known(!flowing),
+                    None => Expect::Missing,
+                }
+            }
             Cond::EmitOk(paired) => {
                 let paired = usize::from(paired);
                 match self.slots.get(paired) {
@@ -709,10 +737,17 @@ impl Record {
             .filter(|&j| self.decision.effects[j].effect == Effect::StartSideTasks)
             .collect();
         let gates: Vec<&TickerGate> = header.in_d_tickers.iter().collect();
-        if gates.len() != in_sd.len() {
+        // A gate the header carries witnesses its `SD`; one `SD` with no gate stays
+        // open for a `TickerSkipped` after the header and is missing only at a
+        // completed close. More gates than `SD`s is an extra witness.
+        if gates.len() > in_sd.len() {
             diffs[1].push(DiffKind::EffectSet);
         } else {
             for (&j, gate) in in_sd.iter().zip(&gates) {
+                if let Some((_, consumed)) = self.side_tickers.iter_mut().find(|(idx, _)| *idx == j)
+                {
+                    *consumed = true;
+                }
                 // Under D the gate reads the state the decision itself just wrote.
                 // The attempt must be for the recording the decision's `SD` targets
                 // before its outcome means anything (D-S2c-2 f).
@@ -920,10 +955,11 @@ impl Record {
 
     /// CP3: a ticker attempt after D (`PostDT:SD`), against the gate's own inputs.
     fn on_ticker(&mut self, gate: &TickerGate) -> Option<DiffKind> {
+        // A gate message is for a `PostDT:SD`; an `In:SD` gate is the header's.
         let Some(&mut (j, ref mut consumed)) = self
-            .later_tickers
+            .side_tickers
             .iter_mut()
-            .find(|(_, consumed)| !*consumed)
+            .find(|(i, consumed)| !*consumed && self.decision.effects[*i].at != Placement::In)
         else {
             return Some(DiffKind::EffectSet);
         };
@@ -941,15 +977,24 @@ impl Record {
     /// the wrong id is `PostState`, never a match (Sol round 8). The reason is recorded
     /// by the caller and never compared with the core.
     fn on_ticker_skipped(&mut self, target: RecordingId) -> Option<DiffKind> {
+        // The first open `SD` the live path did not skip: an `In:SD` (the spawner ran
+        // under D, so its skip follows the header), else a `PostDT:SD`.
         let Some(&mut (j, ref mut consumed)) = self
-            .later_tickers
+            .side_tickers
             .iter_mut()
-            .find(|(_, consumed)| !*consumed)
+            .find(|(i, consumed)| !*consumed && self.slots[*i] != Slot::Skipped)
         else {
             return Some(DiffKind::EffectSet);
         };
         *consumed = true;
         (!self.target_is(j, target)).then_some(DiffKind::PostState)
+    }
+
+    /// The value `SPEC` actually read, sent before its conditional's witness: the
+    /// latest one is what `UnlessSpeculativeFlowing` is judged against.
+    fn on_observed(&mut self, fact: ObservedFact) -> Option<DiffKind> {
+        self.observed_later = Some(observed_flowing(fact));
+        None
     }
 
     /// CP4: the flight closed.
@@ -972,7 +1017,7 @@ impl Record {
                         .iter()
                         .any(|(i, consumed)| !consumed && self.slots[*i] == Slot::Ran)
                     || self
-                        .later_tickers
+                        .side_tickers
                         .iter()
                         .any(|(i, consumed)| !consumed && self.slots[*i] == Slot::Ran))
             {
@@ -1598,6 +1643,7 @@ impl Comparator {
                 ShadowMsg::Cond { pred, taken, .. } => record.on_cond(pred, taken),
                 ShadowMsg::Mirror { mirror, .. } => record.on_mirror(&mirror),
                 ShadowMsg::Ticker { gate, .. } => record.on_ticker(&gate),
+                ShadowMsg::Observed { fact, .. } => record.on_observed(fact),
                 ShadowMsg::TickerSkipped { target, reason, .. } => {
                     let diff = record.on_ticker_skipped(target);
                     if diff.is_none() {

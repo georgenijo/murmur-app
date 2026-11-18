@@ -538,8 +538,15 @@ pub(crate) enum ShadowMsg {
         rec: RecorderId,
         gate: TickerGate,
     },
-    /// A `PostDT:SD` whose spawner returned before the gate (D-S2c-6): the
-    /// alternative to a [`ShadowMsg::Ticker`], never both.
+    /// A value the live path actually read, sent before the witness that depends on
+    /// it (D-S2c-7 amendment): the latest `SpeculativeFlowing` overrides the header's.
+    Observed {
+        rec: RecorderId,
+        fact: ObservedFact,
+    },
+    /// An `SD` whose spawner returned before the gate (D-S2c-6, D-S2c-7): the
+    /// alternative to a gate, never both. For an `In:SD` it follows the header (the
+    /// spawner runs under D); for a `PostDT:SD` it replaces the [`ShadowMsg::Ticker`].
     TickerSkipped {
         rec: RecorderId,
         /// The recording the spawner was asked for, checked against the decision's
@@ -578,6 +585,7 @@ impl ShadowMsg {
             | Self::Mirror { rec, .. }
             | Self::Ticker { rec, .. }
             | Self::TickerSkipped { rec, .. }
+            | Self::Observed { rec, .. }
             | Self::History { rec, .. }
             | Self::Reply { rec, .. }
             | Self::Close { rec, .. }
