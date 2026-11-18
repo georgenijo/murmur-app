@@ -18,16 +18,19 @@
 //!   persisted value without an effect commit, so only the seeding adapter may
 //!   call it (decision D-S1-5 a).
 //!
-//! The scan sees **production code only**: `#[cfg(test)]` items are removed and
-//! files that are test-only modules (`#[cfg(test)] mod x;`, with or without
-//! `#[path]`) are skipped. The per-function call-site checks parse real Rust
-//! syntax (`syn`) and name each caller by its qualified identity (module path,
-//! `impl` type or `<Type as Trait>`, fn names), so same-named functions in sibling
-//! modules, impls or trait impls differ, and skip an item only when its `cfg`
-//! predicate requires `test`; the textual checks blank comments and literals first.
+//! The scan sees **production code only**, and fails closed (D-S2-17). It walks every
+//! `.rs` file under `src/` and skips a whole file only when it is listed in
+//! `TEST_ONLY_FILES` (or the commented naming exceptions); the ratchet no longer
+//! resolves the module tree. Guard tests keep the list honest: every entry exists and
+//! follows the test naming convention. Inside a scanned file `#[cfg(test)]` items
+//! are skipped by their `cfg` predicate (only a predicate that requires `test`), also
+//! through the attributes of an enclosing `extern`, `impl`, `trait` or inline `mod`.
+//! The per-function call-site checks parse real Rust syntax (`syn`) and name each
+//! caller by its qualified identity (module path, `impl` type or `<Type as Trait>`,
+//! fn names), so same-named functions in sibling modules, impls or trait impls
+//! differ; the textual checks blank comments and literals first.
 
 use regex::Regex;
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// Direct writes to the M fields outside the adapter, per field. Only goes down.
@@ -291,118 +294,94 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Out-of-line module declarations (`mod x;`) of one file, as `(candidate files,
-/// whether the declaration requires `test`)`. A declaration requires `test` when its
-/// own `cfg` predicate does, or a module or declaration enclosing it does.
-struct ModDecls<'f> {
-    dir: &'f Path,
-    /// Directory that `mod x;` resolves against (inline modules append their name).
-    base: PathBuf,
-    inline_depth: usize,
-    under_test: bool,
-    found: Vec<(Vec<PathBuf>, bool)>,
+/// Files that are test-only (compiled only under `#[cfg(test)]`, or `include!`d
+/// into a test module), skipped whole by the scan. A file that is not listed is
+/// scanned as production: a test file missing here is a loud false positive, never a
+/// silent miss (D-S2-17). Paths are relative to `src/`; every entry follows the
+/// naming convention ([`follows_test_naming`]) and exists (guard tests).
+const TEST_ONLY_FILES: &[&str] = &[
+    "capture_preview_handoff_tests.rs",
+    "capture_speculative_tests.rs",
+    "capture_standby_tests.rs",
+    "capture_stop_diagnostics_tests.rs",
+    "commands/recording_cancel_tests.rs",
+    "commands/recording_contract_tests.rs",
+    "commands/recording_deferral_tests.rs",
+    "commands/recording_golden_tests.rs",
+    "commands/recording_host_tests.rs",
+    "commands/recording_lifecycle_barrier_tests.rs",
+    "commands/recording_lifecycle_tests.rs",
+    "commands/recording_pd_witness_tests.rs",
+    "commands/recording_preview_tests.rs",
+    "commands/recording_process_audio_tests.rs",
+    "commands/recording_start_tests.rs",
+    "commands/recording_stop_tests.rs",
+    "commands/recording_stream_reuse_tests.rs",
+    "dictation_context_equivalence_tests.rs",
+    "dictation_executor/ratchet_tests.rs",
+    "frontmost/soak_tests.rs",
+    "meeting_store/search_tests.rs",
+    "release_tail_tests.rs",
+    "stream_reuse_tests.rs",
+    "vad_stream_tests.rs",
+];
+
+/// Test-only files that do not follow the naming convention. They are not renamed in
+/// the ratchet's PR; each is skipped like a listed file and named in the PR body.
+/// Every entry must NOT follow the convention (a guard test), so this list cannot
+/// absorb a conforming file.
+const TEST_ONLY_NAMING_EXCEPTIONS: &[&str] = &[
+    // `#[cfg(test)] mod barrier_hook;` (lib.rs): the test barrier registry.
+    "barrier_hook.rs",
+    // `#[cfg(test)] #[path] mod golden_harness;` (recording.rs): the golden harness.
+    "commands/recording_golden_harness.rs",
+    // `#[cfg(test)] mod dictation_diagnostics_contract;` (lib.rs).
+    "dictation_diagnostics_contract.rs",
+    // The stream-reuse probe module, compiled only for tests.
+    "stream_reuse_probe.rs",
+];
+
+/// The test naming convention: `*_tests.rs`, `tests.rs`, or a path under a `tests/`
+/// or `test_support/` directory.
+fn follows_test_naming(relative: &str) -> bool {
+    let mut parts: Vec<&str> = relative.split('/').collect();
+    let file = parts.pop().unwrap_or("");
+    file == "tests.rs"
+        || file.ends_with("_tests.rs")
+        || parts
+            .iter()
+            .any(|dir| *dir == "tests" || *dir == "test_support")
 }
 
-impl<'ast> syn::visit::Visit<'ast> for ModDecls<'_> {
-    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
-        let requires_test = self.under_test || item.attrs.iter().any(is_cfg_test);
-        let name = syn::ext::IdentExt::unraw(&item.ident).to_string();
-        if item.content.is_some() {
-            let (outer_base, outer_test) = (self.base.clone(), self.under_test);
-            self.base = self.base.join(&name);
-            self.inline_depth += 1;
-            self.under_test = requires_test;
-            syn::visit::visit_item_mod(self, item);
-            self.inline_depth -= 1;
-            self.base = outer_base;
-            self.under_test = outer_test;
-            return;
-        }
-        let explicit = item.attrs.iter().find_map(|attr| {
-            if !attr.path().is_ident("path") {
-                return None;
-            }
-            match &attr.meta {
-                syn::Meta::NameValue(syn::MetaNameValue {
-                    value:
-                        syn::Expr::Lit(syn::ExprLit {
-                            lit: syn::Lit::Str(path),
-                            ..
-                        }),
-                    ..
-                }) => Some(path.value()),
-                _ => None,
-            }
-        });
-        let candidates = match explicit {
-            // Relative to the file's directory, or to the inline module's directory.
-            Some(file) if self.inline_depth == 0 => vec![self.dir.join(file)],
-            Some(file) => vec![self.base.join(file)],
-            None => vec![
-                self.base.join(format!("{name}.rs")),
-                self.base.join(&name).join("mod.rs"),
-            ],
-        };
-        self.found.push((candidates, requires_test));
-    }
+/// Whether the scan skips the whole file at `relative` (a path relative to `src/`).
+fn is_test_only_file(relative: &str) -> bool {
+    TEST_ONLY_FILES.contains(&relative) || TEST_ONLY_NAMING_EXCEPTIONS.contains(&relative)
 }
 
-/// Files that are test-only: every `mod x;` declaration that resolves to the file
-/// requires `test` (`#[cfg(test)]`, `all(test, ..)`, or inside such a module). A file
-/// that a production declaration also reaches (the same file declared twice, with
-/// `#[path]`) is production code, and a file nothing declares is production code.
-fn test_only_files(files: &[(PathBuf, String)]) -> HashSet<PathBuf> {
-    let known: HashSet<&PathBuf> = files.iter().map(|(path, _)| path).collect();
-    let mut declared_by: std::collections::HashMap<PathBuf, Vec<bool>> =
-        std::collections::HashMap::new();
-    for (path, source) in files {
-        let dir = path.parent().expect("parent");
-        let stem = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or("");
-        // `foo.rs` declares `mod x;` as `foo/x.rs`; `mod.rs`, `lib.rs` and `main.rs`
-        // (the directory owners) as `x.rs` next to them.
-        let owns_dir = matches!(stem, "mod" | "lib" | "main");
-        let tree =
-            syn::parse_file(source).unwrap_or_else(|error| panic!("parse {path:?}: {error}"));
-        let mut decls = ModDecls {
-            dir,
-            base: if owns_dir {
-                dir.to_path_buf()
-            } else {
-                dir.join(stem)
-            },
-            inline_depth: 0,
-            under_test: false,
-            found: Vec::new(),
-        };
-        syn::visit::Visit::visit_file(&mut decls, &tree);
-        for (candidates, requires_test) in decls.found {
-            for candidate in candidates {
-                // Normalise `a/../b` away so `#[path]` spellings of one file agree.
-                let candidate: PathBuf =
-                    candidate.components().fold(PathBuf::new(), |mut out, c| {
-                        if c == std::path::Component::ParentDir {
-                            out.pop();
-                        } else {
-                            out.push(c);
-                        }
-                        out
-                    });
-                if known.contains(&candidate) {
-                    declared_by
-                        .entry(candidate)
-                        .or_default()
-                        .push(requires_test);
-                }
-            }
-        }
-    }
-    declared_by
+/// `(path relative to dir, raw source)` of every `.rs` file under `dir` that
+/// `skip` does not name, sorted. No module resolution: whatever is not skipped by
+/// name is scanned.
+fn scan_dir(dir: &Path, skip: &dyn Fn(&str) -> bool) -> Vec<(String, String)> {
+    let mut paths = Vec::new();
+    rust_files(dir, &mut paths);
+    paths.sort();
+    paths
         .into_iter()
-        .filter(|(_, declarations)| declarations.iter().all(|requires_test| *requires_test))
-        .map(|(path, _)| path)
+        .filter_map(|path| {
+            let relative = path
+                .strip_prefix(dir)
+                .expect("under dir")
+                .to_string_lossy()
+                .replace('\\', "/");
+            if skip(&relative) {
+                None
+            } else {
+                Some((
+                    relative,
+                    std::fs::read_to_string(&path).expect("read source"),
+                ))
+            }
+        })
         .collect()
 }
 
@@ -415,33 +394,14 @@ fn production_sources() -> Vec<(String, String)> {
         .collect()
 }
 
-/// Every non-test-module `src/**/*.rs` file as `(path relative to src, raw source)`,
-/// for the syntax-aware scanner (it skips `#[cfg(test)]` items itself).
+/// Every `src/**/*.rs` file that is not test-only (see [`TEST_ONLY_FILES`]) as
+/// `(path relative to src, raw source)`, for the syntax-aware scanner (it skips
+/// `#[cfg(test)]` items itself).
 fn raw_production_sources() -> Vec<(String, String)> {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut paths = Vec::new();
-    rust_files(&src, &mut paths);
-    paths.sort();
-    let files: Vec<(PathBuf, String)> = paths
-        .into_iter()
-        .map(|path| {
-            let text = std::fs::read_to_string(&path).expect("read source");
-            (path, text)
-        })
-        .collect();
-    let skipped = test_only_files(&files);
-    files
-        .into_iter()
-        .filter(|(path, _)| !skipped.contains(path))
-        .map(|(path, text)| {
-            let relative = path
-                .strip_prefix(&src)
-                .expect("under src")
-                .to_string_lossy()
-                .replace('\\', "/");
-            (relative, text)
-        })
-        .collect()
+    scan_dir(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &is_test_only_file,
+    )
 }
 
 fn line_of(code: &str, offset: usize) -> usize {
@@ -805,6 +765,15 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         syn::visit::visit_item_macro(self, item);
     }
 
+    /// An `extern` block: `#[cfg(test)] extern \"C\" { m!(..) }` is not production
+    /// whatever its members carry.
+    fn visit_item_foreign_mod(&mut self, item: &'ast syn::ItemForeignMod) {
+        if self.skip(&item.attrs) {
+            return;
+        }
+        syn::visit::visit_item_foreign_mod(self, item);
+    }
+
     /// An associated macro in an `impl`, a `trait` or an `extern` block.
     fn visit_impl_item_macro(&mut self, item: &'ast syn::ImplItemMacro) {
         if self.skip(&item.attrs) {
@@ -1094,7 +1063,7 @@ fn scanner_flags_a_planted_direct_write() {
 }
 
 #[test]
-fn test_only_module_files_are_skipped() {
+fn test_only_files_are_skipped_and_production_files_are_scanned() {
     let files = production_sources();
     let names: Vec<&str> = files.iter().map(|(name, _)| name.as_str()).collect();
     for test_file in [
@@ -1107,6 +1076,85 @@ fn test_only_module_files_are_skipped() {
     }
     assert!(names.contains(&"commands/recording.rs"));
     assert!(names.contains(&"dictation_executor/adapter.rs"));
+}
+
+/// D-S2-17: every skipped file follows the test naming convention, and the
+/// exceptions do not (so the exception list cannot hide a conforming file or a
+/// production file under a wrong name).
+#[test]
+fn every_test_only_file_follows_the_naming_convention() {
+    for file in TEST_ONLY_FILES {
+        assert!(
+            follows_test_naming(file),
+            "{file} is in TEST_ONLY_FILES but does not follow the test naming convention \
+             (`*_tests.rs`, `tests.rs`, or under `tests/` or `test_support/`); list it in \
+             TEST_ONLY_NAMING_EXCEPTIONS with a comment instead"
+        );
+    }
+    for file in TEST_ONLY_NAMING_EXCEPTIONS {
+        assert!(
+            !follows_test_naming(file),
+            "{file} follows the convention: move it to TEST_ONLY_FILES"
+        );
+        assert!(!TEST_ONLY_FILES.contains(file), "{file} is listed twice");
+    }
+}
+
+/// D-S2-17: every listed file exists, so a rename or a deletion cannot leave a stale
+/// entry that would later skip an unrelated file of the same name.
+#[test]
+fn every_test_only_file_exists() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for file in TEST_ONLY_FILES.iter().chain(TEST_ONLY_NAMING_EXCEPTIONS) {
+        assert!(
+            src.join(file).is_file(),
+            "{file} is listed as test-only but does not exist under src/"
+        );
+    }
+}
+
+/// D-S2-17 (fail-closed): a file nobody listed is production. A production file that
+/// is missing from the list and holds a terminal call fails the ratchet, and so does a
+/// test-looking file that was not listed (a loud false positive, never a silent miss).
+#[test]
+fn an_unlisted_file_with_a_terminal_call_fails_the_ratchet() {
+    let allowed = [("commands/a.rs", "run", 1)];
+    let dir = tempfile::tempdir().expect("temp dir");
+    let write = |name: &str, code: &str| {
+        let path = dir.path().join(name);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(path, code).expect("write");
+    };
+    write("commands/a.rs", "fn run() { emit_dictation_terminal(a); }");
+    write(
+        "commands/new_production.rs",
+        "fn f() { emit_dictation_terminal(b); }",
+    );
+    write(
+        "commands/new_feature_tests.rs",
+        "fn g() { emit_dictation_terminal(c); }",
+    );
+    let check = |skip: &dyn Fn(&str) -> bool| {
+        check_terminal_emit_callers(
+            &terminal_emit_callers(&scan_dir(dir.path(), skip)),
+            &allowed,
+        )
+    };
+    // Nothing listed: the unlisted production file and the unlisted test-named file
+    // are both scanned.
+    let found = check(&|_| false).expect_err("two unlisted files with a terminal call");
+    assert!(found.contains("commands/new_production.rs"), "{found}");
+    assert!(found.contains("commands/new_feature_tests.rs"), "{found}");
+    // Listing the test file (and only it) leaves the production file failing.
+    let listed = |name: &str| name == "commands/new_feature_tests.rs";
+    let found = check(&listed).expect_err("the production file is still scanned");
+    assert!(found.contains("commands/new_production.rs"), "{found}");
+    assert!(!found.contains("new_feature_tests"), "{found}");
+    // Listing both is the only way to pass.
+    assert_eq!(
+        check(&|name: &str| name != "commands/a.rs" && name.starts_with("commands/new_")),
+        Ok(())
+    );
 }
 
 /// The D-S1-5 (a) gate fails on a second caller anywhere: in another file, in
@@ -1471,46 +1519,54 @@ fn scanner_counts_constructors_used_as_values() {
     );
 }
 
-/// Sol minor (#1151): a file is test-only only when every `mod` declaration that
-/// resolves to it requires `test`. The same file declared once under `#[cfg(test)]`
-/// and once in production (through `#[path]`) is production code.
+/// Sol round-5 (#1151): the layouts the old module resolver got wrong are all plain
+/// production under the fail-closed scan, because nothing resolves modules: a `#[path]`
+/// inside an inline module, a child of a module loaded with `#[path]`, and a
+/// `#[cfg_attr(unix, path = ..)]` declaration. Each is written to a temp directory and
+/// scanned with an empty skip list; every file's terminal call is counted.
 #[test]
-fn a_file_reached_by_a_production_declaration_is_not_skipped() {
-    let root = PathBuf::from("/s");
-    let file = |name: &str| root.join(name);
-    let skipped = |lib: &str| {
-        let files: Vec<(PathBuf, String)> = vec![
-            (file("lib.rs"), lib.to_string()),
-            (file("shared.rs"), String::new()),
-            (file("helpers.rs"), String::new()),
-            (file("lone.rs"), String::new()),
-            (file("nested/mod.rs"), "#[cfg(test)] mod deep;".to_string()),
-            (file("nested/deep.rs"), String::new()),
-        ];
-        test_only_files(&files)
+fn files_reached_through_path_attributes_are_scanned_as_production() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let write = |name: &str, code: &str| {
+        let path = dir.path().join(name);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(path, code).expect("write");
     };
-    // Test declaration first, production second, and the other way round.
-    for lib in [
-        "#[cfg(test)] #[path = \"shared.rs\"] mod as_test; #[path = \"shared.rs\"] mod as_prod;",
-        "#[path = \"shared.rs\"] mod as_prod; #[cfg(test)] #[path = \"shared.rs\"] mod as_test;",
-        "#[cfg(test)] mod shared; #[cfg(any(test, unix))] #[path = \"shared.rs\"] mod again;",
+    let call = |name: &str| format!("pub fn {name}() {{ emit_dictation_terminal(a); }}");
+    write(
+        "lib.rs",
+        "#[cfg(test)] mod t { #[path = \"inline_path.rs\"] mod a; }\n\
+         mod outer { #[path = \"inner_path.rs\"] mod b; }\n\
+         #[path = \"loaded.rs\"] mod loaded;\n\
+         #[cfg_attr(unix, path = \"attr_path.rs\")] mod c;\n\
+         #[cfg(test)] #[path = \"shared.rs\"] mod as_test;\n\
+         #[path = \"shared.rs\"] mod as_prod;",
+    );
+    write("outer/inner_path.rs", &call("inner"));
+    write("inline_path.rs", &call("inline"));
+    write("loaded.rs", "mod child;");
+    write("loaded/child.rs", &call("child"));
+    write("attr_path.rs", &call("attr"));
+    write("shared.rs", &call("shared"));
+    let sources = scan_dir(dir.path(), &|_| false);
+    let found: Vec<(String, String, usize)> = terminal_emit_callers(&sources);
+    let names: Vec<(&str, &str)> = found
+        .iter()
+        .map(|(file, function, _)| (file.as_str(), function.as_str()))
+        .collect();
+    for expected in [
+        ("outer/inner_path.rs", "inner"),
+        ("inline_path.rs", "inline"),
+        ("loaded/child.rs", "child"),
+        ("attr_path.rs", "attr"),
+        ("shared.rs", "shared"),
     ] {
-        assert!(!skipped(lib).contains(&file("shared.rs")), "{lib}");
+        assert!(names.contains(&expected), "{expected:?} not in {names:?}");
     }
-    // Every declaration requires `test`: skipped, however it is spelled.
-    for lib in [
-        "#[cfg(test)] mod shared;",
-        "#[cfg(test)] #[path = \"shared.rs\"] mod a; #[cfg(all(test, unix))] #[path = \"shared.rs\"] mod b;",
-        "#[cfg(test)] mod outer { #[path = \"../shared.rs\"] mod inner; }",
-    ] {
-        assert!(skipped(lib).contains(&file("shared.rs")), "{lib}");
-    }
-    // Declared under `any(test, ..)`, or not at all: production.
-    assert!(!skipped("#[cfg(any(test, unix))] mod shared;").contains(&file("shared.rs")));
-    assert!(!skipped("mod helpers;").contains(&file("helpers.rs")));
-    assert!(!skipped("").contains(&file("lone.rs")));
-    // A directory-owning `mod.rs` resolves its own children.
-    assert!(skipped("mod nested;").contains(&file("nested/deep.rs")));
+    // Only a listed file is skipped, and only by name.
+    let skip_shared = |name: &str| name == "shared.rs";
+    let after = terminal_emit_callers(&scan_dir(dir.path(), &skip_shared));
+    assert_eq!(after.len(), found.len() - 1);
 }
 
 /// Sol minor (#1151): `r#PersistedCore::new(..)` is the same function as
@@ -1573,4 +1629,34 @@ fn scanner_skips_cfg_test_associated_macros() {
         callers(r#"extern "C" { m! { emit_dictation_terminal(a) } }"#),
         vec![("commands/a.rs".to_string(), String::new(), 1)]
     );
+}
+
+/// D-S2-17: the attributes of an enclosing `extern`, `impl`, `trait` or inline `mod`
+/// are checked before descending: a macro invocation inside a `#[cfg(test)]` block is
+/// not production, whatever the macro itself carries, and an `any(test, ..)` block is.
+#[test]
+fn scanner_skips_macros_in_cfg_test_enclosing_blocks() {
+    let callers =
+        |code: &str| terminal_emit_callers(&[("commands/a.rs".to_string(), code.to_string())]);
+    for test_only in [
+        r#"#[cfg(test)] extern "C" { m!(emit_dictation_terminal(a)); }"#,
+        r#"#[cfg(test)] extern "C" { m! { emit_dictation_terminal(a) } }"#,
+        "#[cfg(test)] impl X { m! { emit_dictation_terminal(a) } }",
+        "#[cfg(test)] trait T { m! { emit_dictation_terminal(a) } }",
+        r#"#[cfg(test)] mod m { extern "C" { m! { emit_dictation_terminal(a) } } }"#,
+        "#[cfg(all(test, unix))] impl X { fn f() { emit_dictation_terminal(a); } }",
+    ] {
+        assert_eq!(callers(test_only), vec![], "{test_only}");
+    }
+    for production in [
+        r#"#[cfg(any(test, unix))] extern "C" { m!(emit_dictation_terminal(a)); }"#,
+        r#"extern "C" { m!(emit_dictation_terminal(a)); }"#,
+        r#"#[cfg(not(test))] extern "C" { m!(emit_dictation_terminal(a)); }"#,
+    ] {
+        assert_eq!(
+            callers(production),
+            vec![("commands/a.rs".to_string(), String::new(), 1)],
+            "{production}"
+        );
+    }
 }
