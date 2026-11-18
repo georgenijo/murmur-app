@@ -264,20 +264,33 @@ pub(crate) fn find_fragment(
     fragment: &[Flat],
     lines: (usize, usize),
 ) -> Option<usize> {
+    find_fragments(haystack, fragment, lines).first().copied()
+}
+
+/// Every index in `haystack` where `fragment` occurs as a sequence of tokens (overlapping
+/// occurrences included), restricted to tokens whose line lies in `lines` (inclusive).
+pub(crate) fn find_fragments(
+    haystack: &[Flat],
+    fragment: &[Flat],
+    lines: (usize, usize),
+) -> Vec<usize> {
     if fragment.is_empty() {
-        return None;
+        return Vec::new();
     }
     let inside: Vec<usize> = (0..haystack.len())
         .filter(|index| haystack[*index].line >= lines.0 && haystack[*index].line <= lines.1)
         .collect();
-    inside.windows(fragment.len()).find_map(|window| {
-        let contiguous = window.windows(2).all(|pair| pair[1] == pair[0] + 1);
-        let same = window
-            .iter()
-            .enumerate()
-            .all(|(offset, index)| same_token(&haystack[*index], &fragment[offset]));
-        (contiguous && same).then_some(window[0])
-    })
+    inside
+        .windows(fragment.len())
+        .filter_map(|window| {
+            let contiguous = window.windows(2).all(|pair| pair[1] == pair[0] + 1);
+            let same = window
+                .iter()
+                .enumerate()
+                .all(|(offset, index)| same_token(&haystack[*index], &fragment[offset]));
+            (contiguous && same).then_some(window[0])
+        })
+        .collect()
 }
 
 fn hash_of(code: &str) -> u64 {

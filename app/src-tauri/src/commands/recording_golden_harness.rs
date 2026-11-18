@@ -1132,6 +1132,16 @@ impl SupervisorPort for World {
             let knobs = self.knobs();
             (knobs.stop_result, knobs.stop_unsealed)
         };
+        // A stop the supervisor handles after the attempt's owner was cleared finds no
+        // attempt: `handle_message` answers `Ok(Vec::new())` at once
+        // (`audio_lifecycle.rs:1235-1238`). Nothing is sealed, so no `CleanupFinished`
+        // follows and no owner clear is pending.
+        if result.is_ok() && locked(&self.supervisor).owner != Some(recording_id) {
+            self.push(format!(
+                "supervisor.stop_after_owner_clear {recording_id} samples=0"
+            ));
+            return Ok(Vec::new());
+        }
         match result {
             Ok(samples) => {
                 if unsealed {

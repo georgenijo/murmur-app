@@ -33,7 +33,7 @@
 //! the table checked here are the same data.
 #![cfg(test)]
 
-use crate::token_pin_tests::{find_fragment, flat_tokens, fragment_tokens, token_hash, Flat};
+use crate::token_pin_tests::{find_fragments, flat_tokens, fragment_tokens, token_hash, Flat};
 use proc_macro2::TokenStream;
 use quote::ToTokens;
 use std::collections::{BTreeMap, BTreeSet};
@@ -635,6 +635,44 @@ fn a_line_shift_breaks_no_citation() {
     );
 }
 
+/// D-S2b-20: a citation must match exactly once inside its pinned function, so a guard
+/// cannot be satisfied by the same tokens in another match arm. Sol's mutant: the
+/// `RecordingSealed` phase guard inverted. The old citation matched `TerminationUnconfirmed`'s
+/// identical `current.phase == AttemptPhase::Stopping` instead; the arm-anchored citation
+/// fails on the inverted tree even when the function's hash is re-pinned (the citation
+/// check does not read a hash). A duplicated cited fragment fails too, naming every match.
+#[test]
+fn a_citation_matches_exactly_once_inside_its_pinned_function() {
+    let inverted = LIFECYCLE_SOURCE.replacen(
+        "if current.phase == AttemptPhase::Stopping\n                && current.owner.dictation_id().is_some()",
+        "if current.phase != AttemptPhase::Stopping\n                && current.owner.dictation_id().is_some()",
+        1,
+    );
+    assert_ne!(inverted, LIFECYCLE_SOURCE, "the probe's anchor exists");
+    let problems = citation_problems(&inverted, AUDIO_SOURCE);
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.starts_with("WorkerEv::RecordingSealed")
+                && problem.contains("are not in `handle_worker_event`")),
+        "{problems:?}"
+    );
+    // The same cited tokens twice in the function: ambiguous, every match printed.
+    let doubled = LIFECYCLE_SOURCE.replacen(
+        "let samples_ready = result.is_ok();",
+        "let samples_ready = result.is_ok();\n                let _twice = current.tail_deadline.is_none();",
+        1,
+    );
+    assert_ne!(doubled, LIFECYCLE_SOURCE, "the probe's anchor exists");
+    let problems = citation_problems(&doubled, AUDIO_SOURCE);
+    assert!(
+        problems.iter().any(|problem| problem.contains(
+            "the tokens `current.tail_deadline.is_none()` occur 2 times in `handle_worker_event`"
+        ) && problem.matches("lines ").count() == 2),
+        "{problems:?}"
+    );
+}
+
 /// Every problem the mirror's citations have against the given sources.
 fn citation_problems(lifecycle_source: &str, audio_source: &str) -> Vec<String> {
     let (mut problems, matched) = citation_report(lifecycle_source, audio_source);
@@ -686,18 +724,34 @@ fn citation_report(lifecycle_source: &str, audio_source: &str) -> (Vec<String>, 
             match fragment_tokens(fragment) {
                 Err(problem) => problems.push(format!("{}: {problem}", row.step)),
                 Ok(wanted) => {
-                    match find_fragment(&item.tokens, &wanted, (item.lines.0, item.lines.1)) {
-                        Some(at) => {
-                            let end = item.tokens[at + wanted.len() - 1].line;
-                            matched.push(format!(
-                                "{}: `{}` lines {}-{end}",
-                                row.step, row.function, item.tokens[at].line
-                            ));
+                    let at = find_fragments(&item.tokens, &wanted, (item.lines.0, item.lines.1));
+                    let places: Vec<String> = at
+                        .iter()
+                        .map(|at| {
+                            format!(
+                                "lines {}-{}",
+                                item.tokens[*at].line,
+                                item.tokens[*at + wanted.len() - 1].line
+                            )
+                        })
+                        .collect();
+                    match places.as_slice() {
+                        [place] => {
+                            matched.push(format!("{}: `{}` {place}", row.step, row.function))
                         }
-                        None => problems.push(format!(
+                        [] => problems.push(format!(
                             "{}: the tokens `{fragment}` are not in `{}` (lines {}-{}); the model \
                              mirrors code the source no longer has",
                             row.step, row.function, item.lines.0, item.lines.1
+                        )),
+                        many => problems.push(format!(
+                            "{}: the tokens `{fragment}` occur {} times in `{}` ({}); a citation \
+                             must match exactly once, so lengthen it (for example with its match \
+                             arm pattern) until it is unique",
+                            row.step,
+                            many.len(),
+                            row.function,
+                            many.join(", ")
                         )),
                     }
                 }

@@ -801,6 +801,35 @@ fn pd_witness_map_is_complete_and_names_real_tests() {
     }
 }
 
+/// The names of the functions of `source` that Cargo runs: a `#[test]` function without
+/// `#[ignore]`, at any module depth. A function without the attribute, or an ignored one,
+/// is not a witness.
+fn running_tests(source: &str) -> std::collections::BTreeSet<String> {
+    fn walk(items: &[syn::Item], names: &mut std::collections::BTreeSet<String>) {
+        for item in items {
+            match item {
+                syn::Item::Fn(function) => {
+                    let has =
+                        |name: &str| function.attrs.iter().any(|attr| attr.path().is_ident(name));
+                    if has("test") && !has("ignore") {
+                        names.insert(function.sig.ident.to_string());
+                    }
+                }
+                syn::Item::Mod(module) => {
+                    if let Some((_, inner)) = &module.content {
+                        walk(inner, names);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let file = syn::parse_file(source).expect("the findings tests parse");
+    let mut names = std::collections::BTreeSet::new();
+    walk(&file.items, &mut names);
+    names
+}
+
 /// The names between backticks in `text` that are shell witnesses of a property-harness
 /// finding (`pd<number>_...`).
 fn finding_witness_names(text: &str) -> std::collections::BTreeSet<String> {
@@ -828,7 +857,7 @@ fn harness_section(map: &str) -> &str {
 }
 
 /// Every `pd*_` witness the map's property-harness section names exists in
-/// `recording_harness_findings_tests.rs`, and PD-19..PD-24 each name at least one: renaming
+/// `recording_harness_findings_tests.rs` as a `#[test]` function without `#[ignore]`, and PD-19..PD-24 each name at least one: renaming
 /// or deleting such a test fails here instead of passing silently.
 #[test]
 fn the_property_harness_section_names_real_shell_tests() {
@@ -838,11 +867,12 @@ fn the_property_harness_section_names_real_shell_tests() {
         .expect("the findings tests");
     let section = harness_section(&map);
     let names = finding_witness_names(section);
+    let running = running_tests(&findings);
     assert!(!names.is_empty(), "the section names no shell witness");
     for name in &names {
         assert!(
-            findings.contains(&format!("fn {name}(")),
-            "the map names `{name}`, which is not a test of recording_harness_findings_tests.rs"
+            running.contains(name),
+            "the map names `{name}`, which is not a `#[test]` function without `#[ignore]` in recording_harness_findings_tests.rs"
         );
     }
     for pd in 19..=24 {
@@ -855,6 +885,19 @@ fn the_property_harness_section_names_real_shell_tests() {
             "PD-{pd} names no shell witness: {line}"
         );
     }
+}
+
+/// A function without `#[test]`, an ignored test and a test in a nested module: only
+/// the tests Cargo runs count as witnesses.
+#[test]
+fn the_witness_check_ignores_functions_cargo_never_runs() {
+    let running = running_tests(
+        "fn pd1_plain() {}\n#[test]\nfn pd2_runs() {}\n#[test]\n#[ignore = \"slow\"]\nfn pd3_ignored() {}\nmod inner { #[test] fn pd4_nested() {} }",
+    );
+    assert_eq!(
+        running.into_iter().collect::<Vec<_>>(),
+        vec!["pd2_runs".to_string(), "pd4_nested".to_string()]
+    );
 }
 
 /// Every `shell_test` of the core crate's `FINDING_SEEDS` names a real test of
@@ -871,6 +914,7 @@ fn every_finding_seed_names_a_real_shell_test() {
     let map = std::fs::read_to_string(root.join("src/commands/recording_pd_witness_map.md"))
         .expect("map");
     let mapped = finding_witness_names(harness_section(&map));
+    let running = running_tests(&findings);
     let table = &seeds[seeds
         .find("const FINDING_SEEDS")
         .expect("FINDING_SEEDS exists")..];
@@ -889,8 +933,8 @@ fn every_finding_seed_names_a_real_shell_test() {
             .unwrap_or_else(|| panic!("a shell_test names no string literal: {entry}"));
         named += 1;
         assert!(
-            findings.contains(&format!("fn {name}(")),
-            "FINDING_SEEDS names `{name}`, which is not a test of recording_harness_findings_tests.rs"
+            running.contains(name),
+            "FINDING_SEEDS names `{name}`, which is not a `#[test]` function without `#[ignore]` in recording_harness_findings_tests.rs"
         );
         assert!(
             mapped.contains(name),

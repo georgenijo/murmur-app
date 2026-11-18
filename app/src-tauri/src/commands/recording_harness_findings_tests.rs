@@ -521,6 +521,27 @@ fn pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree() {
     ));
 }
 
+/// The parked stop was handled after the owner cleared: the supervisor answered an empty
+/// vector at once (`audio_lifecycle.rs:1235-1238`), sealed nothing and sent no
+/// `CleanupFinished`; the owner cleared while the stop was parked.
+fn assert_queued_stop_after_owner_clear(trace: &[String]) {
+    let parked = trace
+        .iter()
+        .position(|line| line.starts_with("supervisor.stop 1 "))
+        .expect("the stop reached the supervisor");
+    let cleared = position(trace, "supervisor.clear_owner 1");
+    let answered = position(trace, "supervisor.stop_after_owner_clear 1 samples=0");
+    assert!(
+        parked < cleared && cleared < answered,
+        "the owner cleared between the stop's parking and its answer: {trace:#?}"
+    );
+    assert!(
+        !trace.iter().any(|line| line.contains("supervisor.sealed_delivery")
+            || line.contains("CleanupFinished")),
+        "a queued stop after the owner cleared seals nothing and emits no CleanupFinished: {trace:#?}"
+    );
+}
+
 // ------------------------------------------------------------------ PD-21
 // Harness seed 244,103 (R206.2 / R203.4). The cancel of a `Recording` dictation
 // (R205.4) releases T for its capture cancel; before its `Cancel` reaches the
@@ -572,9 +593,11 @@ fn pd21_timed_out_cancel_then_a_stop_that_wins_capture(world: &Arc<World>) {
     // Seed 244,103's order after the cancel's receive expired: the worker failed at
     // runtime with 12,000 samples retained (`2630-2698`, `Recovering{RuntimeFailure}`,
     // R209.2 at `Processing`), `finish_attempt` stored the capture and notified
-    // `Interrupted` (`2405-2432`; the arm schedules the auto-stop, R215.2), the
-    // auto-stop is refused at `Processing` (R201.2) and the owner clears (`2460`). Only
-    // then does the parked stop's capture stop return, and its reply is empty (R203.4).
+    // `Interrupted` (`2405-2432`; the arm schedules the auto-stop, R215.2), the owner
+    // clears (`2460`) and the auto-stop is refused at `Processing` (R201.2). Only then does
+    // the parked stop's `Stop` message reach the supervisor, which has no attempt: it
+    // answers an empty vector at once (`1235-1238`), not sealed, so no `CleanupFinished`
+    // follows (R203.4).
     world.runtime_failure(1);
     world.finish_interrupted(1, 12_000);
     assert_eq!(
@@ -582,13 +605,14 @@ fn pd21_timed_out_cancel_then_a_stop_that_wins_capture(world: &Arc<World>) {
         vec![1],
         "the Interrupted arm scheduled the auto-stop"
     );
+    // The owner clears before the auto-stop runs (seed 244,103's order, `2460`).
+    world.release_owner_clear();
     let refused = stop_reply(world, Some(1));
     assert_eq!(
         refused,
         Ok(serde_json::json!({ "type": "already_processing", "state": "processing" })),
         "the auto-stop is refused at Processing (R201.2)"
     );
-    world.release_owner_clear();
     let reply = stop.finish();
     world.reply("stop", &reply);
     assert_eq!(reply, empty_transcription());
@@ -609,15 +633,7 @@ fn pd21_timed_out_cancel_then_a_stop_that_wins_capture(world: &Arc<World>) {
             .any(|line| line.starts_with("supervisor.notify 1 Recovering") && line.contains("User")),
         "the late cancel published no Recovering{{User}}: {trace:#?}"
     );
-    let cleared = position(&trace, "supervisor.clear_owner 1");
-    let stopped = trace
-        .iter()
-        .position(|line| line.starts_with("supervisor.stop 1 "))
-        .expect("the stop reached the capture stop");
-    assert!(
-        cleared > stopped,
-        "the owner cleared while the stop was parked"
-    );
+    assert_queued_stop_after_owner_clear(&trace);
 }
 
 #[test]
@@ -1008,15 +1024,7 @@ fn pd23_an_empty_stop_completes_no_speech(world: &Arc<World>) {
         "NoSpeech won performance before the cancel tail completed"
     );
     let trace = world.trace();
-    let cleared = position(&trace, "supervisor.clear_owner 1");
-    let stopped = trace
-        .iter()
-        .position(|line| line.starts_with("supervisor.stop 1 "))
-        .expect("the stop reached the capture stop");
-    assert!(
-        cleared > stopped,
-        "the owner cleared while the stop was parked"
-    );
+    assert_queued_stop_after_owner_clear(&trace);
 }
 
 #[test]

@@ -395,7 +395,7 @@ harness through `handle` is tracked in #1160.
   `is_dictation_cleanup_pending`, `is_dictation_recording`, `take_interrupted_dictation`,
   `PublicState::owns` and the rest of the public-state accessors) cites the
   `audio_lifecycle.rs` function it mirrors (no line range: the function is hash-pinned, so
-  the test finds the cited tokens anywhere inside it and prints the lines it matched), with a
+  the test finds each cited token sequence **exactly once** inside it and prints the lines it matched; a citation that matches zero or several times fails, so a guard cannot be satisfied by the same tokens in another match arm), with a
   fragment of source that must appear there, the **guard expressions** of the cited code (`guards`) and, where one
   exists, a test of the real supervisor that runs the behaviour (`real_test`: for the sealed
   reply `a_sealed_stop_reply_is_delivered_at_the_seal_before_worker_exit`; for cancel
@@ -418,7 +418,7 @@ harness through `handle` is tracked in #1160.
   pins stay to name what changed. The normalization is the shell ratchet's (`src/token_pin_tests.rs`, shared:
   `proc_macro2` tokens, token kinds, punctuation spacing and commas kept, only whitespace and
   comments stripped), so a comment-only edit passes and a one-token edit fails. The
-  citations are matched as token sequences within the cited, hash-pinned function
+  citations are matched as token sequences, exactly once, within the cited, hash-pinned function
   (`span-locations` gives the matched lines for the diagnostics), so a comment inside a cited
   expression does not hide it and a line shift breaks nothing. A re-pin commit says the model step
   was re-checked against the change (`cargo test --lib print_current_pins -- --ignored

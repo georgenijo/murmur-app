@@ -20,7 +20,8 @@ pub struct Mirror {
     pub function: &'static str,
     /// A fragment of source that must appear within the cited function (the test
     /// reads the source and the function is hash-pinned, so a citation that drifted or
-    /// never matched fails). No line range is kept: the function's pin is the guard
+    /// never matched fails). It must match **exactly once** in the function, so it is long enough
+    /// (an arm pattern, the statement around it) to be unique. No line range is kept: the function's pin is the guard
     /// against an edit inside it, and the test prints the lines it matched.
     pub needle: &'static str,
     /// What the model does there.
@@ -57,19 +58,19 @@ pub const MIRROR: &[Mirror] = &[
     },
     Mirror {
         step: "Msg::Start (accept, refused)",
-        needle: "AudioStartError::Cancelled",
+        needle: "if !request.caller_alive.load(Ordering::Acquire) { let _ = request.response.send(Err(AudioStartError::Cancelled)); return; } if request.probe_permit.as_ref().is_some_and(|permit| !permit.is_valid()) { let _ = request.response.send(Err(AudioStartError::Cancelled)); return; } if request.probe_permit.is_some() && !factory.automatic_capture_authorized()",
         file: "audio_lifecycle.rs",
         function: "handle_start",
         guards: &[
-            "!request.caller_alive.load(Ordering::Acquire)",
-            "response.send(Err(AudioStartError::Cancelled))",
+            "let _hal_boundary = hal_boundary().lock().unwrap_or_else(|poisoned| poisoned.into_inner()); if request.probe_permit.as_ref().is_some_and(|permit| !permit.is_valid()) { let _ = request.response.send(Err(AudioStartError::Cancelled)); return; }",
+            "if !request.caller_alive.load(Ordering::Acquire) { let _ = request.response.send(Err(AudioStartError::Cancelled)); return; } public.still_connecting.store(false, Ordering::SeqCst)",
         ],
         real_test: None,
         what: "a dead caller or an invalid permit: response Err, no owner, no notification",
     },
     Mirror {
         step: "Msg::Start (accept, pending cancelled)",
-        needle: "AudioStartError::Cancelled",
+        needle: "if crate::keyboard::is_app_disabled() { let _ = request.response.send(Err(AudioStartError::Cancelled)); sink.notify(request.app_handle.as_ref(), request.owner, AudioLifecycleEvent::Idle,); continue; }",
         file: "audio_lifecycle.rs",
         function: "run_supervisor",
         guards: &[],
@@ -141,7 +142,7 @@ pub const MIRROR: &[Mirror] = &[
     },
     Mirror {
         step: "Msg::Stop (accept, no attempt)",
-        needle: "response.send(Ok(Vec::new()))",
+        needle: "let Some(current) = attempt.as_ref() else { let _ = response.send(Ok(Vec::new())); return; }",
         file: "audio_lifecycle.rs",
         function: "handle_message",
         guards: &[],
@@ -207,12 +208,12 @@ pub const MIRROR: &[Mirror] = &[
     },
     Mirror {
         step: "Msg::Cancel (accept)",
-        needle: "should_abandon",
+        needle: "if should_abandon { begin_recovery(attempt, reason, sink, public, None); } let cancelled = should_abandon;",
         file: "audio_lifecycle.rs",
         function: "handle_message",
         guards: &[
             "let owner_matches = owner.is_none_or(|owner| owner == current.owner)",
-            "AttemptPhase::Starting",
+            "owner_matches && matches!(current.phase, AttemptPhase::Starting | AttemptPhase::Recording | AttemptPhase::Standby | AttemptPhase::Speculative)",
             "let _ = response.send(Ok(cancelled));",
         ],
         real_test: Some("a_cancel_from_recording_stops_capture_and_answers_true"),
@@ -247,7 +248,7 @@ pub const MIRROR: &[Mirror] = &[
     },
     Mirror {
         step: "SupStep::StopAnswer",
-        needle: "response.send(Ok(Vec::new()))",
+        needle: "begin_recovery(attempt, AudioCancelReason::User, sink, public, None); let _ = response.send(Ok(Vec::new())); return;",
         file: "audio_lifecycle.rs",
         function: "handle_message",
         guards: &[],
@@ -274,7 +275,7 @@ pub const MIRROR: &[Mirror] = &[
     },
     Mirror {
         step: "WorkerEv::InitFailed",
-        needle: "current.failure = Some(failure.clone())",
+        needle: "sink.invalidate_input_health(current.device_id.as_deref()); current.failure = Some(failure.clone()); if let Some(response) = current.start_response.take()",
         file: "audio_lifecycle.rs",
         function: "handle_worker_event",
         guards: &[],
@@ -283,7 +284,7 @@ pub const MIRROR: &[Mirror] = &[
     },
     Mirror {
         step: "WorkerEv::RuntimeFailed",
-        needle: "AudioCancelReason::RuntimeFailure",
+        needle: "begin_recovery(attempt, AudioCancelReason::RuntimeFailure, sink, public, report_failure,)",
         file: "audio_lifecycle.rs",
         function: "handle_worker_event",
         guards: &[],
@@ -296,20 +297,19 @@ pub const MIRROR: &[Mirror] = &[
         file: "audio_lifecycle.rs",
         function: "handle_worker_event",
         guards: &[
-            "if current.phase == AttemptPhase::Stopping",
-            "AudioCancelReason::RuntimeFailure",
+            "if current.phase == AttemptPhase::Stopping { current.failure = Some(failure); report_cleanup_stalled(current, sink, public); return; }",
+            "begin_recovery(attempt, AudioCancelReason::RuntimeFailure, sink, public, Some(failure),)",
         ],
         real_test: None,
         what: "Stopping: report_cleanup_stalled; else begin_recovery(RuntimeFailure, Some(failure))",
     },
     Mirror {
         step: "WorkerEv::RecordingSealed",
-        needle: "current.sealed_delivery",
+        needle: "current.sealed_delivery = current.stop_response.take().is_some_and(|response| response.send(result).is_ok())",
         file: "audio_lifecycle.rs",
         function: "handle_worker_event",
         guards: &[
-            "current.phase == AttemptPhase::Stopping",
-            "current.owner.dictation_id().is_some()",
+            "current.phase == AttemptPhase::Stopping && current.owner.dictation_id().is_some()",
             "current.tail_deadline.is_none()",
             "current.stop_response.is_some()",
             "response.send(result).is_ok()",
@@ -328,11 +328,11 @@ pub const MIRROR: &[Mirror] = &[
     },
     Mirror {
         step: "finish_attempt (Stopping)",
-        needle: "AudioLifecycleEvent::Idle",
+        needle: "if !response_delivered && !idle_after_clear { sink.notify(finished.app_handle.as_ref(), finished.owner, AudioLifecycleEvent::Idle,); }",
         file: "audio_lifecycle.rs",
         function: "finish_attempt",
         guards: &[
-            "if finished.sealed_delivery",
+            "let response_delivered = if finished.sealed_delivery { true } else if let Some(response) = finished.stop_response.take()",
             "response.send(take_samples(&mut finished)).is_ok()",
             "!response_delivered && !idle_after_clear",
         ],
@@ -341,7 +341,7 @@ pub const MIRROR: &[Mirror] = &[
     },
     Mirror {
         step: "finish_attempt (Starting)",
-        needle: "AudioLifecycleEvent::Idle",
+        needle: "report_failure_once(&mut finished, sink, failure.clone()); if let Some(response) = finished.start_response.take() { let _ = response.send(Err(AudioStartError::InitializationFailed(failure))); } if !idle_after_clear { sink.notify(finished.app_handle.as_ref(), finished.owner, AudioLifecycleEvent::Idle,); }",
         file: "audio_lifecycle.rs",
         function: "finish_attempt",
         guards: &[],
@@ -350,7 +350,7 @@ pub const MIRROR: &[Mirror] = &[
     },
     Mirror {
         step: "finish_attempt (Recording)",
-        needle: "AudioLifecycleEvent::Idle",
+        needle: "report_failure_once(&mut finished, sink, AudioFailure::new(AudioFailureKind::BackendError, AudioInitPhase::Runtime),); if !idle_after_clear { sink.notify(finished.app_handle.as_ref(), finished.owner, AudioLifecycleEvent::Idle,); }",
         file: "audio_lifecycle.rs",
         function: "finish_attempt",
         guards: &[],
@@ -386,7 +386,7 @@ pub const MIRROR: &[Mirror] = &[
     },
     Mirror {
         step: "SupStep::Idle",
-        needle: "AudioLifecycleEvent::Idle",
+        needle: "if idle_after_clear { sink.notify(finished.app_handle.as_ref(), finished.owner, AudioLifecycleEvent::Idle,); }",
         file: "audio_lifecycle.rs",
         function: "finish_attempt",
         guards: &[],
@@ -431,10 +431,12 @@ pub const MIRROR: &[Mirror] = &[
     },
     Mirror {
         step: "Timer::HardDeadline",
-        needle: "HardDeadline",
+        needle: "begin_recovery(attempt, AudioCancelReason::HardDeadline, sink, public, Some(AudioFailure::new(kind, phase)),)",
         file: "audio_lifecycle.rs",
         function: "handle_deadlines_at",
-        guards: &[],
+        guards: &[
+            "current.phase == AttemptPhase::Starting && elapsed >= config.hard_deadline",
+        ],
         real_test: None,
         what: "Starting past the hard deadline: begin_recovery(HardDeadline, Some(failure))",
     },
@@ -467,10 +469,12 @@ pub const MIRROR: &[Mirror] = &[
     },
     Mirror {
         step: "supervisor loop (channel first, deadlines on an empty channel)",
-        needle: "handle_deadlines_at",
+        needle: "Err(RecvTimeoutError::Timeout) => { handle_deadlines_at(&mut attempt, sink.as_ref(), &public, config, Instant::now()); }",
         file: "audio_lifecycle.rs",
         function: "run_supervisor",
-        guards: &[],
+        guards: &[
+            "if attempt.as_ref().is_some_and(|current| { current.probe_permit.is_some() || current.tail_deadline.is_some() || current.phase == AttemptPhase::Standby || current.phase == AttemptPhase::Speculative }) { handle_deadlines_at(&mut attempt, sink.as_ref(), &public, config, Instant::now(),); }",
+        ],
         real_test: None,
         what: "one message at a time; handle_deadlines_at on timeout, and before a message only for a tail",
     },
