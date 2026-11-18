@@ -310,6 +310,21 @@ fn s12c(world: &Arc<World>) {
     started(world);
 }
 
+/// (d) A recording whose worker failed (`Recovering{RuntimeFailure}`) and then
+/// receives the supervisor's `Idle` (R211.6): the status is Idle at once, with no
+/// later write to rely on.
+fn s12d(world: &Arc<World>) {
+    recording(world);
+    world.runtime_failure(1);
+    assert_eq!(status(world), DictationStatus::Recovering);
+    world.notify(1, AudioLifecycleEvent::Idle);
+    assert_eq!(
+        status(world),
+        DictationStatus::Idle,
+        "the supervisor Idle over Recovering must restore Idle"
+    );
+}
+
 /// #388 / PR #392, the core-owned part (`66dd78d7`, supervisor-only): any
 /// grammar-legal sequence over a start ends in `Idle`. Scenario 12(a)(b)(c):
 /// `InitializationFailed` then `Idle` after a failed ack, the same before the
@@ -321,13 +336,14 @@ fn s12c(world: &Arc<World>) {
 /// criterion 2). Mutation: R211.4 and R211.6 and R102.3 made no-ops.
 #[test]
 fn bug388_init_failure_reaches_idle() {
-    let bodies: [(&str, fn(&Arc<World>)); 3] = [
+    let bodies: [(&str, fn(&Arc<World>)); 4] = [
         ("12a failure ack, then InitializationFailed and Idle", s12a),
         (
             "12b InitializationFailed and Idle, then the failure ack",
             s12b,
         ),
         ("12c 2 s start timeout with a user cancel", s12c),
+        ("12d Idle over a Recovering attempt", s12d),
     ];
     for _ in 0..repeat_count() {
         for (title, body) in bodies {
@@ -349,10 +365,31 @@ fn bug388_init_failure_reaches_idle() {
                 "{title}: exactly one terminal\n{}",
                 lines.join("\n")
             );
+            if title.starts_with("12b") {
+                // The supervisor's `Idle` over `Starting` (R211.4) restores Idle by
+                // itself, before the failure ack: the later failure path writes Idle
+                // regardless, so only this ordering shows R211.4 working.
+                assert!(
+                    position(&lines, "~ status Starting -> Idle")
+                        < lines
+                            .iter()
+                            .position(|l| l.starts_with("supervisor.start_ack 1 Err("))
+                            .expect("the failed ack"),
+                    "{title}: R211.4 must write Idle before the ack\n{}",
+                    lines.join("\n")
+                );
+            }
+            if title.starts_with("12d") {
+                assert!(
+                    lines.iter().any(|l| l == "~ status Recovering -> Idle"),
+                    "{title}: R211.6 must write Idle over Recovering\n{}",
+                    lines.join("\n")
+                );
+            }
             assert!(
-                !lines
-                    .iter()
-                    .any(|l| l.starts_with("~ status") && l.ends_with("-> Recording")),
+                !lines.iter().any(|l| l.starts_with("~ status")
+                    && l.ends_with("-> Recording")
+                    && !title.starts_with("12d")),
                 "{title}: the attempt never reaches Recording"
             );
         }
@@ -485,12 +522,41 @@ fn bug535_exactly_one_terminal() {
 
 // ------------------------------------------------------------------ #117
 
-/// The production source of `commands/models.rs` above its test module.
+/// The production items of `commands/models.rs` as token text: parsed with `syn`
+/// and every top-level item carrying a `#[cfg(test)]`-style attribute dropped
+/// (the file has a test module in the middle and production code after it).
 fn models_rs_production_source() -> String {
+    use quote::ToTokens;
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/models.rs");
     let text = std::fs::read_to_string(&path).expect("read models.rs");
-    let end = text.find("\n#[cfg(test)]").unwrap_or(text.len());
-    text[..end].to_string()
+    let file = syn::parse_file(&text).expect("parse models.rs");
+    let is_test_cfg = |attr: &syn::Attribute| {
+        attr.path().is_ident("cfg") && attr.to_token_stream().to_string().contains("test")
+    };
+    let items: Vec<String> = file
+        .items
+        .iter()
+        .filter(|item| {
+            let attrs: &[syn::Attribute] = match item {
+                syn::Item::Fn(item) => &item.attrs,
+                syn::Item::Mod(item) => &item.attrs,
+                syn::Item::Impl(item) => &item.attrs,
+                syn::Item::Const(item) => &item.attrs,
+                syn::Item::Static(item) => &item.attrs,
+                syn::Item::Struct(item) => &item.attrs,
+                syn::Item::Enum(item) => &item.attrs,
+                syn::Item::Use(item) => &item.attrs,
+                _ => &[],
+            };
+            !attrs.iter().any(is_test_cfg)
+        })
+        .map(|item| item.to_token_stream().to_string())
+        .collect();
+    assert!(
+        items.iter().any(|item| item.contains("ensure_vad_model")),
+        "the scan must reach ensure_vad_model"
+    );
+    items.join("\n")
 }
 
 /// SP5, source half, for the VAD download path: no `recording-status-changed`
