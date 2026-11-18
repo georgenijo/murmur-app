@@ -28,23 +28,29 @@ const CI_BUDGET: Duration = Duration::from_secs(20);
 /// 3,000,000-seed sweep that takes the witness.
 ///
 /// * 10,724: PD-18 (c), the unsealed stop.
-/// * 11,125: PD-19 through `TerminationUnconfirmed`.
-/// * 18,279: PD-24 through the environmental recovery arm (R102.3, R209.5).
-/// * 22,704: PD-22 against the cancel's own `TERM` (R211.2, R205.5).
-/// * 23,985: PD-19 through a dropped start (no context was ever installed).
-/// * 244,103: PD-21 with a short stop (R206.2, R203.4).
-/// * 377,529: PD-19's refused auto-stop (the capture stays in the store and no ordinary
+/// * 19,737: PD-24 through the user's cancel (R102.3, R209.3).
+/// * 39,219: PD-19 through `TerminationUnconfirmed`.
+/// * 52,153: PD-22 against a stop's performance completion (R211.2, R203.2).
+/// * 101,117: PD-22 against the cancel's own `TERM` (R211.2, R205.5).
+/// * 259,286: PD-19's refused auto-stop (the capture stays in the store and no ordinary
 ///   control sends the stop that would take it; D-S2b-15 (c), (d)). It is rare because the
 ///   unscoped stop IPC, one in four generated stops, takes the capture when it lands, and
 ///   a window sends no stop that it has not seen `Recording` for.
-const FIXED_SEEDS: [u64; 7] = [10_724, 11_125, 18_279, 22_704, 23_985, 244_103, 377_529];
+/// * 262,762: PD-19 through a dropped start (no context was ever installed).
+/// * 273,164: PD-21 with a short stop (R206.2, R203.4).
+///
+/// Re-pinned for #1159: a due command now competes with a ready delivery, which changed
+/// the RNG draws, so PD-19, PD-21 (short stop), PD-22 and PD-24 (R209.3) left the range.
+const FIXED_SEEDS: [u64; 8] = [
+    10_724, 19_737, 39_219, 52_153, 101_117, 259_286, 262_762, 273_164,
+];
 
 /// PD-18's witnesses, one seed per instance (C7.5): the first seed of the fixed
 /// range that ends stuck in `Recovering` through that instance, with the generation's
 /// own evidence (R101.12 in the gap after its last restorer).
 const PD18_SEEDS: [(&str, u64); 3] = [
-    ("(a) S12", 951),
-    ("(b) Idle-arm tail", 79),
+    ("(a) S12", 1_879),
+    ("(b) Idle-arm tail", 77),
     ("(c) unsealed stop", 10_724),
 ];
 
@@ -66,35 +72,35 @@ struct Witness {
 const FINDING_SEEDS: [Witness; 14] = [
     Witness {
         pd: 19,
-        seed: 11_125,
+        seed: 39_219,
         split: None,
         shell_test: Some("pd19_termination_unconfirmed_after_retained_pcm_leaves_recovering"),
         sig: None,
     },
     Witness {
         pd: 19,
-        seed: 23_985,
+        seed: 262_762,
         split: None,
         shell_test: Some("pd19_a_dropped_start_and_a_retained_runtime_failure_leave_recovering"),
         sig: None,
     },
     Witness {
         pd: 19,
-        seed: 377_529,
+        seed: 259_286,
         split: None,
         shell_test: Some("pd19_a_refused_auto_stop_leaves_the_capture_and_recovering"),
         sig: None,
     },
     Witness {
         pd: 20,
-        seed: 305,
+        seed: 76,
         split: Some(("R205.5", "R203.5")),
         shell_test: Some("pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree"),
         sig: None,
     },
     Witness {
         pd: 21,
-        seed: 244_103,
+        seed: 273_164,
         split: Some(("R206.2", "R203.4")),
         shell_test: Some("pd21_timed_out_cancel_then_a_short_stop_disagree"),
         sig: None,
@@ -108,14 +114,14 @@ const FINDING_SEEDS: [Witness; 14] = [
     },
     Witness {
         pd: 22,
-        seed: 5_084,
+        seed: 52_153,
         split: Some(("R211.2", "R203.2")),
         shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance"),
         sig: None,
     },
     Witness {
         pd: 22,
-        seed: 22_704,
+        seed: 101_117,
         split: Some(("R211.2", "R205.5")),
         shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_cancel_completes_performance"),
         sig: None,
@@ -129,7 +135,7 @@ const FINDING_SEEDS: [Witness; 14] = [
     },
     Witness {
         pd: 23,
-        seed: 171,
+        seed: 249,
         split: Some(("R207.3", "R203.1")),
         shell_test: Some("pd23_superseded_terminal_and_a_refused_stop_failed_disagree"),
         sig: None,
@@ -153,7 +159,7 @@ const FINDING_SEEDS: [Witness; 14] = [
     },
     Witness {
         pd: 24,
-        seed: 6_047,
+        seed: 19_737,
         split: Some(("R102.3", "R209.3")),
         shell_test: Some(
             "pd24_start_timeout_terminal_and_the_users_cancel_arm_performance_outcome_disagree",
@@ -162,7 +168,7 @@ const FINDING_SEEDS: [Witness; 14] = [
     },
     Witness {
         pd: 24,
-        seed: 18_279,
+        seed: 5_168,
         split: Some(("R102.3", "R209.5")),
         shell_test: Some(
             "pd24_start_timeout_terminal_and_an_environmental_recovery_arm_performance_outcome_disagree",
@@ -453,7 +459,7 @@ fn pd19_to_pd24_have_pinned_seeds() {
 
 #[test]
 fn a_seed_is_one_run() {
-    for seed in [0u64, 59, 886, 4903, 9_992] {
+    for seed in [0u64, 59, 886, 4903, 9_991] {
         let seed = gated(seed);
         let (first, first_trace) = run_seed_with(seed, true);
         let (second, second_trace) = run_seed_with(seed, true);
@@ -1705,9 +1711,9 @@ fn pd19_is_witnessed_with_its_whole_story() {
     // One seed per entry: `TerminationUnconfirmed`, a dropped start, the refused auto-stop
     // that leaves the capture in the store (no user-accessible recovery).
     for (seed, entries) in [
-        (11_125, [1, 0, 0]),
-        (23_985, [0, 1, 0]),
-        (377_529, [0, 0, 1]),
+        (39_219, [1, 0, 0]),
+        (262_762, [0, 1, 0]),
+        (259_286, [0, 0, 1]),
     ] {
         let report = run_seed(gated(seed));
         assert!(report.hits.pd[19] > 0, "{seed}: {:?}", report.hits);
@@ -1870,12 +1876,12 @@ fn two_windows_can_disagree_about_the_status() {
 
 /// D-S2b-18 (3) in the seeded runs: a window sends a stop on `Recording` after the shell
 /// entered `Recovering` while the other window has already received `Recovering` (and would
-/// send none). One cursor could not represent both. The witness is pinned at seed 839,
+/// send none). One cursor could not represent both. The witness is pinned at seed 205,
 /// inside the fixed 10,000-seed set; the regular suite asserts nothing beyond that gate
 /// (D-S2b-19 (a)).
 #[test]
 fn the_windows_disagree_in_the_seeded_runs() {
-    const WITNESS: u64 = 839;
+    const WITNESS: u64 = 205;
     let (report, trace) = run_seed_with(gated(WITNESS), true);
     assert!(
         report.violations.is_empty(),
@@ -1889,6 +1895,72 @@ fn the_windows_disagree_in_the_seeded_runs() {
         }),
         "seed {WITNESS} no longer has one window send a stop while the other had received Recovering"
     );
+}
+
+/// #1159, D-S2b-19 (c): at a scheduler boundary a due command and a ready delivery compete,
+/// and the run's RNG picks the order, so production's two orders are both explored. This
+/// is the delivery-first side: the window receives `Recording` and only then sends its stop
+/// (the model used to run the due stop first and drop it). Pinned at seed 147.
+#[test]
+fn a_ready_delivery_can_run_before_a_due_stop() {
+    const WITNESS: u64 = 147;
+    let (report, trace) = run_seed_with(gated(WITNESS), true);
+    assert!(
+        report.violations.is_empty(),
+        "{WITNESS}: {:?}",
+        report.violations
+    );
+    let delivered_then_sent = trace.windows(3).any(|lines| {
+        lines[0].contains("window receives Recording (before the due command)")
+            && lines[1..]
+                .iter()
+                .any(|line| line.contains("frontend stop sent ("))
+    });
+    assert!(
+        delivered_then_sent,
+        "seed {WITNESS} no longer delivers `Recording` before its due stop: {trace:#?}"
+    );
+}
+
+/// The stop-first side of the same competition, the shape of the issue's seed 473: R104.2
+/// emits `Recording` at step 30 and the due stop runs before the window receives it, so the
+/// window still shows `Starting` and sends nothing. Pinned at seed 473.
+#[test]
+fn a_due_stop_can_run_before_a_ready_delivery() {
+    const WITNESS: u64 = 473;
+    let (report, trace) = run_seed_with(gated(WITNESS), true);
+    assert!(
+        report.violations.is_empty(),
+        "{WITNESS}: {:?}",
+        report.violations
+    );
+    let emit = trace
+        .iter()
+        .position(|line| line.contains("fx R104.2 In EmitStatus { status: Recording"))
+        .expect("R104.2 emits Recording");
+    let dropped = trace
+        .iter()
+        .position(|line| line.contains("frontend stop not sent (main window shows Starting) while Recording is still queued for it"))
+        .expect("the stop ran ahead of the delivery");
+    assert!(emit < dropped, "{trace:#?}");
+    assert!(
+        !trace[emit..dropped]
+            .iter()
+            .any(|line| line.contains("window receives Recording")),
+        "the main window received Recording before the stop: {trace:#?}"
+    );
+}
+
+/// The competition draws only when a command and a delivery are both ready, and it is part
+/// of the seed: the same seed gives the same order.
+#[test]
+fn the_competition_is_deterministic_per_seed() {
+    for seed in [147u64, 473] {
+        let seed = gated(seed);
+        let (_, first) = run_seed_with(seed, true);
+        let (_, second) = run_seed_with(seed, true);
+        assert_eq!(first, second, "seed {seed}");
+    }
 }
 
 /// Mutation check on the harness's own scheduler: a blocked step must change
