@@ -113,7 +113,7 @@ fn shadow_capture_takes_no_lock_allocates_nothing() {
     assert_eq!(allocations, 0, "the producer path allocated");
     assert_eq!(frees, 0, "the producer path freed");
 
-    // The same with the queue full: a rejected message costs a counter, a loss entry,
+    // The same with the queue full: a rejected message costs two counters,
     // and neither an allocation nor a free (the rejected message is dropped inside).
     let full = local_transport(2);
     let ((), allocations, frees) = count_heap_calls(|| {
@@ -123,7 +123,7 @@ fn shadow_capture_takes_no_lock_allocates_nothing() {
     });
     assert_eq!(allocations, 0, "the drop path allocated");
     assert_eq!(frees, 0, "the drop path freed");
-    assert!(full.take_dropped() > 0);
+    assert!(full.lost() > 0);
     // Nothing was lost to the measurement: the messages the queue took are intact.
     // A flight is five messages: header, witness, conditional mark, reply mark, close.
     assert_eq!(pop_all(&transport).len(), 8 * 5);
@@ -146,7 +146,7 @@ fn the_capture_path_source_has_no_lock_box_channel_or_wake() {
         "pub(crate) fn submit(",
         "fn send(",
         "fn push(",
-        "fn record_loss(",
+        "fn lose(",
         "fn close(",
         "pub(crate) fn ticket(",
         "pub(crate) fn recorder(",
@@ -180,6 +180,10 @@ fn the_capture_path_source_has_no_lock_box_channel_or_wake() {
         );
     }
     assert!(super::policy::function_body(&transport, "fn push(").contains("self.queue.try_push("));
+    // A rejected push costs two counter increments and nothing else (D-S2c-3 a).
+    let lose = super::policy::function_body(&transport, "fn lose(");
+    assert_eq!(lose.matches("fetch_add(").count(), 2, "{lose}");
+    assert!(lose.matches("Ordering::Release").count() == 2, "{lose}");
     // The synchronous dispatch and its mutex exist only under cfg(test): the raw
     // source has them, the production text does not.
     let raw = include_str!("../transport.rs");
@@ -448,7 +452,7 @@ fn shadow_header_precedes_blocking_effect() {
     reached.wait();
     // The flight is blocked; the header was consumed by the comparison thread anyway.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while transport.pending() > 0 {
+    while transport.unconsumed() > 0 {
         assert!(
             std::time::Instant::now() < deadline,
             "the header was never consumed"
@@ -528,13 +532,12 @@ fn shadow_pre_abandoned_requires_entry_into_run_pre() {
         h.send(msg);
     }
     assert_eq!(h.stats().abandoned_pre_d, 1);
-    assert_eq!(h.stats().lost_gap, 0);
+    assert_eq!(h.stats().abandoned_by_loss, 0);
     assert_eq!(h.stats().mismatched_root, 0);
-    assert_eq!(h.stats().skipped_tainted, 0);
-    // ...and a later decision still compares (nothing was tainted).
+    // ...and a later decision still compares (nothing was given up).
     h.feed(&short_idle(2, 2));
     assert_eq!(h.stats().compared, 2);
-    assert_eq!(h.stats().skipped_tainted, 0);
+    assert_eq!(h.stats().abandoned_by_loss, 0);
 
     // Through the comparison: a fresh recorder dropped counts nothing.
     let mut h = harness();
@@ -546,7 +549,6 @@ fn shadow_pre_abandoned_requires_entry_into_run_pre() {
 #[test]
 fn the_channel_capacity_and_documented_limits() {
     assert_eq!(QUEUE_CAPACITY, 256);
-    assert_eq!(crate::dictation_shadow::transport::LOSS_CAPACITY, 256);
     let _ = Ordering::SeqCst;
     let _ = (LiveOp::clone, MirrorField::ActiveContext);
 }
@@ -607,7 +609,7 @@ fn a_rejected_smart_auto_header_allocates_and_frees_nothing() {
         (0, 0),
         "rejecting a header allocated or freed on the live thread"
     );
-    assert!(full.take_dropped() >= 1);
+    assert!(full.lost() >= 1);
     drop(header);
 }
 

@@ -1,16 +1,18 @@
 //! The live side of shadow capture: the preallocated ring, the flight-owned
 //! recorder and the header ticket (appendix C8.2, decisions D-S2c-1 a and c,
-//! D-S2c-2 a and e).
+//! D-S2c-2 a, D-S2c-3 a).
 //!
 //! **The producer path is one bounded `try_push` into the in-crate [`Ring`] and
 //! nothing else.** `witness`, `mark`, `submit` and the recorder's `close` store a
 //! message by value in one of the ring's 256 slots, **in exactly one attempt**: no
 //! loop, no backoff, no yield, no allocation, no free, no lock, no waker, no thread
 //! wake-up. A full ring, a lost compare-and-swap or a slot still in flight hands the
-//! message back; it is counted as a drop (`dropped`, plus `contended` for the last
-//! two) and attributed, by recorder, `seq` and *site*, in a second preallocated ring
-//! (the loss log). The consumer polls on a fixed sleep (`mod.rs`); there is no
-//! channel, no `std::sync::mpsc` and no `Mutex` on this side.
+//! message back; the producer then bumps two atomic counters and nothing else: a
+//! global `lost` and one per *site* (`lost_by_site`, E4). There is no loss log and no
+//! subject id: the consumer cannot say what was lost, only that something was, and
+//! it then gives up everything in flight (`compare.rs`, D-S2c-3 b). The consumer
+//! polls on a fixed sleep (`mod.rs`); there is no channel, no `std::sync::mpsc` and
+//! no `Mutex` on this side.
 //!
 //! The only synchronous dispatch and the only mutex in this file are in the
 //! `test_mode` module at the end, compiled only under `cfg(test)`; the
@@ -25,37 +27,38 @@ use std::sync::Arc;
 
 use murmur_dictation_core::effects::Placement;
 
-use super::ring::{Rejected, Rejection, Ring};
+use super::ring::{Rejection, Ring};
 use super::types::{
-    CondWitness, Inline, LiveOp, LossEntry, MirrorWitness, PredId, RecorderId, ReplyKind,
-    ShadowHeader, ShadowMsg, TickerGate, WitnessedEffect, COND_CAPACITY, MIRROR_CAPACITY,
-    PRE_CAPACITY,
+    CondWitness, Inline, LiveOp, MirrorWitness, PredId, RecorderId, ReplyKind, ShadowHeader,
+    ShadowMsg, TickerGate, WitnessedEffect, COND_CAPACITY, MIRROR_CAPACITY, PRE_CAPACITY,
 };
 
 /// The queue's capacity (C8.2, D-S2c-1 a).
 pub(crate) const QUEUE_CAPACITY: usize = 256;
 
-/// The loss log's capacity: one entry per message the queue could not take.
-pub(crate) const LOSS_CAPACITY: usize = 256;
+/// Per-site loss counters: sites are numbered below this. Slot `0` counts the losses
+/// nobody could attribute (a message with no site, or a site out of range).
+pub(crate) const SITE_SLOTS: usize = 1024;
 
 /// The recorder id counter starts here, so a `RecorderId` can never be mistaken for
 /// a header `seq` (which starts at 1): they are different namespaces by construction.
 const REC_BASE: u64 = 1 << 32;
 
-/// Everything both sides share: the queues, the counters the live side bumps and
+/// Everything both sides share: the queue, the counters the live side bumps and
 /// the two id counters.
 pub(crate) struct Transport {
     queue: Ring<ShadowMsg>,
-    /// What the queue could not take, by recorder, `seq` and site (D-S2c-1 c).
-    losses: Ring<LossEntry>,
-    /// Messages the queue could not take (full, in flight or contended).
-    dropped: AtomicU64,
-    /// The part of `dropped` that was contention (a slot in flight or a lost race)
-    /// rather than a full queue.
+    /// Every message the live side could not hand over (a rejected push, or a ticket
+    /// dropped with no header). Bumped with `Release` **before** the flight's next
+    /// message can be published, so a consumer that reads a later message sees it
+    /// (D-S2c-3 b).
+    lost: AtomicU64,
+    /// `lost` by the site of the decision whose flight lost it; slot `0` is the
+    /// unattributed rest. A fixed array, allocated once.
+    sites: Box<[AtomicU64]>,
+    /// The part of the rejected pushes that was contention (a slot in flight or a
+    /// lost race) rather than a full queue.
     contended: AtomicU64,
-    /// Losses the loss log itself could not take: the consumer can no longer say
-    /// which records were affected and must invalidate every open one.
-    loss_overflow: AtomicU64,
     /// Capture-list overflows (a flight recorded more than a list can hold).
     overflow: AtomicU64,
     /// Next header `seq`; the first one handed out is 1.
@@ -69,14 +72,13 @@ pub(crate) struct Transport {
 }
 
 impl Transport {
-    /// A transport whose queues are allocated here, once, and never again.
-    pub(crate) fn new(capacity: usize, loss_capacity: usize) -> Arc<Self> {
+    /// A transport whose ring and counters are allocated here, once, and never again.
+    pub(crate) fn new(capacity: usize) -> Arc<Self> {
         Arc::new(Self {
             queue: Ring::new(capacity),
-            losses: Ring::new(loss_capacity),
-            dropped: AtomicU64::new(0),
+            lost: AtomicU64::new(0),
+            sites: (0..SITE_SLOTS).map(|_| AtomicU64::new(0)).collect(),
             contended: AtomicU64::new(0),
-            loss_overflow: AtomicU64::new(0),
             overflow: AtomicU64::new(0),
             seq: AtomicU64::new(1),
             rec: AtomicU64::new(REC_BASE),
@@ -92,10 +94,15 @@ impl Transport {
         self.queue.pop()
     }
 
-    /// Messages waiting in the queue.
-    #[cfg(test)]
-    pub(crate) fn pending(&self) -> usize {
-        self.queue.len()
+    /// Messages claimed and not yet consumed, published or not.
+    pub(crate) fn unconsumed(&self) -> usize {
+        self.queue.unconsumed()
+    }
+
+    /// Of [`Transport::unconsumed`], the slots a producer reserved and has not
+    /// published (the consumer stops at the first and never skips it).
+    pub(crate) fn reserved_unpublished(&self) -> usize {
+        self.queue.reserved_unpublished()
     }
 
     /// Test seam: the consumer between its two stores, the head advanced and the slot
@@ -111,49 +118,43 @@ impl Transport {
         self.queue.release(pos);
     }
 
-    /// Whether the loss log's next entry is claimed by a producer but not yet
-    /// readable (D-S2c-3 major 1): the consumer must not compare past it, because a
-    /// loss recorded before the message it holds is still on its way.
-    pub(crate) fn losses_unpublished(&self) -> bool {
-        self.losses.head_unpublished()
-    }
-
-    /// Test seam: a producer that reserved a loss slot and was paused.
+    /// Test seam: a producer that reserved a slot and was paused.
     #[cfg(test)]
-    pub(crate) fn reserve_loss_for_test(&self) -> usize {
-        self.losses.claim_for_test().expect("a free loss slot")
+    pub(crate) fn reserve_for_test(&self) -> usize {
+        self.queue.claim_for_test().expect("a free slot")
     }
 
     /// Test seam: the paused producer's second step.
     #[cfg(test)]
-    pub(crate) fn publish_loss_for_test(&self, pos: usize, loss: LossEntry) {
-        self.losses.publish_for_test(pos, loss);
+    pub(crate) fn publish_for_test(&self, pos: usize, msg: ShadowMsg) {
+        self.queue.publish_for_test(pos, msg);
     }
 
-    /// Test seam: another producer's loss, published in one go.
+    /// Test seam: a loss at `site`, as if a push had been rejected.
     #[cfg(test)]
-    pub(crate) fn record_loss_for_test(&self, loss: LossEntry) {
-        self.record_loss(loss);
+    pub(crate) fn lose_for_test(&self, site: u16) {
+        self.lose(site);
     }
 
-    /// The consumer's side: the next recorded loss.
-    pub(crate) fn pop_loss(&self) -> Option<LossEntry> {
-        self.losses.pop()
+    /// Messages the live side could not hand over, so far.
+    pub(crate) fn lost(&self) -> u64 {
+        self.lost.load(Ordering::Acquire)
     }
 
-    /// Messages the queue could not take, since the last call.
-    pub(crate) fn take_dropped(&self) -> u64 {
-        self.dropped.swap(0, Ordering::Relaxed)
+    /// Losses by site, so far: `each(site, count)` for every site with a loss. Slot
+    /// `0` (unattributed) is reported as site `0`.
+    pub(crate) fn lost_by_site(&self, mut each: impl FnMut(u16, u64)) {
+        for (slot, count) in self.sites.iter().enumerate() {
+            let count = count.load(Ordering::Acquire);
+            if count > 0 {
+                each(u16::try_from(slot).unwrap_or(0), count);
+            }
+        }
     }
 
-    /// The part of the drops that was contention, since the last call.
-    pub(crate) fn take_contended(&self) -> u64 {
-        self.contended.swap(0, Ordering::Relaxed)
-    }
-
-    /// Losses nobody could attribute, since the last call.
-    pub(crate) fn take_loss_overflow(&self) -> u64 {
-        self.loss_overflow.swap(0, Ordering::Relaxed)
+    /// The part of the rejected pushes that was contention, so far.
+    pub(crate) fn contended(&self) -> u64 {
+        self.contended.load(Ordering::Relaxed)
     }
 
     /// Capture-list overflows, since the last call.
@@ -169,7 +170,6 @@ impl Transport {
             unavailable: None,
             next_idx: AtomicU16::new(0),
             site: AtomicU16::new(0),
-            header_seq: AtomicU64::new(0),
             closed: AtomicBool::new(false),
             pre_entered: AtomicBool::new(false),
             seq_taken: AtomicBool::new(false),
@@ -178,50 +178,38 @@ impl Transport {
         }
     }
 
-    fn send(&self, msg: ShadowMsg, origin: Origin) {
+    fn send(&self, msg: ShadowMsg, site: u16) {
         #[cfg(test)]
         if self.sync.load(Ordering::Relaxed) {
             self.deliver_sync(msg);
             return;
         }
-        self.push(msg, origin);
+        self.push(msg, site);
     }
 
-    /// The live path: one `try_push`, one attempt. A rejected message comes back by
-    /// value, so the loss is attributed to its recorder, `seq` and site.
-    fn push(&self, msg: ShadowMsg, origin: Origin) {
+    /// The live path: one `try_push`, one attempt. A rejected message is counted
+    /// against its flight's site and nothing else is done with it.
+    fn push(&self, msg: ShadowMsg, site: u16) {
         if let Err(rejected) = self.queue.try_push(msg) {
-            self.reject(rejected, origin);
+            if rejected.reason == Rejection::Contention {
+                self.contended.fetch_add(1, Ordering::Relaxed);
+            }
+            self.lose(site);
         }
     }
 
-    fn reject(&self, rejected: Rejected<ShadowMsg>, origin: Origin) {
-        self.dropped.fetch_add(1, Ordering::Relaxed);
-        if rejected.reason == Rejection::Contention {
-            self.contended.fetch_add(1, Ordering::Relaxed);
-        }
-        if let Some(loss) = LossEntry::of(&rejected.value, origin.seq, origin.site) {
-            self.record_loss(loss);
-        }
-    }
-
-    fn record_loss(&self, loss: LossEntry) {
-        if self.losses.try_push(loss).is_err() {
-            self.loss_overflow.fetch_add(1, Ordering::Relaxed);
-        }
+    /// One message lost: the site's counter, then the global one (`Release`), so a
+    /// consumer that sees the global count sees the site's.
+    fn lose(&self, site: u16) {
+        let slot = usize::from(site);
+        let slot = if slot < SITE_SLOTS { slot } else { 0 };
+        self.sites[slot].fetch_add(1, Ordering::Release);
+        self.lost.fetch_add(1, Ordering::Release);
     }
 
     fn count_overflow(&self) {
         self.overflow.fetch_add(1, Ordering::Relaxed);
     }
-}
-
-/// Who a message belongs to, for attributing it if the ring cannot take it: the
-/// recorder's header `seq` and its site (D-S2c-2 e). Plain numbers, read from atomics.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct Origin {
-    pub seq: u64,
-    pub site: u16,
 }
 
 /// The `Pre` witnesses buffered inline before the header exists (C8.2): owned by
@@ -258,8 +246,6 @@ pub(crate) struct ShadowRecorder {
     next_idx: AtomicU16,
     /// The site of the decision, set when the ticket is taken (0 before).
     site: AtomicU16,
-    /// The header's `seq`, set when the ticket is taken (0 before).
-    header_seq: AtomicU64,
     closed: AtomicBool,
     /// `run(Pre)` was entered: the flight has done (or is doing) observable work.
     pre_entered: AtomicBool,
@@ -273,7 +259,7 @@ impl ShadowRecorder {
     /// A recorder with no transport yet: the comparison thread has not published it
     /// (the first enabled startup). It never blocks and never allocates; every
     /// message it would send is counted in `counter` as an `Unavailable` drop, and
-    /// nothing is queued, so no loss entry or `seq` exists for it (D-S2c-3 minor 2).
+    /// nothing is queued, so no counter or `seq` exists for it (D-S2c-3 minor 2).
     pub(crate) fn unavailable(counter: &'static AtomicU64) -> Self {
         Self {
             rec: RecorderId(0),
@@ -281,7 +267,6 @@ impl ShadowRecorder {
             unavailable: Some(counter),
             next_idx: AtomicU16::new(0),
             site: AtomicU16::new(0),
-            header_seq: AtomicU64::new(0),
             closed: AtomicBool::new(false),
             pre_entered: AtomicBool::new(false),
             seq_taken: AtomicBool::new(false),
@@ -350,16 +335,15 @@ impl ShadowRecorder {
 
     /// Take the header's `seq` at the existing decision boundary (under D; D-less
     /// entries at decision time) for a decision at `site` (the C0.3 site number).
-    /// The recorder keeps both, so any later message of the flight that the ring
-    /// cannot take is attributed to this site and `seq`; the ticket records the loss
-    /// if it is dropped without a submit.
+    /// The recorder keeps the site, so any later message of the flight that the ring
+    /// cannot take is counted against it; the ticket counts the loss if it is dropped
+    /// without a submit.
     pub(crate) fn ticket(&self, site: u16) -> ShadowTicket<'_> {
         let seq = self
             .transport
             .as_ref()
             .map_or(0, |transport| transport.seq.fetch_add(1, Ordering::Relaxed));
         self.site.store(site, Ordering::Relaxed);
-        self.header_seq.store(seq, Ordering::Relaxed);
         self.seq_taken.store(true, Ordering::Relaxed);
         ShadowTicket {
             seq,
@@ -368,17 +352,9 @@ impl ShadowRecorder {
         }
     }
 
-    /// What a message of this flight loses if it is rejected.
-    fn origin(&self) -> Origin {
-        Origin {
-            seq: self.header_seq.load(Ordering::Relaxed),
-            site: self.site.load(Ordering::Relaxed),
-        }
-    }
-
     fn send(&self, msg: ShadowMsg) {
         match &self.transport {
-            Some(transport) => transport.send(msg, self.origin()),
+            Some(transport) => transport.send(msg, self.site.load(Ordering::Relaxed)),
             None => self.count_unavailable(),
         }
     }
@@ -446,13 +422,7 @@ impl Drop for ShadowTicket<'_> {
     fn drop(&mut self) {
         if !self.sent {
             match &self.recorder.transport {
-                Some(transport) => transport.record_loss(LossEntry {
-                    rec: self.recorder.rec.0,
-                    seq: self.seq,
-                    site: u64::from(self.recorder.site.load(Ordering::Relaxed)),
-                    header: true,
-                    ids: [0; 3],
-                }),
+                Some(transport) => transport.lose(self.recorder.site.load(Ordering::Relaxed)),
                 None => self.recorder.count_unavailable(),
             }
         }
@@ -565,7 +535,6 @@ mod test_mode {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(comparator) = guard.as_mut() {
-                comparator.pump_losses(self);
                 comparator.handle_msg(msg);
             }
         }

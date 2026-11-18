@@ -179,26 +179,20 @@ fn the_transport_counts_contention_apart_from_a_full_queue() {
     let rec = transport.recorder();
     mark(&rec, Mark::Reply(ReplyKind::Ok));
     mark(&rec, Mark::Reply(ReplyKind::Ok));
-    // Full: a drop, not contention.
+    // Full: a loss, not contention.
     mark(&rec, Mark::Reply(ReplyKind::Ok));
-    assert_eq!(transport.take_contended(), 0);
-    assert_eq!(transport.take_dropped(), 1);
+    assert_eq!(transport.contended(), 0);
+    assert_eq!(transport.lost(), 1);
 
     // The consumer is between its two stores: the next push is contention, and it
     // returns at once.
     let (_, pos) = transport.begin_pop_for_test().expect("a message");
     mark(&rec, Mark::Reply(ReplyKind::Ok));
-    assert_eq!(transport.take_dropped(), 1);
-    assert_eq!(transport.take_contended(), 1, "attributed as contention");
+    assert_eq!(transport.lost(), 2);
+    assert_eq!(transport.contended(), 1, "attributed as contention");
     transport.release_for_test(pos);
     mark(&rec, Mark::Reply(ReplyKind::Ok));
-    assert_eq!(transport.take_dropped(), 0, "released: accepted again");
-    // Every drop names its recorder (`seq` 0 for a mark, which has no header).
-    let mut losses = 0;
-    while transport.pop_loss().is_some() {
-        losses += 1;
-    }
-    assert_eq!(losses, 2);
+    assert_eq!(transport.lost(), 2, "released: accepted again");
 }
 
 #[test]
@@ -217,27 +211,26 @@ fn contended_drops_reach_the_summary() {
 }
 
 #[test]
-fn a_claimed_but_unpublished_head_is_not_an_empty_ring() {
-    // D-S2c-3 major 1: the consumer must tell "nothing reserved" from "the head slot
-    // is reserved and not yet readable", because entries behind it may already be
-    // published and `pop` cannot return them.
+fn a_reserved_but_unpublished_slot_stops_the_consumer_and_is_counted() {
+    // D-S2c-3 e: the consumer stops at a reserved slot and never skips it; the
+    // entries behind it stay unconsumed and the ring reports both counts.
     let ring = Ring::new(4);
-    assert!(!ring.head_unpublished(), "empty");
+    assert_eq!((ring.unconsumed(), ring.reserved_unpublished()), (0, 0));
     let paused = ring.claim_for_test().unwrap();
-    assert!(ring.head_unpublished(), "claimed, not published");
+    assert_eq!((ring.unconsumed(), ring.reserved_unpublished()), (1, 1));
     ring.try_push(2).unwrap();
     assert_eq!(ring.pop(), None, "the entry behind it is not readable yet");
-    assert!(ring.head_unpublished());
+    assert_eq!((ring.unconsumed(), ring.reserved_unpublished()), (2, 1));
     ring.publish_for_test(paused, 1);
-    assert!(!ring.head_unpublished(), "published");
+    assert_eq!(ring.reserved_unpublished(), 0, "published");
     assert_eq!(ring.pop(), Some(1));
     assert_eq!(ring.pop(), Some(2));
-    assert!(!ring.head_unpublished(), "drained");
+    assert_eq!((ring.unconsumed(), ring.reserved_unpublished()), (0, 0));
 }
 
 #[test]
 fn the_push_path_has_no_loop_backoff_yield_or_wait() {
-    // The whole of `try_push_between` and the transport's `push` / `reject`, as text:
+    // The whole of `try_push_between` and the transport's `push` / `lose`, as text:
     // a loop, a backoff, a yield, a sleep or a spin hint would reintroduce the stall.
     let ring = super::policy::production_source(include_str!("../ring.rs"));
     let transport = super::policy::production_source(include_str!("../transport.rs"));
@@ -247,8 +240,7 @@ fn the_push_path_has_no_loop_backoff_yield_or_wait() {
         super::policy::function_body(&ring, "fn claim("),
         super::policy::function_body(&ring, "fn publish("),
         super::policy::function_body(&transport, "fn push("),
-        super::policy::function_body(&transport, "fn reject("),
-        super::policy::function_body(&transport, "fn record_loss("),
+        super::policy::function_body(&transport, "fn lose("),
     ];
     for body in bodies {
         for token in [

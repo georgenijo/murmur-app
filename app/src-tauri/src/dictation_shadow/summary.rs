@@ -41,7 +41,7 @@ pub(crate) struct RowStats {
     pub pd_witness: u64,
 }
 
-/// Every counter of C8.4 step 5, plus the loss counters of D-S2c-1 c.
+/// Every counter of C8.4 step 5, plus the loss counters of D-S2c-3.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Stats {
     /// Decisions compared (a header was applied and its decision compared).
@@ -54,8 +54,6 @@ pub(crate) struct Stats {
     /// Mismatches with the `(site, row, diff_kind)` signature of an earlier root, or
     /// a later level of a record that already mismatched.
     pub followup: u64,
-    /// Decisions not compared because an attributed loss could have touched them.
-    pub skipped_tainted: u64,
     /// Decisions not compared because a capture list overflowed: the header was
     /// incomplete.
     pub skipped_incomplete: u64,
@@ -67,18 +65,23 @@ pub(crate) struct Stats {
     /// Messages of recorders created before the transport was published (the first
     /// enabled startup): counted, never queued, never blocking.
     pub dropped_unavailable: u64,
-    /// Header positions that never produced a header: a gap declared lost after
-    /// more than 64 later headers, or a lost header known by its `seq`.
-    pub lost_gap: u64,
     /// Open records evicted past the 64-record cap.
     pub lost_open: u64,
-    /// Open records closed unchecked because a lost message belonged to them.
-    pub invalidated: u64,
-    /// Headers that arrived after their position was declared lost, or for a flight
-    /// already invalidated: discarded, never applied.
+    /// Flights given up because a message was lost (or a header gap was seen with no
+    /// counted loss): the staged batch and every open or held record, counted once
+    /// per flight (D-S2c-3 b).
+    pub abandoned_by_loss: u64,
+    /// Headers that arrived after a reset moved the sequence past them: discarded,
+    /// never applied.
     pub late_header_discarded: u64,
-    /// Losses the loss log could not attribute: every open record was invalidated.
-    pub loss_unattributed: u64,
+    /// Pipeline-owned finishes closed without the owner's H1 token (no registration
+    /// witnessed): neither clean nor a mismatch (D-S2c-3 f).
+    pub unverifiable: u64,
+    /// Messages claimed in the ring and never consumed when the final summary was
+    /// written (shutdown only).
+    pub unconsumed: u64,
+    /// Of `unconsumed`, the slots a producer reserved and never published.
+    pub reserved_unpublished: u64,
     /// Flights closed with `completed:false` (not an error).
     pub abandoned: u64,
     /// Flights that entered `run(Pre)` and were dropped before D entry, reported by
@@ -91,9 +94,11 @@ pub(crate) struct Stats {
     pub shadow_panic: u64,
     /// Mismatch events the rate limit suppressed (C8.4 step 4).
     pub events_suppressed: u64,
-    /// Losses by the site they were attributed to, for E4. Never keyed `0`: a loss
-    /// with no site is counted in `loss_unattributed` instead.
+    /// Losses by the site of the flight that lost them, for E4. Never keyed `0`.
     pub lost_by_site: BTreeMap<u16, u64>,
+    /// Losses with no site (a message of a flight with no ticket, or a site out of
+    /// range).
+    pub loss_unattributed: u64,
     /// By `(site_id, row ordinal)`.
     pub per_row: BTreeMap<(u16, u16), RowStats>,
     /// Preserved-defect witnesses by PD number (E8).
@@ -136,15 +141,16 @@ impl Stats {
             "matched": self.matched,
             "mismatched_root": self.mismatched_root,
             "followup": self.followup,
-            "skipped_tainted": self.skipped_tainted,
             "skipped_incomplete": self.skipped_incomplete,
             "dropped": self.dropped,
             "dropped_contended": self.dropped_contended,
             "dropped_unavailable": self.dropped_unavailable,
-            "lost_gap": self.lost_gap,
             "lost_open": self.lost_open,
-            "invalidated": self.invalidated,
+            "abandoned_by_loss": self.abandoned_by_loss,
             "late_header_discarded": self.late_header_discarded,
+            "unverifiable": self.unverifiable,
+            "unconsumed": self.unconsumed,
+            "reserved_unpublished": self.reserved_unpublished,
             "loss_unattributed": self.loss_unattributed,
             "abandoned": self.abandoned,
             "abandoned_pre_d": self.abandoned_pre_d,

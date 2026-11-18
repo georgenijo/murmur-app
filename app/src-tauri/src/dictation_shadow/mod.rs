@@ -24,19 +24,19 @@
 //!   by-value and heap-free;
 //! * [`ring`] the in-crate bounded ring (Vyukov-style, one consumer) whose
 //!   `try_push` makes exactly one attempt: no loop, backoff or yield;
-//! * [`transport`] the live side: the preallocated ring (256), the loss log, the
-//!   flight-owned [`transport::ShadowRecorder`], the header
-//!   [`transport::ShadowTicket`] and `witness` / `mark` / `submit`, each a single
-//!   `try_push`: no allocation, no free, no lock, no channel, no waker;
+//! * [`transport`] the live side: the preallocated ring (256), the loss counters
+//!   (global and per site), the flight-owned [`transport::ShadowRecorder`], the
+//!   header [`transport::ShadowTicket`] and `witness` / `mark` / `submit`, each a
+//!   single `try_push`: no allocation, no free, no lock, no channel, no waker;
 //! * [`compare`] the `murmur-dictation-shadow` thread's comparison (CP1-CP4,
-//!   `diff_kind` 1-9, attributed loss, cascade control) and [`pd`] the preserved
-//!   defects it credits;
+//!   `diff_kind` 1-9, the loss epoch check that gives up everything in flight,
+//!   cascade control) and [`pd`] the preserved defects it credits;
 //! * [`summary`] the counters, `dictation-shadow-summary.json` and the numeric
 //!   `dictation-shadow-events.jsonl`, both written by the comparison thread only.
 //!
 //! The comparison thread polls the queue on a fixed 5 ms sleep, owns the comparator
-//! (no lock), and on a clean exit drains every queued message before it writes the
-//! final summary. The capture sites that feed it (each marked
+//! (no lock), and on a clean exit makes a bounded number of drain attempts before it
+//! writes the final summary, which reports what the ring still held. The capture sites that feed it (each marked
 //! `shadow_site!(issue = 1154)`) arrive in Stage 2c-2; until then nothing in the shell
 //! sends a message, and the only callers are the startup hook and the clean-exit hook
 //! in `lib.rs`. Removal is tracked in #1154.
@@ -63,7 +63,7 @@ use std::time::{Duration, Instant};
 
 use compare::{Comparator, EventSink, MismatchEvent};
 use summary::{write_summary, EventFile, Stats};
-use transport::{ShadowRecorder, Transport, LOSS_CAPACITY, QUEUE_CAPACITY};
+use transport::{ShadowRecorder, Transport, QUEUE_CAPACITY};
 
 /// The environment variable that arms the feature at process start.
 pub(crate) const ENV_VAR: &str = "MURMUR_SHADOW";
@@ -78,6 +78,12 @@ pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// The clean-exit hook waits this long for the final drain and summary.
 const EXIT_WAIT: Duration = Duration::from_secs(2);
+
+/// Drain attempts the comparison thread makes at shutdown before it writes the final
+/// summary, whatever the ring still holds (D-S2c-3 e). A producer paused between
+/// reserving a slot and publishing it keeps the consumer at that slot; the summary
+/// then reports what was left instead of waiting for it.
+const SHUTDOWN_DRAIN_ATTEMPTS: u32 = 3;
 
 /// Name of the comparison thread (C8.3).
 pub(crate) const THREAD_NAME: &str = "murmur-dictation-shadow";
@@ -102,10 +108,10 @@ pub(crate) fn enabled() -> bool {
 }
 
 /// Allocate and publish the process-wide transport. **Runs on the comparison
-/// thread**: both rings are allocated and initialised there, never on the thread
-/// that started the app (D-S2c-3 minor 2).
+/// thread**: the ring and the counters are allocated and initialised there, never on
+/// the thread that started the app (D-S2c-3 minor 2).
 fn publish_transport() -> Arc<Transport> {
-    Arc::clone(TRANSPORT.get_or_init(|| Transport::new(QUEUE_CAPACITY, LOSS_CAPACITY)))
+    Arc::clone(TRANSPORT.get_or_init(|| Transport::new(QUEUE_CAPACITY)))
 }
 
 /// A new flight recorder, to be created **before** `run(Pre)` (C4.1 step 2); `None`
@@ -238,8 +244,9 @@ pub(crate) fn file_sink(directory: Option<&Path>) -> EventSink {
 }
 
 /// The comparison thread: poll the queue, apply each message, write the summary
-/// every five minutes, and on a stop request drain everything queued and write the
-/// final summary (D-S2c-1 f). It is the only writer of the summary.
+/// every five minutes, and on a stop request drain (a bounded number of attempts)
+/// and write the final summary (D-S2c-1 f, D-S2c-3 e). It is the only writer of the
+/// summary.
 pub(crate) fn run(
     transport: &Transport,
     mut comparator: Comparator,
@@ -254,7 +261,17 @@ pub(crate) fn run(
         let stop = control.shutdown.load(Ordering::Acquire);
         let progressed = comparator.drain(transport);
         if stop {
-            comparator.drain(transport);
+            // Bounded: a slot a producer reserved and never published stops the
+            // consumer at it, and the final summary must still be written.
+            for _ in 1..SHUTDOWN_DRAIN_ATTEMPTS {
+                if transport.unconsumed() == 0 {
+                    break;
+                }
+                std::thread::sleep(poll);
+                comparator.drain(transport);
+            }
+            comparator.stats.unconsumed = transport.unconsumed() as u64;
+            comparator.stats.reserved_unpublished = transport.reserved_unpublished() as u64;
             write_stats(directory, &comparator.stats);
             control.finished.store(true, Ordering::Release);
             return;

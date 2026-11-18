@@ -538,60 +538,6 @@ impl ShadowMsg {
     }
 }
 
-/// Something the live side could not deliver, attributed by recorder, `seq` and
-/// site (D-S2c-1 c, D-S2c-2 e). Plain numbers so it can be written to the lock-free
-/// loss log.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct LossEntry {
-    /// The recorder whose message was lost.
-    pub rec: u64,
-    /// The header `seq` of the recorder's decision: the lost header's own for a
-    /// header, the flight's for a later message.
-    pub seq: u64,
-    /// The decision's C0.3 site. Never `0` for a real loss (the recorder keeps it
-    /// from the moment its ticket was taken).
-    pub site: u64,
-    /// The recording ids the lost header named (`0` = none), so the loss taints
-    /// exactly those ids instead of guessing from neighbours. Empty for a later
-    /// message: the open record already knows its own ids.
-    pub ids: [u64; 3],
-    /// The lost thing was the header itself, so its position in `seq` order is lost
-    /// too. A later message of a flight leaves the header's position alone.
-    pub header: bool,
-}
-
-impl LossEntry {
-    /// What losing `msg` loses. `seq` and `site` are the sending recorder's, used
-    /// for every message but a header (which carries its own). A `PreAbandoned`
-    /// report has no decision to attribute to: it is counted as a drop and nothing
-    /// else.
-    pub(crate) fn of(msg: &ShadowMsg, seq: u64, site: u16) -> Option<Self> {
-        match msg {
-            ShadowMsg::Header(header) => {
-                let mut ids = [0_u64; 3];
-                ids[0] = header.input.recording_id().map_or(0, |id| id.0);
-                ids[1] = header.pre.current_id.0;
-                ids[2] = header.live_post_d.current_id.0;
-                Some(Self {
-                    rec: header.rec.0,
-                    seq: header.seq,
-                    site: u64::from(header.site_id),
-                    ids,
-                    header: true,
-                })
-            }
-            ShadowMsg::PreAbandoned { .. } => None,
-            other => Some(Self {
-                rec: other.rec().0,
-                seq,
-                site: u64::from(site),
-                ids: [0; 3],
-                header: false,
-            }),
-        }
-    }
-}
-
 /// `diff_kind` of the mismatch event (C8.3), in the documented order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]

@@ -39,7 +39,7 @@ fn a_faithful_live_path_compares_clean_at_every_point() {
     assert_clean(&h);
     assert_eq!(h.stats().compared, 9);
     assert_eq!(h.stats().matched, 9, "every flight closed with no mismatch");
-    let lost = h.stats().lost_gap + h.stats().lost_open + h.stats().dropped;
+    let lost = h.stats().abandoned_by_loss + h.stats().lost_open + h.stats().dropped;
     assert_eq!(lost, 0);
     // The fixtures are the rows the tests name.
     let rows: Vec<&str> = flights.iter().map(|f| f.decision.row.0).collect();
@@ -714,7 +714,11 @@ fn shadow_gap_is_count_not_time() {
     h.send(ShadowMsg::Header(short_idle(3, 3).header));
     assert_eq!(h.stats().compared, 1, "seq 3 waits for the gap");
     h.clock.fetch_add(20_000, Ordering::SeqCst);
-    assert_eq!(h.stats().lost_gap, 0, "twenty seconds are not a loss");
+    assert_eq!(
+        h.stats().abandoned_by_loss,
+        0,
+        "twenty seconds are not a loss"
+    );
     h.feed(&slow);
     assert_eq!(
         h.stats().compared,
@@ -723,7 +727,10 @@ fn shadow_gap_is_count_not_time() {
     );
     assert_clean(&h);
 
-    // A missing seq is declared lost only after more than 64 later headers wait.
+    // A missing seq with no counted loss behind it is impossible; if it is seen
+    // anyway (more than 64 later headers wait), it is a loss like any other: the
+    // waiting headers are given up, not applied, and the sequence resynchronises on
+    // the next header (D-S2c-3 d).
     let mut h = harness();
     h.feed(&short_idle(1, 1));
     let missing = 2;
@@ -733,7 +740,7 @@ fn shadow_gap_is_count_not_time() {
     }
     h.clock.fetch_add(3_600_000, Ordering::SeqCst);
     assert_eq!(
-        h.stats().lost_gap,
+        h.stats().abandoned_by_loss,
         0,
         "64 waiting headers keep the gap open"
     );
@@ -741,15 +748,14 @@ fn shadow_gap_is_count_not_time() {
     let overflow = missing + 1 + waiting;
     h.send(ShadowMsg::Header(short_idle(overflow, overflow).header));
     assert_eq!(
-        h.stats().lost_gap,
-        1,
-        "the 65th later header declares it lost"
+        h.stats().abandoned_by_loss,
+        waiting + 1,
+        "the 65th later header gives up every waiting flight"
     );
-    assert_eq!(
-        h.stats().compared,
-        1 + waiting + 1,
-        "and the waiting headers applied"
-    );
+    assert_eq!(h.stats().compared, 1, "none of them was compared");
+    h.feed(&short_idle(500, 500));
+    assert_eq!(h.stats().compared, 2, "the next header resynchronises");
+    assert_clean(&h);
 }
 
 #[test]

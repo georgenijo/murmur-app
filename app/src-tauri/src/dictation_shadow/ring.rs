@@ -116,8 +116,8 @@ impl<T> Ring<T> {
     }
 
     /// The first half of a push: one attempt to reserve the slot at the tail. The
-    /// slot is **not readable** until [`Ring::publish`] runs; between the two, the
-    /// consumer sees the head as claimed but unpublished (`head_unpublished`).
+    /// slot is **not readable** until [`Ring::publish`] runs; between the two, it is
+    /// counted by [`Ring::reserved_unpublished`].
     fn claim(&self, between: impl FnOnce()) -> Result<usize, Rejection> {
         let pos = self.tail.load(Ordering::Relaxed);
         let cell = &self.cells[pos & self.mask];
@@ -166,15 +166,29 @@ impl<T> Ring<T> {
         cell.seq.store(pos.wrapping_add(1), Ordering::Release);
     }
 
-    /// Whether the next message to read is **claimed but not yet published**: a
-    /// producer reserved the head slot and has not finished writing it. Different
-    /// from an empty ring (nothing claimed): entries behind that slot may already be
-    /// published, yet [`Ring::pop`] cannot return them until this one is.
-    pub(crate) fn head_unpublished(&self) -> bool {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Acquire);
-        tail != head
-            && self.cells[head & self.mask].seq.load(Ordering::Acquire) != head.wrapping_add(1)
+    /// Slots claimed and not yet consumed, published or not.
+    pub(crate) fn unconsumed(&self) -> usize {
+        self.tail
+            .load(Ordering::Acquire)
+            .wrapping_sub(self.head.load(Ordering::Acquire))
+    }
+
+    /// Of [`Ring::unconsumed`], the slots a producer reserved and has not published
+    /// yet. [`Ring::pop`] stops at the first of them and never skips it, so every
+    /// message behind it waits too (D-S2c-3 e).
+    pub(crate) fn reserved_unpublished(&self) -> usize {
+        let head = self.head.load(Ordering::Acquire);
+        let claimed = self
+            .tail
+            .load(Ordering::Acquire)
+            .wrapping_sub(head)
+            .min(self.capacity());
+        (0..claimed)
+            .filter(|offset| {
+                let pos = head.wrapping_add(*offset);
+                self.cells[pos & self.mask].seq.load(Ordering::Acquire) != pos.wrapping_add(1)
+            })
+            .count()
     }
 
     /// Test seam: reserve a slot and stop before publishing (a producer paused
@@ -225,14 +239,6 @@ impl<T> Ring<T> {
         self.cells[pos & self.mask]
             .seq
             .store(pos.wrapping_add(self.capacity()), Ordering::Release);
-    }
-
-    /// Messages currently held.
-    #[cfg(test)]
-    pub(crate) fn len(&self) -> usize {
-        self.tail
-            .load(Ordering::Acquire)
-            .wrapping_sub(self.head.load(Ordering::Acquire))
     }
 }
 

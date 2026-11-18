@@ -10,17 +10,19 @@
 //! owned by exactly one thread and needs no lock.
 //!
 //! * **Ordering is by `seq`, never by time.** A header is applied when every smaller
-//!   `seq` was applied or lost. Early headers wait in a buffer of at most 64
+//!   `seq` was applied. Early headers wait in a buffer of at most 64
 //!   ([`MAX_PENDING_HEADERS`]); a gap still open when more than 64 later headers
-//!   wait is declared lost. A flight lasts 2 to 17 s, so a time window could not tell
-//!   a slow flight from a lost record, and none exists.
-//! * **Loss is attributed, never guessed** (D-S2c-1 c). A message the queue could not
-//!   take arrives as a [`LossEntry`] naming its recorder and `seq`. The affected
-//!   record is invalidated and closed unchecked (never compared as clean); a lost
-//!   header's position taints, **in `seq` order**, the neighbours at that position
-//!   (the last applied header and the next one); a header that arrives after its
-//!   position was declared lost, or for an invalidated flight, is discarded. A header
-//!   that allocated a new id (a fresh generation) is never tainted by a neighbour.
+//!   wait is impossible without a counted loss, so it takes the same reset as one. A
+//!   flight lasts 2 to 17 s, so a time window could not tell a slow flight from a
+//!   lost record, and none exists.
+//! * **Loss is a reset, never an attribution** (D-S2c-3). The live side only counts:
+//!   a global `lost` and one counter per site. Each batch is staged, then `lost` is
+//!   read again and compared with the value the last poll ended on. If it moved, the
+//!   staged batch and every open, held or waiting record are given up
+//!   (`abandoned_by_loss`) and the sequence resynchronises on the next header. A
+//!   producer bumps `lost` before it can publish a later message, so a batch holding a
+//!   message that follows a loss always sees the loss. Nothing is compared past a loss
+//!   and nothing is guessed about what it touched.
 //! * **At most 64 records are open** ([`MAX_OPEN_RECORDS`]); the oldest beyond that
 //!   is closed as `lost_open`. A witness that arrives before its header is held (at
 //!   most 32 per recorder).
@@ -49,9 +51,9 @@ use super::pd::{awaiting_outcome, credited, PdEvidence};
 use super::summary::Stats;
 use super::transport::Transport;
 use super::types::{
-    CondWitness, DiffKind, EffectResult, HistoryAction, HistoryTable, LiveOp, LossEntry,
-    MirrorField, MirrorValue, MirrorWitness, ObservedFact, PredId, RecorderId, ReplyKind,
-    ShadowHeader, ShadowMsg, TickerGate, WitnessedEffect,
+    CondWitness, DiffKind, EffectResult, HistoryAction, HistoryTable, LiveOp, MirrorField,
+    MirrorValue, MirrorWitness, ObservedFact, PredId, RecorderId, ReplyKind, ShadowHeader,
+    ShadowMsg, TickerGate, WitnessedEffect,
 };
 
 /// Early headers held while a gap is open (C8.3).
@@ -62,7 +64,9 @@ pub(crate) const MAX_OPEN_RECORDS: usize = 64;
 pub(crate) const MAX_HELD_PER_REC: usize = 32;
 /// Closed recorders remembered, so a late message for one is dropped, not held.
 const CLOSED_MEMORY: usize = 512;
-/// Recording ids remembered for taint and cascade control.
+/// Messages staged per batch: the unit the loss epoch check covers.
+const STAGE_CAPACITY: usize = 64;
+/// Recording ids remembered for cascade control and the preserved-defect windows.
 const MAX_REMEMBERED_IDS: usize = 1024;
 /// Rows remembered per recording id for the two-flight preserved defects.
 const MAX_ROWS_PER_ID: usize = 8;
@@ -253,27 +257,6 @@ fn header_ids(header: &ShadowHeader) -> Vec<RecordingId> {
     ids
 }
 
-/// The decision allocated a new id: a fresh generation.
-fn is_fresh_generation(header: &ShadowHeader) -> bool {
-    header.live_post_d.current_id > header.pre.current_id
-}
-
-/// The ids a header's decision is *about*, for loss taint. A fresh generation is
-/// about its new id only, so a neighbour's loss never taints it; anything else is
-/// about the id it names and the id that was current.
-fn subject_ids(header: &ShadowHeader) -> Vec<RecordingId> {
-    let mut ids = Vec::with_capacity(2);
-    if is_fresh_generation(header) {
-        push_unique(&mut ids, header.live_post_d.current_id);
-    } else {
-        if let Some(id) = header.input.recording_id() {
-            push_unique(&mut ids, id);
-        }
-        push_unique(&mut ids, header.pre.current_id);
-    }
-    ids
-}
-
 /// The token and validated status an input carries, if it carries one.
 pub(crate) fn input_token(input: &Input) -> Option<(Continuation, OpStatus)> {
     match input {
@@ -350,8 +333,6 @@ struct Record {
     pre_id: RecordingId,
     /// Every id the header named, for cascade signatures.
     ids: Vec<RecordingId>,
-    /// What the decision is about, for loss taint.
-    subject: Vec<RecordingId>,
     decision: Decision,
     observed: Vec<ObservedFact>,
     slots: Vec<Slot>,
@@ -382,8 +363,9 @@ struct Record {
     h2_registered: bool,
     /// A pipeline-owned finish's recording (see [`pipeline_owned_finish`]).
     owner_finish: Option<RecordingId>,
-    /// The `K:Pipeline` operation the shadow saw registered for that recording, if
-    /// it did: the owner's full token is `(recording, Pipeline, op)`.
+    /// The `K:Pipeline` operation the shadow itself saw registered for that
+    /// recording, if it did: the owner's full token is `(recording, Pipeline, op)`.
+    /// Without it the finish cannot be verified (D-S2c-3 f).
     owner_op: Option<OperationId>,
     h1_owner_retired: bool,
     h2_owner_retired: bool,
@@ -398,12 +380,10 @@ struct Record {
     reply: Option<ReplyKind>,
     /// Some comparison reported a mismatch for this record.
     mismatched: bool,
-    /// An attributed loss could have touched it: its messages are consumed unchecked.
-    skipped: bool,
 }
 
 impl Record {
-    fn new(header: &ShadowHeader, decision: Decision, skipped: bool) -> Self {
+    fn new(header: &ShadowHeader, decision: Decision) -> Self {
         let later = |placed: &murmur_dictation_core::effects::Placed| {
             matches!(placed.at, Placement::PostDT | Placement::PostT)
         };
@@ -449,7 +429,6 @@ impl Record {
             row_name: decision.row.0,
             pre_id: header.pre.current_id,
             ids: header_ids(header),
-            subject: subject_ids(header),
             slots: vec![Slot::Pending; decision.effects.len()],
             decision,
             observed: header.observed.to_vec(),
@@ -476,7 +455,6 @@ impl Record {
             token: input_token(&header.input),
             reply: None,
             mismatched: false,
-            skipped,
         }
     }
 
@@ -741,6 +719,9 @@ impl Record {
                         Some(rid) if op.cont == ContKind::Pipeline && op.recording_id == rid => {
                             let first = !self.h1_owner_retired;
                             self.h1_owner_retired = true;
+                            // With no registration seen the retirement cannot be
+                            // judged: it passes here and the record closes
+                            // `unverifiable`, never clean.
                             first && matched && self.owner_op.is_none_or(|owner| owner == op.op)
                         }
                         // Another operation's retirement: not the row's token.
@@ -784,6 +765,12 @@ impl Record {
         } else {
             self.token.is_some() && !self.h1_retired
         }
+    }
+
+    /// A pipeline-owned finish whose owner's H1 token the shadow never saw
+    /// registered: it can be neither clean nor a mismatch (D-S2c-3 f).
+    fn unverifiable(&self) -> bool {
+        self.owner_finish.is_some() && self.owner_op.is_none()
     }
 
     /// CP2: one effect that ran after D, against the decided effect at its index.
@@ -935,15 +922,15 @@ pub(crate) struct Comparator {
     sink: EventSink,
     clock: Clock,
     next_seq: u64,
+    /// After a reset nothing is known about the sequence: the next header sets it.
+    resync: bool,
     pending: BTreeMap<u64, ShadowHeader>,
-    /// Positions a loss entry named: skipped, in `seq` order, when reached.
-    lost_seqs: BTreeSet<u64>,
-    /// What each lost position's flight was about, read from its header before the
-    /// header was discarded: tainted and invalidated **at the position** (D-S2c-3 3).
-    lost_subjects: BTreeMap<u64, Vec<RecordingId>>,
-    /// A message popped while the loss log had an unpublished head: held until the
-    /// loss entries recorded before it are readable (D-S2c-3 major 1).
-    deferred: Option<ShadowMsg>,
+    /// The batch being staged (D-S2c-3 b): allocated once, here.
+    staging: Vec<ShadowMsg>,
+    /// `lost` as of the end of the last batch the consumer looked at.
+    seen_lost: u64,
+    /// Messages of recorders that had no transport, in total.
+    unavailable_total: u64,
     /// The `K:Pipeline` operation registered for each recording, for the owner's
     /// full H1 token at its finish.
     pipeline_ops: BTreeMap<u64, OperationId>,
@@ -953,14 +940,8 @@ pub(crate) struct Comparator {
     held: HashMap<RecorderId, Vec<ShadowMsg>>,
     /// Open recorders (records and held ones), oldest first.
     open: VecDeque<RecorderId>,
-    /// Recorders finished with: closed, abandoned, evicted or invalidated.
+    /// Recorders finished with: closed, abandoned or evicted.
     closed: VecDeque<RecorderId>,
-    /// Ids an attributed loss could have touched: their decisions are skipped.
-    tainted: BTreeSet<u64>,
-    /// The next applied header is the neighbour of a lost position.
-    taint_next: bool,
-    /// What the last applied header was about.
-    last_subject: Vec<RecordingId>,
     /// Root mismatch signatures by recording id (cascade control).
     signatures: BTreeMap<u64, Vec<(u16, u16, u8)>>,
     /// Rows that closed clean, by the recording that was current (PD windows).
@@ -981,19 +962,17 @@ impl Comparator {
             sink,
             clock,
             next_seq: 1,
+            resync: false,
             pending: BTreeMap::new(),
-            lost_seqs: BTreeSet::new(),
-            lost_subjects: BTreeMap::new(),
-            deferred: None,
+            staging: Vec::with_capacity(STAGE_CAPACITY),
+            seen_lost: 0,
+            unavailable_total: 0,
             pipeline_ops: BTreeMap::new(),
             unavailable: None,
             records: HashMap::new(),
             held: HashMap::new(),
             open: VecDeque::new(),
             closed: VecDeque::new(),
-            tainted: BTreeSet::new(),
-            taint_next: false,
-            last_subject: Vec::new(),
             signatures: BTreeMap::new(),
             clean_rows: BTreeMap::new(),
             pd_pending: BTreeMap::new(),
@@ -1020,72 +999,111 @@ impl Comparator {
         self.unavailable = Some(counter);
     }
 
-    /// Take everything the live side has queued: each message is applied **after**
-    /// the loss log was read, so a loss recorded before a message was pushed is always
-    /// seen first. A loss entry a producer has reserved but not yet published (the
-    /// log's head is claimed, not readable) may be one of those: the message is held
-    /// until it can be read, and nothing is compared past it (D-S2c-3 major 1). Only
-    /// the consumer waits; every producer still makes one attempt. Returns whether
-    /// anything was applied.
+    /// Take everything the live side has queued, one staged batch at a time. Returns
+    /// whether anything was applied or given up.
     pub(crate) fn drain(&mut self, transport: &Transport) -> bool {
+        self.drain_with(transport, |_| {})
+    }
+
+    /// [`Comparator::drain`] with a seam, `popped(n)`, that runs after the `n`th
+    /// message of a batch was taken: a test loses a message there, between two
+    /// messages of one batch. Production passes an empty closure.
+    ///
+    /// The epoch check (D-S2c-3 b): the batch is staged first, then `lost` is read.
+    /// If it is not the value the last batch ended on, a message was lost since: the
+    /// staged batch and everything open are given up. The batch is processed only
+    /// when the count did not move. A producer bumps `lost` before it can publish a
+    /// later message and the consumer's acquire of that slot happens-before this read,
+    /// so a batch holding a message that follows a loss always sees the loss.
+    pub(crate) fn drain_with(
+        &mut self,
+        transport: &Transport,
+        mut popped: impl FnMut(usize),
+    ) -> bool {
         let mut progressed = false;
         loop {
-            let msg = match self.deferred.take() {
-                Some(msg) => msg,
-                None => match transport.pop() {
-                    Some(msg) => msg,
-                    None => break,
-                },
-            };
-            if self.fold_losses(transport).1 {
-                self.deferred = Some(msg);
+            let mut batch = std::mem::take(&mut self.staging);
+            batch.clear();
+            while batch.len() < STAGE_CAPACITY {
+                let Some(msg) = transport.pop() else {
+                    break;
+                };
+                batch.push(msg);
+                popped(batch.len());
+            }
+            let full = batch.len() == STAGE_CAPACITY;
+            let lost = transport.lost();
+            let unavailable = self.fold_counters(transport, lost);
+            if lost != self.seen_lost || unavailable {
+                self.give_up(transport, lost, &batch);
+                progressed = true;
+            } else if !batch.is_empty() {
+                progressed = true;
+                for msg in batch.drain(..) {
+                    self.apply(msg);
+                }
+            }
+            batch.clear();
+            self.staging = batch;
+            if !full {
                 return progressed;
             }
-            self.apply(msg);
-            progressed = true;
         }
-        self.fold_losses(transport).0 | progressed
     }
 
-    /// Fold the live side's counters and the loss log into the comparison. Returns
-    /// whether it saw anything.
-    pub(crate) fn pump_losses(&mut self, transport: &Transport) -> bool {
-        self.fold_losses(transport).0
+    /// Fold the live side's counters into the summary. Returns whether a recorder with
+    /// no transport dropped something since the last call (a loss like any other).
+    fn fold_counters(&mut self, transport: &Transport, lost: u64) -> bool {
+        let unavailable = self
+            .unavailable
+            .map_or(0, |counter| counter.swap(0, Ordering::Relaxed));
+        self.unavailable_total += unavailable;
+        self.stats.dropped_unavailable = self.unavailable_total;
+        self.stats.dropped = lost + self.unavailable_total;
+        self.stats.dropped_contended = transport.contended();
+        self.stats.witness_overflow += transport.take_overflow();
+        unavailable > 0
     }
 
-    /// `(saw anything, the loss log's head is claimed but unpublished)`. The second
-    /// is sampled *before* each pop that comes back empty, so an empty answer with
-    /// `false` means nothing was reserved when it was asked: every loss recorded
-    /// before the message in hand was read.
-    fn fold_losses(&mut self, transport: &Transport) -> (bool, bool) {
-        let mut seen = false;
-        let dropped = transport.take_dropped();
-        let overflow = transport.take_overflow();
-        self.stats.dropped += dropped;
-        self.stats.dropped_contended += transport.take_contended();
-        self.stats.witness_overflow += overflow;
-        seen |= dropped > 0 || overflow > 0;
-        if let Some(counter) = self.unavailable {
-            let unavailable = counter.swap(0, Ordering::Relaxed);
-            self.stats.dropped += unavailable;
-            self.stats.dropped_unavailable += unavailable;
-            seen |= unavailable > 0;
-        }
-        let unattributed = transport.take_loss_overflow();
-        if unattributed > 0 {
-            seen = true;
-            self.on_unattributed_loss(unattributed);
-        }
-        loop {
-            let blocked = transport.losses_unpublished();
-            match transport.pop_loss() {
-                Some(loss) => {
-                    seen = true;
-                    self.on_loss(loss);
+    /// A loss was seen: read the per-site counts, then give everything up.
+    fn give_up(&mut self, transport: &Transport, lost: u64, batch: &[ShadowMsg]) {
+        if lost != self.seen_lost {
+            self.seen_lost = lost;
+            self.stats.lost_by_site.clear();
+            self.stats.loss_unattributed = 0;
+            let stats = &mut self.stats;
+            transport.lost_by_site(|site, count| {
+                if site == 0 {
+                    stats.loss_unattributed = count;
+                } else {
+                    stats.lost_by_site.insert(site, count);
                 }
-                None => return (seen, blocked),
-            }
+            });
         }
+        self.abandon(batch);
+    }
+
+    /// Give up the staged batch and every open, held or waiting record: counted once
+    /// per flight (`abandoned_by_loss`), remembered as closed so a late message of it
+    /// is dropped, and with every cache that depended on them forgotten. The sequence
+    /// resynchronises on the next header.
+    fn abandon(&mut self, batch: &[ShadowMsg]) {
+        let mut flights: BTreeSet<RecorderId> = batch.iter().map(ShadowMsg::rec).collect();
+        flights.extend(self.records.keys().copied());
+        flights.extend(self.held.keys().copied());
+        flights.extend(self.pending.values().map(|header| header.rec));
+        self.stats.abandoned_by_loss += u64::try_from(flights.len()).unwrap_or(u64::MAX);
+        for rec in flights {
+            self.remember_closed(rec);
+        }
+        self.records.clear();
+        self.held.clear();
+        self.open.clear();
+        self.pending.clear();
+        self.clean_rows.clear();
+        self.pd_pending.clear();
+        self.pipeline_ops.clear();
+        self.resync = true;
     }
 
     /// Apply one message. The shadow's own panics are caught per header.
@@ -1101,7 +1119,7 @@ impl Comparator {
             ShadowMsg::Header(header) => self.on_header(header),
             ShadowMsg::PreAbandoned { rec } => {
                 // `run(Pre)` began and D was never entered: no decision, no seq, no
-                // gap, no taint. Reported, not a mismatch.
+                // gap. Reported, not a mismatch.
                 self.stats.abandoned_pre_d += 1;
                 self.forget(rec);
             }
@@ -1116,23 +1134,13 @@ impl Comparator {
 
     fn on_header(&mut self, header: ShadowHeader) {
         let seq = header.seq;
-        let rec = header.rec;
-        if seq < self.next_seq {
-            // Its position was already declared lost: applying it would compare
-            // evidence that was already given up on. What it was about is applied now:
-            // the position has passed.
-            self.stats.late_header_discarded += 1;
-            self.taint_and_invalidate(&subject_ids(&header));
-            self.forget(rec);
-            return;
+        if std::mem::take(&mut self.resync) {
+            self.next_seq = seq;
         }
-        if self.closed.contains(&rec) {
-            // Its flight was invalidated or evicted: discard the header, and skip
-            // its position in `seq` order so the headers behind it are not stuck.
+        if seq < self.next_seq {
+            // A reset moved the sequence past it: its position was given up.
             self.stats.late_header_discarded += 1;
-            self.note_lost_subjects(seq, &header);
-            self.lost_seqs.insert(seq);
-            self.drain_ready();
+            self.forget(header.rec);
             return;
         }
         if seq == self.next_seq {
@@ -1142,160 +1150,30 @@ impl Comparator {
             return;
         }
         self.pending.insert(seq, header);
-        while self.pending.len() > MAX_PENDING_HEADERS {
-            // More than 64 later headers wait on one open gap: it is lost. A gap is
-            // measured in headers, never in time.
-            self.lose_position();
-            self.drain_ready();
-        }
-    }
-
-    /// The header at `next_seq` will never be applied: count it, taint its
-    /// neighbours at this position, and move on.
-    fn lose_position(&mut self) {
-        self.stats.lost_gap += 1;
-        let mut before = self.last_subject.clone();
-        // What the lost flight itself was about, if its header was seen: applied here,
-        // at its position, even though the header was never compared (D-S2c-3 major 3).
-        before.extend(
-            self.lost_subjects
-                .remove(&self.next_seq)
-                .unwrap_or_default(),
-        );
-        // The record the neighbour before the gap opened may still be open: it is
-        // invalidated here, where the taint is applied, so it cannot close clean or
-        // earn preserved-defect credit (D-S2c-2 e).
-        self.taint_and_invalidate(&before);
-        self.taint_next = true;
-        self.next_seq += 1;
-    }
-
-    /// Remember what a header about to be discarded was about, for its position.
-    fn note_lost_subjects(&mut self, seq: u64, header: &ShadowHeader) {
-        self.lost_subjects
-            .entry(seq)
-            .or_default()
-            .extend(subject_ids(header));
-        while self.lost_subjects.len() > MAX_PENDING_HEADERS * 2 {
-            self.lost_subjects.pop_first();
+        if self.pending.len() > MAX_PENDING_HEADERS {
+            // More than 64 later headers wait on one open gap. Without a counted loss
+            // that cannot happen; if it does, it is a loss like any other (D-S2c-3 d).
+            self.abandon(&[]);
         }
     }
 
     fn drain_ready(&mut self) {
-        loop {
-            if self.lost_seqs.remove(&self.next_seq) {
-                self.lose_position();
-            } else if let Some(header) = self.pending.remove(&self.next_seq) {
-                self.apply_header(header);
-                self.next_seq += 1;
-            } else {
-                break;
-            }
+        while let Some(header) = self.pending.remove(&self.next_seq) {
+            self.apply_header(header);
+            self.next_seq += 1;
         }
-    }
-
-    // ----------------------------------------------------------------- loss
-
-    fn taint(&mut self, ids: &[RecordingId]) {
-        for id in ids {
-            if !id.is_none() {
-                self.tainted.insert(id.0);
-            }
-        }
-        while self.tainted.len() > MAX_REMEMBERED_IDS {
-            self.tainted.pop_first();
-        }
-    }
-
-    /// Taint `ids` and invalidate every open record about one of them: it is
-    /// closed unchecked, never clean, and earns no preserved-defect credit.
-    fn taint_and_invalidate(&mut self, ids: &[RecordingId]) {
-        self.taint(ids);
-        let mut invalidated = 0;
-        for record in self.records.values_mut() {
-            if !record.skipped && record.subject.iter().any(|id| ids.contains(id)) {
-                record.skipped = true;
-                invalidated += 1;
-            }
-        }
-        self.stats.invalidated += invalidated;
-    }
-
-    /// An attributed loss: invalidate what it affects, taint the ids it names, and,
-    /// when the lost thing was a header, leave its position to be skipped in `seq`
-    /// order. The loss is counted under the site the *recorder* kept (a lost witness
-    /// is attributed like a lost header); a loss with no site is unattributed, never
-    /// counted under site `0`.
-    pub(crate) fn on_loss(&mut self, loss: LossEntry) {
-        let rec = RecorderId(loss.rec);
-        match u16::try_from(loss.site) {
-            Ok(site) if site != 0 => *self.stats.lost_by_site.entry(site).or_default() += 1,
-            _ => self.stats.loss_unattributed += 1,
-        }
-        let mut ids: Vec<RecordingId> = loss
-            .ids
-            .iter()
-            .filter(|id| **id != 0)
-            .map(|id| RecordingId(*id))
-            .collect();
-        // The lost flight's own record is affected whatever the loss named.
-        if let Some(record) = self.records.get(&rec) {
-            ids.extend(record.subject.iter().copied());
-        }
-        self.taint_and_invalidate(&ids);
-        // Its header may still be waiting behind a gap: it can never be compared, so
-        // its position is given up here (in `seq` order, like a lost header's).
-        let waiting = self
-            .pending
-            .iter()
-            .find(|(_, header)| header.rec == rec)
-            .map(|(seq, _)| *seq);
-        if let Some(seq) = waiting {
-            if let Some(header) = self.pending.remove(&seq) {
-                self.note_lost_subjects(seq, &header);
-            }
-            self.stats.late_header_discarded += 1;
-            self.lost_seqs.insert(seq);
-        }
-        self.forget(rec);
-        if loss.header && loss.seq != 0 && loss.seq >= self.next_seq {
-            self.lost_seqs.insert(loss.seq);
-        }
-        self.drain_ready();
-    }
-
-    /// The loss log itself overflowed: nothing says which records were affected, so
-    /// every open one is invalidated and the next header is treated as a neighbour.
-    pub(crate) fn on_unattributed_loss(&mut self, count: u64) {
-        self.stats.loss_unattributed += count;
-        for record in self.records.values_mut() {
-            if !record.skipped {
-                record.skipped = true;
-                self.stats.invalidated += 1;
-            }
-        }
-        for header in self.pending.values_mut() {
-            header.overflowed = true;
-        }
-        self.held.clear();
-        let before = self.last_subject.clone();
-        self.taint(&before);
-        self.taint_next = true;
     }
 
     // -------------------------------------------------------------- headers
 
     fn apply_header(&mut self, header: ShadowHeader) {
-        let subject = subject_ids(&header);
-        let fresh = is_fresh_generation(&header);
-        if std::mem::take(&mut self.taint_next) && !fresh {
-            // The neighbour after a lost position: records still open about it are
-            // invalidated here too.
-            self.taint_and_invalidate(&subject);
+        if self.closed.contains(&header.rec) {
+            // Its flight was given up or evicted: the header is discarded, and its
+            // position was consumed by the caller.
+            self.stats.late_header_discarded += 1;
+            return;
         }
-        let skipped = subject.iter().any(|id| self.tainted.contains(&id.0));
         let ids = header_ids(&header);
-        self.last_subject.clone_from(&subject);
         let (site, row) = (header.site_id, header.row);
 
         if header.overflowed {
@@ -1327,15 +1205,10 @@ impl Comparator {
         self.stats.compared += 1;
         self.stats.row(site, row).compared += 1;
 
-        if skipped {
-            self.stats.skipped_tainted += 1;
-        }
         if let Verdict::NeedObservation(_) = decision.verdict {
             // The decision asked for a read the live path did not record: there is
             // nothing complete to compare (`diff_kind 7`).
-            if !skipped {
-                self.report(site, row, DiffKind::Observation, &ids);
-            }
+            self.report(site, row, DiffKind::Observation, &ids);
             self.forget(header.rec);
             return;
         }
@@ -1345,15 +1218,13 @@ impl Comparator {
         for live in header.live_ops.iter() {
             self.note_pipeline_registration(live);
         }
-        let mut record = Record::new(&header, decision, skipped);
+        let mut record = Record::new(&header, decision);
         record.owner_op = record
             .owner_finish
             .and_then(|rid| self.pipeline_ops.get(&rid.0).copied());
-        if !skipped {
-            if let Some(diff) = Self::cp1(&mut record, &header, post) {
-                record.mismatched = true;
-                self.report(site, row, diff, &ids);
-            }
+        if let Some(diff) = Self::cp1(&mut record, &header, post) {
+            record.mismatched = true;
+            self.report(site, row, diff, &ids);
         }
 
         // Messages that arrived before the header attach now.
@@ -1414,7 +1285,7 @@ impl Comparator {
             self.note_pipeline_registration(op);
         }
         if self.closed.contains(&rec) {
-            // A late message of a flight already closed, abandoned or invalidated:
+            // A late message of a flight already closed, abandoned or given up:
             // the comparison is over.
             return;
         }
@@ -1426,10 +1297,7 @@ impl Comparator {
         let ids = record.ids.clone();
         let mut closing = false;
         let mut completed = false;
-        let diff = if record.skipped {
-            closing = matches!(msg, ShadowMsg::Close { .. });
-            None
-        } else {
+        let diff = {
             match msg {
                 ShadowMsg::Witness {
                     idx,
@@ -1471,7 +1339,11 @@ impl Comparator {
             }
         }
         if closing {
-            if !record.mismatched && !record.skipped {
+            if record.mismatched {
+                // Reported already.
+            } else if record.unverifiable() {
+                self.stats.unverifiable += 1;
+            } else {
                 self.stats.matched += 1;
                 self.credit_pd(&record, completed);
             }
@@ -1552,22 +1424,14 @@ impl Comparator {
         }
     }
 
-    /// At most 64 recorders are open: the oldest beyond that is `lost_open`, and
-    /// taints what it was about.
+    /// At most 64 recorders are open: the oldest beyond that is `lost_open`.
     fn evict_over_cap(&mut self) {
         while self.open.len() > MAX_OPEN_RECORDS {
             let Some(oldest) = self.open.pop_front() else {
                 break;
             };
             self.stats.lost_open += 1;
-            match self.records.remove(&oldest) {
-                Some(record) => self.taint(&record.subject),
-                None => {
-                    let before = self.last_subject.clone();
-                    self.taint(&before);
-                    self.taint_next = true;
-                }
-            }
+            self.records.remove(&oldest);
             self.held.remove(&oldest);
             self.remember_closed(oldest);
         }

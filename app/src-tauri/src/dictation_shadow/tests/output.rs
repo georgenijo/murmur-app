@@ -128,13 +128,14 @@ fn shadow_summary_is_numeric_complete_and_atomic() {
         "matched",
         "mismatched_root",
         "followup",
-        "skipped_tainted",
         "skipped_incomplete",
         "dropped",
-        "lost_gap",
         "lost_open",
-        "invalidated",
+        "abandoned_by_loss",
         "late_header_discarded",
+        "unverifiable",
+        "unconsumed",
+        "reserved_unpublished",
         "loss_unattributed",
         "abandoned",
         "abandoned_pre_d",
@@ -265,6 +266,66 @@ fn the_final_summary_is_written_by_the_thread_after_it_drained_the_queue() {
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();
     assert_eq!(names, vec![SUMMARY_FILE.to_string()]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_final_summary_is_written_after_bounded_attempts_with_what_was_left() {
+    // Sol round 4, major 1 (D-S2c-3 e): a producer reserved the head slot of the main
+    // ring and never published it. The consumer stops at the slot and never skips it,
+    // so the flight queued behind it cannot be read; shutdown still writes the final
+    // summary, after a bounded number of attempts, and reports what it could not read.
+    let transport = local_transport(8);
+    let dir = scratch("exit-wedged");
+    let control = Control::new();
+    let paused = transport.reserve_for_test();
+    let recorder = transport.recorder();
+    let flight = idle_for(0, 0, 100);
+    submit_header(&recorder, &flight);
+    send_later(&recorder, &flight);
+    let queued = transport.unconsumed();
+    assert!(queued > 1);
+    control.request_shutdown();
+    let started = std::time::Instant::now();
+    run(
+        &transport,
+        harness().comparator,
+        Some(&dir),
+        &control,
+        Duration::from_millis(1),
+    );
+    assert!(control.is_finished(), "the thread acknowledged the stop");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "shutdown never waits for a reserved slot"
+    );
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(SUMMARY_FILE)).unwrap()).unwrap();
+    assert_eq!(summary["compared"], 0, "{summary}");
+    assert_eq!(summary["unconsumed"], queued as u64, "{summary}");
+    assert_eq!(summary["reserved_unpublished"], 1, "{summary}");
+    assert_eq!(summary["abandoned_by_loss"], 0, "{summary}");
+    // The same ring, once the paused producer publishes: nothing is left over.
+    transport.publish_for_test(
+        paused,
+        crate::dictation_shadow::types::ShadowMsg::PreAbandoned {
+            rec: crate::dictation_shadow::types::RecorderId(1),
+        },
+    );
+    let control = Control::new();
+    control.request_shutdown();
+    run(
+        &transport,
+        harness().comparator,
+        Some(&dir),
+        &control,
+        Duration::from_millis(1),
+    );
+    let summary: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(SUMMARY_FILE)).unwrap()).unwrap();
+    assert_eq!(summary["unconsumed"], 0, "{summary}");
+    assert_eq!(summary["reserved_unpublished"], 0, "{summary}");
+    assert_eq!(summary["compared"], 1, "{summary}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -523,7 +584,7 @@ fn the_rings_are_built_on_the_comparison_thread_and_early_recorders_are_unavaila
         serde_json::from_str(&std::fs::read_to_string(dir.join(SUMMARY_FILE)).unwrap()).unwrap();
     assert_eq!(summary["dropped_unavailable"], 3, "{summary}");
     assert_eq!(summary["dropped"], 3, "{summary}");
-    assert_eq!(summary["lost_gap"], 0, "{summary}");
+    assert_eq!(summary["abandoned_by_loss"], 0, "{summary}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

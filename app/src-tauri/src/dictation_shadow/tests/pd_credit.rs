@@ -174,6 +174,33 @@ fn pd_4_needs_the_rendezvous_a_second_ticker_and_the_later_success() {
 }
 
 #[test]
+fn a_reset_drops_the_windows_and_the_deferred_credits_that_depended_on_what_it_gave_up() {
+    // A preserved defect is credited only from evidence the comparison saw whole. A
+    // reset (a loss was counted) forgets the clean rows that open a two-flight window
+    // (PD-18) and the credits still waiting for a later outcome (PD-4): either could
+    // have depended on a message that was lost.
+    let transport = default_transport();
+    let duplicate = Live {
+        ticker_before: RID,
+        ..Live::default()
+    };
+    let mut h = harness();
+    h.feed(&ready_publish(1, 1, OpStatus::Outstanding));
+    h.feed(&ready_while_recording(2, 2, duplicate));
+    transport.lose_for_test(216);
+    h.comparator.drain(&transport);
+    h.feed(&pipeline_success(3, 3));
+    assert_eq!(credited_count(&h, 4), 0, "{:?}", h.stats().pd_witness);
+
+    let mut h = harness();
+    h.feed(&short_idle(1, 1));
+    transport.lose_for_test(216);
+    h.comparator.drain(&transport);
+    h.feed(&start_during_cleanup(2, 2));
+    assert_eq!(credited_count(&h, 18), 0, "{:?}", h.stats().pd_witness);
+}
+
+#[test]
 fn pd_10_needs_the_terminal_claim_to_have_lost() {
     let mut h = harness();
     h.feed(&capture_failed(1, 1, Live::default()));

@@ -403,6 +403,71 @@ fn a_pipeline_finish_needs_both_owner_retirements() {
 }
 
 #[test]
+fn a_pipeline_finish_without_a_witnessed_registration_is_unverifiable_never_clean() {
+    // Sol round 4, major 2 (D-S2c-3 f): an R204a.1 finish with a substituted H1
+    // operation id and a valid H2 retirement closed clean because no registration
+    // was in the cache to disagree with. The owner's full token must come from the
+    // shadow's own registration witness; without one the finish is neither clean nor
+    // a mismatch.
+    for (name, build) in [
+        (
+            "R204a.1",
+            (|| pipeline_exit(1, 1, Status::Processing, RID, RID)) as fn() -> Flight,
+        ),
+        ("R302.1 guard", || legacy_parse(1, 1, true)),
+        ("R302.1 site 302", || legacy_parse(1, 1, false)),
+    ] {
+        // The faithful finish, and one that names a substituted operation id.
+        for substituted in [false, true] {
+            let mut finish = build();
+            if substituted {
+                for live in finish.header.live_ops.iter_mut() {
+                    if is_owner_retirement(HistoryTable::H1)(live) {
+                        live.op = OperationId(9_999);
+                    }
+                }
+            }
+            let mut h = harness();
+            h.feed(&finish);
+            assert!(h.events().is_empty(), "{name}: {:?}", h.events());
+            assert_eq!(h.stats().matched, 0, "{name}: not clean");
+            assert_eq!(
+                h.stats().unverifiable,
+                1,
+                "{name} substituted={substituted}: {:?}",
+                h.stats()
+            );
+            assert_eq!(h.stats().mismatched_root, 0);
+        }
+        // A retirement that is missing is a mismatch whether or not it can be checked.
+        let mut missing = build();
+        without_ops(&mut missing, |live| {
+            !matches!(live.action, HistoryAction::Retired { .. })
+        });
+        let mut h = harness();
+        h.feed(&missing);
+        assert_eq!(
+            h.only_event().diff_kind,
+            DiffKind::Continuation.code(),
+            "{name}"
+        );
+        assert_eq!(h.stats().unverifiable, 0);
+    }
+    // With the registration witnessed, a substituted operation is a mismatch.
+    let mut substituted = pipeline_exit(2, 2, Status::Processing, RID, RID);
+    for live in substituted.header.live_ops.iter_mut() {
+        if is_owner_retirement(HistoryTable::H1)(live) {
+            live.op = OperationId(9_999);
+        }
+    }
+    let mut h = harness();
+    h.feed(&pipeline_start(1, 1));
+    h.feed(&substituted);
+    assert_eq!(h.only_event().diff_kind, DiffKind::Continuation.code());
+    assert_eq!(h.stats().unverifiable, 0);
+}
+
+#[test]
 fn a_stale_pipeline_finish_retires_its_own_recording_not_the_current_one() {
     // R204a.5c: the finishing pipeline's recording is stale (RID) while a newer one
     // is `Recording`. Its H2 witness retired the newer current recording and closed

@@ -21,7 +21,7 @@ use murmur_dictation_core::status::{Status, StopTrigger};
 use crate::dictation_shadow::compare::{Comparator, MismatchEvent};
 use crate::dictation_shadow::summary::Stats;
 use crate::dictation_shadow::transport::{
-    mark, submit, witness, Mark, ShadowRecorder, Transport, LOSS_CAPACITY, QUEUE_CAPACITY,
+    mark, submit, witness, Mark, ShadowRecorder, Transport, QUEUE_CAPACITY,
 };
 use crate::dictation_shadow::types::{
     CondWitness, EffectResult, HistoryAction, HistoryTable, LiveOp, MirrorField, MirrorValue,
@@ -708,11 +708,11 @@ pub(super) fn retarget(msg: ShadowMsg, to: RecorderId) -> ShadowMsg {
 }
 
 pub(super) fn local_transport(capacity: usize) -> Arc<Transport> {
-    Transport::new(capacity, LOSS_CAPACITY)
+    Transport::new(capacity)
 }
 
 pub(super) fn default_transport() -> Arc<Transport> {
-    Transport::new(QUEUE_CAPACITY, LOSS_CAPACITY)
+    Transport::new(QUEUE_CAPACITY)
 }
 
 /// Send a flight's header through the real producer path under a ticket of
