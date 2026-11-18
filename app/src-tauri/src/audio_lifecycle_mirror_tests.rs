@@ -31,6 +31,7 @@
 //! the cited lines. The rows themselves live in the core crate beside the model
 //! (`property/mirror_table.rs`, included here by path), so the table the harness runs and
 //! the table checked here are the same data.
+#![cfg(test)]
 
 use crate::token_pin_tests::{find_fragment, flat_tokens, fragment_tokens, token_hash, Flat};
 use proc_macro2::TokenStream;

@@ -133,11 +133,11 @@ impl Ports for CancelPorts<'_> {
         match effect {
             Effect::EmitStatus { status, .. } => self
                 .host
-                .emit("recording-status-changed", status.as_str())
+                .emit_event("recording-status-changed", status.as_str())
                 .map_err(|_| PortFailure),
             Effect::EmitEvent(EventKind::Cancelled) => self
                 .host
-                .emit(
+                .emit_event(
                     "recording-cancelled",
                     serde_json::json!({ "recordingId": self.recording_id }),
                 )

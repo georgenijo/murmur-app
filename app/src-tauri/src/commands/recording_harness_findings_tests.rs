@@ -14,6 +14,7 @@
 //! each test asserts the exact replies, statuses and ledger outcomes. The supervisor's
 //! own side (which notifications can follow which) is modeled and checked against the
 //! source by the property harness's mirror table.
+#![cfg(test)]
 
 use super::golden_harness::*;
 use super::golden_tests::{cancelled, recording, sub};

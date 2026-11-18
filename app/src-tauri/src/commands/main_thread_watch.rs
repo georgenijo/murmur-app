@@ -28,8 +28,6 @@ const FILE_NAME: &str = "main-thread-watch.json";
 /// Windows that show the Diagnostics control, and the only ones allowed to use
 /// these commands.
 const OWNER_WINDOWS: [&str; 2] = ["main", "diagnostics"];
-/// Emitted to each owner window after every change, with the new status.
-const STATUS_EVENT: &str = "main-thread-watch-status";
 
 /// The saved setting as this process last read or wrote it, so a status
 /// request never touches the disk. Written only under [`CHANGE_LOCK`].
@@ -158,7 +156,11 @@ pub async fn set_main_thread_watch_armed(
     let dir = super::settings_store::data_dir(&app)?;
     change_setting(dir, armed, |status| {
         for label in OWNER_WINDOWS {
-            let _ = app.emit_to(label, STATUS_EVENT, *status);
+            let _ = app.emit_to(
+                label,
+                crate::events::MAIN_THREAD_WATCH_STATUS_EVENT,
+                *status,
+            );
         }
     })
     .await

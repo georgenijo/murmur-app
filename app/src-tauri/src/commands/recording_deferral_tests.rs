@@ -4,6 +4,7 @@
 //! `IdleGuard`) joins one FIFO and runs when the outermost entry drains, after D is
 //! released. These tests stand a drain guard before the span (what every entry
 //! declares before T and D) and observe the queue and the history around it.
+#![cfg(test)]
 use super::*;
 use crate::core_history::ContinuationGuard;
 use crate::dictation_executor::executor::CoreEntry;

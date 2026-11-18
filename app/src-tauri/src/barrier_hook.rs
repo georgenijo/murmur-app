@@ -10,6 +10,7 @@
 //! the pre-refactor code (the oracle).
 //!
 //! Thread-local: the lifecycle bridge runs on the test's own thread.
+#![cfg(test)]
 
 use std::cell::RefCell;
 

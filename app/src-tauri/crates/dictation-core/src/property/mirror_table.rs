@@ -525,7 +525,7 @@ pub const MIRROR: &[Mirror] = &[
         needle: "AudioWorkerEvent::ThreadExited",
         file: "audio.rs",
         function: "spawn_capture_worker",
-        lines: (3845, 3868),
+        lines: (3841, 3864),
         guards: &[],
         real_test: None,
         what: "after RuntimeFailed / InitFailed the worker returns and sends ThreadExited on its own",

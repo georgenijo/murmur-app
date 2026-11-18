@@ -1,10 +1,10 @@
 //! Test-only token normalization shared by the source pins (D-S2b-15 (b)).
 //!
-//! The functions below are the shell ratchet's (`dictation_executor/ratchet_tests.rs` in
-//! #1152: `normalized_tokens`, `token_hash`) with the macro-aware doc-comment rule of
-//! D-S2b-18, so a pin here and a pin there agree on what an edit is. #1152 takes the same
-//! `without_doc_comments` and `normalized_tokens`, or deletes its copy and `use`s this
-//! module once both have merged (the tests at the bottom pin the behaviour both rely on).
+//! This module is the one copy of the normalization: the shell ratchet
+//! (`dictation_executor/ratchet_tests.rs`: its wrapper and `main.rs` pins) and the
+//! supervisor mirror's pins (`audio_lifecycle_mirror_tests.rs`) both hash with
+//! `normalized_tokens` and `token_hash` from here, so a pin in either agrees on what an
+//! edit is (the tests at the bottom pin the behaviour both rely on).
 //!
 //! A token stream is normalized to text with **no whitespace or comment information**:
 //! every other token, every comma and every punctuation's spacing (`Joint` is `~`) is
@@ -23,6 +23,7 @@
 //!
 //! [`flat_tokens`] is the same stream flattened with each token's source line, for
 //! matching a cited fragment of source as a token sequence ([`find_fragment`]).
+#![cfg(test)]
 
 use proc_macro2::{Delimiter, Group, Spacing, TokenStream, TokenTree};
 

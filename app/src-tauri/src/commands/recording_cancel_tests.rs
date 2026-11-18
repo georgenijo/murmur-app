@@ -5,6 +5,7 @@
 //! The expected traces were captured on the pre-refactor base (the cancel
 //! command inline): this file passes unchanged before and after the cancel
 //! family moves behind `decide_*`.
+#![cfg(test)]
 use super::golden_harness::*;
 use super::golden_tests::{recording, started};
 use super::*;

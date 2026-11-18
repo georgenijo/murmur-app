@@ -16,6 +16,10 @@ pub(crate) const SPEECH_PAD_MS: i32 = 120;
 
 /// Expected path for the VAD model under the app's models directory.
 pub fn vad_model_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = test_seam::model_path() {
+        return Some(path);
+    }
     dirs::data_dir().map(|d| {
         d.join("local-dictation")
             .join("models")
@@ -296,5 +300,160 @@ mod tests {
             context as *const WhisperVadContext as usize
         });
         assert_eq!(first_context, second_context);
+    }
+}
+
+/// Test-only seam for the VAD model download (Stage 4, #117 replay): a models
+/// directory under a temp dir and a fake download that parks until the test
+/// releases it. Compiled out of every non-test build; the production path is
+/// unchanged. Process-global, so a user installs it for the length of one
+/// serialized test run and the guard removes it.
+#[cfg(test)]
+pub(crate) mod test_seam {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::task::{Poll, Waker};
+
+    struct Fake {
+        model_path: PathBuf,
+        released: AtomicBool,
+        parked: AtomicBool,
+        /// The installer is about to wait for the install lock (D-S2b-12 d).
+        reached_lock: AtomicBool,
+        waker: Mutex<Option<Waker>>,
+    }
+
+    static FAKE: Mutex<Option<Arc<Fake>>> = Mutex::new(None);
+
+    fn current() -> Option<Arc<Fake>> {
+        FAKE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Called by the installer just before it waits for the install lock.
+    pub(crate) fn reaching_install_lock() {
+        if let Some(fake) = current() {
+            fake.reached_lock.store(true, Ordering::SeqCst);
+        }
+    }
+
+    pub(crate) fn model_path() -> Option<PathBuf> {
+        current().map(|fake| fake.model_path.clone())
+    }
+
+    /// The fake `stream_download`: for the VAD url, park until released, then write a
+    /// model-sized file of zeros to `dest`.
+    pub(crate) async fn fake_download(url: &str, dest: &Path) -> Option<Result<u64, String>> {
+        if url != super::VAD_MODEL_URL {
+            return None;
+        }
+        let fake = current()?;
+        std::future::poll_fn(|context| {
+            fake.parked.store(true, Ordering::SeqCst);
+            if fake.released.load(Ordering::SeqCst) {
+                return Poll::Ready(());
+            }
+            *fake.waker.lock().unwrap_or_else(|e| e.into_inner()) = Some(context.waker().clone());
+            if fake.released.load(Ordering::SeqCst) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+        let bytes = crate::model_artifact::MIN_VAD_MODEL_BYTES;
+        Some(
+            tokio::fs::write(dest, vec![0_u8; bytes as usize])
+                .await
+                .map(|()| bytes)
+                .map_err(|error| error.to_string()),
+        )
+    }
+
+    /// How a [`Installed::wait_parked`] ended.
+    #[derive(Debug, PartialEq, Eq)]
+    pub(crate) enum Parked {
+        Arrived,
+        WorkerFinished,
+        TimedOut,
+    }
+
+    /// Installed for one test run; removes the fake on drop.
+    pub(crate) struct Installed(Arc<Fake>);
+
+    /// Point the VAD model path at `models_dir` and park the VAD download.
+    pub(crate) fn install(models_dir: &Path) -> Installed {
+        let fake = Arc::new(Fake {
+            model_path: models_dir.join(super::VAD_MODEL_FILENAME),
+            released: AtomicBool::new(false),
+            parked: AtomicBool::new(false),
+            reached_lock: AtomicBool::new(false),
+            waker: Mutex::new(None),
+        });
+        *FAKE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&fake));
+        Installed(fake)
+    }
+
+    impl Installed {
+        /// Wait until the fake download is parked (the install path reached it), the
+        /// worker has finished without reaching it (`finished`), or `timeout` passes.
+        /// A failed install (a models directory that cannot be created) never parks,
+        /// so the wait must not depend on arrival alone.
+        pub(crate) fn wait_parked(
+            &self,
+            finished: impl Fn() -> bool,
+            timeout: std::time::Duration,
+        ) -> Parked {
+            let deadline = std::time::Instant::now() + timeout;
+            loop {
+                if self.0.parked.load(Ordering::SeqCst) {
+                    return Parked::Arrived;
+                }
+                if finished() {
+                    // The worker may have parked just before finishing.
+                    return if self.0.parked.load(Ordering::SeqCst) {
+                        Parked::Arrived
+                    } else {
+                        Parked::WorkerFinished
+                    };
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Parked::TimedOut;
+                }
+                std::thread::yield_now();
+            }
+        }
+
+        /// Wait until the installer has reached the install lock, or `timeout` passes.
+        pub(crate) fn wait_reached_lock(&self, timeout: std::time::Duration) -> bool {
+            let deadline = std::time::Instant::now() + timeout;
+            while !self.0.reached_lock.load(Ordering::SeqCst) {
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::yield_now();
+            }
+            true
+        }
+
+        /// Let the parked download finish.
+        pub(crate) fn release(&self) {
+            self.0.released.store(true, Ordering::SeqCst);
+            let waker = self
+                .0
+                .waker
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take();
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        }
+    }
+
+    impl Drop for Installed {
+        fn drop(&mut self) {
+            *FAKE.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
     }
 }

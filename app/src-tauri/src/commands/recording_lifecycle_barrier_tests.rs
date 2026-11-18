@@ -12,6 +12,7 @@
 //!
 //! These are oracle tests: they were written against the pre-refactor bridge and
 //! must pass there unchanged.
+#![cfg(test)]
 
 use super::tests::test_state;
 use super::*;

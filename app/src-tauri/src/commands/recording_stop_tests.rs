@@ -5,6 +5,7 @@
 //! (after the start reply when the scenario starts a recording). The
 //! expected traces were captured on the pre-refactor base: this file passes
 //! unchanged before and after the stop family moves behind `decide_*`.
+#![cfg(test)]
 use super::golden_harness::*;
 use super::golden_tests::{cancelled, recording, started, stopped};
 use super::*;

@@ -336,7 +336,7 @@ impl Ports for StopPorts<'_> {
         match effect {
             Effect::EmitStatus { status, .. } => self
                 .host
-                .emit("recording-status-changed", status.as_str())
+                .emit_event("recording-status-changed", status.as_str())
                 .map_err(|_| PortFailure),
             Effect::EmitEvent(EventKind::TranscriptionComplete) => {
                 let hook = self.hooks.borrow_mut().event.take().ok_or(PortFailure)?;
