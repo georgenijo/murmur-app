@@ -65,7 +65,8 @@ pub(crate) struct Stats {
     /// Messages of recorders created before the transport was published (the first
     /// enabled startup): counted, never queued, never blocking.
     pub dropped_unavailable: u64,
-    /// Open records evicted past the 64-record cap.
+    /// Open records evicted past the 64-record cap. Each is closed `unverifiable`, so
+    /// it is also counted there (D-S2c-5 b).
     pub lost_open: u64,
     /// Flights given up because a message was lost (or a header gap was seen with no
     /// counted loss): the staged batch, every open or held record, and a header that
@@ -88,7 +89,7 @@ pub(crate) struct Stats {
     pub unverifiable: u64,
     /// Recorders the comparison saw open: every one is closed exactly once, by one of
     /// `matched`, `closed_mismatched`, `unverifiable`, `abandoned_by_loss`,
-    /// `abandoned_by_panic`, `abandoned_pre_d`, `skipped_incomplete` or `lost_open`,
+    /// `abandoned_by_panic`, `abandoned_pre_d` or `skipped_incomplete`,
     /// or is still open (D-S2c-4 b).
     pub opened: u64,
     /// Flights that closed with a mismatch already reported (a close kind of its own,
@@ -140,7 +141,6 @@ impl Stats {
             + self.abandoned_by_panic
             + self.abandoned_pre_d
             + self.skipped_incomplete
-            + self.lost_open
     }
 
     /// The summary document. Numbers only.

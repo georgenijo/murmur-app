@@ -27,11 +27,13 @@
 //!   is judged on its own merits even if the reset moved the sequence past it
 //!   (D-S2c-4 d).
 //! * **Every opened recorder is closed exactly once** (D-S2c-4 b, c): `close(rec,
-//!   kind)` is the only exit, a closed-recorder memory makes a second close a counted
-//!   no-op, and the flight being processed stays open until it is closed, so a panic
-//!   reset counts it too.
+//!   kind)` is the only exit, a closed-recorder set that **never expires** makes a
+//!   second close a counted no-op and a late message or header a drop, never a
+//!   reopen (D-S2c-5 a), and the flight being processed stays open until it is
+//!   closed, so a panic reset counts it too.
 //! * **At most 64 records are open** ([`MAX_OPEN_RECORDS`]); the oldest beyond that
-//!   is closed as `lost_open`. A witness that arrives before its header is held (at
+//!   is closed `unverifiable` (and counted in `lost_open`; D-S2c-5 b), and its header,
+//!   if still waiting behind a gap, is dropped as a skip when its turn comes. A witness that arrives before its header is held (at
 //!   most 32 per recorder).
 //! * **Comparison points** (CP1-CP4), each reporting the first failing level in
 //!   `diff_kind` order, with `Pre` compared before `In`. Effects are matched across
@@ -66,12 +68,11 @@ use super::types::{
 
 /// Early headers held while a gap is open (C8.3).
 pub(crate) const MAX_PENDING_HEADERS: usize = 64;
-/// Records open at once; the oldest beyond this is closed as `lost_open`.
+/// Records open at once; the oldest beyond this is closed `unverifiable` and counted
+/// in `lost_open`.
 pub(crate) const MAX_OPEN_RECORDS: usize = 64;
 /// Messages held per recorder while its header has not arrived.
 pub(crate) const MAX_HELD_PER_REC: usize = 32;
-/// Closed recorders remembered, so a late message for one is dropped, not held.
-const CLOSED_MEMORY: usize = 512;
 /// Messages staged per batch: the unit the loss epoch check covers.
 const STAGE_CAPACITY: usize = 64;
 /// Recording ids remembered for cascade control and the preserved-defect windows.
@@ -93,8 +94,6 @@ enum CloseKind {
     PreAbandoned,
     /// A capture list overflowed: nothing complete to compare.
     Incomplete,
-    /// The oldest open record past the 64-record cap.
-    Evicted,
 }
 
 /// Rate limit of the mismatch event (C8.4 step 4): one per `(site, input_kind,
@@ -400,6 +399,9 @@ struct Record {
     /// recording, if it did: the owner's full token is `(recording, Pipeline, op)`.
     /// Without it the finish cannot be verified (D-S2c-3 f).
     owner_op: Option<OperationId>,
+    /// The operation the finish's H1 retirement named, compared with `owner_op` at the
+    /// close.
+    owner_retired_op: Option<OperationId>,
     h1_owner_retired: bool,
     h2_owner_retired: bool,
     /// The recording the input is about: the recording whose performance a
@@ -482,6 +484,7 @@ impl Record {
             h2_registered: false,
             owner_finish: pipeline_owned_finish(&header.input),
             owner_op: None,
+            owner_retired_op: None,
             h1_owner_retired: false,
             h2_owner_retired: false,
             input_rid: header.input.recording_id(),
@@ -764,10 +767,14 @@ impl Record {
                         Some(rid) if op.cont == ContKind::Pipeline && op.recording_id == rid => {
                             let first = !self.h1_owner_retired;
                             self.h1_owner_retired = true;
-                            // With no registration seen the retirement cannot be
-                            // judged: it passes here and the record closes
-                            // `unverifiable`, never clean.
-                            first && matched && self.owner_op.is_none_or(|owner| owner == op.op)
+                            // Which operation it retired is judged at the close, against
+                            // the cache as it stands then (D-S2c-5 d): with no
+                            // unambiguous registration the record closes
+                            // `unverifiable`, never clean and never a mismatch.
+                            if first {
+                                self.owner_retired_op = Some(op.op);
+                            }
+                            first && matched
                         }
                         // Another operation's retirement: not the row's token.
                         _ => true,
@@ -991,8 +998,13 @@ pub(crate) struct Comparator {
     held: HashMap<RecorderId, Vec<ShadowMsg>>,
     /// Open recorders (records and held ones), oldest first.
     open: VecDeque<RecorderId>,
-    /// Recorders finished with: closed, abandoned or evicted.
-    closed: VecDeque<RecorderId>,
+    /// Recorders finished with: closed, abandoned or evicted. **Never expires**
+    /// (D-S2c-5 a): a message of a recorder can arrive arbitrarily late (a header
+    /// behind a gap, a close after a reset), and one forgotten would reopen as a new
+    /// flight. Ids are allocated monotonically and never reused (`Transport::recorder`
+    /// is one `fetch_add`), but one that sends nothing is never seen, so there is no
+    /// contiguous watermark to compact into: a plain set, one `u64` per closed flight.
+    closed: HashSet<RecorderId>,
     /// Root mismatch signatures by recording id (cascade control).
     signatures: BTreeMap<u64, Vec<(u16, u16, u8)>>,
     /// Rows that closed clean, by the recording that was current (PD windows).
@@ -1006,6 +1018,14 @@ pub(crate) struct Comparator {
     /// A test planted a second close on purpose (D-S2c-4 e).
     #[cfg(test)]
     planted_duplicate_close: bool,
+    /// Per recorder id, for the per-id conservation check (D-S2c-5 c): every id ever
+    /// opened, how many times each was closed, and any id opened a second time.
+    #[cfg(test)]
+    opened_ids: HashSet<RecorderId>,
+    #[cfg(test)]
+    close_counts: HashMap<RecorderId, u32>,
+    #[cfg(test)]
+    reopened: Vec<RecorderId>,
 }
 
 #[cfg(test)]
@@ -1045,7 +1065,7 @@ impl Comparator {
             records: HashMap::new(),
             held: HashMap::new(),
             open: VecDeque::new(),
-            closed: VecDeque::new(),
+            closed: HashSet::new(),
             signatures: BTreeMap::new(),
             clean_rows: BTreeMap::new(),
             pd_pending: BTreeMap::new(),
@@ -1054,6 +1074,12 @@ impl Comparator {
             stats: Stats::default(),
             #[cfg(test)]
             planted_duplicate_close: false,
+            #[cfg(test)]
+            opened_ids: HashSet::new(),
+            #[cfg(test)]
+            close_counts: HashMap::new(),
+            #[cfg(test)]
+            reopened: Vec::new(),
         }
     }
 
@@ -1223,6 +1249,10 @@ impl Comparator {
         }
         self.live.insert(rec);
         self.stats.opened += 1;
+        #[cfg(test)]
+        if !self.opened_ids.insert(rec) {
+            self.reopened.push(rec);
+        }
         true
     }
 
@@ -1237,7 +1267,11 @@ impl Comparator {
         self.records.remove(&rec);
         self.held.remove(&rec);
         self.open.retain(|id| *id != rec);
-        self.remember_closed(rec);
+        self.closed.insert(rec);
+        #[cfg(test)]
+        {
+            *self.close_counts.entry(rec).or_default() += 1;
+        }
         match kind {
             CloseKind::Matched => self.stats.matched += 1,
             CloseKind::Mismatched => self.stats.closed_mismatched += 1,
@@ -1246,7 +1280,6 @@ impl Comparator {
             CloseKind::AbandonedByPanic => self.stats.abandoned_by_panic += 1,
             CloseKind::PreAbandoned => self.stats.abandoned_pre_d += 1,
             CloseKind::Incomplete => self.stats.skipped_incomplete += 1,
-            CloseKind::Evicted => self.stats.lost_open += 1,
         }
     }
 
@@ -1272,6 +1305,25 @@ impl Comparator {
             "an open recorder nothing can close any more: {:?}",
             self.stats
         );
+        // Per recorder id (D-S2c-5 c), not only in the aggregate: no id was opened a
+        // second time, each opened id was closed exactly once or is still open, and
+        // an id the closed set holds is one that was closed.
+        assert!(
+            self.reopened.is_empty(),
+            "a closed recorder reopened: {:?}",
+            self.reopened
+        );
+        assert_eq!(self.opened_ids.len() as u64, self.stats.opened);
+        for id in &self.opened_ids {
+            let closes = self.close_counts.get(id).copied().unwrap_or(0);
+            if self.live.contains(id) {
+                assert_eq!(closes, 0, "{id:?} is open and was closed");
+            } else {
+                assert_eq!(closes, 1, "{id:?} was closed {closes} times");
+                assert!(self.closed.contains(id), "{id:?} is not remembered closed");
+            }
+        }
+        assert_eq!(self.closed.len(), self.close_counts.len());
     }
 
     /// Recorders open now (test visibility for the conservation check).
@@ -1415,9 +1467,6 @@ impl Comparator {
         self.core.commit(&decision);
         let post = self.core.post();
         let mut record = Record::new(&header, decision);
-        record.owner_op = record
-            .owner_finish
-            .and_then(|rid| self.pipeline_ops.get(&rid.0).copied().flatten());
         if let Some(diff) = Self::cp1(&mut record, &header, post) {
             record.mismatched = true;
             self.report(site, row, diff, &ids);
@@ -1502,8 +1551,6 @@ impl Comparator {
             self.hold(rec, msg);
             return;
         };
-        let (site, row) = (record.site_id, record.row);
-        let ids = record.ids.clone();
         let mut closing = false;
         let mut completed = false;
         let diff = {
@@ -1538,22 +1585,20 @@ impl Comparator {
             }
         };
         if let Some(diff) = diff {
-            if record.mismatched {
-                // A later level of a fault already reported for this record.
-                self.stats.followup += 1;
-                self.stats.row(site, row).mismatched += 1;
-            } else {
-                record.mismatched = true;
-                self.report(site, row, diff, &ids);
-            }
+            self.flag(&mut record, diff);
         }
         self.note_pipeline_registration(&mut record);
         if closing {
-            // The cached token may have turned ambiguous since the header: a finish
-            // is verified against the cache as it stands at its close.
+            // A pipeline-owned finish is verified against the cache as it stands at
+            // its close (D-S2c-5 d): an unambiguous token must be the very operation
+            // the finish retired; an invalidated one leaves the finish `unverifiable`.
+            // Independent mismatches of the flight were reported as they came.
             if let Some(owner) = record.owner_finish {
-                if self.pipeline_ops.get(&owner.0).copied().flatten() != record.owner_op {
-                    record.owner_op = None;
+                record.owner_op = self.pipeline_ops.get(&owner.0).copied().flatten();
+                if let (Some(token), Some(retired)) = (record.owner_op, record.owner_retired_op) {
+                    if token != retired {
+                        self.flag(&mut record, DiffKind::Continuation);
+                    }
                 }
             }
             let kind = if record.mismatched {
@@ -1567,6 +1612,20 @@ impl Comparator {
             self.close(rec, kind);
         } else {
             self.records.insert(rec, record);
+        }
+    }
+
+    /// A mismatch of `record`: the first is a root and reports, a later level of the
+    /// same record is a follow-up.
+    fn flag(&mut self, record: &mut Record, diff: DiffKind) {
+        let (site, row) = (record.site_id, record.row);
+        if record.mismatched {
+            self.stats.followup += 1;
+            self.stats.row(site, row).mismatched += 1;
+        } else {
+            record.mismatched = true;
+            let ids = record.ids.clone();
+            self.report(site, row, diff, &ids);
         }
     }
 
@@ -1641,23 +1700,18 @@ impl Comparator {
         }
     }
 
-    /// At most 64 recorders are open: the oldest beyond that is `lost_open`.
+    /// At most 64 recorders are open: the oldest beyond that is closed `unverifiable`
+    /// and counted in `lost_open`.
     fn evict_over_cap(&mut self) {
         while self.open.len() > MAX_OPEN_RECORDS {
             let Some(oldest) = self.open.pop_front() else {
                 break;
             };
-            self.close(oldest, CloseKind::Evicted);
-        }
-    }
-
-    fn remember_closed(&mut self, rec: RecorderId) {
-        if self.closed.contains(&rec) {
-            return;
-        }
-        self.closed.push_back(rec);
-        while self.closed.len() > CLOSED_MEMORY {
-            self.closed.pop_front();
+            // An eviction is a close (D-S2c-5 b): the recorder is `unverifiable`, its
+            // pending header, if any, is dropped as a late header at its own place in
+            // the sequence (a skip), and nothing of it ever reopens.
+            self.stats.lost_open += 1;
+            self.close(oldest, CloseKind::Unverifiable);
         }
     }
 

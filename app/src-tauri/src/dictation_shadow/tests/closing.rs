@@ -12,8 +12,8 @@ use murmur_dictation_core::ids::{OperationId, RecordingId};
 use murmur_dictation_core::status::Status;
 
 use super::harness::*;
-use crate::dictation_shadow::compare::Comparator;
-use crate::dictation_shadow::transport::{submit, ShadowRecorder, ShadowTicket};
+use crate::dictation_shadow::compare::{Comparator, MAX_OPEN_RECORDS};
+use crate::dictation_shadow::transport::{submit, ShadowRecorder, ShadowTicket, Transport};
 use crate::dictation_shadow::types::{HistoryAction, HistoryTable, RecorderId, ShadowMsg};
 
 fn panicking_comparator() -> Comparator {
@@ -331,6 +331,202 @@ fn every_way_a_recorder_closes_is_one_kind() {
     assert_eq!(h.stats().opened, 3);
     h.comparator.assert_conserved();
     drop((done, open));
+}
+
+// ------------------------------------ a closed recorder never reopens (D-S2c-5)
+
+/// 512 recorders that abandon before D, in batches: more closes than the closed-id
+/// memory of round 7 held, so an id that was only remembered would be forgotten.
+fn churn_pre_abandonments(transport: &Arc<Transport>, h: &mut Harness) {
+    for _ in 0..8 {
+        for _ in 0..64 {
+            let pre = transport.recorder();
+            pre.enter_pre();
+            drop(pre);
+        }
+        h.comparator.drain(transport);
+    }
+    assert_eq!(h.stats().abandoned_pre_d, 512);
+}
+
+#[test]
+fn recorder_ids_are_monotonic_and_never_reused() {
+    // D-S2c-5 a: the closed set is permanent, which is sound only if an id never
+    // names two flights. `Transport::recorder` is one `fetch_add`.
+    let transport = default_transport();
+    let mut last = None;
+    for _ in 0..1_000 {
+        let id = transport.recorder().id();
+        assert!(
+            last.is_none_or(|previous| previous < id),
+            "{last:?} then {id:?}"
+        );
+        last = Some(id);
+    }
+}
+
+#[test]
+fn a_late_close_after_many_other_closes_does_not_reopen_a_loss_victim() {
+    // Sol round 7: the recorder was abandoned by a loss; 512 other closes later its
+    // id was forgotten, its `finish` reopened it, and a second loss counted it again.
+    let transport = default_transport();
+    let mut h = harness();
+    let recorder = transport.recorder();
+    let flight = short_idle(0, 0);
+    submit_header(&recorder, &flight);
+    transport.lose_for_test(216);
+    h.comparator.drain(&transport);
+    assert_eq!(h.stats().abandoned_by_loss, 1);
+
+    churn_pre_abandonments(&transport, &mut h);
+    recorder.finish();
+    transport.lose_for_test(216);
+    h.comparator.drain(&transport);
+    h.comparator.assert_conserved();
+    assert_eq!(h.stats().double_close_suppressed, 0);
+    assert_eq!(
+        h.stats().abandoned_by_loss,
+        1,
+        "the same recorder was closed twice: {:?}",
+        h.stats()
+    );
+    assert_eq!(h.stats().opened, 513, "{:?}", h.stats());
+}
+
+#[test]
+fn the_pending_header_of_an_evicted_recorder_is_a_skip_not_a_resurrection() {
+    // Sol round 7: eviction deleted a recorder's held witnesses but left its header
+    // waiting behind a gap. Once the id aged out the header applied, and the real
+    // `Close` reported the discarded witnesses as missing: a false `R205.5` mismatch.
+    let transport = default_transport();
+    let mut h = harness();
+    let short = short_idle(0, 0);
+    transport.lose_for_test(216);
+    h.comparator.drain(&transport);
+
+    let older = transport.recorder();
+    let older_ticket = older.ticket(short.header.site_id);
+    let marker = transport.recorder();
+    submit_header(&marker, &short);
+    send_later(&marker, &short);
+    h.comparator.drain(&transport);
+    assert_eq!(h.stats().matched, 1);
+
+    let gap = transport.recorder();
+    let missing_ticket = gap.ticket(short.header.site_id);
+    let target = transport.recorder();
+    let mut good = cancel(0, 0);
+    assert!(matches!(
+        good.later.pop(),
+        Some(ShadowMsg::Close {
+            completed: true,
+            ..
+        })
+    ));
+    assert!(good.later.len() > 1);
+    submit_header(&target, &good);
+    send_later(&target, &good);
+    h.comparator.drain(&transport);
+
+    for _ in 1..MAX_OPEN_RECORDS {
+        let younger = transport.recorder();
+        submit_header(&younger, &short);
+        send_later(&younger, &short);
+        h.comparator.drain(&transport);
+    }
+    assert_eq!(h.stats().lost_open, 0);
+    submit_ticket(older_ticket, older.id(), &short);
+    send_later(&older, &short);
+    h.comparator.drain(&transport);
+    // `target` was evicted: closed `unverifiable`, counted in `lost_open`.
+    assert_eq!(h.stats().lost_open, 1, "{:?}", h.stats());
+    churn_pre_abandonments(&transport, &mut h);
+    assert_clean(&h);
+
+    // The gap fills: the evicted recorder's header is consumed as a skip.
+    submit_ticket(missing_ticket, gap.id(), &short);
+    send_later(&gap, &short);
+    h.comparator.drain(&transport);
+    target.finish();
+    h.comparator.drain(&transport);
+    assert_clean(&h);
+    assert_eq!(h.stats().double_close_suppressed, 0);
+    h.comparator.assert_conserved();
+    assert!(
+        h.stats().late_header_discarded >= 1,
+        "the evicted header was dropped at its place: {:?}",
+        h.stats()
+    );
+}
+
+#[test]
+fn a_late_conflict_leaves_the_finish_unverifiable_not_a_premature_mismatch() {
+    // Sol round 7: the finish retired token B while A was cached, and the header
+    // reported a mismatch; B's conflicting registration then arrived before the
+    // close, and the cache was invalidated but the mismatch stayed. The identity
+    // check is made at the close: it is `unverifiable`, and only the duplicate
+    // registration is a proven mismatch.
+    let mut h = harness();
+    let owner = pipeline_start(1, 1);
+    h.feed_header(&owner);
+    let mut second = *owner
+        .header
+        .live_ops
+        .iter()
+        .find(|op| op.table == HistoryTable::H1 && op.action == HistoryAction::Registered)
+        .unwrap();
+    second.op = OperationId(5_555);
+    let mut finish = pipeline_exit(2, 2, Status::Processing, RID, RID);
+    let retirement = finish
+        .header
+        .live_ops
+        .iter_mut()
+        .find(|op| {
+            op.table == HistoryTable::H1 && matches!(op.action, HistoryAction::Retired { .. })
+        })
+        .unwrap();
+    retirement.op = second.op;
+    h.feed_header(&finish);
+    assert_eq!(
+        h.stats().mismatched_root,
+        0,
+        "nothing is judged at the header"
+    );
+    h.send(ShadowMsg::History {
+        rec: owner.header.rec,
+        op: second,
+    });
+    h.feed_later(&finish);
+    h.feed_later(&owner);
+    assert_eq!(h.stats().unverifiable, 1, "{:?}", h.stats());
+    assert_eq!(
+        h.stats().closed_mismatched,
+        1,
+        "only the duplicate registration is a proven mismatch: {:?}",
+        h.stats()
+    );
+}
+
+#[test]
+fn a_finish_naming_another_operation_is_still_a_mismatch_at_its_close() {
+    // The deferral does not hide a real mismatch: with the token unambiguous, a
+    // retirement of another operation is `diff_kind 6`, reported at the close.
+    let mut h = harness();
+    h.feed(&pipeline_start(1, 1));
+    let mut finish = pipeline_exit(2, 2, Status::Processing, RID, RID);
+    finish
+        .header
+        .live_ops
+        .iter_mut()
+        .find(|op| {
+            op.table == HistoryTable::H1 && matches!(op.action, HistoryAction::Retired { .. })
+        })
+        .unwrap()
+        .op = OperationId(9_999);
+    h.feed(&finish);
+    assert_eq!(h.stats().mismatched_root, 1, "{:?}", h.stats());
+    assert_eq!(h.stats().closed_mismatched, 1, "{:?}", h.stats());
+    assert_eq!(h.stats().unverifiable, 0);
 }
 
 // -------------------------------------------------------------- the stress
