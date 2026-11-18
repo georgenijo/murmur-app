@@ -594,6 +594,12 @@ fn run_under_watchdog<T: Send + 'static>(
 #[test]
 fn a_cancel_drains_what_its_idle_listener_defers_before_it_returns() {
     let lines = run_under_watchdog("cancel with a listener that drops a stop", || {
+        // This test drops a flight mid-await on purpose: the named incomplete close.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned: 1,
+            ..Default::default()
+        });
         from_cancel(trace(Setup::idle(), |w| {
             recording(w);
             w.knobs().stop_result = Ok(16_000);
@@ -661,6 +667,12 @@ fn a_cancel_drains_what_its_idle_listener_defers_before_it_returns() {
 #[test]
 fn a_cancel_that_resumes_on_another_worker_registers_its_drain_there() {
     run_under_watchdog("a cancel resumed on another worker", || {
+        // This test drops a flight mid-await on purpose: the named incomplete close.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned: 1,
+            ..Default::default()
+        });
         trace(Setup::idle(), |w| {
             recording(w);
             w.knobs().stop_result = Ok(16_000);

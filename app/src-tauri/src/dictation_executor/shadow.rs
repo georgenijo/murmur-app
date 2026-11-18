@@ -163,6 +163,13 @@ pub(crate) fn no_decision() {
 #[cfg(test)]
 static UNRENDERED: AtomicU64 = AtomicU64::new(0);
 
+/// Test builds: flights that ended as the **named no-reply close** (a deferred finish
+/// with no command return of its own, or the import's own pipeline error). The comparator
+/// sees each as `Close{completed:false}`; the gate accepts exactly this many and no other
+/// flight that never completed (D-S2c-9 b).
+#[cfg(test)]
+static NO_REPLY: AtomicU64 = AtomicU64::new(0);
+
 /// Test builds: the counters so far; a replay's report takes the difference between
 /// its end and its start.
 #[cfg(test)]
@@ -172,6 +179,7 @@ pub(crate) fn conservation_now() -> crate::dictation_shadow::replay::Conservatio
         headers: HEADERS.load(Ordering::Relaxed),
         no_decision: NO_DECISION.load(Ordering::Relaxed),
         unrendered: UNRENDERED.load(Ordering::Relaxed),
+        no_reply: NO_REPLY.load(Ordering::Relaxed),
         unwound: UNWOUND.load(Ordering::Relaxed),
     }
 }
@@ -304,6 +312,8 @@ impl Live {
             return;
         }
         if DEFERRED.with(Cell::get) > 0 {
+            #[cfg(test)]
+            NO_REPLY.fetch_add(1, Ordering::Relaxed);
             return;
         }
         let live = RefCell::new(Some(self));
@@ -843,7 +853,12 @@ pub(crate) fn import_pipeline_error() {
     if !crate::dictation_shadow::enabled() {
         return;
     }
-    let _ = REPLY_SINK.try_with(|sink| drop(std::mem::take(&mut *sink.borrow_mut())));
+    let _ = REPLY_SINK.try_with(|sink| {
+        let waiting = std::mem::take(&mut *sink.borrow_mut());
+        #[cfg(test)]
+        NO_REPLY.fetch_add(waiting.len() as u64, Ordering::Relaxed);
+        drop(waiting);
+    });
 }
 
 /// Test builds: whether this task (and nothing it spawned) is inside a command wrapper's

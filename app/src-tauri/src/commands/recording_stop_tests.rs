@@ -916,6 +916,7 @@ fn a_panic_in_the_guards_in_effects_leaves_no_history_entry() {
         unverifiable: 0,
         unwound: 1,
         open: 1,
+        abandoned: 1,
         ..Default::default()
     });
     run_sub_run(&SubRun {
@@ -990,6 +991,12 @@ fn a_stale_pipeline_exit_retires_both_history_entries() {
 #[test]
 fn dropping_a_parked_stop_from_an_inline_listener_defers_the_finish_until_d_is_released() {
     let lines = under_watchdog("a stop dropped from a listener under D", || {
+        // This test drops a flight mid-await on purpose: the named incomplete close.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned: 1,
+            ..Default::default()
+        });
         from_stop(trace(Setup::idle(), |w| {
             recording(w);
             w.knobs().stop_result = Ok(16_000);
@@ -1091,6 +1098,12 @@ fn a_stop_resumed_inline_under_d_waits_out_the_core_span_before_its_204b_section
 /// the original shell did, and the stop guard does not run 204a.
 #[test]
 fn a_panic_in_pe_vad_leaves_processing_because_the_guard_was_disarmed_first() {
+    // This test drops a flight mid-await on purpose: the named incomplete close.
+    #[cfg(feature = "dictation-shadow")]
+    crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+        abandoned: 1,
+        ..Default::default()
+    });
     run_sub_run(&SubRun {
         title: "panic in PE(Vad)",
         setup: Setup::idle(),
@@ -1136,6 +1149,12 @@ fn a_panic_in_pe_vad_leaves_processing_because_the_guard_was_disarmed_first() {
 #[test]
 fn a_finish_queued_in_one_stops_emit_is_applied_before_that_stop_awaits() {
     under_watchdog("a finish queued in a stop's emit", || {
+        // This test drops a flight mid-await on purpose: the named incomplete close.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned: 1,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "cross-thread drain",
             setup: Setup::idle(),
@@ -1196,6 +1215,12 @@ fn a_finish_queued_in_one_stops_emit_is_applied_before_that_stop_awaits() {
 #[test]
 fn a_stop_that_resumes_on_another_worker_registers_its_drain_there() {
     under_watchdog("a stop resumed on another worker", || {
+        // This test drops a flight mid-await on purpose: the named incomplete close.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned: 1,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "stop resumed on another thread",
             setup: Setup::idle(),
@@ -1279,6 +1304,7 @@ fn a_panic_after_a_queued_finish_still_drains_it_during_the_unwind() {
             unverifiable: 0,
             unwound: 1,
             open: 2,
+            abandoned: 1,
             ..Default::default()
         });
         run_sub_run(&SubRun {
@@ -1336,6 +1362,7 @@ fn the_204b_section_drains_a_queued_finish_when_its_listener_panics() {
             unverifiable: 0,
             unwound: 1,
             open: 2,
+            abandoned: 1,
             ..Default::default()
         });
         run_sub_run(&SubRun {
@@ -1406,6 +1433,7 @@ fn a_panic_in_one_deferred_finish_does_not_strand_the_next() {
             unverifiable: 0,
             unwound: 1,
             open: 2,
+            abandoned: 2,
             ..Default::default()
         });
         run_sub_run(&SubRun {
@@ -1472,6 +1500,12 @@ fn a_panic_in_one_deferred_finish_does_not_strand_the_next() {
 #[test]
 fn an_early_stop_unwind_drains_after_it_releases_t() {
     under_watchdog("an early unwind drains with T held", || {
+        // This test drops a flight mid-await on purpose: the named incomplete close.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned: 2,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "unwind drains after T",
             setup: Setup::idle(),
@@ -1691,6 +1725,7 @@ fn a_panicking_subscriber_cannot_strand_the_second_finish_in_a_normal_drain() {
             unverifiable: 0,
             unwound: 1,
             open: 2,
+            abandoned: 2,
             ..Default::default()
         });
         run_sub_run(&SubRun {
@@ -1721,6 +1756,7 @@ fn a_panicking_subscriber_cannot_strand_or_abort_an_unwinding_drain() {
             unverifiable: 0,
             unwound: 2,
             open: 2,
+            abandoned: 2,
             ..Default::default()
         });
         run_sub_run(&SubRun {
@@ -1750,6 +1786,7 @@ fn the_panicked_finish_report_is_registered_and_content_free() {
             unverifiable: 0,
             unwound: 1,
             open: 2,
+            abandoned: 2,
             ..Default::default()
         });
         run_sub_run(&SubRun {

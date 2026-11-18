@@ -425,6 +425,12 @@ fn a_start_nested_in_the_smart_auto_routing_notification_is_refused_before_any_l
 #[test]
 fn dropping_a_pipeline_owner_from_the_smart_auto_routing_notification_defers_its_finish() {
     under_watchdog("a pipeline dropped from the routing notification", || {
+        // This test drops a flight mid-await on purpose: the named incomplete close.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned: 1,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "pipeline finish from the routing notification",
             setup: Setup::idle(),
@@ -489,6 +495,7 @@ fn a_listener_that_drops_a_pipeline_owner_and_panics_in_the_destination_emit_dra
             unverifiable: 0,
             unwound: 1,
             open: 1,
+            abandoned: 1,
             ..Default::default()
         });
         run_sub_run(&SubRun {
@@ -584,6 +591,12 @@ fn assert_drained_with_t_free(what: &str) {
 #[test]
 fn the_pre_d_refusal_drains_what_its_release_defers() {
     under_watchdog("a stop dropped during the pre-D refusal's release", || {
+        // This test drops a flight mid-await on purpose: the named incomplete close.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned: 1,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "pre-D refusal drain",
             setup: Setup::idle(),
@@ -629,6 +642,12 @@ fn the_pre_d_refusal_drains_what_its_release_defers() {
 #[test]
 fn a_flight_that_suspends_with_queued_work_carries_it_and_drains_after_t() {
     under_watchdog("a flight suspended with queued work", || {
+        // This test drops a flight mid-await on purpose: the named incomplete close.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned: 1,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "carried work",
             setup: Setup::idle(),
@@ -780,6 +799,12 @@ fn the_audio_not_ready_publish_looks_up_no_managed_state() {
 #[test]
 fn the_capture_failure_prefix_drains_what_the_abort_port_defers() {
     under_watchdog("a stop dropped during the failure prefix", || {
+        // This test drops a flight mid-await on purpose: the named incomplete close.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned: 1,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "failure prefix drain",
             setup: Setup::idle(),
@@ -818,6 +843,7 @@ fn a_panic_in_the_abort_port_still_drains_the_failure_prefix() {
         #[cfg(feature = "dictation-shadow")]
         crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
             abandoned_pre_d: 1,
+            abandoned: 1,
             ..Default::default()
         });
         run_sub_run(&SubRun {
@@ -866,6 +892,12 @@ fn the_flight_end_drains_what_each_of_its_phases_defers() {
     ] {
         under_watchdog("a stop dropped during the flight end", move || {
             FLIGHT_POINT.with(|slot| slot.set(point));
+            // This test drops a flight mid-await on purpose: the named incomplete close.
+            #[cfg(feature = "dictation-shadow")]
+            crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+                abandoned: 1,
+                ..Default::default()
+            });
             run_sub_run(&SubRun {
                 title: "flight end drain",
                 setup: Setup::idle(),
@@ -912,6 +944,12 @@ fn the_flight_end_drains_what_each_of_its_phases_defers() {
 #[test]
 fn a_panic_at_the_flight_end_still_drains_the_queue() {
     under_watchdog("an unwind from the flight end", || {
+        // This test drops a flight mid-await on purpose: the named incomplete close.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned: 2,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "flight end unwind",
             setup: Setup::idle(),
@@ -951,6 +989,12 @@ thread_local! {
 fn drop_a_stop_at_status_emit(nth: usize) {
     under_watchdog("a stop dropped inside a start's status emit", move || {
         STATUS_EMIT.with(|slot| slot.set(nth));
+        // This test drops a flight mid-await on purpose: the named incomplete close.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned: 1,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "status emit drain",
             setup: Setup::idle(),
@@ -1194,6 +1238,12 @@ fn a_carried_finishes_idle_listener_can_queue_a_retirement_in_the_flights_drain(
 #[test]
 fn a_start_dropped_while_suspended_with_carried_work_drains_after_t() {
     under_watchdog("a suspended start dropped", || {
+        // This test drops a flight mid-await on purpose: the named incomplete close.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned: 1,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "dropped suspended start",
             setup: Setup::idle(),

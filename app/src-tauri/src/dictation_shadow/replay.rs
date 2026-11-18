@@ -38,6 +38,9 @@ pub(crate) struct Conservation {
     pub headers: u64,
     pub no_decision: u64,
     pub unrendered: u64,
+    /// Flights that ended as the named no-reply close (each is one `Close{completed:false}`
+    /// the shell itself accounts for).
+    pub no_reply: u64,
     /// Decisions dropped by an unwind before their header (each recorded as a loss).
     pub unwound: u64,
 }
@@ -49,6 +52,7 @@ impl Conservation {
             headers: self.headers - before.headers,
             no_decision: self.no_decision - before.no_decision,
             unrendered: self.unrendered - before.unrendered,
+            no_reply: self.no_reply - before.no_reply,
             unwound: self.unwound - before.unwound,
         }
     }
@@ -71,10 +75,15 @@ pub(crate) struct Expect {
     /// finish a deferred drain ran after the command that queued it returned, the import's
     /// own pipeline error, a flight with no command return to witness it.
     pub incomplete: u64,
+    /// Flights that closed with `Close{completed:false}` after their header: a flight that
+    /// never ran to its end (a dropped future, a named no-reply close). A completed flight
+    /// whose `Close{completed:true}` was lost is one of these, so the gate requires 0 unless
+    /// the test names them (D-S2c-9 b).
+    pub abandoned: u64,
 }
 
 thread_local! {
-    static EXPECT: std::cell::Cell<Expect> = const { std::cell::Cell::new(Expect { unverifiable: 0, unwound: 0, open: 0, abandoned_pre_d: 0, incomplete: 0 }) };
+    static EXPECT: std::cell::Cell<Expect> = const { std::cell::Cell::new(Expect { unverifiable: 0, unwound: 0, open: 0, abandoned_pre_d: 0, incomplete: 0, abandoned: 0 }) };
 }
 
 /// Called by the test that provokes the loss, before it drives the sub-run on this
@@ -589,6 +598,15 @@ impl Report {
             self.open
         );
         assert_eq!(
+            s.abandoned,
+            c.no_reply + expected.abandoned,
+            "{what}: {} flights closed without completing ({} named no-reply closes by the \
+             shell, {} named by the test): {s:?}",
+            s.abandoned,
+            c.no_reply,
+            expected.abandoned
+        );
+        assert_eq!(
             s.skipped_incomplete, expected.incomplete,
             "{what}: {} flights closed incomplete ({} named by the test): {s:?}",
             s.skipped_incomplete, expected.incomplete
@@ -627,6 +645,7 @@ mod gate_tests {
                 headers: 1,
                 no_decision: 0,
                 unrendered: 0,
+                no_reply: 0,
                 unwound: 0,
             }),
             lost: 0,
@@ -682,6 +701,16 @@ mod gate_tests {
         report.conservation.as_mut().unwrap().headers = 2;
         report.conservation.as_mut().unwrap().entries = 2;
         report.assert_clean("incomplete");
+    }
+
+    #[test]
+    #[should_panic(expected = "closed without completing")]
+    fn a_flight_that_never_completed_fails_the_gate_unless_named() {
+        // Every `Close{completed:true}` dropped degrades to `Close{completed:false}`: the
+        // comparator calls the clean record matched, so only this counter shows it.
+        let mut report = clean();
+        report.stats.abandoned = 1;
+        report.assert_clean("abandoned");
     }
 
     #[test]

@@ -154,16 +154,49 @@ cargo test --lib --features dictation-shadow every_family_pd_is_witnessed -- --t
 cargo test --lib --features dictation-shadow headers_leave_d -- --test-threads=1
 ```
 
-Capture sites are **insertion only** in the live files (D-S2c-8): against `main` the diff
-adds lines and removes none, and every added line is behind `feature = "dictation-shadow"`.
-`python3 scripts/check_shadow_diff.py` (CI, `tests/test_shadow_diff.py`) reads
-`git diff --numstat` and fails on any deleted line in a live file unless
-`SHADOW_DIFF_ALLOW` names it. E7 also reconciles the shell's own counts: decision
-sections entered at D == headers submitted + named no-decision outcomes + unwound, and
-`lost == 0` and `unverifiable == 0` unless the test that provoked the loss asserts it.
+Capture sites are **insertion only** in the live files (D-S2c-8, D-S2c-9): against `main`
+the diff adds lines and removes none, and every added line is behind
+`feature = "dictation-shadow"`. `python3 scripts/check_shadow_diff.py` (CI,
+`tests/test_shadow_diff.py`) reads `git diff --numstat` and fails on any deleted line in
+**any** changed production path under `app/src-tauri/src` and `crates/*/src` (test files and
+the named shadow-only modules excluded; a rename counts as a delete plus an add) unless
+`SHADOW_DIFF_ALLOW` names it.
+
+How E7 counts, so a missed site cannot hide:
+
+* **The count is taken at the guard.** Every lock of the dictation mutex goes through
+  `MutexExt::lock_or_recover`, which (feature on) calls
+  `shadow::dictation_lock_taken` with the caller's location. Each acquisition made while a
+  flight is active must resolve to a header, a named no-decision outcome
+  (`capture::no_decision`), or an unwind; acquisitions that are not decision sections are
+  in a named allowlist by site (`replay::NON_FAMILY`). A raw `dictation.lock()` in
+  production code fails `every_production_dictation_lock_goes_through_the_counting_guard`.
+* **No ambient flight.** There is no thread-local current flight and no stash. The
+  executor carries the flight (`Executor::attach_flight`); the flight owns its mirror,
+  ticker and speculative-flow slots (`Flight::slots()`), and the port wrappers write into
+  those slots. Two flights interleaved on one thread across an await, or dropped out of
+  order, cannot see each other.
+* **Nothing is inferred.** The speculative-flow observation is the boolean the port read
+  returned; the comparator checks it against the independently witnessed branch. Every
+  reply is witnessed where the production code returns it (`*_witnessed` wrapper commands;
+  the detached auto-stop records its real result). A finish that is deferred and has no
+  reply, and a flight left waiting by an `import_pipeline_error`, close as a **named
+  no-reply close**, never with the decided kind filled in.
+* **The gate.** `Report::assert_clean` requires `open == 0`, `lost == 0`,
+  `unverifiable == 0`, `closes == headers`, credit at close, and entries == headers +
+  no-decision + unwound, unless the test that provoked an incomplete close asserts it by
+  name (`replay::expect`). A suite whose every `Close` is dropped fails.
+* The ticker preflight (`ticker_preflight`) is shared between the production spawner's
+  observation and the harness; a test per skip reason asserts exactly one note.
+
 Each `#[tauri::command]` return is witnessed by a feature-only wrapper command
 (`commands/recording/shadow_commands.rs`) that calls the original and records the reply it
 returned; only the `generate_handler!` entries in `lib.rs` choose between the two.
+
+The default-build allocation pins (`recording_pd_witness_tests`, `under_d`) count
+allocations only while D is held, stabilise the timing input, and pin the first delivery
+on a fresh thread (cold) and a later delivery (steady) separately; there is no
+minimum-of-N.
 
 `MURMUR_E7_COLLECT=1` turns the E7 assertion into a findings listing (one
 `E7FINDING` line per divergence: sub-run, site, rows, input kind, diff kind) and

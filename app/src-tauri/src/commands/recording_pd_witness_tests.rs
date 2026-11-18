@@ -48,6 +48,20 @@ pub(super) fn repeat(sub_run: &SubRun) {
     }
 }
 
+/// [`repeat`] for a sub-run that ends `abandoned` flights without a completed close (a
+/// task that panicked mid-flight): each repetition names them to the E7 gate.
+#[cfg_attr(not(feature = "dictation-shadow"), allow(unused_variables))]
+fn repeat_abandoning(sub_run: &SubRun, abandoned: u64) {
+    for _ in 0..repeat_count() {
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned,
+            ..Default::default()
+        });
+        run_sub_run(sub_run);
+    }
+}
+
 fn status(world: &Arc<World>) -> DictationStatus {
     world.state().app_state.dictation.lock_or_recover().status
 }
@@ -596,8 +610,11 @@ fn pd13b_panic_in_the_pipeline(world: &Arc<World>) {
 
 #[test]
 fn pd13_task_panic_restores_idle_without_a_terminal() {
-    repeat(&sub("PD-13 stop task panic", pd13a_panic_in_the_stop_path));
-    repeat(&sub("PD-13 pipeline panic", pd13b_panic_in_the_pipeline));
+    repeat_abandoning(
+        &sub("PD-13 stop task panic", pd13a_panic_in_the_stop_path),
+        1,
+    );
+    repeat_abandoning(&sub("PD-13 pipeline panic", pd13b_panic_in_the_pipeline), 1);
 }
 
 // ---------------------------------------------------------------- PD-14
@@ -1154,10 +1171,13 @@ fn every_family_pd_is_witnessed_by_the_shadow() {
     pd18bc_start_in_the_teardown_tail_leaves_recovering();
     // PD-9's signature in the allowlist is an R101.15 flight abandoned between `PR` and
     // `CS`: a start future dropped while it waits for a kept preview's capture start.
-    repeat(&sub(
-        "PD-9 abandoned at the awaited capture start",
-        pd09c_start_dropped_at_the_awaited_capture_start,
-    ));
+    repeat_abandoning(
+        &sub(
+            "PD-9 abandoned at the awaited capture start",
+            pd09c_start_dropped_at_the_awaited_capture_start,
+        ),
+        1,
+    );
     let totals = replay::totals();
     eprintln!("E8 pd_witness: {:?}", totals.pd_witness);
     eprintln!("E7 rows compared: {:?}", totals.per_row);
