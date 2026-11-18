@@ -104,6 +104,9 @@ struct Live {
     /// Every effect of the decision ran: `Reply` and `Close` follow the header.
     complete: Cell<bool>,
     concluded: Cell<bool>,
+    /// A leading executor (the `Pre` effects, a prefix) holds the flight: its last
+    /// effect does not end the decision, which has not been taken yet.
+    leading: Cell<bool>,
 }
 
 impl Live {
@@ -121,6 +124,7 @@ impl Live {
             reply: Cell::new(None),
             complete: Cell::new(false),
             concluded: Cell::new(false),
+            leading: Cell::new(false),
         }
     }
 
@@ -140,6 +144,9 @@ impl Live {
     }
 
     fn send(&self, message: Later) {
+        if std::env::var_os("SHADOWDBG").is_some() {
+            eprintln!("SHADOWDBG send rec={:?} {message:?}", self.rec.id());
+        }
         match message {
             Later::Witness {
                 idx,
@@ -154,6 +161,13 @@ impl Live {
     fn conclude(&self) {
         if !self.submitted.get() || !self.complete.get() || self.concluded.replace(true) {
             return;
+        }
+        if std::env::var_os("SHADOWDBG").is_some() {
+            eprintln!(
+                "SHADOWDBG conclude rec={:?} reply={:?}",
+                self.rec.id(),
+                self.reply.get()
+            );
         }
         if let Some(kind) = self.reply.get() {
             transport::mark(&self.rec, Mark::Reply(kind));
@@ -190,6 +204,7 @@ impl Flight {
     pub(crate) fn enter_pre(&mut self) {
         if let Some(live) = &self.live {
             live.rec.enter_pre();
+            live.leading.set(true);
         }
     }
 
@@ -266,6 +281,7 @@ impl Flight {
         header.overflowed |= live.ops_overflowed;
         header.adopt_pre(std::mem::take(&mut live.pre));
         live.reply.set(reply.map(ReplyKind::of));
+        live.leading.set(false);
         *live.header.get_mut() = Some(header);
         if effects == 0 {
             live.complete.set(true);
@@ -282,7 +298,7 @@ impl Flight {
         let idx = u16::try_from(usize::from(live.base) + noted.index).unwrap_or(u16::MAX);
         let pred = pred_of(noted.effect, live.base);
         let witnessed = WitnessedEffect {
-            effect: noted.effect.clone(),
+            effect: in_full_list(noted.effect, live.base),
             result: noted.result,
         };
         match noted.placement {
@@ -382,6 +398,9 @@ impl Flight {
     /// the header (now, or when it is submitted).
     pub(crate) fn finish(&self) {
         if let Some(live) = &self.live {
+            if live.leading.get() {
+                return;
+            }
             live.complete.set(true);
             live.conclude();
         }
@@ -411,6 +430,28 @@ impl Flight {
     #[cfg(test)]
     pub(crate) fn is_submitted(&self) -> bool {
         self.live.as_ref().is_some_and(|live| live.submitted.get())
+    }
+}
+
+/// The effect as the **full** decided list names it: an `EmitOk(i)` pairing is an index
+/// into the executor's own (possibly shortened) list, so a dropped prefix shifts it.
+fn in_full_list(effect: &Effect, base: u16) -> Effect {
+    let shifted = |cond: Cond| match cond {
+        Cond::EmitOk(paired) => {
+            Cond::EmitOk(paired.saturating_add(u8::try_from(base).unwrap_or(u8::MAX)))
+        }
+        other => other,
+    };
+    match effect {
+        Effect::EmitStatus { status, cond } => Effect::EmitStatus {
+            status: *status,
+            cond: shifted(*cond),
+        },
+        Effect::Presentation { kind, cond } => Effect::Presentation {
+            kind: *kind,
+            cond: shifted(*cond),
+        },
+        other => other.clone(),
     }
 }
 
@@ -446,6 +487,9 @@ impl Sealed<'_> {
         // Test builds: a point where a test observes whether D is still held.
         #[cfg(test)]
         crate::barrier_hook::at("shadow.submit");
+        if std::env::var_os("SHADOWDBG").is_some() {
+            eprintln!("SHADOWDBG header {header:?}");
+        }
         transport::submit(ticket, header);
         live.submitted.set(true);
         let queued = std::mem::take(&mut *live.deferred.borrow_mut());

@@ -1184,8 +1184,41 @@ impl PipelineOwner {
 
     /// `H2 ret rid` (idempotent).
     fn retire_pipeline(&mut self) {
-        if std::mem::take(&mut self.registered) {
-            self.history.ret_pipeline(self.rid);
+        let _ = self.retire_pipeline_observed();
+    }
+
+    /// [`Self::retire_pipeline`], answering whether the table held the pipeline
+    /// (`None`: nothing was registered here, so nothing was retired).
+    fn retire_pipeline_observed(&mut self) -> Option<bool> {
+        std::mem::take(&mut self.registered).then(|| self.history.ret_pipeline(self.rid))
+    }
+
+    /// The H1 and H2 registrations this owner made, for the shadow (C8.2).
+    #[cfg(feature = "dictation-shadow")]
+    fn registration_ops(&self) -> [crate::dictation_shadow::types::LiveOp; 2] {
+        use crate::dictation_shadow::types::{HistoryAction, HistoryTable, LiveOp};
+        [
+            self.op.registered_op(),
+            LiveOp {
+                table: HistoryTable::H2,
+                action: HistoryAction::Registered,
+                cont: murmur_dictation_core::decision::ContKind::Pipeline,
+                recording_id: self.rid,
+                op: self.op.token().op,
+            },
+        ]
+    }
+
+    /// The H2 retirement of this owner's pipeline, for the shadow.
+    #[cfg(feature = "dictation-shadow")]
+    fn h2_retired_op(&self, matched: bool) -> crate::dictation_shadow::types::LiveOp {
+        use crate::dictation_shadow::types::{HistoryAction, HistoryTable, LiveOp};
+        LiveOp {
+            table: HistoryTable::H2,
+            action: HistoryAction::Retired { matched },
+            cont: murmur_dictation_core::decision::ContKind::Pipeline,
+            recording_id: self.rid,
+            op: self.op.token().op,
         }
     }
 }
@@ -1390,15 +1423,20 @@ impl<'a> IdleGuard<'a> {
             closure_emit: on_idle.is_some(),
         };
         let ports = stop_ports::GuardPorts::new(app_state, on_idle);
-        let pre = stop_ports::try_run_phase(
-            &mut stop_ports::executor(
-                &ports,
-                Decision::pre_only(core_stop::guard_finish_pre_effects(rid), RowId("R204a.pre")),
-            ),
-            Placement::Pre,
-            None,
-            recording_id,
+        // The recorder exists before `run(Pre)` (C4.1 step 2).
+        #[cfg(feature = "dictation-shadow")]
+        let mut flight = crate::dictation_executor::shadow::Flight::begin();
+        let mut pre_exec = stop_ports::executor(
+            &ports,
+            Decision::pre_only(core_stop::guard_finish_pre_effects(rid), RowId("R204a.pre")),
         );
+        #[cfg(feature = "dictation-shadow")]
+        pre_exec.attach_shadow_leading(flight);
+        let pre = stop_ports::try_run_phase(&mut pre_exec, Placement::Pre, None, recording_id);
+        #[cfg(feature = "dictation-shadow")]
+        {
+            flight = pre_exec.take_shadow();
+        }
         // Nothing ran: never carry on with D as if it had. A refusal as re-entrant
         // is not expected here: `run_finish` queues the finish when it is reached
         // inside a span, and the drain runs only outside one, so the Pre phase is
@@ -1420,21 +1458,21 @@ impl<'a> IdleGuard<'a> {
         // status write.
         let mut dictation = app_state.dictation.lock_or_recover();
         let view = FieldAdapter::project_lifecycle_view(app_state, &dictation);
+        let now = core_now();
         // R302.1: the legacy parse failure is exactly the 204a `LegacyParse` rows,
         // decided by site 302; every other origin is 204a.
+        let finish_input = ProcessAudioFinishInput {
+            rid: input.rid,
+            kind: ProcessAudioFinishKind::ParseFailed,
+            closure_emit: input.closure_emit,
+        };
         let decide = || {
             stop_ports::decide(|| match origin {
-                GuardOrigin::LegacyParse => core_process_audio::decide_process_audio_finish(
-                    &view,
-                    ProcessAudioFinishInput {
-                        rid: input.rid,
-                        kind: ProcessAudioFinishKind::ParseFailed,
-                        closure_emit: input.closure_emit,
-                    },
-                    core_now(),
-                ),
+                GuardOrigin::LegacyParse => {
+                    core_process_audio::decide_process_audio_finish(&view, finish_input, now)
+                }
                 GuardOrigin::StopCapture | GuardOrigin::PipelineExit | GuardOrigin::Dropped => {
-                    core_stop::decide_guard_finish(&view, input, core_now())
+                    core_stop::decide_guard_finish(&view, input, now)
                 }
             })
         };
@@ -1445,17 +1483,41 @@ impl<'a> IdleGuard<'a> {
         }
         .after_pre();
         stop_ports::expect_valid(&decision);
+        #[cfg(feature = "dictation-shadow")]
+        if let Some(op) = owner.as_ref().and_then(|owner| owner.op.consumed_op()) {
+            flight.history(op);
+        }
         // H2 `ret rid`: after the decision, before its `In` effects. A panic in
         // an effect (the `ST` trace) can no longer leave either entry behind.
         if let Some(owner) = owner.as_mut() {
+            #[cfg(feature = "dictation-shadow")]
+            if let Some(matched) = owner.retire_pipeline_observed() {
+                flight.history(owner.h2_retired_op(matched));
+            }
+            #[cfg(not(feature = "dictation-shadow"))]
             owner.retire_pipeline();
         }
-        stop_ports::run_phase(
-            &mut stop_ports::executor(&ports, decision),
-            Placement::In,
-            Some(&mut dictation),
-            recording_id,
-        );
+        let mut exec = stop_ports::executor(&ports, decision);
+        #[cfg(feature = "dictation-shadow")]
+        {
+            crate::shadow_site!(issue = 1154);
+            exec.attach_shadow(
+                flight,
+                if origin == GuardOrigin::LegacyParse {
+                    murmur_dictation_core::inputs::Input::ProcessAudioFinish(finish_input)
+                } else {
+                    murmur_dictation_core::inputs::Input::GuardFinish(input)
+                },
+                crate::dictation_executor::shadow::view_projection(&view),
+                now,
+            );
+        }
+        stop_ports::run_phase(&mut exec, Placement::In, Some(&mut dictation), recording_id);
+        #[cfg(feature = "dictation-shadow")]
+        let sealed = exec.seal_shadow(Some(&dictation));
+        drop(dictation);
+        #[cfg(feature = "dictation-shadow")]
+        sealed.submit();
     }
 }
 
@@ -2044,8 +2106,11 @@ fn run_pipeline_idle_emit(
     // Declared before D: it runs after D is released, on a return and on an unwind.
     let _drain = DrainDeferredFinishes::new(app_state);
     let ports = stop_ports::IdleEmitPorts::new(app_state, set_processing, emit_idle);
+    #[cfg(feature = "dictation-shadow")]
+    let flight = crate::dictation_executor::shadow::Flight::begin();
     let mut dictation = app_state.dictation.lock_or_recover();
     let view = FieldAdapter::project_lifecycle_view(app_state, &dictation);
+    let now = core_now();
     let input = PipelineIdleEmitInput {
         rid: RecordingId(recording_id),
         kind,
@@ -2053,28 +2118,41 @@ fn run_pipeline_idle_emit(
         interrupted: None,
         char_count: 0,
     };
+    let legacy_input = ProcessAudioFinishInput {
+        rid: input.rid,
+        kind: ProcessAudioFinishKind::PipelineDone,
+        closure_emit: true,
+    };
     // R302.2: the legacy tail is exactly the 204b `LegacyPost` rows, decided by
     // site 302; the stop command's tail is 204b.
     let decision = stop_ports::decide(|| match kind {
-        PostKind::StopPost => core_stop::decide_pipeline_idle_emit(&view, input, core_now()),
-        PostKind::LegacyPost => core_process_audio::decide_process_audio_finish(
-            &view,
-            ProcessAudioFinishInput {
-                rid: input.rid,
-                kind: ProcessAudioFinishKind::PipelineDone,
-                closure_emit: true,
-            },
-            core_now(),
-        ),
+        PostKind::StopPost => core_stop::decide_pipeline_idle_emit(&view, input, now),
+        PostKind::LegacyPost => {
+            core_process_audio::decide_process_audio_finish(&view, legacy_input, now)
+        }
     });
     stop_ports::expect_valid(&decision);
-    stop_ports::run_phase(
-        &mut stop_ports::executor(&ports, decision),
-        Placement::In,
-        Some(&mut dictation),
-        recording_id,
-    );
+    let mut exec = stop_ports::executor(&ports, decision);
+    #[cfg(feature = "dictation-shadow")]
+    {
+        use murmur_dictation_core::inputs::Input;
+        crate::shadow_site!(issue = 1154);
+        exec.attach_shadow(
+            flight,
+            match kind {
+                PostKind::StopPost => Input::PipelineIdleEmit(input),
+                PostKind::LegacyPost => Input::ProcessAudioFinish(legacy_input),
+            },
+            crate::dictation_executor::shadow::view_projection(&view),
+            now,
+        );
+    }
+    stop_ports::run_phase(&mut exec, Placement::In, Some(&mut dictation), recording_id);
+    #[cfg(feature = "dictation-shadow")]
+    let sealed = exec.seal_shadow(Some(&dictation));
     drop(dictation);
+    #[cfg(feature = "dictation-shadow")]
+    sealed.submit();
     std::time::Instant::now()
 }
 
@@ -4809,6 +4887,11 @@ async fn process_audio_inner(
         decide, executor, expect_valid, refuse_reentrant, run_phase, transition_outside_core,
         DestinationFacts, ProcessAudioPorts,
     };
+    #[cfg(feature = "dictation-shadow")]
+    use {
+        crate::dictation_executor::shadow::{self as capture, Flight},
+        murmur_dictation_core::inputs::Input,
+    };
 
     // C4.1 step 0 / C4.2: the first statement, before the transition await, T, D or
     // `core_history`.
@@ -4832,8 +4915,26 @@ async fn process_audio_inner(
             },
             benchmark_running: None,
         };
+        #[cfg(feature = "dictation-shadow")]
+        let mut flight = Flight::begin();
         // R301.1 reads no D: a meeting refuses before the dictation lock.
         if let Some(refused) = core_pa::decide_process_audio_start_pre(&start_input, now) {
+            // No effects and no D: the decision alone is the header.
+            #[cfg(feature = "dictation-shadow")]
+            {
+                crate::shadow_site!(issue = 1154);
+                flight.decided(
+                    Input::ProcessAudioStart(start_input.clone()),
+                    capture::facts_projection(
+                        murmur_dictation_core::state::LockFreeFacts::default(),
+                    ),
+                    now,
+                    refused.row,
+                    refused.reply.as_ref(),
+                    refused.effects.len(),
+                );
+                flight.seal(None).submit();
+            }
             return refusal_reply(&refused);
         }
         let mut dictation = app_state.dictation.lock_or_recover();
@@ -4849,12 +4950,30 @@ async fn process_audio_inner(
         // the file check passed, in the same D hold.
         if decision.verdict == Verdict::NeedObservation(ObsKind::BenchmarkRunning) {
             start_input.benchmark_running = Some(state.benchmark.is_running());
-            decision = decide(|| core_pa::decide_process_audio_start(&view, start_input, now));
+            decision =
+                decide(|| core_pa::decide_process_audio_start(&view, start_input.clone(), now));
         }
         expect_valid(&decision);
         match &decision.verdict {
             Verdict::Applied => {}
             Verdict::Refused(Refusal::ProcessAudio(kind)) => {
+                // A refusal under D has no effects: the decision alone is the header,
+                // which goes out once D is released.
+                #[cfg(feature = "dictation-shadow")]
+                {
+                    crate::shadow_site!(issue = 1154);
+                    flight.decided(
+                        Input::ProcessAudioStart(start_input.clone()),
+                        capture::view_projection(&view),
+                        now,
+                        decision.row,
+                        decision.reply.as_ref(),
+                        decision.effects.len(),
+                    );
+                    let sealed = flight.seal(Some(capture::view_projection(&view)));
+                    drop(dictation);
+                    sealed.submit();
+                }
                 use murmur_dictation_core::replies::ProcessAudioRefusal;
                 match kind {
                     ProcessAudioRefusal::FileTranscription => tracing::warn!(
@@ -4886,8 +5005,24 @@ async fn process_audio_inner(
         let pipeline_owner = decision
             .continuation
             .map(|spec| PipelineOwner::register(&app_state.core_history, spec));
+        #[cfg(feature = "dictation-shadow")]
+        if let Some(owner) = pipeline_owner.as_ref() {
+            for op in owner.registration_ops() {
+                flight.history(op);
+            }
+        }
         let ports = ProcessAudioPorts::new(host, app_state);
         let mut exec = executor(&ports, decision);
+        #[cfg(feature = "dictation-shadow")]
+        {
+            crate::shadow_site!(issue = 1154);
+            exec.attach_shadow(
+                flight,
+                Input::ProcessAudioStart(start_input),
+                capture::view_projection(&view),
+                now,
+            );
+        }
         // `In`: `ID+`, `ST→Processing`, `AX(s)`, in that order, under D and T.
         run_phase(&mut exec, Placement::In, Some(&mut dictation), 0);
         let recording_id = exec
@@ -4898,7 +5033,11 @@ async fn process_audio_inner(
             .take_delivery_target()
             .expect("R301.5's AX froze the delivery target");
         let smart_enabled = smart_destination_eligible(&dictation);
+        #[cfg(feature = "dictation-shadow")]
+        let sealed = exec.seal_shadow(Some(&dictation));
         drop(dictation);
+        #[cfg(feature = "dictation-shadow")]
+        sealed.submit();
         drop(transition);
         // `PT`: `KB(true)`, `EV(GenStarted)`, `EM(processing)`, with D and T
         // released and `IN_CORE` set around each port call.
@@ -4948,6 +5087,8 @@ async fn process_audio_inner(
             delivery_target: &delivery_target,
         };
         let _drain = DrainDeferredFinishes::new(&state.app_state);
+        #[cfg(feature = "dictation-shadow")]
+        let flight = Flight::begin();
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
         let now = core_now();
@@ -4961,9 +5102,29 @@ async fn process_audio_inner(
         let ports = ProcessAudioPorts::new(host, app_state).with_destination(&facts);
         ports.bind_recording_id(rid);
         let mut exec = executor(&ports, decision);
+        #[cfg(feature = "dictation-shadow")]
+        {
+            crate::shadow_site!(issue = 1154);
+            exec.attach_shadow(
+                flight,
+                Input::ProcessAudioDestination(murmur_dictation_core::inputs::DestinationInput {
+                    rid: RecordingId(rid),
+                    smart_enabled,
+                }),
+                capture::view_projection(&view),
+                now,
+            );
+        }
         run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
+        #[cfg(feature = "dictation-shadow")]
+        let sealed = exec.seal_shadow(Some(&dictation));
         #[cfg(test)]
         process_audio_ports::DESTINATION.with(|slot| *slot.borrow_mut() = exec.witness().to_vec());
+        #[cfg(feature = "dictation-shadow")]
+        {
+            drop(dictation);
+            sealed.submit();
+        }
     }
     // Test builds: where a newer start can land, after the destination section
     // released D and before the parse guard exists.
@@ -6741,6 +6902,11 @@ fn publish_recording_ready_with<R: tauri::Runtime>(
     use murmur_dictation_core::start as core_start;
     use ready_ports::ReadyPorts;
     use start_ports::{decide, executor, expect_valid, run_phase};
+    #[cfg(feature = "dictation-shadow")]
+    use {
+        crate::dictation_executor::shadow::{self as capture, Flight},
+        murmur_dictation_core::inputs::Input,
+    };
 
     // D-S2-3: an internal entry checks re-entrancy before any lock. The `State` is
     // the start's own reference (no managed-state lookup, so the audio-not-ready
@@ -6763,18 +6929,40 @@ fn publish_recording_ready_with<R: tauri::Runtime>(
 
     if !input.audio_ready {
         // R104.1 (D-less): the supervisor said no before D; D is not taken.
+        #[cfg(feature = "dictation-shadow")]
+        let mut flight = Flight::begin();
         let facts = FieldAdapter::lock_free_facts(&state.app_state);
         let decision = ready_op.consume(|op_status| {
             input.op_status = op_status;
             decide(|| core_start::decide_ready_publish_nolock(facts, input, now))
         });
         expect_valid(&decision);
+        // No effects and no D: the decision (and the retirement of the flight's
+        // op) alone is the header.
+        #[cfg(feature = "dictation-shadow")]
+        {
+            if let Some(op) = ready_op.consumed_op() {
+                flight.history(op);
+            }
+            crate::shadow_site!(issue = 1154);
+            flight.decided(
+                Input::ReadyPublish(input),
+                capture::facts_projection(facts),
+                now,
+                decision.row,
+                decision.reply.as_ref(),
+                decision.effects.len(),
+            );
+            flight.seal(None).submit();
+        }
         return false;
     }
 
     // No drain guard here: the start flight holds T around this call and opens a
     // stretch of its own (D-S2-13), which hands the finishes this section's span
     // queues up to the flight's drain, run after T is released.
+    #[cfg(feature = "dictation-shadow")]
+    let mut flight = Flight::begin();
     let mut dictation = state.app_state.dictation.lock_or_recover();
     let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
     let decision = ready_op.consume(|op_status| {
@@ -6793,6 +6981,10 @@ fn publish_recording_ready_with<R: tauri::Runtime>(
         }
     });
     expect_valid(&decision);
+    #[cfg(feature = "dictation-shadow")]
+    if let Some(op) = ready_op.consumed_op() {
+        flight.history(op);
+    }
     let published = match decision.verdict {
         Verdict::Applied => true,
         Verdict::Continue => false,
@@ -6815,7 +7007,41 @@ fn publish_recording_ready_with<R: tauri::Runtime>(
             Box::new(spawn_ready_tasks),
         );
         let mut exec = executor(&ports, decision.clone(), false);
+        #[cfg(feature = "dictation-shadow")]
+        {
+            crate::shadow_site!(issue = 1154);
+            exec.attach_shadow(
+                flight,
+                Input::ReadyPublish(input),
+                capture::view_projection(&view),
+                now,
+            );
+        }
         run_phase(&mut exec, Placement::In, Some(&mut dictation), recording_id);
+        #[cfg(feature = "dictation-shadow")]
+        {
+            let sealed = exec.seal_shadow(Some(&dictation));
+            drop(dictation);
+            sealed.submit();
+        }
+    } else {
+        // R104.3-.6 decide no effect: the decision alone is the header, which goes out
+        // once D is released.
+        #[cfg(feature = "dictation-shadow")]
+        {
+            crate::shadow_site!(issue = 1154);
+            flight.decided(
+                Input::ReadyPublish(input),
+                capture::view_projection(&view),
+                now,
+                decision.row,
+                decision.reply.as_ref(),
+                decision.effects.len(),
+            );
+            let sealed = flight.seal(Some(capture::view_projection(&view)));
+            drop(dictation);
+            sealed.submit();
+        }
     }
     published
 }
@@ -6950,6 +7176,11 @@ async fn start_native_recording_inner(
     use start_ports::{
         decide, executor, expect_valid, run_phase, try_run_phase, StartPlan, StartPorts, StartSlots,
     };
+    #[cfg(feature = "dictation-shadow")]
+    use {
+        crate::dictation_executor::shadow::{self as capture, Flight},
+        murmur_dictation_core::inputs::Input,
+    };
 
     // C4.1 step 0 / C4.2: the **first** statement, before the claims, T, D or any
     // managed-state lookup.
@@ -7011,6 +7242,8 @@ async fn start_native_recording_inner(
         smart_auto_result: None,
     };
     // Site 101, R101.1-.2 (no D).
+    #[cfg(feature = "dictation-shadow")]
+    let shadow_flight = Flight::begin();
     if let Some(pre) = start_ports::decide_pre(|| core_start::decide_start_request_pre(&input, now))
         .unwrap_or_else(|kind| unreachable!("the pre-D check ran inside a core span: {kind:?}"))
     {
@@ -7021,6 +7254,24 @@ async fn start_native_recording_inner(
         // handed up to the flight's drain, which runs after T is released.
         let _stretch = flight.stretch();
         drop(_transition);
+        #[cfg(feature = "dictation-shadow")]
+        {
+            let recording_id = state.app_state.recording_id.load(Ordering::SeqCst);
+            let ports = StartPorts::new(host, state, &slots, Some(recording_id));
+            let mut exec = executor(&ports, pre.clone(), false);
+            crate::shadow_site!(issue = 1154);
+            exec.attach_shadow(
+                shadow_flight,
+                Input::StartRequest(input.clone()),
+                capture::facts_projection(FieldAdapter::lock_free_facts(&state.app_state)),
+                now,
+            );
+            // D-less: the header goes out before the refusal's `PT:REL`.
+            exec.seal_shadow(None).submit();
+            run_phase(&mut exec, Placement::PostT, None, recording_id);
+            return start_ports::reply_of(&pre, None);
+        }
+        #[cfg(not(feature = "dictation-shadow"))]
         return start_ports::release_and_reply(
             host,
             state,
@@ -7030,6 +7281,8 @@ async fn start_native_recording_inner(
             None,
         );
     }
+    #[cfg(feature = "dictation-shadow")]
+    let mut shadow_flight = shadow_flight;
     // Check and update status in one lock; assign recording ID in the same
     // critical section so no concurrent cancel/start can slip between them.
     // Site 101 (R101.3-.15): `decide_start_request`, inline at today's line.
@@ -7097,21 +7350,44 @@ async fn start_native_recording_inner(
                 if let Some(CoreReply::Typed { ty, .. }) = &decision.reply {
                     tracing::warn!(target: "pipeline", reason = ty.as_str(), "start_native_recording: blocked");
                 }
-                drop(dictation);
-                drop(_transition);
                 // R101.14 replies with the Smart Auto resolve's own text.
                 let smart_auto_error = match &resolved {
                     Some(Err(text)) => Some(text.clone()),
                     _ => None,
                 };
-                return start_ports::release_and_reply(
-                    host,
-                    state,
-                    &slots,
-                    decision,
-                    current,
-                    smart_auto_error,
-                );
+                #[cfg(feature = "dictation-shadow")]
+                {
+                    // The refusal has no `In` effect: its header's `seq` is taken here,
+                    // under D, and goes out right after D is released.
+                    let ports = StartPorts::new(host, state, &slots, Some(current));
+                    let mut exec = executor(&ports, decision.clone(), false);
+                    crate::shadow_site!(issue = 1154);
+                    exec.attach_shadow(
+                        shadow_flight,
+                        Input::StartRequest(input.clone()),
+                        capture::view_projection(&view),
+                        now,
+                    );
+                    let sealed = exec.seal_shadow(Some(&dictation));
+                    drop(dictation);
+                    sealed.submit();
+                    drop(_transition);
+                    run_phase(&mut exec, Placement::PostT, None, current);
+                    return start_ports::reply_of(&decision, smart_auto_error);
+                }
+                #[cfg(not(feature = "dictation-shadow"))]
+                {
+                    drop(dictation);
+                    drop(_transition);
+                    return start_ports::release_and_reply(
+                        host,
+                        state,
+                        &slots,
+                        decision,
+                        current,
+                        smart_auto_error,
+                    );
+                }
             }
             Verdict::Applied => {}
             Verdict::Continue | Verdict::Stale(_) | Verdict::NeedObservation(_) => {
@@ -7124,8 +7400,22 @@ async fn start_native_recording_inner(
             // restore Idle independently: `In:ST→Recovering`, `In:EM(recovering)`.
             let ports = StartPorts::new(host, state, &slots, Some(current));
             let mut exec = executor(&ports, decision.clone(), false);
+            #[cfg(feature = "dictation-shadow")]
+            {
+                crate::shadow_site!(issue = 1154);
+                exec.attach_shadow(
+                    shadow_flight,
+                    Input::StartRequest(input.clone()),
+                    capture::view_projection(&view),
+                    now,
+                );
+            }
             run_phase(&mut exec, Placement::In, Some(&mut dictation), current);
+            #[cfg(feature = "dictation-shadow")]
+            let sealed = exec.seal_shadow(Some(&dictation));
             drop(dictation);
+            #[cfg(feature = "dictation-shadow")]
+            sealed.submit();
             drop(_transition);
             run_phase(&mut exec, Placement::PostT, None, current);
             return start_ports::reply_of(&decision, None);
@@ -7173,8 +7463,28 @@ async fn start_native_recording_inner(
             .continuation
             .expect("R101.15 returns K:CaptureStart");
         let capture_guard = ContinuationGuard::register(&state.app_state.core_history, spec);
+        #[cfg(feature = "dictation-shadow")]
+        {
+            shadow_flight.history(capture_guard.registered_op());
+            // What `SPEC` will read when it hands the capture over (an atomic load).
+            shadow_flight.observed(
+                crate::dictation_shadow::types::ObservedFact::SpeculativeFlowing(
+                    slots.speculative_flowing_now(),
+                ),
+            );
+        }
         let ports = StartPorts::new(host, state, &slots, None);
         let mut exec = executor(&ports, decision, kept_preview);
+        #[cfg(feature = "dictation-shadow")]
+        {
+            crate::shadow_site!(issue = 1154);
+            exec.attach_shadow(
+                shadow_flight,
+                Input::StartRequest(input.clone()),
+                capture::view_projection(&view),
+                now,
+            );
+        }
         // `In:ID+, GA, PCC, TRQ, ST→Starting, AX(a)`, under D.
         run_phase(&mut exec, Placement::In, Some(&mut dictation), current);
         let rid = exec
@@ -7182,7 +7492,11 @@ async fn start_native_recording_inner(
             .expect("R101.15's `ID+` allocated the recording id");
         // Read under the same hold, right after the delivery target was frozen.
         let smart_enabled = smart_destination_eligible(&dictation);
+        #[cfg(feature = "dictation-shadow")]
+        let sealed = exec.seal_shadow(Some(&dictation));
         drop(dictation);
+        #[cfg(feature = "dictation-shadow")]
+        sealed.submit();
         // `PDT:SPEC, EV(GenStarted), EM(starting)?, PR, CS(rid)`, T held. A
         // kept-preview `CS` is awaited: the cursor is parked across the await with
         // no port or executor held (they are not `Send`).
@@ -7263,21 +7577,28 @@ async fn start_native_recording_inner(
     match audio_started {
         Ok(()) => {
             // R102.1 (D-less): the capture started; the flight goes on.
+            #[cfg(feature = "dictation-shadow")]
+            let mut shadow_flight = Flight::begin();
             let facts = FieldAdapter::lock_free_facts(&state.app_state);
+            #[cfg(feature = "dictation-shadow")]
+            let mut seen_input = None;
             let decision = capture_guard.consume(|op_status| {
-                decide(|| {
-                    core_start::decide_start_capture_result_nolock(
-                        facts,
-                        CaptureResultInput {
-                            token,
-                            op_status,
-                            result: CaptureResult::Ok,
-                        },
-                        now,
-                    )
-                })
+                let capture_input = CaptureResultInput {
+                    token,
+                    op_status,
+                    result: CaptureResult::Ok,
+                };
+                #[cfg(feature = "dictation-shadow")]
+                {
+                    seen_input = Some(capture_input.clone());
+                }
+                decide(|| core_start::decide_start_capture_result_nolock(facts, capture_input, now))
             });
             expect_valid(&decision);
+            #[cfg(feature = "dictation-shadow")]
+            if let Some(op) = capture_guard.consumed_op() {
+                shadow_flight.history(op);
+            }
             match decision.verdict {
                 Verdict::Continue => {}
                 Verdict::Invalid(_) => unreachable!("expect_valid refused an invalid decision"),
@@ -7293,6 +7614,22 @@ async fn start_native_recording_inner(
                 .continuation
                 .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec))
                 .expect("R102.1 returns `K:ResolveContext`");
+            // R102.1 decides no effect and takes no D: the decision, the retirement of
+            // the capture's op and the registration of the context's are the header.
+            #[cfg(feature = "dictation-shadow")]
+            if let Some(capture_input) = seen_input {
+                shadow_flight.history(context_guard.registered_op());
+                crate::shadow_site!(issue = 1154);
+                shadow_flight.decided(
+                    Input::StartCaptureResult(capture_input),
+                    capture::facts_projection(facts),
+                    now,
+                    decision.row,
+                    decision.reply.as_ref(),
+                    decision.effects.len(),
+                );
+                shadow_flight.seal(None).submit();
+            }
             start_after_capture(
                 host,
                 state,
@@ -7315,42 +7652,66 @@ async fn start_native_recording_inner(
             // drains it after T and D are released (D-S2-13).
             let _stretch = flight.stretch();
             let ports = StartPorts::new(host, state, &slots, Some(rid));
-            run_phase(
-                &mut executor(
-                    &ports,
-                    murmur_dictation_core::decision::Decision::pre_only(
-                        core_start::start_capture_failure_pre_effects(RecordingId(rid)),
-                        RowId("R102.pre"),
-                    ),
-                    false,
+            // The recorder exists before `run(Pre)` (C4.1 step 2).
+            #[cfg(feature = "dictation-shadow")]
+            let mut shadow_flight = Flight::begin();
+            let mut pre_exec = executor(
+                &ports,
+                murmur_dictation_core::decision::Decision::pre_only(
+                    core_start::start_capture_failure_pre_effects(RecordingId(rid)),
+                    RowId("R102.pre"),
                 ),
-                Placement::Pre,
-                None,
-                rid,
+                false,
             );
+            #[cfg(feature = "dictation-shadow")]
+            pre_exec.attach_shadow_leading(shadow_flight);
+            run_phase(&mut pre_exec, Placement::Pre, None, rid);
+            #[cfg(feature = "dictation-shadow")]
+            {
+                shadow_flight = pre_exec.take_shadow();
+            }
             let mut dictation = state.app_state.dictation.lock_or_recover();
             let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+            #[cfg(feature = "dictation-shadow")]
+            let mut seen_input = None;
             let decision = capture_guard
                 .consume(|op_status| {
-                    decide(|| {
-                        core_start::decide_start_capture_result(
-                            &view,
-                            CaptureResultInput {
-                                token,
-                                op_status,
-                                result: CaptureResult::Err(error),
-                            },
-                            now,
-                        )
-                    })
+                    let capture_input = CaptureResultInput {
+                        token,
+                        op_status,
+                        result: CaptureResult::Err(error),
+                    };
+                    #[cfg(feature = "dictation-shadow")]
+                    {
+                        seen_input = Some(capture_input.clone());
+                    }
+                    decide(|| core_start::decide_start_capture_result(&view, capture_input, now))
                 })
                 .after_pre();
             expect_valid(&decision);
+            #[cfg(feature = "dictation-shadow")]
+            if let Some(op) = capture_guard.consumed_op() {
+                shadow_flight.history(op);
+            }
             // `In:ST→Idle` (the current id only), `In:EM(idle)` (unconditional,
             // PD-3) and `In:TERM`, under D and T.
             let mut exec = executor(&ports, decision.clone(), false);
+            #[cfg(feature = "dictation-shadow")]
+            if let Some(capture_input) = seen_input {
+                crate::shadow_site!(issue = 1154);
+                exec.attach_shadow(
+                    shadow_flight,
+                    Input::StartCaptureResult(capture_input),
+                    capture::view_projection(&view),
+                    now,
+                );
+            }
             run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
+            #[cfg(feature = "dictation-shadow")]
+            let sealed = exec.seal_shadow(Some(&dictation));
             drop(dictation);
+            #[cfg(feature = "dictation-shadow")]
+            sealed.submit();
             start_ports::reply_of(&decision, Some(text))
         }
     }
@@ -7380,6 +7741,11 @@ async fn start_after_capture(
     use murmur_dictation_core::inputs::StartContextInput;
     use murmur_dictation_core::start as core_start;
     use start_ports::{decide, executor, expect_valid, reply_of, run_phase, StartPorts, TailFacts};
+    #[cfg(feature = "dictation-shadow")]
+    use {
+        crate::dictation_executor::shadow::{self as capture, Flight},
+        murmur_dictation_core::inputs::Input,
+    };
 
     let now = core_now();
     let recording = RecordingId(rid);
@@ -7442,6 +7808,8 @@ async fn start_after_capture(
         // pipeline owner) is handed up to the flight's drain on both the return and
         // an unwind, and runs after D and T are released (D-S2-4, D-S2-13).
         let _stretch = flight.stretch();
+        #[cfg(feature = "dictation-shadow")]
+        let shadow_flight = Flight::begin();
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
         let decision =
@@ -7449,40 +7817,86 @@ async fn start_after_capture(
         expect_valid(&decision);
         let ports = StartPorts::new(host, state, &slots, Some(rid)).with_tail(&tail);
         let mut exec = executor(&ports, decision, false);
+        #[cfg(feature = "dictation-shadow")]
+        {
+            crate::shadow_site!(issue = 1154);
+            exec.attach_shadow(
+                shadow_flight,
+                Input::StartDestination(murmur_dictation_core::inputs::DestinationInput {
+                    rid: recording,
+                    smart_enabled,
+                }),
+                capture::view_projection(&view),
+                now,
+            );
+        }
         run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
+        #[cfg(feature = "dictation-shadow")]
+        let sealed = exec.seal_shadow(Some(&dictation));
         #[cfg(test)]
         start_ports::DESTINATION.with(|slot| *slot.borrow_mut() = exec.witness().to_vec());
+        #[cfg(feature = "dictation-shadow")]
+        {
+            drop(dictation);
+            sealed.submit();
+        }
     }
     host.performance().production_context(rid, &context);
     // Site 103 (R103.1-.6): the context install under D and T.
     let context_token = context_guard.token();
     let (context_decision, ready_op) = {
         let _stretch = flight.stretch();
+        #[cfg(feature = "dictation-shadow")]
+        let mut shadow_flight = Flight::begin();
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        #[cfg(feature = "dictation-shadow")]
+        let mut seen_input = None;
         let decision = context_guard.consume(|op_status| {
-            decide(|| {
-                core_start::decide_start_context(
-                    &view,
-                    StartContextInput {
-                        token: context_token,
-                        op_status,
-                    },
-                    now,
-                )
-            })
+            let context_input = StartContextInput {
+                token: context_token,
+                op_status,
+            };
+            #[cfg(feature = "dictation-shadow")]
+            {
+                seen_input = Some(context_input);
+            }
+            decide(|| core_start::decide_start_context(&view, context_input, now))
         });
         expect_valid(&decision);
         // R103.1's `H1 reg op_ready`, before any effect.
         let ready_op = decision
             .continuation
             .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec));
+        #[cfg(feature = "dictation-shadow")]
+        {
+            if let Some(op) = context_guard.consumed_op() {
+                shadow_flight.history(op);
+            }
+            if let Some(ready) = ready_op.as_ref() {
+                shadow_flight.history(ready.registered_op());
+            }
+        }
         // `In:CX+` (R103.1, R103.2): the live context slot only, under D.
         let ports = StartPorts::new(host, state, &slots, Some(rid)).with_tail(&tail);
         let mut exec = executor(&ports, decision.clone(), false);
+        #[cfg(feature = "dictation-shadow")]
+        if let Some(context_input) = seen_input {
+            crate::shadow_site!(issue = 1154);
+            exec.attach_shadow(
+                shadow_flight,
+                Input::StartContext(context_input),
+                capture::view_projection(&view),
+                now,
+            );
+        }
         run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
         let status = view.status;
+        #[cfg(feature = "dictation-shadow")]
+        let sealed = exec.seal_shadow(Some(&dictation));
         drop(dictation);
+        #[cfg(feature = "dictation-shadow")]
+        sealed.submit();
         // The `PDT` and `PT` effects of a refused or flushed start run after D is
         // released, T held then released, exactly where today's statements ran.
         match decision.row.0 {
@@ -7553,6 +7967,8 @@ async fn start_after_capture(
     // R104.7, whatever the publish decided: `PDT:PM`, then T is released, then
     // `PT:PB` (ownership is fully installed before diagnostics begin, so
     // Recording, stop, and cancel never wait for SQLite) and `PT:REL`.
+    #[cfg(feature = "dictation-shadow")]
+    let end_flight = Flight::begin();
     let flight_end = decide(|| core_start::decide_start_flight_end(recording, now));
     expect_valid(&flight_end);
     // D-S2-8: the flight end's `PDT` and `PT` phases run in core spans with no D of
@@ -7564,6 +7980,20 @@ async fn start_after_capture(
     let _stretch = flight.stretch();
     let ports = StartPorts::new(host, state, &slots, Some(rid)).with_tail(&tail);
     let mut exec = executor(&ports, flight_end.clone(), false);
+    // R104.7 is D-less: the header goes out before its first effect (`PM`).
+    #[cfg(feature = "dictation-shadow")]
+    {
+        crate::shadow_site!(issue = 1154);
+        exec.attach_shadow(
+            end_flight,
+            Input::StartFlightEnd(murmur_dictation_core::inputs::StartFlightEndInput {
+                rid: recording,
+            }),
+            capture::facts_projection(FieldAdapter::lock_free_facts(&state.app_state)),
+            now,
+        );
+        exec.seal_shadow(None).submit();
+    }
     run_phase(&mut exec, Placement::PostDT, None, rid);
     drop(transition);
     run_phase(&mut exec, Placement::PostT, None, rid);
@@ -7687,6 +8117,11 @@ async fn stop_native_recording_admitted(
     use murmur_dictation_core::status::StopTrigger;
     use murmur_dictation_core::stop as core_stop;
     use stop_ports::{executor, reply_of, run_phase, StopHooks, StopPorts};
+    #[cfg(feature = "dictation-shadow")]
+    use {
+        crate::dictation_executor::shadow::{self as capture, Flight},
+        murmur_dictation_core::inputs::Input,
+    };
 
     // Also the first statement of the tests' direct entry (`_inner`).
     refuse_reentrant_stop()?;
@@ -7740,6 +8175,9 @@ async fn stop_native_recording_admitted(
     // it also happens for a stale owner); the answer is that take.
     if input.is_stale() {
         let stale_recording_id = expected_recording_id.expect("mismatch requires an expectation");
+        // The recorder exists before the decision's `run(Pre)` (C4.1 step 2).
+        #[cfg(feature = "dictation-shadow")]
+        let flight = Flight::begin();
         let first = stop_ports::decide(|| {
             core_stop::decide_stop_request_stale(input, now).expect("the stop is stale")
         });
@@ -7759,7 +8197,21 @@ async fn stop_native_recording_admitted(
         });
         let ports = StopPorts::new(host, state, stale_recording_id, stop_entered_at);
         let mut exec = executor(&ports, decision.clone());
+        // D-less: the decision is taken now; its `Pre` effects are part of the header,
+        // so the header goes out when they have run.
+        #[cfg(feature = "dictation-shadow")]
+        {
+            crate::shadow_site!(issue = 1154);
+            exec.attach_shadow(
+                flight,
+                Input::StopRequest(input),
+                capture::facts_projection(FieldAdapter::lock_free_facts(&state.app_state)),
+                now,
+            );
+        }
         run_phase(&mut exec, Placement::Pre, None, stale_recording_id);
+        #[cfg(feature = "dictation-shadow")]
+        exec.seal_shadow(None).submit();
         return reply_of(&decision, None, "");
     }
 
@@ -7769,6 +8221,8 @@ async fn stop_native_recording_admitted(
     let rid = current_recording_id;
     let (slots, interrupted_capture, mut op_guard) = {
         let mut interrupted_capture = None;
+        #[cfg(feature = "dictation-shadow")]
+        let mut flight = Flight::begin();
         // Atomic check-and-set + generation capture in a single lock: site 201
         // (R201.2-.8) decides under D, the effects `PH`, `ST`, `AX` run under it.
         let mut dictation = state.app_state.dictation.lock_or_recover();
@@ -7803,11 +8257,29 @@ async fn stop_native_recording_admitted(
         let mut op_guard = decision
             .continuation
             .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec));
+        #[cfg(feature = "dictation-shadow")]
+        if let Some(guard) = op_guard.as_ref() {
+            flight.history(guard.registered_op());
+        }
         let slots = {
             let ports = StopPorts::new(host, state, rid, stop_entered_at);
             let mut exec = executor(&ports, decision.clone());
+            #[cfg(feature = "dictation-shadow")]
+            {
+                crate::shadow_site!(issue = 1154);
+                exec.attach_shadow(
+                    flight,
+                    Input::StopRequest(input),
+                    capture::view_projection(&view),
+                    now,
+                );
+            }
             run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
+            #[cfg(feature = "dictation-shadow")]
+            let sealed = exec.seal_shadow(Some(&dictation));
             drop(dictation);
+            #[cfg(feature = "dictation-shadow")]
+            sealed.submit();
             // Claim the release at the accepted transition, before teardown, so a
             // later release queued behind this stop cannot replace it.
             run_phase(&mut exec, Placement::PostDT, None, rid);
@@ -7827,27 +8299,51 @@ async fn stop_native_recording_admitted(
                     .take()
                     .expect("R201.4 registered `K:CaptureCancel`");
                 let token = guard.token();
+                #[cfg(feature = "dictation-shadow")]
+                let mut flight_206 = Flight::begin();
+                #[cfg(feature = "dictation-shadow")]
+                let mut input_206 = None;
                 // Site 206 is D-less and reads nothing live (C2.3): T is released, so
                 // a newer generation may already be starting; the token and the
                 // capture result are the original ones.
                 let cancel_decision = guard.consume(|op_status| {
+                    let cancel_input = CancelCaptureResultInput {
+                        token,
+                        op_status,
+                        rid: RecordingId(rid),
+                        result,
+                        origin: CancelOrigin::Stop,
+                    };
+                    #[cfg(feature = "dictation-shadow")]
+                    {
+                        input_206 = Some(cancel_input);
+                    }
                     stop_ports::decide(|| {
                         core_cancel::decide_cancel_capture_result_nolock(
                             LockFreeFacts::default(),
-                            CancelCaptureResultInput {
-                                token,
-                                op_status,
-                                rid: RecordingId(rid),
-                                result,
-                                origin: CancelOrigin::Stop,
-                            },
+                            cancel_input,
                             now,
                         )
                     })
                 });
+                #[cfg(feature = "dictation-shadow")]
+                if let Some(op) = guard.consumed_op() {
+                    flight_206.history(op);
+                }
                 // R206.2 `PT:TERM(PipelineFailure/RuntimeFailure)`; R206.1 has no
                 // effect.
                 let mut finish_exec = executor(&ports, cancel_decision.clone());
+                #[cfg(feature = "dictation-shadow")]
+                if let Some(cancel_input) = input_206 {
+                    crate::shadow_site!(issue = 1154);
+                    finish_exec.attach_shadow(
+                        flight_206,
+                        Input::CancelCaptureResult(cancel_input),
+                        capture::facts_projection(LockFreeFacts::default()),
+                        now,
+                    );
+                    finish_exec.seal_shadow(None).submit();
+                }
                 stop_ports::expect_valid(&cancel_decision);
                 run_phase(&mut finish_exec, Placement::PostT, None, rid);
                 #[cfg(test)]
@@ -7884,57 +8380,103 @@ async fn stop_native_recording_admitted(
         // R202.3-.5: `Pre:TERM(MissingContext)` before D; then, under D, `ST→Idle`
         // for the current id, `KB(false)`, `EM(idle)`, T released, `PC`.
         let ports = StopPorts::new(host, state, rid, stop_entered_at);
-        run_phase(
-            &mut executor(
-                &ports,
-                Decision::pre_only(core_stop::stop_context_pre_effects(), RowId("R202.pre")),
-            ),
-            Placement::Pre,
-            None,
-            rid,
+        // The recorder exists before `run(Pre)` (C4.1 step 2).
+        #[cfg(feature = "dictation-shadow")]
+        let mut flight = Flight::begin();
+        let mut pre_exec = executor(
+            &ports,
+            Decision::pre_only(core_stop::stop_context_pre_effects(), RowId("R202.pre")),
         );
+        #[cfg(feature = "dictation-shadow")]
+        pre_exec.attach_shadow_leading(flight);
+        run_phase(&mut pre_exec, Placement::Pre, None, rid);
+        #[cfg(feature = "dictation-shadow")]
+        {
+            flight = pre_exec.take_shadow();
+        }
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+        let context_input = StopContextInput {
+            token: stop_context_token,
+            op_status: murmur_dictation_core::decision::OpStatus::Unknown,
+            rid: RecordingId(rid),
+            context_present: false,
+            interrupted_error: interrupted_code,
+        };
+        #[cfg(feature = "dictation-shadow")]
+        let mut seen_input = context_input;
         let decision = op_guard.consume(|op_status| {
+            #[cfg(feature = "dictation-shadow")]
+            {
+                seen_input.op_status = op_status;
+            }
             stop_ports::decide(|| {
                 core_stop::decide_stop_context(
                     &view,
                     StopContextInput {
-                        token: stop_context_token,
                         op_status,
-                        rid: RecordingId(rid),
-                        context_present: false,
-                        interrupted_error: interrupted_code,
+                        ..context_input
                     },
                     now,
                 )
             })
         });
+        #[cfg(feature = "dictation-shadow")]
+        if let Some(op) = op_guard.consumed_op() {
+            flight.history(op);
+        }
         ports.hold_transition(transition);
-        run_phase(
-            &mut executor(&ports, decision.clone().after_pre()),
-            Placement::In,
-            Some(&mut dictation),
-            rid,
-        );
+        let mut exec = executor(&ports, decision.clone().after_pre());
+        #[cfg(feature = "dictation-shadow")]
+        {
+            crate::shadow_site!(issue = 1154);
+            exec.attach_shadow(
+                flight,
+                Input::StopContext(seen_input),
+                capture::view_projection(&view),
+                now,
+            );
+        }
+        run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
+        #[cfg(feature = "dictation-shadow")]
+        let sealed = exec.seal_shadow(Some(&dictation));
+        drop(dictation);
+        #[cfg(feature = "dictation-shadow")]
+        sealed.submit();
         return reply_of(&decision, None, "");
     };
+    #[cfg(feature = "dictation-shadow")]
+    let mut flight = Flight::begin();
     let facts = FieldAdapter::lock_free_facts(&state.app_state);
+    let context_input = StopContextInput {
+        token: stop_context_token,
+        op_status: murmur_dictation_core::decision::OpStatus::Unknown,
+        rid: RecordingId(rid),
+        context_present: true,
+        interrupted_error: interrupted_code,
+    };
+    #[cfg(feature = "dictation-shadow")]
+    let mut seen_input = context_input;
     let decision = op_guard.consume(|op_status| {
+        #[cfg(feature = "dictation-shadow")]
+        {
+            seen_input.op_status = op_status;
+        }
         stop_ports::decide(|| {
             core_stop::decide_stop_context_nolock(
                 facts,
                 StopContextInput {
-                    token: stop_context_token,
                     op_status,
-                    rid: RecordingId(rid),
-                    context_present: true,
-                    interrupted_error: interrupted_code,
+                    ..context_input
                 },
                 now,
             )
         })
     });
+    #[cfg(feature = "dictation-shadow")]
+    if let Some(op) = op_guard.consumed_op() {
+        flight.history(op);
+    }
     if let Verdict::Invalid(_) = decision.verdict {
         return reply_of(&decision, None, "");
     }
@@ -7942,6 +8484,8 @@ async fn stop_native_recording_admitted(
         .continuation
         .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec))
         .expect("a context-present stop registered `K:CaptureStop`");
+    #[cfg(feature = "dictation-shadow")]
+    flight.history(stop_guard.registered_op());
     tracing::debug!(target: "pipeline", "stop_native_recording: stopping");
     // Guard resets status to Idle if stop_recording fails or samples are empty;
     // disarmed before handing off to run_transcription_pipeline (which has its own guard)
@@ -7951,6 +8495,18 @@ async fn stop_native_recording_admitted(
     let stop_result = {
         let ports = StopPorts::new(host, state, rid, stop_entered_at);
         let mut exec = executor(&ports, decision);
+        // D-less (202 nolock): the header goes out before any effect runs.
+        #[cfg(feature = "dictation-shadow")]
+        {
+            crate::shadow_site!(issue = 1154);
+            exec.attach_shadow(
+                flight,
+                Input::StopContext(seen_input),
+                capture::facts_projection(facts),
+                now,
+            );
+            exec.seal_shadow(None).submit();
+        }
         run_phase(&mut exec, Placement::PostDT, None, rid);
         guard = IdleGuard::new(&state.app_state, rid);
 
@@ -8088,8 +8644,16 @@ async fn stop_native_recording_admitted(
 
     // Site 203, R203.9/.10 (D-less): the pipeline starts whatever status and id
     // are now. The stop guard hands status management to the pipeline's own guard.
+    #[cfg(feature = "dictation-shadow")]
+    let mut flight = Flight::begin();
+    #[cfg(feature = "dictation-shadow")]
+    let mut seen_input = probe;
     let facts = FieldAdapter::lock_free_facts(&state.app_state);
     let decision = stop_guard.consume(|op_status| {
+        #[cfg(feature = "dictation-shadow")]
+        {
+            seen_input.op_status = op_status;
+        }
         stop_ports::decide(|| {
             core_stop::decide_stop_capture_result_nolock(
                 facts,
@@ -8098,6 +8662,10 @@ async fn stop_native_recording_admitted(
             )
         })
     });
+    #[cfg(feature = "dictation-shadow")]
+    if let Some(op) = stop_guard.consumed_op() {
+        flight.history(op);
+    }
     if let Verdict::Invalid(_) = decision.verdict {
         return reply_of(&decision, None, "");
     }
@@ -8106,6 +8674,12 @@ async fn stop_native_recording_admitted(
     let pipeline_op = decision
         .continuation
         .map(|spec| PipelineOwner::register(&state.app_state.core_history, spec));
+    #[cfg(feature = "dictation-shadow")]
+    if let Some(owner) = pipeline_op.as_ref() {
+        for op in owner.registration_ops() {
+            flight.history(op);
+        }
+    }
     // The pipeline's own guard takes over status management before `PE(Vad)`
     // (C3.5): a panic in that effect leaves `Processing`, as the original shell did.
     guard.disarm();
@@ -8122,6 +8696,19 @@ async fn stop_native_recording_admitted(
             ..StopHooks::default()
         });
         let mut exec = executor(&ports, decision);
+        // D-less (203 nolock): the header goes out before `PE(Vad)` and the awaited
+        // `PS`; the executor and its flight park together across the pipeline await.
+        #[cfg(feature = "dictation-shadow")]
+        {
+            crate::shadow_site!(issue = 1154);
+            exec.attach_shadow(
+                flight,
+                Input::StopCaptureResult(seen_input),
+                capture::facts_projection(facts),
+                now,
+            );
+            exec.seal_shadow(None).submit();
+        }
         let report = stop_ports::try_run_phase(&mut exec, Placement::PostDT, None, rid);
         if let Err(error) = stop_ports::pipeline_start(report) {
             // The pipeline never started: the stop's guard resets the status.
@@ -8189,22 +8776,33 @@ async fn stop_native_recording_admitted(
         Ok(result) => result,
         Err(error) => {
             // Site 204b, R204b.5 (D-less): the terminal of a failed pipeline.
-            let tail = stop_ports::decide(|| {
-                core_stop::decide_pipeline_idle_emit_tail(
-                    PipelineIdleEmitInput {
-                        rid: RecordingId(rid),
-                        kind: PostKind::StopPost,
-                        result: Some(CorePipelineResult::Err),
-                        interrupted: interrupted_code,
-                        char_count: 0,
-                    },
-                    now,
-                )
-            });
+            #[cfg(feature = "dictation-shadow")]
+            let flight = Flight::begin();
+            let tail_input = PipelineIdleEmitInput {
+                rid: RecordingId(rid),
+                kind: PostKind::StopPost,
+                result: Some(CorePipelineResult::Err),
+                interrupted: interrupted_code,
+                char_count: 0,
+            };
+            let tail =
+                stop_ports::decide(|| core_stop::decide_pipeline_idle_emit_tail(tail_input, now));
             stop_ports::expect_valid(&tail);
             {
                 let ports = StopPorts::new(host, state, rid, stop_entered_at);
-                run_phase(&mut executor(&ports, tail), Placement::PostDT, None, rid);
+                let mut exec = executor(&ports, tail);
+                #[cfg(feature = "dictation-shadow")]
+                {
+                    crate::shadow_site!(issue = 1154);
+                    exec.attach_shadow(
+                        flight,
+                        Input::PipelineIdleEmit(tail_input),
+                        capture::facts_projection(LockFreeFacts::default()),
+                        now,
+                    );
+                    exec.seal_shadow(None).submit();
+                }
+                run_phase(&mut exec, Placement::PostDT, None, rid);
             }
             tracing::error!(
                 target: "pipeline",
@@ -8242,18 +8840,16 @@ async fn stop_native_recording_admitted(
         }
         PipelineTerminal::Cancelled(_) => CorePipelineTerminal::Cancelled,
     };
-    let tail = stop_ports::decide(|| {
-        core_stop::decide_pipeline_idle_emit_tail(
-            PipelineIdleEmitInput {
-                rid: RecordingId(rid),
-                kind: PostKind::StopPost,
-                result: Some(CorePipelineResult::Ok(core_terminal)),
-                interrupted: interrupted_code,
-                char_count,
-            },
-            now,
-        )
-    });
+    #[cfg(feature = "dictation-shadow")]
+    let tail_flight = Flight::begin();
+    let tail_input = PipelineIdleEmitInput {
+        rid: RecordingId(rid),
+        kind: PostKind::StopPost,
+        result: Some(CorePipelineResult::Ok(core_terminal)),
+        interrupted: interrupted_code,
+        char_count,
+    };
+    let tail = stop_ports::decide(|| core_stop::decide_pipeline_idle_emit_tail(tail_input, now));
     if let Verdict::Invalid(_) = tail.verdict {
         return reply_of(&tail, None, &text);
     }
@@ -8359,6 +8955,19 @@ async fn stop_native_recording_admitted(
             ..StopHooks::default()
         });
         let mut exec = executor(&ports, tail.clone());
+        // D-less (R204b.6): the header goes out before the terminal and the
+        // broadcast the decision's effects run.
+        #[cfg(feature = "dictation-shadow")]
+        {
+            crate::shadow_site!(issue = 1154);
+            exec.attach_shadow(
+                tail_flight,
+                Input::PipelineIdleEmit(tail_input),
+                capture::facts_projection(LockFreeFacts::default()),
+                now,
+            );
+            exec.seal_shadow(None).submit();
+        }
         run_phase(&mut exec, Placement::PostDT, None, rid);
         #[cfg(test)]
         stop_ports::TAIL.with(|slot| *slot.borrow_mut() = exec.witness().to_vec());
@@ -8393,34 +9002,64 @@ fn run_stop_capture_rows<'a>(
     let ports = StopPorts::new(host, state, rid, stop_entered_at);
     ports.use_guard_keyboard();
     ports.set_hooks(hooks);
-    run_phase(
-        &mut executor(
-            &ports,
-            Decision::pre_only(
-                core_stop::stop_capture_pre_effects(&probe),
-                RowId("R203.pre"),
-            ),
+    // The recorder exists before `run(Pre)` (C4.1 step 2).
+    #[cfg(feature = "dictation-shadow")]
+    let mut flight = crate::dictation_executor::shadow::Flight::begin();
+    let mut pre_exec = executor(
+        &ports,
+        Decision::pre_only(
+            core_stop::stop_capture_pre_effects(&probe),
+            RowId("R203.pre"),
         ),
-        Placement::Pre,
-        None,
-        rid,
     );
+    #[cfg(feature = "dictation-shadow")]
+    pre_exec.attach_shadow_leading(flight);
+    run_phase(&mut pre_exec, Placement::Pre, None, rid);
+    #[cfg(feature = "dictation-shadow")]
+    {
+        flight = pre_exec.take_shadow();
+    }
     // The decision's `In` effects are the guard's D section: it must not run again.
     guard.disarm();
     let mut dictation = state.app_state.dictation.lock_or_recover();
     let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+    let now = core_now();
+    #[cfg(feature = "dictation-shadow")]
+    let mut seen_input = probe;
     let decision = capture_stop.consume(|op_status| {
+        #[cfg(feature = "dictation-shadow")]
+        {
+            seen_input.op_status = op_status;
+        }
         stop_ports::decide(|| {
             core_stop::decide_stop_capture_result(
                 &view,
                 StopCaptureResultInput { op_status, ..probe },
-                core_now(),
+                now,
             )
         })
     });
+    #[cfg(feature = "dictation-shadow")]
+    if let Some(op) = capture_stop.consumed_op() {
+        flight.history(op);
+    }
     let mut exec = executor(&ports, decision.clone().after_pre());
+    #[cfg(feature = "dictation-shadow")]
+    {
+        crate::shadow_site!(issue = 1154);
+        exec.attach_shadow(
+            flight,
+            murmur_dictation_core::inputs::Input::StopCaptureResult(seen_input),
+            crate::dictation_executor::shadow::view_projection(&view),
+            now,
+        );
+    }
     run_phase(&mut exec, Placement::In, Some(&mut dictation), rid);
+    #[cfg(feature = "dictation-shadow")]
+    let sealed = exec.seal_shadow(Some(&dictation));
     drop(dictation);
+    #[cfg(feature = "dictation-shadow")]
+    sealed.submit();
     run_phase(&mut exec, Placement::PostDT, None, rid);
     decision
 }
@@ -8463,6 +9102,11 @@ async fn cancel_native_recording_inner(
     use murmur_dictation_core::ids::RecordingId;
     use murmur_dictation_core::inputs::{CancelCaptureResultInput, CancelInput, CancelOrigin};
     use murmur_dictation_core::state::LockFreeFacts;
+    #[cfg(feature = "dictation-shadow")]
+    use {
+        crate::dictation_executor::shadow::{self as capture, Flight},
+        murmur_dictation_core::inputs::Input,
+    };
 
     // C4.1 step 0 / C4.2: the **first** statement, before T, D or `core_history`.
     // A callback that a port or an emit runs inline on this thread can re-enter
@@ -8500,22 +9144,39 @@ async fn cancel_native_recording_inner(
     // Site 205 (T held, D section): `decide_cancel_request`, inline at today's
     // line. The view is built from the live fields under the D hold the section
     // already takes.
+    #[cfg(feature = "dictation-shadow")]
+    let mut flight = Flight::begin();
     let mut dictation = state.app_state.dictation.lock_or_recover();
     let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
     let rid = view.current_id.0;
-    let decision = cancel_ports::decide(|| {
-        core_cancel::decide_cancel_request(
-            &view,
-            CancelInput {
-                expected: expected_recording_id.map(RecordingId),
-            },
-            now,
-        )
-    });
+    let cancel_input = CancelInput {
+        expected: expected_recording_id.map(RecordingId),
+    };
+    let decision =
+        cancel_ports::decide(|| core_cancel::decide_cancel_request(&view, cancel_input, now));
     match &decision.verdict {
         Verdict::Applied => {}
         // R205.1-.3: nothing to do; D and T are released by the returns.
-        Verdict::Stale(_) | Verdict::Continue => return Ok(()),
+        Verdict::Stale(_) | Verdict::Continue => {
+            // A decision with no effects is still compared: its header goes out
+            // once D is released.
+            #[cfg(feature = "dictation-shadow")]
+            {
+                let ports = CancelPorts::new(host, state, rid);
+                let mut exec = executor(&ports, decision.clone());
+                crate::shadow_site!(issue = 1154);
+                exec.attach_shadow(
+                    flight,
+                    Input::CancelRequest(cancel_input),
+                    capture::view_projection(&view),
+                    now,
+                );
+                let sealed = exec.seal_shadow(Some(&dictation));
+                drop(dictation);
+                sealed.submit();
+            }
+            return Ok(());
+        }
         Verdict::Invalid(kind) => return Err(cancel_refused(*kind)),
         Verdict::Refused(_) | Verdict::NeedObservation(_) => {
             unreachable!("a cancel request is applied, stale or a no-op")
@@ -8527,11 +9188,29 @@ async fn cancel_native_recording_inner(
     let mut op_guard = decision
         .continuation
         .map(|spec| ContinuationGuard::register(&state.app_state.core_history, spec));
+    #[cfg(feature = "dictation-shadow")]
+    if let Some(guard) = op_guard.as_ref() {
+        flight.history(guard.registered_op());
+    }
     let ports = CancelPorts::new(host, state, rid);
     let mut exec = executor(&ports, decision.clone());
+    #[cfg(feature = "dictation-shadow")]
+    {
+        crate::shadow_site!(issue = 1154);
+        exec.attach_shadow(
+            flight,
+            Input::CancelRequest(cancel_input),
+            capture::view_projection(&view),
+            now,
+        );
+    }
     // R205.5 `In:ST→Idle` under D; R205.4 has no `In` effect.
     run_phase(&mut exec, Placement::In, Some(&mut dictation), rid).map_err(cancel_refused)?;
+    #[cfg(feature = "dictation-shadow")]
+    let sealed = exec.seal_shadow(Some(&dictation));
     drop(dictation);
+    #[cfg(feature = "dictation-shadow")]
+    sealed.submit();
     // R205.5 `PDT:CX-, MC, TERM, KB, EM, EV` with T still held: keep the
     // transition fence through the old generation's unscoped UI events so a newer
     // start cannot publish `starting` and then be reset by this cancellation's
@@ -8556,23 +9235,47 @@ async fn cancel_native_recording_inner(
     // Site 206 is D-less and reads nothing live (C2.3): T is released, so a newer
     // generation may already be starting; the token and the capture result are the
     // original ones.
+    #[cfg(feature = "dictation-shadow")]
+    let mut flight_206 = Flight::begin();
+    #[cfg(feature = "dictation-shadow")]
+    let mut input_206 = None;
     let decision = op_guard.consume(|op_status| {
+        let capture_input = CancelCaptureResultInput {
+            token,
+            op_status,
+            rid: RecordingId(rid),
+            result: result.as_ref().map(|accepted| *accepted).map_err(|_| ()),
+            origin: CancelOrigin::Cancel,
+        };
+        #[cfg(feature = "dictation-shadow")]
+        {
+            input_206 = Some(capture_input);
+        }
         cancel_ports::decide(|| {
             core_cancel::decide_cancel_capture_result_nolock(
                 LockFreeFacts::default(),
-                CancelCaptureResultInput {
-                    token,
-                    op_status,
-                    rid: RecordingId(rid),
-                    result: result.as_ref().map(|accepted| *accepted).map_err(|_| ()),
-                    origin: CancelOrigin::Cancel,
-                },
+                capture_input,
                 now,
             )
         })
     });
+    #[cfg(feature = "dictation-shadow")]
+    if let Some(op) = op_guard.consumed_op() {
+        flight_206.history(op);
+    }
     // R206.2 `PT:TERM(PipelineFailure/RuntimeFailure)`; R206.1 has no effect.
     let mut finish_exec = executor(&ports, decision.clone());
+    #[cfg(feature = "dictation-shadow")]
+    if let Some(capture_input) = input_206 {
+        crate::shadow_site!(issue = 1154);
+        finish_exec.attach_shadow(
+            flight_206,
+            Input::CancelCaptureResult(capture_input),
+            capture::facts_projection(LockFreeFacts::default()),
+            now,
+        );
+        finish_exec.seal_shadow(None).submit();
+    }
     let finished = run_phase(&mut finish_exec, Placement::PostT, None, rid);
     #[cfg(test)]
     cancel_ports::LAST_206_WITNESS.with(|slot| *slot.borrow_mut() = finish_exec.witness().to_vec());

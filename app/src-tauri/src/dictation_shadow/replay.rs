@@ -129,6 +129,24 @@ impl Report {
     /// The E7 gate for one replay: no mismatch, no loss, no panic, nothing skipped.
     pub(crate) fn assert_clean(&self, what: &str) {
         let s = &self.stats;
+        // Findings mode (D-S2c-6 e): record every divergence (row, site, diff kind) and
+        // go on, so one run reports all of them together. The gate itself never runs in
+        // this mode.
+        if std::env::var_os("MURMUR_E7_COLLECT").is_some() {
+            for event in &self.events {
+                let rows: Vec<_> = s
+                    .per_row
+                    .iter()
+                    .filter(|(row, stats)| row.0 == event.site_id && stats.mismatched > 0)
+                    .map(|(row, _)| row.1)
+                    .collect();
+                eprintln!(
+                    "E7FINDING sub_run={what:?} site={} rows={rows:?} input_kind={} diff_kind={}",
+                    event.site_id, event.input_kind, event.diff_kind
+                );
+            }
+            return;
+        }
         assert!(
             self.events.is_empty()
                 && s.mismatched_root == 0

@@ -264,6 +264,17 @@ impl StartSlots {
         *self.after_terminal.borrow_mut() = Some(log);
     }
 
+    /// Whether the still-unconsumed speculative capture is already flowing: the value
+    /// `SPEC` will read when it hands the capture over, read once more under D for the
+    /// shadow's header (appendix C8.2). One atomic load, no lock.
+    #[cfg(feature = "dictation-shadow")]
+    pub(super) fn speculative_flowing_now(&self) -> bool {
+        self.speculative
+            .borrow()
+            .as_ref()
+            .is_some_and(SpeculativeClaim::is_flowing)
+    }
+
     /// Whether the request carried a speculative capture (an observation only).
     pub(super) fn speculative_claimed(&self) -> bool {
         self.speculative
@@ -618,6 +629,7 @@ impl Ports for StartPorts<'_> {
 /// The command's return after a refusal: T was released by the caller, so the
 /// `PT:REL` effect now drops the claims (today's reverse-declaration drop order),
 /// then the reply.
+#[cfg_attr(feature = "dictation-shadow", allow(dead_code))]
 pub(super) fn release_and_reply(
     host: &dyn DictationHost,
     state: &State,
