@@ -542,6 +542,9 @@ pub(crate) enum ShadowMsg {
     /// alternative to a [`ShadowMsg::Ticker`], never both.
     TickerSkipped {
         rec: RecorderId,
+        /// The recording the spawner was asked for, checked against the decision's
+        /// target exactly as a gate's id is.
+        target: RecordingId,
         reason: TickerSkipReason,
     },
     /// An H1 / H2 operation after D (an owner's `Drop`, a deferred retirement).

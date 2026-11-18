@@ -42,8 +42,9 @@
 //!   and ticker attempt needs exactly one witness at a completed close. A `PostDT:SD`
 //!   needs exactly one of a `TickerGate` or a `TickerSkipped` (the spawner returned
 //!   before the gate: no context recorded, or no live preview, D-S2c-6); neither, or
-//!   both, is `EffectSet`. The skip reason is recorded per row, never compared with the
-//!   core.
+//!   both, is `EffectSet`. A skip carries the recording the spawner was asked for and
+//!   is held to the decision's target like a gate (`PostState`); its reason is
+//!   recorded per row, never compared with the core.
 //! * **Cascade control**: a mismatch taints its recording id, and a later mismatch
 //!   with the same `(site, row, diff_kind)`, or any later level of a record that
 //!   already mismatched, is a `followup`, not a new root.
@@ -555,7 +556,13 @@ impl Record {
     /// The ticker attempt was for the recording the decision's `SD` (decided effect
     /// `j`) targets: the input's recording id, else the id current at that effect.
     fn target_matches(&self, j: usize, gate: &TickerGate) -> bool {
-        gate.id == self.side_target.unwrap_or(self.state_before[j].1)
+        self.target_is(j, gate.id)
+    }
+
+    /// The same check for a requested recording id, whether it came with a gate or
+    /// with a skip (D-S2c-6, Sol round 8).
+    fn target_is(&self, j: usize, requested: RecordingId) -> bool {
+        requested == self.side_target.unwrap_or(self.state_before[j].1)
     }
 
     /// CP1 over the header's `Pre` and `In` lists. Effects are matched across
@@ -929,10 +936,12 @@ impl Record {
     /// A `PostDT:SD` whose spawner returned before the gate (D-S2c-6): it stands in
     /// for the decided `StartSideTasks`' gate, so it consumes the same slot. A second
     /// witness for one `SD` (a gate and a skip, or two skips), or one when the
-    /// decision has none, is an extra witness (`EffectSet`). The reason is recorded by
-    /// the caller and never compared with the core.
-    fn on_ticker_skipped(&mut self) -> Option<DiffKind> {
-        let Some(&mut (_, ref mut consumed)) = self
+    /// decision has none, is an extra witness (`EffectSet`). The recording the spawner
+    /// was asked for must be the decision's target, exactly as for a gate: a skip with
+    /// the wrong id is `PostState`, never a match (Sol round 8). The reason is recorded
+    /// by the caller and never compared with the core.
+    fn on_ticker_skipped(&mut self, target: RecordingId) -> Option<DiffKind> {
+        let Some(&mut (j, ref mut consumed)) = self
             .later_tickers
             .iter_mut()
             .find(|(_, consumed)| !*consumed)
@@ -940,12 +949,15 @@ impl Record {
             return Some(DiffKind::EffectSet);
         };
         *consumed = true;
-        None
+        (!self.target_is(j, target)).then_some(DiffKind::PostState)
     }
 
     /// CP4: the flight closed.
-    fn on_close(&mut self, completed: bool) -> Option<DiffKind> {
+    fn on_close(&mut self, completed: bool, owner_identity_mismatch: bool) -> Option<DiffKind> {
         let mut diffs = Vec::new();
+        if owner_identity_mismatch {
+            diffs.push(DiffKind::Continuation);
+        }
         let expected_reply = self.decision.reply.as_ref().map(ReplyKind::of);
         if completed {
             // Every decided effect, conditional, mirror and ticker attempt was
@@ -1586,8 +1598,8 @@ impl Comparator {
                 ShadowMsg::Cond { pred, taken, .. } => record.on_cond(pred, taken),
                 ShadowMsg::Mirror { mirror, .. } => record.on_mirror(&mirror),
                 ShadowMsg::Ticker { gate, .. } => record.on_ticker(&gate),
-                ShadowMsg::TickerSkipped { reason, .. } => {
-                    let diff = record.on_ticker_skipped();
+                ShadowMsg::TickerSkipped { target, reason, .. } => {
+                    let diff = record.on_ticker_skipped(target);
                     if diff.is_none() {
                         self.stats.row(site, row).ticker_skipped[reason.index()] += 1;
                     }
@@ -1608,7 +1620,11 @@ impl Comparator {
                     if !done {
                         self.stats.abandoned += 1;
                     }
-                    record.on_close(done)
+                    // The deferred owner-token identity is one of the close's own
+                    // levels, so the lowest `diff_kind` is chosen across all of them
+                    // (Sol round 8).
+                    let identity = self.owner_identity_mismatch(&mut record);
+                    record.on_close(done, identity)
                 }
                 _ => None,
             }
@@ -1618,18 +1634,6 @@ impl Comparator {
         }
         self.note_pipeline_registration(&mut record);
         if closing {
-            // A pipeline-owned finish is verified against the cache as it stands at
-            // its close (D-S2c-5 d): an unambiguous token must be the very operation
-            // the finish retired; an invalidated one leaves the finish `unverifiable`.
-            // Independent mismatches of the flight were reported as they came.
-            if let Some(owner) = record.owner_finish {
-                record.owner_op = self.pipeline_ops.get(&owner.0).copied().flatten();
-                if let (Some(token), Some(retired)) = (record.owner_op, record.owner_retired_op) {
-                    if token != retired {
-                        self.flag(&mut record, DiffKind::Continuation);
-                    }
-                }
-            }
             let kind = if record.mismatched {
                 CloseKind::Mismatched
             } else if record.unverifiable() {
@@ -1642,6 +1646,21 @@ impl Comparator {
         } else {
             self.records.insert(rec, record);
         }
+    }
+
+    /// A pipeline-owned finish is verified against the cache as it stands at its close
+    /// (D-S2c-5 d): an unambiguous token must be the very operation the finish
+    /// retired (returns whether it was not); an invalidated one leaves the finish
+    /// `unverifiable`.
+    fn owner_identity_mismatch(&self, record: &mut Record) -> bool {
+        let Some(owner) = record.owner_finish else {
+            return false;
+        };
+        record.owner_op = self.pipeline_ops.get(&owner.0).copied().flatten();
+        matches!(
+            (record.owner_op, record.owner_retired_op),
+            (Some(token), Some(retired)) if token != retired
+        )
     }
 
     /// A mismatch of `record`: the first is a root and reports, a later level of the

@@ -700,7 +700,11 @@ pub(super) fn retarget(msg: ShadowMsg, to: RecorderId) -> ShadowMsg {
         },
         ShadowMsg::Mirror { mirror, .. } => ShadowMsg::Mirror { rec: to, mirror },
         ShadowMsg::Ticker { gate, .. } => ShadowMsg::Ticker { rec: to, gate },
-        ShadowMsg::TickerSkipped { reason, .. } => ShadowMsg::TickerSkipped { rec: to, reason },
+        ShadowMsg::TickerSkipped { target, reason, .. } => ShadowMsg::TickerSkipped {
+            rec: to,
+            target,
+            reason,
+        },
         ShadowMsg::History { op, .. } => ShadowMsg::History { rec: to, op },
         ShadowMsg::Reply { kind, .. } => ShadowMsg::Reply { rec: to, kind },
         ShadowMsg::Close { completed, .. } => ShadowMsg::Close { rec: to, completed },
@@ -751,8 +755,8 @@ pub(super) fn send_later(recorder: &ShadowRecorder, flight: &Flight) {
             ShadowMsg::Cond { pred, taken, .. } => mark(recorder, Mark::Cond { pred, taken }),
             ShadowMsg::Mirror { mirror, .. } => mark(recorder, Mark::Mirror(mirror)),
             ShadowMsg::Ticker { gate, .. } => mark(recorder, Mark::Ticker(gate)),
-            ShadowMsg::TickerSkipped { reason, .. } => {
-                mark(recorder, Mark::TickerSkipped { reason });
+            ShadowMsg::TickerSkipped { target, reason, .. } => {
+                mark(recorder, Mark::TickerSkipped { target, reason });
             }
             ShadowMsg::History { op, .. } => mark(recorder, Mark::History(op)),
             ShadowMsg::Reply { kind, .. } => mark(recorder, Mark::Reply(kind)),

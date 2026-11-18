@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 use murmur_dictation_core::decision::SiteId;
 use murmur_dictation_core::effects::Placement;
+use murmur_dictation_core::ids::RecordingId;
 
 use super::ring::{Rejection, Ring};
 use super::types::{
@@ -488,7 +489,11 @@ pub(crate) enum Mark {
     Ticker(TickerGate),
     /// A `PostDT:SD` whose spawner returned before the gate: no gate exists, and
     /// this is the witness that says why (D-S2c-6). Numeric only.
-    TickerSkipped { reason: TickerSkipReason },
+    TickerSkipped {
+        /// The recording the spawner was asked for (numeric).
+        target: RecordingId,
+        reason: TickerSkipReason,
+    },
     /// An H1 / H2 operation after D.
     History(LiveOp),
     /// The command's reply kind.
@@ -546,8 +551,9 @@ pub(crate) fn mark(rec: &ShadowRecorder, mark: Mark) {
             mirror,
         },
         Mark::Ticker(gate) => ShadowMsg::Ticker { rec: rec_id, gate },
-        Mark::TickerSkipped { reason } => ShadowMsg::TickerSkipped {
+        Mark::TickerSkipped { target, reason } => ShadowMsg::TickerSkipped {
             rec: rec_id,
+            target,
             reason,
         },
         Mark::History(op) => ShadowMsg::History { rec: rec_id, op },
