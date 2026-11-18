@@ -84,23 +84,23 @@ pub struct SupInterruptedInput {
 
 // ------------------------------------------------------------------ builders
 
-fn placed(at: Placement, effect: Effect) -> Placed {
+pub(crate) fn placed(at: Placement, effect: Effect) -> Placed {
     Placed::new(at, effect)
 }
 
-fn terminal(at: Placement, outcome: TerminalOutcome, code: ErrCode) -> Placed {
+pub(crate) fn terminal(at: Placement, outcome: TerminalOutcome, code: ErrCode) -> Placed {
     placed(at, Effect::Terminal(Terminal::new(outcome, code)))
 }
 
-fn superseded(at: Placement) -> Placed {
+pub(crate) fn superseded(at: Placement) -> Placed {
     terminal(at, TerminalOutcome::Superseded, ErrCode::StaleOwner)
 }
 
-fn set_status(to: Status) -> Placed {
+pub(crate) fn set_status(to: Status) -> Placed {
     placed(Placement::In, Effect::SetStatus(to))
 }
 
-fn emit_status(at: Placement, status: Status) -> Placed {
+pub(crate) fn emit_status(at: Placement, status: Status) -> Placed {
     placed(
         at,
         Effect::EmitStatus {
@@ -110,11 +110,11 @@ fn emit_status(at: Placement, status: Status) -> Placed {
     )
 }
 
-fn emit_event(at: Placement, kind: EventKind) -> Placed {
+pub(crate) fn emit_event(at: Placement, kind: EventKind) -> Placed {
     placed(at, Effect::EmitEvent(kind))
 }
 
-fn clear_context(at: Placement, rid: RecordingId) -> Placed {
+pub(crate) fn clear_context(at: Placement, rid: RecordingId) -> Placed {
     placed(at, Effect::ClearContext(rid))
 }
 
@@ -142,10 +142,10 @@ fn take_interrupted_dispose(at: Placement, id: RecordingId) -> Placed {
 
 /// An ordered effect list that can pair a `PRES` with the emit just pushed.
 #[derive(Default)]
-struct Fx(Vec<Placed>);
+pub(crate) struct Fx(pub(crate) Vec<Placed>);
 
 impl Fx {
-    fn push(&mut self, effect: Placed) -> &mut Self {
+    pub(crate) fn push(&mut self, effect: Placed) -> &mut Self {
         self.0.push(effect);
         self
     }
@@ -164,7 +164,7 @@ impl Fx {
     }
 }
 
-fn decision(
+pub(crate) fn decision(
     verdict: Verdict,
     transition: Option<(Status, Status)>,
     effects: Vec<Placed>,
@@ -181,7 +181,7 @@ fn decision(
 }
 
 /// A row with no effect: the caller's straight-line code proceeds.
-fn nothing(verdict: Verdict, row: &'static str) -> Decision {
+pub(crate) fn nothing(verdict: Verdict, row: &'static str) -> Decision {
     decision(verdict, None, Vec::new(), row)
 }
 

@@ -25,3 +25,4 @@ pub mod replies;
 pub mod rows;
 pub mod state;
 pub mod status;
+pub mod stop;
