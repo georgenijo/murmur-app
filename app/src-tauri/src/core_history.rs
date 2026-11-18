@@ -321,20 +321,18 @@ impl CoreHistoryLock {
     /// `ret_if_matches` (lock, released). A site never skips its stale rule
     /// because the status is `Unknown`.
     pub(crate) fn consume<R>(&self, token: Continuation, decide: impl FnOnce(OpStatus) -> R) -> R {
-        self.consume_observed(token, decide).0
-    }
-
-    /// [`consume`](Self::consume), also answering what the retirement did (the
-    /// shadow's H1 witness, appendix C8.2). The same three steps in the same order.
-    pub(crate) fn consume_observed<R>(
-        &self,
-        token: Continuation,
-        decide: impl FnOnce(OpStatus) -> R,
-    ) -> (R, Retired) {
         let status = self.validate(token);
         let outcome = decide(status);
-        let retired = self.ret_if_matches(token);
-        (outcome, retired)
+        #[cfg(not(feature = "dictation-shadow"))]
+        self.ret_if_matches(token);
+        // With the shadow compiled in, the same retirement, whose answer is the shadow's
+        // H1 witness (stashed for the shell that consumed; nothing unless armed).
+        #[cfg(feature = "dictation-shadow")]
+        {
+            let retired = self.ret_if_matches(token);
+            crate::dictation_executor::shadow::stash_retired(token, retired);
+        }
+        outcome
     }
 
     /// `H2 reg` (R203.9, R301.5).
@@ -431,9 +429,6 @@ pub(crate) struct ContinuationGuard {
     history: CoreHistoryLock,
     token: Continuation,
     consumed: bool,
-    /// What the last [`consume`](Self::consume) retired (the shadow's H1 witness).
-    #[cfg(feature = "dictation-shadow")]
-    retirement: Option<Retired>,
 }
 
 impl ContinuationGuard {
@@ -443,8 +438,6 @@ impl ContinuationGuard {
             history: history.clone(),
             token: history.reg(spec),
             consumed: false,
-            #[cfg(feature = "dictation-shadow")]
-            retirement: None,
         }
     }
 
@@ -472,8 +465,6 @@ impl ContinuationGuard {
             history: self.history.clone(),
             token: self.token,
             consumed: self.consumed,
-            #[cfg(feature = "dictation-shadow")]
-            retirement: None,
         };
         self.consumed = true;
         moved
@@ -485,27 +476,9 @@ impl ContinuationGuard {
     /// returned: if `decide` panics, the owner's `Drop` still retires the op
     /// (nothing is evicted, so a skipped retirement would leak it forever).
     pub(crate) fn consume<R>(&mut self, decide: impl FnOnce(OpStatus) -> R) -> R {
-        let (outcome, _retired) = self.history.consume_observed(self.token, decide);
+        let outcome = self.history.consume(self.token, decide);
         self.consumed = true;
-        #[cfg(feature = "dictation-shadow")]
-        {
-            self.retirement = Some(_retired);
-        }
         outcome
-    }
-
-    /// The H1 retirement the last [`consume`](Self::consume) made, as the shadow's
-    /// history operation (appendix C8.2).
-    #[cfg(feature = "dictation-shadow")]
-    pub(crate) fn consumed_op(&self) -> Option<crate::dictation_shadow::types::LiveOp> {
-        self.retirement
-            .map(|outcome| crate::dictation_executor::shadow::retired(self.token, outcome))
-    }
-
-    /// The H1 registration this guard made, as the shadow's history operation.
-    #[cfg(feature = "dictation-shadow")]
-    pub(crate) fn registered_op(&self) -> crate::dictation_shadow::types::LiveOp {
-        crate::dictation_executor::shadow::registered(self.token)
     }
 }
 

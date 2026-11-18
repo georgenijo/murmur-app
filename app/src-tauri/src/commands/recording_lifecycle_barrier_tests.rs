@@ -72,13 +72,7 @@ fn handle(event: AudioLifecycleEvent, advance_at: Option<&'static str>) -> Seen 
                 .store(NEWER, Ordering::SeqCst);
         }
     });
-    handle_audio_lifecycle_and_ready_tasks(
-        handle.clone(),
-        RID,
-        event,
-        |_, _| {},
-        |_, _, _| Default::default(),
-    );
+    handle_audio_lifecycle_and_ready_tasks(handle.clone(), RID, event, |_, _| {}, |_, _, _| {});
     let seen = Seen {
         events: events.lock().unwrap().clone(),
         terminal: state.app_state.dictation_telemetry.terminal_for_test(RID),

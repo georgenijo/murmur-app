@@ -909,6 +909,13 @@ fn the_pipeline_guard_retires_both_history_entries_on_a_cancelled_exit() {
 /// effects ran.
 #[test]
 fn a_panic_in_the_guards_in_effects_leaves_no_history_entry() {
+    // This test panics under D on purpose: the shell's unwound decision is the
+    // outcome it provokes, so it states that loss itself.
+    #[cfg(feature = "dictation-shadow")]
+    crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+        unverifiable: 0,
+        unwound: 1,
+    });
     run_sub_run(&SubRun {
         title: "panic in the guard",
         setup: Setup::idle(),
@@ -1263,6 +1270,13 @@ fn a_stop_that_resumes_on_another_worker_registers_its_drain_there() {
 #[test]
 fn a_panic_after_a_queued_finish_still_drains_it_during_the_unwind() {
     under_watchdog("a panic after a queued finish", || {
+        // This test panics under D on purpose: the shell's unwound decision is the
+        // outcome it provokes, so it states that loss itself.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            unverifiable: 0,
+            unwound: 1,
+        });
         run_sub_run(&SubRun {
             title: "panic after queue",
             setup: Setup::idle(),
@@ -1311,6 +1325,13 @@ fn a_panic_after_a_queued_finish_still_drains_it_during_the_unwind() {
 #[test]
 fn the_204b_section_drains_a_queued_finish_when_its_listener_panics() {
     under_watchdog("204b listener panics after queueing", || {
+        // This test panics under D on purpose: the shell's unwound decision is the
+        // outcome it provokes, so it states that loss itself.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            unverifiable: 0,
+            unwound: 1,
+        });
         run_sub_run(&SubRun {
             title: "204b unwind",
             setup: Setup::idle(),
@@ -1372,6 +1393,13 @@ fn park_stop_of_recording_1_then_start_recording_2(
 #[test]
 fn a_panic_in_one_deferred_finish_does_not_strand_the_next() {
     under_watchdog("a second panic during the drain", || {
+        // This test panics under D on purpose: the shell's unwound decision is the
+        // outcome it provokes, so it states that loss itself.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            unverifiable: 0,
+            unwound: 1,
+        });
         run_sub_run(&SubRun {
             title: "second panic",
             setup: Setup::idle(),
@@ -1648,6 +1676,13 @@ fn drain_two_finishes_under_a_panicking_subscriber(
 #[test]
 fn a_panicking_subscriber_cannot_strand_the_second_finish_in_a_normal_drain() {
     under_watchdog("panicking subscriber, normal drain", || {
+        // This test panics under D on purpose: the shell's unwound decision is the
+        // outcome it provokes, so it states that loss itself.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            unverifiable: 0,
+            unwound: 1,
+        });
         run_sub_run(&SubRun {
             title: "panicking subscriber, normal drain",
             setup: Setup::idle(),
@@ -1669,6 +1704,13 @@ fn a_panicking_subscriber_cannot_strand_the_second_finish_in_a_normal_drain() {
 #[test]
 fn a_panicking_subscriber_cannot_strand_or_abort_an_unwinding_drain() {
     under_watchdog("panicking subscriber, unwinding drain", || {
+        // This test panics under D on purpose: the shell's unwound decision is the
+        // outcome it provokes, so it states that loss itself.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            unverifiable: 0,
+            unwound: 2,
+        });
         run_sub_run(&SubRun {
             title: "panicking subscriber, unwinding drain",
             setup: Setup::idle(),
@@ -1689,6 +1731,13 @@ fn a_panicking_subscriber_cannot_strand_or_abort_an_unwinding_drain() {
 #[test]
 fn the_panicked_finish_report_is_registered_and_content_free() {
     under_watchdog("panic report content", || {
+        // This test panics under D on purpose: the shell's unwound decision is the
+        // outcome it provokes, so it states that loss itself.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            unverifiable: 0,
+            unwound: 1,
+        });
         run_sub_run(&SubRun {
             title: "panic report content",
             setup: Setup::idle(),

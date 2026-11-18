@@ -482,6 +482,13 @@ fn destination_witness() -> Vec<(&'static str, String)> {
 fn a_listener_that_drops_a_pipeline_owner_and_panics_in_the_destination_emit_drains_on_the_unwind()
 {
     under_watchdog("a panic in the smart-destination emit", || {
+        // The listener panics under D on purpose: the unwound decision is the outcome the
+        // test provokes, so it states that loss itself.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            unverifiable: 0,
+            unwound: 1,
+        });
         run_sub_run(&SubRun {
             title: "unwind drains the destination section",
             setup: Setup::idle(),
@@ -1059,6 +1066,13 @@ fn finish_f_and_retirement_r(r_first: bool, extra_owner: bool) -> EndState {
         end_state: None,
     };
     under_watchdog("a suspended start carrying a finish", || {
+        // The owner of this finish was dropped by a listener inside a core span, so the
+        // comparator cannot verify its retirement: the test states that loss itself.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            unverifiable: 1,
+            unwound: 0,
+        });
         run_sub_run(&SubRun {
             title: "carried finish F against retirement R",
             setup: Setup::idle(),

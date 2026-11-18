@@ -471,6 +471,7 @@ impl AppState {
         self.settings_revision.fetch_add(1, Ordering::SeqCst) + 1
     }
 
+    #[cfg(not(feature = "dictation-shadow"))]
     pub fn set_active_context(
         &self,
         recording_id: u64,
@@ -482,23 +483,32 @@ impl AppState {
         });
     }
 
-    /// [`AppState::set_active_context`], also returning the slot's id before the
-    /// write. The slot is read inside the same lock section, so the shadow's
-    /// before/after pair adds no lock (appendix C8.2). Used only for an armed flight:
-    /// the live path otherwise runs the plain setter, unchanged.
+    /// With the shadow compiled in: the same write, plus (only while a flight is open)
+    /// the slot's id before it, read inside the same lock section (appendix C8.2).
     #[cfg(feature = "dictation-shadow")]
-    pub(crate) fn set_active_context_observed(
+    pub fn set_active_context(
         &self,
         recording_id: u64,
         snapshot: Arc<crate::dictation_context::DictationContextSnapshot>,
-    ) -> Option<u64> {
+    ) {
         let mut active = self.active_context.lock_or_recover();
-        let before = active.as_ref().map(|context| context.recording_id);
+        let armed = crate::dictation_executor::shadow::armed();
+        let before = armed
+            .then(|| active.as_ref().map(|context| context.recording_id))
+            .flatten();
         *active = Some(ActiveDictationContext {
             recording_id,
             snapshot,
         });
-        before
+        if armed {
+            use crate::dictation_shadow::types::{MirrorField, MirrorValue, MirrorWitness};
+            use murmur_dictation_core::ids::RecordingId;
+            crate::dictation_executor::shadow::stash_mirror(MirrorWitness {
+                field: MirrorField::ActiveContext,
+                before: MirrorValue::Slot(before.map(RecordingId)),
+                after: MirrorValue::Slot(Some(RecordingId(recording_id))),
+            });
+        }
     }
 
     /// The recording id the installed context belongs to, if one is installed
@@ -523,6 +533,7 @@ impl AppState {
 
     /// Clear only the snapshot owned by `recording_id`. A stale guard must not
     /// erase the context installed by a newer recording generation.
+    #[cfg(not(feature = "dictation-shadow"))]
     pub fn clear_active_context(&self, recording_id: u64) -> bool {
         let mut active = self.active_context.lock_or_recover();
         if active
@@ -538,33 +549,54 @@ impl AppState {
         }
     }
 
-    /// [`AppState::clear_active_context`], also returning the slot's id before the
-    /// clear (the slot is unchanged unless the clear happened). Read inside the same
-    /// lock section, so the shadow's before/after pair adds no lock (appendix C8.2).
+    /// With the shadow compiled in: the same clear, plus (only while a flight is open)
+    /// the slot's id before and after, read inside the same lock section.
     #[cfg(feature = "dictation-shadow")]
-    pub(crate) fn clear_active_context_observed(&self, recording_id: u64) -> (bool, Option<u64>) {
+    pub fn clear_active_context(&self, recording_id: u64) -> bool {
         let mut active = self.active_context.lock_or_recover();
         let before = active.as_ref().map(|context| context.recording_id);
-        if before == Some(recording_id) {
+        let cleared = before == Some(recording_id);
+        if cleared {
             *active = None;
             self.vad_stream.clear(recording_id);
             self.stream_reuse.lock_or_recover().clear(recording_id);
-            (true, before)
-        } else {
-            (false, before)
         }
+        if crate::dictation_executor::shadow::armed() {
+            use crate::dictation_shadow::types::{MirrorField, MirrorValue, MirrorWitness};
+            use murmur_dictation_core::ids::RecordingId;
+            crate::dictation_executor::shadow::stash_mirror(MirrorWitness {
+                field: MirrorField::ActiveContext,
+                before: MirrorValue::Slot(before.map(RecordingId)),
+                after: MirrorValue::Slot(if cleared {
+                    None
+                } else {
+                    before.map(RecordingId)
+                }),
+            });
+        }
+        cleared
     }
 
     /// Mark a recording as cancelled by storing its ID.
+    #[cfg(not(feature = "dictation-shadow"))]
     pub fn cancel_recording(&self, id: u64) {
         self.cancelled_id.fetch_max(id, Ordering::SeqCst);
     }
 
-    /// [`AppState::cancel_recording`], also returning the high-water mark before the
-    /// `fetch_max` (the shadow's before value, taken by the same atomic operation).
+    /// With the shadow compiled in: the same `fetch_max`, whose returned high-water mark
+    /// is the witness's before value (only while a flight is open).
     #[cfg(feature = "dictation-shadow")]
-    pub(crate) fn cancel_recording_observed(&self, id: u64) -> u64 {
-        self.cancelled_id.fetch_max(id, Ordering::SeqCst)
+    pub fn cancel_recording(&self, id: u64) {
+        let before = self.cancelled_id.fetch_max(id, Ordering::SeqCst);
+        if crate::dictation_executor::shadow::armed() {
+            use crate::dictation_shadow::types::{MirrorField, MirrorValue, MirrorWitness};
+            use murmur_dictation_core::ids::RecordingId;
+            crate::dictation_executor::shadow::stash_mirror(MirrorWitness {
+                field: MirrorField::CancelledThrough,
+                before: MirrorValue::Id(RecordingId(before)),
+                after: MirrorValue::Id(RecordingId(before.max(id))),
+            });
+        }
     }
 
     /// Check whether a given recording ID has been cancelled.

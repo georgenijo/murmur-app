@@ -13,9 +13,7 @@
 //! constant. `IN_CORE` stays set across the ports (decision D-S2-2); the log line
 //! that followed the emit stays right after it, before `SD`.
 
-#[cfg(not(feature = "dictation-shadow"))]
-use super::register_partial_ticker_locked;
-use super::State;
+use super::{register_partial_ticker_locked, State};
 use crate::dictation_context::DictationContextSnapshot;
 use crate::dictation_executor::executor::{PortFailure, PortResult, Ports};
 use crate::state::{AppState, DictationState};
@@ -28,10 +26,8 @@ use tauri::Emitter;
 
 /// What `publish_recording_ready_with` is handed to start the side tasks (the
 /// incremental VAD and the partial ticker, whose `register` runs under D).
-pub(super) type SpawnReadyTasks<'a, R> = Box<
-    dyn FnOnce(&tauri::AppHandle<R>, u64, Box<dyn FnOnce() -> bool + '_>) -> super::SideTaskNote
-        + 'a,
->;
+pub(super) type SpawnReadyTasks<'a, R> =
+    Box<dyn FnOnce(&tauri::AppHandle<R>, u64, Box<dyn FnOnce() -> bool + '_>) + 'a>;
 
 pub(super) struct ReadyPorts<'a, R: tauri::Runtime> {
     app_handle: &'a tauri::AppHandle<R>,
@@ -39,9 +35,6 @@ pub(super) struct ReadyPorts<'a, R: tauri::Runtime> {
     recording_id: u64,
     context_ready_at: std::time::Instant,
     spawn_ready_tasks: RefCell<Option<SpawnReadyTasks<'a, R>>>,
-    /// The ticker registration attempt the `SD` made (appendix C8.2).
-    #[cfg(feature = "dictation-shadow")]
-    ticker_note: std::cell::Cell<Option<crate::dictation_executor::shadow::TickerNote>>,
 }
 
 impl<'a, R: tauri::Runtime> ReadyPorts<'a, R> {
@@ -58,18 +51,11 @@ impl<'a, R: tauri::Runtime> ReadyPorts<'a, R> {
             recording_id,
             context_ready_at,
             spawn_ready_tasks: RefCell::new(Some(spawn_ready_tasks)),
-            #[cfg(feature = "dictation-shadow")]
-            ticker_note: std::cell::Cell::new(None),
         }
     }
 }
 
 impl<R: tauri::Runtime> Ports for ReadyPorts<'_, R> {
-    #[cfg(feature = "dictation-shadow")]
-    fn take_ticker_note(&self) -> Option<crate::dictation_executor::shadow::TickerNote> {
-        self.ticker_note.take()
-    }
-
     fn app_state(&self) -> &AppState {
         &self.state.app_state
     }
@@ -147,28 +133,10 @@ impl<R: tauri::Runtime> Ports for ReadyPorts<'_, R> {
             .ok_or(PortFailure)?;
         let app_state = &self.state.app_state;
         let recording_id = self.recording_id;
-        keep_side_task_note!(
-            self.ticker_note,
-            spawn(
-                self.app_handle,
-                recording_id,
-                Box::new(|| {
-                    #[cfg(feature = "dictation-shadow")]
-                    {
-                        let (registered, gate) = super::register_partial_ticker_observed(
-                            app_state,
-                            dictation,
-                            recording_id,
-                        );
-                        self.ticker_note.set(Some(
-                            crate::dictation_executor::shadow::TickerNote::Gate(gate),
-                        ));
-                        registered
-                    }
-                    #[cfg(not(feature = "dictation-shadow"))]
-                    register_partial_ticker_locked(app_state, dictation, recording_id)
-                }),
-            )
+        spawn(
+            self.app_handle,
+            recording_id,
+            Box::new(|| register_partial_ticker_locked(app_state, dictation, recording_id)),
         );
         Ok(())
     }

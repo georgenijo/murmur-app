@@ -313,13 +313,25 @@ pub fn run() {
         .invoke_handler(main_thread_watch::instrument_invoke_handler(tauri::generate_handler![
             commands::recording::init_dictation,
             delivery_recovery::retry_last_delivery,
+            #[cfg(not(feature = "dictation-shadow"))]
             commands::recording::process_audio,
+            #[cfg(feature = "dictation-shadow")]
+            commands::recording::shadow_commands::process_audio_witnessed,
             commands::recording::get_status,
             commands::recording::configure_dictation,
             commands::recording::report_start_cue_finished,
+            #[cfg(not(feature = "dictation-shadow"))]
             commands::recording::start_native_recording,
+            #[cfg(feature = "dictation-shadow")]
+            commands::recording::shadow_commands::start_native_recording_witnessed,
+            #[cfg(not(feature = "dictation-shadow"))]
             commands::recording::stop_native_recording,
+            #[cfg(feature = "dictation-shadow")]
+            commands::recording::shadow_commands::stop_native_recording_witnessed,
+            #[cfg(not(feature = "dictation-shadow"))]
             commands::recording::cancel_native_recording,
+            #[cfg(feature = "dictation-shadow")]
+            commands::recording::shadow_commands::cancel_native_recording_witnessed,
             commands::recording::cancel_audio_initialization,
             commands::recording::preview_vocabulary_aliases,
             commands::recording::transcribe_file,

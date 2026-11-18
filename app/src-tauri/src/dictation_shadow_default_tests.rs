@@ -174,10 +174,11 @@ fn ungated_uses(text: &str) -> Vec<usize> {
         if !(code.contains("dictation_shadow::") || code.contains("mod dictation_shadow;")) {
             continue;
         }
-        let same_line = code
-            .find("dictation_shadow")
-            .is_some_and(|at| attribute_gates(&code[..at]) || code[..at].contains("#[cfg("));
-        let gated = same_line_gates(code) || inside_a_gated_item(&lines, n) || same_line;
+        // An attribute on the line gates it only by what it **evaluates** to in the
+        // default build, and only if it comes before the shadow's name: a negated or
+        // always-true predicate on the same line is not a gate (D-S2c-8 g).
+        let named_at = code.find("dictation_shadow").unwrap_or(0);
+        let gated = same_line_gates(&code[..named_at]) || inside_a_gated_item(&lines, n);
         if !gated {
             found.push(n + 1);
         }
@@ -344,4 +345,28 @@ fn the_lint_reads_cfg_attributes_not_comments() {
         "}",
     ]);
     assert!(ungated_uses(&gated_same_line).is_empty());
+
+    // D-S2c-8 g: a negated gate on the same line, or one that is true without the
+    // feature, is not a gate (the text fallback used to accept both).
+    let negated_same_line = fixture(&[
+        "fn live_path() {",
+        "    #[cfg(not(feature = \"dictation-shadow\"))] dictation_shadow::probe();",
+        "}",
+    ]);
+    assert_eq!(ungated_uses(&negated_same_line), vec![2]);
+
+    let either_same_line = fixture(&[
+        "fn live_path() {",
+        "    #[cfg(any(test, feature = \"dictation-shadow\"))] dictation_shadow::probe();",
+        "}",
+    ]);
+    assert_eq!(ungated_uses(&either_same_line), vec![2]);
+
+    // An attribute that comes after the name does not gate it.
+    let attribute_after = fixture(&[
+        "fn live_path() {",
+        "    dictation_shadow::probe(); #[cfg(feature = \"dictation-shadow\")] other();",
+        "}",
+    ]);
+    assert_eq!(ungated_uses(&attribute_after), vec![2]);
 }

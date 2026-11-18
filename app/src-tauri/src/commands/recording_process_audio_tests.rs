@@ -11,6 +11,7 @@
 //! did before sites 301/302 moved behind `decide_*`; they hold on the base. The
 //! `history_` tests read `core_history` and need the registration of R301.5.
 #![cfg(test)]
+use super::golden_harness::commanded_reply;
 use super::*;
 use std::sync::Mutex as StdMutex;
 use std::task::{Context, Poll, Waker};
@@ -387,7 +388,11 @@ impl Run {
                 }
             })
         });
-        poll_to_end(process_audio_inner(&self.host, &self.state, audio))
+        poll_to_end(commanded_reply(process_audio_inner(
+            &self.host,
+            &self.state,
+            audio,
+        )))
     }
 
     fn status(&self) -> DictationStatus {
@@ -896,7 +901,11 @@ fn a_nested_process_audio_is_refused_before_any_lock() {
         let seen = Arc::clone(&nested);
         let audio = wav_base64(8_000);
         *locked(&run.host.on_generation_started) = Some(Box::new(move |host, state| {
-            let reply = poll_to_end(process_audio_inner(host, state, "irrelevant"));
+            let reply = poll_to_end(commanded_reply(process_audio_inner(
+                host,
+                state,
+                "irrelevant",
+            )));
             locked(&seen).push(format!("{reply:?}"));
         }));
         let outer = run.process(&audio).expect("the outer import completes");
@@ -923,7 +932,9 @@ fn a_resumed_import_polled_inside_a_core_span_parks_instead_of_taking_t_and_d() 
     use std::time::Duration;
     run(|run| {
         let audio = wav_base64(8_000);
-        let mut import = Box::pin(process_audio_inner(&run.host, &run.state, &audio));
+        let mut import = Box::pin(commanded_reply(process_audio_inner(
+            &run.host, &run.state, &audio,
+        )));
         // Park ahead of T: the fake's transition is pending before it asks for the
         // lock, so no waiter is queued on T and its release leaves T free.
         run.host.hold_transition.store(true, Ordering::SeqCst);
@@ -978,10 +989,19 @@ fn dropping_a_suspended_import_in_a_core_span_queues_its_retirement_fifo() {
     use murmur_dictation_core::decision::{ContKind, ContinuationSpec};
     use murmur_dictation_core::ids::RecordingId;
     run(|run| {
+        // The dropped import's owner retires inside a span the comparator never saw
+        // registered: the test states that unverifiable close itself.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            unverifiable: 1,
+            unwound: 0,
+        });
         let app_state = &run.state.app_state;
         run.host.hold_capture.store(true, Ordering::SeqCst);
         let audio = wav_base64(8_000);
-        let mut import = Box::pin(process_audio_inner(&run.host, &run.state, &audio));
+        let mut import = Box::pin(commanded_reply(process_audio_inner(
+            &run.host, &run.state, &audio,
+        )));
         assert!(
             poll_once(&mut import).is_pending(),
             "suspended at the capture"
@@ -1055,7 +1075,7 @@ fn cancel_drops_a_suspended_import(world: &Arc<super::golden_harness::World>) {
         let host = Arc::clone(&host);
         async move {
             let state = world.state();
-            process_audio_inner(&*host, state.inner(), &audio).await
+            commanded_reply(process_audio_inner(&*host, state.inner(), &audio)).await
         }
     });
     let mut import = import;

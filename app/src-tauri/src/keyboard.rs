@@ -1687,6 +1687,17 @@ static LAST_TAP_SILENCE_WARNING_AT_MS: AtomicU64 = AtomicU64::new(0);
 pub fn set_processing(processing: bool) {
     let caller = std::panic::Location::caller();
     let was_processing = IS_PROCESSING.swap(processing, Ordering::SeqCst);
+    // The shadow's witness is the value this one atomic write returned, never a later
+    // read (D-S2c-8 e).
+    #[cfg(feature = "dictation-shadow")]
+    if crate::dictation_executor::shadow::armed() {
+        use crate::dictation_shadow::types::{MirrorField, MirrorValue, MirrorWitness};
+        crate::dictation_executor::shadow::stash_mirror(MirrorWitness {
+            field: MirrorField::KeyboardProcessing,
+            before: MirrorValue::Flag(was_processing),
+            after: MirrorValue::Flag(processing),
+        });
+    }
     tracing::debug!(
         target: "keyboard",
         processing = processing,
@@ -1732,7 +1743,7 @@ pub fn set_processing(processing: bool) {
 }
 
 /// Returns whether the app is currently in the processing state.
-#[cfg(any(test, feature = "dictation-shadow"))]
+#[cfg(test)]
 pub fn is_processing() -> bool {
     IS_PROCESSING.load(Ordering::SeqCst)
 }

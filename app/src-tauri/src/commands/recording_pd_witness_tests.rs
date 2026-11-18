@@ -1409,6 +1409,113 @@ pub(super) mod under_d {
         );
     }
 
+    /// What the lifecycle bridge allocates while D is held in the default build, per
+    /// notification (counted on a feature build with the shadow disarmed). The bridge is
+    /// the one live path the entry scenarios above do not reach, and the shadow's
+    /// capture sits inside it: a disarmed shadow must not allocate there (D-S2c-8 b).
+    const DEFAULT_BUILD_BRIDGE_ALLOCATIONS_UNDER_D: [(&str, u64); 6] = [
+        ("bridge Ready while starting (R207)", 2),
+        ("bridge StillConnecting while starting (R208)", 19),
+        ("bridge Recovering while recording (R209)", 8),
+        ("bridge CleanupFinished while recovering (R210)", 29),
+        ("bridge Idle while recording (R211)", 25),
+        ("bridge Idle while idle (short idle, R215.3/R216)", 5),
+    ];
+
+    fn bridge_measure(world: &Arc<World>, event: AudioLifecycleEvent) {
+        let state = world.state();
+        let (_, allocations) = count_under_d(&state.app_state.dictation, || world.notify(1, event));
+        ALLOCATIONS_UNDER_D.with(|total| total.set(total.get() + allocations));
+    }
+
+    /// One scenario per bridge arm that takes a decision section: Ready (R207),
+    /// StillConnecting (R208), Recovering (R209), CleanupFinished (R210), Idle (R211)
+    /// and the short idle (R215.3/R216), plus the same notifications arriving idle.
+    fn bridge_scenarios() -> Vec<Scenario> {
+        vec![
+            Scenario {
+                title: "bridge Ready while starting (R207)",
+                setup: at(DictationStatus::Starting, 1),
+                body: |w| bridge_measure(w, AudioLifecycleEvent::Ready),
+            },
+            Scenario {
+                title: "bridge StillConnecting while starting (R208)",
+                setup: at(DictationStatus::Starting, 1),
+                body: |w| bridge_measure(w, AudioLifecycleEvent::StillConnecting),
+            },
+            Scenario {
+                title: "bridge Recovering while recording (R209)",
+                setup: at(DictationStatus::Recording, 1),
+                body: |w| {
+                    bridge_measure(
+                        w,
+                        AudioLifecycleEvent::Recovering {
+                            reason: crate::audio_lifecycle::AudioCancelReason::DeviceChanged,
+                        },
+                    )
+                },
+            },
+            Scenario {
+                title: "bridge CleanupFinished while recovering (R210)",
+                setup: at(DictationStatus::Recovering, 1),
+                body: |w| bridge_measure(w, AudioLifecycleEvent::CleanupFinished),
+            },
+            Scenario {
+                title: "bridge Idle while recording (R211)",
+                setup: at(DictationStatus::Recording, 1),
+                body: |w| bridge_measure(w, AudioLifecycleEvent::Idle),
+            },
+            Scenario {
+                title: "bridge Idle while idle (short idle, R215.3/R216)",
+                setup: Setup::idle(),
+                body: |w| bridge_measure(w, AudioLifecycleEvent::Idle),
+            },
+        ]
+    }
+
+    /// D-S2c-8 b: the lifecycle bridge, like every refusal above, is inert while the
+    /// shadow is compiled in and not armed: no shadow read, no per-notification
+    /// allocation under D, and the armed run adds none either.
+    #[test]
+    fn the_lifecycle_bridge_allocates_the_same_armed_disarmed_and_in_the_default_build() {
+        let mut counted = 0;
+        let scenarios = bridge_scenarios();
+        for scenario in scenarios {
+            // The least of several deliveries: a first one pays one-time costs (a callsite
+            // registering with the subscriber, a thread-local's first use), and a
+            // notification that logs a duration formats it into a string whose length
+            // varies by a digit, so a single count can read one allocation high.
+            let settled = |disarmed| {
+                (0..5)
+                    .map(|_| run_measured(&scenario, disarmed))
+                    .min()
+                    .unwrap_or(0)
+            };
+            let baseline = settled(true);
+            let armed = settled(false);
+            assert_eq!(
+                armed, baseline,
+                "{}: armed {armed} allocations under D, disarmed {baseline}",
+                scenario.title
+            );
+            let (_, pinned) = DEFAULT_BUILD_BRIDGE_ALLOCATIONS_UNDER_D
+                .iter()
+                .find(|(title, _)| *title == scenario.title)
+                .unwrap_or_else(|| panic!("{}: no pinned default-build count", scenario.title));
+            assert_eq!(
+                baseline, *pinned,
+                "{}: {baseline} allocations under D with the shadow compiled in and not armed, \
+                 the default build makes {pinned} (D-S2c-8 b)",
+                scenario.title
+            );
+            counted += baseline;
+        }
+        assert!(
+            counted > 0,
+            "the probe counted no allocation under D at all"
+        );
+    }
+
     struct WarnUnderD;
 
     impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnUnderD {

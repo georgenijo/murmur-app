@@ -25,14 +25,18 @@ pub(crate) struct Replay {
     ended: bool,
 }
 
-/// The live side's entry/header counters (D-S2c-7 a), as a difference: decisions the
-/// shell took while armed, headers its flights submitted, completed flights whose reply
-/// never went through the flight. The harness that drives the shell reads them (the
-/// replay may not name the live side) and hands the delta to [`Report::conserved`].
+/// The live side's entry/header counters (D-S2c-8 c), as a difference: the decision
+/// sections the shell entered while armed (counted where it acquires D, or, for a
+/// D-less entry, where it decides), the headers its flights submitted, the sections that
+/// ended with a **named** no-decision outcome, the completed flights whose reply no
+/// command return witnessed, and the flights an unwind ended. The harness that drives
+/// the shell reads them (the replay may not name the live side) and hands the delta to
+/// [`Report::conserved`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Conservation {
-    pub decisions: u64,
+    pub entries: u64,
     pub headers: u64,
+    pub no_decision: u64,
     pub unrendered: u64,
     /// Decisions dropped by an unwind before their header (each recorded as a loss).
     pub unwound: u64,
@@ -41,12 +45,33 @@ pub(crate) struct Conservation {
 impl Conservation {
     pub(crate) fn since(self, before: Self) -> Self {
         Self {
-            decisions: self.decisions - before.decisions,
+            entries: self.entries - before.entries,
             headers: self.headers - before.headers,
+            no_decision: self.no_decision - before.no_decision,
             unrendered: self.unrendered - before.unrendered,
             unwound: self.unwound - before.unwound,
         }
     }
+}
+
+/// What a test that **provokes** a loss expects its sub-run to report (D-S2c-8 d). The
+/// E7 gate requires none: `lost == 0`, `unwound == 0`, `unverifiable == 0`. A test that
+/// drives a scenario in which the comparator cannot verify a finish, or an effect
+/// unwinds, states that here, in the test, and the gate then requires exactly it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Expect {
+    pub unverifiable: u64,
+    pub unwound: u64,
+}
+
+thread_local! {
+    static EXPECT: std::cell::Cell<Expect> = const { std::cell::Cell::new(Expect { unverifiable: 0, unwound: 0 }) };
+}
+
+/// Called by the test that provokes the loss, before it drives the sub-run on this
+/// thread. Consumed (reset) by the next gate.
+pub(crate) fn expect(expectation: Expect) {
+    EXPECT.with(|slot| slot.set(expectation));
 }
 
 /// What a replay's comparison counted.
@@ -264,19 +289,6 @@ impl Drop for Replay {
     }
 }
 
-/// Sub-runs in which exactly this many flights close `unverifiable` **by design**: a
-/// pipeline-owned finish whose owner's registering flight was abandoned (the owner is
-/// dropped by a listener inside a core span, or the import future is dropped while
-/// suspended), so the comparator never saw a validated registration to check the
-/// retirement against (D-S2c-3 f). Any other `unverifiable` fails the gate.
-const EXPECTED_UNVERIFIABLE: &[(&str, u64)] = &[
-    ("carried finish F against retirement R", 1),
-    (
-        "dropping_a_suspended_import_in_a_core_span_queues_its_retirement_fifo",
-        1,
-    ),
-];
-
 /// Sub-runs that by design drive no family entry (they exercise a ledger directly), so
 /// `at least one decision compared` does not apply to them. Each is held to taking
 /// none.
@@ -337,54 +349,61 @@ impl Report {
             "{what}: the shadow reported a divergence: events {:?}, stats {s:?}",
             self.events
         );
-        // Entry/header conservation (D-S2c-7 a): a sub-run that compared nothing, or
-        // took a decision without submitting its header, or closed a flight the
-        // comparator could not verify, proves nothing.
-        let expected_unverifiable = EXPECTED_UNVERIFIABLE
-            .iter()
-            .find(|(name, _)| what.ends_with(name))
-            .map_or(0, |(_, count)| *count);
+        // Entry/header conservation (D-S2c-8 c, d): a sub-run that compared nothing, took
+        // a decision section without a header or a named no-decision outcome, lost a
+        // message or closed a flight the comparator could not verify proves nothing,
+        // unless the test that provoked the loss said so itself.
+        let expected = EXPECT.with(|slot| slot.replace(Expect::default()));
         assert_eq!(
-            s.unverifiable, expected_unverifiable,
-            "{what}: {} flights closed unverifiable ({expected_unverifiable} expected): {s:?}",
-            s.unverifiable
+            s.unverifiable, expected.unverifiable,
+            "{what}: {} flights closed unverifiable ({} expected by the test): {s:?}",
+            s.unverifiable, expected.unverifiable
         );
         let c = self.conservation.unwrap_or_else(|| {
             panic!("{what}: the harness handed the replay no entry/header counters")
         });
         assert_eq!(
-            c.decisions,
-            c.headers + c.unwound,
-            "{what}: the live shell took {} decisions but its flights submitted {} headers \
-             and {} were lost to an unwind (a family entry returned without a capture)",
-            c.decisions,
+            c.entries,
+            c.headers + c.no_decision + c.unwound,
+            "{what}: the live shell entered {} decision sections but its flights submitted {} \
+             headers, {} ended with a named no-decision outcome and {} were lost to an unwind \
+             (a family entry returned without a capture)",
+            c.entries,
             c.headers,
+            c.no_decision,
             c.unwound
         );
+        assert_eq!(
+            c.unwound, expected.unwound,
+            "{what}: {} decisions were lost to an unwind ({} expected by the test)",
+            c.unwound, expected.unwound
+        );
         if NO_SHELL_ENTRY.contains(&what) {
-            // A ledger-only scenario: it must still take no decision (if it ever drives
-            // the shell, it leaves this list and is held to the rule below).
+            // A ledger-only scenario: it must still enter no decision section (if it ever
+            // drives the shell, it leaves this list and is held to the rule below).
             assert_eq!(
-                (c.decisions, s.compared),
+                (c.entries, s.compared),
                 (0, 0),
-                "{what}: listed as driving no family entry, but the shell took decisions"
+                "{what}: listed as driving no family entry, but the shell entered sections"
             );
         } else {
             assert!(
-                s.compared >= 1 && c.decisions >= 1,
-                "{what}: the sub-run compared {} decisions (took {}): it proves nothing",
+                s.compared >= 1 && c.entries >= 1,
+                "{what}: the sub-run compared {} decisions (entered {}): it proves nothing",
                 s.compared,
-                c.decisions
+                c.entries
             );
         }
+        // The loss counter is the live side's own account: nothing is lost unless the
+        // test provoked an unwind.
         assert_eq!(
-            self.lost, c.unwound,
-            "{what}: the live side lost {} messages, {} of them to unwinds",
-            self.lost, c.unwound
+            self.lost, expected.unwound,
+            "{what}: the live side lost {} messages ({} expected by the test)",
+            self.lost, expected.unwound
         );
         assert_eq!(
             c.unrendered, 0,
-            "{what}: {} completed flights never rendered their reply through the flight",
+            "{what}: {} completed flights never rendered their reply at a command return",
             c.unrendered
         );
     }

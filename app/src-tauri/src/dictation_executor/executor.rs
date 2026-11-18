@@ -104,14 +104,7 @@ pub(crate) fn refused(kind: InvalidKind) -> Decision {
 /// returns `Invalid(Reentrant)` without calling `decide`.
 pub(crate) fn decide_guarded(decide: impl FnOnce() -> Decision) -> Decision {
     match CoreEntry::enter() {
-        Ok(_entry) => {
-            let decision = decide();
-            // Entry/header conservation (D-S2c-7 a): E7 counts the decisions the live
-            // shell took against the headers its flights submitted.
-            #[cfg(feature = "dictation-shadow")]
-            super::shadow::note_decision(&decision);
-            decision
-        }
+        Ok(_entry) => decide(),
         Err(kind) => refused(kind),
     }
 }
@@ -231,14 +224,6 @@ pub(crate) trait Ports {
     fn detached_under_d(&self, effect: &Effect, _dictation: &DictationState) -> PortResult {
         self.detached(effect)
     }
-    /// The ticker registration attempt the last `SD` made (query 404's inputs and
-    /// result), if it made one: the shadow witnesses it (appendix C8.2). A port that
-    /// runs `SD` stores it where the gate ran and the executor takes it right after
-    /// the effect. Default: none.
-    #[cfg(feature = "dictation-shadow")]
-    fn take_ticker_note(&self) -> Option<super::shadow::TickerNote> {
-        None
-    }
 }
 
 // -------------------------------------------------------------------- report
@@ -339,17 +324,6 @@ pub(crate) struct Executor<'a> {
     emit_ok: Vec<Option<bool>>,
     bound_recording_id: Option<u64>,
     id_mismatches: u32,
-    /// The shadow capture of this decision (appendix C8.2).
-    #[cfg(feature = "dictation-shadow")]
-    shadow: super::shadow::Flight,
-    /// The live-field write and the ticker attempt of the effect being recorded.
-    #[cfg(feature = "dictation-shadow")]
-    noted_mirror: Option<crate::dictation_shadow::types::MirrorWitness>,
-    #[cfg(feature = "dictation-shadow")]
-    noted_ticker: Option<super::shadow::TickerNote>,
-    /// The one `speculative_flowing` read the conditional being recorded judged by.
-    #[cfg(feature = "dictation-shadow")]
-    noted_flowing: Option<bool>,
 }
 
 /// An executor parked across an `.await`: everything but the (non-`Send`) ports
@@ -366,8 +340,6 @@ pub(crate) struct Suspended {
     emit_ok: Vec<Option<bool>>,
     bound_recording_id: Option<u64>,
     id_mismatches: u32,
-    #[cfg(feature = "dictation-shadow")]
-    shadow: super::shadow::Flight,
 }
 
 impl Suspended {
@@ -384,14 +356,6 @@ impl Suspended {
             emit_ok: self.emit_ok,
             bound_recording_id: self.bound_recording_id,
             id_mismatches: self.id_mismatches,
-            #[cfg(feature = "dictation-shadow")]
-            shadow: self.shadow,
-            #[cfg(feature = "dictation-shadow")]
-            noted_mirror: None,
-            #[cfg(feature = "dictation-shadow")]
-            noted_ticker: None,
-            #[cfg(feature = "dictation-shadow")]
-            noted_flowing: None,
         }
     }
 }
@@ -428,14 +392,6 @@ impl<'a> Executor<'a> {
             emit_ok,
             bound_recording_id: None,
             id_mismatches: 0,
-            #[cfg(feature = "dictation-shadow")]
-            shadow: super::shadow::Flight::none(),
-            #[cfg(feature = "dictation-shadow")]
-            noted_mirror: None,
-            #[cfg(feature = "dictation-shadow")]
-            noted_ticker: None,
-            #[cfg(feature = "dictation-shadow")]
-            noted_flowing: None,
         })
     }
 
@@ -477,9 +433,7 @@ impl<'a> Executor<'a> {
             self.cursor += 1;
         }
         #[cfg(feature = "dictation-shadow")]
-        if self.is_finished() {
-            self.shadow.finish();
-        }
+        self.note_leg_end();
         PhaseReport::Done
     }
 
@@ -502,23 +456,7 @@ impl<'a> Executor<'a> {
         });
         self.cursor = index + 1;
         #[cfg(feature = "dictation-shadow")]
-        {
-            // The awaited effect ran (its outcome is the continuation's input, not the
-            // effect's result): witness it now, where the shell drove it.
-            let placed = &self.decision.effects[index];
-            self.shadow.effect(super::shadow::Noted {
-                index,
-                placement: placed.at,
-                effect: &placed.effect,
-                taken: true,
-                result: crate::dictation_shadow::types::EffectResult::Ran,
-                mirror: None,
-                ticker: None,
-            });
-            if self.is_finished() {
-                self.shadow.finish();
-            }
-        }
+        self.note_resumed(index);
         PhaseReport::Done
     }
 
@@ -535,8 +473,6 @@ impl<'a> Executor<'a> {
             emit_ok: self.emit_ok,
             bound_recording_id: self.bound_recording_id,
             id_mismatches: self.id_mismatches,
-            #[cfg(feature = "dictation-shadow")]
-            shadow: self.shadow,
         }
     }
 
@@ -571,152 +507,6 @@ impl<'a> Executor<'a> {
         self.note_shadow(index, effect, outcome);
     }
 
-    /// Hand one recorded effect to the shadow flight (appendix C8.2). An awaited
-    /// effect is witnessed when the shell resumes it, with the rest of its phase.
-    #[cfg(feature = "dictation-shadow")]
-    fn note_shadow(&mut self, index: usize, effect: &Effect, outcome: WitnessOutcome) {
-        use crate::dictation_shadow::types::EffectResult;
-        let mirror = self.noted_mirror.take();
-        let ticker = self.noted_ticker.take();
-        let flowing = self.noted_flowing.take();
-        if !self.shadow.is_active() {
-            return;
-        }
-        let (taken, ok) = match outcome {
-            WitnessOutcome::Ran => (true, true),
-            WitnessOutcome::Failed => (true, false),
-            WitnessOutcome::Skipped => (false, false),
-            WitnessOutcome::Awaiting | WitnessOutcome::Resumed(_) => return,
-        };
-        // What a result means depends on the effect: an emit's `Ok`, whether a
-        // terminal claim won (D-S2-9). Any other port failure is not a result.
-        let result = match effect {
-            Effect::EmitStatus { .. } | Effect::EmitEvent(_) | Effect::SmartDestinationEmit => {
-                EffectResult::Emitted { ok }
-            }
-            Effect::Terminal(_) => EffectResult::Claimed { won: ok },
-            _ => EffectResult::Ran,
-        };
-        let placement = self.decision.effects[index].at;
-        // A condition on `speculative_flowing` is judged against the value the shell
-        // read at that point: send it before the witness (and so before the `Cond` mark),
-        // whether the effect ran or was skipped (D-S2c-7, amendment 2).
-        if matches!(
-            effect,
-            Effect::EmitStatus {
-                cond: Cond::UnlessSpeculativeFlowing,
-                ..
-            } | Effect::Presentation {
-                cond: Cond::UnlessSpeculativeFlowing,
-                ..
-            }
-        ) {
-            // The read the conditional itself made (one `Observed` per conditional, each
-            // holding that conditional's own value); a read here only if it made none.
-            let read = flowing.unwrap_or_else(|| self.ports.speculative_flowing());
-            self.shadow.observed_read(
-                crate::dictation_shadow::types::ObservedFact::SpeculativeFlowing(read),
-            );
-        }
-        self.shadow.effect(super::shadow::Noted {
-            index,
-            placement,
-            effect,
-            taken,
-            result,
-            mirror,
-            ticker,
-        });
-        // `SPEC` hands the capture over and records whether it was already flowing: the
-        // value it read goes out as an observation, before the `EmitStatus` whose
-        // condition depends on it (D-S2c-7 f).
-        if matches!(effect, Effect::SpeculativeConsume) {
-            self.shadow.observed_read(
-                crate::dictation_shadow::types::ObservedFact::SpeculativeFlowing(
-                    self.ports.speculative_flowing(),
-                ),
-            );
-        }
-    }
-
-    /// Attach the shadow flight to this decision, which was taken under D (D-less
-    /// entries: at decision time) from `input` against `pre` (appendix C8.2). The
-    /// header is assembled from values the live path holds; **no core work happens
-    /// here**.
-    #[cfg(feature = "dictation-shadow")]
-    pub(crate) fn attach_shadow(
-        &mut self,
-        mut flight: super::shadow::Flight,
-        input: murmur_dictation_core::inputs::Input,
-        pre: crate::dictation_shadow::types::Projection,
-        now: murmur_dictation_core::ids::Now,
-    ) {
-        flight.decided(
-            input,
-            pre,
-            now,
-            self.decision.row,
-            self.decision.reply.as_ref(),
-            self.decision.effects.len(),
-        );
-        self.shadow = flight;
-    }
-
-    /// Adopt a flight whose header the shell already sealed (a refusal's header is
-    /// sealed from the decision under D, before any executor exists).
-    #[cfg(feature = "dictation-shadow")]
-    pub(crate) fn adopt_shadow(&mut self, flight: super::shadow::Flight) {
-        self.shadow = flight;
-    }
-
-    /// Attach the flight to an executor that runs only a leading part of the decision
-    /// (its `Pre` effects, or a prefix that runs ahead of the decision): the
-    /// witnesses buffer inline until the header exists.
-    #[cfg(feature = "dictation-shadow")]
-    pub(crate) fn attach_shadow_leading(&mut self, mut flight: super::shadow::Flight) {
-        flight.enter_pre();
-        self.shadow = flight;
-    }
-
-    /// Take the flight back (for the executor of the rest of the decision). The
-    /// effects this executor consumed keep their indices.
-    #[cfg(feature = "dictation-shadow")]
-    pub(crate) fn take_shadow(&mut self) -> super::shadow::Flight {
-        let mut flight = std::mem::replace(&mut self.shadow, super::shadow::Flight::none());
-        flight.advance(self.decision.effects.len());
-        flight
-    }
-
-    /// The flight, for an H1 / H2 operation or an observed fact the shell records.
-    #[cfg(feature = "dictation-shadow")]
-    pub(crate) fn shadow_flight(&mut self) -> &mut super::shadow::Flight {
-        &mut self.shadow
-    }
-
-    /// Take the header's `seq` (still under D) and read the persisted M1/M2 as the
-    /// `In` effects committed them. `dictation` is the held guard (`None` for a D-less
-    /// entry). The shell releases D and then submits ([`super::shadow::Sealed::submit`]).
-    #[cfg(feature = "dictation-shadow")]
-    pub(crate) fn seal_shadow(
-        &self,
-        dictation: Option<&DictationState>,
-    ) -> super::shadow::Sealed<'_> {
-        use crate::dictation_admission::core_status;
-        use crate::dictation_shadow::types::Projection;
-        use murmur_dictation_core::state::LiveObs;
-        let post = dictation.map(|dictation| Projection {
-            status: core_status(dictation.status),
-            current_id: RecordingId(
-                self.ports
-                    .app_state()
-                    .recording_id
-                    .load(std::sync::atomic::Ordering::SeqCst),
-            ),
-            obs: LiveObs::default(),
-        });
-        self.shadow.seal(post)
-    }
-
     fn record_port(&mut self, index: usize, effect: &Effect, result: PortResult) {
         let outcome = if result.is_ok() {
             WitnessOutcome::Ran
@@ -736,6 +526,9 @@ impl<'a> Executor<'a> {
     ) -> Result<(), InvalidKind> {
         let ports = self.ports;
         let impossible = InvalidKind::Impossible(self.decision.row);
+        // A live write stashes what it committed for this effect only.
+        #[cfg(feature = "dictation-shadow")]
+        super::shadow::clear_stashes();
         match effect {
             // ---- field effects: committed through the adapter (C1.4.2)
             Effect::SetStatus(to) => {
@@ -759,48 +552,15 @@ impl<'a> Executor<'a> {
                 self.record(index, effect, WitnessOutcome::Ran);
             }
             Effect::MarkCancelled(id) => {
-                // With the feature compiled and the shadow not armed for this flight,
-                // the live path is the default build's, exactly (D-S2c-7 c).
-                #[cfg(feature = "dictation-shadow")]
-                if self.shadow.is_active() {
-                    self.noted_mirror = Some(FieldAdapter::cancel_through_witnessed(
-                        ports.app_state(),
-                        id.0,
-                    ));
-                } else {
-                    FieldAdapter::cancel_through(ports.app_state(), id.0);
-                }
-                #[cfg(not(feature = "dictation-shadow"))]
                 FieldAdapter::cancel_through(ports.app_state(), id.0);
                 self.record(index, effect, WitnessOutcome::Ran);
             }
             Effect::ClearContext(id) => {
-                #[cfg(feature = "dictation-shadow")]
-                if self.shadow.is_active() {
-                    self.noted_mirror = Some(FieldAdapter::clear_context_witnessed(
-                        ports.app_state(),
-                        id.0,
-                    ));
-                } else {
-                    FieldAdapter::clear_context(ports.app_state(), id.0);
-                }
-                #[cfg(not(feature = "dictation-shadow"))]
                 FieldAdapter::clear_context(ports.app_state(), id.0);
                 self.record(index, effect, WitnessOutcome::Ran);
             }
             Effect::SetContext(id) => match ports.context_snapshot(*id) {
                 Some(snapshot) => {
-                    #[cfg(feature = "dictation-shadow")]
-                    if self.shadow.is_active() {
-                        self.noted_mirror = Some(FieldAdapter::set_context_witnessed(
-                            ports.app_state(),
-                            id.0,
-                            snapshot,
-                        ));
-                    } else {
-                        FieldAdapter::set_context(ports.app_state(), id.0, snapshot);
-                    }
-                    #[cfg(not(feature = "dictation-shadow"))]
                     FieldAdapter::set_context(ports.app_state(), id.0, snapshot);
                     self.record(index, effect, WitnessOutcome::Ran);
                 }
@@ -808,15 +568,7 @@ impl<'a> Executor<'a> {
             },
             // ---- emits and the traces paired with them
             Effect::EmitStatus { cond, .. } => {
-                let flowing = *cond == Cond::UnlessSpeculativeFlowing && {
-                    let read = ports.speculative_flowing();
-                    #[cfg(feature = "dictation-shadow")]
-                    {
-                        self.noted_flowing = Some(read);
-                    }
-                    read
-                };
-                if flowing {
+                if *cond == Cond::UnlessSpeculativeFlowing && ports.speculative_flowing() {
                     self.record(index, effect, WitnessOutcome::Skipped);
                 } else {
                     let result = match ctx.dictation.as_deref() {
@@ -841,14 +593,7 @@ impl<'a> Executor<'a> {
                         .flatten()
                         .unwrap_or(false),
                     Cond::Always => true,
-                    Cond::UnlessSpeculativeFlowing => {
-                        let read = ports.speculative_flowing();
-                        #[cfg(feature = "dictation-shadow")]
-                        {
-                            self.noted_flowing = Some(read);
-                        }
-                        !read
-                    }
+                    Cond::UnlessSpeculativeFlowing => !ports.speculative_flowing(),
                 };
                 if paired_ok {
                     let result = ports.trace(effect);
@@ -876,23 +621,8 @@ impl<'a> Executor<'a> {
                 let result = ports.perf(effect);
                 self.record_port(index, effect, result);
             }
-            Effect::KeyboardProcessing(flag) => {
-                // The flag the port actually committed, read from the live flag itself
-                // (not derived from the request or the port's result), before and after;
-                // only for an armed flight (D-S2c-7 c, f).
-                #[cfg(feature = "dictation-shadow")]
-                let before = self.shadow.is_active().then(crate::keyboard::is_processing);
+            Effect::KeyboardProcessing(_) => {
                 let result = ports.keyboard(effect);
-                #[cfg(feature = "dictation-shadow")]
-                if let Some(before) = before {
-                    use crate::dictation_shadow::types::{MirrorField, MirrorValue, MirrorWitness};
-                    self.noted_mirror = Some(MirrorWitness {
-                        field: MirrorField::KeyboardProcessing,
-                        before: MirrorValue::Flag(before),
-                        after: MirrorValue::Flag(crate::keyboard::is_processing()),
-                    });
-                }
-                let _ = flag;
                 self.record_port(index, effect, result);
             }
             Effect::TouchLastTranscription
@@ -920,18 +650,108 @@ impl<'a> Executor<'a> {
                     Some(dictation) => ports.detached_under_d(effect, dictation),
                     None => ports.detached(effect),
                 };
-                #[cfg(feature = "dictation-shadow")]
-                if *effect == Effect::StartSideTasks {
-                    // The gate the spawner asked, or the skip it returned (D-S2c-6, 7 d):
-                    // exactly one, taken from this port's own slot.
-                    self.noted_ticker = ports.take_ticker_note();
-                }
                 self.record_port(index, effect, result);
             }
             // Awaited: `run` returns `Awaiting` before reaching `execute`.
             Effect::PipelineSpawn(_) => return Err(impossible),
         }
         Ok(())
+    }
+}
+
+// ------------------------------------------------------------- the shadow's notes
+
+/// What the executor tells the section's flight (appendix C8.2). Every note starts with
+/// the active-flight check; with the shadow disarmed nothing below reads or allocates.
+#[cfg(feature = "dictation-shadow")]
+impl Executor<'_> {
+    /// The executor finished the effects it was given: a leading one hands the
+    /// indices on, the last one ends the decision.
+    fn note_leg_end(&self) {
+        if !super::shadow::armed() || !self.is_finished() {
+            return;
+        }
+        let consumed = self.decision.effects.len();
+        super::shadow::with_current(|flight| flight.finish_leg(consumed));
+    }
+
+    /// The awaited effect ran (its outcome is the continuation's input, not the
+    /// effect's result): witness it now, where the shell drove it.
+    fn note_resumed(&self, index: usize) {
+        if !super::shadow::armed() {
+            return;
+        }
+        let placed = &self.decision.effects[index];
+        super::shadow::with_current(|flight| {
+            flight.effect(super::shadow::Noted {
+                index,
+                placement: placed.at,
+                effect: &placed.effect,
+                taken: true,
+                result: crate::dictation_shadow::types::EffectResult::Ran,
+                mirror: None,
+                ticker: None,
+            });
+        });
+        self.note_leg_end();
+    }
+
+    /// Hand one recorded effect to the flight. An awaited effect is witnessed when the
+    /// shell resumes it, with the rest of its phase.
+    fn note_shadow(&self, index: usize, effect: &Effect, outcome: WitnessOutcome) {
+        use crate::dictation_shadow::types::{EffectResult, ObservedFact};
+        if !super::shadow::armed() {
+            return;
+        }
+        let (taken, ok) = match outcome {
+            WitnessOutcome::Ran => (true, true),
+            WitnessOutcome::Failed => (true, false),
+            WitnessOutcome::Skipped => (false, false),
+            WitnessOutcome::Awaiting | WitnessOutcome::Resumed(_) => return,
+        };
+        // What a result means depends on the effect: an emit's `Ok`, whether a
+        // terminal claim won (D-S2-9). Any other port failure is not a result.
+        let result = match effect {
+            Effect::EmitStatus { .. } | Effect::EmitEvent(_) | Effect::SmartDestinationEmit => {
+                EffectResult::Emitted { ok }
+            }
+            Effect::Terminal(_) => EffectResult::Claimed { won: ok },
+            _ => EffectResult::Ran,
+        };
+        let placement = self.decision.effects[index].at;
+        let mirror = super::shadow::take_mirror();
+        let ticker = if *effect == Effect::StartSideTasks {
+            super::shadow::take_ticker()
+        } else {
+            None
+        };
+        super::shadow::with_current(|flight| {
+            // A conditional on `speculative_flowing` skips exactly when the shell read
+            // it as flowing: the read the live predicate made, as its outcome. It is
+            // sent as an observation before the conditional's own mark, one per
+            // conditional (D-S2c-8).
+            if matches!(
+                effect,
+                Effect::EmitStatus {
+                    cond: Cond::UnlessSpeculativeFlowing,
+                    ..
+                } | Effect::Presentation {
+                    cond: Cond::UnlessSpeculativeFlowing,
+                    ..
+                }
+            ) {
+                flight.observed_read(ObservedFact::SpeculativeFlowing(!taken));
+            }
+            flight.effect(super::shadow::Noted {
+                index,
+                placement,
+                effect,
+                taken,
+                result,
+                mirror,
+                ticker,
+            });
+        });
     }
 }
 

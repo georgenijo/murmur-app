@@ -548,7 +548,7 @@ impl World {
             recording_id,
             event,
             |_, _| {},
-            |_, _, _| Default::default(),
+            |_, _, _| {},
         );
     }
 
@@ -632,7 +632,15 @@ impl World {
         Box::pin(async move {
             let host = Host(Arc::clone(&world));
             let state = world.state();
-            start_native_recording_inner(&host, state.inner(), None, None, None, None).await
+            commanded_reply(start_native_recording_inner(
+                &host,
+                state.inner(),
+                None,
+                None,
+                None,
+                None,
+            ))
+            .await
         })
     }
 
@@ -646,7 +654,7 @@ impl World {
         Box::pin(async move {
             let host = Host(Arc::clone(&world));
             let state = world.state();
-            start_native_recording_inner(
+            commanded_reply(start_native_recording_inner(
                 &host,
                 state.inner(),
                 device_name,
@@ -658,7 +666,7 @@ impl World {
                 }),
                 None,
                 None,
-            )
+            ))
             .await
         })
     }
@@ -681,12 +689,12 @@ impl World {
         Box::pin(async move {
             let host = Host(Arc::clone(&world));
             let state = world.state();
-            stop_native_recording_inner(
+            commanded_reply(stop_native_recording_inner(
                 &host,
                 state.inner(),
                 expected,
                 audio_lifecycle::DictationStopTrigger::Other,
-            )
+            ))
             .await
         })
     }
@@ -696,7 +704,12 @@ impl World {
         Box::pin(async move {
             let host = Host(Arc::clone(&world));
             let state = world.state();
-            cancel_native_recording_inner(&host, state.inner(), expected).await
+            commanded_reply(cancel_native_recording_inner(
+                &host,
+                state.inner(),
+                expected,
+            ))
+            .await
         })
     }
 
@@ -789,11 +802,10 @@ impl World {
                     let state = app.state::<State>();
                     let Some(context) = state.app_state.active_context(recording_id) else {
                         #[cfg(feature = "dictation-shadow")]
-                        return Some(super::ticker_skip(
+                        crate::dictation_executor::shadow::stash_ticker_skip(
                             recording_id,
                             TickerSkipReason::NoContext,
-                        ));
-                        #[cfg(not(feature = "dictation-shadow"))]
+                        );
                         return;
                     };
                     let model = &context.transcription.model_name;
@@ -801,17 +813,14 @@ impl World {
                         && !transcriber::is_coreml_model(model)
                     {
                         #[cfg(feature = "dictation-shadow")]
-                        return Some(super::ticker_skip(
+                        crate::dictation_executor::shadow::stash_ticker_skip(
                             recording_id,
                             TickerSkipReason::NoLivePreview,
-                        ));
-                        #[cfg(not(feature = "dictation-shadow"))]
+                        );
                         return;
                     }
                     let registered = register();
                     self.push(format!("SD ticker {recording_id} registered={registered}"));
-                    #[cfg(feature = "dictation-shadow")]
-                    return None;
                 },
             );
         };
@@ -1537,11 +1546,10 @@ impl DictationHost for Host {
                 let state = app.state::<State>();
                 let Some(context) = state.app_state.active_context(recording_id) else {
                     #[cfg(feature = "dictation-shadow")]
-                    return Some(super::ticker_skip(
+                    crate::dictation_executor::shadow::stash_ticker_skip(
                         recording_id,
                         TickerSkipReason::NoContext,
-                    ));
-                    #[cfg(not(feature = "dictation-shadow"))]
+                    );
                     return;
                 };
                 let model = &context.transcription.model_name;
@@ -1549,17 +1557,14 @@ impl DictationHost for Host {
                     && !transcriber::is_coreml_model(model)
                 {
                     #[cfg(feature = "dictation-shadow")]
-                    return Some(super::ticker_skip(
+                    crate::dictation_executor::shadow::stash_ticker_skip(
                         recording_id,
                         TickerSkipReason::NoLivePreview,
-                    ));
-                    #[cfg(not(feature = "dictation-shadow"))]
+                    );
                     return;
                 }
                 let registered = register();
                 world.push(format!("SD ticker {recording_id} registered={registered}"));
-                #[cfg(feature = "dictation-shadow")]
-                return None;
             },
         );
         world.push(format!(
@@ -1705,6 +1710,33 @@ impl Setup {
         }
     }
 }
+
+/// A command's entry as its IPC wrapper runs it: the reply the command returns is the
+/// reply the shadow witnesses (CP4, D-S2c-8 f). Without the shadow it is the command.
+pub(super) async fn commanded_reply<T, E, F>(command: F) -> Result<T, E>
+where
+    F: Future<Output = Result<T, E>>,
+    T: ReplyValue,
+{
+    #[cfg(feature = "dictation-shadow")]
+    {
+        crate::dictation_executor::shadow::commanded(command).await
+    }
+    #[cfg(not(feature = "dictation-shadow"))]
+    {
+        command.await
+    }
+}
+
+/// What the shadow can read a returned reply as (the replies of the four commands).
+#[cfg(feature = "dictation-shadow")]
+pub(super) use crate::dictation_executor::shadow::RenderedValue as ReplyValue;
+#[cfg(not(feature = "dictation-shadow"))]
+pub(super) trait ReplyValue {}
+#[cfg(not(feature = "dictation-shadow"))]
+impl ReplyValue for () {}
+#[cfg(not(feature = "dictation-shadow"))]
+impl ReplyValue for serde_json::Value {}
 
 /// Test builds with the shadow compiled in: run sub-runs with the shadow **not** armed
 /// (the feature on, `MURMUR_SHADOW` unset), the baseline a measurement compares with.
