@@ -512,7 +512,11 @@ harness through `handle` is tracked in #1160.
     its own delivery cursor and its own delivery steps. A stop sent while a window still
     shows `Recording` after the shell entered `Recovering` is a valid schedule, even while
     the other window has already received `Recovering` (a stop already in flight stays a
-    flight). A delivery changes no shell state, so it takes no model time. Every generated
+    flight). A delivery changes no shell state, so it takes no model time and carries no
+    actor weight. At a boundary where a command is due and a delivery is ready, the two
+    compete: the run's RNG picks which goes first (one draw, only when both are ready), so
+    production's both orders are explored (#1159: a stop can reach a window that has just
+    received `Recording`, or run before it does). Every generated
     user stop is unscoped (`recording_id = None`), as production sends it; a stale id
     reaches the stop family only through the `Interrupted` auto-stop and the explicit
     decision tests (D-S2b-17 (c)). The registered `stop_native_recording` IPC has no window
@@ -535,10 +539,11 @@ harness through `handle` is tracked in #1160.
   state, uses the production strings, and the test asserts the exact replies, statuses
   and ledger outcomes.
 * **Seeds**: 10,000 in CI (about a second and a half, budget 20 s), fixed whatever the
-  environment says: `0..9,993` and seven fixed seeds (`FIXED_SEEDS`: 10,724, 11,125, 18,279,
-  22,704, 23,985, 244,103, 377,529) that take the PD-18 (unsealed stop), PD-19 (`TerminationUnconfirmed`, dropped start,
-  refused auto-stop), PD-24 (environmental recovery), PD-22 (against the cancel's own
-  `TERM`) and PD-21 (short stop) entries no seed of the plain range takes, so the converse
+  environment says: `0..9,992` and eight fixed seeds (`FIXED_SEEDS`: 10,724, 19,737,
+  39,219, 52,153, 101,117, 259,286, 262,762, 273,164) that take the PD-18 (unsealed stop),
+  PD-19 (`TerminationUnconfirmed`, dropped start, refused auto-stop), PD-24 (the user's
+  cancel), PD-22 (both rows) and PD-21 (short stop) entries no seed of the plain range
+  takes, so the converse
   check (every PD and every signature row is witnessed) has no pinned exception. The deeper
   sweep is a separate ignored test, `cargo test -p murmur-dictation-core --lib --release --
   --ignored the_deep_sweep --nocapture` (300,000 seeds; `DEEP_SWEEP_SEEDS=3000000` sets

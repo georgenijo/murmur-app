@@ -60,6 +60,42 @@ pub fn run_seed_strict(seed: u64) -> RunReport {
     run(seed, false, true).0
 }
 
+/// Some window has a queued status event it has not received.
+fn window_ready(w: &World) -> bool {
+    w.windows.iter().any(|window| !window.inbox.is_empty())
+}
+
+/// One ready window receives its next status event. A delivery is a step of the schedule
+/// that changes no shell state: no model time, no actor weight.
+fn deliver_next(
+    w: &mut World,
+    rng: &mut Rng,
+    checker: &mut Checker,
+    clock: u32,
+    before_command: bool,
+) {
+    let ready: Vec<usize> = (0..w.windows.len())
+        .filter(|window| !w.windows[*window].inbox.is_empty())
+        .collect();
+    let window = ready[rng.index(ready.len())];
+    let status = w.deliver_status(window);
+    if let Some(trace) = checker.trace.as_mut() {
+        trace.push(format!(
+            "{clock:>4} {} window receives {status:?}{}",
+            if window == MAIN_WINDOW {
+                "main"
+            } else {
+                "overlay"
+            },
+            if before_command {
+                " (before the due command)"
+            } else {
+                ""
+            }
+        ));
+    }
+}
+
 fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
     let mut rng = Rng::new(seed);
     let mut scenario_rng = rng.fork();
@@ -101,6 +137,17 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
         }
         // Issue the commands that are due.
         while pending.front().is_some_and(|(at, _)| *at <= clock) {
+            // A due command and a ready delivery compete at this boundary (#1159, D-S2b-19
+            // (c)): production can deliver a status to a window and only then send that
+            // window's stop, or send the stop first. The RNG chooses (one draw, only when both
+            // are ready, so a run with no ready delivery draws nothing new). The delivery
+            // takes no model time and carries no actor weight; the command stays due and
+            // competes again, so the loop ends: each delivery consumes a queued event and
+            // only actors add events.
+            if window_ready(&w) && rng.chance(1, 2) {
+                deliver_next(&mut w, &mut rng, &mut checker, clock, true);
+                continue;
+            }
             let (_, cmd) = pending.pop_front().expect("checked above");
             // Stops follow their caller (D-S2b-15 (c), D-S2b-17 (b), D-S2b-18). A window
             // caller (the main window with the hold and toggle hotkeys and the silence
@@ -136,12 +183,25 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
                                     )
                                 } else {
                                     format!(
-                                        "{clock:>4} frontend stop not sent ({} window shows {observed:?})",
-                                        window_name(index)
+                                        "{clock:>4} frontend stop not sent ({} window shows {observed:?}){}",
+                                        window_name(index),
+                                        // The stop ran ahead of a delivery that would have
+                                        // shown `Recording` (#1159: the competition's other side).
+                                        if w.windows[index].inbox.contains(&Status::Recording) {
+                                            " while Recording is still queued for it"
+                                        } else {
+                                            ""
+                                        }
                                     )
                                 });
                             }
                             continue;
+                        }
+                        if let Some(trace) = checker.trace.as_mut() {
+                            trace.push(format!(
+                                "{clock:>4} frontend stop sent ({} window shows Recording)",
+                                window_name(index)
+                            ));
                         }
                         if w.status == Status::Recovering {
                             if let Some(trace) = checker.trace.as_mut() {
@@ -187,22 +247,8 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
         // the schedule of its own that can land between any two shell steps (or never
         // before a stop is issued). It is not a shell step: it changes no shell state, so
         // it takes no model time and no actor's weight.
-        let ready: Vec<usize> = (0..w.windows.len())
-            .filter(|window| !w.windows[*window].inbox.is_empty())
-            .collect();
-        if !ready.is_empty() && rng.chance(1, 3) {
-            let window = ready[rng.index(ready.len())];
-            let status = w.deliver_status(window);
-            if let Some(trace) = checker.trace.as_mut() {
-                trace.push(format!(
-                    "{clock:>4} {} window receives {status:?}",
-                    if window == MAIN_WINDOW {
-                        "main"
-                    } else {
-                        "overlay"
-                    }
-                ));
-            }
+        if window_ready(&w) && rng.chance(1, 3) {
+            deliver_next(&mut w, &mut rng, &mut checker, clock, false);
             continue;
         }
 
