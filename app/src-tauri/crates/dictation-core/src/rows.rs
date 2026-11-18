@@ -261,6 +261,31 @@ mod tests {
     }
 
     #[test]
+    fn row_ordinals_are_distinct_within_a_site_and_follow_the_appendix() {
+        // The shadow event carries the ordinal as `input_kind` (C8.4): R207.2 is
+        // 2, and a suffixed row keeps its number and adds 100 per suffix step.
+        assert_eq!(crate::decision::RowId("R207.2").ordinal(), 2);
+        assert_eq!(crate::decision::RowId("R101.15").ordinal(), 15);
+        assert_eq!(crate::decision::RowId("R103.0").ordinal(), 0);
+        assert_eq!(crate::decision::RowId("R203.3a").ordinal(), 103);
+        assert_eq!(crate::decision::RowId("R203.3e").ordinal(), 503);
+        assert_eq!(crate::decision::RowId("R203.2r").ordinal(), 602);
+        assert_eq!(crate::decision::RowId("R204b.4c").ordinal(), 304);
+        let mut seen = HashSet::new();
+        for (id, site) in C3_ROWS {
+            let (_, tail) = id.split_once('.').expect("R<site>.<n>");
+            assert!(
+                tail.starts_with(|c: char| c.is_ascii_digit()),
+                "{id} has no numeric ordinal"
+            );
+            assert!(
+                seen.insert((site.code(), crate::decision::RowId(id).ordinal())),
+                "{id} shares an ordinal with another row of {site:?}"
+            );
+        }
+    }
+
+    #[test]
     fn the_split_stop_context_rows_follow_the_context_read() {
         assert_eq!(site_of_row("R202.1"), Some(SiteId::StopContextNoLock));
         assert_eq!(site_of_row("R202.2"), Some(SiteId::StopContextNoLock));

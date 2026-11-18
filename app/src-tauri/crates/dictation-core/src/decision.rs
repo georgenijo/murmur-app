@@ -13,6 +13,28 @@ use crate::status::Status;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RowId(pub &'static str);
 
+impl RowId {
+    /// The numeric row ordinal the shadow event carries as `input_kind` (C8.4):
+    /// `R207.2` is `2`. A row with a letter suffix keeps its number and adds 100
+    /// per suffix step, so every row id maps to a distinct number: `R203.3a` is
+    /// `103`, `R203.3e` is `503`, `R203.2r` (the `r` rows) is `602`. `R103.0` is `0`
+    /// and so is a malformed id; the registry test pins that every C3 row id is
+    /// well formed and that `(site, ordinal)` is unique.
+    pub fn ordinal(self) -> u16 {
+        let Some((_, tail)) = self.0.split_once('.') else {
+            return 0;
+        };
+        let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
+        let base = digits.parse::<u16>().unwrap_or(0);
+        let step = match tail[digits.len()..].chars().next() {
+            Some(letter @ 'a'..='e') => u16::from(letter as u8 - b'a') + 1,
+            Some('r') => 6,
+            _ => 0,
+        };
+        base + 100 * step
+    }
+}
+
 /// The shadow `site_id` of a decision entry (C0.3). `202n`, `204a` and `204b`
 /// are encoded as 2021, 2041 and 2042.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -239,7 +239,8 @@ pub enum GuardOrigin {
     StopCapture,
     /// The pipeline guard (2885).
     PipelineExit,
-    /// Legacy `process_audio` parse failure.
+    /// Legacy `process_audio` parse failure: site 302 (`ProcessAudioFinish`,
+    /// R302.1); `handle` routes it there.
     LegacyParse,
     /// `IdleGuard::drop` (panic or early return).
     Dropped,
@@ -290,7 +291,8 @@ pub enum PipelineResult {
 pub struct PipelineIdleEmitInput {
     /// Recording id.
     pub rid: RecordingId,
-    /// Stop or legacy tail.
+    /// Stop or legacy tail. `LegacyPost` is decided by `decide_process_audio_finish`
+    /// (site 302, R302.2 with its reply); `handle` routes it there.
     pub kind: PostKind,
     /// Tail result (`StopPost` only).
     pub result: Option<PipelineResult>,
@@ -345,8 +347,10 @@ pub enum SupervisorEvent {
     Ready {
         /// Recording id.
         rid: RecordingId,
-        /// Context installed (`[in]`, 4947).
-        context_present: bool,
+        /// Context installed (`[in]`, 4947). `None` until the decision answers
+        /// `NeedObservation(ContextPresent)`: the shell passes `None` first and
+        /// reads the slot only when asked (D-S1-2), so this carries both calls.
+        context_present: Option<bool>,
         /// Stamp at 4927.
         ready_received: Now,
     },
@@ -467,6 +471,68 @@ pub enum Input {
     Supervisor(SupervisorEvent),
     ProcessAudioStart(ProcessAudioStartInput),
     ProcessAudioFinish(ProcessAudioFinishInput),
+    /// R103.0: the start's Smart Destination section (its own D hold, a separate
+    /// decision of site 103).
+    StartDestination(DestinationInput),
+    /// R104.7: the end of the start flight (a pure decision of site 104).
+    StartFlightEnd(StartFlightEndInput),
+    /// R301.6: the import's Smart Destination section (a separate decision of
+    /// site 301, the start's R103.0 under the import's own row id).
+    ProcessAudioDestination(DestinationInput),
+}
+
+/// R103.0 / R301.6: the Smart Destination section's ownership recheck.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DestinationInput {
+    /// Recording id.
+    pub rid: RecordingId,
+    /// Smart destination is enabled (the emit is made only then).
+    pub smart_enabled: bool,
+}
+
+/// R104.7: the end of the start flight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StartFlightEndInput {
+    /// Recording id.
+    pub rid: RecordingId,
+}
+
+impl Input {
+    /// The recording id the input names, if it names one: what the shadow taints
+    /// when a record it could have touched is lost (C8.3 cascade control). A start
+    /// request names none (its id is allocated by the decision, `ID+`); a stop,
+    /// cancel or supervisor input that carries only an optional expectation names
+    /// that expectation.
+    pub fn recording_id(&self) -> Option<RecordingId> {
+        match self {
+            Self::StartRequest(_) | Self::ProcessAudioStart(_) => None,
+            Self::StartCaptureResult(i) => Some(i.token.recording_id),
+            Self::StartContext(i) => Some(i.token.recording_id),
+            Self::ReadyPublish(i) => Some(i.rid),
+            Self::StopRequest(i) => i.expected.or(Some(i.observed_current_id)),
+            Self::StopContext(i) => Some(i.rid),
+            Self::StopCaptureResult(i) => Some(i.rid),
+            Self::GuardFinish(i) => Some(i.rid),
+            Self::PipelineIdleEmit(i) => Some(i.rid),
+            Self::CancelRequest(i) => i.expected,
+            Self::CancelCaptureResult(i) => Some(i.rid),
+            Self::Supervisor(event) => Some(match event {
+                SupervisorEvent::Accepted { rid }
+                | SupervisorEvent::Ready { rid, .. }
+                | SupervisorEvent::StillConnecting { rid }
+                | SupervisorEvent::Recovering { rid, .. }
+                | SupervisorEvent::CleanupFinished { rid }
+                | SupervisorEvent::Idle { rid }
+                | SupervisorEvent::InitializationFailed { rid, .. }
+                | SupervisorEvent::RecoveryStalled { rid }
+                | SupervisorEvent::Interrupted { rid, .. }
+                | SupervisorEvent::InterruptedShortIdle { rid } => *rid,
+            }),
+            Self::ProcessAudioFinish(i) => Some(i.rid),
+            Self::StartDestination(i) | Self::ProcessAudioDestination(i) => Some(i.rid),
+            Self::StartFlightEnd(i) => Some(i.rid),
+        }
+    }
 }
 
 impl Input {
@@ -485,7 +551,15 @@ impl Input {
             Self::StopContext(i) if i.context_present => SiteId::StopContextNoLock,
             Self::StopContext(_) => SiteId::StopContext,
             Self::StopCaptureResult(_) => SiteId::StopCaptureResult,
+            // The legacy import's two finishes are site 302 (one representation,
+            // `ProcessAudioFinish`): `handle` routes them through it.
+            Self::GuardFinish(i) if i.origin == GuardOrigin::LegacyParse => {
+                SiteId::ProcessAudioFinish
+            }
             Self::GuardFinish(_) => SiteId::GuardFinish,
+            Self::PipelineIdleEmit(i) if i.kind == PostKind::LegacyPost => {
+                SiteId::ProcessAudioFinish
+            }
             Self::PipelineIdleEmit(_) => SiteId::PipelineIdleEmit,
             Self::CancelRequest(_) => SiteId::CancelRequest,
             Self::CancelCaptureResult(_) => SiteId::CancelCaptureResult,
@@ -503,6 +577,9 @@ impl Input {
             },
             Self::ProcessAudioStart(_) => SiteId::ProcessAudioStart,
             Self::ProcessAudioFinish(_) => SiteId::ProcessAudioFinish,
+            Self::StartDestination(_) => SiteId::StartContext,
+            Self::StartFlightEnd(_) => SiteId::ReadyPublish,
+            Self::ProcessAudioDestination(_) => SiteId::ProcessAudioStart,
         }
     }
 }
@@ -648,7 +725,7 @@ mod tests {
             }),
             Input::Supervisor(SupervisorEvent::Ready {
                 rid,
-                context_present: true,
+                context_present: Some(true),
                 ready_received: Now(0),
             }),
             Input::Supervisor(SupervisorEvent::StillConnecting { rid }),
@@ -692,6 +769,63 @@ mod tests {
         let mut expected: Vec<u16> = SiteId::ALL.iter().map(|s| s.code()).collect();
         expected.sort_unstable();
         assert_eq!(sites, expected, "each site is reached by exactly one input");
+    }
+
+    #[test]
+    fn sub_section_inputs_belong_to_their_parent_site() {
+        // R103.0, R104.7 and R301.6 are decisions of their own that the C0.3
+        // site table folds into a parent site; none adds a 25th site.
+        let rid = RecordingId(1);
+        let dest = DestinationInput {
+            rid,
+            smart_enabled: true,
+        };
+        assert_eq!(Input::StartDestination(dest).site(), SiteId::StartContext);
+        assert_eq!(
+            Input::StartFlightEnd(StartFlightEndInput { rid }).site(),
+            SiteId::ReadyPublish
+        );
+        assert_eq!(
+            Input::ProcessAudioDestination(dest).site(),
+            SiteId::ProcessAudioStart
+        );
+        for input in [
+            Input::StartDestination(dest),
+            Input::StartFlightEnd(StartFlightEndInput { rid }),
+            Input::ProcessAudioDestination(dest),
+        ] {
+            assert_eq!(input.recording_id(), Some(rid));
+        }
+    }
+
+    #[test]
+    fn recording_id_names_what_a_lost_record_could_have_touched() {
+        let rid = RecordingId(4);
+        assert_eq!(Input::StartRequest(start()).recording_id(), None);
+        assert_eq!(
+            Input::StopRequest(StopInput {
+                expected: Some(RecordingId(2)),
+                trigger: StopTrigger::User,
+                observed_current_id: rid,
+                interrupted: None,
+                entered: Now(0),
+            })
+            .recording_id(),
+            Some(RecordingId(2)),
+            "a stale stop names the recording it expected"
+        );
+        assert_eq!(
+            Input::CancelRequest(CancelInput { expected: None }).recording_id(),
+            None
+        );
+        for input in every_input() {
+            if !matches!(
+                input,
+                Input::StartRequest(_) | Input::ProcessAudioStart(_) | Input::CancelRequest(_)
+            ) {
+                assert!(input.recording_id().is_some(), "{input:?}");
+            }
+        }
     }
 
     #[test]
