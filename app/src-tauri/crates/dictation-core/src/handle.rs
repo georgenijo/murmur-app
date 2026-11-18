@@ -22,8 +22,10 @@
 use crate::cancel::{decide_cancel_capture_result_nolock, decide_cancel_request};
 use crate::decision::Decision;
 use crate::ids::Now;
+use crate::inputs::{
+    GuardOrigin, PostKind, ProcessAudioFinishInput, ProcessAudioFinishKind, StopContextInput,
+};
 use crate::inputs::{Input, SupervisorEvent};
-use crate::inputs::{PostKind, StopContextInput};
 use crate::lifecycle::{
     decide_sup_accepted_nolock, decide_sup_cleanup_finished, decide_sup_idle,
     decide_sup_init_failed_nolock, decide_sup_interrupted_nolock,
@@ -60,11 +62,39 @@ impl DictationCore {
             Input::StopRequest(i) => decide_stop_request(self, i, now),
             Input::StopContext(i) => self.handle_stop_context(i, now),
             Input::StopCaptureResult(i) => decide_stop_capture_result(self, i, now),
+            // The legacy import's parse failure is site 302 in the shell
+            // (`decide_process_audio_finish`: R302.1 and its error reply), never a
+            // bare 204a decision: `ProcessAudioFinish` is the one representation.
+            Input::GuardFinish(i) if i.origin == GuardOrigin::LegacyParse => {
+                decide_process_audio_finish(
+                    self,
+                    ProcessAudioFinishInput {
+                        rid: i.rid,
+                        kind: ProcessAudioFinishKind::ParseFailed,
+                        closure_emit: i.closure_emit,
+                    },
+                    now,
+                )
+            }
             Input::GuardFinish(i) => decide_guard_finish(self, i, now),
+            // Likewise the import's post-pipeline tail is R302.2 with the
+            // transcription reply; its `interrupted` and `char_count` are the
+            // stop tail's and are not read here (the live import passes neither).
+            Input::PipelineIdleEmit(i) if i.kind == PostKind::LegacyPost => {
+                decide_process_audio_finish(
+                    self,
+                    ProcessAudioFinishInput {
+                        rid: i.rid,
+                        kind: ProcessAudioFinishKind::PipelineDone,
+                        closure_emit: false,
+                    },
+                    now,
+                )
+            }
             Input::PipelineIdleEmit(i) => {
                 // The stop command's tail (a result in hand) takes no D; the
-                // in-D emit of the stop and the legacy import carries no result.
-                if i.kind == PostKind::StopPost && i.result.is_some() {
+                // in-D emit of the stop carries no result.
+                if i.result.is_some() {
                     decide_pipeline_idle_emit_tail(i, now)
                 } else {
                     decide_pipeline_idle_emit(self, i, now)
@@ -82,7 +112,7 @@ impl DictationCore {
                     self,
                     SupReadyInput {
                         rid,
-                        context_present: Some(context_present),
+                        context_present,
                         ready_received,
                     },
                     now,

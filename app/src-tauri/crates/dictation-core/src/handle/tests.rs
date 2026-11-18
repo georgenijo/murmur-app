@@ -169,7 +169,12 @@ fn inputs() -> Vec<Input> {
         sup(SupervisorEvent::Accepted { rid }),
         sup(SupervisorEvent::Ready {
             rid,
-            context_present: true,
+            context_present: Some(true),
+            ready_received: Now(2),
+        }),
+        sup(SupervisorEvent::Ready {
+            rid,
+            context_present: None,
             ready_received: Now(2),
         }),
         sup(SupervisorEvent::StillConnecting { rid }),
@@ -313,11 +318,11 @@ fn an_answered_observation_is_the_decision_and_an_unanswered_one_is_returned() {
         context_present,
         ready_received: Now(2),
     };
-    // The supervisor `Ready` input carries the answer (`context_present: bool`).
+    // The supervisor `Ready` input carries the answer (`Option<bool>`).
     let routed = core.handle(
         Input::Supervisor(SupervisorEvent::Ready {
             rid: RID,
-            context_present: true,
+            context_present: Some(true),
             ready_received: Now(2),
         }),
         NOW,
@@ -374,6 +379,149 @@ fn the_two_entries_of_a_split_site_follow_the_input() {
         char_count: 0,
     });
     assert_eq!(core.handle(in_d, NOW).row.0, "R204b.3");
+}
+
+/// The legacy `process_audio` tail and parse failure are site 302 in the shell
+/// (`decide_process_audio_finish`, R302.1 / R302.2 with their replies). `handle`
+/// must not offer a second, different decision for the same moment: the 204a
+/// `LegacyParse` and 204b `LegacyPost` inputs route through it.
+#[test]
+fn the_legacy_finish_has_one_representation_that_matches_the_live_entry() {
+    for core in grid() {
+        for closure_emit in [true, false] {
+            let live_parse = decide_process_audio_finish(
+                &core,
+                ProcessAudioFinishInput {
+                    rid: RID,
+                    kind: ProcessAudioFinishKind::ParseFailed,
+                    closure_emit,
+                },
+                NOW,
+            );
+            let routed = core.handle(
+                Input::GuardFinish(GuardFinishInput {
+                    rid: RID,
+                    origin: GuardOrigin::LegacyParse,
+                    closure_emit,
+                }),
+                NOW,
+            );
+            assert_eq!(routed, live_parse, "{core:?} closure_emit {closure_emit}");
+            assert_eq!(routed.row.0, "R302.1");
+            assert_eq!(routed.reply, live_parse.reply);
+            assert!(routed.reply.is_some(), "the parse failure answers an error");
+            let direct = core.handle(
+                Input::ProcessAudioFinish(ProcessAudioFinishInput {
+                    rid: RID,
+                    kind: ProcessAudioFinishKind::ParseFailed,
+                    closure_emit,
+                }),
+                NOW,
+            );
+            assert_eq!(routed, direct);
+        }
+        let live_post = decide_process_audio_finish(
+            &core,
+            ProcessAudioFinishInput {
+                rid: RID,
+                kind: ProcessAudioFinishKind::PipelineDone,
+                closure_emit: false,
+            },
+            NOW,
+        );
+        for (interrupted, char_count) in [(None, 0), (Some(ErrCode::RuntimeFailure), 12)] {
+            let routed = core.handle(
+                Input::PipelineIdleEmit(PipelineIdleEmitInput {
+                    rid: RID,
+                    kind: PostKind::LegacyPost,
+                    result: None,
+                    interrupted,
+                    char_count,
+                }),
+                NOW,
+            );
+            assert_eq!(routed, live_post, "{core:?}");
+            assert_eq!(routed.row.0, "R302.2");
+            assert!(
+                routed.reply.is_some(),
+                "the import's tail answers the transcription"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_legacy_inputs_report_site_302() {
+    let parse = Input::GuardFinish(GuardFinishInput {
+        rid: RID,
+        origin: GuardOrigin::LegacyParse,
+        closure_emit: true,
+    });
+    let post = Input::PipelineIdleEmit(PipelineIdleEmitInput {
+        rid: RID,
+        kind: PostKind::LegacyPost,
+        result: None,
+        interrupted: None,
+        char_count: 0,
+    });
+    assert_eq!(parse.site(), SiteId::ProcessAudioFinish);
+    assert_eq!(post.site(), SiteId::ProcessAudioFinish);
+    // The stop family's own entries keep their sites.
+    let stop_guard = Input::GuardFinish(GuardFinishInput {
+        rid: RID,
+        origin: GuardOrigin::StopCapture,
+        closure_emit: true,
+    });
+    assert_eq!(stop_guard.site(), SiteId::GuardFinish);
+}
+
+/// The shell reads the context slot lazily: the first call passes `None`, the
+/// decision answers `NeedObservation`, and the shell calls again with the read
+/// value. `handle` must carry both calls, not only the answered one.
+#[test]
+fn the_staged_ready_observation_round_trips_through_handle() {
+    for core in grid() {
+        let live = |context_present| {
+            decide_sup_ready(
+                &core,
+                SupReadyInput {
+                    rid: RID,
+                    context_present,
+                    ready_received: Now(2),
+                },
+                NOW,
+            )
+        };
+        let routed = |context_present| {
+            core.handle(
+                Input::Supervisor(SupervisorEvent::Ready {
+                    rid: RID,
+                    context_present,
+                    ready_received: Now(2),
+                }),
+                NOW,
+            )
+        };
+        assert_eq!(routed(None), live(None), "first call, {core:?}");
+        assert_eq!(routed(Some(true)), live(Some(true)), "answered true");
+        assert_eq!(routed(Some(false)), live(Some(false)), "answered false");
+    }
+    // For a current `Starting` recording the first call asks, and the answer decides
+    // R207.5 either way (a substituted value would suppress one of them).
+    let core = view(Status::Starting, RID);
+    let first = core.handle(
+        Input::Supervisor(SupervisorEvent::Ready {
+            rid: RID,
+            context_present: None,
+            ready_received: Now(2),
+        }),
+        NOW,
+    );
+    assert!(
+        matches!(first.verdict, Verdict::NeedObservation(_)),
+        "{first:?}"
+    );
+    assert!(first.effects.is_empty());
 }
 
 #[test]
