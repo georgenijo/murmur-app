@@ -31,6 +31,15 @@ impl IdVar {
     }
 }
 
+/// Who sends a user stop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopCaller {
+    /// A window, by its index in `World::windows`: gated on that window's observation.
+    Window(usize),
+    /// The `stop_native_recording` IPC: no gate.
+    Ipc,
+}
+
 #[derive(Clone, Debug)]
 pub enum Cmd {
     Start {
@@ -45,14 +54,16 @@ pub enum Cmd {
     /// family only through the supervisor's generation-scoped `Interrupted` auto-stop (a
     /// flight, not a command) and through the explicit decision tests (D-S2b-17 (c)).
     ///
-    /// `via_ipc` marks the caller that bypasses the frontend: the registered
-    /// `stop_native_recording` IPC (callable from any local window, with no `Recovering`
-    /// guard). Every other caller (the main window, the hold and toggle hotkeys, the
-    /// overlay, the silence auto-stop) acts on the status its window last *received* and
-    /// sends no stop while that is `Recovering` (`useRecordingState.ts` `handleStop`).
+    /// The stop is bound to its caller (D-S2b-18). A window caller (the main window with
+    /// the hold and toggle hotkeys and the silence auto-stop, or the overlay) acts on the
+    /// status *its own window* last received and sends the stop IPC only when that is
+    /// `Recording` (`useRecordingState.ts` `handleStop`, `useRecordingControls.ts` click
+    /// and double-click); on `Starting` the window cancels instead and on `Recovering` it
+    /// only presents "Microphone cleanup is still in progress". The registered
+    /// `stop_native_recording` IPC (callable from any local window) has no such gate.
     Stop {
         cfg: StopCfg,
-        via_ipc: bool,
+        caller: StopCaller,
     },
     Cancel {
         id: IdVar,
@@ -243,6 +254,14 @@ fn start(rng: &mut Rng) -> Cmd {
     }
 }
 
+fn stop_caller(rng: &mut Rng) -> StopCaller {
+    if rng.chance(1, 4) {
+        StopCaller::Ipc
+    } else {
+        StopCaller::Window(rng.below(2) as usize)
+    }
+}
+
 pub fn scenario(rng: &mut Rng) -> Scenario {
     let mut cmds: Vec<(u32, Cmd)> = Vec::new();
     cmds.push((0, start(rng)));
@@ -259,7 +278,7 @@ pub fn scenario(rng: &mut Rng) -> Scenario {
                 at + 4 + rng.below(45) as u32,
                 Cmd::Stop {
                     cfg: stop_cfg(rng),
-                    via_ipc: rng.chance(1, 4),
+                    caller: stop_caller(rng),
                 },
             ));
         }

@@ -13,31 +13,38 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-/// CI runs this many seeds; `PROPTEST_CASES` raises (or lowers) it locally.
+/// The regular property tests run exactly this many seeds, whatever the environment says
+/// (D-S2b-18): the CI gate is one fixed set. A deeper sweep is the ignored
+/// [`the_deep_sweep_holds_the_properties`].
 const DEFAULT_SEEDS: u64 = 10_000;
+/// The deep sweep's default size; `DEEP_SWEEP_SEEDS` sets another.
+const DEEP_SWEEP_SEEDS: u64 = 300_000;
 const CI_BUDGET: Duration = Duration::from_secs(20);
 
-/// Seeds that take a signature or a PD entry no seed below `DEFAULT_SEEDS - len` takes
-/// (D-S2b-11 (d)). The default run is `0..(10,000 - len)` plus these, 10,000 seeds in
-/// all, so every witness is produced by the run itself: there is no pinned exception to
-/// the converse check, and a witness that drifted away fails it.
+/// Seeds that take a signature, a split or a PD entry no seed below `DEFAULT_SEEDS - len`
+/// takes (D-S2b-11 (d)). The run is `0..(10,000 - len)` plus these, 10,000 seeds in all,
+/// so every witness is produced by the run itself: there is no pinned exception to the
+/// converse check, and a witness that drifted away fails it. Each is the first seed of a
+/// 3,000,000-seed sweep that takes the witness.
 ///
-/// * 10,843: PD-21 with a short stop (R206.2, R203.4).
-/// * 14,262: PD-19 through a dropped start (no context was ever installed).
-/// * 93,074: PD-22 with the stop's failure tail completing performance (R211.2, R203.2).
-/// * 97,854: PD-19 through `TerminationUnconfirmed`.
-/// * 2,798,896: PD-19's refused auto-stop (the capture stays in the store and no ordinary
+/// * 11,125: PD-19 through `TerminationUnconfirmed`.
+/// * 18,279: PD-24 through the environmental recovery arm (R102.3, R209.5).
+/// * 22,704: PD-22 against the cancel's own `TERM` (R211.2, R205.5).
+/// * 23,985: PD-19 through a dropped start (no context was ever installed).
+/// * 244,103: PD-21 with a short stop (R206.2, R203.4).
+/// * 377,529: PD-19's refused auto-stop (the capture stays in the store and no ordinary
 ///   control sends the stop that would take it; D-S2b-15 (c), (d)). It is rare because the
-///   unscoped stop IPC, one in four generated stops, takes the capture when it lands.
-const FIXED_SEEDS: [u64; 5] = [10_843, 14_262, 93_074, 97_854, 2_798_896];
+///   unscoped stop IPC, one in four generated stops, takes the capture when it lands, and
+///   a window sends no stop that it has not seen `Recording` for.
+const FIXED_SEEDS: [u64; 6] = [11_125, 18_279, 22_704, 23_985, 244_103, 377_529];
 
 /// PD-18's witnesses, one seed per instance (C7.5): the first seed of the fixed
 /// range that ends stuck in `Recovering` through that instance, with the generation's
 /// own evidence (R101.12 in the gap after its last restorer).
 const PD18_SEEDS: [(&str, u64); 3] = [
-    ("(a) S12", 959),
-    ("(b) Idle-arm tail", 271),
-    ("(c) unsealed stop", 507),
+    ("(a) S12", 951),
+    ("(b) Idle-arm tail", 79),
+    ("(c) unsealed stop", 10_724),
 ];
 
 /// A witness of one of PD-19..PD-24: the PD, the seed that takes it, the matched
@@ -58,21 +65,21 @@ struct Witness {
 const FINDING_SEEDS: [Witness; 14] = [
     Witness {
         pd: 19,
-        seed: 97_854,
+        seed: 11_125,
         split: None,
         shell_test: Some("pd19_termination_unconfirmed_after_retained_pcm_leaves_recovering"),
         sig: None,
     },
     Witness {
         pd: 19,
-        seed: 14_262,
+        seed: 23_985,
         split: None,
         shell_test: Some("pd19_a_dropped_start_and_a_retained_runtime_failure_leave_recovering"),
         sig: None,
     },
     Witness {
         pd: 19,
-        seed: 2_798_896,
+        seed: 377_529,
         split: None,
         shell_test: Some("pd19_a_refused_auto_stop_leaves_the_capture_and_recovering"),
         sig: None,
@@ -86,49 +93,49 @@ const FINDING_SEEDS: [Witness; 14] = [
     },
     Witness {
         pd: 21,
-        seed: 10_843,
+        seed: 244_103,
         split: Some(("R206.2", "R203.4")),
         shell_test: Some("pd21_timed_out_cancel_then_a_short_stop_disagree"),
         sig: None,
     },
     Witness {
         pd: 21,
-        seed: 243,
+        seed: 207,
         split: Some(("R206.2", "R209.4")),
         shell_test: Some("pd21_timed_out_cancel_and_the_late_recovery_disagree"),
         sig: None,
     },
     Witness {
         pd: 22,
-        seed: 93_074,
+        seed: 5_084,
         split: Some(("R211.2", "R203.2")),
         shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance"),
         sig: None,
     },
     Witness {
         pd: 22,
-        seed: 382,
+        seed: 22_704,
         split: Some(("R211.2", "R205.5")),
         shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_cancel_completes_performance"),
         sig: None,
     },
     Witness {
         pd: 23,
-        seed: 484,
+        seed: 447,
         split: Some(("R207.3", "R203.5")),
         shell_test: Some("pd23_superseded_terminal_and_an_empty_stop_no_speech_disagree"),
         sig: None,
     },
     Witness {
         pd: 23,
-        seed: 66,
+        seed: 171,
         split: Some(("R207.3", "R203.1")),
         shell_test: Some("pd23_superseded_terminal_and_a_refused_stop_failed_disagree"),
         sig: None,
     },
     Witness {
         pd: 23,
-        seed: 93,
+        seed: 163,
         split: Some(("R207.3", "R205.5")),
         shell_test: Some("pd23_superseded_terminal_and_a_cancel_of_processing_cancelled_disagree"),
         sig: None,
@@ -138,14 +145,14 @@ const FINDING_SEEDS: [Witness; 14] = [
     // the claim, so it has no shell fixture; it stays allowlisted (D-S2b-13 (e)).
     Witness {
         pd: 23,
-        seed: 244,
+        seed: 37,
         split: Some(("R207.3", "R204b.6")),
         shell_test: None,
         sig: Some(2),
     },
     Witness {
         pd: 24,
-        seed: 8_161,
+        seed: 6_047,
         split: Some(("R102.3", "R209.3")),
         shell_test: Some(
             "pd24_start_timeout_terminal_and_the_users_cancel_arm_performance_outcome_disagree",
@@ -154,7 +161,7 @@ const FINDING_SEEDS: [Witness; 14] = [
     },
     Witness {
         pd: 24,
-        seed: 2_813,
+        seed: 18_279,
         split: Some(("R102.3", "R209.5")),
         shell_test: Some(
             "pd24_start_timeout_terminal_and_an_environmental_recovery_arm_performance_outcome_disagree",
@@ -163,26 +170,18 @@ const FINDING_SEEDS: [Witness; 14] = [
     },
 ];
 
-fn seeds() -> u64 {
-    std::env::var("PROPTEST_CASES")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(DEFAULT_SEEDS)
+/// The seeds the regular tests run: `0..(10,000 - FIXED_SEEDS.len())` and [`FIXED_SEEDS`],
+/// 10,000 in all. Nothing in the environment changes it.
+fn seed_list() -> Vec<u64> {
+    let fixed = FIXED_SEEDS.len() as u64;
+    (0..DEFAULT_SEEDS - fixed).chain(FIXED_SEEDS).collect()
 }
 
-/// The seeds one run executes: the default 10,000 are `0..(10,000 - FIXED_SEEDS.len())`
-/// and [`FIXED_SEEDS`]; a raised or lowered `PROPTEST_CASES` is `0..n` plus the fixed
-/// seeds beyond it.
-fn seed_list() -> Vec<u64> {
-    let n = seeds();
-    let fixed = FIXED_SEEDS.len() as u64;
-    if n == DEFAULT_SEEDS {
-        (0..DEFAULT_SEEDS - fixed).chain(FIXED_SEEDS).collect()
-    } else {
-        (0..n)
-            .chain(FIXED_SEEDS.into_iter().filter(|seed| *seed >= n))
-            .collect()
-    }
+/// The deep sweep's seeds: `0..n` plus the fixed seeds beyond it.
+fn sweep_list(n: u64) -> Vec<u64> {
+    (0..n)
+        .chain(FIXED_SEEDS.into_iter().filter(|seed| *seed >= n))
+        .collect()
 }
 
 #[derive(Default)]
@@ -202,88 +201,89 @@ struct Summary {
 
 fn summary() -> &'static Summary {
     static SUMMARY: OnceLock<Summary> = OnceLock::new();
-    SUMMARY.get_or_init(|| {
-        let list = seed_list();
-        let mut summary = Summary {
-            seeds: list.len() as u64,
-            pd: vec![(0, None); 25],
-            pd18: vec![(0, None); 3],
-            pd19: vec![(0, None); 3],
-            sig: vec![(0, None); SIGNATURES.len()],
-            ..Summary::default()
-        };
-        let started = Instant::now();
-        for seed in list {
-            let report = run_seed(seed);
-            summary.steps += u64::from(report.steps);
-            for (pd, count) in report.hits.pd.iter().enumerate() {
-                if *count > 0 {
-                    summary.pd[pd].0 += count;
-                    summary.pd[pd].1.get_or_insert(seed);
-                }
-            }
-            for (instance, count) in report.hits.pd18.iter().enumerate() {
-                if *count > 0 {
-                    summary.pd18[instance].0 += count;
-                    summary.pd18[instance].1.get_or_insert(seed);
-                }
-            }
-            for (entry, count) in report.hits.pd19.iter().enumerate() {
-                if *count > 0 {
-                    summary.pd19[entry].0 += count;
-                    summary.pd19[entry].1.get_or_insert(seed);
-                }
-            }
-            for (pair, count) in &report.hits.pairs {
-                let entry = summary.pairs.entry(*pair).or_insert((0, seed));
-                entry.0 += count;
-            }
-            for (row, count) in report.hits.sig.iter().enumerate() {
-                if *count > 0 {
-                    summary.sig[row].0 += count;
-                    summary.sig[row].1.get_or_insert(seed);
-                }
-            }
-            if !report.violations.is_empty() {
-                summary.failing.push((seed, report.violations));
+    SUMMARY.get_or_init(|| summarize(seed_list()))
+}
+
+fn summarize(list: Vec<u64>) -> Summary {
+    let mut summary = Summary {
+        seeds: list.len() as u64,
+        pd: vec![(0, None); 25],
+        pd18: vec![(0, None); 3],
+        pd19: vec![(0, None); 3],
+        sig: vec![(0, None); SIGNATURES.len()],
+        ..Summary::default()
+    };
+    let started = Instant::now();
+    for seed in list {
+        let report = run_seed(seed);
+        summary.steps += u64::from(report.steps);
+        for (pd, count) in report.hits.pd.iter().enumerate() {
+            if *count > 0 {
+                summary.pd[pd].0 += count;
+                summary.pd[pd].1.get_or_insert(seed);
             }
         }
-        if std::env::var("DUMP_VIOLATIONS").is_ok() {
-            for (seed, violations) in &summary.failing {
-                for violation in violations {
-                    eprintln!("VIOL {seed} {violation}");
-                }
+        for (instance, count) in report.hits.pd18.iter().enumerate() {
+            if *count > 0 {
+                summary.pd18[instance].0 += count;
+                summary.pd18[instance].1.get_or_insert(seed);
             }
         }
-        summary.elapsed = started.elapsed();
+        for (entry, count) in report.hits.pd19.iter().enumerate() {
+            if *count > 0 {
+                summary.pd19[entry].0 += count;
+                summary.pd19[entry].1.get_or_insert(seed);
+            }
+        }
+        for (pair, count) in &report.hits.pairs {
+            let entry = summary.pairs.entry(*pair).or_insert((0, seed));
+            entry.0 += count;
+        }
+        for (row, count) in report.hits.sig.iter().enumerate() {
+            if *count > 0 {
+                summary.sig[row].0 += count;
+                summary.sig[row].1.get_or_insert(seed);
+            }
+        }
+        if !report.violations.is_empty() {
+            summary.failing.push((seed, report.violations));
+        }
+    }
+    if std::env::var("DUMP_VIOLATIONS").is_ok() {
+        for (seed, violations) in &summary.failing {
+            for violation in violations {
+                eprintln!("VIOL {seed} {violation}");
+            }
+        }
+    }
+    summary.elapsed = started.elapsed();
+    eprintln!(
+        "property: {} seeds, {} steps, {:?}; liveness checked on every run",
+        summary.seeds, summary.steps, summary.elapsed
+    );
+    for pd in 1..=24 {
         eprintln!(
-            "property: {} seeds, {} steps, {:?}; liveness checked on every run",
-            summary.seeds, summary.steps, summary.elapsed
+            "property: PD-{pd}: {} occurrences, first at seed {:?}",
+            summary.pd[pd].0, summary.pd[pd].1
         );
-        for pd in 1..=24 {
-            eprintln!(
-                "property: PD-{pd}: {} occurrences, first at seed {:?}",
-                summary.pd[pd].0, summary.pd[pd].1
-            );
-        }
-        eprintln!("property: PD-18 stuck runs (a, b, c): {:?}", summary.pd18);
+    }
+    eprintln!("property: PD-18 stuck runs (a, b, c): {:?}", summary.pd18);
+    eprintln!(
+        "property: PD-19 entries (TerminationUnconfirmed, dropped start, refused auto-stop): {:?}",
+        summary.pd19
+    );
+    for ((terminal, perf), (count, first)) in &summary.pairs {
         eprintln!(
-            "property: PD-19 entries (TerminationUnconfirmed, dropped start, refused auto-stop): {:?}",
-            summary.pd19
+            "property: split {terminal} -> {perf}: {count} occurrences, first at seed {first}"
         );
-        for ((terminal, perf), (count, first)) in &summary.pairs {
-            eprintln!(
-                "property: split {terminal} -> {perf}: {count} occurrences, first at seed {first}"
-            );
-        }
-        for (row, signature) in SIGNATURES.iter().enumerate() {
-            eprintln!(
-                "property: signature {row} (PD-{}, {:?}): {} occurrences, first at seed {:?}",
-                signature.pd, signature.pre, summary.sig[row].0, summary.sig[row].1
-            );
-        }
-        summary
-    })
+    }
+    for (row, signature) in SIGNATURES.iter().enumerate() {
+        eprintln!(
+            "property: signature {row} (PD-{}, {:?}): {} occurrences, first at seed {:?}",
+            signature.pd, signature.pre, summary.sig[row].0, summary.sig[row].1
+        );
+    }
+    summary
 }
 
 /// SP1-SP10 and C7.3 liveness hold on every prefix of every seed, apart from the
@@ -301,6 +301,35 @@ fn seeds_hold_the_properties() {
             summary.seeds
         );
     }
+}
+
+/// The deep sweep (the amendment's 300,000 seeds): the same properties on `0..300,000`
+/// seeds plus the fixed ones, or `0..DEEP_SWEEP_SEEDS`. It is ignored, so a plain
+/// `cargo test` never runs it and no environment variable changes the regular tests:
+///
+/// ```text
+/// cargo test -p murmur-dictation-core --lib --release -- --ignored the_deep_sweep --nocapture
+/// DEEP_SWEEP_SEEDS=3000000 cargo test -p murmur-dictation-core --lib --release -- --ignored the_deep_sweep --nocapture
+/// ```
+///
+/// Findings it makes outside the allowlist are reported, not hidden: no seed exemption
+/// (D-S2b-11 (d), D-S2b-16).
+#[test]
+#[ignore = "deep sweep: run on request (see the doc comment)"]
+fn the_deep_sweep_holds_the_properties() {
+    let n = std::env::var("DEEP_SWEEP_SEEDS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(DEEP_SWEEP_SEEDS);
+    let summary = summarize(sweep_list(n));
+    let seeds: Vec<u64> = summary.failing.iter().map(|(seed, _)| *seed).collect();
+    assert!(
+        summary.failing.is_empty(),
+        "{} of {} seeds violate a property outside the allowlist: {seeds:?}; first: {:?}",
+        summary.failing.len(),
+        summary.seeds,
+        summary.failing.first()
+    );
 }
 
 /// C7.5 budget: 10,000 seeds in under 20 s of the 60 s suite limit.
@@ -1660,9 +1689,9 @@ fn pd19_is_witnessed_with_its_whole_story() {
     // One seed per entry: `TerminationUnconfirmed`, a dropped start, the refused auto-stop
     // that leaves the capture in the store (no user-accessible recovery).
     for (seed, entries) in [
-        (97_854, [1, 0, 0]),
-        (14_262, [0, 1, 0]),
-        (2_798_896, [0, 0, 1]),
+        (11_125, [1, 0, 0]),
+        (23_985, [0, 1, 0]),
+        (377_529, [0, 0, 1]),
     ] {
         let report = run_seed(seed);
         assert!(report.hits.pd[19] > 0, "{seed}: {:?}", report.hits);
@@ -1672,15 +1701,15 @@ fn pd19_is_witnessed_with_its_whole_story() {
     }
 }
 
-/// D-S2b-15 (c), D-S2b-17 (b), (c): stops follow their caller. A frontend-gated stop acts
-/// on the status its window last *received*: it is dropped once `Recovering` has been
-/// delivered, and still issued while the window shows an older status after the shell
-/// entered `Recovering` (delivery is a step of its own). The unscoped
-/// `stop_native_recording` IPC keeps the schedule. All three occur in the seeded runs and
+/// D-S2b-15 (c), D-S2b-17 (b), (c), D-S2b-18: stops follow their caller. A window stop
+/// acts on the status its own window last *received* and is sent only on `Recording`: it
+/// is dropped once `Recovering` has been received, and still issued while the window shows
+/// `Recording` after the shell entered `Recovering` (delivery is a step of its own). The
+/// unscoped `stop_native_recording` IPC keeps the schedule. All occur in the seeded runs and
 /// every property holds in each.
 #[test]
 fn stops_follow_their_caller() {
-    let (mut suppressed, mut stale, mut unscoped) = (0, 0, 0);
+    let (mut suppressed, mut not_sent, mut stale, mut unscoped) = (0, 0, 0, 0);
     for seed in 0..5_000 {
         let (report, trace) = run_seed_with(seed, true);
         assert!(
@@ -1689,13 +1718,18 @@ fn stops_follow_their_caller() {
             report.violations
         );
         let count = |needle: &str| trace.iter().filter(|line| line.contains(needle)).count();
-        suppressed += count("frontend stop suppressed (delivered status Recovering)");
+        suppressed += count("frontend stop suppressed (");
+        not_sent += count("frontend stop not sent (");
         stale += count("frontend stop issued on a stale observation");
         unscoped += count("unscoped stop IPC issued");
     }
     assert!(
         suppressed > 0,
-        "no delivered-Recovering stop was ever suppressed"
+        "no received-Recovering stop was ever suppressed"
+    );
+    assert!(
+        not_sent > 0,
+        "no stop on a non-Recording window was dropped"
     );
     assert!(stale > 0, "no stop was ever issued on a stale observation");
     assert!(
@@ -1704,38 +1738,144 @@ fn stops_follow_their_caller() {
     );
 }
 
-/// D-S2b-17 (b): the window's observation is a separate step. The shell writes a status
-/// at once; the window shows it only after its delivery step.
-#[test]
-fn a_status_reaches_the_window_in_a_step_of_its_own() {
-    use super::sup_task::FrontendTask;
-    let mut w = World::new();
-    w.status = Status::Recovering;
-    w.status_events.push_back(Status::Recovering);
-    assert_eq!(w.observed, Status::Idle, "written, not yet delivered");
+fn deliver(w: &mut World, window: usize) -> Poll {
+    if w.windows[window].inbox.is_empty() {
+        return Poll::Blocked;
+    }
+    w.deliver_status(window);
+    Poll::Progress
+}
+
+/// Apply `effect` as row `row` of recording `rid` (a step of task `tid`).
+fn apply_effect(w: &mut World, tid: TaskId, row: &'static str, effect: Effect) {
     let mut out = StepOut::default();
     let mut spawned: Vec<Box<dyn Task>> = Vec::new();
     let mut mailbox = Vec::new();
     let mut cx = Cx {
-        w: &mut w,
+        w,
         out: &mut out,
         spawn: &mut spawned,
-        tid: 3,
+        tid,
         mailbox: &mut mailbox,
     };
-    assert_eq!(FrontendTask.step(&mut cx), Poll::Progress);
-    assert_eq!(w.observed, Status::Recovering);
-    let mut cx = Cx {
-        w: &mut w,
-        out: &mut out,
-        spawn: &mut spawned,
-        tid: 3,
-        mailbox: &mut mailbox,
+    let fx = FxCtx {
+        tid,
+        rid: 1,
+        row,
+        site: SiteId::SupIdle,
     };
+    apply(&mut cx, &fx, Placement::In, &effect);
+}
+
+fn emit(status: Status) -> Effect {
+    Effect::EmitStatus {
+        status,
+        cond: crate::effects::Cond::Always,
+    }
+}
+
+/// D-S2b-17 (b): the window's observation is a separate step. The shell writes a status
+/// and emits it; the window shows it only after its delivery step.
+#[test]
+fn a_status_reaches_the_window_in_a_step_of_its_own() {
+    let mut w = World::new();
+    apply_effect(&mut w, 1, "R209.2", Effect::SetStatus(Status::Recovering));
+    apply_effect(&mut w, 1, "R209.2", emit(Status::Recovering));
+    assert_eq!(w.status, Status::Recovering);
     assert_eq!(
-        FrontendTask.step(&mut cx),
+        w.windows[MAIN_WINDOW].observed,
+        Status::Idle,
+        "emitted, not yet delivered"
+    );
+    assert_eq!(deliver(&mut w, MAIN_WINDOW), Poll::Progress);
+    assert_eq!(w.windows[MAIN_WINDOW].observed, Status::Recovering);
+    assert_eq!(
+        deliver(&mut w, MAIN_WINDOW),
         Poll::Blocked,
         "nothing left to deliver"
+    );
+}
+
+/// D-S2b-18 (1): the window queue follows *emits*, not writes. R209 writes `Recovering`,
+/// releases the lock and pauses before its emit; R102.3 then writes and emits `Idle`; R209
+/// emits `Recovering` last. A window receives `Idle -> Recovering` (with FIFO delivery) while
+/// the shell's own status is `Idle`: an ordering the write order `Recovering -> Idle`
+/// cannot represent.
+#[test]
+fn a_window_receives_statuses_in_emit_order_not_write_order() {
+    let mut w = World::new();
+    apply_effect(&mut w, 1, "R209.2", Effect::SetStatus(Status::Recovering));
+    apply_effect(&mut w, 2, "R102.3", Effect::SetStatus(Status::Idle));
+    apply_effect(&mut w, 2, "R102.3", emit(Status::Idle));
+    assert!(
+        w.windows[MAIN_WINDOW]
+            .inbox
+            .iter()
+            .eq([Status::Idle].iter()),
+        "R209 has not emitted yet: {:?}",
+        w.windows[MAIN_WINDOW].inbox
+    );
+    apply_effect(&mut w, 1, "R209.2", emit(Status::Recovering));
+    for window in [MAIN_WINDOW, OVERLAY_WINDOW] {
+        let mut seen = Vec::new();
+        while deliver(&mut w, window) == Poll::Progress {
+            seen.push(w.windows[window].observed);
+        }
+        assert_eq!(seen, [Status::Idle, Status::Recovering], "window {window}");
+    }
+    assert_eq!(w.status, Status::Idle, "the shell's own status is Idle");
+    assert_eq!(w.windows[MAIN_WINDOW].observed, Status::Recovering);
+    // A write alone queues nothing.
+    let mut w = World::new();
+    apply_effect(&mut w, 1, "R209.2", Effect::SetStatus(Status::Recovering));
+    assert!(w.windows.iter().all(|view| view.inbox.is_empty()));
+}
+
+/// D-S2b-18 (3): each window has its own delivery cursor. One window can have received
+/// `Recovering` (and send no stop) while the other still shows `Recording` (and does).
+#[test]
+fn two_windows_can_disagree_about_the_status() {
+    let mut w = World::new();
+    apply_effect(&mut w, 1, "R101.15", Effect::SetStatus(Status::Recording));
+    apply_effect(&mut w, 1, "R101.15", emit(Status::Recording));
+    assert_eq!(deliver(&mut w, MAIN_WINDOW), Poll::Progress);
+    assert_eq!(deliver(&mut w, OVERLAY_WINDOW), Poll::Progress);
+    apply_effect(&mut w, 2, "R209.2", Effect::SetStatus(Status::Recovering));
+    apply_effect(&mut w, 2, "R209.2", emit(Status::Recovering));
+    assert_eq!(deliver(&mut w, MAIN_WINDOW), Poll::Progress);
+    assert_eq!(w.windows[MAIN_WINDOW].observed, Status::Recovering);
+    assert_eq!(
+        w.windows[OVERLAY_WINDOW].observed,
+        Status::Recording,
+        "the overlay has not received it"
+    );
+    assert_eq!(w.windows[OVERLAY_WINDOW].inbox.len(), 1);
+}
+
+/// D-S2b-18 (3) in the seeded runs: a window sends a stop on `Recording` after the shell
+/// entered `Recovering` while the other window has already received `Recovering` (and would
+/// send none), and every property holds. One cursor could not represent both.
+#[test]
+fn the_windows_disagree_in_the_seeded_runs() {
+    let mut disagreed = 0;
+    for seed in 0..20_000 {
+        let (report, trace) = run_seed_with(seed, true);
+        assert!(
+            report.violations.is_empty(),
+            "{seed}: {:?}",
+            report.violations
+        );
+        disagreed += trace
+            .iter()
+            .filter(|line| {
+                line.contains("frontend stop issued on a stale observation")
+                    && line.contains("the other window shows Recovering")
+            })
+            .count();
+    }
+    assert!(
+        disagreed > 0,
+        "no run ever had one window send a stop while the other had received Recovering"
     );
 }
 

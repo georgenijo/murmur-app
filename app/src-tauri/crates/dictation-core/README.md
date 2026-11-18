@@ -491,15 +491,23 @@ splitmix64 generator turns a seed into the whole run.
     still in the store. There is no exemption for a preserved capture nobody took: the stop
     that could take it is the user's in `Recovering`, which the frontend suppresses
     (`useRecordingState.ts` `handleStop`; `useRecordingState.test.tsx` "issues no stop or
-    cancel IPC while the status is recovering"), so the generator drops a stop a
-    frontend-gated caller (the main window, the hold and toggle hotkeys, the overlay, the
-    silence auto-stop) would issue while the status its window last *received* is
-    `Recovering`. Observation and delivery are separate (D-S2b-17 (b)): the shell's status
-    write is queued and a `FrontendTask` step delivers it, so a stop sent while the window
-    still shows `Recording` after the shell entered `Recovering` is a valid schedule (a stop
-    already in flight stays a flight). Every generated user stop is unscoped
-    (`recording_id = None`), as production sends it; a stale id reaches the stop family only
-    through the `Interrupted` auto-stop and the explicit decision tests (D-S2b-17 (c)). The registered `stop_native_recording` IPC has no such guard and
+    cancel IPC while the status is recovering"), so the generator binds every user stop to
+    its caller (D-S2b-18): a window caller (the main window with the hold and toggle hotkeys
+    and the silence auto-stop, or the overlay) sends the stop IPC only when *its own
+    window* last received `Recording` (`useRecordingState.ts` `handleStop`,
+    `useRecordingControls.ts` click and double-click; on `Starting` a window cancels
+    instead, on `Recovering` it only presents a message). Observation and delivery are
+    separate (D-S2b-17 (b)): the status event is queued when the shell *emits* it
+    (`EmitStatus`, not at the `SetStatus` write, so two rows that write in one order can
+    emit in the other and a window can receive `Idle -> Recovering`), and each window has
+    its own delivery cursor and its own delivery steps. A stop sent while a window still
+    shows `Recording` after the shell entered `Recovering` is a valid schedule, even while
+    the other window has already received `Recovering` (a stop already in flight stays a
+    flight). A delivery changes no shell state, so it takes no model time. Every generated
+    user stop is unscoped (`recording_id = None`), as production sends it; a stale id
+    reaches the stop family only through the `Interrupted` auto-stop and the explicit
+    decision tests (D-S2b-17 (c)). The registered `stop_native_recording` IPC has no window
+    gate and
     the supervisor's `Interrupted` auto-stop bypasses the frontend: both keep every
     schedule (D-S2b-15 (c)); a run in which the unscoped IPC takes the retained capture ends
     in `Idle`, and one in which nothing does is PD-19's third entry (ordinary controls leave
@@ -517,12 +525,15 @@ splitmix64 generator turns a seed into the whole run.
   (D-S2b-9 (b)): each injected notification or reply cites its production sender and
   state, uses the production strings, and the test asserts the exact replies, statuses
   and ledger outcomes.
-* **Seeds**: 10,000 in CI (about a second and a half, budget 20 s): `0..9,995` and five
-  fixed seeds (`FIXED_SEEDS`: 10,843, 14,262, 93,074, 97,854, 2,798,896) that take the
-  PD-21 (short stop), PD-19 (dropped start, `TerminationUnconfirmed`, refused auto-stop)
-  and PD-22 (stop's failure tail) entries no seed of the plain range takes, so the converse check (every PD and every signature row is
-  witnessed) has no pinned exception. `PROPTEST_CASES=300000 cargo test -p
-  murmur-dictation-core --lib property::` raises it. `TRACE_SEED=<n> cargo test -p
+* **Seeds**: 10,000 in CI (about a second and a half, budget 20 s), fixed whatever the
+  environment says: `0..9,994` and six fixed seeds (`FIXED_SEEDS`: 11,125, 18,279, 22,704,
+  23,985, 244,103, 377,529) that take the PD-19 (`TerminationUnconfirmed`, dropped start,
+  refused auto-stop), PD-24 (environmental recovery), PD-22 (against the cancel's own
+  `TERM`) and PD-21 (short stop) entries no seed of the plain range takes, so the converse
+  check (every PD and every signature row is witnessed) has no pinned exception. The deeper
+  sweep is a separate ignored test, `cargo test -p murmur-dictation-core --lib --release --
+  --ignored the_deep_sweep --nocapture` (300,000 seeds; `DEEP_SWEEP_SEEDS=3000000` sets
+  another size). `TRACE_SEED=<n> cargo test -p
   murmur-dictation-core --lib property::tests::trace_one -- --nocapture` prints one run.
   `DUMP_SP4B=1` prints the context of every split no signature matches. A core row
   change that is meant to differ from C3 edits `c3_fixture.txt` by hand, after the

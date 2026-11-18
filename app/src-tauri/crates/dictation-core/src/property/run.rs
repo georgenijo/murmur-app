@@ -11,10 +11,10 @@
 
 use super::checks::{Checker, RunHits};
 use super::flights::{CancelFlight, StartFlight, StopFlight};
-use super::gen::{self, Bias, Cmd};
+use super::gen::{self, Bias, Cmd, StopCaller};
 use super::model::*;
 use super::rng::Rng;
-use super::sup_task::{FrontendTask, SupTask, WorkerTask};
+use super::sup_task::{SupTask, WorkerTask};
 use super::task::*;
 use crate::status::Status;
 
@@ -82,13 +82,8 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
             task: Box::new(WorkerTask),
             daemon: true,
         },
-        Slot {
-            tid: 3,
-            task: Box::new(FrontendTask),
-            daemon: true,
-        },
     ];
-    let mut next_tid: TaskId = 4;
+    let mut next_tid: TaskId = 3;
     let mut pending: std::collections::VecDeque<(u32, Cmd)> = scenario.cmds.into();
     let mut bias = Bias::roll(&mut rng);
     let mut clock = 0u32;
@@ -107,36 +102,65 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
         // Issue the commands that are due.
         while pending.front().is_some_and(|(at, _)| *at <= clock) {
             let (_, cmd) = pending.pop_front().expect("checked above");
-            // Stops follow their caller (D-S2b-15 (c), D-S2b-17 (b)). A frontend-gated caller
-            // (the main window, the hold and toggle hotkeys, the overlay, the silence
-            // auto-stop) acts on the status its window last *received*: it sends no stop
-            // while that is `Recovering` (`useRecordingState.ts` `handleStop` only presents
-            // "Microphone cleanup is still in progress"), and still sends one while the
-            // window shows `Recording` after the shell entered `Recovering`, because the
-            // status event is delivered by a step of its own (`FrontendTask`). The
-            // `stop_native_recording` IPC has no such guard and keeps every schedule, as does
-            // the supervisor's `Interrupted` auto-stop (a flight, not a command). A stop
-            // issued earlier and still in flight when the status turns `Recovering` is
-            // already a flight.
-            if let Cmd::Stop { via_ipc, .. } = &cmd {
-                if !*via_ipc && w.observed == Status::Recovering {
-                    if let Some(trace) = checker.trace.as_mut() {
-                        trace.push(format!(
-                            "{clock:>4} frontend stop suppressed (delivered status Recovering)"
-                        ));
+            // Stops follow their caller (D-S2b-15 (c), D-S2b-17 (b), D-S2b-18). A window
+            // caller (the main window with the hold and toggle hotkeys and the silence
+            // auto-stop, or the overlay) acts on the status *its own window* last
+            // received, and sends the stop IPC only when that is `Recording`
+            // (`useRecordingState.ts` `handleStop`; `useRecordingControls.ts` click and
+            // double-click). On `Starting` the window cancels instead (the `Cancel`
+            // commands model that call), on `Recovering` it only presents "Microphone
+            // cleanup is still in progress", on anything else it does nothing. The
+            // window can still show `Recording` after the shell entered `Recovering`,
+            // because the emit reaches it in a delivery step of its own, and the
+            // two windows can disagree. The `stop_native_recording` IPC has no such gate
+            // and keeps every schedule, as does the supervisor's `Interrupted` auto-stop
+            // (a flight, not a command). A stop issued earlier and still in flight when
+            // the status turns `Recovering` is already a flight.
+            if let Cmd::Stop { caller, .. } = &cmd {
+                let window_name = |index: usize| {
+                    if index == MAIN_WINDOW {
+                        "main"
+                    } else {
+                        "overlay"
                     }
-                    continue;
-                }
-                if let Some(trace) = checker.trace.as_mut() {
-                    if w.status == Status::Recovering {
-                        trace.push(if *via_ipc {
-                            format!("{clock:>4} unscoped stop IPC issued (status Recovering)")
-                        } else {
-                            format!(
-                                "{clock:>4} frontend stop issued on a stale observation ({:?}) while the shell is Recovering",
-                                w.observed
-                            )
-                        });
+                };
+                match *caller {
+                    StopCaller::Window(index) => {
+                        let observed = w.windows[index].observed;
+                        if observed != Status::Recording {
+                            if let Some(trace) = checker.trace.as_mut() {
+                                trace.push(if observed == Status::Recovering {
+                                    format!(
+                                        "{clock:>4} frontend stop suppressed ({} window received Recovering)",
+                                        window_name(index)
+                                    )
+                                } else {
+                                    format!(
+                                        "{clock:>4} frontend stop not sent ({} window shows {observed:?})",
+                                        window_name(index)
+                                    )
+                                });
+                            }
+                            continue;
+                        }
+                        if w.status == Status::Recovering {
+                            if let Some(trace) = checker.trace.as_mut() {
+                                trace.push(format!(
+                                    "{clock:>4} frontend stop issued on a stale observation ({} window shows Recording) while the shell is Recovering; the other window shows {:?}",
+                                    window_name(index),
+                                    w.windows[1 - index].observed
+                                ));
+                            }
+                        }
+                    }
+                    StopCaller::Ipc => {
+                        if w.status == Status::Recovering {
+                            if let Some(trace) = checker.trace.as_mut() {
+                                trace.push(format!(
+                                    "{clock:>4} unscoped stop IPC issued (status Recovering)"
+                                ));
+                            }
+                        }
                     }
                 }
             }
@@ -156,6 +180,30 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
                 daemon: false,
             });
             next_tid += 1;
+        }
+
+        // A window receives its next status event (D-S2b-17 (b), D-S2b-18). Each window has
+        // its own delivery cursor and receives at its own pace, so a delivery is a step of
+        // the schedule of its own that can land between any two shell steps (or never
+        // before a stop is issued). It is not a shell step: it changes no shell state, so
+        // it takes no model time and no actor's weight.
+        let ready: Vec<usize> = (0..w.windows.len())
+            .filter(|window| !w.windows[*window].inbox.is_empty())
+            .collect();
+        if !ready.is_empty() && rng.chance(1, 3) {
+            let window = ready[rng.index(ready.len())];
+            let status = w.deliver_status(window);
+            if let Some(trace) = checker.trace.as_mut() {
+                trace.push(format!(
+                    "{clock:>4} {} window receives {status:?}",
+                    if window == MAIN_WINDOW {
+                        "main"
+                    } else {
+                        "overlay"
+                    }
+                ));
+            }
+            continue;
         }
 
         // Pick an actor: weighted order, first one that makes progress.

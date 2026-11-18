@@ -452,16 +452,40 @@ pub struct History {
     pub ops_high_water: usize,
 }
 
+/// The window whose stop handler is `useRecordingState.ts` `handleStop` (the main window,
+/// the hold and toggle hotkeys it listens for, the silence auto-stop).
+pub const MAIN_WINDOW: usize = 0;
+/// The overlay window (`useRecordingControls.ts`: click and double-click stop).
+pub const OVERLAY_WINDOW: usize = 1;
+
+/// One window's receiving end of `recording-status-changed`: its own delivery cursor
+/// (`inbox`, in emit order) and the status it last received (`observed`).
+#[derive(Debug, Default, Clone)]
+pub struct WindowView {
+    pub observed: Status,
+    pub inbox: std::collections::VecDeque<Status>,
+}
+
+impl WindowView {
+    /// The window receives the next event of its inbox; returns the status it now shows.
+    fn receive(&mut self) -> Status {
+        if let Some(status) = self.inbox.pop_front() {
+            self.observed = status;
+        }
+        self.observed
+    }
+}
+
 #[derive(Debug)]
 pub struct World {
     // M1-M4
     pub status: Status,
-    /// The status the frontend window last *received* (D-S2b-17 (b)). The shell writes
-    /// `status`; each write is queued in `status_events` and delivered to the window by a
-    /// step of its own (`FrontendTask`), so a window can still show `Recording` after the
-    /// shell entered `Recovering`.
-    pub observed: Status,
-    pub status_events: std::collections::VecDeque<Status>,
+    /// What each stop-capable window last *received* (D-S2b-17 (b), D-S2b-18). The shell
+    /// writes `status`; the `recording-status-changed` *emit* (not the write) queues the
+    /// status in every window's inbox, and a delivery step of the scheduler hands it to that
+    /// window. A window can still show `Recording` after the shell entered `Recovering`, and
+    /// two windows can show different statuses at the same moment.
+    pub windows: [WindowView; 2],
     pub current_id: Rid,
     pub cancelled_through: Rid,
     pub context_for: Option<Rid>,
@@ -498,11 +522,16 @@ pub struct World {
 }
 
 impl World {
+    /// Window `window` receives its next `recording-status-changed` event (a step of the
+    /// schedule of its own); returns the status it now shows.
+    pub fn deliver_status(&mut self, window: usize) -> Status {
+        self.windows[window].receive()
+    }
+
     pub fn new() -> Self {
         Self {
             status: Status::Idle,
-            observed: Status::Idle,
-            status_events: std::collections::VecDeque::new(),
+            windows: [WindowView::default(), WindowView::default()],
             current_id: 0,
             cancelled_through: 0,
             context_for: None,

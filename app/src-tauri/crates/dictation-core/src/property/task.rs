@@ -322,6 +322,17 @@ pub fn by_placement(decision: &Decision, at: Placement) -> Vec<Placed> {
         .collect()
 }
 
+/// Whether an `EmitStatus` with this condition emits in the model. `UnlessSpeculativeFlowing`
+/// skips the `starting` emit while the speculative recorder is flowing; the model has no
+/// speculative flow, so it never skips. `EmitOk` pairs a presentation with an emit and does
+/// not gate an emit; the model's emit always succeeds.
+pub(crate) fn emission_runs(cond: crate::effects::Cond) -> bool {
+    use crate::effects::Cond;
+    match cond {
+        Cond::Always | Cond::UnlessSpeculativeFlowing | Cond::EmitOk(_) => true,
+    }
+}
+
 /// Apply one effect atomically. Returns `false` for the effects a flight
 /// handles itself (they cross to another actor): `CS`, `CP`, `CC`, `RS`, `PS`.
 pub fn apply(cx: &mut Cx<'_>, fx: &FxCtx, at: Placement, effect: &Effect) -> bool {
@@ -335,18 +346,25 @@ pub fn apply(cx: &mut Cx<'_>, fx: &FxCtx, at: Placement, effect: &Effect) -> boo
         | Effect::SelfStop { .. }
         | Effect::PipelineSpawn(_) => return false,
         Effect::SetStatus(to) => {
+            // A write only: a window learns nothing until the status is *emitted*
+            // (`EmitStatus`, often a later placement of the same row), so two rows can
+            // write in one order and emit in the other (D-S2b-18).
             cx.w.status = *to;
-            // The window learns the status from an event, in a step of its own.
-            cx.w.status_events.push_back(*to);
         }
         Effect::AllocId => {
             // SP6: `next_recording_id` only under D+T.
             debug_assert_eq!(cx.w.t_holder, Some(fx.tid), "ID+ without T");
             cx.w.current_id += 1;
         }
-        Effect::EmitStatus { status, .. } => {
-            if *status == Status::Idle {
-                *cx.w.idle_emits.entry(fx.rid).or_default() += 1;
+        Effect::EmitStatus { status, cond } => {
+            if emission_runs(*cond) {
+                if *status == Status::Idle {
+                    *cx.w.idle_emits.entry(fx.rid).or_default() += 1;
+                }
+                // Every window gets the event in emit order, each at its own pace.
+                for window in &mut cx.w.windows {
+                    window.inbox.push_back(*status);
+                }
             }
         }
         Effect::Terminal(terminal) => {

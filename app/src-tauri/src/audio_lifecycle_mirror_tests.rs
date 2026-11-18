@@ -300,7 +300,20 @@ fn without_test_items(items: Vec<syn::Item>) -> Vec<syn::Item> {
             syn::Item::Macro(i) if is_exactly_cfg_test(&i.attrs) => None,
             syn::Item::Union(i) if is_exactly_cfg_test(&i.attrs) => None,
             syn::Item::ExternCrate(i) if is_exactly_cfg_test(&i.attrs) => None,
-            syn::Item::ForeignMod(i) if is_exactly_cfg_test(&i.attrs) => None,
+            syn::Item::ForeignMod(mut block) => {
+                if is_exactly_cfg_test(&block.attrs) {
+                    return None;
+                }
+                // A foreign declaration with its own exact test gate is test-only too.
+                block.items.retain(|member| match member {
+                    syn::ForeignItem::Fn(m) => !is_exactly_cfg_test(&m.attrs),
+                    syn::ForeignItem::Static(m) => !is_exactly_cfg_test(&m.attrs),
+                    syn::ForeignItem::Type(m) => !is_exactly_cfg_test(&m.attrs),
+                    syn::ForeignItem::Macro(m) => !is_exactly_cfg_test(&m.attrs),
+                    _ => true,
+                });
+                Some(syn::Item::ForeignMod(block))
+            }
             syn::Item::TraitAlias(i) if is_exactly_cfg_test(&i.attrs) => None,
             syn::Item::Mod(mut module) => {
                 if is_exactly_cfg_test(&module.attrs) {
@@ -446,11 +459,51 @@ fn the_whole_file_pin_sees_every_production_edit_and_no_test_or_comment_edit() {
         appended("struct P; impl P { #[cfg(test)] fn t() { 1 } }"),
         appended("struct P; impl P { #[cfg(test)] fn t() { 2 } }")
     );
-    // ... and only the exact attribute: `cfg(all(test, unix))` is kept (it is production
-    // in a unix test build and an edit of it is an edit).
+    // A foreign declaration with the exact test gate is test-only; the test-looking gates
+    // are production and an edit of any of them is an edit (Sol's round-7 probes).
+    assert_eq!(
+        appended("extern \"C\" { #[cfg(test)] fn probe(); }"),
+        appended("extern \"C\" { #[cfg(test)] fn probe(x: u8); }")
+    );
+    assert_eq!(
+        appended("extern \"C\" { #[cfg(test)] static PROBE: u8; }"),
+        appended("extern \"C\" { #[cfg(test)] static PROBE: u16; }")
+    );
     assert_ne!(
-        appended("#[cfg(all(test, unix))] fn probe() { 1 }"),
-        appended("#[cfg(all(test, unix))] fn probe() { 2 }")
+        appended("extern \"C\" { fn probe(); }"),
+        appended("extern \"C\" { fn probe(x: u8); }"),
+        "an ungated foreign declaration is production"
+    );
+    // ... and only the exact attribute: `cfg(all(test, unix))`, `cfg(any(test, unix))`,
+    // `cfg(not(test))` and `cfg_attr(test, ..)` are kept (production in some build, so an
+    // edit of any of them is an edit), on items and on foreign declarations alike.
+    for gate in [
+        "#[cfg(all(test, unix))]",
+        "#[cfg(any(test, unix))]",
+        "#[cfg(not(test))]",
+        "#[cfg_attr(test, inline)]",
+    ] {
+        assert_ne!(
+            appended(&format!("{gate} fn probe() {{ 1 }}")),
+            appended(&format!("{gate} fn probe() {{ 2 }}")),
+            "{gate} on an item"
+        );
+        assert_ne!(
+            appended(&format!("extern \"C\" {{ {gate} fn probe(); }}")),
+            appended(&format!("extern \"C\" {{ {gate} fn probe(x: u8); }}")),
+            "{gate} on a foreign declaration"
+        );
+    }
+    // Sol's round-7 probe: a macro input's `#[doc = ".."]` is an edit (a macro can expand it
+    // into anything); a source doc comment outside a macro is not.
+    assert_ne!(
+        appended("macro_rules! pick { (#[doc = \"normal\"]) => { 1 }; (#[doc = $x:literal]) => { 2 }; } fn probe() -> u8 { pick!(#[doc = \"normal\"]) }"),
+        appended("macro_rules! pick { (#[doc = \"normal\"]) => { 1 }; (#[doc = $x:literal]) => { 2 }; } fn probe() -> u8 { pick!(#[doc = \"changed\"]) }"),
+        "a #[doc] argument of a macro call is an edit"
+    );
+    assert_eq!(
+        appended("/// one\nfn probe() { let _ = 1; }"),
+        appended("/// two\n/// lines\nfn probe() { let _ = 1; }")
     );
     // A comment is not an edit; a doc comment is not an edit.
     assert_eq!(
