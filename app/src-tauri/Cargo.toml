@@ -45,7 +45,7 @@ internal-benchmark = []
 # internal builds only, never a user setting, and it also needs `MURMUR_SHADOW=1`
 # at process start. A default build contains none of its code. Removal is tracked
 # in #1154.
-dictation-shadow = []
+dictation-shadow = ["dep:crossbeam-queue"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -120,6 +120,9 @@ objc2-foundation = "0.3"
 objc2-quartz-core = "0.3"
 objc2-core-graphics = "0.3"
 block2 = "0.6"
+# Lock-free preallocated queue for dictation shadow capture (D-S2c-1 a); only built
+# with the `dictation-shadow` feature.
+crossbeam-queue = { version = "0.3", optional = true }
 core-graphics = { version = "0.25", features = ["elcapitan"] }
 core-foundation = "0.10"
 security-framework = "3.7"
@@ -142,3 +145,12 @@ codegen-units = 16
 lto = false
 opt-level = "s"
 strip = false
+
+# Native shadow soak builds (Stage 2c, #1154): the release profile with unwinding.
+# The `dictation-shadow` feature catches the shadow's own panics so they can never
+# reach the live path, and `catch_unwind` does nothing under `panic = "abort"`, so
+# the feature refuses to build in the release profile (`compile_error!` in lib.rs).
+# Build with `cargo build --profile shadow-soak --features dictation-shadow`.
+[profile.shadow-soak]
+inherits = "release"
+panic = "unwind"

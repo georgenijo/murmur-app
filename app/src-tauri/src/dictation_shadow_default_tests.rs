@@ -33,7 +33,14 @@ fn shadow_off_by_default() {
         .split("\n[")
         .next()
         .unwrap();
-    assert!(features.contains("dictation-shadow = []"));
+    assert!(
+        features.contains("dictation-shadow = [\"dep:crossbeam-queue\"]"),
+        "the feature enables only the optional queue dependency"
+    );
+    assert!(
+        manifest.contains("crossbeam-queue = { version = \"0.3\", optional = true }"),
+        "the queue dependency is optional, so a default build does not compile it"
+    );
     for line in features
         .lines()
         .filter(|l| l.trim_start().starts_with("default"))

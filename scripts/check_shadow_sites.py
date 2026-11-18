@@ -21,14 +21,16 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DIR = Path("app/src-tauri/src")
 
 # `shadow_site!(`, `shadow_site!{` and `shadow_site![` all invoke the macro.
-SITE = re.compile(r"\bshadow_site!\s*[(\[{]")
+# Rust allows whitespace, newlines and comments between the macro name and the
+# `!`. Comments are blanked (to spaces) before this runs, so `\s*` covers them.
+SITE = re.compile(r"\bshadow_site\s*!\s*[(\[{]")
 ISSUE = re.compile(r"\s*issue\s*=\s*(\d+)\s*[,)\]}]")
 # The one accepted shape after the opening bracket: the issue number and nothing else.
 WELL_FORMED = re.compile(r"\s*issue\s*=\s*\d+\s*,?\s*[)\]}]")
 TEST_MODULE = re.compile(
     r"#\[cfg\(test\)\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{"
 )
-MACRO_DEFINITION = re.compile(r"macro_rules!\s+shadow_site\s*\{")
+MACRO_DEFINITION = re.compile(r"macro_rules\s*!\s*shadow_site\s*\{")
 CHAR_LITERAL = re.compile(r"'(?:\\[^']+|[^\\'])'")
 RAW_STRING_START = re.compile(r'r(#*)"')
 

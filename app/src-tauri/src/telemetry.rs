@@ -760,12 +760,46 @@ fn is_dictation_shadow_mismatch_event(data: &serde_json::Map<String, serde_json:
 /// the C3 row's ordinal and the comparison level. No string, no recording id, no
 /// content. Keep that exact schema in every build (the event is only emitted by
 /// `dictation-shadow` builds, but its registry arm and this schema are not gated).
+///
+/// The three fields are validated **together**: all present, each a number in its
+/// documented range. A record that fails any check is dropped whole (emptied),
+/// never partly kept, so a partial or out-of-range event cannot reach a log sink.
 fn sanitize_dictation_shadow_mismatch_event(data: &mut serde_json::Map<String, serde_json::Value>) {
-    data.retain(|key, value| match key.as_str() {
-        "event_code" => true,
-        "site_id" | "input_kind" | "diff_kind" => value.as_u64().is_some(),
+    let field = |name: &str| data.get(name).and_then(serde_json::Value::as_u64);
+    let valid = match (field("site_id"), field("input_kind"), field("diff_kind")) {
+        (Some(site), Some(kind), Some(diff)) => {
+            is_valid_dictation_shadow_mismatch(site, kind, diff)
+        }
         _ => false,
+    };
+    if !valid {
+        data.clear();
+        return;
+    }
+    data.retain(|key, _| {
+        matches!(
+            key.as_str(),
+            "event_code" | "site_id" | "input_kind" | "diff_kind"
+        )
     });
+}
+
+/// Largest C3 row ordinal the mismatch event may carry (`RowId::ordinal`, a
+/// registry test pins that every row fits).
+pub(crate) const SHADOW_MAX_INPUT_KIND: u64 = 9_999;
+
+/// The documented value ranges of the shadow mismatch event: a C0.3 site code, a
+/// row ordinal and a `diff_kind` of 1 to 9 (appendix C8.3).
+pub(crate) fn is_valid_dictation_shadow_mismatch(
+    site_id: u64,
+    input_kind: u64,
+    diff_kind: u64,
+) -> bool {
+    murmur_dictation_core::decision::SiteId::ALL
+        .iter()
+        .any(|site| u64::from(site.code()) == site_id)
+        && input_kind <= SHADOW_MAX_INPUT_KIND
+        && (1..=9).contains(&diff_kind)
 }
 
 /// Main-thread diagnostics carry only static labels, ids, monotonic
@@ -4928,7 +4962,8 @@ mod tests {
                 "pipeline.dictation_shadow_mismatch"
             );
 
-            // A string where a number belongs is dropped, not passed through.
+            // A string where a number belongs drops the whole record, not just
+            // the bad field.
             let mut invalid = serde_json::json!({
                 "event_code": "pipeline.dictation_shadow_mismatch",
                 "site_id": "SENTINEL",
@@ -4936,14 +4971,54 @@ mod tests {
                 "diff_kind": 9,
             });
             sanitize_event_data("pipeline", &mut invalid, debug_build);
-            assert_eq!(invalid.as_object().unwrap().len(), 2);
-            assert_eq!(invalid["diff_kind"], 9);
+            assert!(invalid.as_object().unwrap().is_empty(), "{invalid}");
         }
         // The registry arm is compiled in every build.
         assert_eq!(
             canonical_event_code("pipeline.dictation_shadow_mismatch"),
             Some("pipeline.dictation_shadow_mismatch")
         );
+    }
+
+    /// Review fix (Sol 6.2 minor 2): a malformed shadow record is dropped whole by
+    /// the sanitizer both log sinks run. `diff_kind = 256`, a missing field, a
+    /// string, `0`, an unknown site and an oversized row ordinal all fail it.
+    #[test]
+    fn shadow_sanitizer_drops_out_of_range_and_partial_records_whole() {
+        let code = "pipeline.dictation_shadow_mismatch";
+        let bad = [
+            serde_json::json!({"event_code":code,"site_id":216,"input_kind":1,"diff_kind":256}),
+            serde_json::json!({"event_code":code,"site_id":216,"input_kind":1,"diff_kind":10}),
+            serde_json::json!({"event_code":code,"site_id":216,"input_kind":1}),
+            serde_json::json!({"event_code":code,"site_id":216,"diff_kind":2}),
+            serde_json::json!({"event_code":code,"input_kind":1,"diff_kind":2}),
+            serde_json::json!({"event_code":code,"site_id":216,"input_kind":"x","diff_kind":2}),
+            serde_json::json!({"event_code":code,"site_id":216,"input_kind":1,"diff_kind":0}),
+            serde_json::json!({"event_code":code,"site_id":1,"input_kind":1,"diff_kind":2}),
+            serde_json::json!({"event_code":code,"site_id":216,"input_kind":10000,"diff_kind":2}),
+        ];
+        for debug_build in [true, false] {
+            for event in &bad {
+                let mut event = event.clone();
+                sanitize_event_data("pipeline", &mut event, debug_build);
+                assert!(event.as_object().unwrap().is_empty(), "{event}");
+            }
+            let mut good =
+                serde_json::json!({"event_code":code,"site_id":216,"input_kind":1,"diff_kind":9});
+            sanitize_event_data("pipeline", &mut good, debug_build);
+            assert_eq!(good.as_object().unwrap().len(), 4, "{good}");
+        }
+    }
+
+    /// Every C3 row ordinal fits the event's documented `input_kind` range.
+    #[test]
+    fn shadow_input_kind_range_covers_every_row_ordinal() {
+        let largest = murmur_dictation_core::rows::C3_ROWS
+            .iter()
+            .map(|(row, _)| u64::from(murmur_dictation_core::decision::RowId(row).ordinal()))
+            .max()
+            .unwrap();
+        assert!(largest <= SHADOW_MAX_INPUT_KIND, "{largest}");
     }
 
     #[test]

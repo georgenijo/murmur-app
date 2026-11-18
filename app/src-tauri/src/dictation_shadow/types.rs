@@ -5,14 +5,143 @@
 //! effect kinds from the core. No transcript, audio, clipboard or selection
 //! content exists in any of these types (CLAUDE.md privacy rule), so nothing a
 //! message carries can reach a log or the summary file.
+//!
+//! **No type here owns heap memory.** A header's lists are [`Inline`] arrays with a
+//! fixed capacity, so assembling a header and queueing a message never allocates
+//! (D-S2c-1 a): the queue stores messages by value, and a list that would overflow
+//! is counted and marks its header as not comparable instead of growing.
 
-use murmur_dictation_core::decision::{ContKind, ObsKind, OpStatus};
+use murmur_dictation_core::decision::ContKind;
 use murmur_dictation_core::effects::{Effect, Placement};
 use murmur_dictation_core::ids::{Now, OperationId, RecordingId};
 use murmur_dictation_core::inputs::Input;
 use murmur_dictation_core::replies::{Reply, ReplyType};
 use murmur_dictation_core::state::LiveObs;
 use murmur_dictation_core::status::Status;
+
+/// Inline `Pre` capacity: the largest C3 `Pre` list is 4 today (R216.1).
+pub(crate) const PRE_CAPACITY: usize = 8;
+/// Inline `In` capacity: the largest C3 `In` list is 6 today (R101.15).
+pub(crate) const IN_CAPACITY: usize = 16;
+/// Shell-conditional witnesses per placement group.
+pub(crate) const COND_CAPACITY: usize = 8;
+/// Live-field mirrors per placement group.
+pub(crate) const MIRROR_CAPACITY: usize = 8;
+/// History operations a header carries (H1 and H2 registrations and retirements).
+pub(crate) const OPS_CAPACITY: usize = 8;
+/// Observed facts per header.
+pub(crate) const OBSERVED_CAPACITY: usize = 4;
+/// Ticker registrations a header carries (`SD` under D).
+pub(crate) const TICKER_CAPACITY: usize = 2;
+
+/// A fixed-capacity list stored inline: no heap, `push` fails when full.
+#[derive(Clone, Debug)]
+pub(crate) struct Inline<T, const N: usize> {
+    items: [Option<T>; N],
+    len: usize,
+}
+
+impl<T, const N: usize> Default for Inline<T, N> {
+    fn default() -> Self {
+        Self {
+            items: std::array::from_fn(|_| None),
+            len: 0,
+        }
+    }
+}
+
+impl<T, const N: usize> Inline<T, N> {
+    /// Append `value`; `false` (and nothing stored) when the list is full.
+    pub(crate) fn push(&mut self, value: T) -> bool {
+        match self.items.get_mut(self.len) {
+            Some(slot) => {
+                *slot = Some(value);
+                self.len += 1;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.len
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &T> {
+        self.items[..self.len].iter().flatten()
+    }
+
+    pub(crate) fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.items[..self.len].iter_mut().flatten()
+    }
+
+    pub(crate) fn get(&self, index: usize) -> Option<&T> {
+        self.items[..self.len].get(index).and_then(Option::as_ref)
+    }
+
+    /// The items as an owned vector (the comparison side may allocate).
+    pub(crate) fn to_vec(&self) -> Vec<T>
+    where
+        T: Clone,
+    {
+        self.iter().cloned().collect()
+    }
+
+    pub(crate) fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Keep the items `keep` accepts (tests damage a header with it).
+    #[cfg(test)]
+    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&T) -> bool) {
+        let kept: Vec<T> = std::mem::take(self)
+            .items
+            .into_iter()
+            .flatten()
+            .filter(|item| keep(item))
+            .collect();
+        for item in kept {
+            self.push(item);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remove(&mut self, index: usize) -> T {
+        let mut all: Vec<T> = std::mem::take(self).items.into_iter().flatten().collect();
+        let removed = all.remove(index);
+        for item in all {
+            self.push(item);
+        }
+        removed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn swap(&mut self, a: usize, b: usize) {
+        self.items.swap(a, b);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_slice(values: &[T]) -> Self
+    where
+        T: Clone,
+    {
+        let mut list = Self::default();
+        for value in values {
+            assert!(list.push(value.clone()), "capacity {N}");
+        }
+        list
+    }
+}
+
+impl<T: PartialEq, const N: usize> PartialEq for Inline<T, N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.len == other.len && self.iter().zip(other.iter()).all(|(a, b)| a == b)
+    }
+}
 
 /// Names a flight-local recorder. Drawn from the recorder's own counter, created
 /// **before** `run(Pre)`, and never equal to a header's `seq` (the counters live in
@@ -94,9 +223,6 @@ pub(crate) enum MirrorField {
     ActiveContext,
     /// `keyboard::IS_PROCESSING`, written by `KB(b)`.
     KeyboardProcessing,
-    /// The partial ticker registration, written by `SD`. Recorded for the summary
-    /// and the soak; no decided commit exists for it, so it is never compared.
-    TickerRegistered,
 }
 
 /// A live field value.
@@ -111,12 +237,45 @@ pub(crate) enum MirrorValue {
 }
 
 /// A live M-field value before and after an effect wrote it, read inside the
-/// adapter's existing lock section (no new lock, C8.2).
+/// adapter's existing lock section (no new lock, C8.2). The *before* value is what
+/// makes a stale-safe write checkable: `CX-(id)` must clear a slot holding `id` and
+/// must leave a slot holding another recording's id alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct MirrorWitness {
     pub field: MirrorField,
     pub before: MirrorValue,
     pub after: MirrorValue,
+}
+
+/// The inputs and the result of one ticker registration attempt (`SD`, query 404:
+/// `id > 0`, the id is current, the status is `Recording`, the id is not cancelled
+/// and `note_ticker_started` saw no later id). Captured where the live gate ran: under
+/// the caller's D for `In:SD`, under the wrapper's own D for `PostDT:SD`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TickerGate {
+    /// The recording the attempt was for.
+    pub id: RecordingId,
+    /// Live M1 status the gate read.
+    pub status: Status,
+    /// Live M2 current id the gate read.
+    pub current_id: RecordingId,
+    /// Live M3 `cancelled_id` the gate read.
+    pub cancelled_through: RecordingId,
+    /// The ticker high-water mark before `fetch_max` (`note_ticker_started`).
+    pub ticker_before: RecordingId,
+    /// Whether the live path registered a ticker.
+    pub registered: bool,
+}
+
+impl TickerGate {
+    /// What the gate must decide from its own inputs.
+    pub(crate) fn expected(&self) -> bool {
+        self.id.0 > 0
+            && self.status == Status::Recording
+            && self.id == self.current_id
+            && self.cancelled_through < self.id
+            && self.ticker_before <= self.id
+    }
 }
 
 /// Persisted M1/M2 as the live path read them, plus the M3/M4 observations
@@ -128,20 +287,30 @@ pub(crate) struct Projection {
     pub obs: LiveObs,
 }
 
-/// What the shell did to the history for this decision.
+/// Which history table an operation touched. H1 is `pending_ops` (continuations),
+/// H2 is `pipelines` (the registered pipeline of a recording).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LiveOpKind {
-    /// `reg`: the shell drew `op` from `NEXT_OP` and registered the continuation.
-    Registered,
-    /// `ret` / `ret_if_matches`: the shell retired `op`.
-    Retired,
+pub(crate) enum HistoryTable {
+    H1,
+    H2,
 }
 
-/// An op id the live shell drew from `NEXT_OP` (or retired) for a decision. The
-/// shadow **replays** these ids and never draws its own (C8.1).
+/// What the shell did to a history table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HistoryAction {
+    /// `reg` / `reg_pipeline`: the shell drew `op` from `NEXT_OP` and registered it.
+    Registered,
+    /// `ret` / `ret_if_matches` / an owner's `Drop`: the shell retired `op`;
+    /// `matched` is whether the table held it.
+    Retired { matched: bool },
+}
+
+/// One history operation of a decision. The shadow **replays** these ids and never
+/// draws its own (C8.1), and it copies no history.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LiveOp {
-    pub kind: LiveOpKind,
+    pub table: HistoryTable,
+    pub action: HistoryAction,
     pub cont: ContKind,
     pub recording_id: RecordingId,
     pub op: OperationId,
@@ -152,11 +321,6 @@ pub(crate) struct LiveOp {
 pub(crate) enum ObservedFact {
     /// `speculative_flowing`: what `P-spec-flowing` reads.
     SpeculativeFlowing(bool),
-    /// The live path answered this `NeedObservation` (its answer is a field of the
-    /// header's `input`).
-    Answered(ObsKind),
-    /// The validated status of a consumed op token.
-    Op { op: OperationId, status: OpStatus },
 }
 
 /// The kind of a reply: the JSON `type` string, not the body (C8.3 `diff_kind 4`).
@@ -185,7 +349,7 @@ impl ReplyKind {
 }
 
 /// The header of one decision: assembled under D, submitted right after D is
-/// released and before any blocking effect (C8.2).
+/// released and before any blocking effect (C8.2). Owns no heap memory.
 #[derive(Clone, Debug)]
 pub(crate) struct ShadowHeader {
     /// Taken at the existing decision boundary; **is** D order. Not the recorder id.
@@ -201,32 +365,116 @@ pub(crate) struct ShadowHeader {
     /// The typed input, observations answered.
     pub input: Input,
     /// Every value the live path read for this decision.
-    pub observed: Vec<ObservedFact>,
-    /// Op ids the shell drew and registered or retired.
-    pub live_ops: Vec<LiveOp>,
+    pub observed: Inline<ObservedFact, OBSERVED_CAPACITY>,
+    /// The H1 / H2 operations of this decision before the header was sent.
+    pub live_ops: Inline<LiveOp, OPS_CAPACITY>,
     /// The shell's stamp; excluded from comparison.
     pub now: Now,
     /// Effects that ran at `Pre`, in order, with their results.
-    pub pre_effects: Vec<WitnessedEffect>,
+    pub pre_effects: Inline<WitnessedEffect, PRE_CAPACITY>,
     /// Shell-conditional `Pre` effects.
-    pub pre_conditionals: Vec<CondWitness>,
+    pub pre_conditionals: Inline<CondWitness, COND_CAPACITY>,
     /// Effects that ran at `In`, in order.
-    pub in_d_effects: Vec<WitnessedEffect>,
+    pub in_d_effects: Inline<WitnessedEffect, IN_CAPACITY>,
     /// Shell-conditional effects evaluated under D.
-    pub in_d_conditionals: Vec<CondWitness>,
-    /// M4 before/after each `Pre:CX-`.
-    pub pre_mirrors: Vec<MirrorWitness>,
-    /// M4 before/after each `In:CX±`.
-    pub in_d_mirrors: Vec<MirrorWitness>,
+    pub in_d_conditionals: Inline<CondWitness, COND_CAPACITY>,
+    /// The live fields each `Pre` effect wrote (`CX-`, `MC`, `KB`), before and after.
+    pub pre_mirrors: Inline<MirrorWitness, MIRROR_CAPACITY>,
+    /// The live fields each `In` effect wrote, before and after.
+    pub in_d_mirrors: Inline<MirrorWitness, MIRROR_CAPACITY>,
+    /// Ticker registrations attempted by an `In:SD`.
+    pub in_d_tickers: Inline<TickerGate, TICKER_CAPACITY>,
     /// Persisted M1/M2 as the `In` effects committed them, read under D just
     /// before release.
     pub live_post_d: Projection,
+    /// A capture list overflowed while this header was assembled: it is incomplete
+    /// and is counted, never compared.
+    pub overflowed: bool,
 }
 
-/// One message of the single bounded channel.
-#[derive(Debug)]
+impl ShadowHeader {
+    /// A header for `seq` with every list empty; the live path fills it in.
+    pub(crate) fn new(
+        seq: u64,
+        rec: RecorderId,
+        site_id: u16,
+        row: u16,
+        pre: Projection,
+        input: Input,
+        now: Now,
+    ) -> Self {
+        Self {
+            seq,
+            rec,
+            site_id,
+            row,
+            pre,
+            input,
+            observed: Inline::default(),
+            live_ops: Inline::default(),
+            now,
+            pre_effects: Inline::default(),
+            pre_conditionals: Inline::default(),
+            in_d_effects: Inline::default(),
+            in_d_conditionals: Inline::default(),
+            pre_mirrors: Inline::default(),
+            in_d_mirrors: Inline::default(),
+            in_d_tickers: Inline::default(),
+            live_post_d: pre,
+            overflowed: false,
+        }
+    }
+
+    fn note(&mut self, stored: bool) {
+        self.overflowed |= !stored;
+    }
+
+    pub(crate) fn add_observed(&mut self, fact: ObservedFact) {
+        let stored = self.observed.push(fact);
+        self.note(stored);
+    }
+
+    pub(crate) fn add_op(&mut self, op: LiveOp) {
+        let stored = self.live_ops.push(op);
+        self.note(stored);
+    }
+
+    pub(crate) fn add_in_effect(&mut self, effect: WitnessedEffect) {
+        let stored = self.in_d_effects.push(effect);
+        self.note(stored);
+    }
+
+    pub(crate) fn add_in_conditional(&mut self, witness: CondWitness) {
+        let stored = self.in_d_conditionals.push(witness);
+        self.note(stored);
+    }
+
+    pub(crate) fn add_in_mirror(&mut self, mirror: MirrorWitness) {
+        let stored = self.in_d_mirrors.push(mirror);
+        self.note(stored);
+    }
+
+    pub(crate) fn add_in_ticker(&mut self, gate: TickerGate) {
+        let stored = self.in_d_tickers.push(gate);
+        self.note(stored);
+    }
+
+    /// Move the recorder's buffered `Pre` witnesses into the header.
+    pub(crate) fn adopt_pre(&mut self, pre: super::transport::PreCapture) {
+        self.pre_effects = pre.effects;
+        self.pre_conditionals = pre.conditionals;
+        self.pre_mirrors = pre.mirrors;
+        self.overflowed |= pre.overflowed;
+    }
+}
+
+/// One message of the single bounded queue, stored by value.
+#[derive(Clone, Debug)]
+// The header is the large variant on purpose: the queue stores messages by value in
+// preallocated slots, so nothing is boxed or allocated on submit (D-S2c-1 a).
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum ShadowMsg {
-    Header(Box<ShadowHeader>),
+    Header(ShadowHeader),
     /// An effect that ran after D.
     Witness {
         rec: RecorderId,
@@ -242,11 +490,20 @@ pub(crate) enum ShadowMsg {
         pred: PredId,
         taken: bool,
     },
-    /// A live M-field written at effect time after D.
+    /// A live M-field written at effect time after D, with its before and after.
     Mirror {
         rec: RecorderId,
-        field: MirrorField,
-        value: MirrorValue,
+        mirror: MirrorWitness,
+    },
+    /// A ticker registration attempt after D (`PostDT:SD`).
+    Ticker {
+        rec: RecorderId,
+        gate: TickerGate,
+    },
+    /// An H1 / H2 operation after D (an owner's `Drop`, a deferred retirement).
+    History {
+        rec: RecorderId,
+        op: LiveOp,
     },
     Reply {
         rec: RecorderId,
@@ -261,20 +518,71 @@ pub(crate) enum ShadowMsg {
     /// decision, no `seq`. Reported, not lost.
     PreAbandoned {
         rec: RecorderId,
-        pre_effects: Vec<WitnessedEffect>,
-        pre_conditionals: Vec<CondWitness>,
     },
-    /// A header that will never arrive (its ticket was dropped).
-    Lost {
-        seq: u64,
-    },
+}
+
+impl ShadowMsg {
+    /// The recorder a message belongs to.
+    pub(crate) fn rec(&self) -> RecorderId {
+        match self {
+            Self::Header(header) => header.rec,
+            Self::Witness { rec, .. }
+            | Self::Cond { rec, .. }
+            | Self::Mirror { rec, .. }
+            | Self::Ticker { rec, .. }
+            | Self::History { rec, .. }
+            | Self::Reply { rec, .. }
+            | Self::Close { rec, .. }
+            | Self::PreAbandoned { rec } => *rec,
+        }
+    }
+}
+
+/// Something the live side could not deliver, attributed by recorder and seq
+/// (D-S2c-1 c). Plain numbers so it can be written to the lock-free loss log.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LossEntry {
+    /// The recorder whose message was lost.
+    pub rec: u64,
+    /// The lost header's `seq`; `0` when the lost thing was not a header.
+    pub seq: u64,
+    /// The lost header's site, `0` when unknown.
+    pub site: u64,
+    /// The recording ids the lost header named (`0` = none), so the loss taints
+    /// exactly those ids instead of guessing from neighbours.
+    pub ids: [u64; 3],
+}
+
+impl LossEntry {
+    /// What losing `msg` loses.
+    pub(crate) fn of(msg: &ShadowMsg) -> Self {
+        match msg {
+            ShadowMsg::Header(header) => {
+                let mut ids = [0_u64; 3];
+                ids[0] = header.input.recording_id().map_or(0, |id| id.0);
+                ids[1] = header.pre.current_id.0;
+                ids[2] = header.live_post_d.current_id.0;
+                Self {
+                    rec: header.rec.0,
+                    seq: header.seq,
+                    site: u64::from(header.site_id),
+                    ids,
+                }
+            }
+            other => Self {
+                rec: other.rec().0,
+                ..Self::default()
+            },
+        }
+    }
 }
 
 /// `diff_kind` of the mismatch event (C8.3), in the documented order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub(crate) enum DiffKind {
-    /// The multiset of effects differs (including a decided effect never witnessed).
+    /// The multiset of effects differs (including a decided effect, conditional or
+    /// mirror witness never seen, or seen twice).
     EffectSet = 1,
     /// Same set, different order within a placement.
     EffectOrder = 2,
@@ -284,9 +592,9 @@ pub(crate) enum DiffKind {
     Reply = 4,
     /// Persisted M1/M2, or an M3/M4 mirror, differs from the decided commit.
     PostState = 5,
-    /// The registered continuation differs in kind, recording id or op id.
+    /// The registered continuation or a history operation differs.
     Continuation = 6,
-    /// The decision asked for an observation the live path did not record.
+    /// A decision or a conditional needs an input the live path did not record.
     Observation = 7,
     /// The shadow's own decide panicked.
     ShadowPanic = 8,

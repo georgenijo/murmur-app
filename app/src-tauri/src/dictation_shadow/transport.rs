@@ -1,92 +1,113 @@
-//! The live side of shadow capture: the bounded channel, the flight-owned
-//! recorder and the header ticket (appendix C8.2).
+//! The live side of shadow capture: the preallocated queue, the flight-owned
+//! recorder and the header ticket (appendix C8.2, decision D-S2c-1 a and c).
 //!
-//! **The capture path never blocks and takes no lock.** `witness`, `mark`, `submit`
-//! and the two helpers they call (`send`, `try_deliver`) use `try_send` only: a full
-//! channel drops the message and counts it (`dropped`), it never waits. They read
-//! atomics and write one channel slot. The only lock in this file is the comparator
-//! mutex of the **synchronous test mode** (`set_sync`), reached through
-//! `deliver_sync`, a separate function that the live path never enters unless a
-//! test asked for it; the `shadow_capture_takes_no_lock` test pins the bodies of
-//! the others.
+//! **The producer path is a single lock-free `push` into a preallocated
+//! `crossbeam_queue::ArrayQueue` and nothing else.** `witness`, `mark`, `submit`
+//! and the recorder's `close` store a message by value in one of the queue's 256
+//! slots. They allocate nothing, take no lock, register no waker, wake no thread and
+//! never block: a full queue counts a drop through an atomic and records *which
+//! flight and which `seq`* was lost in a second preallocated lock-free queue (the
+//! loss log). The consumer polls on a fixed sleep (`mod.rs`); there is no channel,
+//! no `std::sync::mpsc` and no `Mutex` on this side.
+//!
+//! The only synchronous dispatch and the only mutex in this file are in the
+//! `test_mode` module at the end, compiled only under `cfg(test)`; the
+//! `shadow_capture_takes_no_lock_allocates_nothing` test pins the production text
+//! and counts allocations on the real path.
 //!
 //! **No thread-local is used for correlation** (C8.2): a flight's later phases run
 //! on other threads and tasks, so the recorder travels with the flight instead.
 
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use crossbeam_queue::ArrayQueue;
 use murmur_dictation_core::effects::Placement;
 
-use super::compare::Comparator;
 use super::types::{
-    CondWitness, MirrorField, MirrorValue, MirrorWitness, PredId, RecorderId, ReplyKind,
-    ShadowHeader, ShadowMsg, WitnessedEffect,
+    CondWitness, Inline, LiveOp, LossEntry, MirrorWitness, PredId, RecorderId, ReplyKind,
+    ShadowHeader, ShadowMsg, TickerGate, WitnessedEffect, COND_CAPACITY, MIRROR_CAPACITY,
+    PRE_CAPACITY,
 };
 
-/// The one bounded channel's capacity (C8.2).
-pub(crate) const CHANNEL_CAPACITY: usize = 256;
+/// The queue's capacity (C8.2, D-S2c-1 a).
+pub(crate) const QUEUE_CAPACITY: usize = 256;
 
-/// Inline `Pre` buffer capacity: the largest C3 `Pre` list is 4 today (R216.1), so
-/// 8 leaves room without a heap allocation (`shadow_pre_buffer_covers_c3`).
-pub(crate) const PRE_CAPACITY: usize = 8;
+/// The loss log's capacity: one entry per message the queue could not take.
+pub(crate) const LOSS_CAPACITY: usize = 256;
 
 /// The recorder id counter starts here, so a `RecorderId` can never be mistaken for
 /// a header `seq` (which starts at 1): they are different namespaces by construction.
 const REC_BASE: u64 = 1 << 32;
 
-/// Everything both sides share: the channel's sending end, the counters the live
-/// side bumps and the comparator the receiving side owns.
+/// Everything both sides share: the queues, the counters the live side bumps and
+/// the two id counters.
 pub(crate) struct Transport {
-    tx: SyncSender<ShadowMsg>,
-    /// Messages `try_send` could not queue (channel full or receiver gone).
+    queue: ArrayQueue<ShadowMsg>,
+    /// What the queue could not take, by recorder and `seq` (D-S2c-1 c).
+    losses: ArrayQueue<LossEntry>,
+    /// Messages the queue could not take.
     dropped: AtomicU64,
-    /// `Pre` buffer overflows (a flight recorded more than `PRE_CAPACITY`).
+    /// Losses the loss log itself could not take: the consumer can no longer say
+    /// which records were affected and must invalidate every open one.
+    loss_overflow: AtomicU64,
+    /// Capture-list overflows (a flight recorded more than a list can hold).
     overflow: AtomicU64,
     /// Next header `seq`; the first one handed out is 1.
     seq: AtomicU64,
     /// Next recorder id.
     rec: AtomicU64,
-    /// Test mode: compare on the calling thread instead of the channel.
+    #[cfg(test)]
     sync: AtomicBool,
-    comparator: Arc<Mutex<Comparator>>,
+    #[cfg(test)]
+    sync_comparator: std::sync::Mutex<Option<super::compare::Comparator>>,
 }
 
 impl Transport {
-    /// A transport over a bounded channel of `capacity`, and the receiving end.
-    pub(crate) fn new(capacity: usize, comparator: Comparator) -> (Arc<Self>, Receiver<ShadowMsg>) {
-        let (tx, rx) = sync_channel(capacity);
-        let transport = Arc::new(Self {
-            tx,
+    /// A transport whose queues are allocated here, once, and never again.
+    pub(crate) fn new(capacity: usize, loss_capacity: usize) -> Arc<Self> {
+        Arc::new(Self {
+            queue: ArrayQueue::new(capacity),
+            losses: ArrayQueue::new(loss_capacity),
             dropped: AtomicU64::new(0),
+            loss_overflow: AtomicU64::new(0),
             overflow: AtomicU64::new(0),
             seq: AtomicU64::new(1),
             rec: AtomicU64::new(REC_BASE),
+            #[cfg(test)]
             sync: AtomicBool::new(false),
-            comparator: Arc::new(Mutex::new(comparator)),
-        });
-        (transport, rx)
+            #[cfg(test)]
+            sync_comparator: std::sync::Mutex::new(None),
+        })
     }
 
-    /// The comparator the receiving thread (or the synchronous mode) drives.
-    pub(crate) fn comparator(&self) -> &Arc<Mutex<Comparator>> {
-        &self.comparator
+    /// The consumer's side: the next queued message.
+    pub(crate) fn pop(&self) -> Option<ShadowMsg> {
+        self.queue.pop()
     }
 
-    /// Compare on the calling thread, no channel (E7: the golden replay needs it
-    /// fully deterministic). A test mode: it is the only path that takes the
-    /// comparator lock from a capture call.
-    pub(crate) fn set_sync(&self, on: bool) {
-        self.sync.store(on, Ordering::SeqCst);
+    /// Messages waiting in the queue.
+    #[cfg(test)]
+    pub(crate) fn pending(&self) -> usize {
+        self.queue.len()
     }
 
-    /// Messages the channel could not queue, since the last call.
+    /// The consumer's side: the next recorded loss.
+    pub(crate) fn pop_loss(&self) -> Option<LossEntry> {
+        self.losses.pop()
+    }
+
+    /// Messages the queue could not take, since the last call.
     pub(crate) fn take_dropped(&self) -> u64 {
         self.dropped.swap(0, Ordering::Relaxed)
     }
 
-    /// `Pre` buffer overflows, since the last call.
+    /// Losses nobody could attribute, since the last call.
+    pub(crate) fn take_loss_overflow(&self) -> u64 {
+        self.loss_overflow.swap(0, Ordering::Relaxed)
+    }
+
+    /// Capture-list overflows, since the last call.
     pub(crate) fn take_overflow(&self) -> u64 {
         self.overflow.swap(0, Ordering::Relaxed)
     }
@@ -96,95 +117,90 @@ impl Transport {
         ShadowRecorder {
             rec: RecorderId(self.rec.fetch_add(1, Ordering::Relaxed)),
             transport: Arc::clone(self),
-            flags: Arc::new(Flags::default()),
             next_idx: AtomicU16::new(0),
             closed: AtomicBool::new(false),
-            pre: PreBuffer::default(),
+            pre_entered: AtomicBool::new(false),
+            seq_taken: AtomicBool::new(false),
+            header_submitted: AtomicBool::new(false),
+            pre: PreCapture::default(),
         }
     }
 
     fn send(&self, msg: ShadowMsg) {
+        #[cfg(test)]
         if self.sync.load(Ordering::Relaxed) {
             self.deliver_sync(msg);
-        } else {
-            self.try_deliver(msg);
-        }
-    }
-
-    /// The live path: `try_send` and nothing else.
-    fn try_deliver(&self, msg: ShadowMsg) {
-        if self.tx.try_send(msg).is_err() {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    /// Test mode: apply the message on the calling thread.
-    fn deliver_sync(&self, msg: ShadowMsg) {
-        let Ok(mut comparator) = self.comparator.lock() else {
             return;
-        };
-        comparator.note_dropped(self.take_dropped());
-        comparator.note_overflow(self.take_overflow());
-        comparator.handle_msg(msg);
+        }
+        self.push(msg);
     }
-}
 
-/// Flags the ticket and the recorder share, so each knows what the other did.
-#[derive(Default)]
-struct Flags {
-    /// A ticket was taken: `seq` was assigned, so the flight is past D entry and an
-    /// unsent header is reported by the ticket's `Lost`, not by `PreAbandoned`.
-    seq_taken: AtomicBool,
-    header_submitted: AtomicBool,
+    /// The live path: one `push`. A rejected message comes back by value, so the
+    /// loss is attributed to its recorder and `seq` from the message itself.
+    fn push(&self, msg: ShadowMsg) {
+        if let Err(rejected) = self.queue.push(msg) {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.record_loss(LossEntry::of(&rejected));
+        }
+    }
+
+    fn record_loss(&self, loss: LossEntry) {
+        if self.losses.push(loss).is_err() {
+            self.loss_overflow.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn count_overflow(&self) {
+        self.overflow.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// The `Pre` witnesses buffered inline before the header exists (C8.2): owned by
 /// the flight, written on the decision's own thread, so it needs no lock and no
-/// allocation.
-#[derive(Default)]
-struct PreBuffer {
-    effects: [Option<WitnessedEffect>; PRE_CAPACITY],
-    effect_len: usize,
-    conditionals: [Option<CondWitness>; PRE_CAPACITY],
-    conditional_len: usize,
-    mirrors: [Option<MirrorWitness>; PRE_CAPACITY],
-    mirror_len: usize,
-}
-
-/// The `Pre` witnesses a recorder buffered, ready to become the header's
-/// `pre_effects`, `pre_conditionals` and `pre_mirrors`.
-#[derive(Debug, Default, PartialEq, Eq)]
+/// allocation. It is a recorder field, so it is preallocated with the recorder.
+#[derive(Clone, Debug, Default)]
 pub(crate) struct PreCapture {
-    pub effects: Vec<WitnessedEffect>,
-    pub conditionals: Vec<CondWitness>,
-    pub mirrors: Vec<MirrorWitness>,
+    pub effects: Inline<WitnessedEffect, PRE_CAPACITY>,
+    pub conditionals: Inline<CondWitness, COND_CAPACITY>,
+    pub mirrors: Inline<MirrorWitness, MIRROR_CAPACITY>,
+    pub overflowed: bool,
 }
 
 /// The flight-owned recorder: created before `run(Pre)`, moved with the flight
 /// (the command future, the spawned continuation, the guards, the supervisor-arm
 /// closure; wrap it in an `Arc` to share it between tasks of one flight).
 ///
+/// * `enter_pre` marks the start of `run(Pre)`. A flight dropped before that sent
+///   nothing and owes nothing.
 /// * `Pre` witnesses go to the inline buffer, then into the header (`take_pre`).
 /// * Later witnesses are incremental messages, sent only after the header was
 ///   submitted, so every later message is causally after its header.
 /// * `finish` sends `Close{completed:true}`. A drop without it sends
-///   `Close{completed:false}` once the header was submitted, or `PreAbandoned`
-///   (carrying the buffered `Pre` witnesses) when the flight was dropped before D
-///   entry. A drop after the ticket was taken but before the header was sent is
-///   the ticket's `Lost`.
+///   `Close{completed:false}` once the header was submitted, or `PreAbandoned` when
+///   `run(Pre)` had begun and D was never entered. A drop after the ticket was taken
+///   but before the header was sent is the ticket's loss.
 pub(crate) struct ShadowRecorder {
     rec: RecorderId,
     transport: Arc<Transport>,
-    flags: Arc<Flags>,
     next_idx: AtomicU16,
     closed: AtomicBool,
-    pre: PreBuffer,
+    /// `run(Pre)` was entered: the flight has done (or is doing) observable work.
+    pre_entered: AtomicBool,
+    /// A ticket was taken: `seq` was assigned, so the flight is past D entry.
+    seq_taken: AtomicBool,
+    header_submitted: AtomicBool,
+    pre: PreCapture,
 }
 
 impl ShadowRecorder {
     /// The recorder's id (not a `seq`).
     pub(crate) fn id(&self) -> RecorderId {
         self.rec
+    }
+
+    /// `run(Pre)` begins. Only a flight that entered it can be `PreAbandoned`.
+    pub(crate) fn enter_pre(&self) {
+        self.pre_entered.store(true, Ordering::Relaxed);
     }
 
     /// The index the next effect of the **full** decided list will have, and
@@ -200,79 +216,52 @@ impl ShadowRecorder {
         self.next_idx.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Buffer a `Pre` effect that actually ran. `false` (and a `witness_overflow`
-    /// count) when the buffer is full.
-    pub(crate) fn pre_effect(&mut self, effect: WitnessedEffect) -> bool {
-        match self.pre.effects.get_mut(self.pre.effect_len) {
-            Some(slot) => {
-                *slot = Some(effect);
-                self.pre.effect_len += 1;
-                true
-            }
-            None => {
-                self.transport.overflow.fetch_add(1, Ordering::Relaxed);
-                false
-            }
+    fn note_overflow(&mut self, stored: bool) -> bool {
+        if !stored {
+            self.pre.overflowed = true;
+            self.transport.count_overflow();
         }
+        stored
+    }
+
+    /// Buffer a `Pre` effect that actually ran. `false` (and an overflow count)
+    /// when the buffer is full; the header is then marked not comparable.
+    pub(crate) fn pre_effect(&mut self, effect: WitnessedEffect) -> bool {
+        let stored = self.pre.effects.push(effect);
+        self.note_overflow(stored)
     }
 
     /// Buffer a shell-conditional `Pre` effect (taken or skipped).
     pub(crate) fn pre_conditional(&mut self, pred: PredId, taken: bool) -> bool {
-        match self.pre.conditionals.get_mut(self.pre.conditional_len) {
-            Some(slot) => {
-                *slot = Some(CondWitness { pred, taken });
-                self.pre.conditional_len += 1;
-                true
-            }
-            None => {
-                self.transport.overflow.fetch_add(1, Ordering::Relaxed);
-                false
-            }
-        }
+        let stored = self.pre.conditionals.push(CondWitness { pred, taken });
+        self.note_overflow(stored)
     }
 
-    /// Buffer the M4 slot's before/after value of a `Pre:CX-`.
+    /// Buffer a `Pre` effect's live-field write, before and after.
     pub(crate) fn pre_mirror(&mut self, mirror: MirrorWitness) -> bool {
-        match self.pre.mirrors.get_mut(self.pre.mirror_len) {
-            Some(slot) => {
-                *slot = Some(mirror);
-                self.pre.mirror_len += 1;
-                true
-            }
-            None => {
-                self.transport.overflow.fetch_add(1, Ordering::Relaxed);
-                false
-            }
-        }
+        let stored = self.pre.mirrors.push(mirror);
+        self.note_overflow(stored)
     }
 
-    /// Move the buffered `Pre` witnesses out, for the header.
+    /// Move the buffered `Pre` witnesses out, for the header. Call it before
+    /// `ticket`, which borrows the recorder.
     pub(crate) fn take_pre(&mut self) -> PreCapture {
-        let pre = std::mem::take(&mut self.pre);
-        PreCapture {
-            effects: pre.effects.into_iter().flatten().collect(),
-            conditionals: pre.conditionals.into_iter().flatten().collect(),
-            mirrors: pre.mirrors.into_iter().flatten().collect(),
-        }
+        std::mem::take(&mut self.pre)
     }
 
     /// Take the header's `seq` at the existing decision boundary (under D; D-less
-    /// entries at decision time). The ticket sends `Lost{seq}` if it is dropped
+    /// entries at decision time). The ticket records the loss if it is dropped
     /// without a submit.
-    pub(crate) fn ticket(&self) -> ShadowTicket {
-        self.flags.seq_taken.store(true, Ordering::Relaxed);
+    pub(crate) fn ticket(&self) -> ShadowTicket<'_> {
+        self.seq_taken.store(true, Ordering::Relaxed);
         ShadowTicket {
             seq: self.transport.seq.fetch_add(1, Ordering::Relaxed),
-            rec: self.rec,
-            transport: Arc::clone(&self.transport),
-            flags: Arc::clone(&self.flags),
+            recorder: self,
             sent: false,
         }
     }
 
-    /// The flight ran to its end: send `Close{completed:true}`. Idempotent. A flight
-    /// that ends without ever submitting a header (it never reached D entry) is
-    /// reported as abandoned, never silently lost.
+    /// The flight ran to its end: send `Close{completed:true}`. Idempotent.
     pub(crate) fn finish(&self) {
         self.close(true);
     }
@@ -281,28 +270,19 @@ impl ShadowRecorder {
         if self.closed.swap(true, Ordering::SeqCst) {
             return;
         }
-        if self.flags.header_submitted.load(Ordering::Relaxed) {
+        if self.header_submitted.load(Ordering::Relaxed) {
             self.transport.send(ShadowMsg::Close {
                 rec: self.rec,
                 completed,
             });
-        } else if !self.flags.seq_taken.load(Ordering::Relaxed) {
-            // Before D entry: no decision, no `seq`. (A ticket that was taken and
-            // never submitted reports itself as `Lost{seq}`.)
-            let pre = self.snapshot_pre();
-            self.transport.send(ShadowMsg::PreAbandoned {
-                rec: self.rec,
-                pre_effects: pre.effects,
-                pre_conditionals: pre.conditionals,
-            });
-        }
-    }
-
-    fn snapshot_pre(&self) -> PreCapture {
-        PreCapture {
-            effects: self.pre.effects.iter().flatten().cloned().collect(),
-            conditionals: self.pre.conditionals.iter().flatten().copied().collect(),
-            mirrors: self.pre.mirrors.iter().flatten().copied().collect(),
+        } else if !self.seq_taken.load(Ordering::Relaxed)
+            && self.pre_entered.load(Ordering::Relaxed)
+        {
+            // `run(Pre)` began and D was never entered: no decision, no `seq`.
+            // (A ticket that was taken and never submitted reports its own loss,
+            // and a recorder that never entered `Pre` did nothing to report.)
+            self.transport
+                .send(ShadowMsg::PreAbandoned { rec: self.rec });
         }
     }
 }
@@ -315,17 +295,15 @@ impl Drop for ShadowRecorder {
     }
 }
 
-/// The right to submit one header: `seq` was taken at the decision boundary. Sends
-/// `Lost{seq}` from its `Drop` if the thread unwinds between D release and `submit`.
-pub(crate) struct ShadowTicket {
+/// The right to submit one header: `seq` was taken at the decision boundary. Records
+/// the loss from its `Drop` if the thread unwinds between D release and `submit`.
+pub(crate) struct ShadowTicket<'a> {
     seq: u64,
-    rec: RecorderId,
-    transport: Arc<Transport>,
-    flags: Arc<Flags>,
+    recorder: &'a ShadowRecorder,
     sent: bool,
 }
 
-impl ShadowTicket {
+impl ShadowTicket<'_> {
     /// The header's `seq`.
     pub(crate) fn seq(&self) -> u64 {
         self.seq
@@ -333,50 +311,58 @@ impl ShadowTicket {
 
     /// The recorder the ticket was taken from.
     pub(crate) fn rec(&self) -> RecorderId {
-        self.rec
+        self.recorder.rec
     }
 }
 
-impl Drop for ShadowTicket {
+impl Drop for ShadowTicket<'_> {
     fn drop(&mut self) {
         if !self.sent {
-            self.transport.send(ShadowMsg::Lost { seq: self.seq });
+            self.recorder.transport.record_loss(LossEntry {
+                rec: self.recorder.rec.0,
+                seq: self.seq,
+                ..LossEntry::default()
+            });
         }
     }
 }
 
-/// What `mark` sends: a conditional, a live-field mirror or the reply kind.
+/// What `mark` sends.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Mark {
     /// A shell-conditional effect after D.
     Cond { pred: PredId, taken: bool },
-    /// A live M-field written at effect time after D.
-    Mirror {
-        field: MirrorField,
-        value: MirrorValue,
-    },
+    /// A live M-field written at effect time after D, before and after.
+    Mirror(MirrorWitness),
+    /// A ticker registration attempt after D.
+    Ticker(TickerGate),
+    /// An H1 / H2 operation after D.
+    History(LiveOp),
     /// The command's reply kind.
     Reply(ReplyKind),
 }
 
 /// Submit the header right after D is released and before the first `PostDT` effect
-/// (C8.2): `try_send`, no lock, never blocks. The header's `seq` and `rec` must be
+/// (C8.2): one `push`, no lock, never blocks. The header's `seq` and `rec` must be
 /// the ticket's and its recorder's.
-pub(crate) fn submit(mut ticket: ShadowTicket, header: ShadowHeader) {
+pub(crate) fn submit(mut ticket: ShadowTicket<'_>, header: ShadowHeader) {
     debug_assert_eq!(
         header.seq, ticket.seq,
         "a header is submitted under its own ticket"
     );
     debug_assert_eq!(
-        header.rec, ticket.rec,
+        header.rec, ticket.recorder.rec,
         "a header names its ticket's recorder"
     );
     ticket.sent = true;
-    ticket.flags.header_submitted.store(true, Ordering::Relaxed);
-    ticket.transport.send(ShadowMsg::Header(Box::new(header)));
+    ticket
+        .recorder
+        .header_submitted
+        .store(true, Ordering::Relaxed);
+    ticket.recorder.transport.send(ShadowMsg::Header(header));
 }
 
-/// An effect that ran after D: `try_send` of a `Witness`, no lock, never blocks.
+/// An effect that ran after D: one `push` of a `Witness`.
 pub(crate) fn witness(
     rec: &ShadowRecorder,
     idx: u16,
@@ -391,7 +377,8 @@ pub(crate) fn witness(
     });
 }
 
-/// A conditional, a mirror or the reply of a flight: `try_send`, no lock, never blocks.
+/// A conditional, a mirror, a ticker attempt, a history operation or the reply of a
+/// flight: one `push`.
 pub(crate) fn mark(rec: &ShadowRecorder, mark: Mark) {
     let rec_id = rec.rec;
     let msg = match mark {
@@ -400,12 +387,55 @@ pub(crate) fn mark(rec: &ShadowRecorder, mark: Mark) {
             pred,
             taken,
         },
-        Mark::Mirror { field, value } => ShadowMsg::Mirror {
+        Mark::Mirror(mirror) => ShadowMsg::Mirror {
             rec: rec_id,
-            field,
-            value,
+            mirror,
         },
+        Mark::Ticker(gate) => ShadowMsg::Ticker { rec: rec_id, gate },
+        Mark::History(op) => ShadowMsg::History { rec: rec_id, op },
         Mark::Reply(kind) => ShadowMsg::Reply { rec: rec_id, kind },
     };
     rec.transport.send(msg);
+}
+
+/// Synchronous test-mode dispatch and its mutex: compiled only under `cfg(test)`
+/// (D-S2c-1 a). The golden replay of Stage 2c-2 compares on the calling thread
+/// through it so the result is fully deterministic.
+#[cfg(test)]
+mod test_mode {
+    use super::{Ordering, Transport};
+    use crate::dictation_shadow::compare::Comparator;
+    use crate::dictation_shadow::types::ShadowMsg;
+
+    impl Transport {
+        /// Compare on the calling thread through `comparator`, no queue.
+        pub(crate) fn set_sync(&self, comparator: Option<Comparator>) {
+            let on = comparator.is_some();
+            *self
+                .sync_comparator
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = comparator;
+            self.sync.store(on, Ordering::SeqCst);
+        }
+
+        /// Run `f` on the synchronous comparator.
+        pub(crate) fn with_sync<R>(&self, f: impl FnOnce(&mut Comparator) -> R) -> R {
+            let mut guard = self
+                .sync_comparator
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            f(guard.as_mut().expect("sync comparator installed"))
+        }
+
+        pub(super) fn deliver_sync(&self, msg: ShadowMsg) {
+            let mut guard = self
+                .sync_comparator
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(comparator) = guard.as_mut() {
+                comparator.pump_losses(self);
+                comparator.handle_msg(msg);
+            }
+        }
+    }
 }

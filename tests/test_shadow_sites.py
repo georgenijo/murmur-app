@@ -81,6 +81,27 @@ class ShadowSiteCheckTests(unittest.TestCase):
             )
             self.assertEqual(run(root)[0], 1)
 
+    def test_whitespace_and_comments_between_the_name_and_the_bang_are_still_a_site(self):
+        for name, text in (
+            ("space", "fn f() { shadow_site ! (issue = 1154); }\n"),
+            ("newline", "fn f() {\n    shadow_site\n        !(issue = 1154);\n}\n"),
+            ("comment", "fn f() { shadow_site /* comment */ ! (issue = 1154); }\n"),
+            ("line comment", "fn f() {\n    shadow_site // c\n    ! (issue = 1154);\n}\n"),
+        ):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                write(root, "a.rs", text)
+                sites, problems = scan(root)
+                self.assertEqual([site.issue for site in sites], [1154], name)
+                self.assertEqual(problems, [])
+        # ... and a malformed one in the same spelling is still reported.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write(root, "a.rs", "fn f() { shadow_site /* c */ ! (); }\n")
+            code, out, err = run(root)
+            self.assertEqual(code, 1)
+            self.assertIn("NO ISSUE NUMBER", out)
+
     def test_a_trailing_comma_is_accepted(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
