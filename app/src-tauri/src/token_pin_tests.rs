@@ -87,7 +87,7 @@ fn attribute_len(tokens: &[TokenTree], at: usize) -> Option<usize> {
 
 /// How many tokens from `at` are a macro invocation's bang and input: `!` after the
 /// macro's name (a path's last identifier, not a keyword), then the delimited input, or for
-/// `macro_rules! name {..}` the name and the body.
+/// `macro_rules! name {..}` the name and the body. A label (`'label`) is not a macro name.
 fn macro_input_len(tokens: &[TokenTree], at: usize) -> Option<usize> {
     let TokenTree::Punct(bang) = &tokens[at] else {
         return None;
@@ -98,6 +98,10 @@ fn macro_input_len(tokens: &[TokenTree], at: usize) -> Option<usize> {
     match &tokens[at - 1] {
         TokenTree::Ident(name) if !UNARY_BANG_AFTER.contains(&name.to_string().as_str()) => {}
         _ => return None,
+    }
+    // A lifetime is a `'` and an identifier: `break 'label !(..)` negates, it calls nothing.
+    if at >= 2 && matches!(&tokens[at - 2], TokenTree::Punct(tick) if tick.as_char() == '\'') {
+        return None;
     }
     match (tokens.get(at + 1), tokens.get(at + 2)) {
         (Some(TokenTree::Group(_)), _) => Some(2),
@@ -426,6 +430,44 @@ fn a_doc_attribute_inside_a_macro_is_an_edit_and_a_doc_comment_outside_is_not() 
         hash_of("fn f() { if !(a) { /// x\n b(); } }"),
         hash_of("fn f() { if !(a) { b(); } }")
     );
+}
+
+/// D-S2b-19 (b): `break 'label !(..)` is valid Rust in which `!` negates. The identifier
+/// after a lifetime's apostrophe is a label, never a macro name, so a doc comment inside the
+/// block is still a doc comment. `labeled_break_negation` is the compiled example; the test
+/// hashes its source text.
+#[allow(unused_doc_comments, dead_code)]
+fn labeled_break_negation() -> bool {
+    'label: {
+        if true {
+            break 'label !({
+                /// a doc comment
+                let ready = true;
+                ready
+            });
+        }
+        false
+    }
+}
+
+#[test]
+fn a_label_before_a_bang_is_not_a_macro_name() {
+    let with = |doc: &str| {
+        format!(
+            "fn f() -> bool {{ 'label: {{ if true {{ break 'label !({{ {doc}\n let ready = true; ready }}); }} false }} }}"
+        )
+    };
+    assert_eq!(
+        hash_of(&with("/// one")),
+        hash_of(&with("/// another, longer")),
+        "a doc comment after `break 'label !(` is not an edit"
+    );
+    assert_eq!(hash_of(&with("/// one")), hash_of(&with("")));
+    // The same text with a real macro name keeps its doc comment as an edit.
+    let call = |doc: &str| format!("fn f() {{ label!({{ {doc}\n let ready = true; ready }}); }}");
+    assert_ne!(hash_of(&call("/// one")), hash_of(&call("/// another")));
+    // It compiles, and `!` negated: the break value is `!true`.
+    assert!(!labeled_break_negation());
 }
 
 /// A cited fragment is matched as tokens: a comment or different whitespace inside the

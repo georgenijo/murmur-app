@@ -438,7 +438,7 @@ fn pd19_to_pd24_have_pinned_seeds() {
 
 #[test]
 fn a_seed_is_one_run() {
-    for seed in [0u64, 59, 886, 4903, 9_999] {
+    for seed in [0u64, 59, 886, 4903, 9_993] {
         let (first, first_trace) = run_seed_with(seed, true);
         let (second, second_trace) = run_seed_with(seed, true);
         assert_eq!(
@@ -1854,28 +1854,28 @@ fn two_windows_can_disagree_about_the_status() {
 
 /// D-S2b-18 (3) in the seeded runs: a window sends a stop on `Recording` after the shell
 /// entered `Recovering` while the other window has already received `Recovering` (and would
-/// send none), and every property holds. One cursor could not represent both.
+/// send none). One cursor could not represent both. The witness is pinned at seed 839,
+/// inside the fixed 10,000-seed set; the regular suite asserts nothing beyond that gate
+/// (D-S2b-19 (a)).
 #[test]
 fn the_windows_disagree_in_the_seeded_runs() {
-    let mut disagreed = 0;
-    for seed in 0..20_000 {
-        let (report, trace) = run_seed_with(seed, true);
-        assert!(
-            report.violations.is_empty(),
-            "{seed}: {:?}",
-            report.violations
-        );
-        disagreed += trace
-            .iter()
-            .filter(|line| {
-                line.contains("frontend stop issued on a stale observation")
-                    && line.contains("the other window shows Recovering")
-            })
-            .count();
-    }
+    const WITNESS: u64 = 839;
     assert!(
-        disagreed > 0,
-        "no run ever had one window send a stop while the other had received Recovering"
+        seed_list().contains(&WITNESS),
+        "the witness is inside the gated seeds"
+    );
+    let (report, trace) = run_seed_with(WITNESS, true);
+    assert!(
+        report.violations.is_empty(),
+        "{WITNESS}: {:?}",
+        report.violations
+    );
+    assert!(
+        trace.iter().any(|line| {
+            line.contains("frontend stop issued on a stale observation")
+                && line.contains("the other window shows Recovering")
+        }),
+        "seed {WITNESS} no longer has one window send a stop while the other had received Recovering"
     );
 }
 
