@@ -855,14 +855,8 @@ impl World {
         let stop: Fut<Result<serde_json::Value, String>> = Box::pin(async move {
             let host = Host(Arc::clone(&world));
             let state = world.state();
-            stop_native_recording_admitted(
-                &host,
-                state.inner(),
-                Some(recording_id),
-                audio_lifecycle::DictationStopTrigger::Other,
-                Some(owner),
-            )
-            .await
+            // Production's spawned task runs the same function.
+            dispatch_auto_stop(&host, state.inner(), recording_id, owner).await
         });
         (token, stop)
     }

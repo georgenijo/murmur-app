@@ -1750,6 +1750,21 @@ fn an_auto_stop_carries_its_real_owner_into_the_stop_and_the_op_retires_at_admis
             assert_eq!(token.recording_id, RecordingId(1), "its generation");
             assert_eq!(token.kind, ContKind::AutoStop);
             assert!(history.is_outstanding(token), "outstanding until admission");
+            // The dispatched stop waits on T, which another entry holds: the owner it
+            // carries stays outstanding (a dispatch that dropped it would retire the op
+            // here).
+            let state = w.state();
+            let held = state
+                .app_state
+                .recording_transition
+                .try_lock()
+                .expect("T is free");
+            assert!(poll_once(&mut stop).is_pending(), "the stop waits on T");
+            assert!(
+                history.is_outstanding(token),
+                "the owner is still outstanding while the stop waits for the transition lock"
+            );
+            drop(held);
             // The stop takes T, consumes the owner at admission, and parks in the pipeline.
             assert!(poll_once(&mut stop).is_pending());
             assert!(

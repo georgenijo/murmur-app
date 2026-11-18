@@ -6049,15 +6049,10 @@ pub(crate) fn handle_audio_lifecycle(
                     return;
                 }
                 let state = app_handle.state::<State>();
-                if stop_native_recording_owned(
-                    app_handle.clone(),
-                    state,
-                    Some(recording_id),
-                    audio_lifecycle::DictationStopTrigger::Other,
-                    Some(auto_stop_owner),
-                )
-                .await
-                .is_err()
+                let host = TauriHost::new(app_handle.clone(), state.performance.clone());
+                if dispatch_auto_stop(&host, state.inner(), recording_id, auto_stop_owner)
+                    .await
+                    .is_err()
                 {
                     tracing::error!(
                         target: "pipeline",
@@ -7367,6 +7362,28 @@ async fn stop_native_recording_for(
     stop_trigger: audio_lifecycle::DictationStopTrigger,
 ) -> Result<serde_json::Value, String> {
     stop_native_recording_owned(app_handle, state, expected_recording_id, stop_trigger, None).await
+}
+
+/// R215.2 `RS`: the self-dispatched stop of an interrupted capture. The registered
+/// `AutoStop` owner moves into the stop and is consumed at its admission (C1.4.1 rule
+/// 4), so a dispatch that never runs, or is cancelled while it waits on T, retires the
+/// op when it drops. Production's spawned task and the golden harness's fake host both
+/// run exactly this function.
+async fn dispatch_auto_stop(
+    host: &dyn DictationHost,
+    state: &State,
+    recording_id: u64,
+    auto_stop_owner: ContinuationGuard,
+) -> Result<serde_json::Value, String> {
+    refuse_reentrant_stop()?;
+    stop_native_recording_admitted(
+        host,
+        state,
+        Some(recording_id),
+        audio_lifecycle::DictationStopTrigger::Other,
+        Some(auto_stop_owner),
+    )
+    .await
 }
 
 /// [`stop_native_recording_for`] for the self-dispatched stop of an interrupted
