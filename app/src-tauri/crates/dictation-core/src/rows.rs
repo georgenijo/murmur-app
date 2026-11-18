@@ -3,7 +3,8 @@
 //! and not a claim.
 //!
 //! The table below is the list of row ids in the C3 tables (`R<site>.<n>`,
-//! C3.1-C3.7), in appendix order, 140 rows over 24 sites. It names no behaviour:
+//! C3.1-C3.7), in appendix order, 141 rows over 24 sites (the 140 of the appendix tables and R301.6, the import's own
+//! Smart Destination section, added by Stage 2a-5). It names no behaviour:
 //! it only pins that each row id exists once, belongs to exactly one site, and
 //! that every site is both reachable by an [`crate::inputs::Input`] and owns at
 //! least one row. A `Decision` carries its row as a [`crate::decision::RowId`];
@@ -156,6 +157,7 @@ pub const C3_ROWS: &[(&str, SiteId)] = &[
     ("R301.3", SiteId::ProcessAudioStart),
     ("R301.4", SiteId::ProcessAudioStart),
     ("R301.5", SiteId::ProcessAudioStart),
+    ("R301.6", SiteId::ProcessAudioStart),
     ("R302.1", SiteId::ProcessAudioFinish),
     ("R302.2", SiteId::ProcessAudioFinish),
 ];
@@ -205,7 +207,7 @@ mod tests {
         (SiteId::SupStalled, 2),
         (SiteId::SupInterrupted, 3),
         (SiteId::SupInterruptedShortIdle, 5),
-        (SiteId::ProcessAudioStart, 5),
+        (SiteId::ProcessAudioStart, 6),
         (SiteId::ProcessAudioFinish, 2),
     ];
 
@@ -215,7 +217,7 @@ mod tests {
         for (id, _) in C3_ROWS {
             assert!(seen.insert(*id), "duplicate row id {id}");
         }
-        assert_eq!(C3_ROWS.len(), 140);
+        assert_eq!(C3_ROWS.len(), 141);
     }
 
     #[test]

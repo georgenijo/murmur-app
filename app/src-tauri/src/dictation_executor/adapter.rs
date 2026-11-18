@@ -71,6 +71,10 @@ impl FieldAdapter {
         to: DictationStatus,
     ) -> DictationStatus {
         crate::core_history::assert_not_held();
+        // Test builds: a point where a test observes `core_history` at this `In`
+        // effect (before the write).
+        #[cfg(test)]
+        crate::barrier_hook::at("effect.set_status");
         let from = dictation.status;
         if dictation.core.status() != core_status(from) {
             CORE_DIVERGENCES.fetch_add(1, Ordering::SeqCst);
@@ -93,6 +97,9 @@ impl FieldAdapter {
     /// is counted and re-synced to the live value, never ignored.
     pub(crate) fn alloc_id(app: &AppState, dictation: &mut DictationState) -> u64 {
         crate::core_history::assert_not_held();
+        // Test builds: as for `set_status`, at the `ID+` effect.
+        #[cfg(test)]
+        crate::barrier_hook::at("effect.alloc_id");
         let id = app.next_recording_id();
         let predicted = dictation.core.alloc_id();
         if predicted != RecordingId(id) {

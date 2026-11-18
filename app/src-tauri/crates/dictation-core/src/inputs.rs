@@ -417,8 +417,14 @@ pub enum SupervisorEvent {
 /// Site 301.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessAudioStartInput {
-    /// Occupancy read at 3684-3706.
+    /// The facts read so far (3684-3706): `meeting_active` /
+    /// `meeting_inference_active` before D, then `file_transcribing` under D. Unread
+    /// facts keep their quiet defaults (decision D-S1-2).
     pub occupancy: Occupancy,
+    /// `benchmark.is_running()` (3701): a coordinator-mutex read that today's code
+    /// makes only after the file check passed, so it is `None` until the decision
+    /// answers `NeedObservation(BenchmarkRunning)` (decision D-S1-2).
+    pub benchmark_running: Option<bool>,
 }
 
 /// Which legacy finish (site 302).
@@ -437,6 +443,10 @@ pub struct ProcessAudioFinishInput {
     pub rid: RecordingId,
     /// Which finish.
     pub kind: ProcessAudioFinishKind,
+    /// `ParseFailed` only: the guard's `on_idle` closure emits `idle` (3780, 3786).
+    /// `false` for a finish deferred re-entrantly (D-S2-4: the closure borrows the
+    /// caller's frame and cannot be queued). Ignored by `PipelineDone`.
+    pub closure_emit: bool,
 }
 
 /// Every decide-function input, one variant per C0.3 site.
@@ -665,10 +675,12 @@ mod tests {
             Input::Supervisor(SupervisorEvent::InterruptedShortIdle { rid }),
             Input::ProcessAudioStart(ProcessAudioStartInput {
                 occupancy: Occupancy::default(),
+                benchmark_running: None,
             }),
             Input::ProcessAudioFinish(ProcessAudioFinishInput {
                 rid,
                 kind: ProcessAudioFinishKind::ParseFailed,
+                closure_emit: true,
             }),
         ]
     }

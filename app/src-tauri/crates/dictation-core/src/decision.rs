@@ -130,6 +130,11 @@ pub enum ObsKind {
         /// Recording whose installed context is looked up.
         id: RecordingId,
     },
+    /// `benchmark.is_running()` (3701): the coordinator-mutex read the legacy
+    /// `process_audio` makes only after the file-transcription check passed
+    /// (decision D-S1-2: the decide function asks for it instead of the shell
+    /// reading it eagerly).
+    BenchmarkRunning,
 }
 
 /// Why a stale input (stale recording id, never an op status) takes the site's
@@ -160,6 +165,8 @@ pub enum Refusal {
     AlreadyProcessing,
     /// Stop while Recovering with the capture already taken (R201.6).
     AudioRecovering,
+    /// A legacy `process_audio` refusal (R301.1-.4), with its `Err` text.
+    ProcessAudio(crate::replies::ProcessAudioRefusal),
 }
 
 /// The decision's disposition (C2.1).

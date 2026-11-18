@@ -22,6 +22,7 @@ pub mod effects;
 pub mod ids;
 pub mod inputs;
 pub mod lifecycle;
+pub mod process_audio;
 pub mod replies;
 pub mod rows;
 pub mod start;
