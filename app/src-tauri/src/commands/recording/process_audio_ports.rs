@@ -19,9 +19,10 @@ use tauri::Emitter;
 /// An owned `emit_json` (see [`ImportedAudioHost::idle_emitter`]). A struct with an
 /// `emit_json` method, not a bare closure, so every use is a visible `.emit_json(..)`
 /// call (the SP5 ratchet checks the event name at each).
-pub(super) struct OwnedJsonEmit(
-    Box<dyn Fn(&str, serde_json::Value) -> Result<(), HostEmitError> + Send + 'static>,
-);
+pub(super) struct OwnedJsonEmit(BoxedJsonEmit);
+
+type BoxedJsonEmit =
+    Box<dyn Fn(&str, serde_json::Value) -> Result<(), HostEmitError> + Send + 'static>;
 
 impl OwnedJsonEmit {
     pub(super) fn new(
