@@ -291,44 +291,119 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Files that are `#[cfg(test)]` modules declared out of line (`mod x;`, with an
-/// optional `#[path = ".."]`), resolved against the declaring file's directory.
+/// Out-of-line module declarations (`mod x;`) of one file, as `(candidate files,
+/// whether the declaration requires `test`)`. A declaration requires `test` when its
+/// own `cfg` predicate does, or a module or declaration enclosing it does.
+struct ModDecls<'f> {
+    dir: &'f Path,
+    /// Directory that `mod x;` resolves against (inline modules append their name).
+    base: PathBuf,
+    inline_depth: usize,
+    under_test: bool,
+    found: Vec<(Vec<PathBuf>, bool)>,
+}
+
+impl<'ast> syn::visit::Visit<'ast> for ModDecls<'_> {
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        let requires_test = self.under_test || item.attrs.iter().any(is_cfg_test);
+        let name = syn::ext::IdentExt::unraw(&item.ident).to_string();
+        if item.content.is_some() {
+            let (outer_base, outer_test) = (self.base.clone(), self.under_test);
+            self.base = self.base.join(&name);
+            self.inline_depth += 1;
+            self.under_test = requires_test;
+            syn::visit::visit_item_mod(self, item);
+            self.inline_depth -= 1;
+            self.base = outer_base;
+            self.under_test = outer_test;
+            return;
+        }
+        let explicit = item.attrs.iter().find_map(|attr| {
+            if !attr.path().is_ident("path") {
+                return None;
+            }
+            match &attr.meta {
+                syn::Meta::NameValue(syn::MetaNameValue {
+                    value:
+                        syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Str(path),
+                            ..
+                        }),
+                    ..
+                }) => Some(path.value()),
+                _ => None,
+            }
+        });
+        let candidates = match explicit {
+            // Relative to the file's directory, or to the inline module's directory.
+            Some(file) if self.inline_depth == 0 => vec![self.dir.join(file)],
+            Some(file) => vec![self.base.join(file)],
+            None => vec![
+                self.base.join(format!("{name}.rs")),
+                self.base.join(&name).join("mod.rs"),
+            ],
+        };
+        self.found.push((candidates, requires_test));
+    }
+}
+
+/// Files that are test-only: every `mod x;` declaration that resolves to the file
+/// requires `test` (`#[cfg(test)]`, `all(test, ..)`, or inside such a module). A file
+/// that a production declaration also reaches (the same file declared twice, with
+/// `#[path]`) is production code, and a file nothing declares is production code.
 fn test_only_files(files: &[(PathBuf, String)]) -> HashSet<PathBuf> {
-    let path_attr = Regex::new(r#"#\[path\s*=\s*"([^"]+)"\]"#).expect("regex");
-    let mod_decl = Regex::new(r"^\s*(?:pub(?:\([a-z]+\))?\s+)?mod\s+(\w+)\s*;").expect("regex");
-    let mut skipped = HashSet::new();
+    let known: HashSet<&PathBuf> = files.iter().map(|(path, _)| path).collect();
+    let mut declared_by: std::collections::HashMap<PathBuf, Vec<bool>> =
+        std::collections::HashMap::new();
     for (path, source) in files {
         let dir = path.parent().expect("parent");
-        let mut cfg_test = false;
-        let mut explicit: Option<String> = None;
-        for line in source.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("#[cfg(test)]") || trimmed.starts_with("#[cfg(all(test") {
-                cfg_test = true;
-            } else if let Some(found) = path_attr.captures(trimmed) {
-                explicit = Some(found[1].to_string());
-            } else if let Some(found) = mod_decl.captures(line) {
-                if cfg_test {
-                    match explicit.take() {
-                        Some(file) => {
-                            skipped.insert(dir.join(file));
+        let stem = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("");
+        // `foo.rs` declares `mod x;` as `foo/x.rs`; `mod.rs`, `lib.rs` and `main.rs`
+        // (the directory owners) as `x.rs` next to them.
+        let owns_dir = matches!(stem, "mod" | "lib" | "main");
+        let tree =
+            syn::parse_file(source).unwrap_or_else(|error| panic!("parse {path:?}: {error}"));
+        let mut decls = ModDecls {
+            dir,
+            base: if owns_dir {
+                dir.to_path_buf()
+            } else {
+                dir.join(stem)
+            },
+            inline_depth: 0,
+            under_test: false,
+            found: Vec::new(),
+        };
+        syn::visit::Visit::visit_file(&mut decls, &tree);
+        for (candidates, requires_test) in decls.found {
+            for candidate in candidates {
+                // Normalise `a/../b` away so `#[path]` spellings of one file agree.
+                let candidate: PathBuf =
+                    candidate.components().fold(PathBuf::new(), |mut out, c| {
+                        if c == std::path::Component::ParentDir {
+                            out.pop();
+                        } else {
+                            out.push(c);
                         }
-                        None => {
-                            let name = &found[1];
-                            skipped.insert(dir.join(format!("{name}.rs")));
-                            skipped.insert(dir.join(name).join("mod.rs"));
-                        }
-                    }
+                        out
+                    });
+                if known.contains(&candidate) {
+                    declared_by
+                        .entry(candidate)
+                        .or_default()
+                        .push(requires_test);
                 }
-                cfg_test = false;
-                explicit = None;
-            } else if !trimmed.starts_with("#[") && !trimmed.is_empty() {
-                cfg_test = false;
-                explicit = None;
             }
         }
     }
-    skipped
+    declared_by
+        .into_iter()
+        .filter(|(_, declarations)| declarations.iter().all(|requires_test| *requires_test))
+        .map(|(path, _)| path)
+        .collect()
 }
 
 /// Every `src/**/*.rs` file as `(path relative to src, production code)`, with
@@ -548,7 +623,9 @@ impl SiteFinder<'_> {
         };
         for token in tokens {
             match token {
-                TokenTree::Ident(ident) => chain.push(ident.to_string()),
+                TokenTree::Ident(ident) => {
+                    chain.push(syn::ext::IdentExt::unraw(&ident).to_string())
+                }
                 TokenTree::Punct(punct) if punct.as_char() == ':' => {}
                 TokenTree::Group(group) => {
                     flush(self, &mut chain);
@@ -611,9 +688,17 @@ fn is_cfg_test(attr: &syn::Attribute) -> bool {
         .is_ok_and(|predicate| requires_test(&predicate))
 }
 
+/// An identifier without a raw-identifier prefix: `r#PersistedCore` is `PersistedCore`.
+fn plain(ident: &syn::Ident) -> String {
+    syn::ext::IdentExt::unraw(ident).to_string()
+}
+
 /// A type or path as written, without spaces: `StopPorts<'_>`, `a::B<T>`.
 fn written<T: quote::ToTokens>(node: &T) -> String {
-    node.to_token_stream().to_string().replace(' ', "")
+    node.to_token_stream()
+        .to_string()
+        .replace(' ', "")
+        .replace("r#", "")
 }
 
 /// The scope segment of an `impl` block.
@@ -634,7 +719,7 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         if self.skip(&item.attrs) {
             return;
         }
-        self.within(item.ident.to_string(), |this| {
+        self.within(plain(&item.ident), |this| {
             syn::visit::visit_item_mod(this, item)
         });
     }
@@ -652,7 +737,7 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         if self.skip(&item.attrs) {
             return;
         }
-        self.within(item.ident.to_string(), |this| {
+        self.within(plain(&item.ident), |this| {
             syn::visit::visit_item_trait(this, item)
         });
     }
@@ -661,7 +746,7 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         if self.skip(&item.attrs) {
             return;
         }
-        self.within(item.sig.ident.to_string(), |this| {
+        self.within(plain(&item.sig.ident), |this| {
             syn::visit::visit_item_fn(this, item)
         });
     }
@@ -670,7 +755,7 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         if self.skip(&item.attrs) {
             return;
         }
-        self.within(item.sig.ident.to_string(), |this| {
+        self.within(plain(&item.sig.ident), |this| {
             syn::visit::visit_impl_item_fn(this, item)
         });
     }
@@ -679,7 +764,7 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         if self.skip(&item.attrs) {
             return;
         }
-        self.within(item.sig.ident.to_string(), |this| {
+        self.within(plain(&item.sig.ident), |this| {
             syn::visit::visit_trait_item_fn(this, item)
         });
     }
@@ -688,7 +773,7 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         if self.skip(&item.attrs) {
             return;
         }
-        self.within(format!("<const {}>", item.ident), |this| {
+        self.within(format!("<const {}>", plain(&item.ident)), |this| {
             syn::visit::visit_item_const(this, item)
         });
     }
@@ -697,7 +782,7 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         if self.skip(&item.attrs) {
             return;
         }
-        self.within(format!("<static {}>", item.ident), |this| {
+        self.within(format!("<static {}>", plain(&item.ident)), |this| {
             syn::visit::visit_item_static(this, item)
         });
     }
@@ -706,7 +791,7 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         if self.skip(&item.attrs) {
             return;
         }
-        self.within(format!("<const {}>", item.ident), |this| {
+        self.within(format!("<const {}>", plain(&item.ident)), |this| {
             syn::visit::visit_impl_item_const(this, item)
         });
     }
@@ -718,6 +803,28 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
             return;
         }
         syn::visit::visit_item_macro(self, item);
+    }
+
+    /// An associated macro in an `impl`, a `trait` or an `extern` block.
+    fn visit_impl_item_macro(&mut self, item: &'ast syn::ImplItemMacro) {
+        if self.skip(&item.attrs) {
+            return;
+        }
+        syn::visit::visit_impl_item_macro(self, item);
+    }
+
+    fn visit_trait_item_macro(&mut self, item: &'ast syn::TraitItemMacro) {
+        if self.skip(&item.attrs) {
+            return;
+        }
+        syn::visit::visit_trait_item_macro(self, item);
+    }
+
+    fn visit_foreign_item_macro(&mut self, item: &'ast syn::ForeignItemMacro) {
+        if self.skip(&item.attrs) {
+            return;
+        }
+        syn::visit::visit_foreign_item_macro(self, item);
     }
 
     fn visit_stmt_macro(&mut self, item: &'ast syn::StmtMacro) {
@@ -759,7 +866,7 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
             .path
             .segments
             .iter()
-            .map(|segment| segment.ident.to_string())
+            .map(|segment| plain(&segment.ident))
             .collect();
         if (self.is_target)(&segments) {
             self.hit();
@@ -771,7 +878,7 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         if self.skip(&call.attrs) {
             return;
         }
-        if (self.is_target)(&[call.method.to_string()]) {
+        if (self.is_target)(&[plain(&call.method)]) {
             self.hit();
         }
         syn::visit::visit_expr_method_call(self, call);
@@ -1361,5 +1468,109 @@ fn scanner_counts_constructors_used_as_values() {
     assert_eq!(
         emit_as_value,
         vec![("commands/a.rs".to_string(), "run".to_string(), 1)]
+    );
+}
+
+/// Sol minor (#1151): a file is test-only only when every `mod` declaration that
+/// resolves to it requires `test`. The same file declared once under `#[cfg(test)]`
+/// and once in production (through `#[path]`) is production code.
+#[test]
+fn a_file_reached_by_a_production_declaration_is_not_skipped() {
+    let root = PathBuf::from("/s");
+    let file = |name: &str| root.join(name);
+    let skipped = |lib: &str| {
+        let files: Vec<(PathBuf, String)> = vec![
+            (file("lib.rs"), lib.to_string()),
+            (file("shared.rs"), String::new()),
+            (file("helpers.rs"), String::new()),
+            (file("lone.rs"), String::new()),
+            (file("nested/mod.rs"), "#[cfg(test)] mod deep;".to_string()),
+            (file("nested/deep.rs"), String::new()),
+        ];
+        test_only_files(&files)
+    };
+    // Test declaration first, production second, and the other way round.
+    for lib in [
+        "#[cfg(test)] #[path = \"shared.rs\"] mod as_test; #[path = \"shared.rs\"] mod as_prod;",
+        "#[path = \"shared.rs\"] mod as_prod; #[cfg(test)] #[path = \"shared.rs\"] mod as_test;",
+        "#[cfg(test)] mod shared; #[cfg(any(test, unix))] #[path = \"shared.rs\"] mod again;",
+    ] {
+        assert!(!skipped(lib).contains(&file("shared.rs")), "{lib}");
+    }
+    // Every declaration requires `test`: skipped, however it is spelled.
+    for lib in [
+        "#[cfg(test)] mod shared;",
+        "#[cfg(test)] #[path = \"shared.rs\"] mod a; #[cfg(all(test, unix))] #[path = \"shared.rs\"] mod b;",
+        "#[cfg(test)] mod outer { #[path = \"../shared.rs\"] mod inner; }",
+    ] {
+        assert!(skipped(lib).contains(&file("shared.rs")), "{lib}");
+    }
+    // Declared under `any(test, ..)`, or not at all: production.
+    assert!(!skipped("#[cfg(any(test, unix))] mod shared;").contains(&file("shared.rs")));
+    assert!(!skipped("mod helpers;").contains(&file("helpers.rs")));
+    assert!(!skipped("").contains(&file("lone.rs")));
+    // A directory-owning `mod.rs` resolves its own children.
+    assert!(skipped("mod nested;").contains(&file("nested/deep.rs")));
+}
+
+/// Sol minor (#1151): `r#PersistedCore::new(..)` is the same function as
+/// `PersistedCore::new(..)`; a raw identifier cannot dodge the gates (paths, method
+/// calls, macro tokens, and function names).
+#[test]
+fn scanner_sees_through_raw_identifiers() {
+    let seeder = |code: &str| {
+        check_single_seeder(&persisted_core_new_callers(&[(
+            SEEDING_FILE.to_string(),
+            code.to_string(),
+        )]))
+    };
+    let seed = "impl FieldAdapter { fn seed_core(a: &A) { PersistedCore::new(s, i); } }";
+    assert_eq!(seeder(seed), Ok(()));
+    for extra in [
+        "fn other() { r#PersistedCore::new(s, i); }",
+        "fn other() { PersistedCore::r#new(s, i); }",
+        "fn other() { let make = r#PersistedCore::r#new; }",
+        "fn other() { dbg!(r#PersistedCore::new(s, i)); }",
+    ] {
+        assert!(seeder(&format!("{seed} {extra}")).is_err(), "{extra}");
+    }
+    // The seeder written with raw identifiers is the same function.
+    assert_eq!(
+        seeder("impl r#FieldAdapter { fn r#seed_core(a: &A) { r#PersistedCore::new(s, i); } }"),
+        Ok(())
+    );
+    let emit =
+        |code: &str| terminal_emit_callers(&[("commands/a.rs".to_string(), code.to_string())]);
+    assert_eq!(
+        emit("fn r#terminal() { r#emit_dictation_terminal(a); s.r#emit_dictation_terminal_x(b); }"),
+        vec![("commands/a.rs".to_string(), "terminal".to_string(), 2)]
+    );
+}
+
+/// Sol minor (#1151): the cfg filter covers associated macros: an invocation in an
+/// `impl`, a `trait` or an `extern` block under `#[cfg(test)]` is not production.
+#[test]
+fn scanner_skips_cfg_test_associated_macros() {
+    let callers =
+        |code: &str| terminal_emit_callers(&[("commands/a.rs".to_string(), code.to_string())]);
+    for test_only in [
+        "impl X { #[cfg(test)] m! { emit_dictation_terminal(a) } }",
+        "trait T { #[cfg(test)] m! { emit_dictation_terminal(a) } }",
+        r#"extern "C" { #[cfg(test)] m! { emit_dictation_terminal(a) } }"#,
+        "impl X { #[cfg(all(test, unix))] m!(emit_dictation_terminal(a)); }",
+    ] {
+        assert_eq!(callers(test_only), vec![], "{test_only}");
+    }
+    assert_eq!(
+        callers("impl X { m! { emit_dictation_terminal(a) } }"),
+        vec![("commands/a.rs".to_string(), "X".to_string(), 1)]
+    );
+    assert_eq!(
+        callers("trait T { #[cfg(any(test, unix))] m! { emit_dictation_terminal(a) } }"),
+        vec![("commands/a.rs".to_string(), "T".to_string(), 1)]
+    );
+    assert_eq!(
+        callers(r#"extern "C" { m! { emit_dictation_terminal(a) } }"#),
+        vec![("commands/a.rs".to_string(), String::new(), 1)]
     );
 }
