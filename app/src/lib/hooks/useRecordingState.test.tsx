@@ -93,6 +93,22 @@ describe('useRecordingState transition ordering', () => {
     await act(async () => probeRoot.unmount());
   });
 
+  // The property harness (`dictation-core/src/property`, D-S2b-13 (c)) relies on this: a
+  // stop in `Recovering` is not a step a user can take, so a capture nobody took is not
+  // recoverable by one.
+  it('issues no stop or cancel IPC while the status is recovering', async () => {
+    await act(async () => {
+      mocks.listeners.get('recording-status-changed')?.({ payload: 'recovering' });
+    });
+    expect(current.status).toBe('recovering');
+
+    await act(async () => current.handleStop());
+
+    expect(mocks.stopRecording).not.toHaveBeenCalled();
+    expect(mocks.cancelRecording).not.toHaveBeenCalled();
+    expect(current.status).toBe('recovering');
+  });
+
   it('cancels promptly while microphone initialization is still starting', async () => {
     mocks.startRecording.mockResolvedValueOnce({
       type: 'recording_starting',

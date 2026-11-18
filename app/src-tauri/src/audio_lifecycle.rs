@@ -5193,9 +5193,16 @@ mod tests {
             )));
         // The exit ends the attempt: cleanup is finished, no second reply, no `Idle`.
         teardown.open();
-        wait_until("sealed worker joined", || {
-            supervisor.public.phase() == PublicPhase::Idle
+        // The public phase turns `Idle` before the sink is told, so wait for the
+        // notification itself before counting events.
+        wait_until("cleanup finished is published", || {
+            sink.events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, event)| *event == AudioLifecycleEvent::CleanupFinished)
         });
+        assert_eq!(supervisor.public.phase(), PublicPhase::Idle);
         assert!(!supervisor.public.owns(owner));
         assert!(matches!(
             result.try_recv(),
@@ -5213,6 +5220,120 @@ mod tests {
             .iter()
             .any(|(_, event)| *event == AudioLifecycleEvent::Idle));
         drop(events);
+        shutdown(&supervisor);
+    }
+
+    /// D-S2b-13 (b): a cancel of a `Recording` attempt abandons it. `handle_message`'s
+    /// cancel arm admits `Recording` (`1307-1326`); the supervisor stops the capture
+    /// (`begin_recovery` sends the worker its stop and publishes `Recovering{User}`),
+    /// answers `Ok(true)` and keeps the owner until the worker exits. A guard that admits
+    /// `Recovering` in place of `Recording` answers `Ok(false)` and leaves the capture
+    /// running, which this test fails on at the first assertion.
+    #[test]
+    fn a_cancel_from_recording_stops_capture_and_answers_true() {
+        let teardown = Gate::closed();
+        let sink = Arc::new(RecordingSink::default());
+        let supervisor = spawn_supervisor(
+            Arc::new(SealedFactory {
+                teardown: teardown.clone(),
+                seal: false,
+            }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        let owner = AudioOwner::Dictation(720);
+        start(&supervisor, owner).recv().unwrap().unwrap();
+        wait_until("worker recording", || {
+            supervisor.public.phase() == PublicPhase::Recording
+        });
+        assert_eq!(cancel_active(&supervisor, owner).recv().unwrap(), Ok(true));
+        // The capture is stopped: the supervisor holds the owner in `Recovering` until the
+        // (still torn-down) worker exits.
+        assert_eq!(supervisor.public.phase(), PublicPhase::Recovering);
+        assert!(supervisor.public.owns(owner));
+        assert!(sink
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, event)| matches!(
+                event,
+                AudioLifecycleEvent::Recovering {
+                    reason: AudioCancelReason::User
+                }
+            )));
+        teardown.open();
+        wait_until("cancelled worker finished", || {
+            sink.events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(_, event)| *event == AudioLifecycleEvent::Idle)
+        });
+        assert!(!supervisor.public.owns(owner));
+        shutdown(&supervisor);
+    }
+
+    /// D-S2b-13 (b): the cancel of a `Recovering` attempt behaves as production does
+    /// today: nothing to abandon (`Ok(false)`), no second `Recovering`, the owner kept; a
+    /// stop is refused with the recovering text and a start with `AudioRecovering`. The
+    /// model's `Msg::Cancel (accept)` row relies on this.
+    #[test]
+    fn a_cancel_from_recovering_has_nothing_to_abandon() {
+        let teardown = Gate::closed();
+        let sink = Arc::new(RecordingSink::default());
+        let supervisor = spawn_supervisor(
+            Arc::new(SealedFactory {
+                teardown: teardown.clone(),
+                seal: false,
+            }),
+            sink.clone(),
+            SupervisorConfig::default(),
+        );
+        let owner = AudioOwner::Dictation(721);
+        start(&supervisor, owner).recv().unwrap().unwrap();
+        wait_until("worker recording", || {
+            supervisor.public.phase() == PublicPhase::Recording
+        });
+        assert_eq!(cancel_active(&supervisor, owner).recv().unwrap(), Ok(true));
+        assert_eq!(supervisor.public.phase(), PublicPhase::Recovering);
+        let recovering = |sink: &RecordingSink| {
+            sink.events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(_, event)| matches!(event, AudioLifecycleEvent::Recovering { .. }))
+                .count()
+        };
+        assert_eq!(recovering(&sink), 1);
+        assert_eq!(cancel_active(&supervisor, owner).recv().unwrap(), Ok(false));
+        assert_eq!(recovering(&sink), 1, "a second cancel abandons nothing");
+        assert_eq!(supervisor.public.phase(), PublicPhase::Recovering);
+        assert!(supervisor.public.owns(owner));
+        let (response, result) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Stop {
+                released_at: None,
+                owner: Some(owner),
+                trigger: DictationStopTrigger::Toggle,
+                response,
+            })
+            .unwrap();
+        assert_eq!(
+            result.recv_timeout(Duration::from_secs(1)).unwrap(),
+            Err("Audio is still recovering from the previous attempt".to_string())
+        );
+        assert_eq!(
+            start(&supervisor, AudioOwner::Dictation(722))
+                .recv()
+                .unwrap(),
+            Err(AudioStartError::AudioRecovering)
+        );
+        teardown.open();
+        wait_until("cancelled worker finished", || {
+            !supervisor.public.is_active()
+        });
         shutdown(&supervisor);
     }
 
@@ -5745,6 +5866,24 @@ mod tests {
         receiver
     }
 
+    /// The user's cancel as `cancel` sends it (`3345-3359`): not limited to a starting attempt.
+    fn cancel_active(
+        supervisor: &AudioSupervisor,
+        owner: AudioOwner,
+    ) -> Receiver<Result<bool, String>> {
+        let (sender, receiver) = mpsc::channel();
+        supervisor
+            .sender
+            .send(SupervisorMessage::Cancel {
+                owner: Some(owner),
+                reason: AudioCancelReason::User,
+                starting_only: false,
+                response: sender,
+            })
+            .unwrap();
+        receiver
+    }
+
     fn cancel(supervisor: &AudioSupervisor, owner: AudioOwner) -> Receiver<Result<bool, String>> {
         let (sender, receiver) = mpsc::channel();
         supervisor
@@ -5839,7 +5978,7 @@ mod tests {
         );
         assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
         assert_eq!(
-            cancel(&supervisor, owner)
+            cancel_active(&supervisor, owner)
                 .recv_timeout(Duration::from_millis(100))
                 .unwrap(),
             Ok(true)

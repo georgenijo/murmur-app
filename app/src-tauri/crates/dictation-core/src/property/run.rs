@@ -16,6 +16,7 @@ use super::model::*;
 use super::rng::Rng;
 use super::sup_task::{SupTask, WorkerTask};
 use super::task::*;
+use crate::status::Status;
 
 const MAX_STEPS: u32 = 6_000;
 const REROLL_EVERY: u32 = 12;
@@ -101,6 +102,19 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
         // Issue the commands that are due.
         while pending.front().is_some_and(|(at, _)| *at <= clock) {
             let (_, cmd) = pending.pop_front().expect("checked above");
+            // The frontend suppresses the stop IPC while the status it holds is
+            // `Recovering` (`useRecordingState.ts` `handleStop`: it only presents
+            // "Microphone cleanup is still in progress"), so a user stop issued then is not
+            // a step a user can take (D-S2b-13 (c)). A stop issued earlier and still in
+            // flight when the status turns `Recovering` is: it is already a flight.
+            if matches!(cmd, Cmd::Stop { .. }) && w.status == Status::Recovering {
+                if let Some(trace) = checker.trace.as_mut() {
+                    trace.push(format!(
+                        "{clock:>4} stop IPC suppressed (status Recovering)"
+                    ));
+                }
+                continue;
+            }
             let task: Box<dyn Task> = match cmd {
                 Cmd::Start {
                     plan,

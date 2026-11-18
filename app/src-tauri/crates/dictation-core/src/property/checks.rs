@@ -43,8 +43,10 @@ pub struct RunHits {
     /// PD-19 runs by entry: `[0]` a `TerminationUnconfirmed` end (the bridge's failure
     /// arm cleared the context); `[1]` another runtime failure whose recording never had
     /// a context (a dropped start, PD-9). In both the user's stop took the preserved
-    /// capture (R201.5), found no context and wrote `Idle`.
-    pub pd19: [u32; 2],
+    /// capture (R201.5), found no context and wrote `Idle`; `[2]` the `Interrupted` arm's
+    /// auto-stop took nothing (the status was `Idle`), a start entered `Recovering` before
+    /// the owner cleared, and the capture stays in the store with no user-reachable stop.
+    pub pd19: [u32; 3],
     /// Occurrences per [`SIGNATURES`] row.
     pub sig: [u32; SIGNATURES.len()],
     /// Occurrences per matched split `(terminal row, performance row)`.
@@ -75,6 +77,10 @@ pub enum Pre {
     /// enqueued) and the start's failure claim for the current recording and the
     /// supervisor `Recovering` arm's `PC(Cancelled)` fell on either side of each other.
     StartReceiverTimedOut,
+    /// PD-23 (Completed): the claim was for the current recording, R207.3's `SD` ran and
+    /// the ticker's gate **refused** a second ticker (none spawned), and the recording's
+    /// own path completed performance later.
+    SecondTickerGatedOff,
     /// PD-4: the claim was for the current recording and a **second ticker** spawned
     /// for it after the claim; the recording's own path completed performance later.
     SecondTickerThenPerf,
@@ -125,11 +131,15 @@ pub struct Signature {
     pub claim_status: &'static [Status],
     pub perf: PerfSet,
     pub pre: Pre,
+    /// The performance outcome is a claim of the completion coordinator with no run
+    /// behind it (no run was registered or begun: an aborted start). Only such a claim
+    /// can match a `no_run` signature, and only a run's outcome a run signature.
+    pub no_run: bool,
 }
 
 const SUPERSEDED: (TerminalOutcome, ErrCode) = (TerminalOutcome::Superseded, ErrCode::StaleOwner);
 
-pub const SIGNATURES: [Signature; 8] = [
+pub const SIGNATURES: [Signature; 10] = [
     // PD-4 (C7.1): R207.3 on a live `Recording` claims `Superseded/StaleOwner`, the
     // wrapper's `SD` spawns a **second ticker** for the same id, and performance later
     // completes `Success` (`Completed`): exactly the definition, with no narrower or
@@ -141,25 +151,67 @@ pub const SIGNATURES: [Signature; 8] = [
         claim_status: &[Status::Recording],
         perf: PerfSet::Only(&[("R204b.6", PerfOutcome::Completed)]),
         pre: Pre::SecondTickerThenPerf,
+        no_run: false,
     },
-    // PD-23 (F-5, D-S2b-11 (a)): the claim of PD-4 (R207.3, `Superseded` for a live
-    // `Recording`) split from a performance outcome PD-4's definition does not name: the
-    // recording's own path ends `NoSpeech`, `Failed` or `Cancelled`, or completes
-    // `Success` without a second ticker (the ticker's gate refused). It is listed apart
-    // from PD-4 so PD-4 stays exactly its C7.1 text.
+    // PD-23 (F-5, D-S2b-11 (a), D-S2b-13 (e)): the claim of PD-4 (R207.3, `Superseded` for
+    // a live `Recording`) split from the outcome of the recording's *own* end, other than
+    // PD-4's `Success` with a second ticker. Each outcome is bound to the stop, cancel,
+    // pipeline or supervisor row that completes it (the paths C3 lists), never to a class:
+    // an outcome from a row outside the table is an SP4(b) failure.
     Signature {
         pd: 23,
         terminal: &[("R207.3", SUPERSEDED.0, SUPERSEDED.1)],
         claim_status: &[Status::Recording],
-        perf: PerfSet::Any(ALL_PERF),
+        perf: PerfSet::Only(&[
+            // The stop's capture failed (a stop failure, the supervisor's recovery
+            // refusal, an expired receiver): `Failed`.
+            ("R202.3", PerfOutcome::Failed),
+            ("R203.1", PerfOutcome::Failed),
+            ("R203.2", PerfOutcome::Failed),
+            ("R211.3", PerfOutcome::Failed),
+            ("R211.6", PerfOutcome::Failed),
+            ("R213.2", PerfOutcome::Failed),
+            ("R216.pre", PerfOutcome::Failed),
+            // The stop's capture was empty or short: `NoSpeech`.
+            ("R203.4", PerfOutcome::NoSpeech),
+            ("R203.5", PerfOutcome::NoSpeech),
+            ("R203.6", PerfOutcome::NoSpeech),
+            ("R203.7", PerfOutcome::NoSpeech),
+            ("R203.7r", PerfOutcome::NoSpeech),
+            ("R203.8b", PerfOutcome::NoSpeech),
+            // The user cancelled (the cancel's own `PC`, or the supervisor's recovery arm).
+            ("R205.5", PerfOutcome::Cancelled),
+            ("R209.4", PerfOutcome::Cancelled),
+            // The pipeline's own end, as the stop's guard reports it.
+            ("R204b.6", PerfOutcome::NoSpeech),
+            ("R204b.6", PerfOutcome::Cancelled),
+        ]),
         pre: Pre::LiveClaimThenPerf,
+        no_run: false,
     },
-    // PD-24 (F-6, D-S2b-11 (a)): the start's 2 s receiver timeout. `await_start_response`
-    // revokes the caller and enqueues `Cancel{User}` (`audio_lifecycle.rs:3065-3079`);
-    // the start's failure path (R102.3, status `Recovering`) claims `CaptureInitFailure` for the
-    // current recording while the supervisor's own `Recovering` arm (R209.3 / R209.5)
-    // is between its D section and its post-D effects, and that arm's `PC(Cancelled)`
-    // then completes performance. C4.4 and T2 name the race; C7.1 lists no row for it.
+    // PD-23, the `Success` variant: the same claim, the ticker's gate refused the second
+    // ticker, and the pipeline completes `Completed`. Without the refused second ticker it
+    // is PD-4, and from any row but the pipeline's R204b.6 it is not a C3 outcome. The
+    // shell fixture of this variant is PENDING (source-only): no fake-host schedule makes
+    // the gate refuse after R207.3's claim.
+    Signature {
+        pd: 23,
+        terminal: &[("R207.3", SUPERSEDED.0, SUPERSEDED.1)],
+        claim_status: &[Status::Recording],
+        perf: PerfSet::Only(&[("R204b.6", PerfOutcome::Completed)]),
+        pre: Pre::SecondTickerGatedOff,
+        no_run: false,
+    },
+    // PD-24 (F-6, D-S2b-11 (a), D-S2b-13 (e)): the start's 2 s receiver timeout.
+    // `await_start_response` revokes the caller and enqueues `Cancel{User}`
+    // (`audio_lifecycle.rs:3065-3079`); the start's failure path (R102.3) claims
+    // `CaptureInitFailure` for the current recording while the supervisor's own `Recovering`
+    // arm is between its D section and its post-D effects, and that arm's `PC(Cancelled)`
+    // then completes performance. The mismatch is at the **coordinator's claim**: the failed
+    // start never began a performance run, so no row is behind the claim
+    // (`performance_metrics/repository.rs:421`, `request_completion`). Each signature is
+    // bound to the arm's cause by its row: R209.3 is the user's cancel (the start timeout's
+    // own `Cancel{User}`), R209.5 an environmental recovery (device change, sleep, wake).
     Signature {
         pd: 24,
         terminal: &[(
@@ -168,11 +220,21 @@ pub const SIGNATURES: [Signature; 8] = [
             ErrCode::RuntimeFailure,
         )],
         claim_status: &[Status::Idle],
-        perf: PerfSet::Only(&[
-            ("R209.3", PerfOutcome::Cancelled),
-            ("R209.5", PerfOutcome::Cancelled),
-        ]),
+        perf: PerfSet::Only(&[("R209.3", PerfOutcome::Cancelled)]),
         pre: Pre::StartReceiverTimedOut,
+        no_run: true,
+    },
+    Signature {
+        pd: 24,
+        terminal: &[(
+            "R102.3",
+            TerminalOutcome::CaptureInitFailure,
+            ErrCode::RuntimeFailure,
+        )],
+        claim_status: &[Status::Idle],
+        perf: PerfSet::Only(&[("R209.5", PerfOutcome::Cancelled)]),
+        pre: Pre::StartReceiverTimedOut,
+        no_run: true,
     },
     // PD-5: R207.2 / R209.2 on the current id in `Idle`, `Recovering` or `Processing`
     // (the statuses C3 lists for those rows).
@@ -185,6 +247,7 @@ pub const SIGNATURES: [Signature; 8] = [
         claim_status: &[Status::Idle, Status::Recovering, Status::Processing],
         perf: PerfSet::Any(ALL_PERF),
         pre: Pre::LiveClaimThenPerf,
+        no_run: false,
     },
     // PD-20 (a): the cancel at `Processing` (R205.5) claimed; the stop or pipeline
     // completed performance during the cancel's tail.
@@ -202,6 +265,7 @@ pub const SIGNATURES: [Signature; 8] = [
             PerfOutcome::Completed,
         ]),
         pre: Pre::CancelClaimedFirst,
+        no_run: false,
     },
     // PD-20 (b): another path claimed first; the cancel's `PC(Cancelled)` completed
     // performance.
@@ -233,6 +297,7 @@ pub const SIGNATURES: [Signature; 8] = [
         claim_status: ALL_STATUSES,
         perf: PerfSet::Only(&[("R205.5", PerfOutcome::Cancelled)]),
         pre: Pre::CancelPerfAfterLostClaim,
+        no_run: false,
     },
     // PD-21: R206.2, the failed capture cancel's `TERM(PipelineFailure)`.
     Signature {
@@ -249,6 +314,7 @@ pub const SIGNATURES: [Signature; 8] = [
             PerfOutcome::Completed,
         ]),
         pre: Pre::FailedCancelPort,
+        no_run: false,
     },
     // PD-22: the supervisor `Idle` (R211.2) won `Superseded` for a finished current id.
     Signature {
@@ -260,6 +326,7 @@ pub const SIGNATURES: [Signature; 8] = [
             ("R205.5", PerfOutcome::Cancelled),
         ]),
         pre: Pre::SupervisorIdleWon,
+        no_run: false,
     },
 ];
 
@@ -276,6 +343,9 @@ struct Gen {
     stop_idle: bool,
     /// `Interrupted` of 8,000 samples or more ended the generation.
     long_interrupt: bool,
+    /// The stop the `Interrupted` arm spawned took nothing: the capture stayed in the
+    /// store (R201.3 / R201.4 refused it, or it found none to take).
+    auto_stop_took_nothing: bool,
 }
 
 #[derive(Debug, Default)]
@@ -413,7 +483,10 @@ impl Checker {
             .filter(|e| {
                 matches!(
                     e.effect,
-                    Effect::Terminal(_) | Effect::PerfComplete(_) | Effect::PipelineGuardFinish(_)
+                    Effect::Terminal(_)
+                        | Effect::PerfComplete(_)
+                        | Effect::PerfBegin
+                        | Effect::PipelineGuardFinish(_)
                 ) || (e.row == "R207.3" && matches!(e.effect, Effect::StartSideTasks))
             })
             .map(|e| e.input_rid)
@@ -576,6 +649,9 @@ impl Checker {
                     self.hit(hits, 15, row, *rid);
                 }
             }
+            Note::AutoStopTookNothing { rid } => {
+                self.gens.entry(*rid).or_default().auto_stop_took_nothing = true;
+            }
             Note::StartDropped {
                 rid,
                 registered,
@@ -678,15 +754,6 @@ impl Checker {
         self.sp4b_tail_deferred.remove(&rid);
         self.sp4b_done.insert(rid);
         let completion = w.perf.ctx[&rid];
-        // C7.4, the `Superseded` row: "For stale ids `P` of the stale id is unaffected".
-        // A claim whose input named a recording that was no longer current is the
-        // designed stale-owner terminal (R201.1, R209.1, R213.1, R215.1, ...), not a
-        // live recording's terminal disagreeing with its own outcome, so SP4(b) does not
-        // judge it. This is the appendix's own scope, not a PD: no allowlist entry covers
-        // it, and a claim for the *current* recording always needs a full signature.
-        if claim.input_rid != claim.current {
-            return;
-        }
         if std::env::var("DUMP_SP4B").is_ok() && !self.would_match(w, rid) {
             eprintln!(
                 "SP4B {terminal_row} {outcome:?}/{code:?} st={:?} stale={} cur={} tail(other={},own={}) step={} | {perf_row} {perf:?} st={:?} stale={} tail(other={},own={}) step={} tries={:?}",
@@ -705,6 +772,14 @@ impl Checker {
             );
         }
         let matched = self.matching(w, rid);
+        // D-S2b-13 (d): SP4(b) compares the outcomes a generation actually has. A
+        // completion with no run behind it (an aborted start, a generation whose run was
+        // never begun) is a claim of the coordinator and leaves no performance row, so
+        // there is no outcome to disagree with the terminal; only a signature of such a
+        // claim (PD-24) credits it, and any other is not an SP4(b) split.
+        if matched.is_none() && w.perf.no_run.contains(&rid) {
+            return;
+        }
         match matched {
             Some(index) => {
                 self.hits.pd[usize::from(SIGNATURES[index].pd)] += 1;
@@ -739,6 +814,7 @@ impl Checker {
                 .contains(&(*terminal_row, *outcome, *code))
                 && signature.claim_status.contains(&claim.status_before)
                 && signature.perf.admits(perf_row, *perf)
+                && signature.no_run == w.perf.no_run.contains(&rid)
                 && self.precondition(signature.pre, w, rid)
         })
     }
@@ -784,6 +860,12 @@ impl Checker {
             Pre::SecondTickerThenPerf => {
                 claim_current && claim.step < completion.step && second_ticker
             }
+            Pre::SecondTickerGatedOff => {
+                claim_current
+                    && claim.step < completion.step
+                    && self.r207_3_side_tasks.contains(&rid)
+                    && !second_ticker
+            }
         }
     }
 
@@ -823,10 +905,10 @@ impl Checker {
         }
         match w.status {
             Status::Idle => {}
-            // L5 (C7.3): a preserved capture nobody took leaves the recovery to a stop
-            // that still can run: it takes the capture (R201.5), finds no context and
-            // writes `Idle` (R202.3). That generation is not stuck, only unstopped.
-            Status::Recovering if w.preserved.contains_key(&current) => {}
+            // A preserved capture nobody took is not an exemption: the stop that could
+            // take it is the user's IPC in `Recovering`, which the frontend suppresses
+            // (D-S2b-13 (c)). The run is stuck, and the generation's own evidence decides
+            // whether it is PD-19.
             Status::Recovering => match self.stranded_instance(current, w) {
                 Some(instance) => self.count_stranded(instance, current, w),
                 None => problems.push(format!(
@@ -875,9 +957,17 @@ impl Checker {
                 // only restorer and is refused. A stop that did not take the capture
                 // leaves it for a later stop (see `on_end`): not stuck, so not this
                 // evidence.
-                let _ = w;
-                (gen.long_interrupt && gen.stop_idle && gen.taken_by == Some("R201.5"))
-                    .then_some(Instance::Long)
+                // The other entry: the `Interrupted` arm's auto-stop ran after the status
+                // had become `Idle` (the finished stop's `Idle`, R203.2) and took nothing,
+                // and no stop took the capture either; it is still in the store, and the
+                // only stop that could take it is the user's in `Recovering`.
+                let took_by_stop =
+                    gen.stop_idle && gen.taken_by == Some("R201.5") && gen.long_interrupt;
+                let refused_auto_stop = gen.long_interrupt
+                    && gen.auto_stop_took_nothing
+                    && gen.taken_by.is_none()
+                    && w.preserved.contains_key(&rid);
+                (took_by_stop || refused_auto_stop).then_some(Instance::Long)
             }
             other => Some(other),
         }
@@ -899,9 +989,16 @@ impl Checker {
             }
             Instance::Long => {
                 self.hits.pd[19] += 1;
-                let entry = usize::from(
-                    w.sup.finished_fail.get(&rid) != Some(&ErrCode::TerminationUnconfirmed),
-                );
+                // Entries: `[0]` a `TerminationUnconfirmed` end, `[1]` another runtime
+                // failure (a dropped start), both through the user's stop; `[2]` the
+                // refused auto-stop that left the capture in the store.
+                let entry = if w.preserved.contains_key(&rid) {
+                    2
+                } else {
+                    usize::from(
+                        w.sup.finished_fail.get(&rid) != Some(&ErrCode::TerminationUnconfirmed),
+                    )
+                };
                 self.hits.pd19[entry] += 1;
             }
         }

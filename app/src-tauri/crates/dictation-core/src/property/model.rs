@@ -425,10 +425,21 @@ pub struct Perf {
     pub registered: BTreeSet<Rid>,
     pub begun: BTreeSet<Rid>,
     pub aborted: BTreeSet<Rid>,
-    /// First completion wins (C4.6).
+    /// First completion wins (C4.6). A completion is an outcome of the run only when a
+    /// run was begun for the id (`begun`); one made while the begin is in flight waits in
+    /// `pending`; one made with no run at all is a claim of the completion coordinator
+    /// alone (`no_run`), with no row behind it.
     pub outcome: BTreeMap<Rid, (PerfOutcome, &'static str)>,
     /// The winner's context, by id.
     pub ctx: BTreeMap<Rid, Won>,
+    /// A completion requested while the run's begin was in flight: it is applied when the
+    /// begin resolves (`PerfBegin`) and dropped with the registration (`PerfAbort`)
+    /// (`DictationPerformanceBeginState::Beginning`, `request_completion`).
+    pub pending: BTreeMap<Rid, (PerfOutcome, &'static str, Won)>,
+    /// Ids whose first completion was claimed with no run registered or begun (an
+    /// aborted start, or a stale generation): `request_completion` answers `Persist`, the
+    /// repository finds no active row and records nothing. A claim without an outcome.
+    pub no_run: BTreeSet<Rid>,
 }
 
 #[derive(Debug, Default)]
@@ -616,10 +627,23 @@ impl World {
         self.ledger.diagnostics.entry(rid).or_insert(outcome);
     }
 
+    /// `request_completion` (`recording.rs:3114`): the run's lifecycle decides what the
+    /// completion is. Begun: the run's outcome (first wins). Registered, begin in flight:
+    /// held until the begin resolves. Neither (an aborted start, a stale generation):
+    /// only the coordinator's claim, recorded in `no_run`.
     pub fn perf_complete(&mut self, rid: Rid, outcome: PerfOutcome, row: &'static str, ctx: Won) {
-        if let std::collections::btree_map::Entry::Vacant(slot) = self.perf.outcome.entry(rid) {
-            slot.insert((outcome, row));
+        if self.perf.outcome.contains_key(&rid) {
+            return;
+        }
+        if self.perf.begun.contains(&rid) {
+            self.perf.outcome.insert(rid, (outcome, row));
             self.perf.ctx.insert(rid, ctx);
+        } else if self.perf.registered.contains(&rid) {
+            self.perf.pending.entry(rid).or_insert((outcome, row, ctx));
+        } else {
+            self.perf.outcome.insert(rid, (outcome, row));
+            self.perf.ctx.insert(rid, ctx);
+            self.perf.no_run.insert(rid);
         }
     }
 

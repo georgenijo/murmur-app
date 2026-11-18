@@ -22,13 +22,19 @@ const CI_BUDGET: Duration = Duration::from_secs(20);
 /// all, so every witness is produced by the run itself: there is no pinned exception to
 /// the converse check, and a witness that drifted away fails it.
 ///
-/// * 10,232: PD-24 through R209.3 (the supervisor's `Recovering{User}` after the start's
-///   receiver timeout), the shell test's own arm.
+/// * 11,139: PD-24 through R209.3 (the user's `Cancel{User}` after the start's receiver
+///   timeout), the shell test's own arm.
+/// * 12,625: PD-19's refused auto-stop (the capture stays in the store, no stop in
+///   `Recovering` is user-reachable).
+/// * 20,726: PD-19 through a dropped start (no context was ever installed).
 /// * 31,937: PD-22 with the cancel completing performance (R211.2, R205.5).
 /// * 33,078: PD-22 with the stop's failure tail completing performance (R211.2, R203.2).
-/// * 37,591: PD-19 through a dropped start (no context was ever installed).
+/// * 41,947: PD-19 through `TerminationUnconfirmed`.
+/// * 51,233: PD-24 through R209.5 (an environmental recovery, `SystemWake`).
 /// * 80,068: PD-21 with a short stop (R206.2, R203.4).
-const FIXED_SEEDS: [u64; 5] = [10_232, 31_937, 33_078, 37_591, 80_068];
+const FIXED_SEEDS: [u64; 8] = [
+    11_139, 12_625, 20_726, 31_937, 33_078, 41_947, 51_233, 80_068,
+];
 
 /// PD-18's witnesses, one seed per instance (C7.5): the first seed of the fixed
 /// range that ends stuck in `Recovering` through that instance, with the generation's
@@ -49,76 +55,116 @@ struct Witness {
     seed: u64,
     split: Option<(&'static str, &'static str)>,
     shell_test: Option<&'static str>,
+    /// The `SIGNATURES` row the seed must take, where the PD has more than one signature
+    /// for the same terminal row (the variants bound to different causes).
+    sig: Option<usize>,
 }
 
-const FINDING_SEEDS: [Witness; 11] = [
+const FINDING_SEEDS: [Witness; 14] = [
     Witness {
         pd: 19,
-        seed: 7_729,
+        seed: 41_947,
         split: None,
         shell_test: Some("pd19_termination_unconfirmed_after_retained_pcm_leaves_recovering"),
+        sig: None,
     },
     Witness {
         pd: 19,
-        seed: 37_591,
+        seed: 20_726,
         split: None,
         shell_test: Some("pd19_a_dropped_start_and_a_retained_runtime_failure_leave_recovering"),
+        sig: None,
+    },
+    Witness {
+        pd: 19,
+        seed: 12_625,
+        split: None,
+        shell_test: Some("pd19_a_refused_auto_stop_leaves_the_capture_and_recovering"),
+        sig: None,
     },
     Witness {
         pd: 20,
         seed: 905,
         split: Some(("R205.5", "R203.5")),
         shell_test: Some("pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree"),
+        sig: None,
     },
     Witness {
         pd: 21,
         seed: 80_068,
         split: Some(("R206.2", "R203.4")),
         shell_test: Some("pd21_timed_out_cancel_then_a_short_stop_disagree"),
+        sig: None,
     },
     Witness {
         pd: 21,
         seed: 276,
         split: Some(("R206.2", "R209.4")),
         shell_test: Some("pd21_timed_out_cancel_and_the_late_recovery_disagree"),
+        sig: None,
     },
     Witness {
         pd: 22,
         seed: 33_078,
         split: Some(("R211.2", "R203.2")),
         shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance"),
+        sig: None,
     },
     Witness {
         pd: 22,
         seed: 31_937,
         split: Some(("R211.2", "R205.5")),
         shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_cancel_completes_performance"),
+        sig: None,
     },
     Witness {
         pd: 23,
         seed: 445,
         split: Some(("R207.3", "R203.5")),
         shell_test: Some("pd23_superseded_terminal_and_an_empty_stop_no_speech_disagree"),
+        sig: None,
     },
     Witness {
         pd: 23,
-        seed: 1_328,
-        split: Some(("R207.3", "R203.2")),
-        shell_test: Some("pd23_superseded_terminal_and_a_failed_stop_failed_disagree"),
+        seed: 363,
+        split: Some(("R207.3", "R203.1")),
+        shell_test: Some("pd23_superseded_terminal_and_a_refused_stop_failed_disagree"),
+        sig: None,
     },
     Witness {
         pd: 23,
         seed: 37,
         split: Some(("R207.3", "R205.5")),
-        shell_test: Some("pd23_superseded_terminal_and_a_cancel_cancelled_disagree"),
+        shell_test: Some("pd23_superseded_terminal_and_a_cancel_of_processing_cancelled_disagree"),
+        sig: None,
+    },
+    // PENDING, source-only: R207.3's claim, the ticker's gate refusing the second ticker,
+    // the pipeline completing `Success`. No fake-host schedule makes the gate refuse after
+    // the claim, so it has no shell fixture; it stays allowlisted (D-S2b-13 (e)).
+    Witness {
+        pd: 23,
+        seed: 481,
+        split: Some(("R207.3", "R204b.6")),
+        shell_test: None,
+        sig: Some(2),
     },
     Witness {
         pd: 24,
-        seed: 5_058,
+        seed: 11_139,
+        split: Some(("R102.3", "R209.3")),
+        shell_test: Some(
+            "pd24_start_timeout_terminal_and_the_users_cancel_arm_performance_outcome_disagree",
+        ),
+        sig: Some(3),
+    },
+    Witness {
+        pd: 24,
+        seed: 51_233,
         split: Some(("R102.3", "R209.5")),
         shell_test: Some(
-            "pd24_start_timeout_terminal_and_the_recovering_arms_performance_outcome_disagree",
+            "pd24_start_timeout_terminal_and_an_environmental_recovery_arm_performance_outcome_disagree",
         ),
+        sig: Some(4),
     },
 ];
 
@@ -151,6 +197,8 @@ struct Summary {
     failing: Vec<(u64, Vec<String>)>,
     pd: Vec<(u32, Option<u64>)>,
     pd18: Vec<(u32, Option<u64>)>,
+    /// PD-19 runs per entry (`RunHits::pd19`): occurrences and first seed.
+    pd19: Vec<(u32, Option<u64>)>,
     sig: Vec<(u32, Option<u64>)>,
     /// Matched SP4(b) splits `(terminal row, performance row)`: occurrences and first seed.
     pairs: BTreeMap<(&'static str, &'static str), (u32, u64)>,
@@ -165,6 +213,7 @@ fn summary() -> &'static Summary {
             seeds: list.len() as u64,
             pd: vec![(0, None); 25],
             pd18: vec![(0, None); 3],
+            pd19: vec![(0, None); 3],
             sig: vec![(0, None); SIGNATURES.len()],
             ..Summary::default()
         };
@@ -182,6 +231,12 @@ fn summary() -> &'static Summary {
                 if *count > 0 {
                     summary.pd18[instance].0 += count;
                     summary.pd18[instance].1.get_or_insert(seed);
+                }
+            }
+            for (entry, count) in report.hits.pd19.iter().enumerate() {
+                if *count > 0 {
+                    summary.pd19[entry].0 += count;
+                    summary.pd19[entry].1.get_or_insert(seed);
                 }
             }
             for (pair, count) in &report.hits.pairs {
@@ -217,6 +272,10 @@ fn summary() -> &'static Summary {
             );
         }
         eprintln!("property: PD-18 stuck runs (a, b, c): {:?}", summary.pd18);
+        eprintln!(
+            "property: PD-19 entries (TerminationUnconfirmed, dropped start, refused auto-stop): {:?}",
+            summary.pd19
+        );
         for ((terminal, perf), (count, first)) in &summary.pairs {
             eprintln!(
                 "property: split {terminal} -> {perf}: {count} occurrences, first at seed {first}"
@@ -338,6 +397,15 @@ fn pd19_to_pd24_have_pinned_seeds() {
                 "seed {} no longer takes the split {pair:?}: {:?}",
                 witness.seed,
                 report.hits.pairs
+            );
+        }
+        if let Some(row) = witness.sig {
+            assert!(
+                report.hits.sig[row] > 0,
+                "seed {} no longer takes signature {row} of PD-{}: {:?}",
+                witness.seed,
+                witness.pd,
+                report.hits
             );
         }
         assert!(report.violations.is_empty(), "{:?}", report.violations);
@@ -770,6 +838,9 @@ struct Split {
     perf_tail: Option<TaskId>,
     /// A second ticker spawned for the recording after R207.3's claim.
     second_ticker: bool,
+    /// A performance run was begun for the recording (the completion is the run's outcome),
+    /// or none was (an aborted start: only the coordinator's claim).
+    run: bool,
 }
 
 impl Split {
@@ -790,6 +861,7 @@ impl Split {
             lost_tail: Some(7),
             perf_tail: Some(7),
             second_ticker: false,
+            run: true,
         }
     }
 
@@ -814,6 +886,7 @@ impl Split {
             lost_tail: None,
             perf_tail: Some(7),
             second_ticker: false,
+            run: true,
         }
     }
 
@@ -834,6 +907,7 @@ impl Split {
             lost_tail: None,
             perf_tail: None,
             second_ticker: true,
+            run: true,
         }
     }
 
@@ -895,6 +969,10 @@ impl Split {
             own_cancel_tail: self.perf_own_tail,
             tail: self.perf_tail,
         };
+        if self.run {
+            w.perf.registered.insert(1);
+            w.perf.begun.insert(1);
+        }
         w.perf_complete(1, perf, perf_row, completion);
         w
     }
@@ -995,16 +1073,8 @@ fn an_sp4b_split_needs_its_full_signature() {
             },
             None,
         ),
-        // D-S2b-11 (a): PD-4 is exactly its C7.1 text. Without the second ticker, or
-        // with another outcome, the same R207.3 claim is PD-23, a separate entry.
-        (
-            "PD-4 without its second ticker is PD-23, not PD-4",
-            Split {
-                second_ticker: false,
-                ..Split::pd4()
-            },
-            Some(23),
-        ),
+        // D-S2b-11 (a), D-S2b-13 (e): PD-4 is exactly its C7.1 text. The same R207.3 claim
+        // is PD-23 only for the outcome of the recording's own end the entry binds to a row.
         (
             "PD-4's claim whose recording then ends in another class is PD-23",
             Split {
@@ -1014,13 +1084,61 @@ fn an_sp4b_split_needs_its_full_signature() {
             Some(23),
         ),
         (
-            "PD-4 with a performance row other than the pipeline's `Completed`",
+            "PD-23 with a stop's empty capture",
+            Split {
+                perf: (PerfOutcome::NoSpeech, "R203.5"),
+                ..Split::pd4()
+            },
+            Some(23),
+        ),
+        (
+            "PD-23 with a cancel of a processing recording",
+            Split {
+                perf: (PerfOutcome::Cancelled, "R205.5"),
+                ..Split::pd4()
+            },
+            Some(23),
+        ),
+        (
+            "PD-23 with `Completed` needs the second ticker refused: PD-4's own ticker is PD-4",
+            Split::pd4(),
+            Some(4),
+        ),
+        (
+            "PD-23 with `Completed` and the ticker's gate refused",
+            Split {
+                second_ticker: false,
+                ..Split::pd4()
+            },
+            Some(23),
+        ),
+        // The counterexample of the review: `Completed` from a row that cannot complete
+        // `Success`, with or without a second ticker, is no PD.
+        (
+            "`Completed` from R203.2 with a second ticker is no PD",
             Split {
                 perf: (PerfOutcome::Completed, "R203.2"),
                 second_ticker: true,
                 ..Split::pd4()
             },
-            Some(23),
+            None,
+        ),
+        (
+            "`Completed` from R203.2 without a second ticker is no PD",
+            Split {
+                perf: (PerfOutcome::Completed, "R203.2"),
+                second_ticker: false,
+                ..Split::pd4()
+            },
+            None,
+        ),
+        (
+            "a performance outcome from a row outside PD-23's table",
+            Split {
+                perf: (PerfOutcome::Failed, "R999.9"),
+                ..Split::pd4()
+            },
+            None,
         ),
         (
             "PD-4's row on a status it does not list",
@@ -1124,25 +1242,67 @@ fn pd22_defers_its_judgment_until_the_cancel_tail_closes() {
     );
 }
 
-/// C7.4's `Superseded` row: "for stale ids `P` of the stale id is unaffected". A claim by
-/// an input that named an older recording is outside SP4(b) and is no PD (the PD-12
-/// signature is gone); the same claim for the current recording still needs a signature.
+/// D-S2b-13 (d): there is no blanket stale-input skip. SP4(b) compares the outcomes a
+/// generation actually has: a stale-input claim for a recording whose run began and ended
+/// differently fails; a completion with no run behind it (an aborted start: seed 8096) is
+/// the coordinator's claim, leaves no performance row and is no outcome to compare.
 #[test]
-fn a_stale_input_claim_is_outside_sp4b_and_no_pd() {
+fn sp4b_applies_to_a_stale_claim_when_the_generation_has_both_outcomes() {
     let stale = Split {
         terminal: (TerminalOutcome::Superseded, ErrCode::StaleOwner, "R201.1"),
         claim_status: Status::Idle,
         claim_current: false,
         ..Split::pd4()
     };
-    let checker = stale.run();
-    assert!(checker.violations.is_empty(), "{:?}", checker.violations);
-    assert_eq!(split_pd(&checker), None);
-    let current = Split {
-        claim_current: true,
+    // A run exists: the stale claim and the run's outcome disagree. No signature covers a
+    // stale claim, so this is an SP4(b) failure (it was skipped before).
+    assert!(violations(&stale.run()).contains("SP4(b)"));
+    assert_eq!(split_pd(&stale.run()), None);
+    // No run was begun (the start aborted): nothing to compare.
+    let aborted = Split {
+        run: false,
         ..stale
     };
-    assert!(violations(&current.run()).contains("SP4(b)"));
+    let checker = aborted.run();
+    assert!(checker.violations.is_empty(), "{:?}", checker.violations);
+    assert_eq!(split_pd(&checker), None);
+}
+
+/// The performance run's lifecycle (`request_completion`, `recording.rs:3114`): a
+/// completion is the run's outcome only once the run began; while the begin is in flight
+/// it waits and is applied when the begin resolves; after an abort it is dropped; with no
+/// run registered at all it is a bare claim of the coordinator.
+#[test]
+fn a_completion_follows_the_performance_run_lifecycle() {
+    let won = |step| Won {
+        row: "R203.2",
+        step,
+        input_rid: 1,
+        current: 1,
+        status_before: Status::Idle,
+        other_cancel_tail: false,
+        own_cancel_tail: false,
+        tail: None,
+    };
+    // Begun: the outcome.
+    let mut w = World::new();
+    w.perf.registered.insert(1);
+    w.perf.begun.insert(1);
+    w.perf_complete(1, PerfOutcome::Failed, "R203.2", won(1));
+    assert_eq!(w.perf.outcome[&1].0, PerfOutcome::Failed);
+    assert!(!w.perf.no_run.contains(&1));
+    // Registered, begin in flight: held, the first request wins when the begin resolves.
+    let mut w = World::new();
+    w.perf.registered.insert(2);
+    w.perf_complete(2, PerfOutcome::Cancelled, "R209.4", won(1));
+    w.perf_complete(2, PerfOutcome::Failed, "R203.2", won(2));
+    assert!(w.perf.outcome.is_empty());
+    assert_eq!(w.perf.pending[&2].0, PerfOutcome::Cancelled);
+    // Not registered (an aborted start, or an id that never began): a bare claim.
+    let mut w = World::new();
+    w.perf_complete(3, PerfOutcome::Failed, "R215.1", won(1));
+    assert_eq!(w.perf.outcome[&3].0, PerfOutcome::Failed);
+    assert!(w.perf.no_run.contains(&3));
 }
 
 /// The split is judged at the step where the second outcome arrives, not at the end of
@@ -1168,6 +1328,8 @@ fn an_sp4b_split_is_checked_at_the_prefix_where_both_outcomes_exist() {
         "R999.1",
         claim,
     );
+    w.perf.registered.insert(1);
+    w.perf.begun.insert(1);
     w.perf_complete(
         1,
         PerfOutcome::Failed,
@@ -1451,18 +1613,68 @@ fn a_stuck_recovering_run_needs_the_generations_own_pd18_or_pd19_evidence() {
     let mut checker = stranded(1, long);
     checker.on_end(&w, &[]);
     assert!(violations(&checker).contains("without PD-18/PD-19 evidence"));
+
+    // D-S2b-13 (c): a preserved capture nobody took is no exemption. With the long end and
+    // the R101.12 gap alone it is still a stuck run, and a later stop does not count: the
+    // user's stop in `Recovering` is suppressed by the frontend.
+    let mut w = World::new();
+    w.current_id = 1;
+    w.status = Status::Recovering;
+    w.preserved.insert(
+        1,
+        Preserved {
+            samples: 12_000,
+            code: ErrCode::StreamInvalidated,
+        },
+    );
+    let mut checker = stranded(1, long);
+    checker.on_end(&w, &[]);
+    assert!(
+        violations(&checker).contains("without PD-18/PD-19 evidence"),
+        "{:?}",
+        checker.violations
+    );
+    // With the refused auto-stop that took nothing, the capture still in the store and no
+    // stop that took it, it is PD-19's third entry.
+    let mut checker = stranded(1, long);
+    let mut out = StepOut::default();
+    out.notes.push(Note::AutoStopTookNothing { rid: 1 });
+    checker.on_step(&World::new(), &out);
+    checker.on_end(&w, &[]);
+    assert!(checker.violations.is_empty(), "{:?}", checker.violations);
+    assert_eq!(checker.hits.pd19, [0, 0, 1]);
+    // A stop that did take the capture leaves no capture in the store: another entry.
+    let mut taken = World::new();
+    taken.current_id = 1;
+    taken.status = Status::Recovering;
+    let mut checker = stranded(1, long);
+    let mut out = StepOut::default();
+    out.notes.push(Note::AutoStopTookNothing { rid: 1 });
+    checker.on_step(&World::new(), &out);
+    checker.on_end(&taken, &[]);
+    assert!(
+        violations(&checker).contains("without PD-18/PD-19 evidence"),
+        "{:?}",
+        checker.violations
+    );
 }
 
 /// The seeded runs witness PD-19 with the whole story, so the evidence is real.
 #[test]
 fn pd19_is_witnessed_with_its_whole_story() {
-    let report = run_seed(7_729);
-    assert!(report.hits.pd[19] > 0, "{:?}", report.hits);
-    assert_eq!(report.hits.pd19, [1, 0], "{:?}", report.hits);
-    assert_eq!(report.hits.pd18, [0, 0, 0]);
-    let report = run_seed(37_591);
-    assert_eq!(report.hits.pd19, [0, 1], "{:?}", report.hits);
-    assert_eq!(report.hits.pd18, [0, 0, 0]);
+    // One seed per entry: `TerminationUnconfirmed`, a dropped start, the refused auto-stop
+    // that leaves the capture in the store (no user-accessible recovery).
+    for (seed, entries) in [
+        (41_947, [1, 0, 0]),
+        (20_726, [0, 1, 0]),
+        (12_625, [0, 0, 1]),
+    ] {
+        let report = run_seed(seed);
+        assert!(report.hits.pd[19] > 0, "{seed}: {:?}", report.hits);
+        assert_eq!(report.hits.pd19, entries, "{seed}: {:?}", report.hits);
+        assert_eq!(report.hits.pd18, [0, 0, 0]);
+        assert!(report.violations.is_empty(), "{:?}", report.violations);
+    }
 }
 
 /// Mutation check on the harness's own scheduler: a blocked step must change

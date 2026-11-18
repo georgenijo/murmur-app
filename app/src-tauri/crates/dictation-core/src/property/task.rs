@@ -85,6 +85,12 @@ pub enum Note {
         /// The task and row that took it earlier, if one did.
         earlier: Option<(&'static str,)>,
     },
+    /// The stop the supervisor's `Interrupted` arm spawned (`RS`, R215.2) ended its
+    /// decision without taking the preserved capture of `rid` (refused at `Idle` or
+    /// `Starting`, or nothing to take): the interrupted capture is left in the store.
+    AutoStopTookNothing {
+        rid: Rid,
+    },
     /// A start future was dropped at an await point.
     StartDropped {
         rid: Rid,
@@ -357,11 +363,19 @@ pub fn apply(cx: &mut Cx<'_>, fx: &FxCtx, at: Placement, effect: &Effect) -> boo
         Effect::PerfBegin => {
             if cx.w.perf.registered.contains(&fx.rid) {
                 cx.w.perf.begun.insert(fx.rid);
+                // `resolve_begin(succeeded)`: the completion requested while the begin was
+                // in flight is the run's outcome now.
+                if let Some((outcome, row, ctx)) = cx.w.perf.pending.remove(&fx.rid) {
+                    cx.w.perf.outcome.entry(fx.rid).or_insert((outcome, row));
+                    cx.w.perf.ctx.entry(fx.rid).or_insert(ctx);
+                }
             }
         }
         Effect::PerfAbort => {
             if !cx.w.perf.begun.contains(&fx.rid) {
                 cx.w.perf.registered.remove(&fx.rid);
+                // `abort`: the entry, and the completion it held, are gone.
+                cx.w.perf.pending.remove(&fx.rid);
                 cx.w.perf.aborted.insert(fx.rid);
             }
         }

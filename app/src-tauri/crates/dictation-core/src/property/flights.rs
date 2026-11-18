@@ -552,6 +552,8 @@ pub struct StopFlight {
     q: VecDeque<QItem>,
     expected: Option<Rid>,
     auto: Option<Continuation>,
+    /// This is the stop the `Interrupted` arm spawned (its `AutoStop` token was held).
+    is_auto: bool,
     cfg: StopCfg,
     rid: Rid,
     input: Option<StopInput>,
@@ -571,6 +573,7 @@ impl StopFlight {
             st: Ts::AcquireT,
             q: VecDeque::new(),
             expected,
+            is_auto: auto.is_some(),
             auto,
             cfg,
             rid: 0,
@@ -733,6 +736,11 @@ impl Task for StopFlight {
                     decision = core_stop::decide_stop_request(&view, input, at);
                 }
                 log_decision(cx, SiteId::StopRequest, &decision, self.rid, None);
+                if self.is_auto && self.interrupted.is_none() {
+                    cx.out.notes.push(Note::AutoStopTookNothing {
+                        rid: self.expected.unwrap_or(self.rid),
+                    });
+                }
                 match decision.verdict {
                     Verdict::Applied => {}
                     _ => {

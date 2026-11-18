@@ -17,7 +17,9 @@
 //! checks every row against the source (the function is declared at the cited
 //! line) and checks that every message, worker event, timer and supervisor step of
 //! the model has a row. A step without a row is a defect. A reviewer checks a row
-//! by reading the cited lines.
+//! by reading the cited lines. Beyond the lines, every cited function is pinned **whole**
+//! by the hash of its normalized token stream (`mirror_pins.rs`, D-S2b-13 (a)): any edit of
+//! one fails the mirror test until its row is re-pinned after re-checking the model step.
 //!
 //! What is *not* modeled, and why: the speculative and standby phases (an optional
 //! feature the dictation commands never enter), peek requests (no state change), the
@@ -254,8 +256,8 @@ pub const MIRROR: &[Mirror] = &[
             "AttemptPhase::Starting",
             "let _ = response.send(Ok(cancelled));",
         ],
-        real_test: None,
-        what: "should_abandon in Starting|Recording, begin_recovery, then response Ok(cancelled)",
+        real_test: Some("a_cancel_from_recording_stops_capture_and_answers_true"),
+        what: "should_abandon in Starting|Recording, begin_recovery, then response Ok(cancelled); from Recovering or Stopping nothing is abandoned (a_cancel_from_recovering_has_nothing_to_abandon)",
     },
     Mirror {
         step: "begin_recovery",
