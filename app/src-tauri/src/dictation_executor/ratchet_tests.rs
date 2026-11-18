@@ -1286,29 +1286,140 @@ fn token_idents(tokens: proc_macro2::TokenStream) -> Vec<String> {
     out
 }
 
-/// A token stream as text with no whitespace or comment (doc comment) information:
-/// every other token, every comma and every punctuation's spacing (`Joint` is `~`) is
-/// kept, so `(x,)` and `(x)`, and `m!(&&x)` and `m!(& &x)`, differ.
-fn normalized_tokens(tokens: proc_macro2::TokenStream) -> String {
-    use proc_macro2::{Delimiter, Spacing, TokenTree};
+// The wrapper-pin normalization (shared rule of #1152 and #1153, D-S2b-18): a token
+// stream as text with no whitespace or comment information. Every other token, every
+// comma and every punctuation's spacing (`Joint` is `~`) is kept, so `(x,)` and `(x)`,
+// and `m!(&&x)` and `m!(& &x)`, differ. Only **source doc comments** (`///`, `//!`,
+// `/** */`, `/*! */`) are dropped, and only outside macro invocations and attributes:
+// the lexer turns a doc comment into `#[doc = ".."]` tokens, so they are found by their
+// span (a doc comment's `#` covers the whole comment, an attribute's one character;
+// `proc-macro2`'s `span-locations`). Every token inside a macro invocation (`name!(..)`,
+// `name![..]`, `name!{..}`, `macro_rules! name {..}`) is kept, `#[doc = ".."]` included:
+// a macro can expand an argument into anything, so `#[doc = "a"]` against `#[doc = "b"]`
+// in a macro input is an edit. So is every token inside a non-doc attribute and an
+// explicit `#[doc = ".."]` attribute anywhere.
+use proc_macro2::{Delimiter, Group, Spacing, TokenStream, TokenTree};
+
+/// Keywords after which `!` is the unary operator, not a macro call's bang (`if !(a)`).
+const UNARY_BANG_AFTER: [&str; 12] = [
+    "if", "while", "return", "match", "in", "else", "break", "let", "move", "for", "loop", "mut",
+];
+
+fn rebuilt(group: &Group, stream: TokenStream) -> TokenTree {
+    let mut rebuilt = Group::new(group.delimiter(), stream);
+    rebuilt.set_span(group.span());
+    TokenTree::Group(rebuilt)
+}
+
+/// Whether the tokens at `at` are a source doc comment: `#` (and `!` for an inner one)
+/// followed by `[doc ..]`, where the `#` covers more than one character (a comment's span
+/// is the whole comment; an attribute's `#` is one character). Returns how many tokens it
+/// spans.
+fn doc_comment_len(tokens: &[TokenTree], at: usize) -> Option<usize> {
+    let TokenTree::Punct(hash) = &tokens[at] else {
+        return None;
+    };
+    if hash.as_char() != '#' {
+        return None;
+    }
+    let mut next = at + 1;
+    if matches!(tokens.get(next), Some(TokenTree::Punct(bang)) if bang.as_char() == '!') {
+        next += 1;
+    }
+    let Some(TokenTree::Group(group)) = tokens.get(next) else {
+        return None;
+    };
+    let is_doc = group.delimiter() == Delimiter::Bracket
+        && matches!(
+            group.stream().into_iter().next(),
+            Some(TokenTree::Ident(ident)) if ident == "doc"
+        );
+    let (start, end) = (hash.span().start(), hash.span().end());
+    let covers_a_comment = end.line != start.line || end.column.saturating_sub(start.column) > 1;
+    (is_doc && covers_a_comment).then_some(next + 1 - at)
+}
+
+/// How many tokens from `at` are one attribute (`#[..]` or `#![..]`): `#`, an optional
+/// `!`, the bracket group. `None` when the tokens are not an attribute.
+fn attribute_len(tokens: &[TokenTree], at: usize) -> Option<usize> {
+    let TokenTree::Punct(hash) = &tokens[at] else {
+        return None;
+    };
+    if hash.as_char() != '#' {
+        return None;
+    }
+    let mut next = at + 1;
+    if matches!(tokens.get(next), Some(TokenTree::Punct(bang)) if bang.as_char() == '!') {
+        next += 1;
+    }
+    matches!(
+        tokens.get(next),
+        Some(TokenTree::Group(group)) if group.delimiter() == Delimiter::Bracket
+    )
+    .then_some(next + 1 - at)
+}
+
+/// How many tokens from `at` are a macro invocation's bang and input: `!` after the
+/// macro's name (a path's last identifier, not a keyword), then the delimited input, or for
+/// `macro_rules! name {..}` the name and the body.
+fn macro_input_len(tokens: &[TokenTree], at: usize) -> Option<usize> {
+    let TokenTree::Punct(bang) = &tokens[at] else {
+        return None;
+    };
+    if bang.as_char() != '!' || bang.spacing() != Spacing::Alone || at == 0 {
+        return None;
+    }
+    match &tokens[at - 1] {
+        TokenTree::Ident(name) if !UNARY_BANG_AFTER.contains(&name.to_string().as_str()) => {}
+        _ => return None,
+    }
+    match (tokens.get(at + 1), tokens.get(at + 2)) {
+        (Some(TokenTree::Group(_)), _) => Some(2),
+        (Some(TokenTree::Ident(_)), Some(TokenTree::Group(_))) => Some(3),
+        _ => None,
+    }
+}
+
+/// `tokens` without the source doc comments that sit outside a macro invocation or an
+/// attribute's input. Everything else is kept as it is, spans included.
+fn without_doc_comments(tokens: TokenStream) -> TokenStream {
     let tokens: Vec<TokenTree> = tokens.into_iter().collect();
-    let mut out = Vec::new();
+    let mut out: Vec<TokenTree> = Vec::new();
     let mut at = 0;
     while at < tokens.len() {
-        // `#[doc = "..."]` is a doc comment: not part of the function's code.
-        if let (TokenTree::Punct(hash), Some(TokenTree::Group(group))) =
-            (&tokens[at], tokens.get(at + 1))
-        {
-            let doc = matches!(
-                group.stream().into_iter().next(),
-                Some(TokenTree::Ident(ident)) if ident == "doc"
-            );
-            if hash.as_char() == '#' && group.delimiter() == Delimiter::Bracket && doc {
-                at += 2;
-                continue;
-            }
+        if let Some(len) = doc_comment_len(&tokens, at) {
+            at += len;
+            continue;
+        }
+        // A non-doc attribute and a macro input are kept whole.
+        if let Some(len) = attribute_len(&tokens, at).or_else(|| macro_input_len(&tokens, at)) {
+            out.extend(tokens[at..at + len].iter().cloned());
+            at += len;
+            continue;
         }
         match &tokens[at] {
+            TokenTree::Group(group) => {
+                out.push(rebuilt(group, without_doc_comments(group.stream())));
+            }
+            other => out.push(other.clone()),
+        }
+        at += 1;
+    }
+    out.into_iter().collect()
+}
+
+/// A token stream as text with no whitespace or comment information: every other token,
+/// every comma and every punctuation's spacing (`Joint` is `~`) is kept, so `(x,)` and
+/// `(x)`, and `m!(&&x)` and `m!(& &x)`, differ. Only source doc comments outside macro
+/// invocations are dropped (see the module documentation).
+fn normalized_tokens(tokens: TokenStream) -> String {
+    render(without_doc_comments(tokens))
+}
+
+fn render(tokens: TokenStream) -> String {
+    let mut out = Vec::new();
+    for tree in tokens {
+        match &tree {
             TokenTree::Group(group) => {
                 let (open, close) = match group.delimiter() {
                     Delimiter::Parenthesis => ("(", ")"),
@@ -1316,10 +1427,7 @@ fn normalized_tokens(tokens: proc_macro2::TokenStream) -> String {
                     Delimiter::Bracket => ("[", "]"),
                     Delimiter::None => ("", ""),
                 };
-                out.push(format!(
-                    "{open} {} {close}",
-                    normalized_tokens(group.stream())
-                ));
+                out.push(format!("{open} {} {close}", render(group.stream())));
             }
             TokenTree::Punct(punct) => out.push(match punct.spacing() {
                 Spacing::Joint => format!("{}~", punct.as_char()),
@@ -1327,7 +1435,6 @@ fn normalized_tokens(tokens: proc_macro2::TokenStream) -> String {
             }),
             other => out.push(other.to_string()),
         }
-        at += 1;
     }
     out.join(" ")
 }
@@ -2925,6 +3032,64 @@ fn editing_a_pinned_wrapper_fails_but_reformatting_does_not() {
         let sources = sources_with("commands/recording_host.rs", OLD, edited);
         assert!(the_status_ratchet_rejects(&sources).contains("was edited"), "{edited}");
     }
+}
+
+/// The pin normalization drops source doc comments only outside macro invocations
+/// (D-S2b-18): `#[doc = "a"]` against `#[doc = "b"]` inside a macro input is an edit,
+/// since a macro can expand its argument into anything, while a comment-only edit is
+/// not.
+#[test]
+fn a_doc_attribute_inside_a_macro_in_a_pinned_wrapper_is_an_edit_and_a_comment_is_not() {
+    let pin = |source: &str| {
+        event_sites(&synthetic(source)).dynamic[&("lib.rs".to_string(), "wrap".to_string())].2
+    };
+    let check = |source: &str, pinned: u64| {
+        let entry = [DynamicEmitter {
+            file: "lib.rs",
+            function: "wrap",
+            emits: 1,
+            wrapper: "emit_json",
+            names: &["a"],
+            hash: pinned,
+        }];
+        check_event_sites(&event_sites(&synthetic(source)), &[], &entry, &[])
+    };
+    let wrapper = |before: &str, call: &str| {
+        format!("{before}fn wrap(a: &A, name: &str) {{ {call} a.emit(name, 1); }}")
+    };
+    for call in [
+        "m!(#[doc = \"a\"] x);",
+        "m![#[doc = \"a\"] x];",
+        "m!{#[doc = \"a\"] x}",
+        "m!(/// a\n x);",
+    ] {
+        let base = wrapper("", call);
+        let pinned = pin(&base);
+        assert!(check(&base, pinned).is_ok(), "{call}");
+        // The argument changes: an edit.
+        let edited = base.replace("\"a\"", "\"b\"").replace("/// a", "/// b");
+        assert_ne!(edited, base, "{call}");
+        assert!(check(&edited, pinned).is_err(), "{call}");
+        // Comment-only edits: the same hash.
+        for commented in [
+            wrapper("/// an outer doc comment\n", call),
+            wrapper("/** block doc */\n", call),
+            wrapper("", &format!("/* note */ {call} // trailing\n")),
+            wrapper("", &format!("// leading\n {call}")),
+        ] {
+            assert!(check(&commented, pinned).is_ok(), "{call}: {commented}");
+        }
+    }
+    // An explicit `#[doc = ".."]` attribute outside a macro is an edit too; a doc
+    // comment in the same place is not.
+    let explicit = |text: &str| {
+        format!("#[doc = \"{text}\"]\nfn wrap(a: &A, name: &str) {{ a.emit(name, 1); }}")
+    };
+    let pinned = pin(&explicit("a"));
+    assert!(check(&explicit("b"), pinned).is_err());
+    let comment =
+        |text: &str| format!("/// {text}\nfn wrap(a: &A, name: &str) {{ a.emit(name, 1); }}");
+    assert_eq!(pin(&comment("a")), pin(&comment("b")));
 }
 
 /// D-S2b-10 (e): the pin keeps punctuation spacing and every comma.
