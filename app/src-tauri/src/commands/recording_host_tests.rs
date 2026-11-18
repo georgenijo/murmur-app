@@ -249,6 +249,8 @@ struct Script {
     pipeline_error: Option<String>,
     on_emit_smart_destination: Option<Hook>,
     on_supervisor_start: Option<Hook>,
+    /// Runs inside the supervisor stop, after the stop was admitted.
+    on_supervisor_stop: Option<Hook>,
 }
 
 struct Shared {
@@ -280,12 +282,12 @@ impl Shared {
     }
 }
 
-struct FakeHost {
+pub(super) struct FakeHost {
     shared: Arc<Shared>,
 }
 
 impl FakeHost {
-    fn new(state: Arc<State>) -> Self {
+    pub(super) fn new(state: Arc<State>) -> Self {
         Self {
             shared: Arc::new(Shared {
                 log: StdMutex::new(Vec::new()),
@@ -457,6 +459,9 @@ impl SupervisorPort for Shared {
         _released_at: Option<std::time::Instant>,
     ) -> Result<Vec<f32>, String> {
         self.push(Call::SupervisorStop, format!("{recording_id} {trigger:?}"));
+        if let Some(hook) = self.script().on_supervisor_stop.as_ref() {
+            hook(&self.state);
+        }
         self.script()
             .stop_result
             .take()
@@ -1070,6 +1075,27 @@ fn expected_stop_missing_context() -> Vec<String> {
             .to_string(),
     );
     trace
+}
+
+/// The spawned stop of an interrupted capture (R215.2 `RS`) for recording 7 on a
+/// fake host, carrying the registered `AutoStop` owner. `probe` runs inside the
+/// supervisor stop, i.e. after stop admission and before the stop returns.
+pub(super) fn auto_stop_with_probe(
+    owner: crate::core_history::ContinuationGuard,
+    probe: impl Fn() + Send + 'static,
+) -> serde_json::Value {
+    let (state, host) = fixture(DictationStatus::Recording, 7);
+    install_context(&state, 7);
+    host.script().stop_result = Some(Ok(Vec::new()));
+    host.script().on_supervisor_stop = Some(Box::new(move |_| probe()));
+    run(stop_native_recording_admitted(
+        &host,
+        &state,
+        Some(7),
+        audio_lifecycle::DictationStopTrigger::Other,
+        Some(owner),
+    ))
+    .expect("stop replies")
 }
 
 fn scenario_stop_empty_audio() -> Recorded {

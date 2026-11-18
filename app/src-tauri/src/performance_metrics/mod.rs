@@ -146,6 +146,8 @@ impl PerformanceMetrics {
     }
 
     pub(crate) fn production_capture_failure(&self, id: u64, kind: crate::audio::AudioFailureKind) {
+        #[cfg(test)]
+        crate::barrier_hook::at("performance.production_capture_failure");
         let persist = self
             .production
             .lock()

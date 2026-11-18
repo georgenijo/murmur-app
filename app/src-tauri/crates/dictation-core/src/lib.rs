@@ -20,6 +20,7 @@ pub mod decision;
 pub mod effects;
 pub mod ids;
 pub mod inputs;
+pub mod lifecycle;
 pub mod replies;
 pub mod rows;
 pub mod state;

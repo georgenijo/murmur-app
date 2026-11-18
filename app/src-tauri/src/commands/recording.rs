@@ -1,4 +1,5 @@
 use crate::audio_lifecycle::{self, AudioCancelReason, AudioLifecycleEvent, AudioStartError};
+use crate::core_history::ContinuationGuard;
 use crate::dictation_context::{self, DictationContextSnapshot, ResolverInputs};
 use crate::dictation_diagnostics::DictationCaptureCompletion;
 use crate::dictation_telemetry::{DictationErrorCode, DictationTerminalOutcome};
@@ -171,10 +172,19 @@ fn emit_preview_vad_disagreement(app_state: &AppState, recording_id: u64, sample
 #[path = "recording_host.rs"]
 mod dictation_host;
 use dictation_host::{DictationHost, TauriHost};
+mod lifecycle_ports;
 
 #[cfg(test)]
 #[path = "recording_host_tests.rs"]
 mod host_tests;
+
+#[cfg(test)]
+#[path = "recording_lifecycle_tests.rs"]
+mod lifecycle_tests;
+
+#[cfg(test)]
+#[path = "recording_lifecycle_barrier_tests.rs"]
+mod lifecycle_barrier_tests;
 
 #[cfg(test)]
 #[path = "recording_golden_harness.rs"]
@@ -4924,18 +4934,22 @@ pub(crate) fn handle_audio_lifecycle(
     recording_id: u64,
     event: AudioLifecycleEvent,
 ) {
-    handle_audio_lifecycle_and_ready_tasks(
+    handle_audio_lifecycle_events(
         app_handle,
         recording_id,
         event,
-        |app_handle, recording_id| {
+        |app_handle, recording_id, auto_stop_owner| {
+            // `RS` (R215.2): the registered `AutoStop` op moves into the spawned
+            // stop, which consumes it at admission. A task that never runs, is
+            // cancelled or panics drops it, and `Drop` retires the op.
             tauri::async_runtime::spawn(async move {
                 let state = app_handle.state::<State>();
-                if stop_native_recording_for(
+                if stop_native_recording_owned(
                     app_handle.clone(),
                     state,
                     Some(recording_id),
                     audio_lifecycle::DictationStopTrigger::Other,
+                    Some(auto_stop_owner),
                 )
                 .await
                 .is_err()
@@ -4956,8 +4970,15 @@ pub(crate) fn handle_audio_lifecycle(
 }
 
 /// [`handle_audio_lifecycle`] with its spawns passed in (Stage 0b seam): the
-/// event is handled first, then a `Ready` starts the incremental VAD and the
-/// partial ticker, whose `register` takes the dictation lock itself.
+/// event is handled by [`handle_audio_lifecycle_events`], whose `Ready` decision
+/// ends with the `SD` side-task attempt (the incremental VAD and the partial
+/// ticker, whose `register` takes the dictation lock itself).
+///
+/// The auto-stop closure here does not take the registered `AutoStop` owner (it
+/// only records that the stop was scheduled), so the owner is dropped, and
+/// retired, as the closure returns; production passes it to the stop through
+/// [`handle_audio_lifecycle_events`] directly.
+#[cfg(test)]
 fn handle_audio_lifecycle_and_ready_tasks<R: tauri::Runtime>(
     app_handle: tauri::AppHandle<R>,
     recording_id: u64,
@@ -4965,36 +4986,85 @@ fn handle_audio_lifecycle_and_ready_tasks<R: tauri::Runtime>(
     transcribe_interruption: impl FnOnce(tauri::AppHandle<R>, u64),
     spawn_ready_tasks: impl FnOnce(tauri::AppHandle<R>, u64, Box<dyn FnOnce() -> bool>),
 ) {
-    let became_ready = event == AudioLifecycleEvent::Ready;
-    let partial_app = app_handle.clone();
-    handle_audio_lifecycle_with(app_handle, recording_id, event, transcribe_interruption);
-    if became_ready {
-        let register_app = partial_app.clone();
-        spawn_ready_tasks(
-            partial_app,
-            recording_id,
-            Box::new(move || {
-                let state = register_app.state::<State>();
-                let dictation = state.app_state.dictation.lock_or_recover();
-                register_partial_ticker_locked(&state.app_state, &dictation, recording_id)
-            }),
-        );
-    }
+    handle_audio_lifecycle_events(
+        app_handle,
+        recording_id,
+        event,
+        |app_handle, recording_id, _owner| transcribe_interruption(app_handle, recording_id),
+        spawn_ready_tasks,
+    );
 }
 
+/// The lifecycle bridge with no ready side tasks: what the unit tests that do
+/// not exercise the partial ticker call.
+#[cfg(test)]
 fn handle_audio_lifecycle_with<R: tauri::Runtime>(
     app_handle: tauri::AppHandle<R>,
     recording_id: u64,
     event: AudioLifecycleEvent,
     transcribe_interruption: impl FnOnce(tauri::AppHandle<R>, u64),
 ) {
-    let state = app_handle.state::<State>();
-    if let AudioLifecycleEvent::InitializationFailed { kind, .. } = &event {
-        state
-            .performance
-            .production_capture_failure(recording_id, *kind);
+    handle_audio_lifecycle_and_ready_tasks(
+        app_handle,
+        recording_id,
+        event,
+        transcribe_interruption,
+        |_, _, _| {},
+    );
+}
+
+/// Stage 2a-1: sites 207-216 of appendix C. Each arm builds the decision view
+/// under the lock today's code takes (D for 207-211 and 216; none for 212-215),
+/// calls its `decide_*` inline, and runs the decision's effects through the
+/// executor at their placement: `Pre`, `In` (D held), then, D released, `PDT`.
+/// The shell owns every lock; the executor takes none.
+fn handle_audio_lifecycle_events<R: tauri::Runtime>(
+    app_handle: tauri::AppHandle<R>,
+    recording_id: u64,
+    event: AudioLifecycleEvent,
+    transcribe_interruption: impl FnOnce(tauri::AppHandle<R>, u64, ContinuationGuard),
+    spawn_ready_tasks: impl FnOnce(tauri::AppHandle<R>, u64, Box<dyn FnOnce() -> bool>),
+) {
+    use crate::dictation_executor::convert::{cancel_reason_to_core, error_code_to_core};
+    use crate::dictation_executor::executor::{core_now, decide_guarded, CoreEntry};
+    use crate::dictation_executor::FieldAdapter;
+    use murmur_dictation_core::decision::{Decision, ObsKind, Verdict};
+    use murmur_dictation_core::effects::Placement;
+    use murmur_dictation_core::ids::{Handle, RecordingId};
+    use murmur_dictation_core::lifecycle as core_lifecycle;
+
+    // C4.1 step 0 / C4.2: the **first** statement, before the managed-state
+    // lookup and before any lock. An inline listener that an `In`-phase emit
+    // invokes can re-enter this bridge on this thread while D is held; D is not
+    // reentrant, so the nested entry must be refused before it can ask for D.
+    match CoreEntry::enter() {
+        Ok(entry) => drop(entry),
+        Err(kind) => {
+            tracing::error!(
+                target: "pipeline",
+                recording_id,
+                refusal = ?kind,
+                "re-entrant lifecycle event refused before any lock"
+            );
+            return;
+        }
     }
-    let is_current = || state.app_state.recording_id.load(Ordering::SeqCst) == recording_id;
+    let state = app_handle.state::<State>();
+    let rid = RecordingId(recording_id);
+    let now = core_now();
+    let ports = lifecycle_ports::LifecyclePorts::new(
+        &app_handle,
+        &state,
+        recording_id,
+        transcribe_interruption,
+        spawn_ready_tasks,
+    );
+    let run = |decision: Decision,
+               phase: Placement,
+               dictation: Option<&mut crate::state::DictationState>| {
+        let mut exec = lifecycle_ports::executor(&ports, decision);
+        lifecycle_ports::run_phase(&mut exec, phase, dictation, recording_id);
+    };
 
     match event {
         AudioLifecycleEvent::StartupDiagnostic(diagnostic) => {
@@ -5011,378 +5081,238 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
                 .performance
                 .observe_production_capture(recording_id, diagnostic);
         }
+        // Site 212 (R212.1), D-less: `ACC`, then a `Superseded` terminal for a
+        // recording that is no longer current.
+        // `ACC` takes two mutexes and runs **first**, as today; only then is the
+        // current id read, so a generation that advances meanwhile is seen.
         AudioLifecycleEvent::Accepted => {
-            state.app_state.dictation_telemetry.accepted(recording_id);
-            state.dictation_diagnostics.claim(recording_id);
-            if !is_current() {
-                emit_dictation_terminal(
-                    &state,
-                    recording_id,
-                    DictationTerminalOutcome::Superseded,
-                    DictationErrorCode::StaleOwner,
-                );
-            }
+            let prefix = core_lifecycle::accepted_prefix();
+            run(
+                Decision::effects_only(prefix.clone(), core_lifecycle::ACCEPTED_PREFIX_ROW),
+                Placement::PostDT,
+                None,
+            );
+            let facts = FieldAdapter::lock_free_facts(&state.app_state);
+            let decision =
+                decide_guarded(|| core_lifecycle::decide_sup_accepted_nolock(facts, rid, now))
+                    .after_prefix(&prefix);
+            run(decision, Placement::PostDT, None);
         }
+        // Site 207 (R207.1-.5): the stale check and the status transition under
+        // D; the side tasks (`SD`) after D is released, whatever the arm decided.
         AudioLifecycleEvent::Ready => {
             let ready_received_at = std::time::Instant::now();
             let mut dictation = state.app_state.dictation.lock_or_recover();
-            if !is_current() || dictation.status != DictationStatus::Starting {
-                tracing::warn!(
+            let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+            let mut input = core_lifecycle::SupReadyInput {
+                rid,
+                context_present: None,
+                ready_received: now,
+            };
+            let mut decision =
+                decide_guarded(|| core_lifecycle::decide_sup_ready(&view, input, now));
+            if let Verdict::NeedObservation(ObsKind::ContextPresence { .. }) = decision.verdict {
+                // The context is read only for a current `Starting` recording,
+                // exactly where today's arm reads it (D-S1-2).
+                input.context_present =
+                    Some(state.app_state.active_context(recording_id).is_some());
+                decision = decide_guarded(|| core_lifecycle::decide_sup_ready(&view, input, now));
+            }
+            let row = decision.row;
+            match row.0 {
+                "R207.1" | "R207.2" | "R207.3" => tracing::warn!(
                     target: "audio",
                     recording_id,
                     status = ?dictation.status,
                     "stale audio readiness ignored by dictation lifecycle"
-                );
-                emit_dictation_terminal(
-                    &state,
-                    recording_id,
-                    DictationTerminalOutcome::Superseded,
-                    DictationErrorCode::StaleOwner,
-                );
-                return;
-            }
-            // Core Audio is intentionally started before the immutable
-            // per-recording context is resolved. Keep capturing, but do not
-            // publish Recording until that snapshot is installed.
-            if state.app_state.active_context(recording_id).is_none() {
-                tracing::info!(
+                ),
+                // Core Audio is intentionally started before the immutable
+                // per-recording context is resolved. Keep capturing, but do not
+                // publish Recording until that snapshot is installed.
+                "R207.4" => tracing::info!(
                     target: "pipeline",
                     event_code = "audio.recording_status_timing",
                     recording_id,
                     context_ready = false,
                     ready_to_observation_ms = ready_received_at.elapsed().as_millis() as u64,
                     "audio ready, awaiting context"
-                );
-                return;
+                ),
+                _ => {}
             }
-            transition_dictation_status(recording_id, &mut dictation, DictationStatus::Recording);
-            *state.app_state.last_transcription_at.lock_or_recover() =
-                Some(std::time::Instant::now());
-            let _ = app_handle.emit("recording-status-changed", "recording");
-            tracing::info!(
-                target: "pipeline",
-                event_code = "audio.recording_status_timing",
+            let mut exec = lifecycle_ports::executor(&ports, decision);
+            lifecycle_ports::run_phase(
+                &mut exec,
+                Placement::In,
+                Some(&mut dictation),
                 recording_id,
-                context_ready = true,
-                ready_to_status_emit_ms = ready_received_at.elapsed().as_millis() as u64,
-                "recording status emitted after audio ready"
             );
+            if row.0 == "R207.5" {
+                tracing::info!(
+                    target: "pipeline",
+                    event_code = "audio.recording_status_timing",
+                    recording_id,
+                    context_ready = true,
+                    ready_to_status_emit_ms = ready_received_at.elapsed().as_millis() as u64,
+                    "recording status emitted after audio ready"
+                );
+            }
+            drop(dictation);
+            lifecycle_ports::run_phase(&mut exec, Placement::PostDT, None, recording_id);
         }
+        // Site 208 (R208.1-.2): the stall event is emitted under D.
         AudioLifecycleEvent::StillConnecting => {
-            let dictation = state.app_state.dictation.lock_or_recover();
-            if is_current() && dictation.status == DictationStatus::Starting {
-                let _ = app_handle.emit(
-                    "audio-initialization-stalled",
-                    serde_json::json!({ "recordingId": recording_id }),
-                );
-            }
+            let mut dictation = state.app_state.dictation.lock_or_recover();
+            let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+            let decision =
+                decide_guarded(|| core_lifecycle::decide_sup_still_connecting(&view, rid, now));
+            run(decision, Placement::In, Some(&mut dictation));
         }
+        // Site 209 (R209.1-.7): `ST→Recovering` under D, the rest after D.
         AudioLifecycleEvent::Recovering { reason } => {
-            let previous_status;
-            {
-                let mut dictation = state.app_state.dictation.lock_or_recover();
-                if !is_current()
-                    || !matches!(
-                        dictation.status,
-                        DictationStatus::Starting | DictationStatus::Recording
-                    )
-                {
-                    emit_dictation_terminal(
-                        &state,
-                        recording_id,
-                        DictationTerminalOutcome::Superseded,
-                        DictationErrorCode::StaleOwner,
-                    );
-                    return;
-                }
-                previous_status = transition_dictation_status(
-                    recording_id,
-                    &mut dictation,
-                    DictationStatus::Recovering,
-                );
-            }
-            if reason != AudioCancelReason::RuntimeFailure {
-                crate::dictation_executor::FieldAdapter::clear_context(
-                    &state.app_state,
-                    recording_id,
-                );
-            }
-            if app_handle
-                .emit("recording-status-changed", "recovering")
-                .is_ok()
-            {
-                emit_dictation_presentation(recording_id, DictationPresentation::CleanupInProgress);
-            }
-            let _ = app_handle.emit(
-                "audio-recovery-started",
-                serde_json::json!({
-                    "recordingId": recording_id,
-                    "reason": reason.as_str(),
-                }),
+            ports.set_payload(lifecycle_ports::LifecyclePayload {
+                reason: Some(reason),
+                ..Default::default()
+            });
+            let input = core_lifecycle::SupRecoveringInput {
+                rid,
+                reason: cancel_reason_to_core(reason),
+            };
+            let mut dictation = state.app_state.dictation.lock_or_recover();
+            let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+            let decision =
+                decide_guarded(|| core_lifecycle::decide_sup_recovering(&view, input, now));
+            let mut exec = lifecycle_ports::executor(&ports, decision);
+            lifecycle_ports::run_phase(
+                &mut exec,
+                Placement::In,
+                Some(&mut dictation),
+                recording_id,
             );
-            if !matches!(
-                reason,
-                AudioCancelReason::HardDeadline | AudioCancelReason::RuntimeFailure
-            ) {
-                complete_dictation_performance(
-                    &state.performance,
-                    recording_id,
-                    RunOutcomeV1::Cancelled {
-                        stage: PerformanceStageV1::CaptureFinalization,
-                    },
-                    Vec::new(),
-                    None,
-                    None,
-                );
-            }
-            if reason == AudioCancelReason::User {
-                let (outcome, error_code) = match previous_status {
-                    DictationStatus::Starting => (
-                        DictationTerminalOutcome::UserCancelledStarting,
-                        DictationErrorCode::CancelledStarting,
-                    ),
-                    DictationStatus::Recording => (
-                        DictationTerminalOutcome::UserCancelledRecording,
-                        DictationErrorCode::CancelledRecording,
-                    ),
-                    _ => unreachable!("recovery only begins from starting or recording"),
-                };
-                emit_dictation_terminal(&state, recording_id, outcome, error_code);
-                let _ = app_handle.emit(
-                    "recording-cancelled",
-                    serde_json::json!({ "recordingId": recording_id }),
-                );
-            } else if reason != AudioCancelReason::RuntimeFailure
-                && reason != AudioCancelReason::HardDeadline
-            {
-                let error_code = match reason {
-                    AudioCancelReason::DeviceChanged => DictationErrorCode::DeviceChanged,
-                    AudioCancelReason::SystemSleep => DictationErrorCode::SystemSleep,
-                    AudioCancelReason::SystemWake => DictationErrorCode::SystemWake,
-                    _ => DictationErrorCode::RuntimeFailure,
-                };
-                emit_dictation_terminal(
-                    &state,
-                    recording_id,
-                    DictationTerminalOutcome::RuntimeInterruption,
-                    error_code,
-                );
-            }
+            drop(dictation);
+            lifecycle_ports::run_phase(&mut exec, Placement::PostDT, None, recording_id);
         }
+        // Site 213 (R213.1-.2), D-less; the status is never written. The
+        // production-capture-failure record is the decision's first effect.
         AudioLifecycleEvent::InitializationFailed {
             error,
             kind,
             recovery_reason,
         } => {
-            if !is_current() {
-                emit_dictation_terminal(
-                    &state,
-                    recording_id,
-                    DictationTerminalOutcome::Superseded,
-                    DictationErrorCode::StaleOwner,
-                );
-                return;
-            }
-            let outcome = if recovery_reason == Some(AudioCancelReason::RuntimeFailure) {
-                DictationTerminalOutcome::RuntimeInterruption
-            } else {
-                DictationTerminalOutcome::CaptureInitFailure
-            };
-            emit_dictation_terminal(
-                &state,
-                recording_id,
-                outcome,
-                DictationErrorCode::from_audio_failure(kind),
+            let error_code = error_code_to_core(
+                crate::dictation_telemetry::DictationErrorCode::from_audio_failure(kind),
             );
-            crate::dictation_executor::FieldAdapter::clear_context(&state.app_state, recording_id);
-            complete_dictation_performance(
-                &state.performance,
-                recording_id,
-                RunOutcomeV1::Failed {
-                    stage: PerformanceStageV1::CaptureFinalization,
-                    error_code: StableRunErrorV1::AudioCaptureFailed,
-                },
-                Vec::new(),
-                None,
-                None,
-            );
-            if app_handle
-                .emit("recording-initialization-failed", {
-                    let presentation = DictationPresentation::InitializationFailed(kind);
-                    let (status_code, action_code) = presentation.codes();
-                    serde_json::json!({
-                        "recordingId": recording_id,
-                        "error": error,
-                        "errorKind": kind.as_str(),
-                        "statusCode": status_code,
-                        "actionCode": action_code,
-                    })
-                })
-                .is_ok()
-            {
-                emit_dictation_presentation(
-                    recording_id,
-                    DictationPresentation::InitializationFailed(kind),
-                );
-            }
-        }
-        AudioLifecycleEvent::CleanupFinished => {
-            complete_dictation_capture_cleanup(&state.app_state, recording_id, |restore_idle| {
-                let _ = app_handle.emit(
-                    "recording-cleanup-finished",
-                    serde_json::json!({ "recordingId": recording_id }),
-                );
-                if restore_idle {
-                    let _ = app_handle.emit("recording-status-changed", "idle");
-                }
+            ports.set_payload(lifecycle_ports::LifecyclePayload {
+                failure: Some((error, kind)),
+                ..Default::default()
             });
+            let input = core_lifecycle::SupInitFailedInput {
+                rid,
+                kind: Handle(0),
+                error_code,
+                recovery_reason: recovery_reason.map(cancel_reason_to_core),
+            };
+            // `PCF` takes the production-metrics mutex and runs **first**, as
+            // today; only then is the current id read.
+            let prefix = core_lifecycle::init_failed_prefix(input.kind);
+            run(
+                Decision::effects_only(prefix.clone(), core_lifecycle::INIT_FAILED_PREFIX_ROW),
+                Placement::PostDT,
+                None,
+            );
+            let facts = FieldAdapter::lock_free_facts(&state.app_state);
+            let decision =
+                decide_guarded(|| core_lifecycle::decide_sup_init_failed_nolock(facts, input, now))
+                    .after_prefix(&prefix);
+            run(decision, Placement::PostDT, None);
         }
+        // Site 210 (R210.1-.4): capture completion under D, so a newer
+        // recording is never reset by the old owner's trailing `Idle`.
+        AudioLifecycleEvent::CleanupFinished => {
+            let mut dictation = state.app_state.dictation.lock_or_recover();
+            let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+            let decision =
+                decide_guarded(|| core_lifecycle::decide_sup_cleanup_finished(&view, rid, now));
+            run(decision, Placement::In, Some(&mut dictation));
+        }
+        // Site 214 (R214.1-.2), D-less.
         AudioLifecycleEvent::RecoveryStalled => {
-            if is_current()
-                && app_handle
-                    .emit("recording-recovery-stalled", {
-                        let (status_code, action_code) =
-                            DictationPresentation::CleanupStalled.codes();
-                        serde_json::json!({
-                            "recordingId": recording_id,
-                            "statusCode": status_code,
-                            "actionCode": action_code,
-                        })
-                    })
-                    .is_ok()
-            {
-                emit_dictation_presentation(recording_id, DictationPresentation::CleanupStalled);
-            }
+            let facts = FieldAdapter::lock_free_facts(&state.app_state);
+            let decision =
+                decide_guarded(|| core_lifecycle::decide_sup_stalled_nolock(facts, rid, now));
+            run(decision, Placement::PostDT, None);
         }
+        // Site 215 (R215.1-.3), D-less (`is_current()` is read without D); a
+        // short capture then enters site 216, a separate D section.
         AudioLifecycleEvent::Interrupted {
             reason,
             delivered_samples,
             duration_ms,
         } => {
-            if !is_current() {
-                let _ = audio_lifecycle::take_interrupted_dictation(recording_id);
-                emit_dictation_terminal(
-                    &state,
-                    recording_id,
-                    DictationTerminalOutcome::Superseded,
-                    DictationErrorCode::StaleOwner,
-                );
-                complete_dictation_performance(
-                    &state.performance,
-                    recording_id,
-                    RunOutcomeV1::Failed {
-                        stage: PerformanceStageV1::CaptureFinalization,
-                        error_code: StableRunErrorV1::AudioCaptureFailed,
-                    },
-                    Vec::new(),
-                    Some(ContentFreeInputSummaryV1::audio(duration_ms)),
-                    None,
-                );
-                return;
+            ports.set_payload(lifecycle_ports::LifecyclePayload {
+                interrupted: Some((reason, delivered_samples, duration_ms)),
+                ..Default::default()
+            });
+            let input = core_lifecycle::SupInterruptedInput {
+                rid,
+                delivered_samples: usize::try_from(delivered_samples).unwrap_or(usize::MAX),
+                duration_ms,
+                reason: cancel_reason_to_core(reason),
+            };
+            let facts = FieldAdapter::lock_free_facts(&state.app_state);
+            let mut decision =
+                decide_guarded(|| core_lifecycle::decide_sup_interrupted_nolock(facts, input, now));
+            // R215.2: register the `AutoStop` op right after the decide, before
+            // any effect runs (C4.3). The owner waits in the ports for `RS`, which
+            // moves it into the spawned stop; if `RS` never runs, dropping the
+            // ports retires it.
+            if let Some(spec) = decision.continuation.take() {
+                ports.hold_auto_stop(ContinuationGuard::register(
+                    &state.app_state.core_history,
+                    spec,
+                ));
             }
-            let auto_transcribe = delivered_samples >= 8_000;
-            if app_handle
-                .emit("recording-interrupted", {
-                    let presentation = DictationPresentation::Interrupted {
-                        partial_transcription: auto_transcribe,
-                    };
-                    let (status_code, action_code) = presentation.codes();
-                    serde_json::json!({
-                        "recordingId": recording_id,
-                        "reason": reason.as_str(),
-                        "deliveredSamples": delivered_samples,
-                        "durationMs": duration_ms,
-                        "autoTranscribe": auto_transcribe,
-                        "statusCode": status_code,
-                        "actionCode": action_code,
-                    })
-                })
-                .is_ok()
-            {
-                emit_dictation_presentation(
-                    recording_id,
-                    DictationPresentation::Interrupted {
-                        partial_transcription: auto_transcribe,
-                    },
-                );
-            }
-            if auto_transcribe {
-                transcribe_interruption(app_handle.clone(), recording_id);
-            } else {
-                let _ = audio_lifecycle::take_interrupted_dictation(recording_id);
-                emit_dictation_terminal(
-                    &state,
-                    recording_id,
-                    DictationTerminalOutcome::RuntimeInterruption,
-                    DictationErrorCode::RuntimeFailure,
-                );
-                crate::dictation_executor::FieldAdapter::clear_context(
-                    &state.app_state,
-                    recording_id,
-                );
-                complete_dictation_performance(
-                    &state.performance,
-                    recording_id,
-                    RunOutcomeV1::Failed {
-                        stage: PerformanceStageV1::CaptureFinalization,
-                        error_code: StableRunErrorV1::AudioCaptureFailed,
-                    },
-                    Vec::new(),
-                    Some(ContentFreeInputSummaryV1::audio(duration_ms)),
+            let short_capture = decision.row == core_lifecycle::R215_3;
+            run(decision, Placement::PostDT, None);
+            if short_capture {
+                // Site 216 (R216.1-.5): the `Pre` effects (`TI`, `TERM`, `CX-`,
+                // `PC`) run before D; D is then held for one statement with no
+                // id or status guard (PD-1); `KB` and `EM` follow after D.
+                run(
+                    Decision::pre_only(
+                        core_lifecycle::short_idle_pre_effects(rid),
+                        core_lifecycle::SHORT_IDLE_PRE_ROW,
+                    ),
+                    Placement::Pre,
                     None,
                 );
                 let mut dictation = state.app_state.dictation.lock_or_recover();
-                transition_dictation_status(recording_id, &mut dictation, DictationStatus::Idle);
+                let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+                let decision = decide_guarded(|| {
+                    core_lifecycle::decide_sup_interrupted_short_idle(&view, rid, now)
+                })
+                .after_pre();
+                let mut exec = lifecycle_ports::executor(&ports, decision);
+                lifecycle_ports::run_phase(
+                    &mut exec,
+                    Placement::In,
+                    Some(&mut dictation),
+                    recording_id,
+                );
                 drop(dictation);
                 // Stage 0b test seam (compiled out of every non-test build): a
                 // golden scenario stands here, after D is released and before
                 // the unscoped tail, to run what production can interleave.
                 #[cfg(test)]
                 golden_harness::run_s12_tail_hook();
-                keyboard::set_processing(false);
-                let _ = app_handle.emit("recording-status-changed", "idle");
+                lifecycle_ports::run_phase(&mut exec, Placement::PostDT, None, recording_id);
             }
         }
+        // Site 211 (R211.1-.6), everything under D, including the emit.
         AudioLifecycleEvent::Idle => {
             let mut dictation = state.app_state.dictation.lock_or_recover();
-            if !is_current()
-                || !matches!(
-                    dictation.status,
-                    DictationStatus::Starting
-                        | DictationStatus::Recording
-                        | DictationStatus::Processing
-                        | DictationStatus::Recovering
-                )
-            {
-                emit_dictation_terminal(
-                    &state,
-                    recording_id,
-                    DictationTerminalOutcome::Superseded,
-                    DictationErrorCode::StaleOwner,
-                );
-                return;
-            }
-            emit_dictation_terminal(
-                &state,
-                recording_id,
-                DictationTerminalOutcome::PipelineFailure,
-                DictationErrorCode::RuntimeFailure,
-            );
-            complete_dictation_performance(
-                &state.performance,
-                recording_id,
-                RunOutcomeV1::Failed {
-                    stage: PerformanceStageV1::CaptureFinalization,
-                    error_code: StableRunErrorV1::AudioCaptureFailed,
-                },
-                Vec::new(),
-                None,
-                None,
-            );
-            transition_dictation_status(recording_id, &mut dictation, DictationStatus::Idle);
-            crate::dictation_executor::FieldAdapter::clear_context(&state.app_state, recording_id);
-            keyboard::set_processing(false);
-            let _ = app_handle.emit("recording-status-changed", "idle");
+            let view = FieldAdapter::project_lifecycle_view(&state.app_state, &dictation);
+            let decision = decide_guarded(|| core_lifecycle::decide_sup_idle(&view, rid, now));
+            run(decision, Placement::In, Some(&mut dictation));
         }
     }
 }
@@ -5390,6 +5320,11 @@ fn handle_audio_lifecycle_with<R: tauri::Runtime>(
 /// Capture completion is independent of ASR completion and stall guidance.
 /// Hold the generation/status lock through publication so a newer recording
 /// cannot be reset by the old owner's trailing unscoped Idle event.
+///
+/// Stage 2a-1: the production arm is `decide_sup_cleanup_finished` (site 210)
+/// through the executor; this closure-publishing form is the pre-extraction
+/// oracle the supervisor's own tests drive, so it is test-only.
+#[cfg(test)]
 pub(crate) fn complete_dictation_capture_cleanup(
     app_state: &AppState,
     recording_id: u64,
@@ -5990,19 +5925,56 @@ async fn stop_native_recording_for(
     expected_recording_id: Option<u64>,
     stop_trigger: audio_lifecycle::DictationStopTrigger,
 ) -> Result<serde_json::Value, String> {
-    let host = TauriHost::new(app_handle, state.performance.clone());
-    stop_native_recording_inner(&host, state.inner(), expected_recording_id, stop_trigger).await
+    stop_native_recording_owned(app_handle, state, expected_recording_id, stop_trigger, None).await
 }
 
+/// [`stop_native_recording_for`] for the self-dispatched stop of an interrupted
+/// capture (R215.2 `RS`), which carries the registered `AutoStop` owner.
+async fn stop_native_recording_owned(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, State>,
+    expected_recording_id: Option<u64>,
+    stop_trigger: audio_lifecycle::DictationStopTrigger,
+    auto_stop_owner: Option<ContinuationGuard>,
+) -> Result<serde_json::Value, String> {
+    let host = TauriHost::new(app_handle, state.performance.clone());
+    stop_native_recording_admitted(
+        &host,
+        state.inner(),
+        expected_recording_id,
+        stop_trigger,
+        auto_stop_owner,
+    )
+    .await
+}
+
+#[cfg(test)]
 async fn stop_native_recording_inner(
     host: &dyn DictationHost,
     state: &State,
     expected_recording_id: Option<u64>,
     stop_trigger: audio_lifecycle::DictationStopTrigger,
 ) -> Result<serde_json::Value, String> {
+    stop_native_recording_admitted(host, state, expected_recording_id, stop_trigger, None).await
+}
+
+async fn stop_native_recording_admitted(
+    host: &dyn DictationHost,
+    state: &State,
+    expected_recording_id: Option<u64>,
+    stop_trigger: audio_lifecycle::DictationStopTrigger,
+    auto_stop_owner: Option<ContinuationGuard>,
+) -> Result<serde_json::Value, String> {
     // The `releaseToStop` endpoint: entry, before any lock wait (#826).
     let stop_entered_at = std::time::Instant::now();
     let transition = state.app_state.recording_transition.lock().await;
+    // Stop admission (T held): the `AutoStop` op the interruption registered is
+    // consumed here (C1.4.1 rule 4). Its status does not branch anything; the stale
+    // rule below runs whatever it was. Until here the op stayed outstanding, so a
+    // task cancelled while it waited on T, or a panic, retires it through `Drop`.
+    if let Some(mut owner) = auto_stop_owner {
+        owner.consume(|_status| ());
+    }
     let current_recording_id = state.app_state.recording_id.load(Ordering::SeqCst);
     if !stop_owner_matches(current_recording_id, expected_recording_id) {
         let stale_recording_id = expected_recording_id.expect("mismatch requires an expectation");

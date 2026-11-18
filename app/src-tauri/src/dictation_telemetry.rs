@@ -187,6 +187,8 @@ pub(crate) struct DictationTelemetry {
 
 impl DictationTelemetry {
     pub(crate) fn accepted(&self, recording_id: u64) {
+        #[cfg(test)]
+        crate::barrier_hook::at("telemetry.accepted");
         let mut state = self.inner.lock_or_recover();
         if state.attempts.contains_key(&recording_id) {
             return;

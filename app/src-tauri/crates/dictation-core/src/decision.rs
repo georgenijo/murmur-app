@@ -4,7 +4,7 @@
 //! Stage 2a family PRs; they will return a [`Decision`].
 
 use crate::admission::RefusalCode;
-use crate::effects::{validate_effects, Effect, EffectListError, Placed};
+use crate::effects::{validate_effects, Cond, Effect, EffectListError, Placed};
 use crate::ids::{OperationId, RecordingId};
 use crate::replies::Reply;
 use crate::status::Status;
@@ -113,6 +113,13 @@ pub enum ObsKind {
     /// `take_interrupted_dictation(rid)` (5939), destructive.
     TakeInterrupted {
         /// Recording whose preserved capture is taken.
+        id: RecordingId,
+    },
+    /// `active_context(rid).is_some()` (4947), a leaf-mutex read today's `Ready`
+    /// arm performs only after the stale check passed (decision D-S1-2: the
+    /// decide function asks for it instead of the shell reading it eagerly).
+    ContextPresence {
+        /// Recording whose installed context is looked up.
         id: RecordingId,
     },
 }
@@ -244,6 +251,67 @@ pub enum DecisionError {
 }
 
 impl Decision {
+    /// A decision that holds only `pre`, the input-derived effects that run
+    /// before the D section (C2.1 `pre_effects()`). The shell runs it through its
+    /// own executor **before** it acquires D and decides.
+    pub fn pre_only(pre: Vec<Placed>, row: RowId) -> Self {
+        Self {
+            verdict: Verdict::Applied,
+            transition: None,
+            effects: pre,
+            continuation: None,
+            reply: None,
+            row,
+        }
+    }
+
+    /// A decision that holds only `effects`: the leading effects of a D-less
+    /// entry that today's code runs **before** it reads the facts the rest of the
+    /// decision depends on (the shell runs them, then reads the facts, decides, and
+    /// strips them with [`Decision::after_prefix`]).
+    pub fn effects_only(effects: Vec<Placed>, row: RowId) -> Self {
+        Self::pre_only(effects, row)
+    }
+
+    /// This decision without `prefix`, the leading effects the shell already ran
+    /// before it took the observation `decide_*` consumed. A decision that does not
+    /// begin with `prefix` is returned unchanged (a refused entry has no effects);
+    /// the crate tests pin that every prefix user's decision does begin with it.
+    #[must_use]
+    pub fn after_prefix(mut self, prefix: &[Placed]) -> Self {
+        if self.effects.starts_with(prefix) {
+            self.effects.drain(..prefix.len());
+            // `EmitOk(i)` names an effect by its index in this list: every
+            // pairing moves up by the number of effects removed in front of it.
+            let shift = u8::try_from(prefix.len()).expect("a prefix has few effects");
+            for placed in &mut self.effects {
+                if let Effect::EmitStatus { cond, .. } | Effect::Presentation { cond, .. } =
+                    &mut placed.effect
+                {
+                    if let Cond::EmitOk(paired) = cond {
+                        debug_assert!(*paired >= shift, "a pairing must not name the prefix");
+                        *paired = paired.saturating_sub(shift);
+                    }
+                }
+            }
+        }
+        self
+    }
+
+    /// This decision without its leading `Pre` effects, which the shell already
+    /// ran from `pre_effects()` before the decide (`decide_*` returns them
+    /// prepended, for tracing and shadow, C2.1).
+    #[must_use]
+    pub fn after_pre(mut self) -> Self {
+        let pre = self
+            .effects
+            .iter()
+            .take_while(|placed| placed.at == crate::effects::Placement::Pre)
+            .count();
+        self.effects.drain(..pre);
+        self
+    }
+
     /// Check the structural rules of C2.1: valid effect list, and `transition`
     /// is `Some` iff an `ST` effect is present (with a matching target).
     pub fn validate(&self) -> Result<(), DecisionError> {

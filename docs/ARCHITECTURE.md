@@ -296,6 +296,8 @@ Commands and command-side window transports live under `commands/`: `benchmark`,
 
 **PD witnesses and contract tests (`commands/recording_pd_witness_tests.rs`, `recording_contract_tests.rs`, `recording_pd_witness_map.md`).** Stage 1 adds shell-level characterization tests for the preserved defects no golden witnesses, and the C4.9 contract tests that pin the executor contract on today's shell, on the same harness (`MURMUR_GOLDEN_REPEAT` repeats them too). `recording_pd_witness_map.md` maps every PD to its witness and gives each C4.9 test not implemented in Stage 1 an owning Stage 2a PR (decision D-S1-1); two tests check the map against the sources. The one production seam is `run_partial_ticker_loop`, the partial ticker's loop with its effects passed in (behaviour-neutral), so a ticker panic can be injected.
 
+**Lifecycle events through `decide_*` (`dictation-core::lifecycle`, `commands/recording/lifecycle_ports.rs`, `recording_lifecycle_tests.rs`).** Stage 2a-1 moves the supervisor-thread lifecycle arms (`handle_audio_lifecycle_events`: `Accepted`, `Ready`, `StillConnecting`, `Recovering`, `InitializationFailed`, `CleanupFinished`, `RecoveryStalled`, `Interrupted`, `Idle`) onto ten pure decide functions, one per D critical section. Each arm builds the decision view under the lock today's code takes, calls its `decide_*` inline, and runs the returned effects through the executor at their `Pre` / `In` / `PostDT` placement; `LifecyclePorts` is the production `Ports`, each effect being the statement the arm ran before. Behaviour is unchanged: the golden traces, the PD witnesses and a table-driven test of every (event, status, id) cell pass against the same expectations.
+
 ### `state.rs` — Shared State
 
 ```rust

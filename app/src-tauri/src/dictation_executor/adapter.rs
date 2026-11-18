@@ -28,7 +28,7 @@
 use crate::dictation_admission::core_status;
 use crate::state::{AppState, DictationState, DictationStatus};
 use murmur_dictation_core::ids::RecordingId;
-use murmur_dictation_core::state::{LiveObs, PersistedCore};
+use murmur_dictation_core::state::{DictationCore, LiveObs, LockFreeFacts, PersistedCore};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -135,6 +135,36 @@ impl FieldAdapter {
         LiveObs {
             cancelled_through: RecordingId(app.cancelled_id.load(Ordering::SeqCst)),
             context_for: app.active_context_id().map(RecordingId),
+        }
+    }
+
+    /// The decision view of the supervisor-lifecycle sites (207-211, 216), built
+    /// under the D hold the caller already has: M1 and M2 from the live fields
+    /// (`project()`, authoritative until the lifecycle cutover) and the M3
+    /// atomic. **M4 is left `None` on purpose**: no lifecycle decide function
+    /// reads it (`Ready` asks for the context through
+    /// `NeedObservation(ContextPresence)` after its stale check, decision
+    /// D-S1-2), so the leaf-mutex read stays where today's code does it. The crate
+    /// test `no_lifecycle_decision_reads_m3_or_m4` pins that.
+    pub(crate) fn project_lifecycle_view(
+        app: &AppState,
+        dictation: &DictationState,
+    ) -> DictationCore {
+        DictationCore::project(
+            core_status(dictation.status),
+            RecordingId(app.recording_id.load(Ordering::SeqCst)),
+            LiveObs {
+                cancelled_through: RecordingId(app.cancelled_id.load(Ordering::SeqCst)),
+                context_for: None,
+            },
+        )
+    }
+
+    /// The atomics a D-less lifecycle entry (212-215) reads, with no lock.
+    pub(crate) fn lock_free_facts(app: &AppState) -> LockFreeFacts {
+        LockFreeFacts {
+            current_id: RecordingId(app.recording_id.load(Ordering::SeqCst)),
+            cancelled_through: RecordingId(app.cancelled_id.load(Ordering::SeqCst)),
         }
     }
 

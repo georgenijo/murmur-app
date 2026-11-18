@@ -203,6 +203,8 @@ impl DictationDiagnostics {
     }
 
     pub(crate) fn claim(&self, recording_id: u64) -> bool {
+        #[cfg(test)]
+        crate::barrier_hook::at("diagnostics.claim");
         if recording_id == 0 {
             return false;
         }
