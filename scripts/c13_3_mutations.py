@@ -38,7 +38,8 @@ REPO_ROOT = SCRIPT_DIR.parent
 FAMILIES = ("admission", "cancel", "lifecycle", "process_audio", "start", "stop")
 
 CARGO_DIR = "app/src-tauri"
-BUILD_ERROR = re.compile(r"^error(\[E\d+\])?:|could not compile", re.MULTILINE)
+# `error: test failed, to rerun pass ...` is a test failure; only a compile stop is INVALID.
+BUILD_ERROR = re.compile(r"^error\[E\d+\]|could not compile|^error: aborting due to", re.MULTILINE)
 
 
 class SpecError(ValueError):
