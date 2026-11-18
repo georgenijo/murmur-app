@@ -370,3 +370,188 @@ Stage 2b's generator drives the same entries and must keep rule 1 above:
    itself and returns `Pending`; the golden harness (`poll_once`) polls it once, with
    no waker that re-polls, and polls again only after the span ended. A driver that
    re-polled on the self-wake would spin inside the span.
+
+## The property harness (Stage 2b-1, appendix C7.5)
+
+`src/property/` is a `#[cfg(test)]` module of this crate (CI runs `cargo nextest
+run -E 'kind(lib)'`, which does not run integration tests). It composes the **real**
+`decide_*` functions of every site with an interpreter of their placed effects over a
+model world (M1-M4, the telemetry ledger, the performance and diagnostics sinks,
+`core_history` H1/H2, the supervisor's owner and phase). It has no dependency: a
+splitmix64 generator turns a seed into the whole run.
+
+**What the harness is evidence for.** It calls the `decide_*` functions directly, not
+through `DictationCore::handle`, so it gives no signal about the cutover's routing. The
+cutover evidence is the goldens, the replays, the harness-findings shell tests
+(`recording_harness_findings_tests.rs`) and the shadow comparison E1-E9. Routing the
+harness through `handle` is tracked in #1160.
+
+* **Generator** (`gen.rs`, `supervisor.rs`): commands (start, stop, cancel; ids
+  `current`, `current-1`, `current+1`, unscoped) and, per start, one word of the C7.3
+  `Attempt` grammar. Every supervisor word ends with an explicit `OwnerClear` step
+  (followed by `CleanupFinished` for a sealed stop only); `cleanup_pending` is derived
+  from the model (owner set and phase `Stopping`/`Recovering`), never generated.
+* **Supervisor mirror** (D-S2b-9 (a), `mirror_table.rs`): `MIRROR` is a table in which
+  every modeled supervisor or client step (and every helper the model mirrors:
+  `is_dictation_cleanup_pending`, `is_dictation_recording`, `take_interrupted_dictation`,
+  `PublicState::owns` and the rest of the public-state accessors) cites the
+  `audio_lifecycle.rs` function it mirrors (no line range: the function is hash-pinned, so
+  the test finds each cited token sequence **exactly once** inside it and prints the lines it matched; a citation that matches zero or several times fails, so a guard cannot be satisfied by the same tokens in another match arm), with a
+  fragment of source that must appear there, the **guard expressions** of the cited code (`guards`) and, where one
+  exists, a test of the real supervisor that runs the behaviour (`real_test`: for the sealed
+  reply `a_sealed_stop_reply_is_delivered_at_the_seal_before_worker_exit`; for cancel
+  `a_cancel_from_recording_stops_capture_and_answers_true` and
+  `a_cancel_from_recovering_has_nothing_to_abandon`; for the queries
+  `a_cleanup_is_pending_only_for_the_owner_while_stopping_or_recovering` and
+  `a_taken_interrupted_capture_is_gone_for_the_next_stop`). This crate checks that every
+  message, worker event, timer and supervisor step of the model has a row
+  (`every_modeled_step_has_a_mirror_row`). **The pins and the citation checks live in the
+  app crate** (D-S2b-15), in `src/audio_lifecycle_mirror_tests.rs`, which includes
+  `mirror_table.rs` by path (so the table the harness runs is the table checked) and
+  parses the source with `syn`: every production function, method, constant and static of
+  `audio_lifecycle.rs` has its **own pin** (`LIFECYCLE_PINS`: the FNV-1a hash of the item's
+  normalized token stream), so any edit, addition or removal fails
+  `every_production_item_of_audio_lifecycle_is_pinned` and names the item until its pin is
+  updated. The **whole production file is pinned too** (`LIFECYCLE_FILE_PIN`,
+  D-S2b-17 (a)): the normalized tokens of every item except `#[cfg(test)]` modules and
+  items whose own attribute is exactly `#[cfg(test)]`, so a serde attribute, a
+  `macro_rules!` body, a methodless impl, a module's cfg or a `use` fails too; the per-item
+  pins stay to name what changed. The normalization is the shell ratchet's (`src/token_pin_tests.rs`, shared:
+  `proc_macro2` tokens, token kinds, punctuation spacing and commas kept, only whitespace and
+  comments stripped), so a comment-only edit passes and a one-token edit fails. The
+  citations are matched as token sequences, exactly once, within the cited, hash-pinned function
+  (`span-locations` gives the matched lines for the diagnostics), so a comment inside a cited
+  expression does not hide it and a line shift breaks nothing. A re-pin commit says the model step
+  was re-checked against the change (`cargo test --lib print_current_pins -- --ignored
+  --nocapture` in the app crate prints the tables). Every function a cited function calls is
+  cited by a row or listed in `NOT_MODELED` with the reason it is outside the model.
+  The core crate has no hand-written lexer and no dependency. A command (start, stop and cancel alike, each with its own
+  receiver deadline) has five events: the client's enqueue (never blocked by a busy
+  supervisor), the supervisor's acceptance, the reply at its production point (a stop's
+  at the seal or the worker's exit, a cancel's when handled), the receiver's timeout and
+  the client's continuation. An immediate refusal (a stop with no attempt or another
+  owner, a cancel with nothing to abandon, a start refused because its caller was
+  revoked or an attempt exists) is a step of its own after the acceptance, so the
+  receiver can expire between the two and the reply is then dropped. A start whose
+  receiver timed out revokes its caller and enqueues `Cancel{User}` (`await_start_response`).
+  A notification fires only in a state where the cited code sends it.
+* **Supervisor fidelity** (D-S2b-7 (b), `supervisor.rs`, `sup_task.rs`): the model may
+  not invent or exclude a schedule. The worker's own end (a recovery, a crash, a failed
+  open) is a pending end that a stop or a cancel command can still win until the
+  supervisor takes it; the start's answer, a cancel's answer (after `begin_recovery`
+  returned) and the attempt's results are steps of their own; `finish_attempt` is one
+  uninterrupted group; `RecoveryStalled` is notified only while stopping or recovering; a
+  cancel client's timeout is its own outcome (`CancelMode::Timeout`: `Err` while the
+  supervisor still handles the cancel).
+* **Scheduler** (`run.rs`, `flights.rs`, `sup_task.rs`): one thread; T-holder flights,
+  D sections, the supervisor thread, each notification's bridge arm, the pipeline, the
+  partial ticker (which takes and drops the partial-decode lease) and a task per
+  duplicate or late token delivery (`redeliver.rs`) are separate actors. A D section is
+  atomic; `Pre`, `PostDT` and `PostT` effects are one step each, so another actor's D
+  section can land between any two. A blocked step changes nothing (a test compares the
+  whole world). The README rules above hold: a start can only be dropped between steps,
+  at its smart-capture await.
+* **Checks** (`checks.rs`, `c3.rs`): SP1-SP4, SP6-SP10 after every step.
+  * *C3 effect fixture* (`c3_fixture.txt`, `c3.rs`, D-S2b-9 (d)): a hand transcription
+    of appendix-c.md C3.1-C3.7, one line per row of `C3_ROWS` (a snapshot of observed
+    effects is not a fixture), reachable by the harness or not. Every decision, including
+    each stale or valid input the model never reaches, must match one allowed outcome of
+    its row with exactly those effects, each the stated number of times, so a row that
+    grows an extra write, claims another outcome or emits a duplicate terminal fails. The
+    typed failure travels through the model (`AudioFailureKind` to its `ErrCode`), and a
+    row whose terminal code is the input's (R203.4-.8, R204b.5-.6, R213.2) is written
+    `@in`: the code must equal the exact code the harness gave that decision, with no
+    wildcard, so a row that rewrites it (`TerminationUnconfirmed` to `HostUnavailable`)
+    fails. The
+    continuation-ID bound is checked at every registration. SP2 for terminals: under D a
+    stale input claims only what the row lists for a stale input. SP5 stays structural
+    (the #1152 ratchet) and file admission stays a unit test.
+  * *SP4(b) signatures*: a terminal and a performance outcome that disagree are judged
+    at the step where the second one arrives. The split leaves the failure set only when
+    one signature matches in full, with every element bound to the same window: the PD,
+    the terminal rows with outcome and code, the statuses the claim saw, the performance
+    outcome class (or exact rows) and a causal precondition read from what each winner
+    recorded (`Won`: the cancel's tail open, the order of the winners, a later claim
+    lost). PD-4 is exactly its C7.1 definition (R207.3 on a live `Recording`, a second
+    ticker, `Success`); the same claim with another outcome is PD-23, whose signature binds
+    each outcome to the stop, cancel or pipeline rows that complete it (a class is not
+    enough), and whose `Success` variant needs the ticker's gate to have refused the second
+    ticker (pending at the shell: source-only). PD-24 has one signature per cause, R209.3
+    (the start timeout's own `Cancel{User}`) and R209.5 (an environmental recovery), and
+    is a mismatch at the performance **coordinator's claim**: the failed start never began a
+    run, so no row is behind it. PD-22 needs the winning `Idle` claim and the losing named
+    claim in the same cancel tail and is judged when that tail closes, because the window's
+    events land in either order. There is no stale-input skip (D-S2b-13 (d)): SP4(b)
+    compares the outcomes a generation actually has, and the model follows the performance
+    run's lifecycle (`request_completion`): a completion is the run's outcome once the run
+    began, waits while the begin is in flight, is dropped by an abort, and is a bare claim
+    of the coordinator with no row when no run was registered (an aborted start, seed
+    8096); only a signature marked `no_run` (PD-24) credits such a claim. No allowlist entry
+    is widened to make a seed pass: a split no signature covers is a finding to reproduce
+    at the shell (PD-23, PD-24) or a model fix. No PD exempts a whole recording.
+  * *SP10*: the partial-decode lease changes only by its holder's own acquire and drop,
+    and is released by the end of the run.
+  * *C7.3 liveness* is evaluated for every run from per-generation evidence, never by
+    filtering a run: a stuck `Recovering` needs the stranded recording's own PD-18
+    instance or PD-19 story. PD-19 has three entries: the user's stop took the preserved
+    capture (R201.5), found no context and wrote `Idle` while the owner recovered, a start
+    took R101.12 in the gap and the auto-stop was refused (`TerminationUnconfirmed`, or a
+    dropped start); or the auto-stop ran at status `Idle`, took nothing, and the capture is
+    still in the store. There is no exemption for a preserved capture nobody took: the stop
+    that could take it is the user's in `Recovering`, which the frontend suppresses
+    (`useRecordingState.ts` `handleStop`; `useRecordingState.test.tsx` "issues no stop or
+    cancel IPC while the status is recovering"), so the generator binds every user stop to
+    its caller (D-S2b-18): a window caller (the main window with the hold and toggle hotkeys
+    and the silence auto-stop, or the overlay) sends the stop IPC only when *its own
+    window* last received `Recording` (`useRecordingState.ts` `handleStop`,
+    `useRecordingControls.ts` click and double-click; on `Starting` a window cancels
+    instead, on `Recovering` it only presents a message). Observation and delivery are
+    separate (D-S2b-17 (b)): the status event is queued when the shell *emits* it
+    (`EmitStatus`, not at the `SetStatus` write, so two rows that write in one order can
+    emit in the other and a window can receive `Idle -> Recovering`), and each window has
+    its own delivery cursor and its own delivery steps. A stop sent while a window still
+    shows `Recording` after the shell entered `Recovering` is a valid schedule, even while
+    the other window has already received `Recovering` (a stop already in flight stays a
+    flight). A delivery changes no shell state, so it takes no model time. Every generated
+    user stop is unscoped (`recording_id = None`), as production sends it; a stale id
+    reaches the stop family only through the `Interrupted` auto-stop and the explicit
+    decision tests (D-S2b-17 (c)). The registered `stop_native_recording` IPC has no window
+    gate and
+    the supervisor's `Interrupted` auto-stop bypasses the frontend: both keep every
+    schedule (D-S2b-15 (c)); a run in which the unscoped IPC takes the retained capture ends
+    in `Idle`, and one in which nothing does is PD-19's third entry (ordinary controls leave
+    the app stuck; only the unscoped IPC recovers it, D-S2b-15 (d)). Only
+    the recording whose attempt awaits a stop or a cancel may stay `Recording` (L4), and
+    only a dropped start's own recording may stay `Starting` or `Recording`.
+  There is no "known findings" set: a behaviour outside the allowlist fails
+  `seeds_hold_the_properties`.
+* **Layer** (D-S2b-4, D-S2b-7 (c)): the harness runs the real `decide_*` functions over
+  a model world, not the shell. Where a model witness and a production-reachable shell
+  fixture disagree, the fixture wins and the model is fixed. PD-19..PD-24 were found
+  this way (`src/commands/recording_harness_findings_tests.rs`, pinned seeds in
+  `FINDING_SEEDS`, each beside its shell test). The shell fixtures drive the Stage 0b
+  fake host, because the real supervisor has no test seam outside `audio_lifecycle.rs`
+  (D-S2b-9 (b)): each injected notification or reply cites its production sender and
+  state, uses the production strings, and the test asserts the exact replies, statuses
+  and ledger outcomes.
+* **Seeds**: 10,000 in CI (about a second and a half, budget 20 s), fixed whatever the
+  environment says: `0..9,993` and seven fixed seeds (`FIXED_SEEDS`: 10,724, 11,125, 18,279,
+  22,704, 23,985, 244,103, 377,529) that take the PD-18 (unsealed stop), PD-19 (`TerminationUnconfirmed`, dropped start,
+  refused auto-stop), PD-24 (environmental recovery), PD-22 (against the cancel's own
+  `TERM`) and PD-21 (short stop) entries no seed of the plain range takes, so the converse
+  check (every PD and every signature row is witnessed) has no pinned exception. The deeper
+  sweep is a separate ignored test, `cargo test -p murmur-dictation-core --lib --release --
+  --ignored the_deep_sweep --nocapture` (300,000 seeds; `DEEP_SWEEP_SEEDS=3000000` sets
+  another size). `TRACE_SEED=<n> cargo test -p
+  murmur-dictation-core --lib property::tests::trace_one -- --nocapture` prints one run.
+  `DUMP_SP4B=1` prints the context of every split no signature matches. A core row
+  change that is meant to differ from C3 edits `c3_fixture.txt` by hand, after the
+  appendix.
+
+What this layer does not cover: SP5 (structural), the shell's own locks and executor
+(the golden harness and the shell tests drive those through the 0a seams), and
+`FieldAdapter`. SP1 is checked on the model ledger (first claim wins by construction).
+A duplicate or late token delivery runs the site's decision in the later world (SP7:
+the same row for a retired token as for an outstanding one) and may retire nothing; its
+own effects do not run, because in the shell a token has one consumer, the flight that
+registered it.

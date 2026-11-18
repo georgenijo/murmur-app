@@ -1,0 +1,198 @@
+# C3 effect fixture (D-S2b-9 (d)): a hand transcription of appendix-c.md C3.1-C3.7
+# (lines 371-644). It is NOT generated from the core and NOT a snapshot of what a run
+# observed: every row of `rows::C3_ROWS` has exactly one line here, reachable by the
+# harness or not, and a row the model never reaches is still a valid input.
+#
+# Line:   ROW | statuses | alternative / alternative / ...
+#   statuses     the C3 "Status" cell: a comma list, or `*` for "any (not read)".
+#   alternative  one allowed outcome of the row: an optional `[fresh]` / `[stale]` (the
+#                input names the current recording / another one, C3 "Guard" cell)
+#                and the counted effects, or `-` for none.
+#
+# Counted effects (the C0.2 legend codes that carry a status, a terminal or a
+# performance outcome; every other code is a count-free side effect):
+#   ST:<from>><to>   `SetStatus` (from is the status the decision read)
+#   TERM:<outcome>/<code>
+#   PC:<outcome>     `complete_dictation_performance`
+#   PGF:<outcome>    the pipeline guard's own `finish`
+#   `|` lists alternatives inside one argument. `@in` is the appendix's own "code" cell
+#   that follows the input (`from_audio_failure(kind)`, the interrupted capture's reason,
+#   the pipeline's no-speech code): it must equal, exactly, the code the harness gave the
+#   decision as input. There is no wildcard: a decision that rewrites the code it was
+#   given, or reports a code its input does not carry, fails (D-S2b-11 (b)).
+#
+# A decision matches an alternative only when it has exactly those effects, in any
+# order, each the stated number of times: a duplicate terminal or a second `ST`
+# fails, as does a missing one.
+
+# ---- C3.1 decide_start_request (101)
+R101.1  | *          | -
+R101.2  | *          | -
+R101.3  | *          | -
+R101.4  | *          | -
+R101.5  | *          | -
+R101.6  | *          | -
+R101.7  | *          | -
+R101.8  | Starting   | -
+R101.9  | Recording  | -
+R101.10 | Recovering | -
+R101.11 | Processing | -
+R101.12 | Idle       | ST:Idle>Recovering
+R101.13 | Idle       | -
+R101.14 | Idle       | -
+R101.15 | Idle       | ST:Idle>Starting
+
+# ---- C3.2 decide_start_capture_result (102)
+R102.1 | *                    | -
+R102.2 | Starting             | [fresh] ST:Starting>Idle TERM:CaptureInitFailure/RuntimeFailure
+R102.3 | Recovering           | [fresh] ST:Recovering>Idle TERM:CaptureInitFailure/RuntimeFailure
+R102.4 | Idle                 | [fresh] ST:Idle>Idle TERM:CaptureInitFailure/RuntimeFailure
+R102.5 | Recording,Processing | [fresh] ST:Recording>Idle TERM:CaptureInitFailure/RuntimeFailure / [fresh] ST:Processing>Idle TERM:CaptureInitFailure/RuntimeFailure
+R102.6 | *                    | [stale] TERM:CaptureInitFailure/RuntimeFailure
+
+# ---- C3.3 decide_start_context (103); R103.0' (Idle, or a stale/cancelled rid) is row .0 too
+R103.0 | *                    | -
+R103.1 | Starting             | -
+R103.2 | Recovering           | -
+R103.3 | Idle                 | -
+R103.4 | Recording            | TERM:Superseded/StaleOwner
+R103.5 | Processing           | TERM:Superseded/StaleOwner
+R103.6 | *                    | TERM:Superseded/StaleOwner
+
+# ---- C3.4 decide_ready_publish (104)
+R104.1 | *                    | -
+R104.2 | Starting             | ST:Starting>Recording
+R104.3 | Starting             | -
+R104.4 | Starting             | -
+R104.5 | Idle,Recovering,Processing | -
+R104.6 | Recording            | -
+R104.7 | *                    | -
+
+# ---- C3.5 stop family (201-206)
+R201.1 | *          | TERM:Superseded/StaleOwner
+R201.2 | Processing | -
+R201.3 | Idle       | -
+R201.4 | Starting   | -
+R201.5 | Recovering | -
+R201.6 | Recovering | -
+R201.7 | Recovering | ST:Recovering>Processing
+R201.8 | Recording  | ST:Recording>Processing
+
+R202.1 | *          | -
+R202.2 | *          | -
+R202.3 | Processing | TERM:PipelineFailure/MissingContext ST:Processing>Idle PC:Failed
+R202.4 | Idle       | TERM:PipelineFailure/MissingContext ST:Idle>Idle PC:Failed
+R202.5 | Starting,Recording,Recovering | TERM:PipelineFailure/MissingContext ST:Starting>Idle PC:Failed / TERM:PipelineFailure/MissingContext ST:Recording>Idle PC:Failed / TERM:PipelineFailure/MissingContext ST:Recovering>Idle PC:Failed / -
+
+R203.1  | Processing | [fresh] TERM:StopFailure/StopFinalizationFailed ST:Processing>Idle PC:Failed
+R203.2  | Idle       | [fresh] TERM:StopFailure/StopFinalizationFailed ST:Idle>Idle PC:Failed
+R203.2r | Recovering | [fresh] TERM:StopFailure/StopFinalizationFailed ST:Recovering>Idle PC:Failed
+R203.3a | Idle       | [stale] TERM:StopFailure/StopFinalizationFailed PC:Failed
+R203.3b | Starting   | [stale] TERM:StopFailure/StopFinalizationFailed PC:Failed
+R203.3c | Recording  | [stale] TERM:StopFailure/StopFinalizationFailed PC:Failed
+R203.3d | Recovering | [stale] TERM:StopFailure/StopFinalizationFailed PC:Failed
+R203.3e | Processing | [stale] TERM:StopFailure/StopFinalizationFailed PC:Failed
+R203.4  | Processing | [fresh] TERM:NoSpeech/EmptyAudio ST:Processing>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/@in ST:Processing>Idle PGF:NoSpeech
+R203.5  | Idle       | [fresh] TERM:NoSpeech/EmptyAudio ST:Idle>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/@in ST:Idle>Idle PGF:NoSpeech
+R203.5r | Recovering | [fresh] TERM:NoSpeech/EmptyAudio ST:Recovering>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/@in ST:Recovering>Idle PGF:NoSpeech
+R203.6  | Processing | [fresh] TERM:TooShort/BelowMinimumDuration ST:Processing>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/@in ST:Processing>Idle PGF:NoSpeech
+R203.7  | Idle       | [fresh] TERM:TooShort/BelowMinimumDuration ST:Idle>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/@in ST:Idle>Idle PGF:NoSpeech
+R203.7r | Recovering | [fresh] TERM:TooShort/BelowMinimumDuration ST:Recovering>Idle PGF:NoSpeech / [fresh] TERM:RuntimeInterruption/@in ST:Recovering>Idle PGF:NoSpeech
+R203.8a | Idle       | [stale] TERM:NoSpeech/EmptyAudio PGF:NoSpeech / [stale] TERM:TooShort/BelowMinimumDuration PGF:NoSpeech / [stale] TERM:RuntimeInterruption/@in PGF:NoSpeech
+R203.8b | Starting   | [stale] TERM:NoSpeech/EmptyAudio PGF:NoSpeech / [stale] TERM:TooShort/BelowMinimumDuration PGF:NoSpeech / [stale] TERM:RuntimeInterruption/@in PGF:NoSpeech
+R203.8c | Recording  | [stale] TERM:NoSpeech/EmptyAudio PGF:NoSpeech / [stale] TERM:TooShort/BelowMinimumDuration PGF:NoSpeech / [stale] TERM:RuntimeInterruption/@in PGF:NoSpeech
+R203.8d | Recovering | [stale] TERM:NoSpeech/EmptyAudio PGF:NoSpeech / [stale] TERM:TooShort/BelowMinimumDuration PGF:NoSpeech / [stale] TERM:RuntimeInterruption/@in PGF:NoSpeech
+R203.8e | Processing | [stale] TERM:NoSpeech/EmptyAudio PGF:NoSpeech / [stale] TERM:TooShort/BelowMinimumDuration PGF:NoSpeech / [stale] TERM:RuntimeInterruption/@in PGF:NoSpeech
+R203.9  | *          | -
+R203.10 | *          | -
+
+R204a.1  | Processing | [fresh] ST:Processing>Idle
+R204a.2  | Idle       | [fresh] ST:Idle>Idle
+R204a.3  | Recovering | [fresh] ST:Recovering>Idle
+R204a.4  | Starting,Recording | [fresh] -
+R204a.5a | Idle       | [stale] -
+R204a.5b | Starting   | [stale] -
+R204a.5c | Recording  | [stale] -
+R204a.5d | Recovering | [stale] -
+R204a.5e | Processing | [stale] -
+R204a.6  | *          | [fresh] ST:Processing>Idle / [fresh] ST:Idle>Idle / [fresh] ST:Recovering>Idle / [fresh] - / [stale] -
+
+R204b.1  | Idle       | -
+R204b.2  | Recovering | -
+R204b.3  | Processing | -
+R204b.4a | Idle       | -
+R204b.4b | Starting   | -
+R204b.4c | Recording  | -
+R204b.4d | Recovering | -
+R204b.4e | Processing | -
+R204b.5  | *          | TERM:PipelineFailure/TranscriptionFailed / TERM:RuntimeInterruption/@in
+R204b.6  | *          | TERM:Success/None PGF:Completed / TERM:NoSpeech/@in PGF:NoSpeech / TERM:UserCancelledProcessing/CancelledProcessing PGF:Cancelled / TERM:RuntimeInterruption/@in PGF:Completed|NoSpeech|Cancelled
+
+R205.1 | *                  | -
+R205.2 | Idle               | -
+R205.3 | Recovering         | -
+R205.4 | Starting,Recording | -
+R205.5 | Processing         | ST:Processing>Idle TERM:UserCancelledProcessing/CancelledProcessing PC:Cancelled
+
+R206.1 | * | -
+R206.2 | * | TERM:PipelineFailure/RuntimeFailure
+
+# ---- C3.6 supervisor-thread inputs (207-216)
+R212.1 | *          | [fresh] - / [stale] TERM:Superseded/StaleOwner
+
+R207.1 | *          | [stale] TERM:Superseded/StaleOwner
+R207.2 | Idle,Recovering,Processing | [fresh] TERM:Superseded/StaleOwner
+R207.3 | Recording  | [fresh] TERM:Superseded/StaleOwner
+R207.4 | Starting   | [fresh] -
+R207.5 | Starting   | [fresh] ST:Starting>Recording
+
+R208.1 | Starting   | [fresh] -
+R208.2 | *          | -
+
+R209.1 | *          | [stale] TERM:Superseded/StaleOwner
+R209.2 | Idle,Recovering,Processing | [fresh] TERM:Superseded/StaleOwner
+R209.3 | Starting   | [fresh] ST:Starting>Recovering PC:Cancelled TERM:UserCancelledStarting/CancelledStarting
+R209.4 | Recording  | [fresh] ST:Recording>Recovering PC:Cancelled TERM:UserCancelledRecording/CancelledRecording
+R209.5 | Starting,Recording | [fresh] ST:Starting>Recovering PC:Cancelled TERM:RuntimeInterruption/DeviceChanged|SystemSleep|SystemWake / [fresh] ST:Recording>Recovering PC:Cancelled TERM:RuntimeInterruption/DeviceChanged|SystemSleep|SystemWake
+R209.6 | Starting,Recording | [fresh] ST:Starting>Recovering / [fresh] ST:Recording>Recovering
+R209.7 | Starting,Recording | [fresh] ST:Starting>Recovering / [fresh] ST:Recording>Recovering
+
+R210.1 | *          | [stale] -
+R210.2 | Idle       | [fresh] ST:Idle>Idle
+R210.3 | Recovering | [fresh] ST:Recovering>Idle
+R210.4 | Starting,Recording,Processing | [fresh] -
+
+R211.1 | *          | [stale] TERM:Superseded/StaleOwner
+R211.2 | Idle       | [fresh] TERM:Superseded/StaleOwner
+R211.3 | Processing | [fresh] TERM:PipelineFailure/RuntimeFailure PC:Failed ST:Processing>Idle
+R211.4 | Starting   | [fresh] TERM:PipelineFailure/RuntimeFailure PC:Failed ST:Starting>Idle
+R211.5 | Recording  | [fresh] TERM:PipelineFailure/RuntimeFailure PC:Failed ST:Recording>Idle
+R211.6 | Recovering | [fresh] TERM:PipelineFailure/RuntimeFailure PC:Failed ST:Recovering>Idle
+
+R213.1 | *          | [stale] TERM:Superseded/StaleOwner
+R213.2 | *          | [fresh] TERM:CaptureInitFailure/@in PC:Failed / [fresh] TERM:RuntimeInterruption/@in PC:Failed
+
+R214.1 | *          | [fresh] -
+R214.2 | *          | [stale] -
+
+R215.1 | *          | [stale] TERM:Superseded/StaleOwner PC:Failed
+R215.2 | *          | [fresh] -
+R215.3 | *          | [fresh] -
+
+R216.1 | Recovering | TERM:RuntimeInterruption/RuntimeFailure PC:Failed ST:Recovering>Idle
+R216.2 | Idle       | TERM:RuntimeInterruption/RuntimeFailure PC:Failed ST:Idle>Idle
+R216.3 | Starting,Recording | TERM:RuntimeInterruption/RuntimeFailure PC:Failed ST:Starting>Idle / TERM:RuntimeInterruption/RuntimeFailure PC:Failed ST:Recording>Idle
+R216.4 | Processing | TERM:RuntimeInterruption/RuntimeFailure PC:Failed ST:Processing>Idle
+R216.5 | *          | [stale] TERM:RuntimeInterruption/RuntimeFailure PC:Failed ST:Idle>Idle / [stale] TERM:RuntimeInterruption/RuntimeFailure PC:Failed ST:Starting>Idle / [stale] TERM:RuntimeInterruption/RuntimeFailure PC:Failed ST:Recording>Idle / [stale] TERM:RuntimeInterruption/RuntimeFailure PC:Failed ST:Processing>Idle / [stale] TERM:RuntimeInterruption/RuntimeFailure PC:Failed ST:Recovering>Idle
+
+# ---- C3.7 legacy process_audio (301, 302)
+R301.1 | *          | -
+R301.2 | *          | -
+R301.3 | *          | -
+R301.4 | Starting,Recording,Recovering,Processing | -
+R301.5 | Idle       | ST:Idle>Processing
+# R301.6 is the 141st row (errata D-S2-14, #1151): the import's destination decision, the
+# R103.0 shape under site 301's own id: the `SDE` emit only, no counted effect.
+R301.6 | *          | -
+R302.1 | *          | [fresh] ST:Processing>Idle / [fresh] ST:Idle>Idle / [fresh] ST:Recovering>Idle / [fresh] - / [stale] -
+R302.2 | *          | -

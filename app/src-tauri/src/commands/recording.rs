@@ -226,6 +226,10 @@ mod golden_tests;
 mod pd_witness_tests;
 
 #[cfg(test)]
+#[path = "recording_harness_findings_tests.rs"]
+mod harness_findings_tests;
+
+#[cfg(test)]
 #[path = "recording_bug_replay_tests.rs"]
 mod bug_replay_tests;
 
