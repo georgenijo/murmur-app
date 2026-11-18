@@ -40,6 +40,18 @@ pub enum StopCaller {
     Ipc,
 }
 
+/// Who sends a start (#1162): the main window's `beginRecording`, the overlay, or the
+/// registered `start_native_recording` IPC (hotkeys, scripts).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartCaller {
+    /// A window, by its index in `World::windows`. Only the main window awaits the reply
+    /// and writes its status from it (`useRecordingState.ts:465-486`); the overlay keeps
+    /// no such write (`useRecordingControls.ts`: "status will sync via event").
+    Window(usize),
+    /// The IPC: nobody models the reply.
+    Ipc,
+}
+
 #[derive(Clone, Debug)]
 pub enum Cmd {
     Start {
@@ -47,6 +59,7 @@ pub enum Cmd {
         blockers: Blockers,
         app_disabled: bool,
         smart: bool,
+        caller: StartCaller,
     },
     /// A user stop, always unscoped (`recording_id = None`), as production sends it: the
     /// frontend's `stop_native_recording` call carries no expected id, and neither does the
@@ -245,12 +258,21 @@ fn blockers(rng: &mut Rng) -> Blockers {
     blockers
 }
 
+fn start_caller(rng: &mut Rng) -> StartCaller {
+    match rng.weighted(&[5, 3, 2]) {
+        0 => StartCaller::Window(MAIN_WINDOW),
+        1 => StartCaller::Window(OVERLAY_WINDOW),
+        _ => StartCaller::Ipc,
+    }
+}
+
 fn start(rng: &mut Rng) -> Cmd {
     Cmd::Start {
         plan: plan(rng),
         blockers: blockers(rng),
         app_disabled: rng.chance(1, 25),
         smart: rng.chance(1, 3),
+        caller: start_caller(rng),
     }
 }
 

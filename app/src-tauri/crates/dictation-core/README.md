@@ -380,15 +380,22 @@ model world (M1-M4, the telemetry ledger, the performance and diagnostics sinks,
 `core_history` H1/H2, the supervisor's owner and phase). It has no dependency: a
 splitmix64 generator turns a seed into the whole run.
 
-**What the harness is evidence for.** It calls the `decide_*` functions directly, not
-through `DictationCore::handle`, so it gives no signal about the cutover's routing. The
-cutover evidence is the goldens, the replays, the harness-findings shell tests
-(`recording_harness_findings_tests.rs`) and the shadow comparison E1-E9. Routing the
-harness through `handle` is tracked in #1160.
+**What the harness is evidence for.** Every flight and every supervisor arm decides
+through `DictationCore::handle` (`entry.rs`, #1160), so the 10,000 seeds exercise the D /
+D-less entry choice (`202`/`202n`, `204b`, the `*_nolock` entries) and every
+`NeedObservation` round trip, the harness answering each observation from the model world
+where the shell reads it. The flight keeps its old direct `decide_*` call as a cross-check:
+a `handle` decision that differs from it fails the seed (`handle: ...` violation), and the
+flight acts on the `handle` decision, so a routing defect also shows downstream. The
+cutover evidence is that, the goldens, the replays, the harness-findings shell tests
+(`recording_harness_findings_tests.rs`) and the shadow comparison E1-E9.
 
 * **Generator** (`gen.rs`, `supervisor.rs`): commands (start, stop, cancel; ids
   `current`, `current-1`, `current+1`, unscoped) and, per start, one word of the C7.3
-  `Attempt` grammar. Every supervisor word ends with an explicit `OwnerClear` step
+  `Attempt` grammar. A start has a caller (the main window, the overlay or the IPC) and a
+  stop has one; the main window's start reply is delivered to it as a step of its own that
+  writes the reply's status unless it is a stale `starting` (`useRecordingState.ts:465-486`,
+  #1162), so a late reply can put `Recording` back over the window's local `Processing`. Every supervisor word ends with an explicit `OwnerClear` step
   (followed by `CleanupFinished` for a sealed stop only); `cleanup_pending` is derived
   from the model (owner set and phase `Stopping`/`Recovering`), never generated.
 * **Supervisor mirror** (D-S2b-9 (a), `mirror_table.rs`): `MIRROR` is a table in which
@@ -539,11 +546,11 @@ harness through `handle` is tracked in #1160.
   state, uses the production strings, and the test asserts the exact replies, statuses
   and ledger outcomes.
 * **Seeds**: 10,000 in CI (about a second and a half, budget 20 s), fixed whatever the
-  environment says: `0..9,992` and eight fixed seeds (`FIXED_SEEDS`: 10,724, 19,737,
-  39,219, 52,153, 101,117, 259,286, 262,762, 273,164) that take the PD-18 (unsealed stop),
+  environment says: `0..9,991` and nine fixed seeds (`FIXED_SEEDS`: 11,612, 21,272, 10,882,
+  81,353, 161,052, 2,569,791, 179,248, 48,827, 203,928) that take the PD-18 (unsealed stop),
   PD-19 (`TerminationUnconfirmed`, dropped start, refused auto-stop), PD-24 (the user's
-  cancel), PD-22 (both rows) and PD-21 (short stop) entries no seed of the plain range
-  takes, so the converse
+  cancel), PD-22 (both rows), PD-21 (short stop) and the late main-window start reply
+  (#1162) entries no seed of the plain range takes, so the converse
   check (every PD and every signature row is witnessed) has no pinned exception. The deeper
   sweep is a separate ignored test, `cargo test -p murmur-dictation-core --lib --release --
   --ignored the_deep_sweep --nocapture` (300,000 seeds; `DEEP_SWEEP_SEEDS=3000000` sets

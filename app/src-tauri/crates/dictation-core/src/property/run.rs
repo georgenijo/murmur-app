@@ -11,7 +11,7 @@
 
 use super::checks::{Checker, RunHits};
 use super::flights::{CancelFlight, StartFlight, StopFlight};
-use super::gen::{self, Bias, Cmd, StopCaller};
+use super::gen::{self, Bias, Cmd, StartCaller, StopCaller};
 use super::model::*;
 use super::rng::Rng;
 use super::sup_task::{SupTask, WorkerTask};
@@ -60,9 +60,10 @@ pub fn run_seed_strict(seed: u64) -> RunReport {
     run(seed, false, true).0
 }
 
-/// Some window has a queued status event it has not received.
+/// Something is waiting for a window: a queued status event it has not received, or a start
+/// reply the main window has not processed.
 fn window_ready(w: &World) -> bool {
-    w.windows.iter().any(|window| !window.inbox.is_empty())
+    !w.start_replies.is_empty() || w.windows.iter().any(|window| !window.inbox.is_empty())
 }
 
 fn window_name(index: usize) -> &'static str {
@@ -90,9 +91,11 @@ fn due_label(cmd: &Cmd) -> String {
     }
 }
 
-/// One ready window receives its next status event. A delivery is a step of the schedule
-/// that changes no shell state: no model time, no actor weight. `before_command` names the
-/// due command it ran ahead of, when it ran at a due-command boundary.
+/// One ready delivery happens: a window receives its next status event, or the main window
+/// processes its next start reply (#1162, a step of its own like a status delivery). A delivery
+/// is a step of the schedule that changes no shell state: no model time, no actor weight.
+/// `before_command` names the due command it ran ahead of, when it ran at a due-command
+/// boundary.
 fn deliver_next(
     w: &mut World,
     rng: &mut Rng,
@@ -100,20 +103,44 @@ fn deliver_next(
     clock: u32,
     before_command: Option<String>,
 ) {
-    let ready: Vec<usize> = (0..w.windows.len())
+    // The status deliveries first (window order), the start reply last, so a world with no
+    // pending reply draws exactly what it drew before the reply existed.
+    let mut ready: Vec<Option<usize>> = (0..w.windows.len())
         .filter(|window| !w.windows[*window].inbox.is_empty())
+        .map(Some)
         .collect();
-    let window = ready[rng.index(ready.len())];
-    let status = w.deliver_status(window);
-    if let Some(trace) = checker.trace.as_mut() {
-        trace.push(format!(
-            "{clock:>4} {} window receives {status:?}{}",
-            window_name(window),
-            match &before_command {
-                Some(label) => format!(" (before the due {label})"),
-                None => String::new(),
+    if !w.start_replies.is_empty() {
+        ready.push(None);
+    }
+    let before = match &before_command {
+        Some(label) => format!(" (before the due {label})"),
+        None => String::new(),
+    };
+    match ready[rng.index(ready.len())] {
+        Some(window) => {
+            let status = w.deliver_status(window);
+            if let Some(trace) = checker.trace.as_mut() {
+                trace.push(format!(
+                    "{clock:>4} {} window receives {status:?}{before}",
+                    window_name(window)
+                ));
             }
-        ));
+        }
+        None => {
+            let (reply, write) = w.deliver_start_reply().expect("a start reply was pending");
+            if let Some(trace) = checker.trace.as_mut() {
+                trace.push(format!(
+                    "{clock:>4} main window receives the start reply {} (state {:?}): {}{before}",
+                    reply.ty.as_str(),
+                    reply.state,
+                    match write {
+                        ReplyWrite::Wrote(status) => format!("writes {status:?}"),
+                        ReplyWrite::NotOwner => "not the owner of the state".to_string(),
+                        ReplyWrite::StaleStarting => "stale starting, ignored".to_string(),
+                    }
+                ));
+            }
+        }
     }
 }
 
@@ -257,13 +284,28 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
                     }
                 }
             }
+            if let Cmd::Start { caller, .. } = &cmd {
+                if let Some(trace) = checker.trace.as_mut() {
+                    trace.push(format!(
+                        "{clock:>4} start issued by {}",
+                        match caller {
+                            StartCaller::Window(index) =>
+                                format!("the {} window", window_name(*index)),
+                            StartCaller::Ipc => "the IPC".to_string(),
+                        }
+                    ));
+                }
+            }
             let task: Box<dyn Task> = match cmd {
                 Cmd::Start {
                     plan,
                     blockers,
                     app_disabled,
                     smart,
-                } => Box::new(StartFlight::new(plan, blockers, app_disabled, smart)),
+                    caller,
+                } => Box::new(
+                    StartFlight::new(plan, blockers, app_disabled, smart).with_caller(caller),
+                ),
                 Cmd::Stop { cfg, caller } => {
                     let flight = StopFlight::new(None, None, cfg);
                     Box::new(match caller {

@@ -10,8 +10,10 @@ use crate::decision::{ContKind, Continuation, ContinuationSpec, OpStatus};
 use crate::effects::{PerfOutcome, Terminal};
 use crate::ids::{OperationId, RecordingId};
 use crate::inputs::CaptureErr;
+use crate::replies::ReplyType;
 use crate::state::{DictationCore, LiveObs, LockFreeFacts};
 use crate::status::{AudioCancelReason, ErrCode, Status, TerminalOutcome};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub type Rid = u64;
@@ -458,6 +460,27 @@ pub const MAIN_WINDOW: usize = 0;
 /// The overlay window (`useRecordingControls.ts`: click and double-click stop).
 pub const OVERLAY_WINDOW: usize = 1;
 
+/// A start command's typed reply on its way to the main window (#1162): the value its
+/// `beginRecording` awaits (`useRecordingState.ts:465`). Only a typed reply is queued: an
+/// `Err` reply rejects the invoke, which `beginRecording`'s `catch` handles (not modelled).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StartReply {
+    pub ty: ReplyType,
+    pub state: Status,
+}
+
+/// What the main window did with a start reply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReplyWrite {
+    /// `statusRef` / `setStatus` were written (`:485-486`); the status shown now.
+    Wrote(Status),
+    /// The reply does not own dictation state (`audio_recovering`, `already_starting`,
+    /// `:471-472`): lifecycle events stay the authority.
+    NotOwner,
+    /// A `starting` reply that is stale (`:481-483`): the window already moved past it.
+    StaleStarting,
+}
+
 /// One window's receiving end of `recording-status-changed`: its own delivery cursor
 /// (`inbox`, in emit order) and the status it last received (`observed`).
 #[derive(Debug, Default, Clone)]
@@ -524,6 +547,13 @@ pub struct World {
     pub idle_emits: BTreeMap<Rid, u32>,
     /// T: the task holding the recording transition.
     pub t_holder: Option<TaskId>,
+    /// The replies of the main window's start commands that have returned and that the
+    /// window has not processed yet, in return order (#1162). Processing one is a step of
+    /// the schedule of its own, like a status delivery.
+    pub start_replies: VecDeque<StartReply>,
+    /// Differences the harness found between `DictationCore::handle` and the flight's
+    /// direct `decide_*` call (`entry::once`), drained per step by the checker.
+    pub handle_faults: RefCell<Vec<String>>,
     /// Tasks currently inside a PD-16 window: a cancel's `PostDT` tail after its
     /// `In` section, by recording.
     pub cancel_tail: BTreeMap<Rid, TaskId>,
@@ -562,6 +592,40 @@ impl World {
         }
     }
 
+    /// A start command issued by the main window has returned `reply`: the window will
+    /// process it in a step of its own (`beginRecording`'s `await startRecording(...)`
+    /// resolves at the window's own pace, apart from the status events).
+    pub fn start_replied(&mut self, reply: StartReply) {
+        self.start_replies.push_back(reply);
+    }
+
+    /// The main window processes the next start reply, `useRecordingState.ts:465-486`:
+    /// the reply's status is written to `statusRef` / `setStatus` when the reply owns
+    /// dictation state, unless it is a stale `starting` (the window already left `Idle` and
+    /// `Starting`). The write does not look at the stop guard, and clears nothing.
+    ///
+    /// `generationEnded` (`:474-476`, an id compared with the last generation the window saw
+    /// end) is not modelled: the window's events carry no ids here. It can only turn more
+    /// `starting` writes into stale ones, so the model writes where production may not.
+    pub fn deliver_start_reply(&mut self) -> Option<(StartReply, ReplyWrite)> {
+        let reply = self.start_replies.pop_front()?;
+        let view = &mut self.windows[MAIN_WINDOW];
+        let write = if matches!(
+            reply.ty,
+            ReplyType::AudioRecovering | ReplyType::AlreadyStarting
+        ) {
+            ReplyWrite::NotOwner
+        } else if reply.state == Status::Starting
+            && !matches!(view.observed, Status::Idle | Status::Starting)
+        {
+            ReplyWrite::StaleStarting
+        } else {
+            view.observed = reply.state;
+            ReplyWrite::Wrote(reply.state)
+        };
+        Some((reply, write))
+    }
+
     pub fn new() -> Self {
         Self {
             status: Status::Idle,
@@ -586,6 +650,8 @@ impl World {
             delivered: BTreeSet::new(),
             idle_emits: BTreeMap::new(),
             t_holder: None,
+            start_replies: VecDeque::new(),
+            handle_faults: RefCell::new(Vec::new()),
             cancel_tail: BTreeMap::new(),
             step: 0,
         }

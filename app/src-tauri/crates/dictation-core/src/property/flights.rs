@@ -3,6 +3,8 @@
 //! `decide_*` functions. The order of sections and the placement of each
 //! effect follow the shell (`commands/recording.rs`) and the C3 tables.
 
+use super::entry::once;
+use super::gen::StartCaller;
 use super::model::*;
 use super::supervisor::ReplyPoll;
 use super::task::*;
@@ -13,10 +15,12 @@ use crate::effects::{Effect, Placement};
 use crate::ids::{Now, RecordingId};
 use crate::inputs::{
     CancelCaptureResultInput, CancelInput, CancelOrigin, CaptureErr, CaptureResult,
-    CaptureResultInput, DeviceSel, GestureObs, GuardOrigin, InterruptedMeta, Origin,
-    PipelineTerminal, SpeculativeObs, StartContextInput, StartInput, StopCaptureResult,
-    StopCaptureResultInput, StopContextInput, StopInput,
+    CaptureResultInput, DestinationInput, DeviceSel, GestureObs, GuardOrigin, Input,
+    InterruptedMeta, Origin, PipelineTerminal, SpeculativeObs, StartContextInput,
+    StartFlightEndInput, StartInput, StopCaptureResult, StopCaptureResultInput, StopContextInput,
+    StopInput,
 };
+use crate::replies::Reply;
 use crate::start as core_start;
 use crate::status::{Status, StopTrigger};
 use crate::stop as core_stop;
@@ -81,6 +85,10 @@ pub struct StartFlight {
     audio_ready: bool,
     capture_current: bool,
     dropped: bool,
+    /// Who sent the start (#1162): the main window's `beginRecording` awaits the reply.
+    caller: StartCaller,
+    /// The reply of the last decision that carried one: the value the command returns.
+    reply: Option<Reply>,
 }
 
 impl StartFlight {
@@ -105,6 +113,21 @@ impl StartFlight {
             audio_ready: false,
             capture_current: false,
             dropped: false,
+            caller: StartCaller::Ipc,
+            reply: None,
+        }
+    }
+
+    /// This start was sent by `caller`.
+    pub fn with_caller(mut self, caller: StartCaller) -> Self {
+        self.caller = caller;
+        self
+    }
+
+    /// Remember the reply a decision carries: the command returns the last one.
+    fn note_reply(&mut self, decision: &crate::decision::Decision) {
+        if let Some(reply) = &decision.reply {
+            self.reply = Some(reply.clone());
         }
     }
 
@@ -207,7 +230,17 @@ impl Task for StartFlight {
             Ss::Pre => {
                 let input = self.input(cx);
                 match core_start::decide_start_request_pre(&input, at) {
-                    Some(pre) => {
+                    Some(direct) => {
+                        // R101.1-.2 take no D, but the entry is still `handle`'s.
+                        let view = cx.w.view();
+                        let pre = once(
+                            &cx.w.handle_faults,
+                            &view,
+                            Input::StartRequest(input),
+                            at,
+                            direct,
+                        );
+                        self.note_reply(&pre);
                         log_decision(cx, SiteId::StartRequest, &pre, cx.w.current_id, None);
                         self.rid = cx.w.current_id;
                         self.leave(cx, &pre, SiteId::StartRequest);
@@ -220,7 +253,14 @@ impl Task for StartFlight {
                 let mut input = self.input(cx);
                 let mut rounds = 0;
                 let decision = loop {
-                    let decision = core_start::decide_start_request(&view, input.clone(), at);
+                    let direct = core_start::decide_start_request(&view, input.clone(), at);
+                    let decision = once(
+                        &cx.w.handle_faults,
+                        &view,
+                        Input::StartRequest(input.clone()),
+                        at,
+                        direct,
+                    );
                     rounds += 1;
                     match decision.verdict {
                         Verdict::NeedObservation(ObsKind::CleanupPending { id }) if rounds == 1 => {
@@ -233,6 +273,7 @@ impl Task for StartFlight {
                     }
                 };
                 self.rid = cx.w.current_id;
+                self.note_reply(&decision);
                 log_decision(cx, SiteId::StartRequest, &decision, self.rid, None);
                 match decision.row.0 {
                     "R101.15" => {
@@ -324,14 +365,22 @@ impl Task for StartFlight {
                     SiteId::StartCaptureResult,
                     self.rid,
                     move |w, op_status| {
-                        core_start::decide_start_capture_result_nolock(
+                        let input = CaptureResultInput {
+                            token,
+                            op_status,
+                            result: CaptureResult::Ok,
+                        };
+                        let direct = core_start::decide_start_capture_result_nolock(
                             w.facts(),
-                            CaptureResultInput {
-                                token,
-                                op_status,
-                                result: CaptureResult::Ok,
-                            },
+                            input.clone(),
                             at,
+                        );
+                        once(
+                            &w.handle_faults,
+                            &w.view(),
+                            Input::StartCaptureResult(input),
+                            at,
+                            direct,
                         )
                     },
                 );
@@ -359,19 +408,26 @@ impl Task for StartFlight {
                     SiteId::StartCaptureResult,
                     rid,
                     move |w, op_status| {
-                        core_start::decide_start_capture_result(
-                            &w.view(),
-                            CaptureResultInput {
-                                token,
-                                op_status,
-                                result: CaptureResult::Err(error.clone()),
-                            },
+                        let input = CaptureResultInput {
+                            token,
+                            op_status,
+                            result: CaptureResult::Err(error.clone()),
+                        };
+                        let view = w.view();
+                        let direct =
+                            core_start::decide_start_capture_result(&view, input.clone(), at);
+                        once(
+                            &w.handle_faults,
+                            &view,
+                            Input::StartCaptureResult(input),
                             at,
+                            direct,
                         )
                     },
                 );
                 let decision = after_pre(cx, decision);
                 self.cap = None;
+                self.note_reply(&decision);
                 log_decision(cx, SiteId::StartCaptureResult, &decision, rid, None);
                 let ctx = fx(cx, rid, decision.row.0, SiteId::StartCaptureResult);
                 apply_in(cx, &ctx, &decision);
@@ -395,8 +451,19 @@ impl Task for StartFlight {
             Ss::SmartSde => {
                 // R103.0: the emit's own D section rechecks ownership.
                 let view = cx.w.view();
-                let decision =
+                let direct =
                     core_start::decide_start_destination(&view, RecordingId(self.rid), true, at);
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &view,
+                    Input::StartDestination(DestinationInput {
+                        rid: RecordingId(self.rid),
+                        smart_enabled: true,
+                    }),
+                    at,
+                    direct,
+                );
+                self.note_reply(&decision);
                 log_decision(cx, SiteId::StartContext, &decision, self.rid, None);
                 let ctx = fx(cx, self.rid, decision.row.0, SiteId::StartContext);
                 apply_in(cx, &ctx, &decision);
@@ -410,14 +477,20 @@ impl Task for StartFlight {
                     SiteId::StartContext,
                     self.rid,
                     move |w, op_status| {
-                        core_start::decide_start_context(
-                            &w.view(),
-                            StartContextInput { token, op_status },
+                        let input = StartContextInput { token, op_status };
+                        let view = w.view();
+                        let direct = core_start::decide_start_context(&view, input, at);
+                        once(
+                            &w.handle_faults,
+                            &view,
+                            Input::StartContext(input),
                             at,
+                            direct,
                         )
                     },
                 );
                 self.ctx = None;
+                self.note_reply(&decision);
                 log_decision(cx, SiteId::StartContext, &decision, self.rid, None);
                 if let Some(spec) = decision.continuation {
                     self.ready = Some(cx.w.register(spec));
@@ -447,20 +520,26 @@ impl Task for StartFlight {
                     let rid = self.rid;
                     let decision =
                         consume(cx, token, SiteId::ReadyPublish, rid, move |w, op_status| {
-                            core_start::decide_ready_publish_nolock(
-                                w.facts(),
-                                crate::inputs::ReadyPublishInput {
-                                    token,
-                                    op_status,
-                                    rid: RecordingId(rid),
-                                    audio_ready: false,
-                                    context_present: None,
-                                    context_ready_at: at,
-                                },
+                            let input = crate::inputs::ReadyPublishInput {
+                                token,
+                                op_status,
+                                rid: RecordingId(rid),
+                                audio_ready: false,
+                                context_present: None,
+                                context_ready_at: at,
+                            };
+                            let direct =
+                                core_start::decide_ready_publish_nolock(w.facts(), input, at);
+                            once(
+                                &w.handle_faults,
+                                &w.view(),
+                                Input::ReadyPublish(input),
                                 at,
+                                direct,
                             )
                         });
                     self.ready = None;
+                    self.note_reply(&decision);
                     log_decision(cx, SiteId::ReadyPublish, &decision, self.rid, None);
                     self.st = Ss::FlightEnd;
                 }
@@ -481,7 +560,14 @@ impl Task for StartFlight {
                         };
                         let mut rounds = 0;
                         loop {
-                            let decision = core_start::decide_ready_publish(&view, input, at);
+                            let direct = core_start::decide_ready_publish(&view, input, at);
+                            let decision = once(
+                                &w.handle_faults,
+                                &view,
+                                Input::ReadyPublish(input),
+                                at,
+                                direct,
+                            );
                             rounds += 1;
                             match decision.verdict {
                                 Verdict::NeedObservation(ObsKind::ContextPresence { id })
@@ -494,6 +580,7 @@ impl Task for StartFlight {
                         }
                     });
                 self.ready = None;
+                self.note_reply(&decision);
                 log_decision(cx, SiteId::ReadyPublish, &decision, self.rid, None);
                 let ctx = fx(cx, self.rid, decision.row.0, SiteId::ReadyPublish);
                 apply_in(cx, &ctx, &decision);
@@ -501,7 +588,17 @@ impl Task for StartFlight {
             }
             Ss::FlightEnd => {
                 // R104.7: `PDT:PM`, T released, `PT:PB`, `PT:REL`.
-                let decision = core_start::decide_start_flight_end(RecordingId(self.rid), at);
+                let direct = core_start::decide_start_flight_end(RecordingId(self.rid), at);
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &cx.w.view(),
+                    Input::StartFlightEnd(StartFlightEndInput {
+                        rid: RecordingId(self.rid),
+                    }),
+                    at,
+                    direct,
+                );
+                self.note_reply(&decision);
                 log_decision(cx, SiteId::ReadyPublish, &decision, self.rid, None);
                 let ctx = fx(cx, self.rid, decision.row.0, SiteId::ReadyPublish);
                 queue_phase(&mut self.q, ctx, &decision, Placement::PostDT);
@@ -512,10 +609,25 @@ impl Task for StartFlight {
             Ss::Finish => {
                 self.retire_tokens(cx);
                 release_t(cx);
+                self.send_reply(cx);
                 return Poll::Done;
             }
         }
         Poll::Progress
+    }
+}
+
+impl StartFlight {
+    /// The command returns: the main window's `beginRecording` receives the reply later,
+    /// in a step of its own (#1162). A dropped start future returns nothing, and the
+    /// overlay and the IPC write no window state from the reply.
+    fn send_reply(&mut self, cx: &mut Cx<'_>) {
+        if self.dropped || self.caller != StartCaller::Window(MAIN_WINDOW) {
+            return;
+        }
+        if let Some(Reply::Typed { ty, state, .. }) = self.reply.take() {
+            cx.w.start_replied(StartReply { ty, state });
+        }
     }
 }
 
@@ -696,7 +808,15 @@ impl Task for StopFlight {
                     // capture first (D-S1-3, PD-15).
                     let stale = self.expected.expect("a stale stop has an expectation");
                     let mut input = input;
-                    let first = core_stop::decide_stop_request_stale(input, at).expect("stale");
+                    let view = cx.w.view();
+                    let direct = core_stop::decide_stop_request_stale(input, at).expect("stale");
+                    let first = once(
+                        &cx.w.handle_faults,
+                        &view,
+                        Input::StopRequest(input),
+                        at,
+                        direct,
+                    );
                     if matches!(
                         first.verdict,
                         Verdict::NeedObservation(ObsKind::TakeInterrupted { .. })
@@ -712,7 +832,14 @@ impl Task for StopFlight {
                         });
                         input.interrupted = Some(taken.map(meta_of));
                     }
-                    let decision = core_stop::decide_stop_request_stale(input, at).expect("stale");
+                    let direct = core_stop::decide_stop_request_stale(input, at).expect("stale");
+                    let decision = once(
+                        &cx.w.handle_faults,
+                        &view,
+                        Input::StopRequest(input),
+                        at,
+                        direct,
+                    );
                     log_decision(cx, SiteId::StopRequest, &decision, stale, None);
                     let ctx = fx(cx, stale, decision.row.0, SiteId::StopRequest);
                     queue_phase(&mut self.q, ctx, &decision, Placement::Pre);
@@ -728,7 +855,14 @@ impl Task for StopFlight {
             Ts::D201 => {
                 let view = cx.w.view();
                 let mut input = *self.input_ref();
-                let mut decision = core_stop::decide_stop_request(&view, input, at);
+                let direct = core_stop::decide_stop_request(&view, input, at);
+                let mut decision = once(
+                    &cx.w.handle_faults,
+                    &view,
+                    Input::StopRequest(input),
+                    at,
+                    direct,
+                );
                 if let Verdict::NeedObservation(ObsKind::TakeInterrupted { id }) = decision.verdict
                 {
                     let earlier = cx.w.taken_by.get(&id.0).map(|row| (*row,));
@@ -743,7 +877,14 @@ impl Task for StopFlight {
                     self.interrupted = taken;
                     input.interrupted = Some(taken.map(meta_of));
                     *self.input_ref() = input;
-                    decision = core_stop::decide_stop_request(&view, input, at);
+                    let direct = core_stop::decide_stop_request(&view, input, at);
+                    decision = once(
+                        &cx.w.handle_faults,
+                        &view,
+                        Input::StopRequest(input),
+                        at,
+                        direct,
+                    );
                 }
                 log_decision(cx, SiteId::StopRequest, &decision, self.rid, None);
                 if self.is_auto && self.interrupted.is_none() {
@@ -800,17 +941,27 @@ impl Task for StopFlight {
                     token,
                     SiteId::CancelCaptureResult,
                     self.rid,
-                    move |_, op_status| {
-                        core_cancel::decide_cancel_capture_result_nolock(
+                    move |w, op_status| {
+                        let input = CancelCaptureResultInput {
+                            token,
+                            op_status,
+                            rid: RecordingId(rid),
+                            result,
+                            origin: CancelOrigin::Stop,
+                        };
+                        // The direct call reads no fact of the view (`default()`), so a
+                        // `handle` that fed it the real ones must still agree.
+                        let direct = core_cancel::decide_cancel_capture_result_nolock(
                             crate::state::LockFreeFacts::default(),
-                            CancelCaptureResultInput {
-                                token,
-                                op_status,
-                                rid: RecordingId(rid),
-                                result,
-                                origin: CancelOrigin::Stop,
-                            },
+                            input,
                             at,
+                        );
+                        once(
+                            &w.handle_faults,
+                            &w.view(),
+                            Input::CancelCaptureResult(input),
+                            at,
+                            direct,
                         )
                     },
                 );
@@ -832,16 +983,21 @@ impl Task for StopFlight {
                         SiteId::StopContextNoLock,
                         rid,
                         move |w, op_status| {
-                            core_stop::decide_stop_context_nolock(
-                                w.facts(),
-                                StopContextInput {
-                                    token,
-                                    op_status,
-                                    rid: RecordingId(rid),
-                                    context_present: true,
-                                    interrupted_error,
-                                },
+                            let input = StopContextInput {
+                                token,
+                                op_status,
+                                rid: RecordingId(rid),
+                                context_present: true,
+                                interrupted_error,
+                            };
+                            let direct =
+                                core_stop::decide_stop_context_nolock(w.facts(), input, at);
+                            once(
+                                &w.handle_faults,
+                                &w.view(),
+                                Input::StopContext(input),
                                 at,
+                                direct,
                             )
                         },
                     );
@@ -870,16 +1026,21 @@ impl Task for StopFlight {
                 let rid = self.rid;
                 let interrupted_error = self.interrupted.map(|preserved| preserved.code);
                 let decision = consume(cx, token, SiteId::StopContext, rid, move |w, op_status| {
-                    core_stop::decide_stop_context(
-                        &w.view(),
-                        StopContextInput {
-                            token,
-                            op_status,
-                            rid: RecordingId(rid),
-                            context_present: false,
-                            interrupted_error,
-                        },
+                    let input = StopContextInput {
+                        token,
+                        op_status,
+                        rid: RecordingId(rid),
+                        context_present: false,
+                        interrupted_error,
+                    };
+                    let view = w.view();
+                    let direct = core_stop::decide_stop_context(&view, input, at);
+                    once(
+                        &w.handle_faults,
+                        &view,
+                        Input::StopContext(input),
                         at,
+                        direct,
                     )
                 });
                 let decision = after_pre(cx, decision);
@@ -948,10 +1109,15 @@ impl Task for StopFlight {
                         SiteId::StopCaptureResult,
                         rid,
                         move |w, op_status| {
-                            core_stop::decide_stop_capture_result_nolock(
-                                w.facts(),
-                                StopCaptureResultInput { op_status, ..probe },
+                            let input = StopCaptureResultInput { op_status, ..probe };
+                            let direct =
+                                core_stop::decide_stop_capture_result_nolock(w.facts(), input, at);
+                            once(
+                                &w.handle_faults,
+                                &w.view(),
+                                Input::StopCaptureResult(input),
                                 at,
+                                direct,
                             )
                         },
                     );
@@ -977,14 +1143,18 @@ impl Task for StopFlight {
             Ts::PanicGuard => {
                 let view = cx.w.view();
                 let rid = self.rid;
-                let decision = core_stop::decide_guard_finish(
+                let input = crate::inputs::GuardFinishInput {
+                    rid: RecordingId(rid),
+                    origin: GuardOrigin::Dropped,
+                    closure_emit: false,
+                };
+                let direct = core_stop::decide_guard_finish(&view, input, at);
+                let decision = once(
+                    &cx.w.handle_faults,
                     &view,
-                    crate::inputs::GuardFinishInput {
-                        rid: RecordingId(rid),
-                        origin: GuardOrigin::Dropped,
-                        closure_emit: false,
-                    },
+                    Input::GuardFinish(input),
                     at,
+                    direct,
                 );
                 let decision = after_pre(cx, decision);
                 log_decision(
@@ -1015,15 +1185,20 @@ impl Task for StopFlight {
                     SiteId::StopCaptureResult,
                     rid,
                     move |w, op_status| {
-                        core_stop::decide_stop_capture_result(
-                            &w.view(),
-                            StopCaptureResultInput {
-                                token,
-                                op_status,
-                                rid: RecordingId(rid),
-                                result: capture,
-                            },
+                        let input = StopCaptureResultInput {
+                            token,
+                            op_status,
+                            rid: RecordingId(rid),
+                            result: capture,
+                        };
+                        let view = w.view();
+                        let direct = core_stop::decide_stop_capture_result(&view, input, at);
+                        once(
+                            &w.handle_faults,
+                            &view,
+                            Input::StopCaptureResult(input),
                             at,
+                            direct,
                         )
                     },
                 );
@@ -1064,16 +1239,20 @@ impl Task for StopFlight {
                 // R204b.1-.4: the second D section, id-only (`KB(false)`, `EM(idle)`).
                 let view = cx.w.view();
                 let rid = self.rid;
-                let decision = core_stop::decide_pipeline_idle_emit(
+                let input = crate::inputs::PipelineIdleEmitInput {
+                    rid: RecordingId(rid),
+                    kind: crate::inputs::PostKind::StopPost,
+                    result: None,
+                    interrupted: None,
+                    char_count: 0,
+                };
+                let direct = core_stop::decide_pipeline_idle_emit(&view, input, at);
+                let decision = once(
+                    &cx.w.handle_faults,
                     &view,
-                    crate::inputs::PipelineIdleEmitInput {
-                        rid: RecordingId(rid),
-                        kind: crate::inputs::PostKind::StopPost,
-                        result: None,
-                        interrupted: None,
-                        char_count: 0,
-                    },
+                    Input::PipelineIdleEmit(input),
                     at,
+                    direct,
                 );
                 log_decision(cx, SiteId::PipelineIdleEmit, &decision, rid, None);
                 let ctx = fx(cx, rid, decision.row.0, SiteId::PipelineIdleEmit);
@@ -1089,18 +1268,23 @@ impl Task for StopFlight {
                     }
                     _ => crate::inputs::PipelineResult::Err,
                 };
-                let decision = core_stop::decide_pipeline_idle_emit_tail(
-                    crate::inputs::PipelineIdleEmitInput {
-                        rid: RecordingId(rid),
-                        kind: crate::inputs::PostKind::StopPost,
-                        result: Some(result),
-                        interrupted: self.interrupted.map(|preserved| preserved.code),
-                        char_count: usize::from(matches!(
-                            result,
-                            crate::inputs::PipelineResult::Ok(PipelineTerminal::Success)
-                        )),
-                    },
+                let input = crate::inputs::PipelineIdleEmitInput {
+                    rid: RecordingId(rid),
+                    kind: crate::inputs::PostKind::StopPost,
+                    result: Some(result),
+                    interrupted: self.interrupted.map(|preserved| preserved.code),
+                    char_count: usize::from(matches!(
+                        result,
+                        crate::inputs::PipelineResult::Ok(PipelineTerminal::Success)
+                    )),
+                };
+                let direct = core_stop::decide_pipeline_idle_emit_tail(input, at);
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &cx.w.view(),
+                    Input::PipelineIdleEmit(input),
                     at,
+                    direct,
                 );
                 // R204b.5/.6: the terminal code is the interrupted capture's, else the
                 // pipeline's own no-speech code.
@@ -1207,12 +1391,16 @@ impl Task for CancelFlight {
             Cs::D205 => {
                 let view = cx.w.view();
                 self.rid = cx.w.current_id;
-                let decision = core_cancel::decide_cancel_request(
+                let input = CancelInput {
+                    expected: self.expected.map(RecordingId),
+                };
+                let direct = core_cancel::decide_cancel_request(&view, input, at);
+                let decision = once(
+                    &cx.w.handle_faults,
                     &view,
-                    CancelInput {
-                        expected: self.expected.map(RecordingId),
-                    },
+                    Input::CancelRequest(input),
                     at,
+                    direct,
                 );
                 log_decision(cx, SiteId::CancelRequest, &decision, self.rid, None);
                 if decision.verdict != Verdict::Applied {
@@ -1263,17 +1451,27 @@ impl Task for CancelFlight {
                     token,
                     SiteId::CancelCaptureResult,
                     rid,
-                    move |_, op_status| {
-                        core_cancel::decide_cancel_capture_result_nolock(
+                    move |w, op_status| {
+                        let input = CancelCaptureResultInput {
+                            token,
+                            op_status,
+                            rid: RecordingId(rid),
+                            result,
+                            origin: CancelOrigin::Cancel,
+                        };
+                        // The direct call reads no fact of the view (`default()`), so a
+                        // `handle` that fed it the real ones must still agree.
+                        let direct = core_cancel::decide_cancel_capture_result_nolock(
                             crate::state::LockFreeFacts::default(),
-                            CancelCaptureResultInput {
-                                token,
-                                op_status,
-                                rid: RecordingId(rid),
-                                result,
-                                origin: CancelOrigin::Cancel,
-                            },
+                            input,
                             at,
+                        );
+                        once(
+                            &w.handle_faults,
+                            &w.view(),
+                            Input::CancelCaptureResult(input),
+                            at,
+                            direct,
                         )
                     },
                 );
@@ -1436,14 +1634,18 @@ impl Task for Pipeline {
                 let view = cx.w.view();
                 let rid = self.rid;
                 let origin = self.origin();
-                let decision = core_stop::decide_guard_finish(
+                let input = crate::inputs::GuardFinishInput {
+                    rid: RecordingId(rid),
+                    origin,
+                    closure_emit: false,
+                };
+                let direct = core_stop::decide_guard_finish(&view, input, at);
+                let decision = once(
+                    &cx.w.handle_faults,
                     &view,
-                    crate::inputs::GuardFinishInput {
-                        rid: RecordingId(rid),
-                        origin,
-                        closure_emit: false,
-                    },
+                    Input::GuardFinish(input),
                     at,
+                    direct,
                 );
                 let decision = after_pre(cx, decision);
                 log_decision(cx, SiteId::GuardFinish, &decision, rid, Some(origin));

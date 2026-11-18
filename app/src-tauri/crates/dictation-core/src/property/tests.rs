@@ -18,13 +18,17 @@ use std::time::{Duration, Instant};
 /// [`the_deep_sweep_holds_the_properties`].
 const DEFAULT_SEEDS: u64 = 10_000;
 
-// Witness seeds for the delivery/stop competition (#1159, #1167), re-pinned by sweeping.
-// Seed 147 (the pre-#1167 pin) is the overlay's delivery-first witness: its stop is the
-// overlay's, not the main window's.
-const MAIN_DELIVERY_FIRST: u64 = 176;
-const OVERLAY_DELIVERY_FIRST: u64 = 147;
-const MAIN_STOP_FIRST: u64 = 473;
-const OVERLAY_STOP_FIRST: u64 = 169;
+// Witness seeds for the delivery/stop competition (#1159, #1167), re-pinned by sweeping. Routing
+// every flight through `DictationCore::handle` (#1160) and the start caller and reply (#1162)
+// shifted every seed: 176 -> 217, 147 -> 25, 473 -> 164, 169 -> 147.
+const MAIN_DELIVERY_FIRST: u64 = 217;
+const OVERLAY_DELIVERY_FIRST: u64 = 25;
+const MAIN_STOP_FIRST: u64 = 164;
+const OVERLAY_STOP_FIRST: u64 = 147;
+/// #1162: the overlay's start wins, the main window's refused start replies late, after the main
+/// window's stop, and the second stop gesture is sent. It is the first of 500,000 seeds that
+/// does (about one in 150,000), so it is a fixed seed.
+const LATE_START_REPLY_SECOND_STOP: u64 = 203_928;
 /// The deep sweep's default size; `DEEP_SWEEP_SEEDS` sets another.
 const DEEP_SWEEP_SEEDS: u64 = 300_000;
 const CI_BUDGET: Duration = Duration::from_secs(20);
@@ -35,31 +39,35 @@ const CI_BUDGET: Duration = Duration::from_secs(20);
 /// converse check, and a witness that drifted away fails it. Each is the first seed of a
 /// 3,000,000-seed sweep that takes the witness.
 ///
-/// * 10,724: PD-18 (c), the unsealed stop.
-/// * 19,737: PD-24 through the user's cancel (R102.3, R209.3).
-/// * 39,219: PD-19 through `TerminationUnconfirmed`.
-/// * 52,153: PD-22 against a stop's performance completion (R211.2, R203.2).
-/// * 101,117: PD-22 against the cancel's own `TERM` (R211.2, R205.5).
-/// * 259,286: PD-19's refused auto-stop (the capture stays in the store and no ordinary
+/// * 11,612: PD-18 (c), the unsealed stop.
+/// * 21,272: PD-24 through the user's cancel (R102.3, R209.3).
+/// * 10,882: PD-19 through `TerminationUnconfirmed`.
+/// * 81,353: PD-22 against a stop's performance completion (R211.2, R203.2).
+/// * 161,052: PD-22 against the cancel's own `TERM` (R211.2, R205.5).
+/// * 2,569,791: PD-19's refused auto-stop (the capture stays in the store and no ordinary
 ///   control sends the stop that would take it; D-S2b-15 (c), (d)). It is rare because the
 ///   unscoped stop IPC, one in four generated stops, takes the capture when it lands, and
 ///   a window sends no stop that it has not seen `Recording` for.
-/// * 262,762: PD-19 through a dropped start (no context was ever installed).
-/// * 273,164: PD-21 with a short stop (R206.2, R203.4).
+/// * 179,248: PD-19 through a dropped start (no context was ever installed).
+/// * 48,827: PD-21 with a short stop (R206.2, R203.4).
+/// * 203,928: the late main-window start reply and its second stop (#1162), the first of 500,000
+///   seeds that has the whole sequence.
 ///
-/// Re-pinned for #1159: a due command now competes with a ready delivery, which changed
-/// the RNG draws, so PD-19, PD-21 (short stop), PD-22 and PD-24 (R209.3) left the range.
-const FIXED_SEEDS: [u64; 8] = [
-    10_724, 19_737, 39_219, 52_153, 101_117, 259_286, 262_762, 273_164,
+/// Re-pinned for #1160 and #1162: every flight decides through `DictationCore::handle`, and a
+/// start now draws its caller, which changed the RNG draws. Old -> new: 10,724 -> 11,612,
+/// 19,737 -> 21,272, 39,219 -> 10,882, 52,153 -> 81,353, 101,117 -> 161,052,
+/// 259,286 -> 2,569,791, 262,762 -> 179,248, 273,164 -> 48,827; 203,928 is new.
+const FIXED_SEEDS: [u64; 9] = [
+    11_612, 21_272, 10_882, 81_353, 161_052, 2_569_791, 179_248, 48_827, 203_928,
 ];
 
 /// PD-18's witnesses, one seed per instance (C7.5): the first seed of the fixed
 /// range that ends stuck in `Recovering` through that instance, with the generation's
 /// own evidence (R101.12 in the gap after its last restorer).
 const PD18_SEEDS: [(&str, u64); 3] = [
-    ("(a) S12", 1_879),
-    ("(b) Idle-arm tail", 77),
-    ("(c) unsealed stop", 10_724),
+    ("(a) S12", 2_997),
+    ("(b) Idle-arm tail", 121),
+    ("(c) unsealed stop", 11_612),
 ];
 
 /// A witness of one of PD-19..PD-24: the PD, the seed that takes it, the matched
@@ -80,77 +88,77 @@ struct Witness {
 const FINDING_SEEDS: [Witness; 14] = [
     Witness {
         pd: 19,
-        seed: 39_219,
+        seed: 10_882,
         split: None,
         shell_test: Some("pd19_termination_unconfirmed_after_retained_pcm_leaves_recovering"),
         sig: None,
     },
     Witness {
         pd: 19,
-        seed: 262_762,
+        seed: 179_248,
         split: None,
         shell_test: Some("pd19_a_dropped_start_and_a_retained_runtime_failure_leave_recovering"),
         sig: None,
     },
     Witness {
         pd: 19,
-        seed: 259_286,
+        seed: 2_569_791,
         split: None,
         shell_test: Some("pd19_a_refused_auto_stop_leaves_the_capture_and_recovering"),
         sig: None,
     },
     Witness {
         pd: 20,
-        seed: 76,
+        seed: 574,
         split: Some(("R205.5", "R203.5")),
         shell_test: Some("pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree"),
         sig: None,
     },
     Witness {
         pd: 21,
-        seed: 273_164,
+        seed: 48_827,
         split: Some(("R206.2", "R203.4")),
         shell_test: Some("pd21_timed_out_cancel_then_a_short_stop_disagree"),
         sig: None,
     },
     Witness {
         pd: 21,
-        seed: 207,
+        seed: 3,
         split: Some(("R206.2", "R209.4")),
         shell_test: Some("pd21_timed_out_cancel_and_the_late_recovery_disagree"),
         sig: None,
     },
     Witness {
         pd: 22,
-        seed: 52_153,
+        seed: 81_353,
         split: Some(("R211.2", "R203.2")),
         shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance"),
         sig: None,
     },
     Witness {
         pd: 22,
-        seed: 101_117,
+        seed: 161_052,
         split: Some(("R211.2", "R205.5")),
         shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_cancel_completes_performance"),
         sig: None,
     },
     Witness {
         pd: 23,
-        seed: 447,
+        seed: 822,
         split: Some(("R207.3", "R203.5")),
         shell_test: Some("pd23_superseded_terminal_and_an_empty_stop_no_speech_disagree"),
         sig: None,
     },
     Witness {
         pd: 23,
-        seed: 249,
+        seed: 1_183,
         split: Some(("R207.3", "R203.1")),
         shell_test: Some("pd23_superseded_terminal_and_a_refused_stop_failed_disagree"),
         sig: None,
     },
     Witness {
         pd: 23,
-        seed: 163,
+        seed: 123,
         split: Some(("R207.3", "R205.5")),
         shell_test: Some("pd23_superseded_terminal_and_a_cancel_of_processing_cancelled_disagree"),
         sig: None,
@@ -160,14 +168,14 @@ const FINDING_SEEDS: [Witness; 14] = [
     // the claim, so it has no shell fixture; it stays allowlisted (D-S2b-13 (e)).
     Witness {
         pd: 23,
-        seed: 37,
+        seed: 757,
         split: Some(("R207.3", "R204b.6")),
         shell_test: None,
         sig: Some(2),
     },
     Witness {
         pd: 24,
-        seed: 19_737,
+        seed: 21_272,
         split: Some(("R102.3", "R209.3")),
         shell_test: Some(
             "pd24_start_timeout_terminal_and_the_users_cancel_arm_performance_outcome_disagree",
@@ -176,7 +184,7 @@ const FINDING_SEEDS: [Witness; 14] = [
     },
     Witness {
         pd: 24,
-        seed: 5_168,
+        seed: 5_206,
         split: Some(("R102.3", "R209.5")),
         shell_test: Some(
             "pd24_start_timeout_terminal_and_an_environmental_recovery_arm_performance_outcome_disagree",
@@ -467,7 +475,7 @@ fn pd19_to_pd24_have_pinned_seeds() {
 
 #[test]
 fn a_seed_is_one_run() {
-    for seed in [0u64, 59, 886, 4903, 9_991] {
+    for seed in [0u64, 59, 886, 4903, 9_990] {
         let seed = gated(seed);
         let (first, first_trace) = run_seed_with(seed, true);
         let (second, second_trace) = run_seed_with(seed, true);
@@ -1719,9 +1727,9 @@ fn pd19_is_witnessed_with_its_whole_story() {
     // One seed per entry: `TerminationUnconfirmed`, a dropped start, the refused auto-stop
     // that leaves the capture in the store (no user-accessible recovery).
     for (seed, entries) in [
-        (39_219, [1, 0, 0]),
-        (262_762, [0, 1, 0]),
-        (259_286, [0, 0, 1]),
+        (10_882, [1, 0, 0]),
+        (179_248, [0, 1, 0]),
+        (2_569_791, [0, 0, 1]),
     ] {
         let report = run_seed(gated(seed));
         assert!(report.hits.pd[19] > 0, "{seed}: {:?}", report.hits);
@@ -1871,21 +1879,181 @@ fn a_finished_main_window_stop_flight_clears_its_guard() {
     w.windows[MAIN_WINDOW].stop_in_flight = true;
     drive_stop_flight(&mut w, StopFlight::new(None, None, cfg));
     assert!(w.windows[MAIN_WINDOW].stop_in_flight);
-    // The overlay has no guard: its flight clears nothing and sets nothing.
+    // The overlay has no guard: its flight clears nothing and sets nothing. The main window's
+    // guard is set while the overlay's flight runs to completion (#1162): a flight that
+    // cleared "the" guard whatever its window would clear this one, so it must still be set.
     let mut w = new_world();
+    w.window_stop_sent(MAIN_WINDOW);
     w.window_stop_sent(OVERLAY_WINDOW);
+    assert!(w.windows[MAIN_WINDOW].stop_in_flight);
     drive_stop_flight(
         &mut w,
         StopFlight::new(None, None, cfg).with_window(OVERLAY_WINDOW),
     );
     assert!(!w.windows[OVERLAY_WINDOW].stop_in_flight);
+    assert!(
+        w.windows[MAIN_WINDOW].stop_in_flight,
+        "the overlay's finished flight cleared the main window's guard"
+    );
 }
 
-/// #1167, seed 1454 (the issue's seed): the main window's second stop at step 36 is held back
-/// by `isStoppingRef` before either flight runs. The overlay, with no guard, can send two.
+/// Drive a start flight alone to completion over `w` (no other actor runs): every step must
+/// progress or finish, and it must finish within a bounded number of steps. The supervisor
+/// never answers, so only a start that is refused before it sends a request can finish.
+fn drive_start_flight(w: &mut World, flight: super::flights::StartFlight) {
+    let mut flight = flight;
+    let mut out = StepOut::default();
+    let mut spawned: Vec<Box<dyn Task>> = Vec::new();
+    let mut mailbox = Vec::new();
+    for step in 0..200 {
+        w.step = step;
+        out.clear();
+        let poll = flight.step(&mut Cx {
+            w,
+            out: &mut out,
+            spawn: &mut spawned,
+            tid: 4,
+            mailbox: &mut mailbox,
+        });
+        match poll {
+            Poll::Done => return,
+            Poll::Progress => {}
+            Poll::Blocked => panic!("the start flight blocked at step {step}"),
+        }
+    }
+    panic!("the start flight did not finish");
+}
+
+/// #1162: a start's reply reaches the main window only when the main window sent the start, and
+/// as a step of its own. The overlay and the IPC write no window state from it. A start the
+/// shell refuses because a recording is already running replies `already_recording` with state
+/// `recording` (`dictation_admission.rs:936`).
+#[test]
+fn a_main_window_start_returns_its_reply_for_the_window_to_process() {
+    use super::flights::{Blockers, StartFlight};
+    use super::gen::StartCaller;
+    let recording_world = || {
+        let mut w = World::new();
+        w.status = Status::Recording;
+        w.current_id = 1;
+        w
+    };
+    let flight = |caller| {
+        StartFlight::new(external_attempt_plan(), Blockers::default(), false, false)
+            .with_caller(caller)
+    };
+    let mut w = recording_world();
+    drive_start_flight(&mut w, flight(StartCaller::Window(MAIN_WINDOW)));
+    assert_eq!(
+        w.start_replies.iter().copied().collect::<Vec<_>>(),
+        [StartReply {
+            ty: crate::replies::ReplyType::AlreadyRecording,
+            state: Status::Recording
+        }],
+        "the refused start's reply waits for the main window"
+    );
+    for caller in [StartCaller::Window(OVERLAY_WINDOW), StartCaller::Ipc] {
+        let mut w = recording_world();
+        drive_start_flight(&mut w, flight(caller));
+        assert!(
+            w.start_replies.is_empty(),
+            "{caller:?} writes no window state"
+        );
+    }
+    // A start future dropped at its await returns nothing at all.
+    let mut w = recording_world();
+    let mut dropped = flight(StartCaller::Window(MAIN_WINDOW));
+    let mut out = StepOut::default();
+    let mut spawned: Vec<Box<dyn Task>> = Vec::new();
+    let mut mailbox = Vec::new();
+    dropped.drop_now(&mut Cx {
+        w: &mut w,
+        out: &mut out,
+        spawn: &mut spawned,
+        tid: 4,
+        mailbox: &mut mailbox,
+    });
+    drive_start_flight(&mut w, dropped);
+    assert!(w.start_replies.is_empty());
+}
+
+/// #1162, `useRecordingState.ts:465-486`: the main window writes the reply's status unless the
+/// reply does not own dictation state or is a stale `starting`, and the write ignores the stop
+/// guard. The issue's sequence: the overlay's start won, the main window's start was refused
+/// `already_recording`, its reply is delayed past the main window's stop, and then rewrites
+/// `Recording` over the local `Processing` while the stop IPC is still in flight.
+#[test]
+fn the_main_window_writes_a_late_start_reply_over_its_processing_status() {
+    use crate::replies::ReplyType;
+    let mut w = World::new();
+    w.window_stop_sent(MAIN_WINDOW);
+    assert_eq!(w.windows[MAIN_WINDOW].observed, Status::Processing);
+    w.start_replied(StartReply {
+        ty: ReplyType::AlreadyRecording,
+        state: Status::Recording,
+    });
+    assert_eq!(
+        w.windows[MAIN_WINDOW].observed,
+        Status::Processing,
+        "the reply has not been processed yet"
+    );
+    let (_, write) = w.deliver_start_reply().expect("a reply is pending");
+    assert_eq!(write, ReplyWrite::Wrote(Status::Recording));
+    assert_eq!(w.windows[MAIN_WINDOW].observed, Status::Recording);
+    assert!(
+        w.windows[MAIN_WINDOW].stop_in_flight,
+        "the write does not touch the guard: the stop IPC is still in flight"
+    );
+    assert!(w.deliver_start_reply().is_none());
+    // `audio_recovering` and `already_starting` never own the state (`:471-472`).
+    for ty in [ReplyType::AudioRecovering, ReplyType::AlreadyStarting] {
+        let mut w = World::new();
+        w.windows[MAIN_WINDOW].observed = Status::Processing;
+        w.start_replied(StartReply {
+            ty,
+            state: Status::Idle,
+        });
+        assert_eq!(
+            w.deliver_start_reply().map(|(_, write)| write),
+            Some(ReplyWrite::NotOwner)
+        );
+        assert_eq!(w.windows[MAIN_WINDOW].observed, Status::Processing);
+    }
+    // A `starting` reply is stale once the window left `Idle` and `Starting` (`:481-483`).
+    for observed in [Status::Recording, Status::Processing, Status::Recovering] {
+        let mut w = World::new();
+        w.windows[MAIN_WINDOW].observed = observed;
+        w.start_replied(StartReply {
+            ty: ReplyType::RecordingStarting,
+            state: Status::Starting,
+        });
+        assert_eq!(
+            w.deliver_start_reply().map(|(_, write)| write),
+            Some(ReplyWrite::StaleStarting)
+        );
+        assert_eq!(w.windows[MAIN_WINDOW].observed, observed);
+    }
+    for observed in [Status::Idle, Status::Starting] {
+        let mut w = World::new();
+        w.windows[MAIN_WINDOW].observed = observed;
+        w.start_replied(StartReply {
+            ty: ReplyType::RecordingStarting,
+            state: Status::Starting,
+        });
+        assert_eq!(
+            w.deliver_start_reply().map(|(_, write)| write),
+            Some(ReplyWrite::Wrote(Status::Starting))
+        );
+        assert_eq!(w.windows[MAIN_WINDOW].observed, Status::Starting);
+    }
+}
+
+/// #1167: the main window's second stop is held back by `isStoppingRef` before either flight
+/// runs (seed 2,559; the issue's seed 1454 before #1160 and #1162 moved every seed). The
+/// overlay, with no guard, can send two (seed 25, formerly 33).
 #[test]
 fn a_second_main_window_stop_waits_for_the_first() {
-    let (report, trace) = run_seed_with(gated(1_454), true);
+    let (report, trace) = run_seed_with(gated(2_559), true);
     assert!(report.violations.is_empty(), "{:?}", report.violations);
     let sent = trace
         .iter()
@@ -1895,7 +2063,7 @@ fn a_second_main_window_stop_waits_for_the_first() {
         trace[sent + 1].contains("frontend stop not sent (main window has a stop in flight)"),
         "{trace:#?}"
     );
-    let (_, overlay) = run_seed_with(gated(33), true);
+    let (_, overlay) = run_seed_with(gated(25), true);
     let count = |needle: &str| overlay.iter().filter(|line| line.contains(needle)).count();
     assert!(
         count("frontend stop sent (overlay window") >= 2,
@@ -2020,12 +2188,12 @@ fn two_windows_can_disagree_about_the_status() {
 
 /// D-S2b-18 (3) in the seeded runs: a window sends a stop on `Recording` after the shell
 /// entered `Recovering` while the other window has already received `Recovering` (and would
-/// send none). One cursor could not represent both. The witness is pinned at seed 2,386
-/// (re-pinned from 205 by #1167, inside the 10,000-seed gate); the regular suite asserts nothing beyond that gate
+/// send none). One cursor could not represent both. The witness is pinned at seed 852
+/// (re-pinned from 2,386 by #1160 and #1162, inside the 10,000-seed gate); the regular suite asserts nothing beyond that gate
 /// (D-S2b-19 (a)).
 #[test]
 fn the_windows_disagree_in_the_seeded_runs() {
-    const WITNESS: u64 = 2_386;
+    const WITNESS: u64 = 852;
     let (report, trace) = run_seed_with(gated(WITNESS), true);
     assert!(
         report.violations.is_empty(),
@@ -2175,6 +2343,101 @@ fn the_ordering_matchers_name_their_caller_and_boundary() {
         "  32 frontend stop not sent (main window shows Starting) while Recording is still queued for it",
     ]);
     assert!(!stop_first(&main_received, "main"));
+}
+
+/// #1162: the issue's sequence, read from a trace. The overlay's start wins (it reaches
+/// `Recording`), the main window's own start is refused `already_recording`, the main window's
+/// stop is sent, then the delayed start reply is processed and rewrites `Recording` over the
+/// local `Processing`, and a second stop gesture is sent with no `Idle` received in between.
+fn late_start_reply_second_stop(trace: &[String]) -> bool {
+    let at = |from: usize, needle: &str| {
+        trace[from..]
+            .iter()
+            .position(|line| line.contains(needle))
+            .map(|offset| from + offset)
+    };
+    let stop = "frontend stop sent (main window shows Recording)";
+    let reply = "main window receives the start reply already_recording (state Recording): writes Recording";
+    let Some(overlay_start) = at(0, "start issued by the overlay window") else {
+        return false;
+    };
+    let Some(main_start) = at(overlay_start + 1, "start issued by the main window") else {
+        return false;
+    };
+    let Some(recording) = at(
+        main_start + 1,
+        "fx R104.2 In EmitStatus { status: Recording",
+    ) else {
+        return false;
+    };
+    let Some(first_stop) = at(recording + 1, stop) else {
+        return false;
+    };
+    let Some(late_reply) = at(first_stop + 1, reply) else {
+        return false;
+    };
+    let Some(second_stop) = at(late_reply + 1, stop) else {
+        return false;
+    };
+    !trace[first_stop..second_stop]
+        .iter()
+        .any(|line| line.contains("main window receives Idle"))
+}
+
+/// #1162: the main window's start reply is a step of its own, so it can arrive after the main
+/// window's stop and put `Recording` back: the second gesture is then sent, where the model that
+/// never delivered a start reply dropped it (the guard or the `Processing` observation refused
+/// it).
+#[test]
+fn a_late_start_reply_lets_the_main_window_send_a_second_stop() {
+    let (report, trace) = run_seed_with(gated(LATE_START_REPLY_SECOND_STOP), true);
+    assert!(
+        report.violations.is_empty(),
+        "{LATE_START_REPLY_SECOND_STOP}: {:?}",
+        report.violations
+    );
+    assert!(
+        late_start_reply_second_stop(&trace),
+        "seed {LATE_START_REPLY_SECOND_STOP} no longer sends the second stop after the late start reply: {trace:#?}"
+    );
+}
+
+/// The matcher needs every step of the sequence, in order, and no `Idle` between the stops.
+#[test]
+fn the_late_reply_matcher_needs_the_whole_sequence() {
+    let full: Vec<String> = [
+        "   0 start issued by the overlay window",
+        "   3 start issued by the main window",
+        "  30 t3   fx R104.2 In EmitStatus { status: Recording, cond: Always } rid=1 Recording->Recording claim=None",
+        "  34 frontend stop sent (main window shows Recording)",
+        "  35 main window receives the start reply already_recording (state Recording): writes Recording",
+        "  40 frontend stop sent (main window shows Recording)",
+    ]
+    .iter()
+    .map(|line| line.to_string())
+    .collect();
+    assert!(late_start_reply_second_stop(&full));
+    // Each line is needed.
+    for skip in 0..full.len() {
+        let mut partial = full.clone();
+        partial.remove(skip);
+        assert!(
+            !late_start_reply_second_stop(&partial),
+            "accepted without line {skip}"
+        );
+    }
+    // The reply must come after the first stop, and the main window must not receive `Idle`
+    // between the two stops.
+    let mut early = full.clone();
+    early.swap(3, 4);
+    assert!(!late_start_reply_second_stop(&early));
+    let mut idle = full.clone();
+    idle.insert(5, "  36 main window receives Idle".to_string());
+    assert!(!late_start_reply_second_stop(&idle));
+    // A reply that does not write (not the owner, stale) is not the sequence.
+    let mut ignored = full.clone();
+    ignored[4] = "  35 main window receives the start reply already_starting (state Idle): not the owner of the state".to_string();
+    assert!(!late_start_reply_second_stop(&ignored));
 }
 
 /// The competition draws only when a command and a delivery are both ready, and it is part

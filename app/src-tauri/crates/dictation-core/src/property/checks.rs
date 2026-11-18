@@ -456,6 +456,10 @@ impl Checker {
             self.violations.push(fault.clone());
         }
         self.faults_seen = w.registry_faults.len();
+        // `handle` against the direct `decide_*` (`entry::once`): every difference fails the seed.
+        for fault in w.handle_faults.borrow_mut().drain(..) {
+            self.violations.push(fault);
+        }
         let mut hits: Vec<Hit> = Vec::new();
         for d in &out.decisions {
             self.detect_decision(d, &mut hits);

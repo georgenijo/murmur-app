@@ -68,7 +68,7 @@ fn empty_transcription() -> Result<serde_json::Value, String> {
 }
 
 // ----------------------------------------------------------------- PD-19
-// Harness seed 39,219 (`FINDING_SEEDS`). The worker's exit is unconfirmed while a dictation records.
+// Harness seed 10,882 (`FINDING_SEEDS`; 39,219 before #1160 and #1162 re-pinned it). The worker's exit is unconfirmed while a dictation records.
 // The real supervisor handles `TerminationUnconfirmed` outside `Stopping` with
 // `StartupDiagnostic(WorkerInvariantViolation)` (`audio_lifecycle.rs:2036-2046`, no
 // standby deadline), then `begin_recovery(RuntimeFailure, Some(failure))`
@@ -188,7 +188,7 @@ fn pd19_termination_unconfirmed_after_retained_pcm_leaves_recovering() {
     ));
 }
 
-// PD-19, second entry (harness seed 262,762). The same defect with the context missing
+// PD-19, second entry (harness seed 179,248; 262,762 before the #1160 and #1162 re-pin). The same defect with the context missing
 // for another reason: the start future was dropped at its await after the supervisor's
 // ack (PD-9, `smart_capture`), so no context was ever installed and the status stays
 // `Starting`. The worker then fails at runtime with 8,000 samples retained
@@ -253,7 +253,7 @@ fn pd19_a_dropped_start_and_a_retained_runtime_failure_leave_recovering() {
     ));
 }
 
-// PD-19, third entry (harness seed 259,286): the refused auto-stop, with no ordinary
+// PD-19, third entry (harness seed 2,569,791; 259,286 before the #1160 and #1162 re-pin): the refused auto-stop, with no ordinary
 // control that takes the capture. A user stop moved the status to `Processing` and waits in the
 // supervisor's capture stop (R201.8, R202.1). The worker fails at runtime with 8,000
 // samples retained: `begin_recovery(RuntimeFailure)` publishes `Recovering` (`2630-2698`,
@@ -447,7 +447,7 @@ fn perf_claim(id: u64) -> Option<RunOutcomeV1> {
 }
 
 // ------------------------------------------------------------------ PD-20
-// Harness seed 76 (R205.5 / R203.5). A stop is in its capture stop with T released
+// Harness seed 574 (R205.5 / R203.5; 76 before the #1160 and #1162 re-pin). A stop is in its capture stop with T released
 // (status Processing). A cancel takes T and runs R205.5: its `PostDT` `TERM` wins
 // the terminal as `UserCancelledProcessing`. Inside that tail, before the cancel's
 // `PT:PC`, the stop's capture returns zero samples (a sealed delivery of nothing,
@@ -584,14 +584,14 @@ fn a_queued_stop_after_the_owner_was_replaced_is_refused() {
 
 // ------------------------------------------------------------------ PD-21
 //
-// The pinned signature is the pair of rows PD-21 splits, harness seed 273,164 (R206.2 /
-// R203.4; 244,103 before #1159 changed the draws): a cancel's receive timeout makes
+// The pinned signature is the pair of rows PD-21 splits, harness seed 48,827 (R206.2 /
+// R203.4; 273,164 before the #1160 and #1162 re-pin, 244,103 before #1159 changed the draws): a cancel's receive timeout makes
 // R206.2 claim the terminal as `PipelineFailure` (`CANCEL_RECEIVE_TIMEOUT`,
 // `audio_lifecycle.rs:3353-3363`), and a stop's R203.4 later completes performance as
 // `NoSpeech` over an empty capture at `Processing`, its terminal having lost the claim.
 //
 // This fixture does not replay that seed's order, and the seed does not replay the
-// fixture's. Seed 273,164 reaches R206.2 (step 83) *before* the stop's R201.8 (step 96).
+// fixture's. Seed 273,164 (the pin before the re-pin) reached R206.2 (step 83) *before* the stop's R201.8 (step 96).
 // The fixture's causal sequence is the one that makes the stop's reply empty: the cancel of
 // a `Recording` dictation (R205.4) releases T for its capture cancel; before its `Cancel`
 // reaches the supervisor's queue a stop lands (R201.8), takes T, and its `Stop` is enqueued
@@ -692,7 +692,7 @@ fn pd21_timed_out_cancel_then_a_short_stop_disagree() {
     ));
 }
 
-// Harness seed 207 (R206.2 / R209.4). The queued `Cancel{User}` is handled after the
+// Harness seed 3 (R206.2 / R209.4; 207 before the #1160 and #1162 re-pin). The queued `Cancel{User}` is handled after the
 // client's 2 s receive expired: the attempt is still `Recording`, so `begin_recovery`
 // publishes `Recovering{User}` (`audio_lifecycle.rs:1301-1330`) and the reply goes to a
 // dropped receiver. R206.2 had already claimed the terminal as `PipelineFailure`; the
@@ -744,7 +744,8 @@ fn pd21_timed_out_cancel_and_the_late_recovery_disagree() {
 }
 
 // ------------------------------------------------------------------ PD-22
-// Harness seeds 52,153 (R211.2 / R203.2) and 101,117 (R211.2 / R205.5). A stop is in its
+// Harness seeds 81,353 (R211.2 / R203.2) and 161,052 (R211.2 / R205.5); 52,153 and 101,117
+// before the #1160 and #1162 re-pin. A stop is in its
 // capture stop with T released (status Processing) and its 12 s receive expires
 // (`audio_lifecycle.rs:3276-3282`): the client's reply is [`STOP_RECEIVE_TIMEOUT`]
 // and the receiver is dropped. The stop's continuation has not run when the worker
@@ -853,8 +854,8 @@ fn pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance() {
 }
 
 // ------------------------------------------------------------------ PD-24
-// Harness seeds 19,737 (R102.3 / R209.3, the user's cancel) and 5,168 (R102.3 / R209.5,
-// an environmental recovery). The start call's 2 s receiver expired while the supervisor
+// Harness seeds 21,272 (R102.3 / R209.3, the user's cancel) and 5,206 (R102.3 / R209.5,
+// an environmental recovery); 19,737 and 5,168 before the #1160 and #1162 re-pin. The start call's 2 s receiver expired while the supervisor
 // was still handling the start (`await_start_response`, `audio_lifecycle.rs:3065-3079`):
 // the caller is revoked, `Cancel{User}` is enqueued, and the call returns
 // `SupervisorUnavailable`, so the start thread runs R102 (a failure result). The
@@ -974,7 +975,8 @@ fn pd24_start_timeout_terminal_and_an_environmental_recovery_arm_performance_out
 }
 
 // ------------------------------------------------------------------ PD-23
-// Harness seeds 447 (R207.3 / R203.5), 171 (R207.3 / R203.1) and 163 (R207.3 / R205.5).
+// Harness seeds 822 (R207.3 / R203.5), 1,183 (R207.3 / R203.1) and 123 (R207.3 / R205.5);
+// 447, 249 and 163 before the #1160 and #1162 re-pin.
 // C8 (`s10c`, PD-4): the fake supervisor sets the phase to `Recording` and holds before
 // notifying `Ready`, the start's continuation publishes `Recording`, and the held `Ready`
 // is handled for a recording that is already `Recording`: R207.3 claims
@@ -999,7 +1001,7 @@ fn pd23_c8_forced(world: &Arc<World>) {
     assert_eq!(terminal(world, 1), Some(SUPERSEDED));
 }
 
-/// Seed 447's cold-start rendezvous (R207.3 / R203.5). The cold start's `Ready` is held
+/// Seed 447's cold-start rendezvous (R207.3 / R203.5; the pin before the #1160 and #1162 re-pin). The cold start's `Ready` is held
 /// until the start's continuation published `Recording`, and R207.3 claims `Superseded`
 /// for the live recording (`pd23_c8_forced`). The user cancels the `Recording` dictation
 /// (R205.4): the capture cancel is accepted, `Recovering{User}` is published and the
