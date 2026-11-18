@@ -20,6 +20,9 @@ use super::golden_harness::*;
 use super::golden_tests::{recording, started, stopped};
 use super::*;
 
+/// A named scenario body, with the terminal (outcome/code) its golden records.
+type TerminalScenario = (&'static str, fn(&Arc<World>), &'static str);
+
 /// A named scenario body.
 type Scenario = (&'static str, fn(&Arc<World>));
 
@@ -480,7 +483,7 @@ fn s05(world: &Arc<World>) {
 #[test]
 fn bug535_exactly_one_terminal() {
     // (title, body, the terminal the golden trace records for id 1: outcome/code)
-    let scenarios: [(&str, fn(&Arc<World>), &str); 7] = [
+    let scenarios: [TerminalScenario; 7] = [
         (
             "3a interruption, auto-stop transcribes",
             s03a,
