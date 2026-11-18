@@ -28,7 +28,15 @@ every production call that can carry it, per enclosing function
   each name once; any violation fails. `lib.rs` must declare exactly one module named
   `events` at the crate root, out of line (`mod events;` or `pub mod events;`) with no
   `cfg`, `cfg_attr` or `path` attribute, so no inline or cfg-selected replacement can
-  give `crate::events::NAME` a value the scan never read. Any `use .. as concat`, any import whose final
+  give `crate::events::NAME` a value the scan never read. `crate::events` is
+  resolved against `src/lib.rs` only, so every other production crate root is
+  validated too: the ratchet knows `src/lib.rs` and `src/main.rs`; any file under
+  `src/bin/`, a `[[bin]]` target or a non-default `[lib]` path in `Cargo.toml` is an
+  unknown root and fails; `main.rs` may contain no `mod` item, no `macro_rules!`, no
+  emitter identifier and no `crate::events` path (it only calls `ui_lib::..`). Build
+  scripts, examples and integration tests are not production roots and are not
+  scanned. Attribute names are matched after normalizing raw identifiers (`r#path`).
+  Any `use .. as concat`, any import whose final
   name is `concat`, and any `macro_rules! concat` anywhere in the crate fails too
   (D-S2b-12 b). A new emitted constant goes in the events module and is emitted as
   `crate::events::NAME`.
