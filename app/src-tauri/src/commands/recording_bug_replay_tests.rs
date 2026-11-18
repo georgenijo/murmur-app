@@ -20,6 +20,9 @@ use super::golden_harness::*;
 use super::golden_tests::{recording, started, stopped};
 use super::*;
 
+/// A named scenario body.
+type Scenario = (&'static str, fn(&Arc<World>));
+
 const IDLE_EMIT: &str = "emit recording-status-changed \"idle\"";
 
 fn status(world: &Arc<World>) -> DictationStatus {
@@ -336,7 +339,7 @@ fn s12d(world: &Arc<World>) {
 /// criterion 2). Mutation: R211.4 and R211.6 and R102.3 made no-ops.
 #[test]
 fn bug388_init_failure_reaches_idle() {
-    let bodies: [(&str, fn(&Arc<World>)); 4] = [
+    let bodies: [Scenario; 4] = [
         ("12a failure ack, then InitializationFailed and Idle", s12a),
         (
             "12b InitializationFailed and Idle, then the failure ack",
@@ -474,7 +477,7 @@ fn s05(world: &Arc<World>) {
 /// R102.2 or make R211.3's `TERM` conditional.
 #[test]
 fn bug535_exactly_one_terminal() {
-    let scenarios: [(&str, fn(&Arc<World>)); 7] = [
+    let scenarios: [Scenario; 7] = [
         ("3a interruption, auto-stop transcribes", s03a),
         ("3b interruption, the user stop wins", s03b),
         ("4a short interruption", s04a),
