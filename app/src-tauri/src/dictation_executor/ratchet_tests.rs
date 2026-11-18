@@ -1675,63 +1675,115 @@ const KNOWN_CRATE_ROOTS: [&str; 2] = ["lib.rs", "main.rs"];
 /// `ui_lib::..`) and re-pinned. The token checks below stay as diagnostics.
 const MAIN_RS_HASH: u64 = 0xca0b8d635cac3929;
 
-/// A crate root other than `lib.rs` may only call into `ui_lib::..`: no `mod` item, no
-/// `macro_rules!`, no emitter identifier and no `crate::events` path, anywhere in its
-/// tokens. A root that is not in `KNOWN_CRATE_ROOTS` (any file under `src/bin/`) fails.
-/// Otherwise a startup module could declare its own `events` and emit through
-/// `crate::events::NAME` while the scan read the library's harmless value.
-fn check_crate_roots(sources: &[(String, String)], main_rs_hash: u64) -> Vec<String> {
+/// Token diagnostics for a crate root other than `lib.rs`: no `mod` item, no
+/// `macro_rules!`, no `include`, no emitter identifier and no `crate::events` path,
+/// anywhere in its tokens. Otherwise a startup module could declare its own `events`
+/// and emit through `crate::events::NAME` while the scan read the library's value.
+fn scan_root_tokens(tokens: proc_macro2::TokenStream, file: &str, problems: &mut Vec<String>) {
     use proc_macro2::TokenTree;
-    fn scan(tokens: proc_macro2::TokenStream, file: &str, problems: &mut Vec<String>) {
-        let tokens: Vec<TokenTree> = tokens.into_iter().collect();
-        for (at, token) in tokens.iter().enumerate() {
-            match token {
-                TokenTree::Ident(ident) => {
-                    let name = plain(ident);
-                    let crate_events = name == "crate"
-                        && matches!(tokens.get(at + 1), Some(TokenTree::Punct(p)) if p.as_char() == ':')
-                        && matches!(tokens.get(at + 2), Some(TokenTree::Punct(p)) if p.as_char() == ':')
-                        && matches!(tokens.get(at + 3), Some(TokenTree::Ident(i)) if plain(i) == EVENTS_MODULE);
-                    if name == "mod"
-                        || name == "macro_rules"
-                        || name == "include"
-                        || is_emit_api_name(&name)
-                        || crate_events
-                    {
-                        problems.push(format!(
-                            "{file}: a crate root other than lib.rs may only call into `ui_lib::..`, found `{}`",
-                            if crate_events { "crate::events" } else { &name }
-                        ));
-                    }
+    let tokens: Vec<TokenTree> = tokens.into_iter().collect();
+    for (at, token) in tokens.iter().enumerate() {
+        match token {
+            TokenTree::Ident(ident) => {
+                let name = plain(ident);
+                let crate_events = name == "crate"
+                    && matches!(tokens.get(at + 1), Some(TokenTree::Punct(p)) if p.as_char() == ':')
+                    && matches!(tokens.get(at + 2), Some(TokenTree::Punct(p)) if p.as_char() == ':')
+                    && matches!(tokens.get(at + 3), Some(TokenTree::Ident(i)) if plain(i) == EVENTS_MODULE);
+                if name == "mod"
+                    || name == "macro_rules"
+                    || name == "include"
+                    || is_emit_api_name(&name)
+                    || crate_events
+                {
+                    problems.push(format!(
+                        "{file}: a crate root other than lib.rs may only call into `ui_lib::..`, found `{}`",
+                        if crate_events { "crate::events" } else { &name }
+                    ));
                 }
-                TokenTree::Group(group) => scan(group.stream(), file, problems),
-                _ => {}
             }
+            TokenTree::Group(group) => scan_root_tokens(group.stream(), file, problems),
+            _ => {}
         }
     }
+}
+
+/// The token diagnostics and the whole-file pin (D-S2b-18 a) for one binary root.
+fn check_root_file(file: &str, source: &str, pin: Option<u64>) -> Vec<String> {
+    let parsed = match syn::parse_file(source) {
+        Ok(parsed) => parsed,
+        Err(error) => return vec![format!("{file}: does not parse: {error}")],
+    };
+    let mut problems = Vec::new();
+    scan_root_tokens(
+        quote::ToTokens::to_token_stream(&parsed),
+        file,
+        &mut problems,
+    );
+    if let Some(pinned) = pin {
+        let hash = token_hash(&parsed);
+        if hash != pinned {
+            problems.push(format!(
+                "{file}: was edited: its token hash is {hash:#018x}, pinned {pinned:#018x}. \
+                 Re-review it (it may only call into `ui_lib::..`) and re-pin MAIN_RS_HASH."
+            ));
+        }
+    }
+    problems
+}
+
+/// A crate root other than `lib.rs` may only call into `ui_lib::..`. A root that is not
+/// in `KNOWN_CRATE_ROOTS` (any file under `src/bin/`, in any letter case) fails.
+fn check_crate_roots(sources: &[(String, String)], main_rs_hash: u64) -> Vec<String> {
     let mut problems = Vec::new();
     for (file, source) in sources {
-        if file.starts_with("bin/") {
+        let in_bin = file.to_lowercase().starts_with("bin/");
+        if in_bin {
             problems.push(format!(
                 "{file}: an unknown production crate root (known: {KNOWN_CRATE_ROOTS:?})"
             ));
         }
-        if file == "main.rs" || file.starts_with("bin/") {
-            let parsed =
-                syn::parse_file(source).unwrap_or_else(|error| panic!("parse {file}: {error}"));
-            scan(
-                quote::ToTokens::to_token_stream(&parsed),
-                file,
-                &mut problems,
-            );
-            let hash = token_hash(&parsed);
-            if file == "main.rs" && hash != main_rs_hash {
-                problems.push(format!(
-                    "{file}: was edited: its token hash is {hash:#018x}, pinned {main_rs_hash:#018x}. \
-                     Re-review it (it may only call into `ui_lib::..`) and re-pin MAIN_RS_HASH."
-                ));
+        if file == "main.rs" || in_bin {
+            let pin = (file == "main.rs").then_some(main_rs_hash);
+            problems.extend(check_root_file(file, source, pin));
+        }
+    }
+    problems
+}
+
+/// Round 10: the layout of `src/`, read from the filesystem before any test-source
+/// filtering (a `#![cfg(test)]` first line cannot hide a file from it). Cargo resolves
+/// `src/Bin/tool.rs` as a binary and `src/Main.rs` as `src/main.rs` on a
+/// case-insensitive filesystem, so a path compare in the walk is not enough:
+/// 1. `src/main.rs` is read and hashed directly, and a missing file fails;
+/// 2. any entry directly under `src/` that matches `bin` or `main.rs` case-insensitively
+///    but is not spelled exactly that way fails;
+/// 3. `src/bin` must not exist at all (checked through the filesystem).
+fn check_src_layout(src: &Path, main_rs_hash: u64) -> Vec<String> {
+    let mut problems = Vec::new();
+    match std::fs::read_dir(src) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let lower = name.to_lowercase();
+                if (lower == "bin" && name != "bin") || (lower == "main.rs" && name != "main.rs") {
+                    problems.push(format!(
+                        "src/{name}: spelled like a production crate root but not exactly `bin` / `main.rs` (Cargo resolves it case-insensitively on macOS)"
+                    ));
+                }
             }
         }
+        Err(error) => problems.push(format!("src/ cannot be read: {error}")),
+    }
+    if src.join("bin").exists() {
+        problems.push(
+            "src/bin exists: an unknown production crate root (no `src/bin` is allowed)"
+                .to_string(),
+        );
+    }
+    match std::fs::read_to_string(src.join("main.rs")) {
+        Ok(source) => problems.extend(check_root_file("main.rs", &source, Some(main_rs_hash))),
+        Err(error) => problems.push(format!("src/main.rs cannot be read: {error}")),
     }
     problems
 }
@@ -1761,17 +1813,46 @@ fn manifest_root_problems(manifest: &str) -> Vec<String> {
         }
         _ => problems.push("Cargo.toml: the [lib] table is missing".to_string()),
     }
+    // Cargo must build the `ui` binary with the production feature set: either the
+    // default `src/main.rs` (autobins on, package named `ui`) or an explicit
+    // `[[bin]] name = "ui"` at `src/main.rs`; never behind `required-features`.
+    let package = table.get("package").and_then(toml::Value::as_table);
+    let autobins = package
+        .and_then(|package| package.get("autobins"))
+        .and_then(toml::Value::as_bool)
+        != Some(false);
     match table.get("bin") {
-        None => {}
+        None => {
+            let package_name = package
+                .and_then(|package| package.get("name"))
+                .and_then(toml::Value::as_str);
+            if !autobins {
+                problems.push(
+                    "Cargo.toml: `autobins = false` without an explicit `ui` [[bin]]: Cargo would build no app binary"
+                        .to_string(),
+                );
+            } else if package_name != Some("ui") {
+                problems.push(
+                    "Cargo.toml: no [[bin]] and the package is not named `ui`: the default `src/main.rs` binary would not be `ui`"
+                        .to_string(),
+                );
+            }
+        }
         Some(toml::Value::Array(bins)) if bins.len() == 1 => {
             let bin = bins[0].as_table();
             let get = |key: &str| {
                 bin.and_then(|bin| bin.get(key))
                     .and_then(toml::Value::as_str)
             };
-            if get("path") != Some("src/main.rs") || get("name").is_some_and(|name| name != "ui") {
+            if get("path") != Some("src/main.rs") || get("name") != Some("ui") {
                 problems
                     .push("Cargo.toml: the only [[bin]] must be `ui` at `src/main.rs`".to_string());
+            }
+            if bin.is_some_and(|bin| bin.contains_key("required-features")) {
+                problems.push(
+                    "Cargo.toml: the `ui` [[bin]] has `required-features`: the production feature set may not build it"
+                        .to_string(),
+                );
             }
         }
         Some(_) => problems.push("Cargo.toml: more than one [[bin]] target".to_string()),
@@ -2493,6 +2574,12 @@ fn status_events_are_emitted_only_by_the_allowlisted_functions() {
     if let Err(message) = check_tree(&found) {
         panic!("{message}");
     }
+    // Round 10: the layout of `src/` and `src/main.rs` come from the filesystem.
+    let layout = check_src_layout(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        MAIN_RS_HASH,
+    );
+    assert!(layout.is_empty(), "{layout:#?}");
 }
 
 /// A source file of the tree with `old` replaced by `new` (exactly one occurrence).
@@ -2992,15 +3079,16 @@ fn the_manifest_declares_no_unknown_production_target() {
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
             .expect("Cargo.toml");
     assert_eq!(manifest_root_problems(&manifest), Vec::<String>::new());
+    let pkg = "[package]\nname = \"ui\"\n";
     let lib = "[lib]\nname = \"ui_lib\"\n";
     let bad = |manifest: &str| !manifest_root_problems(manifest).is_empty();
     // Valid Cargo syntax the old line scan missed (round 9): spaces in the header, a
     // trailing comment after a header.
     assert!(bad(&format!(
-        "{lib}[[ bin ]]\nname = \"desktop\"\npath = \"src/desktop.rs\"\n"
+        "{pkg}{lib}[[ bin ]]\nname = \"desktop\"\npath = \"src/desktop.rs\"\n"
     )));
     assert!(bad(&format!(
-        "{lib}[[bin]]\nname = \"x\"\npath = \"src/x.rs\"\n"
+        "{pkg}{lib}[[bin]]\nname = \"x\"\npath = \"src/x.rs\"\n"
     )));
     assert!(bad(
         "[lib]  # comment\nname = \"ui_lib\"\npath = \"src/other.rs\"\n"
@@ -3010,17 +3098,116 @@ fn the_manifest_declares_no_unknown_production_target() {
     assert!(bad(
         "lib = { name = \"ui_lib\", path = \"src/other.rs\" }\n"
     ));
-    assert!(bad(&format!("bin = [{{ name = \"a\", path = \"src/a.rs\" }}, {{ name = \"b\", path = \"src/b.rs\" }}]\n{lib}")));
-    assert!(bad("[lib]\nname = \"other\"\n"));
-    assert!(bad("[package]\nname = \"ui\"\n"));
+    assert!(bad(&format!("bin = [{{ name = \"a\", path = \"src/a.rs\" }}, {{ name = \"b\", path = \"src/b.rs\" }}]\n{pkg}{lib}")));
+    assert!(bad(&format!("{pkg}[lib]\nname = \"other\"\n")));
+    assert!(bad(pkg));
     assert!(bad("[lib\n"));
-    // The accepted forms: the default path, and the one `ui` bin at `src/main.rs`.
-    assert!(!bad(
-        "[lib]  # the library\nname = \"ui_lib\"\npath = \"src/lib.rs\"\n"
-    ));
-    assert!(!bad(&format!(
-        "{lib}[[ bin ]]\nname = \"ui\"\npath = \"src/main.rs\"\n"
+    // Round 10: Cargo must resolve the `ui` binary with the production feature set.
+    // `autobins = false` and no explicit `ui` bin builds only the library.
+    assert!(bad(&format!(
+        "[package]\nname = \"ui\"\nautobins = false\n{lib}"
     )));
+    assert!(bad(&format!(
+        "[package]\nname = \"ui\"\nautobins = false\ndefault-run = \"ui\"\n{lib}"
+    )));
+    // The default bin is named after the package.
+    assert!(bad(&format!("[package]\nname = \"other\"\n{lib}")));
+    // An explicit `ui` bin gated behind a feature: a default build skips it.
+    assert!(bad(&format!(
+        "{pkg}{lib}[[bin]]\nname = \"ui\"\npath = \"src/main.rs\"\nrequired-features = [\"app\"]\n"
+    )));
+    assert!(bad(&format!(
+        "{pkg}{lib}[[bin]]\nname = \"ui\"\npath = \"src/main.rs\"\nrequired-features = []\n"
+    )));
+    // An explicit bin without a name, or named otherwise, is not the `ui` binary.
+    assert!(bad(&format!("{pkg}{lib}[[bin]]\npath = \"src/main.rs\"\n")));
+    // The accepted forms: the default path, the default `ui` bin, and the one explicit
+    // `ui` bin at `src/main.rs` (also with autobins off).
+    assert!(!bad(&format!(
+        "{pkg}[lib]  # the library\nname = \"ui_lib\"\npath = \"src/lib.rs\"\n"
+    )));
+    assert!(!bad(&format!(
+        "{pkg}{lib}[[ bin ]]\nname = \"ui\"\npath = \"src/main.rs\"\n"
+    )));
+    assert!(!bad(&format!(
+        "[package]\nname = \"ui\"\nautobins = false\n{lib}[[bin]]\nname = \"ui\"\npath = \"src/main.rs\"\n"
+    )));
+}
+
+/// Round 10 (Sol): on a case-insensitive filesystem Cargo discovers `src/Bin/tool.rs`
+/// as a binary and resolves `src/Main.rs` as `src/main.rs`. The layout check reads
+/// `src/` from the filesystem, before any test-source filtering, and reads and hashes
+/// `src/main.rs` directly.
+#[test]
+fn the_src_layout_check_rejects_case_variants_a_second_bin_and_a_missing_main() {
+    let real_main =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/main.rs"))
+            .expect("main.rs");
+    let bin_main = "mod events { pub const MAIN_THREAD_WATCH_STATUS_EVENT: &str = \"recording-status-changed\"; }\n\
+        fn startup(app: &tauri::AppHandle) { let _ = app.emit(crate::events::MAIN_THREAD_WATCH_STATUS_EVENT, 1); }\nfn main() {}\n";
+    // Each case builds a fresh `src/` with the given files.
+    let layout = |files: &[(&str, &str)]| {
+        let dir = tempfile::tempdir().expect("temp dir");
+        for (name, text) in files {
+            let path = dir.path().join(name);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+            std::fs::write(path, text).expect("write");
+        }
+        check_src_layout(dir.path(), MAIN_RS_HASH)
+    };
+    assert_eq!(
+        layout(&[("main.rs", &real_main), ("lib.rs", "")]),
+        Vec::<String>::new()
+    );
+    let reject = |files: &[(&str, &str)], needle: &str| {
+        let problems = layout(files);
+        assert!(
+            problems.iter().any(|problem| problem.contains(needle)),
+            "{needle}: {problems:#?}"
+        );
+    };
+    // Sol's probes: `src/Bin/tool.rs` (also self-gated by `#![cfg(test)]`, which the
+    // source walk would skip) and `src/Main.rs`.
+    reject(
+        &[("main.rs", &real_main), ("Bin/tool.rs", bin_main)],
+        "src/Bin",
+    );
+    let gated = format!("#![cfg(test)]\n{bin_main}");
+    reject(
+        &[("main.rs", &real_main), ("Bin/tool.rs", &gated)],
+        "src/Bin",
+    );
+    reject(&[("Main.rs", bin_main)], "src/Main.rs");
+    reject(&[("Main.rs", &real_main)], "src/Main.rs");
+    reject(&[("main.rs", &real_main), ("BIN", "")], "src/BIN");
+    // `src/bin` exists at all, even under an exact spelling or self-gated.
+    reject(
+        &[("main.rs", &real_main), ("bin/tool.rs", bin_main)],
+        "src/bin exists",
+    );
+    reject(
+        &[("main.rs", &real_main), ("bin/tool.rs", &gated)],
+        "src/bin exists",
+    );
+    // A missing `main.rs` fails; so does an edited or self-gated one.
+    reject(&[("lib.rs", "")], "src/main.rs cannot be read");
+    reject(
+        &[("main.rs", &format!("#![cfg(test)]\n{real_main}"))],
+        "main.rs: was edited",
+    );
+    reject(
+        &[(
+            "main.rs",
+            &real_main.replace("ui_lib::run()", "ui_lib::quiet();\n    ui_lib::run()"),
+        )],
+        "main.rs: was edited",
+    );
+    // The source-list path rejects a `Bin/` file in any case.
+    let mut sources = raw_production_sources();
+    sources.push(("Bin/tool.rs".to_string(), bin_main.to_string()));
+    assert!(check_crate_roots(&sources, MAIN_RS_HASH)
+        .iter()
+        .any(|problem| problem.contains("Bin/tool.rs")));
 }
 
 /// Round-3 probe 5: `OwnedJsonEmit::emit_json` remapped an event through an unpinned
