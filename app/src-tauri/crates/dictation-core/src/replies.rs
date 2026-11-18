@@ -86,24 +86,26 @@ pub enum ErrText {
     MissingContext(RecordingId),
     /// R101.2: `Smart Auto cannot be combined with a fixed microphone.`
     SmartAutoWithFixedDevice,
-    /// R101.14: the smart-auto resolution error, verbatim.
-    SmartAuto(String),
+    /// R101.14: the smart-auto resolution error, verbatim. Like [`ErrText::Shell`],
+    /// the text is the shell's (the core only sees a typed `SmartAutoFailure`), so
+    /// the shell replies with the error string it kept.
+    SmartAuto,
     /// R301.1-.4.
     ProcessAudio(ProcessAudioRefusal),
 }
 
 impl ErrText {
-    /// The literal text, where the core knows it (`None` for [`ErrText::Shell`]).
+    /// The literal text, where the core knows it (`None` for [`ErrText::Shell`] and
+    /// [`ErrText::SmartAuto`], whose text the shell owns).
     pub fn message(&self) -> Option<String> {
         match self {
-            Self::Shell => None,
+            Self::Shell | Self::SmartAuto => None,
             Self::MissingContext(id) => {
                 Some(format!("Missing dictation context for recording {}", id.0))
             }
             Self::SmartAutoWithFixedDevice => {
                 Some("Smart Auto cannot be combined with a fixed microphone.".to_string())
             }
-            Self::SmartAuto(text) => Some(text.clone()),
             Self::ProcessAudio(refusal) => Some(refusal.message().to_string()),
         }
     }

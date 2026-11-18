@@ -6703,8 +6703,8 @@ async fn start_native_recording_inner(
     use murmur_dictation_core::effects::{Effect as CoreEffect, Placement};
     use murmur_dictation_core::ids::{Handle, RecordingId};
     use murmur_dictation_core::inputs::{
-        CaptureResult, CaptureResultInput, DeviceSel, GestureObs, Origin, SmartAutoSel,
-        SpeculativeObs, StartInput,
+        CaptureResult, CaptureResultInput, DeviceSel, GestureObs, Origin, SmartAutoFailure,
+        SmartAutoSel, SpeculativeObs, StartInput,
     };
     use murmur_dictation_core::replies::Reply as CoreReply;
     use murmur_dictation_core::start as core_start;
@@ -6788,6 +6788,7 @@ async fn start_native_recording_inner(
             &slots,
             pre,
             state.app_state.recording_id.load(Ordering::SeqCst),
+            None,
         );
     }
     // Check and update status in one lock; assign recording ID in the same
@@ -6826,11 +6827,13 @@ async fn start_native_recording_inner(
                         .as_ref()
                         .expect("R101.13 asks only for a Smart Auto request");
                     let result = start_ports::observe_in_core(|| host.resolve_smart_auto(request));
+                    // The core sees a typed code; the error text stays here, and the
+                    // refusal's reply is rendered with it (`release_and_reply`).
                     input.smart_auto_result = Some(
                         result
                             .as_ref()
                             .map(|_| SmartAutoSel { handle: Handle(0) })
-                            .map_err(Clone::clone),
+                            .map_err(|_| SmartAutoFailure::ResolveFailed),
                     );
                     resolved = Some(result);
                 }
@@ -6857,7 +6860,19 @@ async fn start_native_recording_inner(
                 }
                 drop(dictation);
                 drop(_transition);
-                return start_ports::release_and_reply(host, state, &slots, decision, current);
+                // R101.14 replies with the Smart Auto resolve's own text.
+                let smart_auto_error = match &resolved {
+                    Some(Err(text)) => Some(text.clone()),
+                    _ => None,
+                };
+                return start_ports::release_and_reply(
+                    host,
+                    state,
+                    &slots,
+                    decision,
+                    current,
+                    smart_auto_error,
+                );
             }
             Verdict::Applied => {}
             Verdict::Continue | Verdict::Stale(_) | Verdict::NeedObservation(_) => {

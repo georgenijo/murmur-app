@@ -469,7 +469,11 @@ mod tests {
         impl<S: tracing::Subscriber> Layer<S> for Capture {
             fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
                 let stream = event.metadata().target();
-                let (summary, data) = super::super::sanitized_event_payload(stream, event, self.1);
+                let Some((summary, data)) =
+                    super::super::sanitized_event_payload(stream, event, self.1)
+                else {
+                    return;
+                };
                 self.0
                     .lock()
                     .unwrap()

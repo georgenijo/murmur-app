@@ -43,8 +43,8 @@ use crate::decision::{
 use crate::effects::{AxMode, Cond, Effect, EventKind, Placed, Placement as At};
 use crate::ids::{Now, RecordingId};
 use crate::inputs::{
-    CaptureErr, CaptureResult, CaptureResultInput, DeviceSel, ReadyPublishInput, StartContextInput,
-    StartInput,
+    CaptureErr, CaptureResult, CaptureResultInput, DeviceSel, ReadyPublishInput, SmartAutoFailure,
+    StartContextInput, StartInput,
 };
 use crate::lifecycle::{
     clear_context, decision, emit_status, nothing, placed, set_status, terminal,
@@ -147,14 +147,14 @@ fn refusal_row(code: &RefusalCode, status: Status) -> Decision {
             )
         }
         // R101.14: the resolve's own text, no id burned.
-        RefusalCode::SmartAutoFailed(text) => with_reply(
+        RefusalCode::SmartAutoFailed(_) => with_reply(
             decision(
                 Verdict::Refused(Refusal::Admission(code.clone())),
                 None,
                 vec![release_claims()],
                 "R101.14",
             ),
-            Reply::Err(ErrText::SmartAuto(text.clone())),
+            Reply::Err(ErrText::SmartAuto),
         ),
         RefusalCode::AppDisabled | RefusalCode::SmartAutoWithFixedDevice => {
             unreachable!("{code:?} is a pre-D refusal (decide_start_request_pre)")
@@ -223,8 +223,10 @@ pub fn decide_start_request(core: &DictationCore, input: StartInput, now: Now) -
     occupancy.smart_auto = match (input.device, &input.smart_auto_result) {
         (DeviceSel::SmartAuto, None) => SmartAutoObservation::Requested(None),
         (DeviceSel::SmartAuto, Some(Ok(_))) => SmartAutoObservation::Requested(Some(Ok(()))),
-        (DeviceSel::SmartAuto, Some(Err(text))) => {
-            SmartAutoObservation::Requested(Some(Err(text.clone())))
+        // The resolve's text is the shell's (`ErrText::SmartAuto`): admission only
+        // needs to know it failed.
+        (DeviceSel::SmartAuto, Some(Err(SmartAutoFailure::ResolveFailed))) => {
+            SmartAutoObservation::Requested(Some(Err(String::new())))
         }
         (DeviceSel::SystemDefault | DeviceSel::Explicit, _) => SmartAutoObservation::NotRequested,
     };
