@@ -1,3 +1,4 @@
+#![cfg(test)]
 use crate::dictation_diagnostics::{
     DictationCaptureArmStatusV1, DictationCaptureCompletion, DictationDiagnostics,
 };

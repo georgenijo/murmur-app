@@ -29,6 +29,7 @@
 //! caller by its qualified identity (module path, `impl` type or `<Type as Trait>`,
 //! fn names), so same-named functions in sibling modules, impls or trait impls
 //! differ; the textual checks blank comments and literals first.
+#![cfg(test)]
 
 use regex::Regex;
 use std::path::{Path, PathBuf};
@@ -294,248 +295,16 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Files that are test-only (compiled only under `#[cfg(test)]`, or `include!`d
-/// into a test module), skipped whole by the scan. A file that is not listed is
-/// scanned as production: a test file missing here is a loud false positive, never a
-/// silent miss (D-S2-17). Paths are relative to `src/`; every entry follows the
-/// naming convention ([`follows_test_naming`]) and exists (guard tests).
-const TEST_ONLY_FILES: &[&str] = &[
-    "capture_preview_handoff_tests.rs",
-    "capture_speculative_tests.rs",
-    "capture_standby_tests.rs",
-    "capture_stop_diagnostics_tests.rs",
-    "commands/recording_bug_replay_tests.rs",
-    "commands/recording_cancel_tests.rs",
-    "commands/recording_contract_tests.rs",
-    "commands/recording_deferral_tests.rs",
-    "commands/recording_golden_tests.rs",
-    "commands/recording_host_tests.rs",
-    "commands/recording_lifecycle_barrier_tests.rs",
-    "commands/recording_lifecycle_tests.rs",
-    "commands/recording_pd_witness_tests.rs",
-    "commands/recording_preview_tests.rs",
-    "commands/recording_process_audio_tests.rs",
-    "commands/recording_start_tests.rs",
-    "commands/recording_stop_tests.rs",
-    "commands/recording_stream_reuse_tests.rs",
-    "dictation_context_equivalence_tests.rs",
-    "dictation_executor/ratchet_tests.rs",
-    "frontmost/soak_tests.rs",
-    "meeting_store/search_tests.rs",
-    "release_tail_tests.rs",
-    "stream_reuse_tests.rs",
-    "vad_stream_tests.rs",
-];
-
-/// Test-only files that do not follow the naming convention. They are not renamed in
-/// the ratchet's PR; each is skipped like a listed file and named in the PR body.
-/// Every entry must NOT follow the convention (a guard test), so this list cannot
-/// absorb a conforming file.
-const TEST_ONLY_NAMING_EXCEPTIONS: &[&str] = &[
-    // `#[cfg(test)] mod barrier_hook;` (lib.rs): the test barrier registry.
-    "barrier_hook.rs",
-    // `#[cfg(test)] #[path] mod golden_harness;` (recording.rs): the golden harness.
-    "commands/recording_golden_harness.rs",
-    // `#[cfg(test)] mod dictation_diagnostics_contract;` (lib.rs).
-    "dictation_diagnostics_contract.rs",
-    // The stream-reuse probe module, compiled only for tests.
-    "stream_reuse_probe.rs",
-];
-
-/// The test naming convention: `*_tests.rs`, `tests.rs`, or a path under a `tests/`
-/// or `test_support/` directory.
-fn follows_test_naming(relative: &str) -> bool {
-    let mut parts: Vec<&str> = relative.split('/').collect();
-    let file = parts.pop().unwrap_or("");
-    file == "tests.rs"
-        || file.ends_with("_tests.rs")
-        || parts
-            .iter()
-            .any(|dir| *dir == "tests" || *dir == "test_support")
-}
-
-/// Whether the scan skips the whole file at `relative` (a path relative to `src/`).
-fn is_test_only_file(relative: &str) -> bool {
-    TEST_ONLY_FILES.contains(&relative) || TEST_ONLY_NAMING_EXCEPTIONS.contains(&relative)
-}
-
-/// The attribute lines directly above line `at` (comment lines between them are
-/// ignored): the contiguous run of `#[..]` lines.
-fn attribute_lines_above<'l>(lines: &[&'l str], at: usize) -> Vec<&'l str> {
-    let mut attrs = Vec::new();
-    let mut index = at;
-    while index > 0 {
-        index -= 1;
-        let line = lines[index].trim();
-        if line.starts_with("#[") {
-            attrs.push(line);
-        } else if !(line.starts_with("//") || line.is_empty()) {
-            break;
-        }
-    }
-    attrs
-}
-
-/// Whether any of the attribute `lines` is a `cfg` whose predicate requires `test`.
-fn lines_require_test(attrs: &[&str]) -> bool {
-    attrs.iter().any(|line| {
-        syn::parse::Parser::parse_str(syn::Attribute::parse_outer, line)
-            .is_ok_and(|parsed| parsed.iter().any(is_cfg_test))
-    })
-}
-
-fn indentation(line: &str) -> usize {
-    line.len() - line.trim_start().len()
-}
-
-/// A declaration grep (not module resolution): every `mod <name>;` or
-/// `include!("..")` line in `sources` that declares the file at `relative`, and
-/// whether `#[cfg(test)]` (a predicate that requires `test`) gates it, through the
-/// attribute lines directly above it or above an enclosing `mod x {` block. A
-/// `mod` line declares a file by its name (the file stem, or the directory for
-/// `mod.rs`) or by a `#[path = ".."]` attribute naming it; an `include!` by its
-/// path. Returns `(ungated declarations, all declarations)` as `file:line`.
-fn declarations_of(sources: &[(String, String)], relative: &str) -> (Vec<String>, Vec<String>) {
-    let file_name = relative.rsplit('/').next().unwrap_or(relative);
-    let stem = file_name.trim_end_matches(".rs");
-    let module_name = if stem == "mod" {
-        relative.rsplit('/').nth(1).unwrap_or(stem)
-    } else {
-        stem
-    };
-    let mod_line = Regex::new(r"^(?:pub(?:\([a-z:]+\))?\s+)?mod\s+(\w+)\s*;").expect("regex");
-    let include_line = Regex::new(r#"include!\(\s*"([^"]+)"\s*\)"#).expect("regex");
-    let path_attr = Regex::new(r#"^#\[path\s*=\s*"([^"]+)"\s*\]"#).expect("regex");
-    let names_file = |path: &str| path.rsplit('/').next() == Some(file_name);
-    let (mut ungated, mut all) = (Vec::new(), Vec::new());
-    for (source_file, source) in sources {
-        let lines: Vec<&str> = source.lines().collect();
-        for (at, line) in lines.iter().enumerate() {
-            let trimmed = line.trim();
-            let attrs = attribute_lines_above(&lines, at);
-            let declares = if let Some(found) = mod_line.captures(trimmed) {
-                let explicit = attrs
-                    .iter()
-                    .find_map(|attr| path_attr.captures(attr).map(|c| c[1].to_string()));
-                match explicit {
-                    Some(path) => names_file(&path),
-                    None => &found[1] == module_name,
-                }
-            } else if let Some(found) = include_line.captures(trimmed) {
-                names_file(&found[1])
-            } else {
-                false
-            };
-            if !declares {
-                continue;
-            }
-            let here = format!("{source_file}:{}", at + 1);
-            all.push(here.clone());
-            // Gated by its own attributes, or by an enclosing `mod x {` block.
-            let mut gated = lines_require_test(&attrs);
-            let mut outer = indentation(line);
-            for above in (0..at).rev() {
-                if gated || outer == 0 {
-                    break;
-                }
-                let candidate = lines[above];
-                let header = candidate.trim_start();
-                if !candidate.trim().is_empty()
-                    && indentation(candidate) < outer
-                    && (header.starts_with("mod ") || header.starts_with("pub mod "))
-                    && header.trim_end().ends_with('{')
-                {
-                    outer = indentation(candidate);
-                    gated = lines_require_test(&attribute_lines_above(&lines, above));
-                }
-            }
-            if !gated {
-                ungated.push(here);
-            }
-        }
-    }
-    (ungated, all)
-}
-
-/// D-S2-18 (a): the last fail-open path. A file in `TEST_ONLY_FILES` or
-/// `TEST_ONLY_NAMING_EXCEPTIONS` is skipped whole, so something must declare it, and
-/// every declaration (`mod <name>;`, `#[path]`, `include!`) must be gated by
-/// `#[cfg(test)]`; otherwise a production module could be listed and silently dropped.
-#[test]
-fn every_test_only_file_is_declared_under_cfg_test() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    // Every file is searched, the listed ones too (a declaration can live in a test
-    // module that a gated parent declares), except this file, whose fixtures are
-    // text about declarations.
-    let sources = scan_dir(&src, &|relative| {
-        relative == "dictation_executor/ratchet_tests.rs"
-    });
-    for file in TEST_ONLY_FILES.iter().chain(TEST_ONLY_NAMING_EXCEPTIONS) {
-        let (ungated, all) = declarations_of(&sources, file);
-        assert!(
-            !all.is_empty(),
-            "{file} is listed as test-only but no `mod` or `include!` line declares it"
-        );
-        assert!(
-            ungated.is_empty(),
-            "{file} is listed as test-only but is declared without `#[cfg(test)]` at {ungated:?}"
-        );
-    }
-}
-
-/// The declaration grep on fixtures: gated, ungated, `#[path]`, `include!` in a gated
-/// block, a predicate that does not require `test`, and no declaration at all.
-#[test]
-fn the_declaration_grep_sees_a_missing_cfg_test() {
-    let one = |code: &str| vec![("lib.rs".to_string(), code.to_string())];
-    let gated = |code: &str, file: &str| {
-        let (ungated, all) = declarations_of(&one(code), file);
-        (all.len(), ungated.len())
-    };
-    assert_eq!(
-        gated("#[cfg(test)]\nmod helper_tests;\n", "helper_tests.rs"),
-        (1, 0)
-    );
-    assert_eq!(gated("mod helper_tests;\n", "helper_tests.rs"), (1, 1));
-    assert_eq!(
-        gated(
-            "#[cfg(any(test, unix))]\nmod helper_tests;\n",
-            "helper_tests.rs"
-        ),
-        (1, 1)
-    );
-    assert_eq!(
-        gated(
-            "#[cfg(test)]\n#[path = \"dir/harness.rs\"]\nmod golden;\n",
-            "dir/harness.rs"
-        ),
-        (1, 0)
-    );
-    assert_eq!(
-        gated("#[path = \"harness.rs\"]\nmod golden;\n", "harness.rs"),
-        (1, 1)
-    );
-    // A `mod.rs` is declared by its directory name.
-    assert_eq!(
-        gated("#[cfg(test)]\nmod nested;\n", "nested/mod.rs"),
-        (1, 0)
-    );
-    // `include!` inside a gated block, and inside an ungated one.
-    let block = |attr: &str| {
-        format!("{attr}\nmod tests {{\n    mod inner {{\n        include!(\"a_tests.rs\");\n    }}\n}}\n")
-    };
-    assert_eq!(gated(&block("#[cfg(test)]"), "a_tests.rs"), (1, 0));
-    assert_eq!(gated(&block(""), "a_tests.rs"), (1, 1));
-    // Two declarations: one ungated is enough to fail.
-    assert_eq!(
-        gated(
-            "#[cfg(test)]\nmod x_tests;\n#[path = \"x_tests.rs\"]\nmod again;\n",
-            "x_tests.rs"
-        ),
-        (2, 1)
-    );
-    // No declaration at all.
-    assert_eq!(gated("mod other;\n", "x_tests.rs"), (0, 0));
+/// D-S2b-10 (d): test gating lives in the file. A file is skipped as test-only only
+/// when it declares `#![cfg(test)]` itself (an inner attribute whose predicate
+/// requires `test`); nothing outside the file can mark it. A file that is not
+/// self-gated is production: a test file that forgot the attribute is a loud false
+/// positive, never a silent miss, and an alias such as `#[cfg_attr(not(test), path =
+/// "barrier_hook.rs")] mod production_barrier;` cannot hide a production inclusion of
+/// a skipped file (the file would compile to nothing there, and the `path` attribute
+/// itself fails the SP5 ratchet).
+fn is_self_gated_test_file(source: &str) -> bool {
+    syn::parse_file(source).is_ok_and(|file| file.attrs.iter().any(is_cfg_test))
 }
 
 /// `(path relative to dir, raw source)` of every `.rs` file under `dir` that
@@ -574,14 +343,20 @@ fn production_sources() -> Vec<(String, String)> {
         .collect()
 }
 
-/// Every `src/**/*.rs` file that is not test-only (see [`TEST_ONLY_FILES`]) as
+/// Every `src/**/*.rs` file that is not self-gated test code (see
+/// [`is_self_gated_test_file`]) as
 /// `(path relative to src, raw source)`, for the syntax-aware scanner (it skips
 /// `#[cfg(test)]` items itself).
 fn raw_production_sources() -> Vec<(String, String)> {
-    scan_dir(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-        &is_test_only_file,
-    )
+    scan_dir_self_gated(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+}
+
+/// Every `.rs` file under `dir` that does not gate itself with `#![cfg(test)]`.
+fn scan_dir_self_gated(dir: &Path) -> Vec<(String, String)> {
+    scan_dir(dir, &|_| false)
+        .into_iter()
+        .filter(|(_, source)| !is_self_gated_test_file(source))
+        .collect()
 }
 
 fn line_of(code: &str, offset: usize) -> usize {
@@ -747,8 +522,16 @@ struct SiteFinder<'m> {
     /// function's token hash (the event-name scanner, SP5 status events).
     record_calls: bool,
     calls: Vec<CallRecord>,
-    /// The token hash of each enclosing function, innermost last.
-    fn_hashes: Vec<u64>,
+    /// Each enclosing function's token hash and local names, innermost last.
+    frames: Vec<FnFrame>,
+    /// The module path of the file plus the inline `mod`s entered (`crate::a::b`).
+    mod_path: Vec<String>,
+    /// Every function defined (also trait declarations).
+    fn_defs: Vec<FnDef>,
+    /// An emitter (`emit`, ..) named outside a direct call: `(fn scope, name)`.
+    escapes: Vec<(String, String)>,
+    /// A `#[path]` / `cfg_attr(.., path = ..)` attribute on a production item.
+    path_attrs: Vec<(String, String)>,
 }
 
 impl SiteFinder<'_> {
@@ -791,75 +574,83 @@ impl SiteFinder<'_> {
         if !self.record_calls {
             return;
         }
+        let (fn_hash, locals) = match self.frames.last() {
+            Some(frame) => (frame.hash, std::rc::Rc::clone(&frame.locals)),
+            None => (0, std::rc::Rc::default()),
+        };
         self.calls.push(CallRecord {
             function: self.scope.join("::"),
             callee,
             args,
             path_call,
-            fn_hash: self.fn_hashes.last().copied().unwrap_or(0),
+            fn_hash,
+            module: self.mod_path.join("::"),
+            locals,
         });
     }
 
-    /// A macro invocation, with its arguments when they parse as expressions (the
-    /// calls inside them are visited too), else the calls written in its tokens.
+    /// A macro invocation (D-S2b-10 a): its body is parsed as arguments, else as
+    /// statements, and the calls inside get the same checks as any call. A body that
+    /// parses as neither and names an emitter fails (an opaque emit); one that holds
+    /// the status event as a literal is a status site.
     fn record_macro(&mut self, mac: &syn::Macro) {
         use syn::visit::Visit;
         let Some(last) = mac.path.segments.last() else {
             return;
         };
         let name = plain(&last.ident);
-        match parse_expr_list(mac.tokens.clone()) {
-            Some(args) => {
-                if !PURE_MACROS.contains(&name.as_str()) {
-                    self.record(name, Some(args.clone()), false);
-                }
-                for arg in &args {
-                    self.visit_expr(arg);
-                }
+        if let Some(args) = parse_expr_list(mac.tokens.clone()) {
+            if !PURE_MACROS.contains(&name.as_str()) {
+                self.record(name, Some(args.clone()), false);
             }
-            None => self.record_token_calls(mac.tokens.clone()),
-        }
-    }
-
-    /// `name(..)` written inside macro tokens: recorded with its arguments when they
-    /// parse, and (unparsed) when `name` is an emit API.
-    fn record_token_calls(&mut self, tokens: proc_macro2::TokenStream) {
-        use proc_macro2::{Delimiter, TokenTree};
-        let mut previous: Option<String> = None;
-        for token in tokens {
-            match token {
-                TokenTree::Ident(ident) => previous = Some(plain(&ident)),
-                TokenTree::Group(group) => {
-                    if group.delimiter() == Delimiter::Parenthesis {
-                        if let Some(name) = previous.take() {
-                            let args = parse_expr_list(group.stream());
-                            if args.is_some() || is_emit_api_name(&name) {
-                                self.record(name, args, false);
-                            }
-                        }
-                    }
-                    previous = None;
-                    self.record_token_calls(group.stream());
-                }
-                _ => previous = None,
+            for arg in &args {
+                self.visit_expr(arg);
+            }
+        } else if let Some(stmts) = parse_stmts(mac.tokens.clone()) {
+            for stmt in &stmts {
+                self.visit_stmt(stmt);
+            }
+        } else {
+            if let Some(emitter) = find_emitter_ident(mac.tokens.clone()) {
+                self.record(emitter, None, false);
+            }
+            if mentions_status_literal(mac.tokens.clone()) {
+                let literal: syn::Expr =
+                    syn::parse_str("\"recording-status-changed\"").expect("a literal");
+                self.record(name, Some(vec![literal]), false);
             }
         }
     }
 
-    /// Enter a function: its token hash is computed up front.
+    /// Enter a function: its token hash and local names are computed up front.
     fn within_fn(
         &mut self,
         segment: String,
-        hash: impl FnOnce() -> u64,
+        bodyless: bool,
+        frame: impl FnOnce() -> FnFrame,
         walk: impl FnOnce(&mut Self),
     ) {
-        let pushed = self.record_calls;
-        if pushed {
-            self.fn_hashes.push(hash());
+        let recording = self.record_calls;
+        if recording {
+            let frame = frame();
+            let scope = self
+                .scope
+                .iter()
+                .cloned()
+                .chain(std::iter::once(segment.clone()))
+                .collect::<Vec<_>>()
+                .join("::");
+            self.fn_defs.push(FnDef {
+                name: segment.clone(),
+                scope,
+                hash: frame.hash,
+                bodyless,
+            });
+            self.frames.push(frame);
         }
         self.within(segment, walk);
-        if pushed {
-            self.fn_hashes.pop();
+        if recording {
+            self.frames.pop();
         }
     }
 
@@ -941,9 +732,19 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         if self.skip(&item.attrs) {
             return;
         }
+        if self.record_calls {
+            if let Some(target) = path_attr_value(&item.attrs) {
+                self.path_attrs.push((
+                    format!("{}::{}", self.mod_path.join("::"), item.ident),
+                    target,
+                ));
+            }
+        }
+        self.mod_path.push(plain(&item.ident));
         self.within(plain(&item.ident), |this| {
             syn::visit::visit_item_mod(this, item)
         });
+        self.mod_path.pop();
     }
 
     fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
@@ -970,7 +771,8 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         }
         self.within_fn(
             plain(&item.sig.ident),
-            || token_hash(item),
+            false,
+            || item_fn_frame(item),
             |this| syn::visit::visit_item_fn(this, item),
         );
     }
@@ -981,7 +783,8 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         }
         self.within_fn(
             plain(&item.sig.ident),
-            || token_hash(item),
+            false,
+            || impl_fn_frame(item),
             |this| syn::visit::visit_impl_item_fn(this, item),
         );
     }
@@ -992,7 +795,8 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         }
         self.within_fn(
             plain(&item.sig.ident),
-            || token_hash(item),
+            item.default.is_none(),
+            || trait_fn_frame(item),
             |this| syn::visit::visit_trait_item_fn(this, item),
         );
     }
@@ -1089,13 +893,24 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
         if self.skip(&call.attrs) {
             return;
         }
-        if let syn::Expr::Path(function) = &*call.func {
-            if let Some(last) = function.path.segments.last() {
-                self.record(
-                    plain(&last.ident),
-                    Some(call.args.iter().cloned().collect()),
-                    true,
-                );
+        if self.record_calls {
+            if let syn::Expr::Path(function) = &*call.func {
+                if let Some(last) = function.path.segments.last() {
+                    let name = plain(&last.ident);
+                    self.record(
+                        name.clone(),
+                        Some(call.args.iter().cloned().collect()),
+                        true,
+                    );
+                    if is_emit_api_name(&name) {
+                        // A direct call of an emitter: only its arguments are visited,
+                        // so the callee path is not mistaken for an escaping reference.
+                        for arg in &call.args {
+                            syn::visit::Visit::visit_expr(self, arg);
+                        }
+                        return;
+                    }
+                }
             }
         }
         syn::visit::visit_expr_call(self, call);
@@ -1116,6 +931,21 @@ impl<'ast> syn::visit::Visit<'ast> for SiteFinder<'_> {
             .collect();
         if (self.is_target)(&segments) {
             self.hit();
+        }
+        // D-S2b-10 (a): an emitter named anywhere but as the callee of a direct call
+        // (bound to a value, passed or returned) escapes the argument checks.
+        if self.record_calls {
+            let local = segments.len() == 1
+                && self
+                    .frames
+                    .last()
+                    .is_some_and(|frame| frame.locals.contains(&segments[0]));
+            if let Some(name) = segments
+                .last()
+                .filter(|name| is_emit_api_name(name) && !local)
+            {
+                self.escapes.push((self.scope.join("::"), name.clone()));
+            }
         }
         syn::visit::visit_expr_path(self, path);
     }
@@ -1160,7 +990,11 @@ fn call_scopes(
         hits: Vec::new(),
         record_calls: false,
         calls: Vec::new(),
-        fn_hashes: Vec::new(),
+        frames: Vec::new(),
+        mod_path: Vec::new(),
+        fn_defs: Vec::new(),
+        escapes: Vec::new(),
+        path_attrs: Vec::new(),
     };
     finder.visit_file(&file);
     finder.hits
@@ -1233,23 +1067,29 @@ fn terminal_emit_callers_are_exactly_the_allowlisted_functions() {
     );
 }
 
-// ------------------------------------------------ SP5: status events (D-S2b-3, D-S2b-8)
+// ------------------------------------------------ SP5: status events (D-S2b-10)
 //
-// The ratchet does no value-flow analysis (D-S2b-8), so it is fail-closed by
-// construction:
+// The ratchet proves syntactically what it accepts and rejects everything else
+// (see `README.md` in this directory for the threat model).
 //
-// (a) An emit call's event name is resolved only when the argument is a string
-//     literal, a `concat!` of string literals, or a path to a `const` / `static`
-//     whose initializer is one of those. Everything else is unresolved: a `let`
-//     (mutable or not), a parameter, a captured value, a method result.
-// (b) An unresolved emit is allowed only inside a function on
-//     `DYNAMIC_EMIT_ALLOWLIST`; each entry pins the function's normalized token
-//     stream by hash (whitespace, comments and doc comments stripped), so any edit to
-//     a wrapper fails until it is re-reviewed and re-pinned.
-// (c) Every call of an allowlisted wrapper (`emit_json`, `emit_event`, the latter
-//     two also through `idle_emitter`'s returned `OwnedJsonEmit`) outside the
-//     wrappers must pass a name that resolves under (a) and is declared by an entry
-//     for that wrapper name.
+// (a) An emitter (`emit`, `emit_to`, `emit_filter`, `emit_json`, `emit_event`, ..)
+//     appears only as the callee of a direct call. Binding it to a value, passing it
+//     or returning it fails. A macro body is parsed as arguments or statements and
+//     its calls get the same checks; a body that cannot be parsed and names an
+//     emitter fails.
+// (b) An event name resolves only by proof: a string literal, `concat!` of literals
+//     (the built-in `concat!`, and only when the crate defines no `concat` macro), or
+//     a path to a `const` / `static` declared exactly once at that module path (or
+//     imported by `use`), with no local pattern, parameter, closure argument or
+//     `use .. as` in scope binding the same identifier. Anything else is unresolved.
+// (c) An unresolved emit is allowed only inside a function on
+//     `DYNAMIC_EMIT_ALLOWLIST`, pinned by token hash (spacing and every comma kept;
+//     whitespace and comments stripped). Each wrapper name reaches one destination,
+//     and every caller of a wrapper passes a resolvable name that its entry declares.
+//     The owned idle emitter has no event parameter and its forwarding body is
+//     pinned (`PINNED_FUNCTIONS`).
+// (d) A file is skipped only by its own `#![cfg(test)]`; any `#[path]` or
+//     `cfg_attr(.., path = ..)` on a production item fails.
 //
 // A call "touches" the status event when any argument resolves to it. The touch is
 // an emit unless the callee is a listener (`listen`, `once`, ...).
@@ -1257,16 +1097,36 @@ fn terminal_emit_callers_are_exactly_the_allowlisted_functions() {
 /// The event name SP5 pins.
 const STATUS_EVENT: &str = "recording-status-changed";
 
+/// A function's token hash and the names its patterns bind (parameters, `let`s,
+/// closure parameters, `for` and `match` patterns).
+struct FnFrame {
+    hash: u64,
+    locals: std::rc::Rc<std::collections::HashSet<String>>,
+}
+
+/// One function definition (also a trait declaration without a body).
+#[derive(Clone)]
+struct FnDef {
+    name: String,
+    /// Qualified like the call scopes: impl type or `<Type as Trait>`, then fn.
+    scope: String,
+    hash: u64,
+    bodyless: bool,
+}
+
 /// One call, method call or macro with the arguments written at it.
 struct CallRecord {
     function: String,
     callee: String,
-    /// `None`: macro tokens that did not parse as arguments.
+    /// `None`: an emitter named inside a macro body that did not parse.
     args: Option<Vec<syn::Expr>>,
     /// Written as a path call (`Emitter::emit(app, ..)`: the receiver is argument 0).
     path_call: bool,
     /// The token hash of the enclosing function (0 outside any function).
     fn_hash: u64,
+    /// The module path of the call (`crate::commands::recording`).
+    module: String,
+    locals: std::rc::Rc<std::collections::HashSet<String>>,
 }
 
 /// Macros whose arguments are data, not calls with an event name.
@@ -1311,25 +1171,32 @@ fn parse_expr_list(tokens: proc_macro2::TokenStream) -> Option<Vec<syn::Expr>> {
         .map(|list| list.into_iter().collect())
 }
 
+fn parse_stmts(tokens: proc_macro2::TokenStream) -> Option<Vec<syn::Stmt>> {
+    use syn::parse::Parser;
+    syn::Block::parse_within.parse2(tokens).ok()
+}
+
 /// The listener APIs: their event argument is a subscription, not an emit.
 const LISTENERS: [&str; 4] = ["listen", "once", "listen_any", "once_any"];
 
 /// `(name, arguments of the method form, index of the event argument)`. The Tauri
-/// `Emitter` API, and this code's own host wrappers `emit_json` / `emit_event`.
-const EMIT_APIS: [(&str, usize, usize); 9] = [
+/// `Emitter` API, and this code's own host wrappers.
+const EMIT_APIS: [(&str, usize, usize); 10] = [
     ("emit", 2, 0),
     ("emit_all", 2, 0),
     ("emit_str", 2, 0),
     ("emit_json", 2, 0),
     ("emit_event", 2, 0),
+    ("emit_import_json", 2, 0),
     ("emit_to", 3, 1),
     ("emit_str_to", 3, 1),
     ("emit_filter", 3, 0),
     ("emit_str_filter", 3, 0),
 ];
 
-/// The host wrappers whose callers are checked against the declared event names.
-const WRAPPER_NAMES: [&str; 2] = ["emit_json", "emit_event"];
+/// The host wrappers: each reaches exactly one destination and has one entry on
+/// `DYNAMIC_EMIT_ALLOWLIST` declaring the events its callers may pass.
+const WRAPPER_NAMES: [&str; 3] = ["emit_json", "emit_event", "emit_import_json"];
 
 fn is_emit_api_name(name: &str) -> bool {
     EMIT_APIS.iter().any(|(api, _, _)| *api == name)
@@ -1345,9 +1212,84 @@ fn emit_event_index(name: &str, args: usize, path_call: bool) -> Option<usize> {
         .map(|(_, _, index)| index + shift)
 }
 
-/// A token stream as text with no spacing, comment or doc-comment information.
+/// The first emitter identifier anywhere in `tokens` (nested groups included).
+fn find_emitter_ident(tokens: proc_macro2::TokenStream) -> Option<String> {
+    use proc_macro2::TokenTree;
+    for token in tokens {
+        match token {
+            TokenTree::Ident(ident) if is_emit_api_name(&plain(&ident)) => {
+                return Some(plain(&ident))
+            }
+            TokenTree::Group(group) => {
+                if let Some(found) = find_emitter_ident(group.stream()) {
+                    return Some(found);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether `tokens` hold the status event as a string literal.
+fn mentions_status_literal(tokens: proc_macro2::TokenStream) -> bool {
+    use proc_macro2::TokenTree;
+    tokens.into_iter().any(|token| match token {
+        TokenTree::Literal(literal) => literal.to_string() == format!("{STATUS_EVENT:?}"),
+        TokenTree::Group(group) => mentions_status_literal(group.stream()),
+        _ => false,
+    })
+}
+
+/// D-S2b-10 (d): the target of a `#[path = ".."]` attribute, or `cfg_attr(..)` when a
+/// `cfg_attr` mentions `path` (its target is never reviewable).
+fn path_attr_value(attrs: &[syn::Attribute]) -> Option<String> {
+    attrs.iter().find_map(|attr| {
+        if attr.path().is_ident("path") {
+            return Some(match &attr.meta {
+                syn::Meta::NameValue(syn::MetaNameValue {
+                    value:
+                        syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Str(text),
+                            ..
+                        }),
+                    ..
+                }) => text.value(),
+                _ => "<not a literal>".to_string(),
+            });
+        }
+        match &attr.meta {
+            syn::Meta::List(list)
+                if attr.path().is_ident("cfg_attr")
+                    && token_idents(list.tokens.clone())
+                        .iter()
+                        .any(|name| name == "path") =>
+            {
+                Some("cfg_attr(..)".to_string())
+            }
+            _ => None,
+        }
+    })
+}
+
+fn token_idents(tokens: proc_macro2::TokenStream) -> Vec<String> {
+    use proc_macro2::TokenTree;
+    let mut out = Vec::new();
+    for token in tokens {
+        match token {
+            TokenTree::Ident(ident) => out.push(plain(&ident)),
+            TokenTree::Group(group) => out.extend(token_idents(group.stream())),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A token stream as text with no whitespace or comment (doc comment) information:
+/// every other token, every comma and every punctuation's spacing (`Joint` is `~`) is
+/// kept, so `(x,)` and `(x)`, and `m!(&&x)` and `m!(& &x)`, differ.
 fn normalized_tokens(tokens: proc_macro2::TokenStream) -> String {
-    use proc_macro2::{Delimiter, TokenTree};
+    use proc_macro2::{Delimiter, Spacing, TokenTree};
     let tokens: Vec<TokenTree> = tokens.into_iter().collect();
     let mut out = Vec::new();
     let mut at = 0;
@@ -1373,12 +1315,15 @@ fn normalized_tokens(tokens: proc_macro2::TokenStream) -> String {
                     Delimiter::Bracket => ("[", "]"),
                     Delimiter::None => ("", ""),
                 };
-                // A trailing comma is formatting (rustfmt adds and removes it).
-                let inner = normalized_tokens(group.stream());
-                let inner = inner.strip_suffix(" ,").unwrap_or(&inner);
-                out.push(format!("{open} {inner} {close}"));
+                out.push(format!(
+                    "{open} {} {close}",
+                    normalized_tokens(group.stream())
+                ));
             }
-            TokenTree::Punct(punct) => out.push(punct.as_char().to_string()),
+            TokenTree::Punct(punct) => out.push(match punct.spacing() {
+                Spacing::Joint => format!("{}~", punct.as_char()),
+                Spacing::Alone => punct.as_char().to_string(),
+            }),
             other => out.push(other.to_string()),
         }
         at += 1;
@@ -1395,36 +1340,211 @@ fn token_hash<T: quote::ToTokens>(item: &T) -> u64 {
     })
 }
 
-/// Every `const` / `static` (also associated consts) by name, across files.
-type Consts = std::collections::HashMap<String, Vec<syn::Expr>>;
-
-struct ConstCollector<'c> {
-    consts: &'c mut Consts,
+/// The identifiers bound by patterns inside one function.
+#[derive(Default)]
+struct LocalNames {
+    names: std::collections::HashSet<String>,
 }
 
-impl<'ast> syn::visit::Visit<'ast> for ConstCollector<'_> {
+impl<'ast> syn::visit::Visit<'ast> for LocalNames {
+    fn visit_pat_ident(&mut self, ident: &'ast syn::PatIdent) {
+        self.names.insert(plain(&ident.ident));
+        syn::visit::visit_pat_ident(self, ident);
+    }
+}
+
+fn item_fn_frame(item: &syn::ItemFn) -> FnFrame {
+    let mut names = LocalNames::default();
+    syn::visit::Visit::visit_item_fn(&mut names, item);
+    FnFrame {
+        hash: token_hash(item),
+        locals: std::rc::Rc::new(names.names),
+    }
+}
+
+fn impl_fn_frame(item: &syn::ImplItemFn) -> FnFrame {
+    let mut names = LocalNames::default();
+    syn::visit::Visit::visit_impl_item_fn(&mut names, item);
+    FnFrame {
+        hash: token_hash(item),
+        locals: std::rc::Rc::new(names.names),
+    }
+}
+
+fn trait_fn_frame(item: &syn::TraitItemFn) -> FnFrame {
+    let mut names = LocalNames::default();
+    syn::visit::Visit::visit_trait_item_fn(&mut names, item);
+    FnFrame {
+        hash: token_hash(item),
+        locals: std::rc::Rc::new(names.names),
+    }
+}
+
+// ---- the crate index: what a path can be proven to name
+
+/// The module path of a source file relative to `src/`: `commands/recording.rs` is
+/// `crate::commands::recording`, `a/mod.rs` is `crate::a`, `lib.rs` is `crate`. Sound
+/// because `#[path]` fails the ratchet in production source.
+fn module_of_file(relative: &str) -> Vec<String> {
+    let mut parts: Vec<String> = relative
+        .trim_end_matches(".rs")
+        .split('/')
+        .map(String::from)
+        .collect();
+    if parts.last().is_some_and(|last| last == "mod") {
+        parts.pop();
+    } else if parts.len() == 1 && (parts[0] == "lib" || parts[0] == "main") {
+        parts.clear();
+    }
+    std::iter::once("crate".to_string()).chain(parts).collect()
+}
+
+/// A `use` path as an absolute module path (relative paths are relative to the module).
+fn absolutize(module: &[String], segments: &[String]) -> Vec<String> {
+    match segments.first().map(String::as_str) {
+        Some("crate") => segments.to_vec(),
+        Some("self") => module.iter().chain(&segments[1..]).cloned().collect(),
+        Some("super") => {
+            let mut base = module.to_vec();
+            let mut rest = segments;
+            while rest.first().map(String::as_str) == Some("super") {
+                if base.len() > 1 {
+                    base.pop();
+                }
+                rest = &rest[1..];
+            }
+            base.into_iter().chain(rest.iter().cloned()).collect()
+        }
+        _ => module.iter().chain(segments).cloned().collect(),
+    }
+}
+
+/// `(bound identifier, imported path, renamed with `as`)` of every name a `use` tree
+/// binds. Glob imports bind nothing that can be proven.
+fn flatten_use(
+    tree: &syn::UseTree,
+    prefix: &mut Vec<String>,
+    out: &mut Vec<(String, Vec<String>, bool)>,
+) {
+    match tree {
+        syn::UseTree::Path(path) => {
+            prefix.push(plain(&path.ident));
+            flatten_use(&path.tree, prefix, out);
+            prefix.pop();
+        }
+        syn::UseTree::Name(name) => {
+            if name.ident == "self" {
+                if let Some(last) = prefix.last() {
+                    out.push((last.clone(), prefix.clone(), false));
+                }
+            } else {
+                let mut full = prefix.clone();
+                full.push(plain(&name.ident));
+                out.push((plain(&name.ident), full, false));
+            }
+        }
+        syn::UseTree::Rename(rename) => {
+            let mut full = prefix.clone();
+            full.push(plain(&rename.ident));
+            out.push((plain(&rename.rename), full, true));
+        }
+        syn::UseTree::Glob(_) => {}
+        syn::UseTree::Group(group) => {
+            for item in &group.items {
+                flatten_use(item, prefix, out);
+            }
+        }
+    }
+}
+
+/// What the production code of the crate declares: constants and statics by full
+/// path, `use` bindings and renames by module, and the `macro_rules!` names.
+#[derive(Default)]
+struct CrateIndex {
+    consts: std::collections::HashMap<String, Vec<syn::Expr>>,
+    uses: std::collections::HashMap<String, std::collections::HashMap<String, Vec<String>>>,
+    renamed: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    macros: std::collections::HashSet<String>,
+}
+
+struct IndexBuilder<'i> {
+    index: &'i mut CrateIndex,
+    module: Vec<String>,
+}
+
+impl IndexBuilder<'_> {
+    fn declare(&mut self, ident: &syn::Ident, init: &syn::Expr) {
+        let key = format!("{}::{}", self.module.join("::"), ident);
+        self.index.consts.entry(key).or_default().push(init.clone());
+    }
+}
+
+impl<'ast> syn::visit::Visit<'ast> for IndexBuilder<'_> {
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        if item.attrs.iter().any(is_cfg_test) {
+            return;
+        }
+        self.module.push(plain(&item.ident));
+        syn::visit::visit_item_mod(self, item);
+        self.module.pop();
+    }
+
+    fn visit_item_fn(&mut self, item: &'ast syn::ItemFn) {
+        if !item.attrs.iter().any(is_cfg_test) {
+            syn::visit::visit_item_fn(self, item);
+        }
+    }
+
+    fn visit_item_impl(&mut self, item: &'ast syn::ItemImpl) {
+        if !item.attrs.iter().any(is_cfg_test) {
+            syn::visit::visit_item_impl(self, item);
+        }
+    }
+
     fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
-        self.consts
-            .entry(plain(&item.ident))
-            .or_default()
-            .push((*item.expr).clone());
-        syn::visit::visit_item_const(self, item);
+        if !item.attrs.iter().any(is_cfg_test) {
+            self.declare(&item.ident, &item.expr);
+        }
     }
 
     fn visit_item_static(&mut self, item: &'ast syn::ItemStatic) {
-        self.consts
-            .entry(plain(&item.ident))
-            .or_default()
-            .push((*item.expr).clone());
-        syn::visit::visit_item_static(self, item);
+        if !item.attrs.iter().any(is_cfg_test) {
+            self.declare(&item.ident, &item.expr);
+        }
     }
 
-    fn visit_impl_item_const(&mut self, item: &'ast syn::ImplItemConst) {
-        self.consts
-            .entry(plain(&item.ident))
-            .or_default()
-            .push(item.expr.clone());
-        syn::visit::visit_impl_item_const(self, item);
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        if item.attrs.iter().any(is_cfg_test) {
+            return;
+        }
+        let mut bound = Vec::new();
+        flatten_use(&item.tree, &mut Vec::new(), &mut bound);
+        let key = self.module.join("::");
+        for (ident, path, renamed) in bound {
+            if renamed {
+                self.index
+                    .renamed
+                    .entry(key.clone())
+                    .or_default()
+                    .insert(ident.clone());
+            }
+            self.index
+                .uses
+                .entry(key.clone())
+                .or_default()
+                .insert(ident, absolutize(&self.module, &path));
+        }
+    }
+
+    fn visit_item_macro(&mut self, item: &'ast syn::ItemMacro) {
+        if item.attrs.iter().any(is_cfg_test) {
+            return;
+        }
+        if item.mac.path.is_ident("macro_rules") {
+            if let Some(name) = &item.ident {
+                self.index.macros.insert(plain(name));
+            }
+        }
     }
 }
 
@@ -1435,62 +1555,146 @@ fn short(text: &str) -> String {
     format!("`{text}`")
 }
 
-/// A string literal, or a `concat!` of string literals (nothing else).
-fn literal_value(expr: &syn::Expr) -> Result<String, String> {
-    match expr {
-        syn::Expr::Lit(syn::ExprLit {
-            lit: syn::Lit::Str(text),
-            ..
-        }) => Ok(text.value()),
-        syn::Expr::Macro(call)
-            if call
-                .mac
+/// D-S2b-10 (b): resolves an event argument by proof, or says why it cannot.
+struct Resolver<'a> {
+    index: &'a CrateIndex,
+    module: Vec<String>,
+    locals: &'a std::collections::HashSet<String>,
+}
+
+impl Resolver<'_> {
+    /// `concat!`, `std::concat!` or `core::concat!`, and the crate defines no macro
+    /// named `concat`.
+    fn is_builtin_concat(&self, mac: &syn::Macro) -> bool {
+        let segments: Vec<String> = mac
+            .path
+            .segments
+            .iter()
+            .map(|segment| plain(&segment.ident))
+            .collect();
+        let named = matches!(
+            segments.iter().map(String::as_str).collect::<Vec<_>>()[..],
+            ["concat"] | ["std", "concat"] | ["core", "concat"]
+        );
+        named && !self.index.macros.contains("concat")
+    }
+
+    /// A string literal, or the built-in `concat!` of string literals (nothing else).
+    fn literal_value(&self, expr: &syn::Expr) -> Result<String, String> {
+        match expr {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Str(text),
+                ..
+            }) => Ok(text.value()),
+            syn::Expr::Macro(call)
+                if call
+                    .mac
+                    .path
+                    .segments
+                    .last()
+                    .is_some_and(|s| s.ident == "concat") =>
+            {
+                if !self.is_builtin_concat(&call.mac) {
+                    return Err("a `concat!` that is not the built-in one".to_string());
+                }
+                let parts =
+                    parse_expr_list(call.mac.tokens.clone()).ok_or("an unparsable `concat!`")?;
+                let mut joined = String::new();
+                for part in &parts {
+                    match part {
+                        syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Str(text),
+                            ..
+                        }) => joined.push_str(&text.value()),
+                        other => return Err(format!("`concat!` of {}", short(&written(other)))),
+                    }
+                }
+                Ok(joined)
+            }
+            other => Err(short(&written(other))),
+        }
+    }
+
+    fn resolve(&self, expr: &syn::Expr) -> Result<Names, String> {
+        match expr {
+            syn::Expr::Path(path) => self.resolve_path(path),
+            other => self.literal_value(other).map(|name| Names::from([name])),
+        }
+    }
+
+    fn resolve_path(&self, path: &syn::ExprPath) -> Result<Names, String> {
+        let shown = written(path);
+        if path.qself.is_some()
+            || path
                 .path
                 .segments
-                .last()
-                .is_some_and(|segment| segment.ident == "concat") =>
+                .iter()
+                .any(|segment| !segment.arguments.is_empty())
         {
-            let parts =
-                parse_expr_list(call.mac.tokens.clone()).ok_or("an unparsable `concat!`")?;
-            let mut joined = String::new();
-            for part in &parts {
-                match part {
-                    syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(text),
-                        ..
-                    }) => joined.push_str(&text.value()),
-                    other => return Err(format!("`concat!` of {}", short(&written(other)))),
+            return Err(format!("`{shown}` has generic arguments"));
+        }
+        let segments: Vec<String> = path
+            .path
+            .segments
+            .iter()
+            .map(|segment| plain(&segment.ident))
+            .collect();
+        let module_key = self.module.join("::");
+        let mut candidates: Vec<Vec<String>> = Vec::new();
+        if segments.len() == 1 {
+            let name = &segments[0];
+            if self.locals.contains(name) {
+                return Err(format!("`{shown}` is shadowed by a local binding"));
+            }
+            if self
+                .index
+                .renamed
+                .get(&module_key)
+                .is_some_and(|renamed| renamed.contains(name))
+            {
+                return Err(format!("`{shown}` is bound by a `use .. as ..`"));
+            }
+            candidates.push(self.module.iter().cloned().chain([name.clone()]).collect());
+            if let Some(target) = self.index.uses.get(&module_key).and_then(|u| u.get(name)) {
+                candidates.push(target.clone());
+            }
+        } else {
+            match segments[0].as_str() {
+                "crate" | "self" | "super" => candidates.push(absolutize(&self.module, &segments)),
+                first => {
+                    candidates.push(self.module.iter().chain(&segments).cloned().collect());
+                    if let Some(target) =
+                        self.index.uses.get(&module_key).and_then(|u| u.get(first))
+                    {
+                        candidates.push(target.iter().chain(&segments[1..]).cloned().collect());
+                    }
                 }
             }
-            Ok(joined)
         }
-        other => Err(short(&written(other))),
+        candidates.sort();
+        candidates.dedup();
+        let declared: Vec<(&Vec<String>, &Vec<syn::Expr>)> = candidates
+            .iter()
+            .filter_map(|candidate| {
+                self.index
+                    .consts
+                    .get(&candidate.join("::"))
+                    .map(|inits| (candidate, inits))
+            })
+            .collect();
+        match declared.as_slice() {
+            [] => Err(format!(
+                "`{shown}` is not a const or static declared at that path"
+            )),
+            [(_, inits)] if inits.len() == 1 => self
+                .literal_value(&inits[0])
+                .map(|name| Names::from([name])),
+            _ => Err(format!("`{shown}` is not declared exactly once")),
+        }
     }
 }
 
-/// D-S2b-8 (a): the event names an argument can be: a literal, a `concat!` of
-/// literals, or a path to a `const` / `static` whose initializer is one of those.
-/// Anything else is unresolved, with the reason.
-fn resolve_event(expr: &syn::Expr, consts: &Consts) -> Result<Names, String> {
-    match expr {
-        syn::Expr::Path(path) => {
-            let Some(last) = path.path.segments.last() else {
-                return Err("an empty path".to_string());
-            };
-            let name = plain(&last.ident);
-            let Some(initializers) = consts.get(&name) else {
-                return Err(format!("`{}` is not a const or static", written(path)));
-            };
-            initializers
-                .iter()
-                .map(|init| literal_value(init).map_err(|why| format!("const `{name}`: {why}")))
-                .collect()
-        }
-        other => literal_value(other).map(|name| Names::from([name])),
-    }
-}
-
-/// A call of a host wrapper (`emit_json`, `emit_event`) and the name it passes.
+/// A call of a host wrapper and the name it passes.
 struct WrapperCall {
     file: String,
     function: String,
@@ -1507,42 +1711,60 @@ struct EventSites {
     /// `(file, qualified fn)` → unresolved emits: how many, why, the function's hash.
     dynamic: std::collections::BTreeMap<(String, String), (usize, Names, u64)>,
     wrapper_calls: Vec<WrapperCall>,
+    /// `(file, fn scope, emitter)` named outside a direct call.
+    escapes: Vec<(String, String, String)>,
+    /// `(file, module)` carrying a `#[path]` attribute in production source.
+    path_attrs: Vec<(String, String, String)>,
+    fn_defs: Vec<(String, FnDef)>,
 }
 
 /// Classify one call: a status touch (emit or listener), an unresolved emit, and a
 /// wrapper call.
-fn classify_call(file: &str, record: &CallRecord, consts: &Consts, found: &mut EventSites) {
-    let function = record.function.clone();
+fn classify_call(file: &str, record: &CallRecord, index: &CrateIndex, found: &mut EventSites) {
+    let resolver = Resolver {
+        index,
+        module: record.module.split("::").map(String::from).collect(),
+        locals: &record.locals,
+    };
     let name = record.callee.as_str();
     let mut dynamic = |why: String| {
         let entry = found
             .dynamic
-            .entry((file.to_string(), function.clone()))
+            .entry((file.to_string(), record.function.clone()))
             .or_default();
         entry.0 += 1;
         entry.1.insert(why);
         entry.2 = record.fn_hash;
     };
     let Some(args) = &record.args else {
-        dynamic(format!("the tokens of an `{name}(..)` in a macro"));
+        dynamic(format!(
+            "`{name}` named in a macro body that does not parse"
+        ));
         return;
     };
-    let touches = args
-        .iter()
-        .any(|arg| resolve_event(arg, consts).is_ok_and(|names| names.contains(STATUS_EVENT)));
+    let touches = args.iter().any(|arg| {
+        resolver
+            .resolve(arg)
+            .is_ok_and(|names| names.contains(STATUS_EVENT))
+    });
     let emit_index = emit_event_index(name, args.len(), record.path_call);
+    let mut wrapper_call = None;
     if let Some(index) = emit_index {
-        if let Err(why) = resolve_event(&args[index], consts) {
+        let resolved = resolver.resolve(&args[index]);
+        if WRAPPER_NAMES.contains(&name) {
+            wrapper_call = Some(resolved.clone());
+        }
+        if let Err(why) = resolved {
             dynamic(why);
         }
-        if WRAPPER_NAMES.contains(&name) {
-            found.wrapper_calls.push(WrapperCall {
-                file: file.to_string(),
-                function: record.function.clone(),
-                callee: name.to_string(),
-                name: resolve_event(&args[index], consts),
-            });
-        }
+    }
+    if let Some(resolved) = wrapper_call {
+        found.wrapper_calls.push(WrapperCall {
+            file: file.to_string(),
+            function: record.function.clone(),
+            callee: name.to_string(),
+            name: resolved,
+        });
     }
     if touches {
         let kind = if LISTENERS.contains(&name) {
@@ -1570,10 +1792,11 @@ fn event_sites(sources: &[(String, String)]) -> EventSites {
             )
         })
         .collect();
-    let mut consts = Consts::new();
-    for (_, file) in &files {
-        ConstCollector {
-            consts: &mut consts,
+    let mut index = CrateIndex::default();
+    for (path, file) in &files {
+        IndexBuilder {
+            index: &mut index,
+            module: module_of_file(path),
         }
         .visit_file(file);
     }
@@ -1587,11 +1810,24 @@ fn event_sites(sources: &[(String, String)]) -> EventSites {
             hits: Vec::new(),
             record_calls: true,
             calls: Vec::new(),
-            fn_hashes: Vec::new(),
+            frames: Vec::new(),
+            mod_path: module_of_file(path),
+            fn_defs: Vec::new(),
+            escapes: Vec::new(),
+            path_attrs: Vec::new(),
         };
         finder.visit_file(file);
         for record in &finder.calls {
-            classify_call(path, record, &consts, &mut found);
+            classify_call(path, record, &index, &mut found);
+        }
+        for (scope, name) in finder.escapes {
+            found.escapes.push((path.to_string(), scope, name));
+        }
+        for (module, target) in finder.path_attrs {
+            found.path_attrs.push((path.to_string(), module, target));
+        }
+        for def in finder.fn_defs {
+            found.fn_defs.push((path.to_string(), def));
         }
     }
     found
@@ -1601,25 +1837,32 @@ fn event_sites(sources: &[(String, String)]) -> EventSites {
 /// `recording-status-changed` event name, pinned per enclosing function:
 /// `(file relative to src, qualified enclosing fn, "emit" | "listen", calls)`. The
 /// walk is the D-S2-17 fail-closed one (`raw_production_sources`: every `src/**/*.rs`
-/// file except the declared test-only ones), so a status emit planted in any other
-/// file (the #117 shape: `commands/models.rs`) fails. The set is:
+/// file that does not gate itself with `#![cfg(test)]`), so a status emit planted in
+/// any other file (the #117 shape: `commands/models.rs`) fails. The set is:
 ///
 /// * the executor's own `EM` effect ports (`*_ports.rs`), the sanctioned emitters;
-/// * four idle emits the shell still passes to the legacy parse and pipeline-idle
-///   finishers (`recording.rs`), the `204a` / `204b` / `302` tails that run under the
-///   executor's decisions: pinned so they can only go down.
+/// * the legacy idle emits the shell still makes (`recording.rs`) and the owned idle
+///   emitter's one fixed emit (`idle_emitter`), the `204a` / `204b` / `302` tails that
+///   run under the executor's decisions: pinned so they can only go down.
 ///
 /// The two functions that subscribe to the event (`initialize` of
 /// `smart_auto_probe.rs` and `meeting_suggestions.rs`) loop over an array of event
 /// names, so their argument is unresolved: they are not listed, and an emit added in
 /// either is an unresolved emit outside the dynamic allowlist and fails.
-const STATUS_EVENT_ALLOWLIST: [(&str, &str, &str, usize); 8] = [
-    // The legacy idle emits (two parse-failure closures and the 204b tail in
-    // `process_audio_inner`, the stop's 204b tail): decided by site 204/302.
-    ("commands/recording.rs", "process_audio_inner", "emit", 3),
+const STATUS_EVENT_ALLOWLIST: [(&str, &str, &str, usize); 9] = [
+    // The legacy idle emits (the pipeline-idle closure in `process_audio_inner`, the
+    // stop's 204b tail): decided by site 204/302.
+    ("commands/recording.rs", "process_audio_inner", "emit", 1),
     (
         "commands/recording.rs",
         "stop_native_recording_admitted",
+        "emit",
+        1,
+    ),
+    // The owned idle emitter's one fixed emit (a parse-failure finish).
+    (
+        "commands/recording/process_audio_ports.rs",
+        "<TauriImportHost as ImportedAudioHost>::idle_emitter",
         "emit",
         1,
     ),
@@ -1668,16 +1911,16 @@ struct DynamicEmitter {
     function: &'static str,
     /// Unresolved emits inside it.
     emits: usize,
-    /// The wrapper names (`emit_json`, `emit_event`) whose callers feed it.
-    wrappers: &'static [&'static str],
-    /// The event names it may forward: every caller of its wrappers passes one.
+    /// The wrapper name its callers use: one name, one destination.
+    wrapper: &'static str,
+    /// The event names its callers may pass.
     names: &'static [&'static str],
     /// The function's normalized token-stream hash (`token_hash`).
     hash: u64,
 }
 
 /// The lifecycle and delivery events the dictation host forwards (every
-/// `emit_event` caller; the status event is among them).
+/// `emit_json` / `emit_event` caller on it; the status event is among them).
 const HOST_EVENTS: &[&str] = &[
     "dictation-delivery-outcome",
     "dictation-generation-started",
@@ -1686,52 +1929,98 @@ const HOST_EVENTS: &[&str] = &[
     "transcription-complete",
 ];
 
-/// The events the imported-audio host forwards (every `emit_json` caller): the
+/// The events the imported-audio host forwards (every `emit_import_json` caller): the
 /// status event (the idle emit and `Effect::EmitStatus`, including its `processing`
 /// payload) and the generation-started event.
 const IMPORT_EVENTS: &[&str] = &["dictation-generation-started", "recording-status-changed"];
 
 /// Reviewed wrappers: each forwards its `event` parameter to `AppHandle::emit`
-/// unchanged. Editing one fails the hash until it is re-reviewed.
-const DYNAMIC_EMIT_ALLOWLIST: [DynamicEmitter; 4] = [
+/// unchanged. Editing one fails the hash until it is re-reviewed and re-pinned.
+const DYNAMIC_EMIT_ALLOWLIST: [DynamicEmitter; 3] = [
     DynamicEmitter {
         file: "commands/recording/process_audio_ports.rs",
-        function: "<TauriImportHost as ImportedAudioHost>::emit_json",
+        function: "<TauriImportHost as ImportedAudioHost>::emit_import_json",
         emits: 1,
-        wrappers: &["emit_json"],
+        wrapper: "emit_import_json",
         names: IMPORT_EVENTS,
-        hash: 0xb281a3c614b27342,
-    },
-    DynamicEmitter {
-        file: "commands/recording/process_audio_ports.rs",
-        function: "<TauriImportHost as ImportedAudioHost>::idle_emitter",
-        emits: 1,
-        wrappers: &["emit_json"],
-        names: IMPORT_EVENTS,
-        hash: 0x04390ac0450c9b93,
+        hash: 0x69b0_5c17_06de_f3c0,
     },
     DynamicEmitter {
         file: "commands/recording_host.rs",
         function: "<TauriHost as DictationHost>::emit_json",
         emits: 1,
-        wrappers: &["emit_event"],
+        wrapper: "emit_json",
         names: HOST_EVENTS,
-        hash: 0xb281a3c614b27342,
+        hash: 0xdcfd_6d5e_ed77_6618,
     },
     DynamicEmitter {
         file: "commands/recording_host.rs",
         function: "dynDictationHost+'_::emit_event",
         emits: 1,
-        wrappers: &["emit_event"],
+        wrapper: "emit_event",
         names: HOST_EVENTS,
-        hash: 0xf1c0421dc47f2833,
+        hash: 0x4dfe_de55_209a_74ad,
     },
+];
+
+/// Functions whose forwarding body is pinned without being an unresolved emitter:
+/// `(file, qualified fn, token hash)`. The owned idle emitter carries no event
+/// parameter; these two bodies are all it can do.
+const PINNED_FUNCTIONS: [(&str, &str, u64); 2] = [
+    (
+        "commands/recording/process_audio_ports.rs",
+        "OwnedIdleEmit::new",
+        0xb2db_f5c7_eef7_b21b,
+    ),
+    (
+        "commands/recording/process_audio_ports.rs",
+        "OwnedIdleEmit::emit_idle",
+        0x07cb_34aa_cb12_0135,
+    ),
+];
+
+/// D-S2b-10 (d): the production `#[path]` module declarations that already exist
+/// (`(declaring file, module path, path literal)`). No other `#[path]` or
+/// `cfg_attr(.., path = ..)` is allowed in production source: a path alias is how a
+/// self-gated file could still be compiled into the app and skipped by the walk. The
+/// target files of these seven are not self-gated; the module path the scan derives
+/// from their file name differs from the real one, which fails closed (a constant in
+/// one is not resolved).
+const PATH_ATTR_ALLOWLIST: [(&str, &str, &str); 7] = [
+    ("audio.rs", "crate::audio::prepare", "audio_prepare.rs"),
+    (
+        "audio_lifecycle.rs",
+        "crate::audio_lifecycle::gesture",
+        "audio_gesture.rs",
+    ),
+    (
+        "audio_lifecycle.rs",
+        "crate::audio_lifecycle::speculative",
+        "audio_speculative.rs",
+    ),
+    (
+        "commands/recording.rs",
+        "crate::commands::recording::dictation_host",
+        "recording_host.rs",
+    ),
+    (
+        "meeting_diarization.rs",
+        "crate::meeting_diarization::probe",
+        "meeting_diarization_probe.rs",
+    ),
+    ("platform/mod.rs", "crate::platform::current", "macos.rs"),
+    (
+        "smart_destination.rs",
+        "crate::smart_destination::native",
+        "smart_destination/macos.rs",
+    ),
 ];
 
 fn check_event_sites(
     found: &EventSites,
     status_allowed: &[(&str, &str, &str, usize)],
     dynamic_allowed: &[DynamicEmitter],
+    pinned: &[(&str, &str, u64)],
 ) -> Result<(), String> {
     let mut problems = Vec::new();
     // Status sites, per function.
@@ -1772,9 +2061,10 @@ fn check_event_sites(
             .map(|((file, function), (_, why, _))| format!("{file} {function}: {why:?}"))
             .collect();
         problems.push(format!(
-            "emits with an unresolvable event name changed (D-S2b-8 b).\n  found:   {dynamic:?}\n  allowed: {want_dynamic:?}\n  why: {reasons:?}\n\
-             An event name must be a literal, a `concat!` of literals, or a const of one. A \
-             reviewed wrapper goes on DYNAMIC_EMIT_ALLOWLIST with its declared names and hash."
+            "emits with an unresolvable event name changed (D-S2b-10 b).\n  found:   {dynamic:?}\n  allowed: {want_dynamic:?}\n  why: {reasons:?}\n\
+             An event name must be a literal, the built-in `concat!` of literals, or a const of one \
+             proven to be the one declared. A reviewed wrapper goes on DYNAMIC_EMIT_ALLOWLIST with \
+             its declared names and hash."
         ));
     }
     for entry in dynamic_allowed {
@@ -1788,14 +2078,50 @@ fn check_event_sites(
                 ));
             }
         }
-        if entry.names.is_empty() || entry.wrappers.is_empty() {
+        if entry.names.is_empty() || !WRAPPER_NAMES.contains(&entry.wrapper) {
             problems.push(format!(
-                "{} {}: an entry declares its wrappers and event names",
+                "{} {}: an entry declares a wrapper name and its event names",
                 entry.file, entry.function
             ));
         }
     }
-    // D-S2b-8 (c): every caller of a wrapper passes a resolvable, declared name.
+    for name in WRAPPER_NAMES {
+        let entries = dynamic_allowed.iter().filter(|e| e.wrapper == name).count();
+        if entries > 1 {
+            problems.push(format!(
+                "wrapper name `{name}` has {entries} entries: one name, one destination"
+            ));
+        }
+    }
+    // Pinned forwarding bodies.
+    for (file, function, hash) in pinned {
+        match found
+            .fn_defs
+            .iter()
+            .find(|(def_file, def)| def_file == file && def.scope == *function)
+        {
+            None => problems.push(format!("{file} {function} is pinned but not found")),
+            Some((_, def)) if def.hash != *hash => problems.push(format!(
+                "{file} {function} was edited: its token hash is {:#018x}, pinned {hash:#018x}. \
+                 Re-review the forwarding body and re-pin.",
+                def.hash
+            )),
+            Some(_) => {}
+        }
+    }
+    // A function named like a wrapper is the reviewed wrapper (or a trait declaration).
+    for (file, def) in &found.fn_defs {
+        let reviewed = dynamic_allowed
+            .iter()
+            .any(|e| e.file == file && e.function == def.scope);
+        if WRAPPER_NAMES.contains(&def.name.as_str()) && !def.bodyless && !reviewed {
+            problems.push(format!(
+                "{file} {}: a function named like a host wrapper that is not a reviewed entry",
+                def.scope
+            ));
+        }
+    }
+    // D-S2b-10 (c): every caller of a wrapper passes a resolvable name its entry declares.
     let reviewed: std::collections::BTreeSet<(&str, &str)> = dynamic_allowed
         .iter()
         .map(|e| (e.file, e.function))
@@ -1806,7 +2132,7 @@ fn check_event_sites(
         }
         let declared: Names = dynamic_allowed
             .iter()
-            .filter(|e| e.wrappers.contains(&call.callee.as_str()))
+            .filter(|e| e.wrapper == call.callee)
             .flat_map(|e| e.names.iter().map(|name| name.to_string()))
             .collect();
         match &call.name {
@@ -1818,11 +2144,25 @@ fn check_event_sites(
                 let undeclared: Vec<&String> = names.difference(&declared).collect();
                 if !undeclared.is_empty() {
                     problems.push(format!(
-                        "{} {}: `{}(..)` passes {undeclared:?}, which no `{}` entry declares",
-                        call.file, call.function, call.callee, call.callee
+                        "{} {}: `{}(..)` passes {undeclared:?}, which its entry does not declare",
+                        call.file, call.function, call.callee
                     ));
                 }
             }
+        }
+    }
+    // D-S2b-10 (a) and (d).
+    for (file, function, name) in &found.escapes {
+        problems.push(format!(
+            "{file} {function}: the emitter `{name}` is used as a value, not called directly"
+        ));
+    }
+    for (file, module, target) in &found.path_attrs {
+        if !PATH_ATTR_ALLOWLIST.contains(&(file.as_str(), module.as_str(), target.as_str())) {
+            problems.push(format!(
+                "{file} {module}: a `#[path = \"{target}\"]` / `cfg_attr(.., path = ..)` attribute \
+                 in production source (only the reviewed PATH_ATTR_ALLOWLIST declarations pass)"
+            ));
         }
     }
     if problems.is_empty() {
@@ -1832,12 +2172,37 @@ fn check_event_sites(
     }
 }
 
+fn check_tree(found: &EventSites) -> Result<(), String> {
+    let stale: Vec<String> = PATH_ATTR_ALLOWLIST
+        .iter()
+        .filter(|(file, module, target)| {
+            !found
+                .path_attrs
+                .iter()
+                .any(|(f, m, t)| (f.as_str(), m.as_str(), t.as_str()) == (*file, *module, *target))
+        })
+        .map(|(file, module, target)| {
+            format!(
+                "{file} {module} = \"{target}\" is on PATH_ATTR_ALLOWLIST but no longer declared"
+            )
+        })
+        .collect();
+    if !stale.is_empty() {
+        return Err(stale.join("\n"));
+    }
+
+    check_event_sites(
+        found,
+        &STATUS_EVENT_ALLOWLIST,
+        &DYNAMIC_EMIT_ALLOWLIST,
+        &PINNED_FUNCTIONS,
+    )
+}
+
 #[test]
 fn status_events_are_emitted_only_by_the_allowlisted_functions() {
     let found = event_sites(&raw_production_sources());
-    if let Err(message) =
-        check_event_sites(&found, &STATUS_EVENT_ALLOWLIST, &DYNAMIC_EMIT_ALLOWLIST)
-    {
+    if let Err(message) = check_tree(&found) {
         panic!("{message}");
     }
 }
@@ -1859,9 +2224,19 @@ fn sources_with(file: &str, old: &str, new: &str) -> Vec<(String, String)> {
 }
 
 fn the_status_ratchet_rejects(sources: &[(String, String)]) -> String {
-    let found = event_sites(sources);
-    check_event_sites(&found, &STATUS_EVENT_ALLOWLIST, &DYNAMIC_EMIT_ALLOWLIST)
-        .expect_err("the planted change must fail the ratchet")
+    check_tree(&event_sites(sources)).expect_err("the planted change must fail the ratchet")
+}
+
+/// The end of the VAD completion path in `commands/models.rs`, where #117 sat.
+const VAD_TAIL: &str = "    tracing::info!(target: \"system\", \"VAD model downloaded: {} ({} bytes)\", vad::VAD_MODEL_FILENAME, received);\n";
+
+/// `commands/models.rs` with `plant` added at the end of the VAD completion path.
+fn models_with(plant: &str) -> Vec<(String, String)> {
+    sources_with(
+        "commands/models.rs",
+        VAD_TAIL,
+        &format!("    {plant}\n{VAD_TAIL}"),
+    )
 }
 
 #[test]
@@ -1877,9 +2252,9 @@ fn a_planted_status_emit_in_models_rs_fails_the_status_ratchet() {
     assert!(error.contains("commands/models.rs") && error.contains("ensure_vad_model"));
 }
 
-/// Sol's round-1 probe 1: an extra emit that reuses the listener's event variable
-/// inside `meeting_suggestions::initialize`. The variable is a loop variable: its
-/// emit is unresolved, outside the dynamic allowlist.
+/// Round-1 probe 1: an extra emit that reuses the listener's event variable inside
+/// `meeting_suggestions::initialize`. The variable is a loop variable: its emit is
+/// unresolved, outside the dynamic allowlist.
 #[test]
 fn an_emit_reusing_the_listener_variable_fails_the_status_ratchet() {
     let sources = sources_with(
@@ -1894,14 +2269,12 @@ fn an_emit_reusing_the_listener_variable_fails_the_status_ratchet() {
     );
 }
 
-/// Sol's round-1 probe 2: the event name built with `concat!` (it resolves, so it is
-/// a status site in a function that is not allowed one).
+/// Round-1 probe 2: the event name built with `concat!` (it resolves, so it is a
+/// status site in a function that is not allowed one).
 #[test]
 fn a_concat_status_emit_fails_the_status_ratchet() {
-    let sources = sources_with(
-        "commands/models.rs",
-        "    let _ = tokio::fs::remove_file(model_download::resume_path(&temp_path)).await;\n    tracing::info!(target: \"system\", \"VAD model downloaded: {} ({} bytes)\", vad::VAD_MODEL_FILENAME, received);\n",
-        "    let _ = tokio::fs::remove_file(model_download::resume_path(&temp_path)).await;\n    let _ = app_handle.emit(concat!(\"recording-status-\", \"changed\"), \"processing\");\n    tracing::info!(target: \"system\", \"VAD model downloaded: {} ({} bytes)\", vad::VAD_MODEL_FILENAME, received);\n",
+    let sources = models_with(
+        "let _ = app_handle.emit(concat!(\"recording-status-\", \"changed\"), \"processing\");",
     );
     let error = the_status_ratchet_rejects(&sources);
     assert!(
@@ -1910,25 +2283,19 @@ fn a_concat_status_emit_fails_the_status_ratchet() {
     );
 }
 
-/// Sol's round-2 probe 1: a `let mut event` initialized to another name and later set
-/// to the status event. No value-flow analysis: the emit's argument is a `let`, so it
-/// is unresolved.
+/// Round-2 probe 1: a `let mut event` initialized to another name and later set to
+/// the status event. No value-flow analysis: the emit's argument is a `let`, so it is
+/// unresolved.
 #[test]
 fn a_reassigned_event_name_fails_the_status_ratchet() {
-    let sources = sources_with(
-        "meeting_suggestions.rs",
-        "    let coordinator = app.state::<State>().meeting_suggestions.clone();\n    for event in [",
-        "    let coordinator = app.state::<State>().meeting_suggestions.clone();\n    let mut reassigned = \"model-runtime-status-changed\";\n    reassigned = \"recording-status-changed\";\n    let _ = app.emit(reassigned, \"processing\");\n    for event in [",
+    let sources = models_with(
+        "let mut reassigned = \"model-runtime-status-changed\"; reassigned = \"recording-status-changed\"; let _ = app_handle.emit(reassigned, \"processing\");",
     );
-    let error = the_status_ratchet_rejects(&sources);
-    assert!(
-        error.contains("meeting_suggestions.rs") && error.contains("initialize"),
-        "{error}"
-    );
+    assert!(the_status_ratchet_rejects(&sources).contains("ensure_vad_model_with_progress"));
 }
 
-/// Sol's round-2 probe 2: `TauriHost::emit_json` remaps `recording-cancelled` to the
-/// status event. The wrapper's pinned token hash changes.
+/// Round-2 probe 2: `TauriHost::emit_json` remaps `recording-cancelled` to the status
+/// event. The wrapper's pinned token hash changes.
 #[test]
 fn a_wrapper_that_remaps_an_event_fails_the_status_ratchet() {
     let sources = sources_with(
@@ -1943,31 +2310,102 @@ fn a_wrapper_that_remaps_an_event_fails_the_status_ratchet() {
     );
 }
 
-/// Editing a pinned wrapper fails; reformatting it or its comments does not.
+/// Round-3 probe 1: an emitter bound to a value (`tauri::Emitter::emit` as `publish`)
+/// and called after the VAD install; the replay failed on the late event while SP5
+/// passed. D-S2b-10 (a): an emitter outside a direct call fails.
 #[test]
-fn editing_a_pinned_wrapper_fails_but_reformatting_does_not() {
-    const OLD: &str = "    fn emit_json(&self, event: &str, payload: serde_json::Value) -> Result<(), HostEmitError> {\n        self.app\n            .emit(event, payload)";
-    let reformatted = sources_with(
-        "commands/recording_host.rs",
-        OLD,
-        "    /// A doc comment.\n    fn emit_json(\n        &self,\n        event: &str,\n        payload: serde_json::Value,\n    ) -> Result<(), HostEmitError> {\n        // a comment\n        self.app.emit(event, payload)",
+fn an_emitter_bound_to_a_value_fails_the_status_ratchet() {
+    let sources = models_with(
+        "let publish = tauri::Emitter::emit; let _ = publish(app_handle, \"recording-status-changed\", \"processing\");",
     );
-    check_event_sites(
-        &event_sites(&reformatted),
-        &STATUS_EVENT_ALLOWLIST,
-        &DYNAMIC_EMIT_ALLOWLIST,
-    )
-    .expect("a comment and a reformat keep the pinned hash");
-    let edited = sources_with(
-        "commands/recording_host.rs",
-        OLD,
-        "    fn emit_json(&self, event: &str, payload: serde_json::Value) -> Result<(), HostEmitError> {\n        let _ = &payload;\n        self.app\n            .emit(event, payload)",
-    );
-    assert!(the_status_ratchet_rejects(&edited).contains("was edited"));
+    let error = the_status_ratchet_rejects(&sources);
+    assert!(error.contains("used as a value"), "{error}");
+    // Returned, and passed to a function.
+    for plant in [
+        "let _ = std::convert::identity(tauri::Emitter::emit::<tauri::AppHandle, &str>);",
+        "let _ = Some(tauri::Emitter::emit);",
+    ] {
+        let error = the_status_ratchet_rejects(&models_with(plant));
+        assert!(error.contains("used as a value"), "{plant}: {error}");
+    }
 }
 
-/// (c): a caller of a wrapper passes a name that resolves and is declared, also
-/// through the returned `OwnedJsonEmit` (its `.emit_json(..)`).
+/// Round-3 probe 2: the same call hidden in a `tracing!` field, where the macro
+/// fallback lost the receiver offset. The body is parsed and checked like any call,
+/// and a body that does not parse but names an emitter fails.
+#[test]
+fn an_emit_inside_a_macro_field_fails_the_status_ratchet() {
+    for plant in [
+        // Parses as an assignment expression: a direct path call with the receiver offset.
+        "tracing::info!(published = tauri::Emitter::emit(app_handle, \"recording-status-changed\", \"x\").is_ok(), \"x\");",
+        // A `%` sigil does not parse: an emitter in an unparseable body fails.
+        "tracing::info!(published = %tauri::Emitter::emit(app_handle, \"recording-status-changed\", \"x\").is_ok(), \"x\");",
+    ] {
+        let error = the_status_ratchet_rejects(&models_with(plant));
+        assert!(error.contains("ensure_vad_model_with_progress"), "{plant}: {error}");
+    }
+}
+
+/// Round-3 probe 3: a local, a parameter or a renamed import that shares its
+/// identifier with an unrelated safe constant is not that constant.
+#[test]
+fn a_binding_that_shadows_a_constant_is_unresolved() {
+    // `VAD_MODEL_FILENAME` is a string constant declared in `vad.rs`.
+    for plant in [
+        "fn shadow_param(app: &tauri::AppHandle, VAD_MODEL_FILENAME: &str) { let _ = app.emit(VAD_MODEL_FILENAME, 1); }",
+        "fn shadow_let(app: &tauri::AppHandle) { let VAD_MODEL_FILENAME = \"recording-status-changed\"; let _ = app.emit(VAD_MODEL_FILENAME, 1); }",
+        "fn shadow_path(app: &tauri::AppHandle) { let _ = app.emit(bogus::VAD_MODEL_FILENAME, 1); }",
+        "use crate::vad::VAD_MODEL_URL as VAD_MODEL_FILENAME;\nfn shadow_import(app: &tauri::AppHandle) { let _ = app.emit(VAD_MODEL_FILENAME, 1); }",
+    ] {
+        let sources = sources_with(
+            "commands/models.rs",
+            "pub(crate) async fn ensure_vad_model<R: tauri::Runtime>(",
+            &format!("{plant}\n\npub(crate) async fn ensure_vad_model<R: tauri::Runtime>("),
+        );
+        let error = the_status_ratchet_rejects(&sources);
+        assert!(error.contains("commands/models.rs"), "{plant}: {error}");
+    }
+}
+
+/// Round-3 probe 4: a local macro named `concat` can return the status event while the
+/// scanner evaluates its arguments as the built-in would.
+#[test]
+fn a_local_concat_macro_fails_the_status_ratchet() {
+    let sources = sources_with(
+        "commands/models.rs",
+        "pub(crate) async fn ensure_vad_model<R: tauri::Runtime>(",
+        "macro_rules! concat { ($($t:tt)*) => { \"recording-status-changed\" }; }\n\npub(crate) async fn ensure_vad_model<R: tauri::Runtime>(",
+    );
+    let error = the_status_ratchet_rejects(&sources);
+    // Every `concat!` in the crate is now unproven.
+    assert!(error.contains("commands/models.rs"), "{error}");
+    let sources =
+        models_with("let _ = app_handle.emit(concat!(\"recording-status-\", \"changed\"), 1);");
+    assert!(the_status_ratchet_rejects(&sources).contains("ensure_vad_model_with_progress"));
+}
+
+/// Round-3 probe 5: `OwnedJsonEmit::emit_json` remapped an event through an unpinned
+/// boxed closure. The idle emitter has no event parameter now, and its forwarding
+/// bodies are pinned.
+#[test]
+fn editing_the_owned_idle_emitter_fails_the_status_ratchet() {
+    let sources = sources_with(
+        "commands/recording/process_audio_ports.rs",
+        "    pub(super) fn emit_idle(&self) -> Result<(), HostEmitError> {\n        (self.0)()\n    }",
+        "    pub(super) fn emit_idle(&self) -> Result<(), HostEmitError> {\n        let _ = &self;\n        (self.0)()\n    }",
+    );
+    let error = the_status_ratchet_rejects(&sources);
+    assert!(
+        error.contains("OwnedIdleEmit::emit_idle") && error.contains("was edited"),
+        "{error}"
+    );
+}
+
+/// Round-3 probe 6: `dictation-generation-started` sent through the idle emitter's
+/// spelling. Each wrapper name reaches one destination and is checked against that
+/// destination's declared events: the import wrapper does not declare
+/// `recording-cancelled`, the dictation host's `emit_json` does not declare an event
+/// no host caller passes.
 #[test]
 fn a_wrapper_caller_must_pass_a_declared_resolvable_name() {
     let call = |body: &str| {
@@ -1976,27 +2414,93 @@ fn a_wrapper_caller_must_pass_a_declared_resolvable_name() {
             "fn process_audio_inner",
             &format!("fn planted(host: &H, name: &str) {{ {body} }}\nfn process_audio_inner"),
         );
-        let found = event_sites(&sources);
-        check_event_sites(&found, &STATUS_EVENT_ALLOWLIST, &DYNAMIC_EMIT_ALLOWLIST)
+        check_tree(&event_sites(&sources))
     };
-    // A declared literal passes the wrapper check (only the status ones are status
-    // sites, so use a non-status declared name).
     assert!(call("let _ = host.emit_event(\"transcription-complete\", 1);").is_ok());
-    // An undeclared name, an unresolvable name, and the same through the closure.
+    assert!(call("let _ = host.emit_import_json(\"dictation-generation-started\", 1);").is_ok());
     for body in [
         "let _ = host.emit_event(\"not-declared\", 1);",
         "let _ = host.emit_event(name, 1);",
-        "let _ = host.emit_json(\"recording-cancelled\", 1);",
-        "let emit = host.idle_emitter(); let _ = emit.emit_json(name, 1);",
-        "let emit = host.idle_emitter(); let _ = emit.emit_json(\"recording-cancelled\", 1);",
+        "let _ = host.emit_import_json(\"recording-cancelled\", 1);",
+        "let _ = host.emit_import_json(name, 1);",
+        "let _ = host.emit_json(\"also-not-declared\", 1);",
     ] {
         assert!(call(body).is_err(), "{body}");
     }
 }
 
+/// D-S2b-10 (d): a file that skips itself through a `cfg_attr` path alias still fails.
+#[test]
+fn a_production_path_attribute_fails_the_status_ratchet() {
+    for attr in [
+        "#[path = \"barrier_hook.rs\"]",
+        "#[cfg_attr(not(test), path = \"barrier_hook.rs\")]",
+        "#[cfg_attr(all(), cfg_attr(unix, path = \"barrier_hook.rs\"))]",
+    ] {
+        let sources = sources_with(
+            "lib.rs",
+            "mod barrier_hook;\n",
+            &format!("mod barrier_hook;\n{attr}\nmod production_barrier;\n"),
+        );
+        let error = the_status_ratchet_rejects(&sources);
+        assert!(
+            error.contains("production_barrier") && error.contains("path"),
+            "{attr}: {error}"
+        );
+    }
+}
+
+/// A function named like a host wrapper that is not the reviewed entry fails.
+#[test]
+fn a_second_function_named_like_a_wrapper_fails_the_status_ratchet() {
+    let sources = sources_with(
+        "commands/models.rs",
+        "pub(crate) async fn ensure_vad_model<R: tauri::Runtime>(",
+        "fn emit_event(app: &tauri::AppHandle) { let _ = app; }\n\npub(crate) async fn ensure_vad_model<R: tauri::Runtime>(",
+    );
+    assert!(the_status_ratchet_rejects(&sources).contains("named like a host wrapper"));
+}
+
+/// Editing a pinned wrapper fails; whitespace, comments and doc comments do not.
+#[test]
+fn editing_a_pinned_wrapper_fails_but_reformatting_does_not() {
+    const OLD: &str = "    fn emit_json(&self, event: &str, payload: serde_json::Value) -> Result<(), HostEmitError> {\n        self.app\n            .emit(event, payload)";
+    let reformatted = sources_with(
+        "commands/recording_host.rs",
+        OLD,
+        "    /// A doc comment.\n    fn emit_json(&self,   event: &str,\n        payload: serde_json::Value) -> Result<(), HostEmitError> {\n        // a comment\n        self.app.emit(event, payload)",
+    );
+    check_tree(&event_sites(&reformatted)).expect("whitespace and comments keep the pinned hash");
+    // A token edit, and a trailing comma, fail: every comma is part of the pin.
+    for edited in [
+        "    fn emit_json(&self, event: &str, payload: serde_json::Value) -> Result<(), HostEmitError> {\n        let _ = &payload;\n        self.app\n            .emit(event, payload)",
+        "    fn emit_json(&self, event: &str, payload: serde_json::Value,) -> Result<(), HostEmitError> {\n        self.app\n            .emit(event, payload)",
+    ] {
+        let sources = sources_with("commands/recording_host.rs", OLD, edited);
+        assert!(the_status_ratchet_rejects(&sources).contains("was edited"), "{edited}");
+    }
+}
+
+/// D-S2b-10 (e): the pin keeps punctuation spacing and every comma.
+#[test]
+fn the_token_hash_keeps_commas_and_punctuation_spacing() {
+    let hash = |code: &str| token_hash(&syn::parse_str::<syn::ItemFn>(code).expect("a function"));
+    assert_ne!(
+        hash("fn f() { let _ = (x,); }"),
+        hash("fn f() { let _ = (x); }")
+    );
+    assert_ne!(hash("fn f() { m!(&&x); }"), hash("fn f() { m!(& &x); }"));
+    assert_ne!(hash("fn f(a: u8,) {}"), hash("fn f(a: u8) {}"));
+    assert_eq!(
+        hash("fn f() {\n    // comment\n    /// doc\n    let _ = 1;\n}"),
+        hash("fn f(){let _=1;}")
+    );
+}
+
 /// Counts for one synthetic file: `(status emits, status listeners, unresolved emits)`.
+/// The file is `lib.rs`, the crate root: its module path is `crate`.
 fn event_counts(source: &str) -> (usize, usize, usize) {
-    let found = event_sites(&[("x.rs".to_string(), source.to_string())]);
+    let found = event_sites(&[("lib.rs".to_string(), source.to_string())]);
     let status = |wanted: &str| {
         found
             .status
@@ -2013,33 +2517,40 @@ fn event_counts(source: &str) -> (usize, usize, usize) {
 }
 
 #[test]
-fn the_event_scanner_resolves_only_literals_concat_and_consts() {
+fn the_event_scanner_resolves_by_proof_only() {
     // (source, status emits, status listeners, unresolved emits)
-    let cases: [(&str, (usize, usize, usize)); 24] = [
+    let cases: [(&str, (usize, usize, usize)); 38] = [
         ("fn f(a: &A) { a.emit(\"recording-status-changed\", 1); }", (1, 0, 0)),
         ("fn f(a: &A) { a.emit(\"other\", 1); }", (0, 0, 0)),
         ("fn f(a: &A) { a.emit(concat!(\"recording-status-\", \"changed\"), 1); }", (1, 0, 0)),
-        (
-            "fn f(a: &A) { a.emit(concat!(\"recording\", \"-status\", \"-changed\"), 1); }",
-            (1, 0, 0),
-        ),
+        ("fn f(a: &A) { a.emit(std::concat!(\"recording-status-\", \"changed\"), 1); }", (1, 0, 0)),
         ("const E: &str = \"recording-status-changed\"; fn f(a: &A) { a.emit(E, 1); }", (1, 0, 0)),
         ("static E: &str = \"recording-status-changed\"; fn f(a: &A) { a.emit(E, 1); }", (1, 0, 0)),
         (
             "const E: &str = concat!(\"recording-status-\", \"changed\"); fn f(a: &A) { a.emit(crate::E, 1); }",
             (1, 0, 0),
         ),
+        (
+            "mod m { pub const E: &str = \"recording-status-changed\"; } fn f(a: &A) { a.emit(m::E, 1); }",
+            (1, 0, 0),
+        ),
+        (
+            "mod m { pub const E: &str = \"recording-status-changed\"; } use m::E; fn f(a: &A) { a.emit(E, 1); }",
+            (1, 0, 0),
+        ),
         ("fn f(a: &A) { a.emit_to(\"main\", \"recording-status-changed\", 1); }", (1, 0, 0)),
         ("fn f(a: &A) { tauri::Emitter::emit(a, concat!(\"recording-status-\", \"changed\"), 1); }", (1, 0, 0)),
         ("fn f(a: &A) { a.listen_any(\"recording-status-changed\", |_| ()); }", (0, 1, 0)),
         ("fn f(a: &A) { w!(a, concat!(\"recording-status-\", \"changed\")); }", (1, 0, 0)),
+        ("fn f(a: &A) { w!(a.emit(\"recording-status-changed\", 1)); }", (1, 0, 0)),
+        ("fn f(a: &A) { w! { let _ = a.emit(\"recording-status-changed\", 1); } }", (1, 0, 0)),
         // A name that is not the status event, a test-only emit, a pure macro.
         ("fn f(a: &A) { a.emit(\"recording-status-changedx\", 1); }", (0, 0, 0)),
         ("#[cfg(test)] fn f(a: &A) { a.emit(\"recording-status-changed\", 1); }", (0, 0, 0)),
         ("fn f() { let n = format!(\"{}\", \"recording-status-changed\"); }", (0, 0, 0)),
         // Unresolved, however innocent: a parameter, a call, a field, a `let`, a
         // reassigned `let mut`, a loop variable, a method result, a const of a const,
-        // a const that is not a literal.
+        // a const that is not a literal, an undeclared or doubly declared path.
         ("fn f(a: &A, name: &str) { a.emit(name, 1); }", (0, 0, 1)),
         ("fn f(a: &A) { a.emit(event_name(), 1); }", (0, 0, 1)),
         ("fn f(a: &A, s: &S) { a.emit(s.event, 1); }", (0, 0, 1)),
@@ -2048,10 +2559,7 @@ fn the_event_scanner_resolves_only_literals_concat_and_consts() {
             "fn f(a: &A) { let mut e = \"x\"; e = \"recording-status-changed\"; a.emit(e, 1); }",
             (0, 0, 1),
         ),
-        (
-            "fn f(a: &A) { for e in [\"recording-status-changed\"] { a.emit(e, 1); } }",
-            (0, 0, 1),
-        ),
+        ("fn f(a: &A) { for e in [\"recording-status-changed\"] { a.emit(e, 1); } }", (0, 0, 1)),
         ("fn f(a: &A) { a.emit(\"recording-status-changed\".to_string(), 1); }", (0, 0, 1)),
         (
             "const A: &str = \"recording-status-changed\"; const B: &str = A; fn f(a: &A) { a.emit(B, 1); }",
@@ -2062,6 +2570,46 @@ fn the_event_scanner_resolves_only_literals_concat_and_consts() {
             (0, 0, 1),
         ),
         ("fn f(a: &A) { a.emit(String::from(\"recording-status-changed\"), 1); }", (1, 0, 1)),
+        ("fn f(a: &A) { a.emit(nowhere::E, 1); }", (0, 0, 1)),
+        (
+            "const E: &str = \"recording-status-changed\"; mod m { const E: &str = \"x\"; } fn f(a: &A) { a.emit(E, 1); }",
+            (1, 0, 0),
+        ),
+        // A binding that shares the identifier is not the constant: a parameter, a
+        // `let`, a closure parameter, a `use .. as`.
+        (
+            "const E: &str = \"recording-status-changed\"; fn f(a: &A, E: &str) { a.emit(E, 1); }",
+            (0, 0, 1),
+        ),
+        (
+            "const E: &str = \"recording-status-changed\"; fn f(a: &A) { let E = \"x\"; a.emit(E, 1); }",
+            (0, 0, 1),
+        ),
+        (
+            "const E: &str = \"recording-status-changed\"; fn f(a: &A) { let g = |E: &str| a.emit(E, 1); }",
+            (0, 0, 1),
+        ),
+        (
+            "const E: &str = \"recording-status-changed\"; use other::X as E; fn f(a: &A) { a.emit(E, 1); }",
+            (0, 0, 1),
+        ),
+        // A local macro named `concat` is not the built-in.
+        (
+            "macro_rules! concat { () => {}; } fn f(a: &A) { a.emit(concat!(\"recording-status-\", \"changed\"), 1); }",
+            (0, 0, 1),
+        ),
+        // A macro body that does not parse and names an emitter fails.
+        ("fn f(a: &A) { w!(x = %a.emit(\"recording-status-changed\", 1)); }", (1, 0, 1)),
+        // A constant declared twice at one path is not proven.
+        (
+            "const E: &str = \"recording-status-changed\"; const E: &str = \"x\"; fn f(a: &A) { a.emit(E, 1); }",
+            (0, 0, 1),
+        ),
+        // A const of another module is not in scope without a path or `use`.
+        (
+            "mod m { pub const E: &str = \"recording-status-changed\"; } fn f(a: &A) { a.emit(E, 1); }",
+            (0, 0, 1),
+        ),
     ];
     for (source, expected) in cases {
         assert_eq!(event_counts(source), expected, "{source}");
@@ -2075,25 +2623,75 @@ fn the_event_scanner_resolves_only_literals_concat_and_consts() {
     );
 }
 
+/// D-S2b-10 (a): an emitter outside a direct call escapes the argument checks.
+#[test]
+fn the_event_scanner_flags_an_emitter_outside_a_direct_call() {
+    let escapes = |source: &str| {
+        event_sites(&[("lib.rs".to_string(), source.to_string())])
+            .escapes
+            .len()
+    };
+    assert_eq!(
+        escapes("fn f(a: &A) { let p = tauri::Emitter::emit; p(a, \"x\", 1); }"),
+        1
+    );
+    assert_eq!(escapes("fn f() -> fn(&A) { Emitter::emit }"), 1);
+    assert_eq!(escapes("fn f() { g(Emitter::emit_json); }"), 1);
+    assert_eq!(escapes("fn f() { w!(Emitter::emit); }"), 1);
+    // Direct calls, however written, are not escapes.
+    assert_eq!(
+        escapes("fn f(a: &A) { a.emit(\"x\", 1); tauri::Emitter::emit(a, \"x\", 1); }"),
+        0
+    );
+    assert_eq!(
+        escapes("fn f(a: &A) { w!(tauri::Emitter::emit(a, \"x\", 1)); }"),
+        0
+    );
+}
+
 #[test]
 fn a_reviewed_dynamic_emitter_needs_its_pin_and_declarations() {
     let source = "fn wrap(a: &A, name: &str) { a.emit(name, 1); }";
-    let found = event_sites(&[("x.rs".to_string(), source.to_string())]);
-    let hash = found.dynamic[&("x.rs".to_string(), "wrap".to_string())].2;
-    let entry = |hash, names: &'static [&'static str]| {
+    let found = event_sites(&[("lib.rs".to_string(), source.to_string())]);
+    let hash = found.dynamic[&("lib.rs".to_string(), "wrap".to_string())].2;
+    let entry = |hash, wrapper, names: &'static [&'static str]| {
         [DynamicEmitter {
-            file: "x.rs",
+            file: "lib.rs",
             function: "wrap",
             emits: 1,
-            wrappers: &["emit_json"],
+            wrapper,
             names,
             hash,
         }]
     };
-    assert!(check_event_sites(&found, &[], &entry(hash, &["a"])).is_ok());
-    assert!(check_event_sites(&found, &[], &entry(hash ^ 1, &["a"])).is_err());
-    assert!(check_event_sites(&found, &[], &entry(hash, &[])).is_err());
-    assert!(check_event_sites(&found, &[], &[]).is_err());
+    let ok = |entries: &[DynamicEmitter]| check_event_sites(&found, &[], entries, &[]);
+    assert!(ok(&entry(hash, "emit_json", &["a"])).is_ok());
+    assert!(ok(&entry(hash ^ 1, "emit_json", &["a"])).is_err());
+    assert!(ok(&entry(hash, "emit_json", &[])).is_err());
+    assert!(ok(&entry(hash, "not_a_wrapper", &["a"])).is_err());
+    assert!(ok(&[]).is_err());
+    // A pinned function must exist and keep its hash.
+    assert!(check_event_sites(
+        &found,
+        &[],
+        &entry(hash, "emit_json", &["a"]),
+        &[("lib.rs", "wrap", hash)]
+    )
+    .is_ok());
+    assert!(check_event_sites(
+        &found,
+        &[],
+        &entry(hash, "emit_json", &["a"]),
+        &[("lib.rs", "wrap", hash ^ 1)]
+    )
+    .is_err());
+    assert!(check_event_sites(
+        &found,
+        &[],
+        &entry(hash, "emit_json", &["a"]),
+        &[("lib.rs", "gone", 0)]
+    )
+    .is_err());
 }
 
 /// The one function allowed to call `PersistedCore::new` (decision D-S1-5 a).
@@ -2229,46 +2827,12 @@ fn test_only_files_are_skipped_and_production_files_are_scanned() {
     assert!(names.contains(&"dictation_executor/adapter.rs"));
 }
 
-/// D-S2-17: every skipped file follows the test naming convention, and the
-/// exceptions do not (so the exception list cannot hide a conforming file or a
-/// production file under a wrong name).
+/// D-S2b-10 (d), fail-closed: a file is skipped only by its own `#![cfg(test)]`. An
+/// ungated file, whatever its name, is production and fails when it holds a terminal
+/// call; a conditional gate (`any(test, ..)`) and a gate written in another file do
+/// not skip it.
 #[test]
-fn every_test_only_file_follows_the_naming_convention() {
-    for file in TEST_ONLY_FILES {
-        assert!(
-            follows_test_naming(file),
-            "{file} is in TEST_ONLY_FILES but does not follow the test naming convention \
-             (`*_tests.rs`, `tests.rs`, or under `tests/` or `test_support/`); list it in \
-             TEST_ONLY_NAMING_EXCEPTIONS with a comment instead"
-        );
-    }
-    for file in TEST_ONLY_NAMING_EXCEPTIONS {
-        assert!(
-            !follows_test_naming(file),
-            "{file} follows the convention: move it to TEST_ONLY_FILES"
-        );
-        assert!(!TEST_ONLY_FILES.contains(file), "{file} is listed twice");
-    }
-}
-
-/// D-S2-17: every listed file exists, so a rename or a deletion cannot leave a stale
-/// entry that would later skip an unrelated file of the same name.
-#[test]
-fn every_test_only_file_exists() {
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    for file in TEST_ONLY_FILES.iter().chain(TEST_ONLY_NAMING_EXCEPTIONS) {
-        assert!(
-            src.join(file).is_file(),
-            "{file} is listed as test-only but does not exist under src/"
-        );
-    }
-}
-
-/// D-S2-17 (fail-closed): a file nobody listed is production. A production file that
-/// is missing from the list and holds a terminal call fails the ratchet, and so does a
-/// test-looking file that was not listed (a loud false positive, never a silent miss).
-#[test]
-fn an_unlisted_file_with_a_terminal_call_fails_the_ratchet() {
+fn a_file_is_skipped_only_by_its_own_cfg_test() {
     let allowed = [("commands/a.rs", "run", 1)];
     let dir = tempfile::tempdir().expect("temp dir");
     let write = |name: &str, code: &str| {
@@ -2278,34 +2842,25 @@ fn an_unlisted_file_with_a_terminal_call_fails_the_ratchet() {
     };
     write("commands/a.rs", "fn run() { emit_dictation_terminal(a); }");
     write(
-        "commands/new_production.rs",
-        "fn f() { emit_dictation_terminal(b); }",
-    );
-    write(
         "commands/new_feature_tests.rs",
         "fn g() { emit_dictation_terminal(c); }",
     );
-    let check = |skip: &dyn Fn(&str) -> bool| {
-        check_terminal_emit_callers(
-            &terminal_emit_callers(&scan_dir(dir.path(), skip)),
-            &allowed,
-        )
-    };
-    // Nothing listed: the unlisted production file and the unlisted test-named file
-    // are both scanned.
-    let found = check(&|_| false).expect_err("two unlisted files with a terminal call");
-    assert!(found.contains("commands/new_production.rs"), "{found}");
-    assert!(found.contains("commands/new_feature_tests.rs"), "{found}");
-    // Listing the test file (and only it) leaves the production file failing.
-    let listed = |name: &str| name == "commands/new_feature_tests.rs";
-    let found = check(&listed).expect_err("the production file is still scanned");
-    assert!(found.contains("commands/new_production.rs"), "{found}");
-    assert!(!found.contains("new_feature_tests"), "{found}");
-    // Listing both is the only way to pass.
-    assert_eq!(
-        check(&|name: &str| name != "commands/a.rs" && name.starts_with("commands/new_")),
-        Ok(())
+    write(
+        "commands/conditional.rs",
+        "#![cfg(any(test, unix))]\nfn h() { emit_dictation_terminal(d); }",
     );
+    write(
+        "commands/gated_tests.rs",
+        "//! docs\n#![cfg(test)]\nfn k() { emit_dictation_terminal(e); }",
+    );
+    let found = check_terminal_emit_callers(
+        &terminal_emit_callers(&scan_dir_self_gated(dir.path())),
+        &allowed,
+    )
+    .expect_err("the ungated and the conditionally gated files are scanned");
+    assert!(found.contains("commands/new_feature_tests.rs"), "{found}");
+    assert!(found.contains("commands/conditional.rs"), "{found}");
+    assert!(!found.contains("gated_tests"), "{found}");
 }
 
 /// The D-S1-5 (a) gate fails on a second caller anywhere: in another file, in

@@ -4957,16 +4957,12 @@ async fn process_audio_inner(
     let wav_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, audio_data)
         .map_err(|e| {
             let emit = host.idle_emitter();
-            guard.finish_owned(move |_| {
-                emit.emit_json("recording-status-changed", serde_json::json!("idle"))
-            });
+            guard.finish_owned(move |_| emit.emit_idle());
             format!("Failed to decode base64: {}", e)
         })?;
     let samples = transcriber::parse_wav_to_samples(&wav_bytes).inspect_err(|_e| {
         let emit = host.idle_emitter();
-        guard.finish_owned(move |_| {
-            emit.emit_json("recording-status-changed", serde_json::json!("idle"))
-        });
+        guard.finish_owned(move |_| emit.emit_idle());
     })?;
     tracing::info!(target: "pipeline", "audio parse (base64 + WAV): {:?}", t_parse.elapsed());
     performance_guard.record(StageTimingV1::measured(
@@ -5007,7 +5003,7 @@ async fn process_audio_inner(
         murmur_dictation_core::inputs::PostKind::LegacyPost,
         &|processing| host.set_processing(processing),
         &|| {
-            host.emit_json("recording-status-changed", serde_json::json!("idle"))
+            host.emit_import_json("recording-status-changed", serde_json::json!("idle"))
                 .is_ok()
         },
     );

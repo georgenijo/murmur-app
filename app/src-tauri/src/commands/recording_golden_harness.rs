@@ -32,6 +32,7 @@
 //! partial ticker's hide ownership, the interrupted-capture store, the
 //! performance begin ledger) is reset before and after every run, and runs are
 //! serialized by [`GOLDEN_LOCK`].
+#![cfg(test)]
 
 use super::dictation_host::{
     HostEmitError, HostFuture, KeyboardPort, PerformancePort, SmartDestinationPort, SupervisorPort,

@@ -10,6 +10,7 @@
 //! The behaviour tests (no `history_` in the name) assert only what the command
 //! did before sites 301/302 moved behind `decide_*`; they hold on the base. The
 //! `history_` tests read `core_history` and need the registration of R301.5.
+#![cfg(test)]
 use super::*;
 use std::sync::Mutex as StdMutex;
 use std::task::{Context, Poll, Waker};
@@ -113,7 +114,7 @@ impl FakeHost {
 }
 
 impl ImportedAudioHost for FakeHost {
-    fn emit_json(
+    fn emit_import_json(
         &self,
         event: &str,
         payload: serde_json::Value,
@@ -131,10 +132,11 @@ impl ImportedAudioHost for FakeHost {
         Ok(())
     }
 
-    fn idle_emitter(&self) -> super::process_audio_ports::OwnedJsonEmit {
+    fn idle_emitter(&self) -> super::process_audio_ports::OwnedIdleEmit {
         let (log, history) = (Arc::clone(&self.log), self.history.clone());
-        super::process_audio_ports::OwnedJsonEmit::new(move |event, payload| {
+        super::process_audio_ports::OwnedIdleEmit::new(move || {
             let (h2, h1) = (history.pipeline_count(), history.outstanding_ops());
+            let (event, payload) = ("recording-status-changed", serde_json::json!("idle"));
             locked(&log).push(format!("emit {event} {payload} h2={h2} h1={h1}"));
             Ok(())
         })

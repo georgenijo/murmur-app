@@ -15,6 +15,7 @@
 //!
 //! The revert and mutation each test must fail under is recorded in the PR body
 //! and, in short, on each test.
+#![cfg(test)]
 
 use super::golden_harness::*;
 use super::golden_tests::{recording, started, stopped};

@@ -6,6 +6,7 @@
 //! Modes and is frozen evidence now. The frontend migration (`legacyModes.ts`)
 //! rewrites the same settings into `migrated-matrix.json`; the resolver over
 //! those migrated settings must reproduce every field that still has a home.
+#![cfg(test)]
 
 use crate::commands::recording::sanitize_app_profiles;
 use crate::dictation_context::{resolve, DictationContextSnapshot, ResolverInputs};

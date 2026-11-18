@@ -1,3 +1,4 @@
+#![cfg(test)]
 use super::*;
 use tracing_subscriber::layer::{Context, SubscriberExt};
 use tracing_subscriber::Layer;
