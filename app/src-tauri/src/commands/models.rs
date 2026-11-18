@@ -9,6 +9,14 @@ use tauri::Emitter;
 
 static VAD_INSTALL_LOCK: LazyLock<tokio::sync::Mutex<()>> =
     LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// Test builds only: take the VAD install lock, as a parked installer holds it (the
+/// #117 replay's blocked-installer test).
+#[cfg(test)]
+pub(crate) fn hold_vad_install_lock_for_test() -> tokio::sync::MutexGuard<'static, ()> {
+    VAD_INSTALL_LOCK.blocking_lock()
+}
+
 static MODEL_INSTALL_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 
 // Register ownership before waiting on any install lock. Cancellation targets

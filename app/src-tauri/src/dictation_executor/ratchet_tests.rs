@@ -18,17 +18,23 @@
 //!   persisted value without an effect commit, so only the seeding adapter may
 //!   call it (decision D-S1-5 a).
 //!
-//! The scan sees **production code only**, and fails closed (D-S2-17). It walks every
-//! `.rs` file under `src/` and skips a whole file only when it is listed in
-//! `TEST_ONLY_FILES` (or the commented naming exceptions); the ratchet no longer
-//! resolves the module tree. Guard tests keep the list honest: every entry exists and
-//! follows the test naming convention. Inside a scanned file `#[cfg(test)]` items
-//! are skipped by their `cfg` predicate (only a predicate that requires `test`), also
-//! through the attributes of an enclosing `extern`, `impl`, `trait` or inline `mod`.
-//! The per-function call-site checks parse real Rust syntax (`syn`) and name each
-//! caller by its qualified identity (module path, `impl` type or `<Type as Trait>`,
-//! fn names), so same-named functions in sibling modules, impls or trait impls
-//! differ; the textual checks blank comments and literals first.
+//! * `status_events_are_emitted_only_by_the_allowlisted_functions`: every call that can
+//!   carry `recording-status-changed` is pinned per enclosing function, and an event
+//!   name the scan cannot prove is allowed only inside a hash-pinned wrapper (D-S2b-10;
+//!   `README.md` in this directory states what the scan proves and its threat model).
+//!
+//! The scan sees **production code only**, and fails closed (D-S2-17, D-S2b-10 d). It
+//! walks every `.rs` file under `src/` and skips a whole file only when it starts with
+//! its own `#![cfg(test)]`; the ratchet does not resolve the module tree, and a
+//! `#[path]` or `cfg_attr(.., path = ..)` in production source fails (only the reviewed
+//! `PATH_ATTR_ALLOWLIST` declarations pass), so a self-gated file cannot be compiled
+//! into the app under an alias. Inside a scanned file `#[cfg(test)]` items are skipped
+//! by their `cfg` predicate (only a predicate that requires `test`), also through the
+//! attributes of an enclosing `extern`, `impl`, `trait` or inline `mod`. The
+//! per-function call-site checks parse real Rust syntax (`syn`) and name each caller by
+//! its qualified identity (module path, `impl` type or `<Type as Trait>`, fn names), so
+//! same-named functions in sibling modules, impls or trait impls differ; the textual
+//! checks blank comments and literals first.
 #![cfg(test)]
 
 use regex::Regex;

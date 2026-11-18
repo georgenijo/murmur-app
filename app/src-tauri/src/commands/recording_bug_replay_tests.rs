@@ -714,29 +714,50 @@ fn sp5_models_rs_emits_no_recording_status() {
 
 /// The real `ensure_vad_model` on a worker thread (the pipeline starts it as a
 /// fire-and-forget task), against a fake download (`vad::test_seam`) parked until
-/// released. Dropping it releases the download and joins the worker, so a failing
-/// assertion in a replay never leaves a parked thread behind.
+/// released. The worker has an explicit cancellation path and every join is bounded
+/// (D-S2b-10 g): a worker that cannot make progress (here: one waiting on the install
+/// lock another installer holds) is cancelled, and a worker that still does not stop
+/// fails the test instead of hanging it. Dropping releases the download, cancels and
+/// joins within the bound, so a failing assertion never leaves a thread behind.
 struct VadInstall {
     seam: crate::vad::test_seam::Installed,
+    cancel: Arc<tokio::sync::Notify>,
     worker: Option<std::thread::JoinHandle<Result<(), String>>>,
 }
 
 /// The longest a replay waits for the install to park before it fails.
 const VAD_PARK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// The longest the worker may take to stop after the download is released.
+const VAD_JOIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// The longest the worker may take to stop after it is cancelled.
+const VAD_CANCEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The error a cancelled install returns.
+const VAD_INSTALL_CANCELLED: &str = "the VAD install was cancelled";
 
 impl VadInstall {
     fn start(world: &Arc<World>, models_dir: &std::path::Path) -> Self {
         let seam = crate::vad::test_seam::install(models_dir);
         let handle = world.app_handle();
+        let cancel = Arc::new(tokio::sync::Notify::new());
+        let worker_cancel = Arc::clone(&cancel);
         let worker = std::thread::spawn(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("runtime")
-                .block_on(super::super::models::ensure_vad_model(&handle))
+                .block_on(async {
+                    // Every wait inside the install is async, so dropping its future
+                    // (the lock wait, the parked download) is a real cancellation.
+                    tokio::select! {
+                        result = super::super::models::ensure_vad_model(&handle) => result,
+                        () = worker_cancel.notified() => Err(VAD_INSTALL_CANCELLED.to_string()),
+                    }
+                })
         });
         Self {
             seam,
+            cancel,
             worker: Some(worker),
         }
     }
@@ -744,12 +765,13 @@ impl VadInstall {
     /// `Ok` when the install parked in its download; `Err` when it finished first (its
     /// result) or did not park in time.
     fn wait_parked(&mut self) -> Result<(), String> {
+        self.wait_parked_within(VAD_PARK_TIMEOUT)
+    }
+
+    fn wait_parked_within(&mut self, timeout: std::time::Duration) -> Result<(), String> {
         use crate::vad::test_seam::Parked;
         let worker = self.worker.as_ref().expect("the worker");
-        match self
-            .seam
-            .wait_parked(|| worker.is_finished(), VAD_PARK_TIMEOUT)
-        {
+        match self.seam.wait_parked(|| worker.is_finished(), timeout) {
             Parked::Arrived => Ok(()),
             Parked::WorkerFinished => Err(format!(
                 "the VAD install finished before it parked: {:?}",
@@ -759,20 +781,71 @@ impl VadInstall {
         }
     }
 
-    /// Release the download and return the install's result.
+    /// Wait up to `timeout` for the worker, then collect its result; `None` when it
+    /// is still running.
+    fn join_within(&mut self, timeout: std::time::Duration) -> Option<Result<(), String>> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if self
+                .worker
+                .as_ref()
+                .is_none_or(|worker| worker.is_finished())
+            {
+                return Some(match self.worker.take() {
+                    Some(worker) => worker.join().expect("the VAD install thread"),
+                    None => Err("the VAD install was already collected".to_string()),
+                });
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// Cancel the worker and wait for it within `VAD_CANCEL_TIMEOUT`.
+    fn cancel(&mut self) -> Result<Result<(), String>, String> {
+        self.cancel.notify_one();
+        self.join_within(VAD_CANCEL_TIMEOUT).ok_or_else(|| {
+            format!(
+                "the VAD install did not stop within {VAD_CANCEL_TIMEOUT:?} of its cancellation"
+            )
+        })
+    }
+
+    /// Release the download and return the install's result. A worker that does not
+    /// finish within `VAD_JOIN_TIMEOUT` is cancelled; one that still does not stop
+    /// fails the test.
     fn finish(&mut self) -> Result<(), String> {
         self.seam.release();
-        match self.worker.take() {
-            Some(worker) => worker.join().expect("the VAD install thread"),
-            None => Err("the VAD install was already collected".to_string()),
+        match self.join_within(VAD_JOIN_TIMEOUT) {
+            Some(result) => result,
+            None => match self.cancel() {
+                Ok(_) => panic!(
+                    "the VAD install did not finish within {VAD_JOIN_TIMEOUT:?} of its release \
+                     (it was cancelled)"
+                ),
+                Err(error) => panic!("{error}"),
+            },
         }
     }
 }
 
 impl Drop for VadInstall {
     fn drop(&mut self) {
-        if self.worker.is_some() {
-            let _ = self.finish();
+        if self.worker.is_none() {
+            return;
+        }
+        self.seam.release();
+        if let Err(error) = self.cancel() {
+            // The worker is detached (its handle is dropped, never joined): the test
+            // fails, it does not hang.
+            self.worker = None;
+            if std::thread::panicking() {
+                eprintln!("{error}");
+            } else {
+                panic!("{error}");
+            }
         }
     }
 }
@@ -807,6 +880,44 @@ fn bug117_a_failed_install_returns_promptly() {
     assert!(
         started.elapsed() < VAD_PARK_TIMEOUT / 2,
         "the failure path returned in {:?}, not by timeout",
+        started.elapsed()
+    );
+}
+
+/// D-S2b-10 (g): a replay bounds the installer's shutdown as well as its arrival. The
+/// installer here waits on the install lock another installer holds, so it never parks
+/// (the shape that hung the replay: the wait timed out, then `Drop` joined the blocked
+/// worker for good). The wait reports it, the cancellation stops the worker promptly
+/// with the cancellation error, and dropping the handle returns instead of hanging.
+#[test]
+fn bug117_a_blocked_installer_is_cancelled_not_awaited() {
+    let lock = super::super::models::hold_vad_install_lock_for_test();
+    let started = std::time::Instant::now();
+    let reports = std::sync::Mutex::new(None);
+    run_sub_run_observed(
+        &sub("117 installer blocked on the install lock", |_| {}),
+        &|w| {
+            let mut install = VadInstall::start(w, &bug117_models_dir());
+            let parked = install.wait_parked_within(std::time::Duration::from_millis(300));
+            let cancelled = install.cancel();
+            *reports.lock().unwrap() = Some((parked, cancelled));
+            // Dropped here with its worker already collected: nothing left to join.
+        },
+    );
+    drop(lock);
+    let (parked, cancelled) = reports.lock().unwrap().take().expect("the observer ran");
+    assert_eq!(
+        parked,
+        Err("the VAD install never parked in its download".to_string())
+    );
+    assert_eq!(
+        cancelled,
+        Ok(Err(VAD_INSTALL_CANCELLED.to_string())),
+        "the cancellation stops an installer that is blocked on the lock"
+    );
+    assert!(
+        started.elapsed() < VAD_CANCEL_TIMEOUT,
+        "shutdown was bounded, took {:?}",
         started.elapsed()
     );
 }
