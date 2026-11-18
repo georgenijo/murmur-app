@@ -356,7 +356,14 @@ fn production_sources() -> Vec<(String, String)> {
 /// `(path relative to src, raw source)`, for the syntax-aware scanner (it skips
 /// `#[cfg(test)]` items itself).
 fn raw_production_sources() -> Vec<(String, String)> {
-    scan_dir_self_gated(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+    raw_production_sources_in(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"))
+}
+
+/// The loader behind [`raw_production_sources`], by source root: the real-tree tests
+/// call it with `src/`, and the stale-source regression probe calls this same function
+/// with a temp dir, so a snapshot added here would be caught by that probe.
+fn raw_production_sources_in(src: &Path) -> Vec<(String, String)> {
+    scan_dir_self_gated(src)
 }
 
 /// Every `.rs` file under `dir` that does not gate itself with `#![cfg(test)]`. The
@@ -2901,7 +2908,9 @@ fn an_edited_file_is_never_answered_from_the_scan_cache() {
     let write = |name: &str, text: &str| {
         std::fs::write(dir.path().join(name), text).expect("write");
     };
-    let sites = || event_sites(&scan_dir_self_gated(dir.path()));
+    // The production loader (what `raw_production_sources` calls with `src/`), not a
+    // lower-level helper: a snapshot added to the loader must fail this test.
+    let sites = || event_sites(&raw_production_sources_in(dir.path()));
     let emits_in_a = |found: &EventSites| {
         found
             .status
