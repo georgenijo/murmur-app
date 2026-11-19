@@ -9781,8 +9781,8 @@ async fn cancel_native_recording_inner(
     _drain = DrainDeferredFinishes::new(&state.app_state);
     let now = core_now();
     // Site 205 (T held, D section): `decide_cancel_request`, inline at today's
-    // line. The view is built from the live fields under the D hold the section
-    // already takes.
+    // line. The view is built from the persisted core (M1/M2, C8.6: counted and
+    // re-synced against live) under the D hold the section already takes.
     // Declared before D, so a return submits the header after D is released.
     #[cfg(feature = "dictation-shadow")]
     let flight_205 = Flight::begin();

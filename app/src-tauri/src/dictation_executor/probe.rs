@@ -150,7 +150,11 @@ pub(crate) fn take_stop_entries() -> Vec<StopEntryRead> {
     )
 }
 
-static CANCEL_ENTRIES: std::sync::Mutex<Vec<StopEntryRead>> = std::sync::Mutex::new(Vec::new());
+/// What a cancel entry's C8.6 assertion read ([`EntryRead`]) and where the entry is: the
+/// `(file, line)` of its `FieldAdapter::cancel_view` call.
+pub(crate) type CancelEntryRead = (EntryRead, (&'static str, u32));
+
+static CANCEL_ENTRIES: std::sync::Mutex<Vec<CancelEntryRead>> = std::sync::Mutex::new(Vec::new());
 static CANCEL_ENTRIES_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// [`record_lifecycle_entries`] for the cancel family's entry (`FieldAdapter::cancel_view`).
@@ -158,8 +162,8 @@ pub(crate) fn record_cancel_entries(on: bool) {
     CANCEL_ENTRIES_ON.store(on, Ordering::Relaxed);
 }
 
-/// [`stop_entry`] for the cancel family: what a cancel entry's C8.6 assertion read, as read
-/// at the entry, with the entry's call site.
+/// What a cancel entry's C8.6 assertion read, as read at the entry, with the entry's call
+/// site.
 pub(crate) fn cancel_entry(
     persisted: (
         murmur_dictation_core::status::Status,
@@ -181,7 +185,7 @@ pub(crate) fn cancel_entry(
 }
 
 /// Every cancel entry's read since the last call, oldest first.
-pub(crate) fn take_cancel_entries() -> Vec<StopEntryRead> {
+pub(crate) fn take_cancel_entries() -> Vec<CancelEntryRead> {
     std::mem::take(
         &mut *CANCEL_ENTRIES
             .lock()

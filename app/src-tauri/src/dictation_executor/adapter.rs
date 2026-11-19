@@ -38,9 +38,31 @@ use std::sync::Arc;
 /// the live fields directly.
 static CORE_DIVERGENCES: AtomicU64 = AtomicU64::new(0);
 
-/// The divergences counted so far.
+/// The divergences counted so far (in a test build, less the ones a test planted on purpose:
+/// [`forgive_planted_divergences`]).
 pub(crate) fn core_divergences() -> u64 {
+    let counted = CORE_DIVERGENCES.load(Ordering::SeqCst);
+    #[cfg(test)]
+    let counted = counted.saturating_sub(FORGIVEN_DIVERGENCES.load(Ordering::SeqCst));
+    counted
+}
+
+/// Divergences a test planted on purpose, which the golden harness's invariant
+/// (`core_divergences() <= baseline`) must not count (cancel cutover tests).
+#[cfg(test)]
+static FORGIVEN_DIVERGENCES: AtomicU64 = AtomicU64::new(0);
+
+/// Test builds: every divergence counted, planted ones included.
+#[cfg(test)]
+pub(crate) fn core_divergences_counted() -> u64 {
     CORE_DIVERGENCES.load(Ordering::SeqCst)
+}
+
+/// Test builds: allow `planted` more divergences to be counted without the harness's
+/// invariant seeing them; `0` clears the allowance.
+#[cfg(test)]
+pub(crate) fn forgive_planted_divergences(planted: u64) {
+    FORGIVEN_DIVERGENCES.store(planted, Ordering::SeqCst);
 }
 
 /// The app's status for a core status (the inverse of [`core_status`]): how the

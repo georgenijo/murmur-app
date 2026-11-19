@@ -57,16 +57,16 @@ const E204B: &str = "run_pipeline_idle_emit#0";
 const E301: &str = "process_audio_inner#0";
 const E3016: &str = "process_audio_inner#1";
 
-pub(super) type Pair = (Status, RecordingId);
+type Pair = (Status, RecordingId);
 
-pub(super) fn recording_source() -> String {
+fn recording_source() -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/recording.rs");
     std::fs::read_to_string(path).expect("recording.rs")
 }
 
 /// Every free function and method of `recording.rs` (not those of its test modules), as
 /// `(name, first line, last line)`.
-pub(super) fn fn_spans(source: &str) -> Vec<(String, usize, usize)> {
+fn fn_spans(source: &str) -> Vec<(String, usize, usize)> {
     use syn::spanned::Spanned;
     let file = syn::parse_file(source).expect("recording.rs parses");
     let mut spans = Vec::new();
@@ -95,7 +95,7 @@ pub(super) fn fn_spans(source: &str) -> Vec<(String, usize, usize)> {
 }
 
 /// The lines of `source` (1-based) that hold `needle`, inside the function `name`.
-pub(super) fn lines_with(
+fn lines_with(
     source: &str,
     spans: &[(String, usize, usize)],
     name: &str,
@@ -134,7 +134,7 @@ fn label(source: &str, spans: &[(String, usize, usize)], line: usize) -> String 
 /// Tests share the process-global probes; one cutover test at a time. The entry reads are
 /// remembered only while the guard lives (remembering allocates, which the allocation pins
 /// under D must not see), and are cleared when it starts and ends.
-pub(super) struct Probes(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+struct Probes(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
 
 impl Drop for Probes {
     fn drop(&mut self) {
@@ -143,7 +143,7 @@ impl Drop for Probes {
     }
 }
 
-pub(super) fn serialized() -> Probes {
+fn serialized() -> Probes {
     static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let gate = GATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     probe::take_stop_entries();
@@ -161,7 +161,7 @@ struct Run {
     trace: Vec<String>,
 }
 
-pub(super) fn labelled(reads: Vec<probe::StopEntryRead>) -> Vec<(String, Pair, Pair)> {
+fn labelled(reads: Vec<probe::StopEntryRead>) -> Vec<(String, Pair, Pair)> {
     let source = recording_source();
     let spans = fn_spans(&source);
     reads
