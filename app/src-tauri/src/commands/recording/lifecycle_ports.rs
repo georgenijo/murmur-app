@@ -440,8 +440,9 @@ impl<R: tauri::Runtime> Ports for LifecyclePorts<'_, R> {
         let recording_id = self.recording_id;
         let register_app = self.app.clone();
         let gate = std::rc::Rc::new(std::cell::Cell::new(None));
-        let preflight = super::ticker_preflight(&self.app.state::<State>().app_state, recording_id);
         let noted = std::rc::Rc::clone(&gate);
+        // Nothing a spawner left from an earlier call is this one's.
+        crate::dictation_executor::shadow::take_ticker_skip();
         spawn(
             self.app.clone(),
             recording_id,
@@ -456,9 +457,11 @@ impl<R: tauri::Runtime> Ports for LifecyclePorts<'_, R> {
                 )
             }),
         );
-        slots
-            .ticker
-            .set(super::ticker_note(recording_id, preflight, gate.take()));
+        slots.ticker.set(super::ticker_note(
+            recording_id,
+            crate::dictation_executor::shadow::take_ticker_skip(),
+            gate.take(),
+        ));
         Ok(())
     }
 }

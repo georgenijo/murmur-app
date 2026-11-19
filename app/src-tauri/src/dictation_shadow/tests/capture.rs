@@ -1006,10 +1006,12 @@ fn a_command_reply_is_witnessed_as_the_value_the_command_returned() {
     }
 }
 
-/// A reply that is another site's to return (R201.4, R205.4) concludes with the kind it
-/// decided when its flight is dropped, without waiting for the command.
+/// A reply that is another site's to return (R201.4, R205.4) has an explicit `Delegated`
+/// disposition: its flight reports no reply kind (the comparison stays at the site that
+/// renders it) and closes as the named no-reply close, never with the kind it decided
+/// (D-S2c-10 R5).
 #[test]
-fn a_delegated_reply_concludes_with_the_decided_kind() {
+fn a_delegated_reply_reports_no_kind_and_closes_as_the_named_no_reply_close() {
     use crate::dictation_executor::shadow::commanded;
     use murmur_dictation_core::replies::{Reply, ReplyType};
 
@@ -1019,15 +1021,16 @@ fn a_delegated_reply_concludes_with_the_decided_kind() {
     let _: Result<(), String> = block_on(commanded(async {
         let flight = replying_flight(&decided);
         flight.delegated_reply();
+        let before = crate::dictation_executor::shadow::conservation_now();
         drop(flight);
         let (replies, closes) = reply_and_close(&pop_all(&transport));
-        assert_eq!(
-            replies,
-            vec![ReplyKind::Typed(ReplyType::RecordingCancelled)]
-        );
-        assert_eq!(closes, vec![true]);
+        assert!(replies.is_empty(), "no kind was reported: {replies:?}");
+        assert_eq!(closes, vec![false], "closed as the named no-reply close");
+        let counted = crate::dictation_executor::shadow::conservation_now().since(before);
+        assert_eq!((counted.no_reply, counted.unrendered), (1, 0));
         Ok(())
     }));
+    // The command's own return credits nothing to the delegated flight.
     assert_eq!(reply_and_close(&pop_all(&transport)), (vec![], vec![]));
 }
 
@@ -1249,55 +1252,83 @@ fn flights_dropped_out_of_order_lose_only_themselves() {
 
 // ------------------------------------------ named no-reply closes (D-S2c-9 d)
 
-/// A finish a deferred drain ran after its command had already returned has no reply of
-/// its own: it closes as the named no-reply close, never with the kind it decided and
-/// never completed.
+/// A finish a drain ran from the deferred queue has no reply of its own: its flight closes
+/// as the named no-reply close, never with the kind it decided and never completed, even
+/// inside a command's scope. A synchronous command nested in it keeps its own reply
+/// (D-S2c-10 R6: the old depth counter lost it).
 #[test]
-fn a_deferred_finish_closes_with_no_reply_and_is_never_given_the_decided_kind() {
-    use crate::dictation_executor::shadow::{commanded, deferred};
+fn a_queued_finish_closes_with_no_reply_and_a_nested_command_keeps_its_own() {
+    use crate::dictation_executor::shadow::{commanded, unreplied};
     use murmur_dictation_core::replies::{Reply, ReplyType};
+    use std::future::Future;
 
+    let decided = Reply::typed(ReplyType::NotRecording, Status::Idle);
     let transport = default_transport();
     let _armed = Armed::on(&transport);
+    let before = crate::dictation_executor::shadow::conservation_now();
     let _ = block_on(commanded(async {
-        let drain = deferred();
-        drop(replying_flight(&Reply::typed(
-            ReplyType::NotRecording,
-            Status::Idle,
-        )));
-        drop(drain);
+        unreplied(|| {
+            // The finish's own flight.
+            drop(replying_flight(&decided));
+            // A synchronous command nested inside it, returning at once.
+            let mut nested = Box::pin(commanded(async {
+                drop(replying_flight(&decided));
+                Ok::<_, String>(serde_json::json!({"type": "not_recording", "state": "idle"}))
+            }));
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(nested.as_mut().poll(&mut cx).is_ready());
+        });
         Ok::<_, String>(serde_json::json!({"type": "not_recording", "state": "idle"}))
     }));
-    let (replies, closes) = reply_and_close(&pop_all(&transport));
-    assert!(replies.is_empty(), "no reply was credited: {replies:?}");
-    assert!(
-        !closes.contains(&true),
-        "closed as completed: {closes:?} (the command's own return is not this finish's)"
+    let (replies, mut closes) = reply_and_close(&pop_all(&transport));
+    assert_eq!(
+        replies,
+        vec![ReplyKind::Typed(ReplyType::NotRecording)],
+        "only the nested command's flight has a reply"
     );
+    closes.sort_unstable();
+    assert_eq!(
+        closes,
+        vec![false, true],
+        "the finish closes incomplete, the nested command's flight completes"
+    );
+    let counted = crate::dictation_executor::shadow::conservation_now().since(before);
+    assert_eq!((counted.no_reply, counted.unrendered), (1, 0));
 }
 
-/// The import's own pipeline error is the reply the command returns, which R302.2 does not
-/// model: the flights waiting for that return close as the named no-reply close, and the
-/// error is not read as the kind they decided.
+/// The import's pipeline failure is modelled as an `Err` outcome for R302.2, and the actual
+/// return is what it is compared against (D-S2c-10 R3): the `Err` it returns closes the
+/// waiting flights as the named no-reply close; any other return is credited as the reply
+/// it is, so the comparator can report it.
 #[test]
-fn an_import_pipeline_error_closes_waiting_flights_with_no_reply() {
+fn an_import_pipeline_error_is_compared_with_the_actual_return() {
     use crate::dictation_executor::shadow::{commanded, import_pipeline_error};
     use murmur_dictation_core::replies::{Reply, ReplyType};
 
-    let transport = default_transport();
-    let _armed = Armed::on(&transport);
-    let result: Result<serde_json::Value, String> = block_on(commanded(async {
-        drop(replying_flight(&Reply::typed(
-            ReplyType::NotRecording,
-            Status::Idle,
-        )));
-        import_pipeline_error();
-        Err("the pipeline failed".to_string())
-    }));
-    assert!(result.is_err());
-    let (replies, closes) = reply_and_close(&pop_all(&transport));
-    assert!(replies.is_empty(), "no reply was credited: {replies:?}");
-    assert!(!closes.contains(&true), "closed as completed: {closes:?}");
+    let decided = Reply::typed(ReplyType::NotRecording, Status::Idle);
+    for (returned, credited) in [
+        (Err("the pipeline failed".to_string()), None),
+        (
+            Ok(serde_json::json!({"type": "not_recording", "state": "idle"})),
+            Some(ReplyKind::Typed(ReplyType::NotRecording)),
+        ),
+    ] {
+        let transport = default_transport();
+        let _armed = Armed::on(&transport);
+        let result = block_on(commanded(async {
+            drop(replying_flight(&decided));
+            import_pipeline_error();
+            returned.clone()
+        }));
+        assert_eq!(result, returned);
+        let (replies, closes) = reply_and_close(&pop_all(&transport));
+        assert_eq!(replies, credited.into_iter().collect::<Vec<_>>());
+        assert_eq!(
+            closes.contains(&true),
+            credited.is_some(),
+            "for {returned:?}: {closes:?}"
+        );
+    }
 }
 
 /// The capture keeps no ambient "current flight": nothing in the shadow's live module is a
@@ -1318,17 +1349,17 @@ fn the_live_capture_module_keeps_no_ambient_flight_or_stash() {
         "fn take_h2_retired_op",
         "fn armed(",
         "static MIRROR",
-        "static TICKER",
+        "static TICKER:",
         "static H1_RETIRED",
         "static H2_RETIRED",
     ] {
         assert!(!code.contains(banned), "shadow.rs still has `{banned}`");
     }
-    // The only thread-locals left are a depth counter and a write sequence: no flight.
+    // The only thread-locals left are a write sequence and a one-call mailbox: no flight.
     for block in code.split("thread_local!").skip(1) {
         let head: String = block.lines().take(4).collect::<Vec<_>>().join(" ");
         assert!(
-            head.contains("DEFERRED") || head.contains("KEYBOARD_WRITES"),
+            head.contains("KEYBOARD_WRITES") || head.contains("TICKER_SKIP"),
             "an unexpected thread-local in the live capture: {head}"
         );
         assert!(

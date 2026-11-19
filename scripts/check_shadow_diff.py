@@ -10,11 +10,17 @@ addition of the new one; this check requires 0 removed lines for **every changed
 file** (any `.rs` under `app/src-tauri/src` or `app/src-tauri/crates/*/src`), except
 
 * test files: a name ending in `_tests.rs` or `tests.rs`, a file that declares
-  `#![cfg(test)]`, a file under a `tests/` directory, and the named `TEST_ONLY_FILES`;
+  `#![cfg(test)]`, a file under a `tests/` directory, and the named `TEST_ONLY_FILES`. A
+  file is classified from its **base** revision (the branch's text only for a new file), so
+  adding `#![cfg(test)]` to an existing production file does not exempt its deletions;
 * the named shadow-only modules (`SHADOW_ONLY`): code that exists only for the shadow;
 * what `SHADOW_DIFF_ALLOW` names (a path, the most lines it may remove, and why).
 
     python3 scripts/check_shadow_diff.py [--base origin/main]
+
+It also rejects an always-false gate (`#[cfg(any())]`, `cfg(not(all()))`, `cfg(all(any()))`
+and the like) in front of a statement the base already had: that disables an original
+statement without deleting a line, which is a removal by another name (D-S2c-10 R8).
 
 A file's additions are checked by the Rust tests (`shadow_off_by_default` reads every
 `cfg` attribute): this check is the other half, that nothing was taken out.
@@ -44,9 +50,16 @@ TEST_ONLY_FILES = [
     f"{TAURI}/src/commands/recording_golden_harness.rs",
 ]
 
-# A production file that may lose lines: `path -> (most removed lines, why)`. Empty by
-# design; an entry needs a reason a reviewer can weigh.
-SHADOW_DIFF_ALLOW: dict[str, tuple[int, str]] = {}
+# A production file that may lose lines: `path -> (most removed lines, why)`. An entry needs
+# a reason a reviewer can weigh; this list is a reviewed exception, never a convenience.
+SHADOW_DIFF_ALLOW: dict[str, tuple[int, str]] = {
+    f"{TAURI}/src/main_thread_watch.rs": (
+        1,
+        "test-only: the `tests` module parses `lib.rs`'s `generate_handler!` list up to the "
+        "first `]`; the shadow's `#[cfg(..)]` entries inside the macro carry their own `]`, so "
+        "that one line now stops at the macro's closing `]))`. No production statement changes.",
+    ),
+}
 
 _PRODUCTION = re.compile(rf"^{re.escape(TAURI)}/(src|crates/[^/]+/src)/.+\.rs$")
 
@@ -110,13 +123,82 @@ def guarded_paths(stats: dict[str, tuple[int, int]], root: Path, base: str) -> l
     for path in sorted(stats):
         if not is_production_path(path) or is_shadow_only(path):
             continue
-        # A file is a test file by what it is on either side of the change: a deletion
-        # shows the base's text, an addition the branch's.
-        text = show(root, "HEAD", path) or show(root, base, path)
+        # A file is a test file by what the base says it is: adding `#![cfg(test)]` to an
+        # existing production file must not exempt it. A new file has no base text.
+        text = show(root, base, path) or show(root, "HEAD", path)
         if is_test_file(path, text):
             continue
         guarded.append(path)
     return guarded
+
+
+def _cfg_value(predicate: str) -> bool | None:
+    """The constant value of a `cfg` predicate: `True`, `False`, or `None` when it depends on
+    the build (a feature, a target, `test`)."""
+    predicate = predicate.strip()
+    match = re.fullmatch(r"(all|any|not)\((.*)\)", predicate, re.S)
+    if not match:
+        return None
+    kind, inner = match.groups()
+    parts, depth, current = [], 0, ""
+    for char in inner:
+        if char == "," and depth == 0:
+            parts.append(current)
+            current = ""
+            continue
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        current += char
+    if current.strip():
+        parts.append(current)
+    values = [_cfg_value(part) for part in parts]
+    if kind == "not":
+        return None if len(values) != 1 or values[0] is None else not values[0]
+    if kind == "all":
+        if any(value is False for value in values):
+            return False
+        return True if all(value is True for value in values) else None
+    if any(value is True for value in values):
+        return True
+    return False if all(value is False for value in values) else None
+
+
+_CFG_ATTRIBUTE = re.compile(r"^\s*#!?\[cfg\((.*)\)\]\s*$")
+
+
+def added_lines(root: Path, base: str, path: str) -> set[int]:
+    """The 1-based line numbers the branch added to `path`."""
+    result = subprocess.run(
+        ["git", "diff", "-U0", "--no-renames", f"{base}...HEAD", "--", path],
+        cwd=root,
+        capture_output=True,
+        text=True,
+    )
+    lines: set[int] = set()
+    for header in re.finditer(r"^@@ -\S+ \+(\d+)(?:,(\d+))? @@", result.stdout, re.M):
+        start, count = int(header.group(1)), int(header.group(2) or 1)
+        lines.update(range(start, start + count))
+    return lines
+
+
+def disabled_originals(root: Path, base: str, path: str) -> list[str]:
+    """Always-false gates the branch put in front of a statement the base already had."""
+    text = show(root, "HEAD", path).splitlines()
+    added = added_lines(root, base, path)
+    found = []
+    for number in sorted(added):
+        match = _CFG_ATTRIBUTE.match(text[number - 1]) if number <= len(text) else None
+        if not match or _cfg_value(match.group(1)) is not False:
+            continue
+        # The item the attribute gates: the next line that is not another attribute or a comment.
+        target = number + 1
+        while target <= len(text) and re.match(r"^\s*(#\[|//)", text[target - 1]):
+            target += 1
+        if target <= len(text) and target not in added:
+            found.append(
+                f"{path}:{number}: `{text[number - 1].strip()}` disables the existing statement "
+                f"at line {target} without deleting it"
+            )
+    return found
 
 
 def violations(
@@ -154,6 +236,8 @@ def main(root: Path = ROOT, base: str = "origin/main") -> int:
         return 2
     guarded = guarded_paths(stats, root, base)
     problems = violations(stats, guarded)
+    for path in guarded:
+        problems.extend(disabled_originals(root, base, path))
     for path in guarded:
         added, removed = stats[path]
         print(f"{added}\t{removed}\t{path}")

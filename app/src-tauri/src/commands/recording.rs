@@ -354,38 +354,48 @@ pub(crate) fn register_partial_ticker_locked_observed(
     registered
 }
 
-/// The ticker spawner's own synchronous preconditions, shared by the production ports'
-/// observation and the golden harness's spawner (D-S2c-9 f): a recorded context, and a
-/// model that supports a live preview. `Some(reason)` is the skip the spawner takes before
-/// it calls `register`.
+/// The ticker spawner's own synchronous preconditions, from its one lookup: the recorded
+/// context and a model that supports a live preview. `Err(reason)` is the skip the spawner
+/// takes before it calls `register`, and is handed to the port that called it (D-S2c-10 R2).
+/// The production spawner and the golden harness's spawner both go through it, so the
+/// replay exercises the production check.
 #[cfg(feature = "dictation-shadow")]
-pub(crate) fn ticker_preflight(
+pub(crate) fn ticker_start_check(
     app_state: &AppState,
     recording_id: u64,
-) -> Option<crate::dictation_shadow::types::TickerSkipReason> {
+) -> Result<
+    (
+        Arc<crate::dictation_context::DictationContextSnapshot>,
+        bool,
+    ),
+    crate::dictation_shadow::types::TickerSkipReason,
+> {
     use crate::dictation_shadow::types::TickerSkipReason;
     let Some(context) = app_state.active_context(recording_id) else {
-        return Some(TickerSkipReason::NoContext);
+        crate::dictation_executor::shadow::ticker_skipped(TickerSkipReason::NoContext);
+        return Err(TickerSkipReason::NoContext);
     };
     let model = &context.transcription.model_name;
-    if !transcriber::whisper::supports_live_preview(model) && !transcriber::is_coreml_model(model) {
-        return Some(TickerSkipReason::NoLivePreview);
+    let whisper = transcriber::whisper::supports_live_preview(model);
+    if !whisper && !transcriber::is_coreml_model(model) {
+        crate::dictation_executor::shadow::ticker_skipped(TickerSkipReason::NoLivePreview);
+        return Err(TickerSkipReason::NoLivePreview);
     }
-    None
+    Ok((context, whisper))
 }
 
 /// What one `SD` attempt witnesses: the gate when `register` ran, the skip when the
-/// spawner returned before it. The preflight (taken before the spawn) and what the spawner
-/// did must agree; when they do not, nothing is noted, so the comparator sees an `SD` with
+/// spawner returned before it. The spawner's single lookup yields exactly one of them;
+/// when it yielded neither or both, nothing is noted, so the comparator sees an `SD` with
 /// no witness and the disagreement fails closed rather than being guessed.
 #[cfg(feature = "dictation-shadow")]
 pub(crate) fn ticker_note(
     recording_id: u64,
-    preflight: Option<crate::dictation_shadow::types::TickerSkipReason>,
+    skipped: Option<crate::dictation_shadow::types::TickerSkipReason>,
     gate: Option<crate::dictation_shadow::types::TickerGate>,
 ) -> Option<crate::dictation_executor::shadow::TickerNote> {
     use crate::dictation_executor::shadow::TickerNote;
-    match (preflight, gate) {
+    match (skipped, gate) {
         (None, Some(gate)) => Some(TickerNote::Gate(gate)),
         (Some(reason), None) => Some(TickerNote::Skipped {
             target: murmur_dictation_core::ids::RecordingId(recording_id),
@@ -397,6 +407,7 @@ pub(crate) fn ticker_note(
 
 /// Spawn the live-preview ticker. `register` runs under the dictation lock
 /// (see [`register_partial_ticker_locked`]); no ticker runs if it refuses.
+#[cfg(not(feature = "dictation-shadow"))]
 fn spawn_dictation_partial_ticker(
     app: tauri::AppHandle,
     recording_id: u64,
@@ -461,6 +472,70 @@ fn spawn_dictation_partial_ticker(
             },
             // An accepted stop hands this hide to delivery, which queues it
             // behind the paste; only cancels and interruptions hide here.
+            || crate::commands::dictation_preview::hide_on_ticker_exit(&app, recording_id),
+        )
+        .await;
+    }));
+}
+
+/// [`spawn_dictation_partial_ticker`] with the shadow compiled in: the same spawn, whose
+/// one lookup is [`ticker_start_check`], so the skip it takes is the witness of that
+/// lookup and nothing is read twice (D-S2c-10 R2).
+#[cfg(feature = "dictation-shadow")]
+fn spawn_dictation_partial_ticker(
+    app: tauri::AppHandle,
+    recording_id: u64,
+    register: impl FnOnce() -> bool,
+) {
+    let (context, whisper) = match ticker_start_check(&app.state::<State>().app_state, recording_id)
+    {
+        Ok(started) => started,
+        Err(reason) => {
+            if reason == crate::dictation_shadow::types::TickerSkipReason::NoLivePreview {
+                emit_dictation_partial_tick(recording_id, "unsupported_model", 0);
+            }
+            return;
+        }
+    };
+    if !register() {
+        return;
+    }
+    {
+        let state = app.state::<State>();
+        if !whisper
+            && context.transcription.streaming_pipeline_enabled
+            && vad::is_enabled(context.transcription.vad_sensitivity)
+            && state.app_state.vad_stream.consumed(recording_id).is_some()
+        {
+            state
+                .app_state
+                .stream_reuse
+                .lock_or_recover()
+                .begin(recording_id);
+        }
+    }
+    let interval = if whisper {
+        WHISPER_PARTIAL_INTERVAL
+    } else {
+        PARTIAL_INTERVAL
+    };
+    let preview: WhisperPreview = Arc::new(Mutex::new(None));
+    drop(tauri::async_runtime::spawn(async move {
+        let window_app = app.clone();
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            crate::commands::dictation_preview::ensure_window(&window_app, recording_id)
+        })
+        .await;
+        run_partial_ticker_loop(
+            interval,
+            || dictation_partial_is_current(&app.state::<State>().app_state, recording_id),
+            || {
+                let tick_app = app.clone();
+                let tick_preview = preview.clone();
+                drop(tauri::async_runtime::spawn(async move {
+                    decode_one_dictation_partial(&tick_app, recording_id, tick_preview).await;
+                }));
+            },
             || crate::commands::dictation_preview::hide_on_ticker_exit(&app, recording_id),
         )
         .await;
@@ -1748,9 +1823,6 @@ fn run_deferred(
     mut batch: std::collections::VecDeque<DeferredFinish>,
     own_tail_from: Option<usize>,
 ) {
-    // The command that queued these finishes has already returned its reply.
-    #[cfg(feature = "dictation-shadow")]
-    let _deferred = capture::deferred();
     let me = app_state.core_history.identity();
     let mut first_panic: Option<Box<dyn std::any::Any + Send>> = None;
     let mut panicked: Vec<(u64, murmur_dictation_core::inputs::GuardOrigin)> = Vec::new();
@@ -1780,6 +1852,7 @@ fn run_deferred(
                 .push(app_state.recording_transition.try_lock().is_ok());
         });
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            #[cfg(not(feature = "dictation-shadow"))]
             if entry.retire_only {
                 // Outside any core span here: the owner retires H2 then H1.
                 drop(entry.owner.take());
@@ -1796,6 +1869,25 @@ fn run_deferred(
                     &mut entry.owner,
                 );
             }
+            // The finish a drain runs has no reply of its own (D-S2c-10 R6).
+            #[cfg(feature = "dictation-shadow")]
+            capture::unreplied(|| {
+                if entry.retire_only {
+                    drop(entry.owner.take());
+                    drop(entry.op.take());
+                } else {
+                    IdleGuard::finish_section(
+                        app_state,
+                        entry.recording_id,
+                        entry.origin,
+                        entry
+                            .idle
+                            .take()
+                            .map(|emit| -> stop_ports::OnIdle<'_> { emit }),
+                        &mut entry.owner,
+                    );
+                }
+            });
         }));
         if let Err(panic) = outcome {
             panicked.push((entry.recording_id, entry.origin));

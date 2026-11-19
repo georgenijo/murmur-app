@@ -45,6 +45,8 @@ thread_local! {
 /// Taken before D is acquired, where today's code takes its own timing instant.
 /// No decide function branches on it.
 pub(crate) fn core_now() -> murmur_dictation_core::ids::Now {
+    #[cfg(test)]
+    super::probe::core_now();
     static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     let micros = EPOCH
         .get_or_init(std::time::Instant::now)
@@ -716,14 +718,14 @@ impl<'a> Executor<'a> {
                 // The write is the keyboard module's atomic swap; its operands are noted
                 // there, and are this effect's only if exactly one write happened while it ran.
                 #[cfg(feature = "dictation-shadow")]
-                let written_before = super::shadow::keyboard_writes();
+                let written_before = observing.as_ref().map(|_| super::shadow::keyboard_writes());
                 let result = ports.keyboard(effect);
                 #[cfg(feature = "dictation-shadow")]
-                if let Some(observing) = observing.as_ref() {
+                if let (Some(observing), Some(before)) = (observing.as_ref(), written_before) {
                     observing
                         .slots
                         .mirror
-                        .set(super::shadow::keyboard_write_since(written_before));
+                        .set(super::shadow::keyboard_write_since(before));
                 }
                 self.record_port(index, effect, result);
             }

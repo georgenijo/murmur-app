@@ -7,6 +7,7 @@ import unittest
 
 from scripts.check_shadow_diff import (
     SHADOW_DIFF_ALLOW,
+    _cfg_value,
     SHADOW_ONLY,
     guarded_paths,
     is_production_path,
@@ -84,7 +85,15 @@ class ShadowDiffTests(unittest.TestCase):
         self.assertEqual(violations(stats), [])
 
     def test_the_allow_list_names_a_file_a_count_and_a_reason(self):
-        self.assertEqual(SHADOW_DIFF_ALLOW, {}, "an allowed removal is a reviewed exception")
+        self.assertEqual(
+            list(SHADOW_DIFF_ALLOW),
+            ["app/src-tauri/src/main_thread_watch.rs"],
+            "an allowed removal is a reviewed exception, named one by one",
+        )
+        for count, reason in SHADOW_DIFF_ALLOW.values():
+            self.assertEqual(count, 1)
+            self.assertIn("test-only", reason)
+        self.assertEqual(violations({}), [])
         stats = {LIVE: (3, 2)}
         self.assertTrue(violations(stats))
         self.assertEqual(violations(stats, allow={LIVE: (2, "a renamed import")}), [])
@@ -181,6 +190,52 @@ class ShadowDiffTests(unittest.TestCase):
         self.assertEqual(guarded_paths(stats, root, "main"), [])
         code, _, err = run(root)
         self.assertEqual(code, 0, err)
+
+    def test_always_false_gates_are_recognised(self):
+        for predicate in [
+            "any()",
+            "not(all())",
+            "all(any())",
+            "all(feature = \"a\", any())",
+            "any(any(), any())",
+            "not(not(any()))",
+        ]:
+            self.assertIs(_cfg_value(predicate), False, predicate)
+        for predicate in [
+            "test",
+            "feature = \"dictation-shadow\"",
+            "not(feature = \"dictation-shadow\")",
+            "any(test, any())",
+            "all()",
+        ]:
+            self.assertIsNot(_cfg_value(predicate), False, predicate)
+
+    def test_an_always_false_gate_on_an_existing_statement_fails(self):
+        for gate in ["#[cfg(any())]", "#[cfg(not(all()))]", "#[cfg(all(any()))]"]:
+            root = repo("a\nb\nc\n", f"a\n{gate}\nb\nc\n")
+            code, _, err = run(root)
+            self.assertEqual(code, 1, f"{gate}: {err}")
+            self.assertIn("disables the existing statement", err)
+
+    def test_an_always_false_gate_on_a_new_statement_is_harmless(self):
+        root = repo("a\nb\n", "a\n#[cfg(any())]\nnew();\nb\n")
+        code, _, err = run(root)
+        self.assertEqual(code, 0, err)
+
+    def test_a_real_gate_on_an_existing_statement_passes(self):
+        root = repo(
+            "a\nb\n",
+            "a\n#[cfg(not(feature = \"dictation-shadow\"))]\nb\n"
+            "#[cfg(feature = \"dictation-shadow\")]\nb2();\n",
+        )
+        code, _, err = run(root)
+        self.assertEqual(code, 0, err)
+
+    def test_adding_cfg_test_to_an_existing_production_file_does_not_exempt_it(self):
+        root = repo("fn a() {}\nfn b() {}\n", "#![cfg(test)]\nfn a() {}\n")
+        code, _, err = run(root)
+        self.assertEqual(code, 1, err)
+        self.assertIn("removes", err)
 
     def test_numstat_reads_added_and_removed(self):
         root = repo("a\n", "a\nb\n")

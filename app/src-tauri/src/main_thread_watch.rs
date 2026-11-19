@@ -2328,12 +2328,9 @@ mod tests {
             .find("tauri::generate_handler![")
             .expect("generate_handler! in lib.rs")
             + "tauri::generate_handler![".len();
-        // Superseded by the next statement, kept as it was so the diff against `main`
-        // only inserts: `lib.rs` source now carries `#[cfg(..)]` attributes inside the
-        // macro in every build, and their own `]` is not the end of the list.
-        #[cfg(any())]
-        let end = start + lib_rs[start..].find(']').expect("handler end");
-        // The list ends at the `]` that closes the macro (`]))`).
+        // The list ends at the `]` that closes the macro (`]))`): `lib.rs` source now
+        // carries `#[cfg(..)]` attributes inside it in every build, and their own `]` is not
+        // the end of the list. A named test-only exception in `check_shadow_diff.py`.
         let end = start + lib_rs[start..].find("]))").expect("handler end");
         // The shadow build registers a witnessing wrapper (`<name>_witnessed`, renamed to
         // `<name>` for IPC) next to a `cfg(not(feature))` entry of the command itself: the

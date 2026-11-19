@@ -203,11 +203,13 @@ struct Live {
     reply: Cell<Option<ReplyKind>>,
     /// The decision has a reply: `Reply` and `Close` wait for the returned kind.
     expects_reply: Cell<bool>,
-    /// The kind the decision decided (a reply a later site returns: see
-    /// [`Flight::delegated_reply`]).
-    decided_reply: Cell<Option<ReplyKind>>,
-    /// The command's reply is another site's to witness: conclude with the decided kind.
+    /// The command's reply is another site's to witness (see
+    /// [`Flight::delegated_reply`]): this flight carries no reply disposition of its own.
     delegated: Cell<bool>,
+    /// The decision models a success the command did not return: the import's pipeline
+    /// failed, so the command returns `Err` (see [`import_pipeline_error`]). The actual
+    /// return is what it is compared against.
+    err_outcome: Cell<bool>,
     /// The decision was taken (D is held, or the entry is D-less) and its header has
     /// not been sealed: an unwind here is a recorded loss (D-S2c-7 e).
     in_decision: Cell<bool>,
@@ -235,8 +237,8 @@ impl Live {
             deferred: RefCell::new(Inline::default()),
             reply: Cell::new(None),
             expects_reply: Cell::new(false),
-            decided_reply: Cell::new(None),
             delegated: Cell::new(false),
+            err_outcome: Cell::new(false),
             in_decision: Cell::new(false),
             complete: Cell::new(false),
             concluded: Cell::new(false),
@@ -291,8 +293,10 @@ impl Live {
 
     /// The flight's owner is done with it. A decision still waiting for its reply goes
     /// to the command wrapper's sink, to be concluded with the reply the command
-    /// returns; with none (a caller that is not an IPC command), or when the reply is
-    /// another site's, it concludes with the kind it decided.
+    /// returns. A reply that is another site's (R201.4 / R205.4, see
+    /// [`Flight::delegated_reply`]) and a finish a queued drain ran (see [`unreplied`]) have
+    /// no reply of their own: each closes as the **named no-reply close** (incomplete, no
+    /// `Reply` credited), never with a kind the shell decided (D-S2c-9 d, D-S2c-10 R5, R6).
     fn hand_over(self) {
         let waiting = self.complete.get()
             && self.submitted.get()
@@ -302,16 +306,7 @@ impl Live {
         if !waiting {
             return;
         }
-        // A reply that is another site's (see `delegated_reply`) concludes with the kind
-        // that site decided for it. A finish a deferred drain ran after the command that
-        // queued it had already returned has no reply of its own: it closes as the named
-        // no-reply close, never with the kind it decided (D-S2c-9 d).
         if self.delegated.get() {
-            self.reply.set(self.decided_reply.get());
-            self.conclude();
-            return;
-        }
-        if DEFERRED.with(Cell::get) > 0 {
             #[cfg(test)]
             NO_REPLY.fetch_add(1, Ordering::Relaxed);
             return;
@@ -319,8 +314,15 @@ impl Live {
         let live = RefCell::new(Some(self));
         let handed = REPLY_SINK
             .try_with(|sink| {
-                if let Some(live) = live.borrow_mut().take() {
-                    sink.borrow_mut().push(live);
+                let Some(live) = live.borrow_mut().take() else {
+                    return;
+                };
+                if sink.replyless {
+                    #[cfg(test)]
+                    NO_REPLY.fetch_add(1, Ordering::Relaxed);
+                    drop(live);
+                } else {
+                    sink.flights.borrow_mut().push(live);
                 }
             })
             .is_ok();
@@ -462,7 +464,6 @@ impl Flight {
         header.overflowed |= live.ops_overflowed.get();
         header.adopt_pre(std::mem::take(&mut *live.pre.borrow_mut()));
         live.expects_reply.set(reply.is_some());
-        live.decided_reply.set(reply.map(ReplyKind::of));
         live.in_decision.set(true);
         live.leading.set(false);
         *live.header.borrow_mut() = Some(header);
@@ -746,35 +747,6 @@ pub(crate) fn keyboard_write_since(before: u64) -> Option<MirrorWitness> {
     })
 }
 
-// Deferred finishes this thread is running right now: a **depth**, not a flight. The
-// drain is synchronous (no `.await` inside it), so the count cannot leak across tasks or
-// be restored out of order.
-thread_local! {
-    static DEFERRED: Cell<u32> = const { Cell::new(0) };
-}
-
-/// A deferred drain is running a queued finish: the command that queued it has already
-/// returned, so the finish has no reply of its own to witness. A flight of such a finish
-/// that waits for a reply closes as the named **no-reply close** (incomplete, no `Reply`
-/// mark): it is never given the kind it decided (D-S2c-9 d).
-pub(crate) struct Deferred(bool);
-
-pub(crate) fn deferred() -> Deferred {
-    let on = crate::dictation_shadow::enabled();
-    if on {
-        DEFERRED.with(|depth| depth.set(depth.get() + 1));
-    }
-    Deferred(on)
-}
-
-impl Drop for Deferred {
-    fn drop(&mut self) {
-        if self.0 {
-            DEFERRED.with(|depth| depth.set(depth.get().saturating_sub(1)));
-        }
-    }
-}
-
 // --------------------------------------------------- the ports an executor observes
 
 // ------------------------------------------------------- the header after D
@@ -817,9 +789,15 @@ impl Drop for AfterD<'_> {
 
 // ----------------------------------------------------- the reply at the return
 
+/// The flights of one command invocation that wait for the reply it returns, or (a drain
+/// that runs a queued finish) the scope in which a flight waits for no reply at all.
+struct Sink {
+    flights: RefCell<Vec<Live>>,
+    replyless: bool,
+}
+
 tokio::task_local! {
-    /// The flights of one command invocation that wait for the reply it returns.
-    static REPLY_SINK: RefCell<Vec<Live>>;
+    static REPLY_SINK: Sink;
 }
 
 /// Run one IPC command invocation (a `#[tauri::command]` wrapper) and witness the reply
@@ -835,30 +813,74 @@ where
         return command.await;
     }
     REPLY_SINK
-        .scope(RefCell::new(Vec::new()), async {
-            let result = command.await;
-            witness_returned(&result);
-            result
-        })
+        .scope(
+            Sink {
+                flights: RefCell::new(Vec::new()),
+                replyless: false,
+            },
+            async {
+                let result = command.await;
+                witness_returned(&result);
+                result
+            },
+        )
         .await
 }
 
+/// Run the finish a drain took from the deferred queue. The command that queued it has
+/// already returned (or returns something else): the finish has no reply of its own, so
+/// its flights close as the named no-reply close (D-S2c-10 R6). The scope is the finish's
+/// own, so a synchronous command nested inside it still sees its own sink. A disarmed
+/// shadow runs `finish` unchanged.
+pub(crate) fn unreplied<R>(finish: impl FnOnce() -> R) -> R {
+    if !crate::dictation_shadow::enabled() {
+        return finish();
+    }
+    REPLY_SINK.sync_scope(
+        Sink {
+            flights: RefCell::new(Vec::new()),
+            replyless: true,
+        },
+        finish,
+    )
+}
+
 /// The command is about to return the import pipeline's own error, which the core's
-/// R302.2 (decided as if the pipeline had succeeded) does not model: the decisions
-/// already waiting for the command's reply close as the **named no-reply close**
-/// (incomplete, no `Reply` credited), instead of being given a kind they did not decide
-/// or compared with a reply that was never theirs (D-S2c-9 d). Does nothing without a
-/// command wrapper.
+/// R302.2 does not model (it decides the success reply): the decisions already waiting
+/// for the command's reply take the `Err` outcome, and the actual return is what they are
+/// compared against (D-S2c-10 R3). An `Err` return closes them as the named no-reply close;
+/// any other return is concluded as the reply it is, which the comparator reports. Does
+/// nothing without a command wrapper.
 pub(crate) fn import_pipeline_error() {
     if !crate::dictation_shadow::enabled() {
         return;
     }
     let _ = REPLY_SINK.try_with(|sink| {
-        let waiting = std::mem::take(&mut *sink.borrow_mut());
-        #[cfg(test)]
-        NO_REPLY.fetch_add(waiting.len() as u64, Ordering::Relaxed);
-        drop(waiting);
+        for live in sink.flights.borrow().iter() {
+            live.err_outcome.set(true);
+        }
     });
+}
+
+// The ticker spawner's skip, handed to the port that called it. The spawner runs
+// synchronously inside the port's `spawn` call and there is no `.await` between its
+// write and the port's take, so this holds one value for one call; it names no flight and
+// is written only while armed and read only by the active port that made the call.
+thread_local! {
+    static TICKER_SKIP: Cell<Option<TickerSkipReason>> = const { Cell::new(None) };
+}
+
+/// The ticker spawner returned before it asked for the registration gate (its one lookup
+/// found no recorded context, or a model with no live preview).
+pub(crate) fn ticker_skipped(reason: TickerSkipReason) {
+    if crate::dictation_shadow::enabled() {
+        TICKER_SKIP.with(|slot| slot.set(Some(reason)));
+    }
+}
+
+/// The skip the spawner reported during the port's call, if any (an active port only).
+pub(crate) fn take_ticker_skip() -> Option<TickerSkipReason> {
+    TICKER_SKIP.with(Cell::take)
 }
 
 /// Test builds: whether this task (and nothing it spawned) is inside a command wrapper's
@@ -871,8 +893,14 @@ pub(crate) fn reply_sink_visible() -> bool {
 fn witness_returned<T: RenderedValue, E>(result: &Result<T, E>) {
     let kind = rendered_kind(result);
     let _ = REPLY_SINK.try_with(|sink| {
-        let waiting = std::mem::take(&mut *sink.borrow_mut());
+        let waiting = std::mem::take(&mut *sink.flights.borrow_mut());
         for live in waiting {
+            if live.err_outcome.get() && kind == ReplyKind::Err {
+                // The modelled outcome happened: the pipeline's own error is returned.
+                #[cfg(test)]
+                NO_REPLY.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
             live.reply.set(Some(kind));
             live.conclude();
         }

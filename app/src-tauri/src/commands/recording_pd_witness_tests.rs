@@ -1242,6 +1242,27 @@ pub(super) mod under_d {
             const { Cell::new(std::ptr::null()) };
         static ALLOCATIONS_UNDER_D: Cell<u64> = const { Cell::new(0) };
         static WARNED_UNDER_D: Cell<Vec<bool>> = const { Cell::new(Vec::new()) };
+        /// `(core_now calls, view projections)` made by the measured entries.
+        static READS_UNDER_D: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+        /// Reads of the shadow's own per-thread state made by the measured entries.
+        static SHADOW_READS_UNDER_D: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// Run `f` and add the clock reads and view projections it made to [`READS_UNDER_D`].
+    fn count_reads<R>(f: impl FnOnce() -> R) -> R {
+        let before = crate::dictation_executor::probe::counts();
+        let shadow_before = crate::dictation_executor::probe::shadow_reads();
+        let result = f();
+        let after = crate::dictation_executor::probe::counts();
+        SHADOW_READS_UNDER_D.with(|total| {
+            total
+                .set(total.get() + crate::dictation_executor::probe::shadow_reads() - shadow_before)
+        });
+        READS_UNDER_D.with(|total| {
+            let (now, views) = total.get();
+            total.set((now + after.0 - before.0, views + after.1 - before.1));
+        });
+        result
     }
 
     /// The dictation lock is held right now (by this thread: the shell is synchronous).
@@ -1274,7 +1295,9 @@ pub(super) mod under_d {
     /// Drive an entry to completion and count the allocations made while D was held.
     fn measure<T>(world: &Arc<World>, mut entry: Fut<T>) {
         let state = world.state();
-        let (_, allocations) = count_under_d(&state.app_state.dictation, || complete(&mut entry));
+        let (_, allocations) = count_under_d(&state.app_state.dictation, || {
+            count_reads(|| complete(&mut entry))
+        });
         ALLOCATIONS_UNDER_D.with(|total| total.set(total.get() + allocations));
     }
 
@@ -1374,6 +1397,8 @@ pub(super) mod under_d {
 
     fn run_measured(scenario: &Scenario, disarmed: bool) -> u64 {
         ALLOCATIONS_UNDER_D.with(|total| total.set(0));
+        READS_UNDER_D.with(|total| total.set((0, 0)));
+        SHADOW_READS_UNDER_D.with(|total| total.set(0));
         REPLAY_DISARMED.store(disarmed, Ordering::SeqCst);
         struct Rearm;
         impl Drop for Rearm {
@@ -1446,7 +1471,9 @@ pub(super) mod under_d {
 
     fn bridge_measure(world: &Arc<World>, event: AudioLifecycleEvent) {
         let state = world.state();
-        let (_, allocations) = count_under_d(&state.app_state.dictation, || world.notify(1, event));
+        let (_, allocations) = count_under_d(&state.app_state.dictation, || {
+            count_reads(|| world.notify(1, event))
+        });
         ALLOCATIONS_UNDER_D.with(|total| total.set(total.get() + allocations));
     }
 
@@ -1549,6 +1576,98 @@ pub(super) mod under_d {
         assert!(
             counted > 0,
             "the probe counted no allocation under D at all"
+        );
+    }
+
+    /// The clock reads and view projections each entry makes with the shadow compiled in
+    /// and not armed (the default build's own): `(core_now calls, view projections)`, then
+    /// the same armed. The disarmed shadow reads nothing for any entry; the armed one
+    /// reads exactly what its header needs. An extra read added under D allocates nothing,
+    /// so the allocation pins cannot see it; one of these does (D-S2c-10 R4).
+    const READS: [(&str, (u64, u64), (u64, u64)); 16] = [
+        (
+            "start refused before D (Smart Auto with a fixed device)",
+            (1, 0),
+            (1, 1),
+        ),
+        (
+            "start refused under D (a meeting is active)",
+            (1, 1),
+            (1, 1),
+        ),
+        ("start refused under D (already recording)", (1, 1), (1, 1)),
+        ("stop refused (stale, R201.1)", (1, 0), (1, 1)),
+        ("stop refused (processing, R201.2)", (1, 1), (1, 1)),
+        ("stop refused (idle, R201.3)", (1, 1), (1, 1)),
+        (
+            "stop refused (recovering, nothing preserved, R201.6)",
+            (1, 1),
+            (1, 1),
+        ),
+        ("cancel refused (stale, R205.1)", (1, 1), (1, 1)),
+        ("cancel no-op (idle, R205.2)", (1, 1), (1, 1)),
+        ("cancel no-op (recovering, R205.3)", (1, 1), (1, 1)),
+        ("bridge Ready while starting (R207)", (1, 1), (1, 1)),
+        (
+            "bridge StillConnecting while starting (R208)",
+            (1, 1),
+            (1, 1),
+        ),
+        ("bridge Recovering while recording (R209)", (1, 1), (1, 1)),
+        (
+            "bridge CleanupFinished while recovering (R210)",
+            (1, 1),
+            (1, 1),
+        ),
+        ("bridge Idle while recording (R211)", (1, 1), (1, 1)),
+        (
+            "bridge Idle while idle (short idle, R215.3/R216)",
+            (1, 1),
+            (1, 1),
+        ),
+    ];
+
+    fn reads_of(scenario: &Scenario, disarmed: bool) -> (u64, u64) {
+        run_measured(scenario, disarmed);
+        READS_UNDER_D.with(Cell::get)
+    }
+
+    #[test]
+    fn the_shadow_reads_the_clock_and_the_live_fields_only_as_pinned() {
+        let mut counted = (0, 0);
+        for scenario in scenarios().into_iter().chain(bridge_scenarios()) {
+            let disarmed = reads_of(&scenario, true);
+            assert_eq!(
+                SHADOW_READS_UNDER_D.with(Cell::get),
+                0,
+                "{}: the disarmed shadow read its own thread-local state",
+                scenario.title
+            );
+            let armed = reads_of(&scenario, false);
+            if std::env::var_os("MURMUR_PRINT_PINS").is_some() {
+                eprintln!("PIN (\"{}\", {disarmed:?}, {armed:?}),", scenario.title);
+                continue;
+            }
+            let (_, pinned_disarmed, pinned_armed) = READS
+                .iter()
+                .find(|(title, _, _)| *title == scenario.title)
+                .unwrap_or_else(|| panic!("{}: no pinned reads", scenario.title));
+            assert_eq!(
+                disarmed, *pinned_disarmed,
+                "{}: (core_now, views) {disarmed:?} with the shadow compiled in and not armed, \
+                 pinned {pinned_disarmed:?} (D-S2c-10 R4)",
+                scenario.title
+            );
+            assert_eq!(
+                armed, *pinned_armed,
+                "{}: (core_now, views) {armed:?} with the shadow armed, pinned {pinned_armed:?}",
+                scenario.title
+            );
+            counted = (counted.0 + disarmed.0, counted.1 + armed.1);
+        }
+        assert!(
+            counted.0 > 0 || std::env::var_os("MURMUR_PRINT_PINS").is_some(),
+            "the probe counted no clock read at all: it is not measuring"
         );
     }
 

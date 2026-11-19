@@ -798,13 +798,7 @@ impl World {
                     // The ticker's own preconditions are production's: a recorded
                     // context and a model that supports a live preview.
                     let state = app.state::<State>();
-                    let Some(context) = state.app_state.active_context(recording_id) else {
-                        return;
-                    };
-                    let model = &context.transcription.model_name;
-                    if !transcriber::whisper::supports_live_preview(model)
-                        && !transcriber::is_coreml_model(model)
-                    {
+                    if !ticker_can_start(&state.app_state, recording_id) {
                         return;
                     }
                     let registered = register();
@@ -1532,13 +1526,7 @@ impl DictationHost for Host {
             |app, recording_id, register| {
                 world.side_task_spawns.fetch_add(1, Ordering::SeqCst);
                 let state = app.state::<State>();
-                let Some(context) = state.app_state.active_context(recording_id) else {
-                    return;
-                };
-                let model = &context.transcription.model_name;
-                if !transcriber::whisper::supports_live_preview(model)
-                    && !transcriber::is_coreml_model(model)
-                {
+                if !ticker_can_start(&state.app_state, recording_id) {
                     return;
                 }
                 let registered = register();
@@ -1686,6 +1674,25 @@ impl Setup {
             status: DictationStatus::Idle,
             recording_id: 0,
         }
+    }
+}
+
+/// The partial ticker spawner's own preconditions, as the harness's two spawners apply
+/// them: with the shadow compiled in they are the production spawner's check
+/// (`ticker_start_check`, the one lookup that also hands its skip to the port); without it
+/// they are the same two conditions, read here.
+fn ticker_can_start(app_state: &AppState, recording_id: u64) -> bool {
+    #[cfg(feature = "dictation-shadow")]
+    {
+        ticker_start_check(app_state, recording_id).is_ok()
+    }
+    #[cfg(not(feature = "dictation-shadow"))]
+    {
+        let Some(context) = app_state.active_context(recording_id) else {
+            return false;
+        };
+        let model = &context.transcription.model_name;
+        transcriber::whisper::supports_live_preview(model) || transcriber::is_coreml_model(model)
     }
 }
 

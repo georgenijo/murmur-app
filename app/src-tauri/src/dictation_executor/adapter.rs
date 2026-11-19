@@ -176,6 +176,8 @@ impl FieldAdapter {
     /// atomic load and the context id is one leaf-mutex read, the same reads
     /// `DictationCore::project` performs and a cut-over entry will perform.
     pub(crate) fn observe_live(app: &AppState) -> LiveObs {
+        #[cfg(test)]
+        super::probe::view();
         LiveObs {
             cancelled_through: RecordingId(app.cancelled_id.load(Ordering::SeqCst)),
             context_for: app.active_context_id().map(RecordingId),
@@ -194,6 +196,8 @@ impl FieldAdapter {
         app: &AppState,
         dictation: &DictationState,
     ) -> DictationCore {
+        #[cfg(test)]
+        super::probe::view();
         DictationCore::project(
             core_status(dictation.status),
             RecordingId(app.recording_id.load(Ordering::SeqCst)),
@@ -206,6 +210,8 @@ impl FieldAdapter {
 
     /// The atomics a D-less lifecycle entry (212-215) reads, with no lock.
     pub(crate) fn lock_free_facts(app: &AppState) -> LockFreeFacts {
+        #[cfg(test)]
+        super::probe::view();
         LockFreeFacts {
             current_id: RecordingId(app.recording_id.load(Ordering::SeqCst)),
             cancelled_through: RecordingId(app.cancelled_id.load(Ordering::SeqCst)),

@@ -82,11 +82,32 @@ fn the_default_features_and_dev_profiles_unwind() {
 
 /// Every production acquisition of the dictation lock D goes through
 /// `MutexExt::lock_or_recover`, the one function that counts it for the shadow's
-/// conservation check (D-S2c-9 a). A raw `.lock()` / `.try_lock()` on `dictation` in
-/// production code would take D without being counted, which is the bypass the guard-level
-/// count exists to close.
+/// conservation check (D-S2c-9 a, D-S2c-10 b R1). The scan matches the **receiver**, not
+/// a method name: any use of the `AppState::dictation` field in production code that is
+/// not `.dictation.lock_or_recover()` (a raw `lock`, `try_lock`, `try_lock_or_recover`,
+/// any future method, a UFCS call, a borrow handed to a helper) fails, unless it is one
+/// of the named non-decision diagnostic reads below. Test code is outside the scan.
 #[test]
 fn every_production_dictation_lock_goes_through_the_counting_guard() {
+    /// Non-blocking diagnostic reads that never take a decision: (file, text near the
+    /// use, why). Each stays uncounted on purpose.
+    const NAMED: &[(&str, &str, &str)] = &[
+        (
+            "state.rs",
+            "self.dictation\n            .try_lock_or_recover()",
+            "hang-diagnostics status read, never contends with a decision",
+        ),
+        (
+            "commands/recording.rs",
+            "app_state.dictation.try_lock_or_recover() else",
+            "supervisor-idle probe that reports contention instead of waiting",
+        ),
+        (
+            "commands/models.rs",
+            "state.app_state.dictation.try_lock_or_recover()",
+            "model-switch refusal probe",
+        ),
+    ];
     fn production_files(dir: &Path, found: &mut Vec<std::path::PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
@@ -129,6 +150,39 @@ fn every_production_dictation_lock_goes_through_the_counting_guard() {
             .collect::<Vec<_>>()
             .join("\n")
     }
+    /// Every `.dictation` receiver in `text`: (byte offset, the receiver identifier before
+    /// the dot, what follows it with whitespace removed).
+    fn receivers(text: &str) -> Vec<(usize, String, String)> {
+        let bytes = text.as_bytes();
+        let mut found = Vec::new();
+        let mut from = 0;
+        while let Some(at) = text[from..].find(".dictation") {
+            let start = from + at;
+            let end = start + ".dictation".len();
+            from = end;
+            if bytes
+                .get(end)
+                .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            {
+                continue; // `.dictation_diagnostics`, `.dictation_status` ...
+            }
+            let receiver: String = text[..start]
+                .chars()
+                .rev()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let tail: String = text[end..]
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .take(40)
+                .collect();
+            found.push((start, receiver, tail));
+        }
+        found
+    }
     let mut files = Vec::new();
     production_files(&manifest_dir().join("src"), &mut files);
     assert!(
@@ -137,20 +191,38 @@ fn every_production_dictation_lock_goes_through_the_counting_guard() {
         files.len()
     );
     let mut raw = Vec::new();
+    let mut named_seen = vec![false; NAMED.len()];
     for file in files {
-        let text = std::fs::read_to_string(&file).unwrap();
-        for (number, line) in production_text(&text).lines().enumerate() {
-            if line.contains("dictation.lock()") || line.contains("dictation.try_lock()") {
-                raw.push(format!("{}: {}", file.display(), line.trim()));
-                let _ = number;
+        let text = production_text(&std::fs::read_to_string(&file).unwrap());
+        let shown = file.to_string_lossy().replace('\\', "/");
+        for (start, receiver, tail) in receivers(&text) {
+            // The counted guard, and the executor context's own borrowed guard option.
+            if tail.starts_with(".lock_or_recover()") || receiver == "ctx" {
+                continue;
+            }
+            let context = &text[start.saturating_sub(40)..(start + 80).min(text.len())];
+            let named = NAMED.iter().position(|(file_suffix, anchor, _)| {
+                shown.ends_with(file_suffix) && context.contains(anchor)
+            });
+            if let Some(index) = named {
+                named_seen[index] = true;
+            } else {
+                raw.push(format!("{shown}: `{receiver}.dictation{tail}`"));
             }
         }
     }
     assert!(
         raw.is_empty(),
-        "a production site takes the dictation lock without `lock_or_recover` (uncounted by \
-         the shadow's conservation check): {raw:#?}"
+        "a production site reaches the dictation mutex other than through `lock_or_recover` \
+         (uncounted by the shadow's conservation check): {raw:#?}"
     );
+    for (index, seen) in named_seen.iter().enumerate() {
+        assert!(
+            *seen,
+            "the named uncounted read {:?} no longer exists: remove it",
+            NAMED[index]
+        );
+    }
 }
 
 /// The detached auto-stop the audio lifecycle spawns is its own invocation: its flights
