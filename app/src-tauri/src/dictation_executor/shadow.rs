@@ -731,6 +731,8 @@ pub(crate) fn keyboard_written(was: bool, now: bool) {
 
 /// This thread's number of keyboard writes so far (the bracket's opening).
 pub(crate) fn keyboard_writes() -> u64 {
+    #[cfg(test)]
+    super::probe::shadow_read();
     KEYBOARD_WRITES.with(Cell::get)
 }
 
@@ -880,6 +882,8 @@ pub(crate) fn ticker_skipped(reason: TickerSkipReason) {
 
 /// The skip the spawner reported during the port's call, if any (an active port only).
 pub(crate) fn take_ticker_skip() -> Option<TickerSkipReason> {
+    #[cfg(test)]
+    super::probe::shadow_read();
     TICKER_SKIP.with(Cell::take)
 }
 

@@ -160,7 +160,11 @@ the diff adds lines and removes none, and every added line is behind
 `tests/test_shadow_diff.py`) reads `git diff --numstat` and fails on any deleted line in
 **any** changed production path under `app/src-tauri/src` and `crates/*/src` (test files and
 the named shadow-only modules excluded; a rename counts as a delete plus an add) unless
-`SHADOW_DIFF_ALLOW` names it.
+`SHADOW_DIFF_ALLOW` names it (one test-only entry today, `main_thread_watch.rs`, with its
+reason). Files are classified from the base revision, so adding `#![cfg(test)]` to a
+production file does not exempt its deletions, and a gate that is always false
+(`cfg(any())`, `cfg(not(all()))`, ...) on a statement that exists in the base fails as
+disabling it.
 
 How E7 counts, so a missed site cannot hide:
 
@@ -169,25 +173,40 @@ How E7 counts, so a missed site cannot hide:
   `shadow::dictation_lock_taken` with the caller's location. Each acquisition made while a
   flight is active must resolve to a header, a named no-decision outcome
   (`capture::no_decision`), or an unwind; acquisitions that are not decision sections are
-  in a named allowlist by site (`replay::NON_FAMILY`). A raw `dictation.lock()` in
-  production code fails `every_production_dictation_lock_goes_through_the_counting_guard`.
+  in a named allowlist by site (`replay::NON_FAMILY`). That policy scan matches the
+  **receiver** (`.dictation`), so every acquisition form (`lock`, `try_lock`,
+  `try_lock_or_recover`, any future method) outside the counted `lock_or_recover` and a
+  short named list of non-decision reads fails
+  `every_production_dictation_lock_goes_through_the_counting_guard`.
 * **No ambient flight.** There is no thread-local current flight and no stash. The
   executor carries the flight (`Executor::attach_flight`); the flight owns its mirror,
   ticker and speculative-flow slots (`Flight::slots()`), and the port wrappers write into
   those slots. Two flights interleaved on one thread across an await, or dropped out of
-  order, cannot see each other.
+  order, cannot see each other. The two thread-locals left name no flight: the keyboard
+  write sequence (read only inside an active flight's bracket, so a disarmed shadow reads no
+  state of its own under D) and a one-call mailbox for the ticker spawner's skip.
 * **Nothing is inferred.** The speculative-flow observation is the boolean the port read
   returned; the comparator checks it against the independently witnessed branch. Every
   reply is witnessed where the production code returns it (`*_witnessed` wrapper commands;
-  the detached auto-stop records its real result). A finish that is deferred and has no
-  reply, and a flight left waiting by an `import_pipeline_error`, close as a **named
-  no-reply close**, never with the decided kind filled in.
+  the detached auto-stop records its real result, and a source scan pins that until georgenijo/murmur-app#1171 drives it by behaviour). A finish a drain ran from the deferred queue (closed inside a no-reply scope;
+  a command nested in it keeps its own reply) and a parent whose reply is another site's
+  (R201.4 / R205.4, an explicit `Delegated` disposition; the comparison stays at R206)
+  close as a **named no-reply close**, never with a kind filled in. The import's pipeline
+  failure is an `Err` outcome for R302.2 compared with the actual return, so an `Ok`
+  return after a failed import is reported as a mismatch.
 * **The gate.** `Report::assert_clean` requires `open == 0`, `lost == 0`,
   `unverifiable == 0`, `closes == headers`, credit at close, and entries == headers +
   no-decision + unwound, unless the test that provoked an incomplete close asserts it by
   name (`replay::expect`). A suite whose every `Close` is dropped fails.
-* The ticker preflight (`ticker_preflight`) is shared between the production spawner's
-  observation and the harness; a test per skip reason asserts exactly one note.
+* The ticker spawner makes **one** lookup (`ticker_start_check`): the production spawner and
+  the harness's spawners both go through it and the skip it takes is handed to the port
+  that called it, so nothing is read twice under D. A test per skip reason asserts exactly
+  one note.
+* **Reads are pinned.** `the_shadow_reads_the_clock_and_the_live_fields_only_as_pinned`
+  counts `core_now()` calls and live-field view projections per entry (disarmed and armed),
+  and `a_disarmed_keyboard_write_reads_no_shadow_state` the disarmed shadow's reads of its
+  own state, which must be none. An extra read under D allocates nothing, so the
+  allocation pins cannot see it.
 
 Each `#[tauri::command]` return is witnessed by a feature-only wrapper command
 (`commands/recording/shadow_commands.rs`) that calls the original and records the reply it

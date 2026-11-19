@@ -1672,6 +1672,31 @@ pub(super) mod under_d {
         );
     }
 
+    /// The keyboard effect reads the shadow's per-thread write sequence only for a flight
+    /// that is armed: a disarmed shadow reads none of its own state under D, even where a
+    /// keyboard write happens (D-S2c-10 R4). R211 (an idle notice while recording) writes
+    /// the keyboard under D; its armed run must read the sequence, or the scenario does not
+    /// reach the keyboard effect at all.
+    #[test]
+    fn a_disarmed_keyboard_write_reads_no_shadow_state() {
+        let scenario = bridge_scenarios()
+            .into_iter()
+            .find(|scenario| scenario.title == "bridge Idle while recording (R211)")
+            .expect("the R211 scenario");
+        run_measured(&scenario, false);
+        assert!(
+            SHADOW_READS_UNDER_D.with(Cell::get) > 0,
+            "the armed R211 never read the keyboard write sequence: the scenario does not \
+             reach the keyboard effect"
+        );
+        run_measured(&scenario, true);
+        assert_eq!(
+            SHADOW_READS_UNDER_D.with(Cell::get),
+            0,
+            "the disarmed shadow read its own state at a keyboard write under D"
+        );
+    }
+
     struct WarnUnderD;
 
     impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnUnderD {
