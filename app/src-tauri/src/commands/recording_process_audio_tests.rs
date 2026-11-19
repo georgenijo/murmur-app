@@ -1363,7 +1363,8 @@ fn the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal() {
             assert!(run.state.benchmark.try_start());
         }),
         ("a live dictation (under D)", |run| {
-            run.state.app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+            // Seeds the persisted core with the live write.
+            run.set_status(DictationStatus::Recording, 0);
         }),
     ];
     const DEFAULT_BUILD_ALLOCATIONS: [(&str, u64); 4] = [
