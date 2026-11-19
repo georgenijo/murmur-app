@@ -10,7 +10,7 @@
 //! changes nothing and the scheduler moves on to another actor).
 
 use super::checks::{Checker, RunHits};
-use super::flights::{CancelFlight, StartFlight, StopFlight};
+use super::flights::{CancelFlight, ImportFlight, StartFlight, StopFlight};
 use super::gen::{self, Bias, Cmd, StartCaller, StopCaller};
 use super::model::*;
 use super::rng::Rng;
@@ -87,8 +87,19 @@ fn due_label(cmd: &Cmd) -> String {
             ..
         } => "stop from the IPC".to_string(),
         Cmd::Start { .. } => "start".to_string(),
+        Cmd::Import(_) => "import".to_string(),
         Cmd::Cancel { .. } => "cancel".to_string(),
     }
+}
+
+/// What a delivery changed that the run follows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Delivered {
+    Other,
+    /// The main window received `Idle`: its guard and its local status are gone.
+    MainIdle,
+    /// The main window's start reply put `Recording` over the `Processing` of a stop in flight.
+    ReplyOverProcessing,
 }
 
 /// One ready delivery happens: a window receives its next status event, or the main window
@@ -102,7 +113,8 @@ fn deliver_next(
     checker: &mut Checker,
     clock: u32,
     before_command: Option<String>,
-) {
+) -> Delivered {
+    let mut delivered = Delivered::Other;
     // The status deliveries first (window order), the start reply last, so a world with no
     // pending reply draws exactly what it drew before the reply existed.
     let mut ready: Vec<Option<usize>> = (0..w.windows.len())
@@ -112,42 +124,77 @@ fn deliver_next(
     if !w.start_replies.is_empty() {
         ready.push(None);
     }
-    let before = match &before_command {
+    let before_command_text = match &before_command {
         Some(label) => format!(" (before the due {label})"),
         None => String::new(),
     };
     match ready[rng.index(ready.len())] {
         Some(window) => {
             let status = w.deliver_status(window);
+            if window == MAIN_WINDOW && status == Status::Idle {
+                delivered = Delivered::MainIdle;
+            }
             if let Some(trace) = checker.trace.as_mut() {
                 trace.push(format!(
-                    "{clock:>4} {} window receives {status:?}{before}",
+                    "{clock:>4} {} window receives {status:?}{before_command_text}",
                     window_name(window)
                 ));
             }
         }
         None => {
+            let before = w.windows[MAIN_WINDOW].observed;
+            let stop_in_flight = w.windows[MAIN_WINDOW].stop_in_flight;
             let (reply, write) = w.deliver_start_reply().expect("a start reply was pending");
+            let after = w.windows[MAIN_WINDOW].observed;
+            // Read off the window, not off the write the model reports: a reply that put
+            // `Recording` over the `Processing` of a stop still in flight (#1162).
+            if before == Status::Processing && after == Status::Recording && stop_in_flight {
+                checker.hits.reply_over_processing += 1;
+                delivered = Delivered::ReplyOverProcessing;
+            }
+            if write == ReplyWrite::EndedGeneration {
+                checker.hits.reply_ended_generation += 1;
+            }
             if let Some(trace) = checker.trace.as_mut() {
+                let (ty, state, generation) = match reply.response {
+                    StartResponse::Typed {
+                        ty,
+                        state,
+                        recording_id,
+                    } => (
+                        ty.as_str().to_string(),
+                        format!("{state:?}"),
+                        recording_id.map_or(String::new(), |id| format!(", recording {id}")),
+                    ),
+                    StartResponse::Error => {
+                        ("error".to_string(), "no state".to_string(), String::new())
+                    }
+                };
                 trace.push(format!(
-                    "{clock:>4} main window receives the start reply {} (state {:?}): {}{before}",
-                    reply.ty.as_str(),
-                    reply.state,
+                    "{clock:>4} main window receives the reply of its start t{} ({ty}, state {state}{generation}): {}; the window shows {before:?} -> {after:?}{before_command_text}",
+                    reply.tid,
                     match write {
                         ReplyWrite::Wrote(status) => format!("writes {status:?}"),
                         ReplyWrite::NotOwner => "not the owner of the state".to_string(),
                         ReplyWrite::StaleStarting => "stale starting, ignored".to_string(),
+                        ReplyWrite::EndedGeneration =>
+                            "starting for a generation that already ended, ignored".to_string(),
+                        ReplyWrite::NoState => "no state to write".to_string(),
                     }
                 ));
             }
         }
     }
+    delivered
 }
 
 fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
     let mut rng = Rng::new(seed);
     let mut scenario_rng = rng.fork();
-    let scenario = gen::scenario(&mut scenario_rng);
+    // A second stream, apart from the scheduler's and the scenario's: what it draws (the
+    // microphone of a start, the legacy imports) moves none of their draws.
+    let mut extra_rng = Rng::new(seed ^ 0x1A7E_5EED_0F00_BA11);
+    let scenario = gen::scenario(&mut scenario_rng, &mut extra_rng);
     let mut w = World::new();
     let mut out = StepOut::default();
     let mut checker = Checker::default();
@@ -172,6 +219,9 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
     let mut bias = Bias::roll(&mut rng);
     let mut clock = 0u32;
     let mut steps = 0u32;
+    // A start reply put `Recording` over a stop's `Processing`, and the main window has received
+    // no `Idle` since: its next stop gesture is the second one the reply made possible (#1162).
+    let mut late_reply = false;
 
     loop {
         if steps >= MAX_STEPS {
@@ -194,7 +244,11 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
             // only actors add events.
             if window_ready(&w) && rng.chance(1, 2) {
                 let label = due_label(&pending.front().expect("checked above").1);
-                deliver_next(&mut w, &mut rng, &mut checker, clock, Some(label));
+                match deliver_next(&mut w, &mut rng, &mut checker, clock, Some(label)) {
+                    Delivered::ReplyOverProcessing => late_reply = true,
+                    Delivered::MainIdle => late_reply = false,
+                    Delivered::Other => {}
+                }
                 continue;
             }
             let (_, cmd) = pending.pop_front().expect("checked above");
@@ -244,7 +298,11 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
                                         window_name(index),
                                         // The stop ran ahead of a delivery that would have
                                         // shown `Recording` (#1159: the competition's other side).
-                                        if w.windows[index].inbox.contains(&Status::Recording) {
+                                        if w.windows[index]
+                                            .inbox
+                                            .iter()
+                                            .any(|event| event.status == Status::Recording)
+                                        {
                                             " while Recording is still queued for it"
                                         } else {
                                             ""
@@ -256,7 +314,7 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
                         }
                         if let Some(trace) = checker.trace.as_mut() {
                             trace.push(format!(
-                                "{clock:>4} frontend stop sent ({} window shows Recording)",
+                                "{clock:>4} frontend stop sent ({} window shows Recording) as t{next_tid}",
                                 window_name(index)
                             ));
                         }
@@ -271,6 +329,10 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
                         }
                         // The main window now shows `Processing` and holds its guard until
                         // the IPC returns.
+                        if index == MAIN_WINDOW && late_reply {
+                            checker.hits.second_stop_after_late_reply += 1;
+                            late_reply = false;
+                        }
                         w.window_stop_sent(index);
                     }
                     StopCaller::Ipc => {
@@ -285,9 +347,25 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
                 }
             }
             if let Cmd::Start { caller, .. } = &cmd {
+                // The main window's `beginRecording` keeps `startOperationRef` until its start's
+                // response was processed: a second start gesture meanwhile awaits the same
+                // operation and sends no IPC (`useRecordingState.ts:456-459`).
+                if *caller == StartCaller::Window(MAIN_WINDOW)
+                    && w.windows[MAIN_WINDOW].start_in_flight
+                {
+                    if let Some(trace) = checker.trace.as_mut() {
+                        trace.push(format!(
+                            "{clock:>4} frontend start coalesced (the main window's start is still in flight)"
+                        ));
+                    }
+                    continue;
+                }
+                if *caller == StartCaller::Window(MAIN_WINDOW) {
+                    w.window_start_sent();
+                }
                 if let Some(trace) = checker.trace.as_mut() {
                     trace.push(format!(
-                        "{clock:>4} start issued by {}",
+                        "{clock:>4} start issued by {} as t{next_tid}",
                         match caller {
                             StartCaller::Window(index) =>
                                 format!("the {} window", window_name(*index)),
@@ -303,9 +381,13 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
                     app_disabled,
                     smart,
                     caller,
+                    mic,
                 } => Box::new(
-                    StartFlight::new(plan, blockers, app_disabled, smart).with_caller(caller),
+                    StartFlight::new(plan, blockers, app_disabled, smart)
+                        .with_caller(caller)
+                        .with_mic(mic),
                 ),
+                Cmd::Import(plan) => Box::new(ImportFlight::new(plan)),
                 Cmd::Stop { cfg, caller } => {
                     let flight = StopFlight::new(None, None, cfg);
                     Box::new(match caller {
@@ -329,7 +411,11 @@ fn run(seed: u64, trace: bool, strict: bool) -> (RunReport, Vec<String>) {
         // before a stop is issued). It is not a shell step: it changes no shell state, so
         // it takes no model time and no actor's weight.
         if window_ready(&w) && rng.chance(1, 3) {
-            deliver_next(&mut w, &mut rng, &mut checker, clock, None);
+            match deliver_next(&mut w, &mut rng, &mut checker, clock, None) {
+                Delivered::ReplyOverProcessing => late_reply = true,
+                Delivered::MainIdle => late_reply = false,
+                Delivered::Other => {}
+            }
             continue;
         }
 

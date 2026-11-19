@@ -460,13 +460,32 @@ pub const MAIN_WINDOW: usize = 0;
 /// The overlay window (`useRecordingControls.ts`: click and double-click stop).
 pub const OVERLAY_WINDOW: usize = 1;
 
-/// A start command's typed reply on its way to the main window (#1162): the value its
-/// `beginRecording` awaits (`useRecordingState.ts:465`). Only a typed reply is queued: an
-/// `Err` reply rejects the invoke, which `beginRecording`'s `catch` handles (not modelled).
+/// What a main-window start command's response carries (#1162): the value its
+/// `beginRecording` awaits (`useRecordingState.ts:465`), after `lib/dictation.ts`
+/// `startRecording` has turned it into a response object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartResponse {
+    /// A typed `{type, state[, recordingId]}` reply. `recording_id` is set only on
+    /// `recording_starting` (R104.7): the generation the window compares with the last one
+    /// it saw end.
+    Typed {
+        ty: ReplyType,
+        state: Status,
+        recording_id: Option<Rid>,
+    },
+    /// An `Err` reply (or a failed invoke): the wrapper catches the rejection and returns
+    /// `{type: 'error', error}`, which has no `state` and no `recordingId`
+    /// (`lib/dictation.ts` `startRecording`). The hook's outer `catch` is not reached, so
+    /// the window writes no status.
+    Error,
+}
+
+/// A start command's response on its way to the main window, tied to the one start
+/// (`tid`) that produced it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StartReply {
-    pub ty: ReplyType,
-    pub state: Status,
+    pub tid: TaskId,
+    pub response: StartResponse,
 }
 
 /// What the main window did with a start reply.
@@ -479,6 +498,23 @@ pub enum ReplyWrite {
     NotOwner,
     /// A `starting` reply that is stale (`:481-483`): the window already moved past it.
     StaleStarting,
+    /// A `starting` reply for a generation the window saw end (`:474-476`): its
+    /// `recordingId` is not above the last one a `recovering`, `idle` or `processing` event
+    /// closed.
+    EndedGeneration,
+    /// No `state` in the response (an error response): nothing is written.
+    NoState,
+}
+
+/// A `recording-status-changed` event on its way to a window, with the newest generation
+/// whose `dictation-generation-started` event was emitted before it. The window learns that
+/// generation in emit order, so carrying it on the status event the window receives next is
+/// the same knowledge at every status event (`latestRecordingGenerationRef` only matters
+/// through `endedRecordingGenerationRef`, which only a status event moves).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Inbound {
+    pub status: Status,
+    pub latest_generation: Rid,
 }
 
 /// One window's receiving end of `recording-status-changed`: its own delivery cursor
@@ -486,22 +522,39 @@ pub enum ReplyWrite {
 #[derive(Debug, Default, Clone)]
 pub struct WindowView {
     pub observed: Status,
-    pub inbox: std::collections::VecDeque<Status>,
+    pub inbox: std::collections::VecDeque<Inbound>,
     /// The main window's `isStoppingRef` (`useRecordingState.ts`): set by a stop gesture that
     /// reaches the IPC, cleared when that IPC returns and when the window receives `Idle`
     /// (#1167). Only the main window has it; the overlay's click handlers keep no such guard
     /// (`useRecordingControls.ts`), so this stays `false` for the overlay.
     pub stop_in_flight: bool,
+    /// The main window's `startOperationRef`: set when `beginRecording` sends the start
+    /// IPC, cleared in its `finally` once the response was processed. While it is set,
+    /// another `beginRecording` awaits the same operation and sends nothing
+    /// (`useRecordingState.ts:456-459`).
+    pub start_in_flight: bool,
+    /// `latestRecordingGenerationRef`: the newest generation a received event named.
+    pub latest_generation: Rid,
+    /// `endedRecordingGenerationRef`: set to `latestRecordingGenerationRef` by every
+    /// received `recovering`, `idle` or `processing` status event.
+    pub ended_generation: Rid,
 }
 
 impl WindowView {
     /// The window receives the next event of its inbox; returns the status it now shows.
     fn receive(&mut self) -> Status {
-        if let Some(status) = self.inbox.pop_front() {
-            self.observed = status;
+        if let Some(event) = self.inbox.pop_front() {
+            self.latest_generation = self.latest_generation.max(event.latest_generation);
+            self.observed = event.status;
+            if matches!(
+                event.status,
+                Status::Recovering | Status::Idle | Status::Processing
+            ) {
+                self.ended_generation = self.ended_generation.max(self.latest_generation);
+            }
             // `recording-status-changed` handler: "If idle arrived externally (e.g. Escape
             // cancel), unblock handleStop" (`useRecordingState.ts`).
-            if status == Status::Idle {
+            if event.status == Status::Idle {
                 self.stop_in_flight = false;
             }
         }
@@ -551,6 +604,9 @@ pub struct World {
     /// window has not processed yet, in return order (#1162). Processing one is a step of
     /// the schedule of its own, like a status delivery.
     pub start_replies: VecDeque<StartReply>,
+    /// The newest generation whose `dictation-generation-started` event was emitted
+    /// (`EV(GenStarted)`), carried on the status events emitted after it ([`Inbound`]).
+    pub gen_emitted: Rid,
     /// Differences the harness found between `DictationCore::handle` and the flight's
     /// direct `decide_*` call (`entry::once`), drained per step by the checker.
     pub handle_faults: RefCell<Vec<String>>,
@@ -592,6 +648,12 @@ impl World {
         }
     }
 
+    /// The main window's `beginRecording` sends a start IPC (`startOperationRef` set). A
+    /// second start gesture while it is set awaits the same operation and sends nothing.
+    pub fn window_start_sent(&mut self) {
+        self.windows[MAIN_WINDOW].start_in_flight = true;
+    }
+
     /// A start command issued by the main window has returned `reply`: the window will
     /// process it in a step of its own (`beginRecording`'s `await startRecording(...)`
     /// resolves at the window's own pace, apart from the status events).
@@ -601,27 +663,37 @@ impl World {
 
     /// The main window processes the next start reply, `useRecordingState.ts:465-486`:
     /// the reply's status is written to `statusRef` / `setStatus` when the reply owns
-    /// dictation state, unless it is a stale `starting` (the window already left `Idle` and
-    /// `Starting`). The write does not look at the stop guard, and clears nothing.
-    ///
-    /// `generationEnded` (`:474-476`, an id compared with the last generation the window saw
-    /// end) is not modelled: the window's events carry no ids here. It can only turn more
-    /// `starting` writes into stale ones, so the model writes where production may not.
+    /// dictation state, unless it is a stale `starting` (the generation already ended in
+    /// this window, or the window already left `Idle` and `Starting`). The write does not
+    /// look at the stop guard, and clears nothing. `beginRecording`'s `finally` then clears
+    /// the start guard (`:530-532`).
     pub fn deliver_start_reply(&mut self) -> Option<(StartReply, ReplyWrite)> {
         let reply = self.start_replies.pop_front()?;
         let view = &mut self.windows[MAIN_WINDOW];
-        let write = if matches!(
-            reply.ty,
-            ReplyType::AudioRecovering | ReplyType::AlreadyStarting
-        ) {
-            ReplyWrite::NotOwner
-        } else if reply.state == Status::Starting
-            && !matches!(view.observed, Status::Idle | Status::Starting)
-        {
-            ReplyWrite::StaleStarting
-        } else {
-            view.observed = reply.state;
-            ReplyWrite::Wrote(reply.state)
+        view.start_in_flight = false;
+        let write = match reply.response {
+            StartResponse::Error => ReplyWrite::NoState,
+            StartResponse::Typed {
+                ty: ReplyType::AudioRecovering | ReplyType::AlreadyStarting,
+                ..
+            } => ReplyWrite::NotOwner,
+            StartResponse::Typed {
+                state,
+                recording_id,
+                ..
+            } => {
+                let ended = recording_id.is_some_and(|id| id <= view.ended_generation);
+                if state == Status::Starting && ended {
+                    ReplyWrite::EndedGeneration
+                } else if state == Status::Starting
+                    && !matches!(view.observed, Status::Idle | Status::Starting)
+                {
+                    ReplyWrite::StaleStarting
+                } else {
+                    view.observed = state;
+                    ReplyWrite::Wrote(state)
+                }
+            }
         };
         Some((reply, write))
     }
@@ -651,6 +723,7 @@ impl World {
             idle_emits: BTreeMap::new(),
             t_holder: None,
             start_replies: VecDeque::new(),
+            gen_emitted: 0,
             handle_faults: RefCell::new(Vec::new()),
             cancel_tail: BTreeMap::new(),
             step: 0,

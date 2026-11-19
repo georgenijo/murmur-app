@@ -18,17 +18,38 @@ use std::time::{Duration, Instant};
 /// [`the_deep_sweep_holds_the_properties`].
 const DEFAULT_SEEDS: u64 = 10_000;
 
-// Witness seeds for the delivery/stop competition (#1159, #1167), re-pinned by sweeping. Routing
-// every flight through `DictationCore::handle` (#1160) and the start caller and reply (#1162)
-// shifted every seed: 176 -> 217, 147 -> 25, 473 -> 164, 169 -> 147.
-const MAIN_DELIVERY_FIRST: u64 = 217;
-const OVERLAY_DELIVERY_FIRST: u64 = 25;
-const MAIN_STOP_FIRST: u64 = 164;
-const OVERLAY_STOP_FIRST: u64 = 147;
-/// #1162: the overlay's start wins, the main window's refused start replies late, after the main
-/// window's stop, and the second stop gesture is sent. It is the first of 500,000 seeds that
-/// does (about one in 150,000), so it is a fixed seed.
-const LATE_START_REPLY_SECOND_STOP: u64 = 203_928;
+// Witness seeds for the delivery/stop competition (#1159, #1167), re-pinned by scanning the gated
+// seeds. Each change of the harness's draws or schedule moves them: routing every flight through
+// `DictationCore::handle` (#1160) and the start caller and reply (#1162) moved 176 -> 217,
+// 147 -> 25, 473 -> 164, 169 -> 147; the Smart Auto and import gates, the main window's start guard
+// and the generation tracking (#1169 review) moved them to 86, 100, 175 and 25.
+const MAIN_DELIVERY_FIRST: u64 = 86;
+const OVERLAY_DELIVERY_FIRST: u64 = 100;
+const MAIN_STOP_FIRST: u64 = 175;
+const OVERLAY_STOP_FIRST: u64 = 25;
+/// #1167: the main window's second stop waits for the first (the issue's seed 1454 before the
+/// re-pins), and the overlay, which has no guard, sends two.
+const MAIN_SECOND_STOP_WAITS: u64 = 456;
+const OVERLAY_TWO_STOPS: u64 = 162;
+/// #1162, #1169 review: the main window's start `S` is in flight (it issued no second start), the
+/// main window sends a stop, `S`'s reply is processed while that stop is in flight and puts
+/// `Recording` over its `Processing`, the stop returns, and the second stop gesture is sent. It is
+/// the first of 3,000,000 seeds that does (41 of them do), so it is a fixed seed.
+const LATE_START_REPLY_SECOND_STOP: u64 = 73_499;
+/// The rows of the start gate that the Smart Auto selection round makes reachable (#1169
+/// review): the pre-D refusal of Smart Auto with a fixed device (R101.2) and the failed resolve
+/// (R101.14). The gated seeds must decide each of them, so a `handle` that stops asking for the
+/// selection fails the gate even if the flight's own twin agreed.
+const START_GATE_ROWS: [&str; 2] = ["R101.2", "R101.14"];
+/// The `NeedObservation` rounds the gated seeds answer: the Smart Auto resolve (R101.13) and the
+/// import's benchmark read (R301.3).
+const GATE_OBSERVATIONS: [&str; 2] = ["R101.13", "R301.3"];
+/// The legacy import's rows (sites 301 and 302, Appendix C's stop cutover): the refusals, the
+/// benchmark observation (R301.3 is decided twice for an import that reaches it), the accepted
+/// import, its Smart Destination recheck and both finish branches.
+const IMPORT_GATE_ROWS: [&str; 8] = [
+    "R301.1", "R301.2", "R301.3", "R301.4", "R301.5", "R301.6", "R302.1", "R302.2",
+];
 /// The deep sweep's default size; `DEEP_SWEEP_SEEDS` sets another.
 const DEEP_SWEEP_SEEDS: u64 = 300_000;
 const CI_BUDGET: Duration = Duration::from_secs(20);
@@ -39,35 +60,40 @@ const CI_BUDGET: Duration = Duration::from_secs(20);
 /// converse check, and a witness that drifted away fails it. Each is the first seed of a
 /// 3,000,000-seed sweep that takes the witness.
 ///
-/// * 11,612: PD-18 (c), the unsealed stop.
-/// * 21,272: PD-24 through the user's cancel (R102.3, R209.3).
-/// * 10,882: PD-19 through `TerminationUnconfirmed`.
-/// * 81,353: PD-22 against a stop's performance completion (R211.2, R203.2).
-/// * 161,052: PD-22 against the cancel's own `TERM` (R211.2, R205.5).
-/// * 2,569,791: PD-19's refused auto-stop (the capture stays in the store and no ordinary
+/// * 14,033: PD-18 (c), the unsealed stop.
+/// * 81,584: PD-19 through a dropped start (no context was ever installed).
+/// * 492,192: PD-19 through `TerminationUnconfirmed`.
+/// * 2,071,065: PD-19's refused auto-stop (the capture stays in the store and no ordinary
 ///   control sends the stop that would take it; D-S2b-15 (c), (d)). It is rare because the
 ///   unscoped stop IPC, one in four generated stops, takes the capture when it lands, and
 ///   a window sends no stop that it has not seen `Recording` for.
-/// * 179,248: PD-19 through a dropped start (no context was ever installed).
-/// * 48,827: PD-21 with a short stop (R206.2, R203.4).
-/// * 203,928: the late main-window start reply and its second stop (#1162), the first of 500,000
-///   seeds that has the whole sequence.
+/// * 289,110: PD-21 with a short stop (R206.2, R203.4).
+/// * 31,086: PD-22 against a stop's performance completion (R211.2, R203.2).
+/// * 154,052: PD-22 against the cancel's own `TERM` (R211.2, R205.5).
+/// * 24,199: PD-24 through an environmental recovery (R102.3, R209.5). The user's cancel
+///   (R102.3, R209.3) is now taken by seed 3,651, inside the range.
+/// * 73,499: the late main-window start reply and its second stop (#1162, #1169 review), the first
+///   of 3,000,000 seeds that has the whole sequence tied to one start and one stop.
 ///
-/// Re-pinned for #1160 and #1162: every flight decides through `DictationCore::handle`, and a
-/// start now draws its caller, which changed the RNG draws. Old -> new: 10,724 -> 11,612,
-/// 19,737 -> 21,272, 39,219 -> 10,882, 52,153 -> 81,353, 101,117 -> 161,052,
-/// 259,286 -> 2,569,791, 262,762 -> 179,248, 273,164 -> 48,827; 203,928 is new.
+/// Re-pinned for #1160 and #1162 (every flight decides through `DictationCore::handle`, a start
+/// draws its caller) and again for the #1169 review (the main window's start guard, the reply
+/// identity and generation tracking, the Smart Auto and import gates). Old -> new, from the
+/// state before #1160: 10,724 -> 11,612 -> 14,033, 19,737 -> 21,272 -> 3,651 (now in range),
+/// 39,219 -> 10,882 -> 492,192, 52,153 -> 81,353 -> 31,086, 101,117 -> 161,052 -> 154,052,
+/// 259,286 -> 2,569,791 -> 2,071,065, 262,762 -> 179,248 -> 81,584,
+/// 273,164 -> 48,827 -> 289,110; 203,928 -> 73,499; 24,199 is the PD-24 (R209.5) witness,
+/// formerly seed 5,206 in range.
 const FIXED_SEEDS: [u64; 9] = [
-    11_612, 21_272, 10_882, 81_353, 161_052, 2_569_791, 179_248, 48_827, 203_928,
+    14_033, 81_584, 492_192, 2_071_065, 289_110, 31_086, 154_052, 24_199, 73_499,
 ];
 
 /// PD-18's witnesses, one seed per instance (C7.5): the first seed of the fixed
 /// range that ends stuck in `Recovering` through that instance, with the generation's
 /// own evidence (R101.12 in the gap after its last restorer).
 const PD18_SEEDS: [(&str, u64); 3] = [
-    ("(a) S12", 2_997),
+    ("(a) S12", 654),
     ("(b) Idle-arm tail", 121),
-    ("(c) unsealed stop", 11_612),
+    ("(c) unsealed stop", 14_033),
 ];
 
 /// A witness of one of PD-19..PD-24: the PD, the seed that takes it, the matched
@@ -88,35 +114,35 @@ struct Witness {
 const FINDING_SEEDS: [Witness; 14] = [
     Witness {
         pd: 19,
-        seed: 10_882,
+        seed: 492_192,
         split: None,
         shell_test: Some("pd19_termination_unconfirmed_after_retained_pcm_leaves_recovering"),
         sig: None,
     },
     Witness {
         pd: 19,
-        seed: 179_248,
+        seed: 81_584,
         split: None,
         shell_test: Some("pd19_a_dropped_start_and_a_retained_runtime_failure_leave_recovering"),
         sig: None,
     },
     Witness {
         pd: 19,
-        seed: 2_569_791,
+        seed: 2_071_065,
         split: None,
         shell_test: Some("pd19_a_refused_auto_stop_leaves_the_capture_and_recovering"),
         sig: None,
     },
     Witness {
         pd: 20,
-        seed: 574,
+        seed: 140,
         split: Some(("R205.5", "R203.5")),
         shell_test: Some("pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree"),
         sig: None,
     },
     Witness {
         pd: 21,
-        seed: 48_827,
+        seed: 289_110,
         split: Some(("R206.2", "R203.4")),
         shell_test: Some("pd21_timed_out_cancel_then_a_short_stop_disagree"),
         sig: None,
@@ -130,35 +156,35 @@ const FINDING_SEEDS: [Witness; 14] = [
     },
     Witness {
         pd: 22,
-        seed: 81_353,
+        seed: 31_086,
         split: Some(("R211.2", "R203.2")),
         shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance"),
         sig: None,
     },
     Witness {
         pd: 22,
-        seed: 161_052,
+        seed: 154_052,
         split: Some(("R211.2", "R205.5")),
         shell_test: Some("pd22_expired_stop_idle_supersedes_and_the_cancel_completes_performance"),
         sig: None,
     },
     Witness {
         pd: 23,
-        seed: 822,
+        seed: 450,
         split: Some(("R207.3", "R203.5")),
         shell_test: Some("pd23_superseded_terminal_and_an_empty_stop_no_speech_disagree"),
         sig: None,
     },
     Witness {
         pd: 23,
-        seed: 1_183,
+        seed: 1_291,
         split: Some(("R207.3", "R203.1")),
         shell_test: Some("pd23_superseded_terminal_and_a_refused_stop_failed_disagree"),
         sig: None,
     },
     Witness {
         pd: 23,
-        seed: 123,
+        seed: 169,
         split: Some(("R207.3", "R205.5")),
         shell_test: Some("pd23_superseded_terminal_and_a_cancel_of_processing_cancelled_disagree"),
         sig: None,
@@ -168,14 +194,14 @@ const FINDING_SEEDS: [Witness; 14] = [
     // the claim, so it has no shell fixture; it stays allowlisted (D-S2b-13 (e)).
     Witness {
         pd: 23,
-        seed: 757,
+        seed: 1_610,
         split: Some(("R207.3", "R204b.6")),
         shell_test: None,
         sig: Some(2),
     },
     Witness {
         pd: 24,
-        seed: 21_272,
+        seed: 3_651,
         split: Some(("R102.3", "R209.3")),
         shell_test: Some(
             "pd24_start_timeout_terminal_and_the_users_cancel_arm_performance_outcome_disagree",
@@ -184,7 +210,7 @@ const FINDING_SEEDS: [Witness; 14] = [
     },
     Witness {
         pd: 24,
-        seed: 5_206,
+        seed: 24_199,
         split: Some(("R102.3", "R209.5")),
         shell_test: Some(
             "pd24_start_timeout_terminal_and_an_environmental_recovery_arm_performance_outcome_disagree",
@@ -233,6 +259,17 @@ struct Summary {
     sig: Vec<(u32, Option<u64>)>,
     /// Matched SP4(b) splits `(terminal row, performance row)`: occurrences and first seed.
     pairs: BTreeMap<(&'static str, &'static str), (u32, u64)>,
+    /// Decisions the flights acted on, by row: occurrences and first seed.
+    decided: BTreeMap<&'static str, (u32, u64)>,
+    /// `NeedObservation` rounds the flights answered, by row.
+    observed: BTreeMap<&'static str, (u32, u64)>,
+    /// Start replies that put `Recording` over the `Processing` of a stop in flight
+    /// (`RunHits::reply_over_processing`): occurrences and first seed.
+    reply_over_processing: (u32, Option<u64>),
+    /// The second stop after such a reply: occurrences and first seed.
+    second_stop_after_late_reply: (u32, Option<u64>),
+    /// `starting` replies ignored for an ended generation: occurrences and first seed.
+    reply_ended_generation: (u32, Option<u64>),
     steps: u64,
 }
 
@@ -276,6 +313,24 @@ fn summarize(list: Vec<u64>) -> Summary {
             let entry = summary.pairs.entry(*pair).or_insert((0, seed));
             entry.0 += count;
         }
+        for (row, count) in &report.hits.decided {
+            summary.decided.entry(*row).or_insert((0, seed)).0 += count;
+        }
+        for (row, count) in &report.hits.observed {
+            summary.observed.entry(*row).or_insert((0, seed)).0 += count;
+        }
+        if report.hits.reply_over_processing > 0 {
+            summary.reply_over_processing.0 += report.hits.reply_over_processing;
+            summary.reply_over_processing.1.get_or_insert(seed);
+        }
+        if report.hits.second_stop_after_late_reply > 0 {
+            summary.second_stop_after_late_reply.0 += report.hits.second_stop_after_late_reply;
+            summary.second_stop_after_late_reply.1.get_or_insert(seed);
+        }
+        if report.hits.reply_ended_generation > 0 {
+            summary.reply_ended_generation.0 += report.hits.reply_ended_generation;
+            summary.reply_ended_generation.1.get_or_insert(seed);
+        }
         for (row, count) in report.hits.sig.iter().enumerate() {
             if *count > 0 {
                 summary.sig[row].0 += count;
@@ -308,6 +363,24 @@ fn summarize(list: Vec<u64>) -> Summary {
     eprintln!(
         "property: PD-19 entries (TerminationUnconfirmed, dropped start, refused auto-stop): {:?}",
         summary.pd19
+    );
+    for row in START_GATE_ROWS.iter().chain(&IMPORT_GATE_ROWS) {
+        eprintln!(
+            "property: row {row}: {:?} (occurrences, first seed)",
+            summary.decided.get(row)
+        );
+    }
+    for row in GATE_OBSERVATIONS {
+        eprintln!(
+            "property: observation round {row}: {:?}",
+            summary.observed.get(row)
+        );
+    }
+    eprintln!(
+        "property: a start reply over a stop's Processing: {:?}; a second stop after it: {:?}; an ended generation's starting reply: {:?}",
+        summary.reply_over_processing,
+        summary.second_stop_after_late_reply,
+        summary.reply_ended_generation
     );
     for ((terminal, perf), (count, first)) in &summary.pairs {
         eprintln!(
@@ -419,6 +492,29 @@ fn every_preserved_defect_is_witnessed() {
     assert_eq!(
         summary.pd[17].0, 0,
         "PD-17 is latent: no schedule reaches it"
+    );
+    // The gates of the cutover (#1169 review): every row of the Smart Auto round and of the legacy
+    // import is decided by the gated seeds, and the late start reply the main window writes over
+    // a stop's `Processing` happens in them.
+    let silent: Vec<&str> = START_GATE_ROWS
+        .iter()
+        .chain(&IMPORT_GATE_ROWS)
+        .filter(|row| !summary.decided.contains_key(**row))
+        .copied()
+        .collect();
+    assert!(silent.is_empty(), "rows no gated seed decides: {silent:?}");
+    let unasked: Vec<&str> = GATE_OBSERVATIONS
+        .iter()
+        .filter(|row| !summary.observed.contains_key(**row))
+        .copied()
+        .collect();
+    assert!(
+        unasked.is_empty(),
+        "observation rounds no gated seed answers: {unasked:?}"
+    );
+    assert!(
+        summary.reply_over_processing.0 > 0,
+        "no gated seed has a start reply put `Recording` over the `Processing` of a stop in flight"
     );
 }
 
@@ -1727,9 +1823,9 @@ fn pd19_is_witnessed_with_its_whole_story() {
     // One seed per entry: `TerminationUnconfirmed`, a dropped start, the refused auto-stop
     // that leaves the capture in the store (no user-accessible recovery).
     for (seed, entries) in [
-        (10_882, [1, 0, 0]),
-        (179_248, [0, 1, 0]),
-        (2_569_791, [0, 0, 1]),
+        (492_192, [1, 0, 0]),
+        (81_584, [0, 1, 0]),
+        (2_071_065, [0, 0, 1]),
     ] {
         let report = run_seed(gated(seed));
         assert!(report.hits.pd[19] > 0, "{seed}: {:?}", report.hits);
@@ -1747,7 +1843,8 @@ fn pd19_is_witnessed_with_its_whole_story() {
 /// every property holds in each.
 #[test]
 fn stops_follow_their_caller() {
-    let (mut suppressed, mut not_sent, mut stale, mut unscoped, mut in_flight) = (0, 0, 0, 0, 0);
+    let (mut suppressed, mut not_sent, mut stale, mut unscoped, mut in_flight, mut coalesced) =
+        (0, 0, 0, 0, 0, 0);
     for seed in 0..5_000 {
         let (report, trace) = run_seed_with(gated(seed), true);
         assert!(
@@ -1761,6 +1858,7 @@ fn stops_follow_their_caller() {
         stale += count("frontend stop issued on a stale observation");
         unscoped += count("unscoped stop IPC issued");
         in_flight += count("window has a stop in flight");
+        coalesced += count("frontend start coalesced (the main window's start is still in flight)");
     }
     assert!(
         suppressed > 0,
@@ -1778,6 +1876,10 @@ fn stops_follow_their_caller() {
     assert!(
         in_flight > 0,
         "no main-window stop was ever held back by its in-flight guard"
+    );
+    assert!(
+        coalesced > 0,
+        "no main-window start gesture was ever coalesced into the start in flight"
     );
 }
 
@@ -1873,7 +1975,7 @@ fn a_finished_main_window_stop_flight_clears_its_guard() {
     assert!(w
         .windows
         .iter()
-        .all(|view| !view.inbox.contains(&Status::Idle)));
+        .all(|view| !view.inbox.iter().any(|event| event.status == Status::Idle)));
     // A stop from the IPC or the auto-stop belongs to no window and leaves the guard alone.
     let mut w = new_world();
     w.windows[MAIN_WINDOW].stop_in_flight = true;
@@ -1946,11 +2048,13 @@ fn a_main_window_start_returns_its_reply_for_the_window_to_process() {
     drive_start_flight(&mut w, flight(StartCaller::Window(MAIN_WINDOW)));
     assert_eq!(
         w.start_replies.iter().copied().collect::<Vec<_>>(),
-        [StartReply {
-            ty: crate::replies::ReplyType::AlreadyRecording,
-            state: Status::Recording
-        }],
-        "the refused start's reply waits for the main window"
+        [reply(
+            4,
+            crate::replies::ReplyType::AlreadyRecording,
+            Status::Recording,
+            None
+        )],
+        "the refused start's reply waits for the main window, tied to that one start (t4)"
     );
     for caller in [StartCaller::Window(OVERLAY_WINDOW), StartCaller::Ipc] {
         let mut w = recording_world();
@@ -1960,7 +2064,9 @@ fn a_main_window_start_returns_its_reply_for_the_window_to_process() {
             "{caller:?} writes no window state"
         );
     }
-    // A start future dropped at its await returns nothing at all.
+    // A start future dropped at its await returns a failed invoke: the wrapper's error
+    // response, which has no state (`lib/dictation.ts`), so it writes nothing but still
+    // ends the main window's start operation.
     let mut w = recording_world();
     let mut dropped = flight(StartCaller::Window(MAIN_WINDOW));
     let mut out = StepOut::default();
@@ -1974,7 +2080,30 @@ fn a_main_window_start_returns_its_reply_for_the_window_to_process() {
         mailbox: &mut mailbox,
     });
     drive_start_flight(&mut w, dropped);
-    assert!(w.start_replies.is_empty());
+    assert_eq!(
+        w.start_replies.iter().copied().collect::<Vec<_>>(),
+        [StartReply {
+            tid: 4,
+            response: StartResponse::Error
+        }]
+    );
+}
+
+/// The typed response of start `tid`.
+fn reply(
+    tid: TaskId,
+    ty: crate::replies::ReplyType,
+    state: Status,
+    recording_id: Option<Rid>,
+) -> StartReply {
+    StartReply {
+        tid,
+        response: StartResponse::Typed {
+            ty,
+            state,
+            recording_id,
+        },
+    }
 }
 
 /// #1162, `useRecordingState.ts:465-486`: the main window writes the reply's status unless the
@@ -1988,18 +2117,29 @@ fn the_main_window_writes_a_late_start_reply_over_its_processing_status() {
     let mut w = World::new();
     w.window_stop_sent(MAIN_WINDOW);
     assert_eq!(w.windows[MAIN_WINDOW].observed, Status::Processing);
-    w.start_replied(StartReply {
-        ty: ReplyType::AlreadyRecording,
-        state: Status::Recording,
-    });
+    w.window_start_sent();
+    w.start_replied(reply(
+        4,
+        ReplyType::AlreadyRecording,
+        Status::Recording,
+        None,
+    ));
     assert_eq!(
         w.windows[MAIN_WINDOW].observed,
         Status::Processing,
         "the reply has not been processed yet"
     );
+    assert!(
+        w.windows[MAIN_WINDOW].start_in_flight,
+        "the start operation lasts until its reply is processed"
+    );
     let (_, write) = w.deliver_start_reply().expect("a reply is pending");
     assert_eq!(write, ReplyWrite::Wrote(Status::Recording));
     assert_eq!(w.windows[MAIN_WINDOW].observed, Status::Recording);
+    assert!(
+        !w.windows[MAIN_WINDOW].start_in_flight,
+        "`beginRecording`'s finally ends the start operation"
+    );
     assert!(
         w.windows[MAIN_WINDOW].stop_in_flight,
         "the write does not touch the guard: the stop IPC is still in flight"
@@ -2009,10 +2149,7 @@ fn the_main_window_writes_a_late_start_reply_over_its_processing_status() {
     for ty in [ReplyType::AudioRecovering, ReplyType::AlreadyStarting] {
         let mut w = World::new();
         w.windows[MAIN_WINDOW].observed = Status::Processing;
-        w.start_replied(StartReply {
-            ty,
-            state: Status::Idle,
-        });
+        w.start_replied(reply(4, ty, Status::Idle, None));
         assert_eq!(
             w.deliver_start_reply().map(|(_, write)| write),
             Some(ReplyWrite::NotOwner)
@@ -2023,10 +2160,12 @@ fn the_main_window_writes_a_late_start_reply_over_its_processing_status() {
     for observed in [Status::Recording, Status::Processing, Status::Recovering] {
         let mut w = World::new();
         w.windows[MAIN_WINDOW].observed = observed;
-        w.start_replied(StartReply {
-            ty: ReplyType::RecordingStarting,
-            state: Status::Starting,
-        });
+        w.start_replied(reply(
+            4,
+            ReplyType::RecordingStarting,
+            Status::Starting,
+            None,
+        ));
         assert_eq!(
             w.deliver_start_reply().map(|(_, write)| write),
             Some(ReplyWrite::StaleStarting)
@@ -2036,10 +2175,12 @@ fn the_main_window_writes_a_late_start_reply_over_its_processing_status() {
     for observed in [Status::Idle, Status::Starting] {
         let mut w = World::new();
         w.windows[MAIN_WINDOW].observed = observed;
-        w.start_replied(StartReply {
-            ty: ReplyType::RecordingStarting,
-            state: Status::Starting,
-        });
+        w.start_replied(reply(
+            4,
+            ReplyType::RecordingStarting,
+            Status::Starting,
+            None,
+        ));
         assert_eq!(
             w.deliver_start_reply().map(|(_, write)| write),
             Some(ReplyWrite::Wrote(Status::Starting))
@@ -2048,12 +2189,291 @@ fn the_main_window_writes_a_late_start_reply_over_its_processing_status() {
     }
 }
 
+/// #1169 review: the reply carries its recording id, and the window tracks the generations it saw
+/// start and end (`useRecordingState.ts:174-178`, `:244`, `:474-476`). A generation ends in the
+/// window when it receives `recovering`, `idle` or `processing`; a delayed `starting` reply of that
+/// generation is then ignored, where the window that had received `Idle` would otherwise restore
+/// `Starting`. A newer generation's reply, and a reply with no recording id, are not affected.
+#[test]
+fn the_main_window_ignores_a_starting_reply_of_a_generation_it_saw_end() {
+    use crate::effects::EventKind;
+    use crate::replies::ReplyType;
+    let start_reply = |id| reply(4, ReplyType::RecordingStarting, Status::Starting, Some(id));
+    let mut w = World::new();
+    w.window_start_sent();
+    // Generation 1 starts: its event, then `Starting`, reach the window.
+    apply_effect_for(
+        &mut w,
+        3,
+        1,
+        "R101.15",
+        Effect::EmitEvent(EventKind::GenStarted),
+    );
+    apply_effect_for(&mut w, 3, 1, "R101.15", emit(Status::Starting));
+    assert_eq!(deliver(&mut w, MAIN_WINDOW), Poll::Progress);
+    assert_eq!(w.windows[MAIN_WINDOW].latest_generation, 1);
+    assert_eq!(w.windows[MAIN_WINDOW].ended_generation, 0);
+    // It ends: the window receives `Idle`, with no reply processed yet.
+    apply_effect_for(&mut w, 3, 1, "R102.3", emit(Status::Idle));
+    assert_eq!(deliver(&mut w, MAIN_WINDOW), Poll::Progress);
+    assert_eq!(w.windows[MAIN_WINDOW].ended_generation, 1);
+    assert_eq!(w.windows[MAIN_WINDOW].observed, Status::Idle);
+    // Its delayed `starting` reply is ignored: the window stays `Idle`.
+    w.start_replied(start_reply(1));
+    let (_, write) = w.deliver_start_reply().expect("a reply is pending");
+    assert_eq!(write, ReplyWrite::EndedGeneration);
+    assert_eq!(w.windows[MAIN_WINDOW].observed, Status::Idle);
+    assert!(!w.windows[MAIN_WINDOW].start_in_flight);
+    // The next generation's `starting` reply is not ended, nor is a reply with no recording id.
+    apply_effect_for(
+        &mut w,
+        3,
+        2,
+        "R101.15",
+        Effect::EmitEvent(EventKind::GenStarted),
+    );
+    w.start_replied(start_reply(2));
+    assert_eq!(
+        w.deliver_start_reply().map(|(_, write)| write),
+        Some(ReplyWrite::Wrote(Status::Starting))
+    );
+    w.windows[MAIN_WINDOW].observed = Status::Idle;
+    w.start_replied(reply(
+        4,
+        ReplyType::RecordingStarting,
+        Status::Starting,
+        None,
+    ));
+    assert_eq!(
+        w.deliver_start_reply().map(|(_, write)| write),
+        Some(ReplyWrite::Wrote(Status::Starting))
+    );
+    // `recovering` and `processing` end the newest generation the window knows, as `idle` does.
+    for status in [Status::Recovering, Status::Processing] {
+        let mut w = World::new();
+        apply_effect_for(
+            &mut w,
+            3,
+            7,
+            "R101.15",
+            Effect::EmitEvent(EventKind::GenStarted),
+        );
+        apply_effect_for(&mut w, 3, 7, "R101.15", emit(status));
+        assert_eq!(deliver(&mut w, MAIN_WINDOW), Poll::Progress);
+        assert_eq!(w.windows[MAIN_WINDOW].ended_generation, 7, "{status:?}");
+    }
+    // A status event does not end a generation that started after it was emitted.
+    let mut w = World::new();
+    apply_effect_for(&mut w, 3, 1, "R101.15", emit(Status::Idle));
+    apply_effect_for(
+        &mut w,
+        3,
+        2,
+        "R101.15",
+        Effect::EmitEvent(EventKind::GenStarted),
+    );
+    apply_effect_for(&mut w, 3, 2, "R101.15", emit(Status::Starting));
+    assert_eq!(deliver(&mut w, MAIN_WINDOW), Poll::Progress);
+    assert_eq!(w.windows[MAIN_WINDOW].ended_generation, 0);
+    assert_eq!(deliver(&mut w, MAIN_WINDOW), Poll::Progress);
+    assert_eq!(w.windows[MAIN_WINDOW].latest_generation, 2);
+    assert_eq!(w.windows[MAIN_WINDOW].ended_generation, 0);
+}
+
+/// An `Err` reply is a failed invoke: `lib/dictation.ts` `startRecording` catches the rejection and
+/// returns `{type: 'error', error}` with no `state`, so the window writes no status (the hook's outer
+/// `catch`, which would write `idle`, is not reached) but its start operation still ends.
+#[test]
+fn an_error_response_writes_no_status_and_ends_the_start() {
+    let mut w = World::new();
+    w.windows[MAIN_WINDOW].observed = Status::Recording;
+    w.window_start_sent();
+    w.start_replied(StartReply {
+        tid: 4,
+        response: StartResponse::Error,
+    });
+    assert_eq!(
+        w.deliver_start_reply().map(|(_, write)| write),
+        Some(ReplyWrite::NoState)
+    );
+    assert_eq!(w.windows[MAIN_WINDOW].observed, Status::Recording);
+    assert!(!w.windows[MAIN_WINDOW].start_in_flight);
+}
+
+/// `entry::once` reports a `handle` decision that differs from the direct `decide_*` one, and is
+/// silent when they agree.
+#[test]
+fn the_cross_check_reports_a_difference() {
+    use crate::decision::Decision;
+    let w = World::new();
+    let view = w.view();
+    let input = || {
+        crate::inputs::Input::StartFlightEnd(crate::inputs::StartFlightEndInput {
+            rid: crate::ids::RecordingId(1),
+        })
+    };
+    let at = crate::ids::Now(0);
+    let direct: Decision = crate::start::decide_start_flight_end(crate::ids::RecordingId(1), at);
+    let decided = super::entry::once(&w.handle_faults, &view, input(), at, direct.clone());
+    assert_eq!(decided, direct);
+    assert!(w.handle_faults.borrow().is_empty());
+    let other = crate::start::decide_start_flight_end(crate::ids::RecordingId(2), at);
+    let decided = super::entry::once(&w.handle_faults, &view, input(), at, other);
+    assert_eq!(decided, direct, "the `handle` decision is the one acted on");
+    assert_eq!(w.handle_faults.borrow().len(), 1);
+}
+
+/// Step `task` over `w` (no other actor runs) until it finishes, blocks, or `max` steps ran:
+/// the rows it decided, the observation rounds it answered, and whether it finished.
+fn drive_rows(
+    w: &mut World,
+    task: &mut dyn Task,
+    tid: TaskId,
+    max: u32,
+) -> (Vec<&'static str>, Vec<&'static str>, bool) {
+    let mut rows = Vec::new();
+    let mut observations = Vec::new();
+    let mut out = StepOut::default();
+    let mut spawned: Vec<Box<dyn Task>> = Vec::new();
+    let mut mailbox = Vec::new();
+    for step in 0..max {
+        w.step = step;
+        out.clear();
+        let poll = task.step(&mut Cx {
+            w,
+            out: &mut out,
+            spawn: &mut spawned,
+            tid,
+            mailbox: &mut mailbox,
+        });
+        assert!(out.violations.is_empty(), "{:?}", out.violations);
+        rows.extend(out.decisions.iter().map(|decision| decision.row));
+        observations.extend(out.observations.iter().copied());
+        match poll {
+            Poll::Done => return (rows, observations, true),
+            Poll::Blocked => return (rows, observations, false),
+            Poll::Progress => {}
+        }
+    }
+    (rows, observations, false)
+}
+
+/// #1169 review: the Smart Auto observation round is part of the start gate. A Smart Auto start
+/// asks for the cleanup check, then for the resolve, and is admitted only after the resolve
+/// answered; a failed resolve is R101.14 and burns no id; Smart Auto with a fixed device is refused
+/// before D (R101.2); a start with no Smart Auto never asks for the resolve.
+#[test]
+fn a_smart_auto_start_asks_for_the_selection_after_the_cleanup_check() {
+    use super::flights::{Blockers, StartFlight};
+    use super::gen::Mic;
+    let run = |mic| {
+        let mut w = World::new();
+        let mut flight =
+            StartFlight::new(external_attempt_plan(), Blockers::default(), false, false)
+                .with_mic(mic);
+        let (rows, observations, done) = drive_rows(&mut w, &mut flight, 4, 12);
+        assert!(w.handle_faults.borrow().is_empty(), "{:?}", w.handle_faults);
+        (rows, observations, done, w.current_id)
+    };
+    let (rows, observations, _, id) = run(Mic::SmartAutoResolved);
+    assert_eq!(
+        observations,
+        ["R101.12", "R101.13"],
+        "cleanup check, then resolve"
+    );
+    assert_eq!(rows.first(), Some(&"R101.15"));
+    assert_eq!(id, 1, "admitted");
+    let (rows, observations, done, id) = run(Mic::SmartAutoFailed);
+    assert_eq!(observations, ["R101.12", "R101.13"]);
+    assert_eq!(rows, ["R101.14"]);
+    assert!(done);
+    assert_eq!(id, 0, "a failed resolve burns no id");
+    let (rows, observations, done, id) = run(Mic::SmartAutoWithFixed);
+    assert_eq!(
+        (rows.as_slice(), observations.as_slice()),
+        (&["R101.2"][..], &[][..])
+    );
+    assert!(done);
+    assert_eq!(id, 0);
+    for mic in [Mic::SystemDefault, Mic::Explicit] {
+        let (rows, observations, _, id) = run(mic);
+        assert_eq!(observations, ["R101.12"], "{mic:?} asks no resolve");
+        assert_eq!(rows.first(), Some(&"R101.15"));
+        assert_eq!(id, 1);
+    }
+}
+
+/// #1169 review: the legacy import (sites 301 and 302) is decided through `handle`. Its refusals
+/// follow today's order (meeting, file, benchmark through the observation, status), the accepted
+/// import allocates its id and writes `Processing`, and the parse failure finishes through
+/// `GuardFinish` with `LegacyParse` (R302.1) and restores `Idle`.
+#[test]
+fn the_legacy_import_is_gated_through_handle() {
+    use super::flights::{Blockers, ImportFlight, PipelineCfg, PipelineEnd};
+    use super::gen::ImportPlan;
+    let plan = |blockers: Blockers, parses: bool| ImportPlan {
+        blockers,
+        smart: false,
+        parses,
+        pipeline: PipelineCfg {
+            work: 0,
+            end: PipelineEnd::Err,
+        },
+    };
+    let run = |blockers: Blockers, status: Status, parses: bool| {
+        let mut w = World::new();
+        w.status = status;
+        let mut flight = ImportFlight::new(plan(blockers, parses));
+        let (rows, observations, done) = drive_rows(&mut w, &mut flight, 4, 40);
+        assert!(w.handle_faults.borrow().is_empty(), "{:?}", w.handle_faults);
+        (rows, observations, done, w)
+    };
+    let blocked = |meeting, file, benchmark| Blockers {
+        meeting,
+        file,
+        benchmark,
+        ..Blockers::default()
+    };
+    let (rows, observations, done, _) = run(blocked(true, true, true), Status::Idle, true);
+    assert_eq!(
+        (rows.as_slice(), observations.len(), done),
+        (&["R301.1"][..], 0, true)
+    );
+    let (rows, observations, done, _) = run(blocked(false, true, true), Status::Idle, true);
+    assert_eq!(
+        (rows.as_slice(), observations.len(), done),
+        (&["R301.2"][..], 0, true)
+    );
+    let (rows, observations, done, _) = run(blocked(false, false, true), Status::Idle, true);
+    assert_eq!(rows, ["R301.3"]);
+    assert_eq!(
+        observations,
+        ["R301.3"],
+        "the benchmark is read through the observation"
+    );
+    assert!(done);
+    let (rows, observations, done, _) = run(Blockers::default(), Status::Recording, true);
+    assert_eq!(
+        (rows.as_slice(), observations.len(), done),
+        (&["R301.4"][..], 1, true)
+    );
+    // Accepted, then the parse fails: R301.5, R302.1, `Idle` again, no history left.
+    let (rows, observations, done, w) = run(Blockers::default(), Status::Idle, false);
+    assert_eq!(rows, ["R301.5", "R302.1"]);
+    assert_eq!(observations, ["R301.3"]);
+    assert!(done);
+    assert_eq!(w.current_id, 1, "the import allocated its id");
+    assert_eq!(w.status, Status::Idle, "the parse failure restored Idle");
+    assert!(w.history.ops.is_empty() && w.history.pipelines.is_empty());
+    assert!(w.t_holder.is_none());
+}
+
 /// #1167: the main window's second stop is held back by `isStoppingRef` before either flight
-/// runs (seed 2,559; the issue's seed 1454 before #1160 and #1162 moved every seed). The
-/// overlay, with no guard, can send two (seed 25, formerly 33).
+/// runs (seed 456; the issue's seed 1454 before the re-pins moved every seed). The overlay, with no
+/// guard, can send two (seed 162).
 #[test]
 fn a_second_main_window_stop_waits_for_the_first() {
-    let (report, trace) = run_seed_with(gated(2_559), true);
+    let (report, trace) = run_seed_with(gated(MAIN_SECOND_STOP_WAITS), true);
     assert!(report.violations.is_empty(), "{:?}", report.violations);
     let sent = trace
         .iter()
@@ -2063,7 +2483,7 @@ fn a_second_main_window_stop_waits_for_the_first() {
         trace[sent + 1].contains("frontend stop not sent (main window has a stop in flight)"),
         "{trace:#?}"
     );
-    let (_, overlay) = run_seed_with(gated(25), true);
+    let (_, overlay) = run_seed_with(gated(OVERLAY_TWO_STOPS), true);
     let count = |needle: &str| overlay.iter().filter(|line| line.contains(needle)).count();
     assert!(
         count("frontend stop sent (overlay window") >= 2,
@@ -2080,8 +2500,13 @@ fn deliver(w: &mut World, window: usize) -> Poll {
     Poll::Progress
 }
 
-/// Apply `effect` as row `row` of recording `rid` (a step of task `tid`).
+/// Apply `effect` as row `row` of recording 1 (a step of task `tid`).
 fn apply_effect(w: &mut World, tid: TaskId, row: &'static str, effect: Effect) {
+    apply_effect_for(w, tid, 1, row, effect);
+}
+
+/// Apply `effect` as row `row` of recording `rid` (a step of task `tid`).
+fn apply_effect_for(w: &mut World, tid: TaskId, rid: Rid, row: &'static str, effect: Effect) {
     let mut out = StepOut::default();
     let mut spawned: Vec<Box<dyn Task>> = Vec::new();
     let mut mailbox = Vec::new();
@@ -2094,7 +2519,7 @@ fn apply_effect(w: &mut World, tid: TaskId, row: &'static str, effect: Effect) {
     };
     let fx = FxCtx {
         tid,
-        rid: 1,
+        rid,
         row,
         site: SiteId::SupIdle,
     };
@@ -2145,7 +2570,8 @@ fn a_window_receives_statuses_in_emit_order_not_write_order() {
         w.windows[MAIN_WINDOW]
             .inbox
             .iter()
-            .eq([Status::Idle].iter()),
+            .map(|event| event.status)
+            .eq([Status::Idle]),
         "R209 has not emitted yet: {:?}",
         w.windows[MAIN_WINDOW].inbox
     );
@@ -2345,80 +2771,114 @@ fn the_ordering_matchers_name_their_caller_and_boundary() {
     assert!(!stop_first(&main_received, "main"));
 }
 
-/// #1162: the issue's sequence, read from a trace. The overlay's start wins (it reaches
-/// `Recording`), the main window's own start is refused `already_recording`, the main window's
-/// stop is sent, then the delayed start reply is processed and rewrites `Recording` over the
-/// local `Processing`, and a second stop gesture is sent with no `Idle` received in between.
-fn late_start_reply_second_stop(trace: &[String]) -> bool {
-    let at = |from: usize, needle: &str| {
-        trace[from..]
-            .iter()
-            .position(|line| line.contains(needle))
-            .map(|offset| from + offset)
-    };
-    let stop = "frontend stop sent (main window shows Recording)";
-    let reply = "main window receives the start reply already_recording (state Recording): writes Recording";
-    let Some(overlay_start) = at(0, "start issued by the overlay window") else {
-        return false;
-    };
-    let Some(main_start) = at(overlay_start + 1, "start issued by the main window") else {
-        return false;
-    };
-    let Some(recording) = at(
-        main_start + 1,
-        "fx R104.2 In EmitStatus { status: Recording",
-    ) else {
-        return false;
-    };
-    let Some(first_stop) = at(recording + 1, stop) else {
-        return false;
-    };
-    let Some(late_reply) = at(first_stop + 1, reply) else {
-        return false;
-    };
-    let Some(second_stop) = at(late_reply + 1, stop) else {
-        return false;
-    };
-    !trace[first_stop..second_stop]
-        .iter()
-        .any(|line| line.contains("main window receives Idle"))
+/// The number after `prefix` in `line` (a task id: `... as t7`).
+fn id_after(line: &str, prefix: &str) -> Option<u32> {
+    let rest = &line[line.find(prefix)? + prefix.len()..];
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    digits.parse().ok()
 }
 
-/// #1162: the main window's start reply is a step of its own, so it can arrive after the main
-/// window's stop and put `Recording` back: the second gesture is then sent, where the model that
-/// never delivered a start reply dropped it (the guard or the `Processing` observation refused
-/// it).
+const MAIN_START: &str = "start issued by the main window as t";
+const MAIN_STOP: &str = "frontend stop sent (main window shows Recording) as t";
+
+/// #1162: the issue's sequence, read from a trace and tied to one start and one stop (#1169
+/// review). The main window issues start `S`; it sends a stop `F` while `S` is still in flight
+/// (`startOperationRef` set, so it issued no second start); `S`'s own reply is processed while `F`
+/// is still in flight and puts `Recording` over `F`'s local `Processing`; `F` returns; and the
+/// window, which has received no `Idle` since, sends a second stop. The reply must be `S`'s, must
+/// change the window's status from `Processing` to `Recording`, and must precede `F`'s return.
+fn late_start_reply_second_stop(trace: &[String]) -> bool {
+    let after = |from: usize, pred: &dyn Fn(&str) -> bool| {
+        trace[from..]
+            .iter()
+            .position(|line| pred(line))
+            .map(|offset| from + offset)
+    };
+    (0..trace.len()).any(|issue| {
+        let Some(start) = id_after(&trace[issue], MAIN_START) else {
+            return false;
+        };
+        let Some(first_stop) = after(issue + 1, &|line| line.contains(MAIN_STOP)) else {
+            return false;
+        };
+        let Some(stop) = id_after(&trace[first_stop], MAIN_STOP) else {
+            return false;
+        };
+        let reply_of = format!("main window receives the reply of its start t{start} (");
+        let Some(reply) = after(first_stop + 1, &|line| {
+            line.contains(&reply_of)
+                && line.contains("writes Recording; the window shows Processing -> Recording")
+        }) else {
+            return false;
+        };
+        let returned = format!("WindowStopReturned {{ window: 0, tid: {stop} }}");
+        let Some(returned) = after(first_stop + 1, &|line| line.contains(&returned)) else {
+            return false;
+        };
+        // The guard coalesces a second start gesture: no other main start before the reply,
+        // and the reply is processed before the first stop returns.
+        let one_start = !trace[issue + 1..reply]
+            .iter()
+            .any(|line| line.contains(MAIN_START));
+        let Some(second) = after(returned + 1, &|line| {
+            line.contains(MAIN_STOP) && id_after(line, MAIN_STOP) != Some(stop)
+        }) else {
+            return false;
+        };
+        one_start
+            && reply < returned
+            && !trace[first_stop..second]
+                .iter()
+                .any(|line| line.contains("main window receives Idle"))
+    })
+}
+
+/// #1162: the main window's start reply is a step of its own, so it can arrive while the main
+/// window's stop is in flight and put `Recording` back: the second gesture is then sent, where the
+/// model that never delivered a start reply dropped it (the guard or the `Processing` observation
+/// refused it).
 #[test]
 fn a_late_start_reply_lets_the_main_window_send_a_second_stop() {
-    let (report, trace) = run_seed_with(gated(LATE_START_REPLY_SECOND_STOP), true);
+    let seed = gated(LATE_START_REPLY_SECOND_STOP);
+    let (report, trace) = run_seed_with(seed, true);
     assert!(
         report.violations.is_empty(),
-        "{LATE_START_REPLY_SECOND_STOP}: {:?}",
+        "{seed}: {:?}",
         report.violations
     );
     assert!(
         late_start_reply_second_stop(&trace),
-        "seed {LATE_START_REPLY_SECOND_STOP} no longer sends the second stop after the late start reply: {trace:#?}"
+        "seed {seed} no longer sends the second stop after the late start reply: {trace:#?}"
+    );
+    // The run's own counters agree: the reply overwrote `Processing`, and the second stop followed.
+    assert!(report.hits.reply_over_processing > 0, "{:?}", report.hits);
+    assert!(
+        report.hits.second_stop_after_late_reply > 0,
+        "{:?}",
+        report.hits
     );
 }
 
-/// The matcher needs every step of the sequence, in order, and no `Idle` between the stops.
+/// The matcher needs every step of the sequence, tied to the same start and the same stop.
 #[test]
 fn the_late_reply_matcher_needs_the_whole_sequence() {
     let full: Vec<String> = [
-        "   0 start issued by the overlay window",
-        "   3 start issued by the main window",
+        "   0 start issued by the overlay window as t3",
+        "   3 start issued by the main window as t4",
         "  30 t3   fx R104.2 In EmitStatus { status: Recording, cond: Always } rid=1 Recording->Recording claim=None",
-        "  34 frontend stop sent (main window shows Recording)",
-        "  35 main window receives the start reply already_recording (state Recording): writes Recording",
-        "  40 frontend stop sent (main window shows Recording)",
+        "  34 frontend stop sent (main window shows Recording) as t5",
+        "  35 main window receives the reply of its start t4 (already_recording, state Recording): writes Recording; the window shows Processing -> Recording",
+        "  36 frontend start coalesced (the main window's start is still in flight)",
+        "     note WindowStopReturned { window: 0, tid: 5 }",
+        "  40 frontend stop sent (main window shows Recording) as t6",
     ]
     .iter()
     .map(|line| line.to_string())
     .collect();
     assert!(late_start_reply_second_stop(&full));
-    // Each line is needed.
-    for skip in 0..full.len() {
+    // Each of the start, the first stop, the reply, the stop's return and the second stop is
+    // needed.
+    for skip in [1, 3, 4, 6, 7] {
         let mut partial = full.clone();
         partial.remove(skip);
         assert!(
@@ -2426,18 +2886,48 @@ fn the_late_reply_matcher_needs_the_whole_sequence() {
             "accepted without line {skip}"
         );
     }
-    // The reply must come after the first stop, and the main window must not receive `Idle`
-    // between the two stops.
-    let mut early = full.clone();
-    early.swap(3, 4);
-    assert!(!late_start_reply_second_stop(&early));
+    let with = |index: usize, line: &str| {
+        let mut changed = full.clone();
+        changed[index] = line.to_string();
+        changed
+    };
+    // The reply of another start (`t40` is not `t4`) is not this start's.
+    assert!(!late_start_reply_second_stop(&with(
+        4,
+        "  35 main window receives the reply of its start t40 (already_recording, state Recording): writes Recording; the window shows Processing -> Recording"
+    )));
+    // A reply that changes nothing (the write suppressed, or the window not on `Processing`).
+    assert!(!late_start_reply_second_stop(&with(
+        4,
+        "  35 main window receives the reply of its start t4 (already_recording, state Recording): writes Recording; the window shows Processing -> Processing"
+    )));
+    // A reply that does not write (not the owner, stale, an ended generation).
+    assert!(!late_start_reply_second_stop(&with(
+        4,
+        "  35 main window receives the reply of its start t4 (already_starting, state Idle): not the owner of the state; the window shows Processing -> Processing"
+    )));
+    // The reply must come before the first stop returns, not after.
+    let mut late = full.clone();
+    late.swap(4, 6);
+    assert!(!late_start_reply_second_stop(&late));
+    // The first stop's return is the stop's own (`t5`), not another stop's.
+    assert!(!late_start_reply_second_stop(&with(
+        6,
+        "     note WindowStopReturned { window: 0, tid: 9 }"
+    )));
+    // A second main-window start before the reply: the guard would have coalesced it.
+    let mut second_start = full.clone();
+    second_start.insert(4, "  34 start issued by the main window as t7".to_string());
+    assert!(!late_start_reply_second_stop(&second_start));
+    // The main window received `Idle` between the stops.
     let mut idle = full.clone();
-    idle.insert(5, "  36 main window receives Idle".to_string());
+    idle.insert(7, "  37 main window receives Idle".to_string());
     assert!(!late_start_reply_second_stop(&idle));
-    // A reply that does not write (not the owner, stale) is not the sequence.
-    let mut ignored = full.clone();
-    ignored[4] = "  35 main window receives the start reply already_starting (state Idle): not the owner of the state".to_string();
-    assert!(!late_start_reply_second_stop(&ignored));
+    // The second stop is another stop, not the first again.
+    assert!(!late_start_reply_second_stop(&with(
+        7,
+        "  40 frontend stop sent (main window shows Recording) as t5"
+    )));
 }
 
 /// The competition draws only when a command and a delivery are both ready, and it is part

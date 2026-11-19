@@ -51,6 +51,19 @@ pub struct RunHits {
     pub sig: [u32; SIGNATURES.len()],
     /// Occurrences per matched split `(terminal row, performance row)`.
     pub pairs: BTreeMap<(&'static str, &'static str), u32>,
+    /// Every decision the flights acted on, by row: the rows the gate must see.
+    pub decided: BTreeMap<&'static str, u32>,
+    /// Every `NeedObservation` round a flight answered, by the row the verdict names.
+    pub observed: BTreeMap<&'static str, u32>,
+    /// The main window processed a start reply that took its status from `Processing` to
+    /// `Recording` while its stop IPC was still in flight (#1162). Counted from what the window
+    /// shows before and after, so a model that suppressed the write counts none.
+    pub reply_over_processing: u32,
+    /// The main window sent a second stop gesture after such a reply, with no `Idle` received
+    /// since: the stop the reply made possible (#1162).
+    pub second_stop_after_late_reply: u32,
+    /// The main window ignored a `starting` reply of a generation it had seen end (#1162).
+    pub reply_ended_generation: u32,
 }
 
 /// What a signature's causal precondition requires of the two winners. Every
@@ -460,8 +473,12 @@ impl Checker {
         for fault in w.handle_faults.borrow_mut().drain(..) {
             self.violations.push(fault);
         }
+        for row in &out.observations {
+            *self.hits.observed.entry(*row).or_default() += 1;
+        }
         let mut hits: Vec<Hit> = Vec::new();
         for d in &out.decisions {
+            *self.hits.decided.entry(d.row).or_default() += 1;
             self.detect_decision(d, &mut hits);
         }
         for e in &out.effects {

@@ -4,7 +4,7 @@
 //! effect follow the shell (`commands/recording.rs`) and the C3 tables.
 
 use super::entry::once;
-use super::gen::StartCaller;
+use super::gen::{ImportPlan, Mic, StartCaller};
 use super::model::*;
 use super::supervisor::ReplyPoll;
 use super::task::*;
@@ -12,14 +12,16 @@ use crate::admission::Occupancy;
 use crate::cancel as core_cancel;
 use crate::decision::{ContKind, Continuation, ObsKind, OpStatus, SiteId, Verdict};
 use crate::effects::{Effect, Placement};
-use crate::ids::{Now, RecordingId};
+use crate::ids::{Handle, Now, RecordingId};
 use crate::inputs::{
     CancelCaptureResultInput, CancelInput, CancelOrigin, CaptureErr, CaptureResult,
     CaptureResultInput, DestinationInput, DeviceSel, GestureObs, GuardOrigin, Input,
-    InterruptedMeta, Origin, PipelineTerminal, SpeculativeObs, StartContextInput,
+    InterruptedMeta, Origin, PipelineTerminal, ProcessAudioFinishInput, ProcessAudioFinishKind,
+    ProcessAudioStartInput, SmartAutoFailure, SmartAutoSel, SpeculativeObs, StartContextInput,
     StartFlightEndInput, StartInput, StopCaptureResult, StopCaptureResultInput, StopContextInput,
     StopInput,
 };
+use crate::process_audio as core_pa;
 use crate::replies::Reply;
 use crate::start as core_start;
 use crate::status::{Status, StopTrigger};
@@ -89,6 +91,10 @@ pub struct StartFlight {
     caller: StartCaller,
     /// The reply of the last decision that carried one: the value the command returns.
     reply: Option<Reply>,
+    /// The microphone selection the start carries.
+    mic: Mic,
+    /// The command already returned: it returns once.
+    replied: bool,
 }
 
 impl StartFlight {
@@ -115,7 +121,15 @@ impl StartFlight {
             dropped: false,
             caller: StartCaller::Ipc,
             reply: None,
+            mic: Mic::SystemDefault,
+            replied: false,
         }
+    }
+
+    /// This start carries microphone selection `mic`.
+    pub fn with_mic(mut self, mic: Mic) -> Self {
+        self.mic = mic;
+        self
     }
 
     /// This start was sent by `caller`.
@@ -134,12 +148,18 @@ impl StartFlight {
     fn input(&self, cx: &Cx<'_>) -> StartInput {
         StartInput {
             origin: Origin::Toggle,
-            device: DeviceSel::SystemDefault,
+            device: match self.mic {
+                Mic::SystemDefault => DeviceSel::SystemDefault,
+                Mic::Explicit => DeviceSel::Explicit,
+                Mic::SmartAutoResolved | Mic::SmartAutoFailed | Mic::SmartAutoWithFixed => {
+                    DeviceSel::SmartAuto
+                }
+            },
             gesture: GestureObs::default(),
             speculative: SpeculativeObs::default(),
             kept_preview: false,
             app_disabled: self.app_disabled,
-            fixed_and_smart: false,
+            fixed_and_smart: self.mic == Mic::SmartAutoWithFixed,
             occupancy: Occupancy {
                 status: cx.w.status,
                 relaunch_committed: self.blockers.relaunch,
@@ -213,6 +233,7 @@ impl Task for StartFlight {
         self.retire_tokens(cx);
         release_t(cx);
         self.st = Ss::Finish;
+        self.send_reply(cx);
     }
 
     fn step(&mut self, cx: &mut Cx<'_>) -> Poll {
@@ -252,6 +273,10 @@ impl Task for StartFlight {
                 let view = cx.w.view();
                 let mut input = self.input(cx);
                 let mut rounds = 0;
+                // The observation rounds, in the order the shell reads the facts: the
+                // retiring-capture check (5523), then the Smart Auto resolve (5546), which
+                // takes no D and so is answered from the model's own plan.
+                let mut smart_round = false;
                 let decision = loop {
                     let direct = core_start::decide_start_request(&view, input.clone(), at);
                     let decision = once(
@@ -262,16 +287,67 @@ impl Task for StartFlight {
                         direct,
                     );
                     rounds += 1;
+                    if matches!(decision.verdict, Verdict::NeedObservation(_)) {
+                        cx.out.observations.push(decision.row.0);
+                    }
                     match decision.verdict {
-                        Verdict::NeedObservation(ObsKind::CleanupPending { id }) if rounds == 1 => {
+                        Verdict::NeedObservation(ObsKind::CleanupPending { id })
+                            if input.cleanup_pending.is_none() =>
+                        {
                             input.cleanup_pending = Some(cx.w.sup.cleanup_pending(id.0));
                         }
+                        Verdict::NeedObservation(ObsKind::SmartAutoSelection)
+                            if input.smart_auto_result.is_none() =>
+                        {
+                            if input.device != DeviceSel::SmartAuto
+                                || input.cleanup_pending.is_none()
+                            {
+                                cx.out.violations.push(format!(
+                                    "R101.13: the Smart Auto resolve was asked for with device \
+                                     {:?} and the cleanup check {:?}",
+                                    input.device, input.cleanup_pending
+                                ));
+                            }
+                            smart_round = true;
+                            input.smart_auto_result = Some(if self.mic == Mic::SmartAutoFailed {
+                                Err(SmartAutoFailure::ResolveFailed)
+                            } else {
+                                Ok(SmartAutoSel { handle: Handle(1) })
+                            });
+                        }
                         Verdict::NeedObservation(kind) => {
-                            unreachable!("a start asks once for the cleanup check, not {kind:?}")
+                            unreachable!(
+                                "a start asks once for each of the cleanup check and the \
+                                 Smart Auto resolve, not {kind:?} (round {rounds})"
+                            )
                         }
                         _ => break decision,
                     }
                 };
+                // The Smart Auto round is the start gate's own (admission order: blockers,
+                // status, the retiring capture, then the resolve): a start that reached the
+                // resolve asked for it exactly once, an admitted one asked for it iff it is a
+                // Smart Auto start, and a failed resolve never admitted. These read the
+                // decisions the flight acts on, not the direct call.
+                let smart_start = input.device == DeviceSel::SmartAuto;
+                if decision.row.0 == "R101.15" && smart_start != smart_round {
+                    cx.out.violations.push(format!(
+                        "R101.13: an admitted start with device {:?} {} the Smart Auto resolve",
+                        input.device,
+                        if smart_round { "ran" } else { "skipped" }
+                    ));
+                }
+                if self.mic == Mic::SmartAutoFailed && decision.row.0 == "R101.15" {
+                    cx.out.violations.push(
+                        "R101.14: a start whose Smart Auto resolve failed was admitted".into(),
+                    );
+                }
+                if smart_round && self.mic == Mic::SmartAutoFailed && decision.row.0 != "R101.14" {
+                    cx.out.violations.push(format!(
+                        "R101.14: a failed Smart Auto resolve decided {}",
+                        decision.row.0
+                    ));
+                }
                 self.rid = cx.w.current_id;
                 self.note_reply(&decision);
                 log_decision(cx, SiteId::StartRequest, &decision, self.rid, None);
@@ -618,16 +694,382 @@ impl Task for StartFlight {
 }
 
 impl StartFlight {
-    /// The command returns: the main window's `beginRecording` receives the reply later,
-    /// in a step of its own (#1162). A dropped start future returns nothing, and the
-    /// overlay and the IPC write no window state from the reply.
+    /// The command returns: the main window's `beginRecording` receives the response later,
+    /// in a step of its own (#1162), and it is the response of this one start (`cx.tid`).
+    /// Only the main window awaits it: the overlay and the IPC write no window state from it.
+    /// A reply that is an `Err` (a refusal with the resolve's text, a failed capture start), or
+    /// that a dropped start future never produced, is a failed invoke: the wrapper turns it
+    /// into an error response with no `state` (`lib/dictation.ts`), so it writes nothing but
+    /// still ends the start operation.
     fn send_reply(&mut self, cx: &mut Cx<'_>) {
-        if self.dropped || self.caller != StartCaller::Window(MAIN_WINDOW) {
+        if self.caller != StartCaller::Window(MAIN_WINDOW) || self.replied {
             return;
         }
-        if let Some(Reply::Typed { ty, state, .. }) = self.reply.take() {
-            cx.w.start_replied(StartReply { ty, state });
+        self.replied = true;
+        let response = match self.reply.take() {
+            Some(Reply::Typed {
+                ty,
+                state,
+                recording_id,
+            }) if !self.dropped => StartResponse::Typed {
+                ty,
+                state,
+                recording_id: recording_id.map(|id| id.0),
+            },
+            _ => StartResponse::Error,
+        };
+        cx.w.start_replied(StartReply {
+            tid: cx.tid,
+            response,
+        });
+    }
+}
+
+// ----------------------------------------------------------------- import
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Is {
+    AcquireT,
+    Pre,
+    D301,
+    DestAwait,
+    Dest,
+    Parse,
+    D302Parse,
+    AwaitPipeline,
+    D302Tail,
+    Finish,
+}
+
+/// The legacy `process_audio` import (`commands/recording.rs` `process_audio_inner`), sites
+/// 301 and 302. It takes T like a start, decides R301.1-.5 (the benchmark through
+/// `NeedObservation`), drops T and runs its `PT` effects, runs its own Smart Destination
+/// section (R301.6), then either fails the parse (R302.1) or runs the pipeline and decides the
+/// tail (R302.2). No terminal is decided anywhere in it: the pipeline's guard (204a) and the
+/// tail restore `Idle`, the import never claims a terminal.
+pub struct ImportFlight {
+    st: Is,
+    q: VecDeque<QItem>,
+    plan: ImportPlan,
+    rid: Rid,
+    /// `K:Pipeline`: the import owns it until the pipeline's guard (or an exit) retires it.
+    op: Option<Continuation>,
+}
+
+impl ImportFlight {
+    pub fn new(plan: ImportPlan) -> Self {
+        Self {
+            st: Is::AcquireT,
+            q: VecDeque::new(),
+            plan,
+            rid: 0,
+            op: None,
         }
+    }
+
+    fn input(&self, benchmark: Option<bool>) -> ProcessAudioStartInput {
+        ProcessAudioStartInput {
+            occupancy: Occupancy {
+                meeting_active: self.plan.blockers.meeting,
+                file_transcribing: self.plan.blockers.file,
+                ..Occupancy::default()
+            },
+            benchmark_running: benchmark,
+        }
+    }
+
+    /// The import's own exit: both history entries it owns are retired (`pipeline_owner`'s
+    /// `Drop`), `H2` first.
+    fn retire_owned(&mut self, cx: &mut Cx<'_>) {
+        cx.w.history.pipelines.remove(&self.rid);
+        if let Some(token) = self.op.take() {
+            cx.w.retire_op(token);
+        }
+    }
+}
+
+impl Queued for ImportFlight {
+    fn queue(&mut self) -> &mut VecDeque<QItem> {
+        &mut self.q
+    }
+
+    fn cross(&mut self, _cx: &mut Cx<'_>, _fx: &FxCtx, effect: &Effect) -> Result<(), ()> {
+        unreachable!("an import does not run {effect:?}")
+    }
+}
+
+impl Task for ImportFlight {
+    fn name(&self) -> &'static str {
+        "import"
+    }
+
+    fn step(&mut self, cx: &mut Cx<'_>) -> Poll {
+        if let Some(poll) = drain_one(self, cx) {
+            return poll;
+        }
+        let at = now(cx);
+        match self.st {
+            Is::AcquireT => {
+                if !acquire_t(cx) {
+                    return Poll::Blocked;
+                }
+                self.st = Is::Pre;
+            }
+            Is::Pre => {
+                // R301.1 (3684): a meeting owns ASR. Decided with no D, but the entry is
+                // still `handle`'s.
+                let input = self.input(None);
+                match core_pa::decide_process_audio_start_pre(&input, at) {
+                    Some(direct) => {
+                        let view = cx.w.view();
+                        let pre = once(
+                            &cx.w.handle_faults,
+                            &view,
+                            Input::ProcessAudioStart(input),
+                            at,
+                            direct,
+                        );
+                        self.rid = cx.w.current_id;
+                        log_decision(cx, SiteId::ProcessAudioStart, &pre, self.rid, None);
+                        release_t(cx);
+                        self.st = Is::Finish;
+                    }
+                    None => self.st = Is::D301,
+                }
+            }
+            Is::D301 => {
+                let view = cx.w.view();
+                let mut input = self.input(None);
+                // The benchmark is read after the file check passed (D-S1-2), through
+                // `NeedObservation(BenchmarkRunning)`: the flight answers from the plan.
+                let decision = loop {
+                    let direct = core_pa::decide_process_audio_start(&view, input.clone(), at);
+                    let decision = once(
+                        &cx.w.handle_faults,
+                        &view,
+                        Input::ProcessAudioStart(input.clone()),
+                        at,
+                        direct,
+                    );
+                    if matches!(decision.verdict, Verdict::NeedObservation(_)) {
+                        cx.out.observations.push(decision.row.0);
+                    }
+                    match decision.verdict {
+                        Verdict::NeedObservation(ObsKind::BenchmarkRunning)
+                            if input.benchmark_running.is_none() =>
+                        {
+                            input.benchmark_running = Some(self.plan.blockers.benchmark);
+                        }
+                        Verdict::NeedObservation(kind) => {
+                            unreachable!("an import asks once for the benchmark, not {kind:?}")
+                        }
+                        _ => break decision,
+                    }
+                };
+                // The refusal order of today's code (meeting before D, then the file, the
+                // benchmark, the status), read off the model, not off either entry: a decision
+                // that disagrees fails the seed whichever entry produced it.
+                let blockers = self.plan.blockers;
+                let expected = if blockers.meeting {
+                    "R301.1"
+                } else if blockers.file {
+                    "R301.2"
+                } else if blockers.benchmark {
+                    "R301.3"
+                } else if cx.w.status != Status::Idle {
+                    "R301.4"
+                } else {
+                    "R301.5"
+                };
+                if decision.row.0 != expected {
+                    cx.out.violations.push(format!(
+                        "R301: an import with meeting {}, file {}, benchmark {} on status {:?} \
+                         decided {}, not {expected}",
+                        blockers.meeting,
+                        blockers.file,
+                        blockers.benchmark,
+                        cx.w.status,
+                        decision.row.0
+                    ));
+                }
+                log_decision(
+                    cx,
+                    SiteId::ProcessAudioStart,
+                    &decision,
+                    cx.w.current_id,
+                    None,
+                );
+                if decision.row.0 != "R301.5" {
+                    release_t(cx);
+                    self.st = Is::Finish;
+                    return Poll::Progress;
+                }
+                // R301.5: `ID+` is the first `In` effect, so every `In` effect runs for the new
+                // id. The shell registers `H1` and `H2` right after the decide; the model does
+                // it once the id exists (SP6 bounds a continuation by the current id), and
+                // nothing runs between the two inside one D section.
+                let rid = cx.w.current_id + 1;
+                let ctx = fx(cx, rid, "R301.5", SiteId::ProcessAudioStart);
+                apply_in(cx, &ctx, &decision);
+                self.rid = cx.w.current_id;
+                let spec = decision.continuation.expect("R301.5 registers K:Pipeline");
+                cx.w.history.pipelines.insert(self.rid);
+                self.op = Some(cx.w.register(spec));
+                // T was dropped between D and `PT:KB(true), EV(GenStarted), EM(processing)`.
+                self.q.push_back(QItem::ReleaseT);
+                queue_phase(&mut self.q, ctx, &decision, Placement::PostT);
+                self.st = if self.plan.smart {
+                    Is::DestAwait
+                } else {
+                    Is::Parse
+                };
+            }
+            Is::DestAwait => {
+                // The smart-destination capture's await: other tasks run meanwhile.
+                self.st = Is::Dest;
+            }
+            Is::Dest => {
+                // R301.6: under D, is the capture still current?
+                let view = cx.w.view();
+                let rid = RecordingId(self.rid);
+                let direct = core_pa::decide_process_audio_destination(&view, rid, true, at);
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &view,
+                    Input::ProcessAudioDestination(DestinationInput {
+                        rid,
+                        smart_enabled: true,
+                    }),
+                    at,
+                    direct,
+                );
+                log_decision(cx, SiteId::ProcessAudioStart, &decision, self.rid, None);
+                let ctx = fx(cx, self.rid, decision.row.0, SiteId::ProcessAudioStart);
+                apply_in(cx, &ctx, &decision);
+                if matches!(decision.verdict, Verdict::Stale(_)) {
+                    // A stale return: the owner retires both entries, nothing else runs.
+                    self.retire_owned(cx);
+                    self.st = Is::Finish;
+                } else {
+                    self.st = Is::Parse;
+                }
+            }
+            Is::Parse => {
+                if self.plan.parses {
+                    // The pipeline runs in the caller: the model parks the import on it.
+                    let op = self.op.take();
+                    cx.spawn.push(Box::new(Pipeline::new(
+                        self.rid,
+                        cx.tid,
+                        op,
+                        self.plan.pipeline,
+                    )));
+                    self.st = Is::AwaitPipeline;
+                } else {
+                    // `IdleGuard::finish_owned`: `CX-` runs before D.
+                    let ctx = fx(cx, self.rid, "R302.pre", SiteId::ProcessAudioFinish);
+                    for placed in core_stop::guard_finish_pre_effects(RecordingId(self.rid)) {
+                        self.q.push_back(QItem::Fx(ctx, placed));
+                    }
+                    self.st = Is::D302Parse;
+                }
+            }
+            Is::D302Parse => {
+                // R302.1: the parse failure, `Input::GuardFinish` with `LegacyParse` through
+                // `handle`.
+                let view = cx.w.view();
+                let rid = self.rid;
+                let direct = core_pa::decide_process_audio_finish(
+                    &view,
+                    ProcessAudioFinishInput {
+                        rid: RecordingId(rid),
+                        kind: ProcessAudioFinishKind::ParseFailed,
+                        closure_emit: true,
+                    },
+                    at,
+                );
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &view,
+                    Input::GuardFinish(crate::inputs::GuardFinishInput {
+                        rid: RecordingId(rid),
+                        origin: GuardOrigin::LegacyParse,
+                        closure_emit: true,
+                    }),
+                    at,
+                    direct,
+                );
+                let decision = after_pre(cx, decision);
+                log_decision(
+                    cx,
+                    SiteId::ProcessAudioFinish,
+                    &decision,
+                    rid,
+                    Some(GuardOrigin::LegacyParse),
+                );
+                // `H2 ret` and `H1 ret op_pl` come right after the decide and before the `In`
+                // effects (C3.9).
+                self.retire_owned(cx);
+                let ctx = fx(cx, rid, decision.row.0, SiteId::ProcessAudioFinish);
+                apply_in(cx, &ctx, &decision);
+                self.st = Is::Finish;
+            }
+            Is::AwaitPipeline => {
+                let reply = cx
+                    .mailbox
+                    .iter()
+                    .position(|(tid, _)| *tid == cx.tid)
+                    .map(|index| cx.mailbox.remove(index).1);
+                let Some(reply) = reply else {
+                    return Poll::Blocked;
+                };
+                // A panic unwinds the command: no tail. An `Err` is returned after the tail
+                // (`pipeline_result?`), so the tail still runs.
+                self.st = if reply == PipelineReply::Panicked {
+                    Is::Finish
+                } else {
+                    Is::D302Tail
+                };
+            }
+            Is::D302Tail => {
+                // R302.2: the tail after the pipeline, `Input::PipelineIdleEmit` with
+                // `LegacyPost` through `handle`.
+                let view = cx.w.view();
+                let rid = self.rid;
+                let direct = core_pa::decide_process_audio_finish(
+                    &view,
+                    ProcessAudioFinishInput {
+                        rid: RecordingId(rid),
+                        kind: ProcessAudioFinishKind::PipelineDone,
+                        closure_emit: false,
+                    },
+                    at,
+                );
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &view,
+                    Input::PipelineIdleEmit(crate::inputs::PipelineIdleEmitInput {
+                        rid: RecordingId(rid),
+                        kind: crate::inputs::PostKind::LegacyPost,
+                        result: None,
+                        interrupted: None,
+                        char_count: 0,
+                    }),
+                    at,
+                    direct,
+                );
+                log_decision(cx, SiteId::ProcessAudioFinish, &decision, rid, None);
+                let ctx = fx(cx, rid, decision.row.0, SiteId::ProcessAudioFinish);
+                apply_in(cx, &ctx, &decision);
+                self.st = Is::Finish;
+            }
+            Is::Finish => {
+                self.retire_owned(cx);
+                release_t(cx);
+                return Poll::Done;
+            }
+        }
+        Poll::Progress
     }
 }
 
@@ -1307,6 +1749,10 @@ impl Task for StopFlight {
                 release_t(cx);
                 if let Some(window) = self.window {
                     cx.w.window_stop_returned(window);
+                    cx.out.notes.push(Note::WindowStopReturned {
+                        window,
+                        tid: cx.tid,
+                    });
                 }
                 return Poll::Done;
             }

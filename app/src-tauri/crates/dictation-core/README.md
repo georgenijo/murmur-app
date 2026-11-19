@@ -395,7 +395,22 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
   `Attempt` grammar. A start has a caller (the main window, the overlay or the IPC) and a
   stop has one; the main window's start reply is delivered to it as a step of its own that
   writes the reply's status unless it is a stale `starting` (`useRecordingState.ts:465-486`,
-  #1162), so a late reply can put `Recording` back over the window's local `Processing`. Every supervisor word ends with an explicit `OwnerClear` step
+  #1162), so a late reply can put `Recording` back over the window's local `Processing`. The
+  reply is tied to the one start that produced it: the main window's `beginRecording` keeps
+  `startOperationRef` until the reply is processed, so a second main-window start gesture
+  meanwhile is coalesced and issues no IPC (`:456-459`); the reply carries its recording id,
+  and the window tracks the newest generation it saw start and end (`:174-178`, `:244`), so
+  a delayed `starting` reply of an ended generation is ignored (`:474-476`). An `Err` reply is
+  a failed invoke that `lib/dictation.ts` turns into an error response with no `state`: it
+  writes no status and ends the start operation. A start also carries its microphone selection
+  (system default, a fixed device, Smart Auto resolved or failed, Smart Auto with a fixed
+  device), so the gate's Smart Auto observation round (R101.13, R101.14, R101.2) is exercised;
+  and a seed in four has a legacy `process_audio` import (sites 301 and 302: the meeting, file
+  and benchmark refusals with the benchmark read through `NeedObservation`, the status
+  refusal, the accepted import, its Smart Destination recheck, the parse failure and the
+  pipeline tail), which is decided through `handle` like every other site. What the microphone
+  and the imports draw comes from a second RNG stream (`extra`), so it moves none of the
+  scenario's or the scheduler's other draws. Every supervisor word ends with an explicit `OwnerClear` step
   (followed by `CleanupFinished` for a sealed stop only); `cleanup_pending` is derived
   from the model (owner set and phase `Stopping`/`Recovering`), never generated.
 * **Supervisor mirror** (D-S2b-9 (a), `mirror_table.rs`): `MIRROR` is a table in which
@@ -546,12 +561,17 @@ cutover evidence is that, the goldens, the replays, the harness-findings shell t
   state, uses the production strings, and the test asserts the exact replies, statuses
   and ledger outcomes.
 * **Seeds**: 10,000 in CI (about a second and a half, budget 20 s), fixed whatever the
-  environment says: `0..9,991` and nine fixed seeds (`FIXED_SEEDS`: 11,612, 21,272, 10,882,
-  81,353, 161,052, 2,569,791, 179,248, 48,827, 203,928) that take the PD-18 (unsealed stop),
-  PD-19 (`TerminationUnconfirmed`, dropped start, refused auto-stop), PD-24 (the user's
-  cancel), PD-22 (both rows), PD-21 (short stop) and the late main-window start reply
-  (#1162) entries no seed of the plain range takes, so the converse
-  check (every PD and every signature row is witnessed) has no pinned exception. The deeper
+  environment says: `0..9,991` and nine fixed seeds (`FIXED_SEEDS`: 14,033, 81,584, 492,192,
+  2,071,065, 289,110, 31,086, 154,052, 24,199, 73,499) that take the PD-18 (unsealed stop),
+  PD-19 (dropped start, `TerminationUnconfirmed`, refused auto-stop), PD-21 (short stop),
+  PD-22 (both rows), PD-24 (an environmental recovery) and the late main-window start reply
+  with its second stop (#1162) entries no seed of the plain range takes, so the converse
+  check (every PD and every signature row is witnessed) has no pinned exception. The same
+  check requires the gated seeds to decide every row of the Smart Auto round (R101.2, R101.14)
+  and of the legacy import (R301.1-R301.6, R302.1, R302.2), to answer the R101.13 and R301.3
+  observation rounds, and to have a start reply put `Recording` over the `Processing` of a stop
+  in flight, so a `handle` that stops asking for one of those, or a model that stops writing
+  that reply, fails the gate. The deeper
   sweep is a separate ignored test, `cargo test -p murmur-dictation-core --lib --release --
   --ignored the_deep_sweep --nocapture` (300,000 seeds; `DEEP_SWEEP_SEEDS=3000000` sets
   another size). `TRACE_SEED=<n> cargo test -p

@@ -52,6 +52,34 @@ pub enum StartCaller {
     Ipc,
 }
 
+/// The microphone selection a start carries (`start_native_recording`'s `device_name` and
+/// `smart_auto`), with the answer the shell's Smart Auto resolve will give (5543-5562).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mic {
+    SystemDefault,
+    /// A fixed device (`device_name`, no Smart Auto).
+    Explicit,
+    /// Smart Auto, and the resolve answers `Ok`.
+    SmartAutoResolved,
+    /// Smart Auto, and the resolve fails (`R101.14`: the resolve's own text, no id burned).
+    SmartAutoFailed,
+    /// Smart Auto together with a fixed device (`R101.2`, refused before D).
+    SmartAutoWithFixed,
+}
+
+/// How the legacy `process_audio` import (sites 301 and 302) goes. Its own blockers are the
+/// meeting, the file transcription and the benchmark (`Blockers::relaunch` and `corpus` are
+/// not read by the import).
+#[derive(Clone, Copy, Debug)]
+pub struct ImportPlan {
+    pub blockers: Blockers,
+    /// The Smart Destination section runs (`smart_destination_eligible`).
+    pub smart: bool,
+    /// The WAV parses; `false` is the parse failure (R302.1).
+    pub parses: bool,
+    pub pipeline: PipelineCfg,
+}
+
 #[derive(Clone, Debug)]
 pub enum Cmd {
     Start {
@@ -60,7 +88,11 @@ pub enum Cmd {
         app_disabled: bool,
         smart: bool,
         caller: StartCaller,
+        mic: Mic,
     },
+    /// The legacy audio import (`process_audio`): it holds T like a start, runs its own
+    /// pipeline in the caller and has no terminal.
+    Import(ImportPlan),
     /// A user stop, always unscoped (`recording_id = None`), as production sends it: the
     /// frontend's `stop_native_recording` call carries no expected id, and neither does the
     /// direct IPC (`recording.rs` `stop_native_recording`). A stale id reaches the stop
@@ -266,13 +298,44 @@ fn start_caller(rng: &mut Rng) -> StartCaller {
     }
 }
 
-fn start(rng: &mut Rng) -> Cmd {
+fn start(rng: &mut Rng, extra: &mut Rng) -> Cmd {
     Cmd::Start {
         plan: plan(rng),
         blockers: blockers(rng),
         app_disabled: rng.chance(1, 25),
         smart: rng.chance(1, 3),
         caller: start_caller(rng),
+        // Drawn from the `extra` stream, so the scenario the earlier draws made is unchanged.
+        mic: mic(extra),
+    }
+}
+
+fn mic(extra: &mut Rng) -> Mic {
+    match extra.weighted(&[78, 4, 9, 6, 3]) {
+        0 => Mic::SystemDefault,
+        1 => Mic::Explicit,
+        2 => Mic::SmartAutoResolved,
+        3 => Mic::SmartAutoFailed,
+        _ => Mic::SmartAutoWithFixed,
+    }
+}
+
+fn import(extra: &mut Rng) -> ImportPlan {
+    let mut blockers = Blockers::default();
+    // A blocker on about one import in three: the meeting (R301.1), the file transcription
+    // (R301.2) and the benchmark (R301.3, read through `NeedObservation`) are each hit.
+    if extra.chance(1, 3) {
+        match extra.below(3) {
+            0 => blockers.meeting = true,
+            1 => blockers.file = true,
+            _ => blockers.benchmark = true,
+        }
+    }
+    ImportPlan {
+        blockers,
+        smart: extra.chance(1, 3),
+        parses: extra.chance(5, 6),
+        pipeline: pipeline(extra),
     }
 }
 
@@ -284,15 +347,17 @@ fn stop_caller(rng: &mut Rng) -> StopCaller {
     }
 }
 
-pub fn scenario(rng: &mut Rng) -> Scenario {
+/// `extra` is a second stream, seeded apart from the first: what it draws (the microphone of a
+/// start, the legacy imports) leaves every draw `rng` makes where it was.
+pub fn scenario(rng: &mut Rng, extra: &mut Rng) -> Scenario {
     let mut cmds: Vec<(u32, Cmd)> = Vec::new();
-    cmds.push((0, start(rng)));
+    cmds.push((0, start(rng, extra)));
     let mut at = 0u32;
     let starts = 1 + rng.below(3);
     for index in 0..starts {
         if index > 0 {
             at += rng.below(40) as u32;
-            cmds.push((at, start(rng)));
+            cmds.push((at, start(rng, extra)));
         }
         // Most starts get a stop (L4); some a cancel; a few both.
         if rng.chance(4, 5) {
@@ -314,7 +379,14 @@ pub fn scenario(rng: &mut Rng) -> Scenario {
     // A late start a stop or a cancel can run into (the PD-18 windows).
     if rng.chance(1, 2) {
         let base = cmds.iter().map(|(at, _)| *at).max().unwrap_or(0);
-        cmds.push((base.saturating_sub(rng.below(30) as u32), start(rng)));
+        cmds.push((base.saturating_sub(rng.below(30) as u32), start(rng, extra)));
+    }
+    // The legacy import (sites 301-302): about one seed in four has one, at any point of the
+    // scenario, so it meets a live dictation, a recovering one and an idle one.
+    if extra.chance(1, 4) {
+        let span = cmds.iter().map(|(at, _)| *at).max().unwrap_or(0) + 20;
+        let at = extra.below(u64::from(span) + 1) as u32;
+        cmds.push((at, Cmd::Import(import(extra))));
     }
     cmds.sort_by_key(|(at, _)| *at);
     Scenario { cmds }
