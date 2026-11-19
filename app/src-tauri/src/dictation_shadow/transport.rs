@@ -76,6 +76,30 @@ static SITE_SLOT: [u8; MAX_SITE_CODE + 1] = {
 /// a header `seq` (which starts at 1): they are different namespaces by construction.
 const REC_BASE: u64 = 1 << 32;
 
+/// One read of the shutdown accounting (see [`Transport::accounting`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Accounting {
+    /// Every publish attempt, counted before the attempt.
+    pub published_attempts: u64,
+    /// Messages the consumer took off the queue.
+    pub popped: u64,
+    /// Attempts the queue rejected (a part of `lost`).
+    pub push_lost: u64,
+    /// Attempts refused because shutdown had begun.
+    pub rejected_after_close: u64,
+}
+
+impl Accounting {
+    /// Attempts with no outcome yet.
+    pub(crate) fn unsettled(&self) -> u64 {
+        self.published_attempts.saturating_sub(
+            self.popped
+                .saturating_add(self.push_lost)
+                .saturating_add(self.rejected_after_close),
+        )
+    }
+}
+
 /// Everything both sides share: the queue, the counters the live side bumps and
 /// the two id counters.
 pub(crate) struct Transport {
@@ -118,6 +142,10 @@ pub(crate) struct Transport {
     /// final snapshot is written (a producer resuming at the boundary).
     #[cfg(test)]
     boundary_hook: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// Test seam: runs on the comparison thread after each write of the final summary (a
+    /// producer resuming while the file is being written).
+    #[cfg(test)]
+    after_write_hook: std::sync::Mutex<Option<Box<dyn FnMut() + Send>>>,
     #[cfg(test)]
     sync: AtomicBool,
     #[cfg(test)]
@@ -142,6 +170,8 @@ impl Transport {
             rejected_after_close: AtomicU64::new(0),
             #[cfg(test)]
             boundary_hook: std::sync::Mutex::new(None),
+            #[cfg(test)]
+            after_write_hook: std::sync::Mutex::new(None),
             #[cfg(test)]
             sync: AtomicBool::new(false),
             #[cfg(test)]
@@ -285,20 +315,28 @@ impl Transport {
         self.closed.store(true, Ordering::SeqCst);
     }
 
-    /// Attempts not yet accounted for: queued and not popped, still inside the push, or
-    /// rejected and not yet counted. `0` means the queue holds every message that will
-    /// ever be published, and the consumer has them all. The settled count is read first
-    /// and the attempts after it, so an attempt that is still under way can only show as
-    /// unsettled, never as settled.
+    /// The shutdown accounting, read once: the settled parts first, the attempts last, so
+    /// an attempt that is still under way can only show as unsettled, never as settled, and
+    /// every figure derived from it (the refusals, the unsettled count) is from this one
+    /// read.
+    pub(crate) fn accounting(&self) -> Accounting {
+        let popped = self.popped.load(Ordering::SeqCst);
+        let push_lost = self.push_lost.load(Ordering::SeqCst);
+        let rejected_after_close = self.rejected_after_close.load(Ordering::SeqCst);
+        let published_attempts = self.published_attempts.load(Ordering::SeqCst);
+        Accounting {
+            published_attempts,
+            popped,
+            push_lost,
+            rejected_after_close,
+        }
+    }
+
+    /// Attempts not yet accounted for (queued and not popped, still inside the push, or
+    /// rejected and not yet counted). `0` means the queue holds every message that will
+    /// ever be published and the consumer has them all.
     pub(crate) fn unsettled(&self) -> u64 {
-        let settled = self
-            .popped
-            .load(Ordering::SeqCst)
-            .saturating_add(self.push_lost.load(Ordering::SeqCst))
-            .saturating_add(self.rejected_after_close.load(Ordering::SeqCst));
-        self.published_attempts
-            .load(Ordering::SeqCst)
-            .saturating_sub(settled)
+        self.accounting().unsettled()
     }
 
     /// Every publish attempt so far.
@@ -327,6 +365,22 @@ impl Transport {
     #[cfg(test)]
     pub(crate) fn set_boundary_hook(&self, hook: impl FnOnce() + Send + 'static) {
         *self.boundary_hook.lock().unwrap() = Some(Box::new(hook));
+    }
+
+    /// Test seam: what runs after each write of the final summary.
+    #[cfg(test)]
+    pub(crate) fn set_after_write_hook(&self, hook: impl FnMut() + Send + 'static) {
+        *self.after_write_hook.lock().unwrap() = Some(Box::new(hook));
+    }
+
+    /// Test seam: run the after-write hook, if one was set.
+    #[cfg(test)]
+    pub(crate) fn run_after_write_hook(&self) {
+        let mut hook = self.after_write_hook.lock().unwrap().take();
+        if let Some(hook) = hook.as_mut() {
+            hook();
+        }
+        *self.after_write_hook.lock().unwrap() = hook;
     }
 
     /// Test seam: run the boundary hook, if one was set.

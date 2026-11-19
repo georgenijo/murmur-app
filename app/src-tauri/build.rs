@@ -46,10 +46,17 @@ fn export_build_identity() {
         .and_then(|head| git_output(&["rev-parse", "--git-path", &head]))
         .filter(|path| Path::new(path).exists())
         .or_else(|| git_output(&["rev-parse", "--git-path", "packed-refs"]));
-    for path in [git_output(&["rev-parse", "--git-path", "HEAD"]), head_ref]
-        .into_iter()
-        .flatten()
-        .filter(|path| Path::new(path).exists())
+    // A commit or pull on a branch whose ref is packed creates the loose ref and changes
+    // neither `HEAD` nor `packed-refs`: the reflog (`logs/HEAD`, per worktree) grows on
+    // every move of HEAD, so it is watched too.
+    for path in [
+        git_output(&["rev-parse", "--git-path", "HEAD"]),
+        git_output(&["rev-parse", "--git-path", "logs/HEAD"]),
+        head_ref,
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|path| Path::new(path).exists())
     {
         println!("cargo:rerun-if-changed={path}");
     }

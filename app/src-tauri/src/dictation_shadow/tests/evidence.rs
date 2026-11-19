@@ -672,6 +672,149 @@ fn a_flight_published_after_the_final_drain_is_reported_never_silently_absent() 
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Fable's round-3 scenario: a flight starts while the final file is being written. The
+/// sample was taken before the write, so only a re-check after it can see the refusals; the
+/// file the run leaves must say so.
+#[test]
+fn a_flight_that_starts_while_the_final_file_is_written_taints_it() {
+    let dir = scratch("during-write");
+    let transport = default_transport();
+    let control = Control::new();
+    let recorder = transport.recorder();
+    let mut flight = stale_stop(0, 0);
+    *flight
+        .later
+        .iter_mut()
+        .find_map(|msg| match msg {
+            ShadowMsg::Reply { kind, .. } => Some(kind),
+            _ => None,
+        })
+        .unwrap() = ReplyKind::Err;
+    let mut sent = false;
+    transport.set_after_write_hook(move || {
+        if !std::mem::replace(&mut sent, true) {
+            submit_header(&recorder, &flight);
+            send_later(&recorder, &flight);
+        }
+    });
+    control.request_shutdown();
+    crate::dictation_shadow::run(
+        &transport,
+        harness().comparator,
+        Some(&dir),
+        &control,
+        Duration::from_millis(1),
+    );
+    let summary = read_summary(&dir);
+    assert_eq!(summary["final"], true);
+    assert_eq!(summary["shutdown_quiesced"], false, "{summary}");
+    let dropped = summary["dropped_after_shutdown"].as_u64().unwrap();
+    assert!(dropped >= 3, "header, effects, reply and close: {summary}");
+    assert_eq!(summary["published_attempts"], dropped, "{summary}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A producer that never stops publishing cannot hold the thread: the rewrites are bounded
+/// (the first write and three more), and the last file says it was not quiet.
+#[test]
+fn a_producer_that_never_stops_cannot_hold_the_final_write() {
+    let dir = scratch("never-quiet");
+    let transport = default_transport();
+    let control = Control::new();
+    let recorder = transport.recorder();
+    let writes = Arc::new(AtomicU64::new(0));
+    let counted = Arc::clone(&writes);
+    transport.set_after_write_hook(move || {
+        counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        crate::dictation_shadow::transport::mark(
+            &recorder,
+            crate::dictation_shadow::transport::Mark::Reply(ReplyKind::Ok),
+        );
+    });
+    control.request_shutdown();
+    crate::dictation_shadow::run(
+        &transport,
+        harness().comparator,
+        Some(&dir),
+        &control,
+        Duration::from_millis(1),
+    );
+    assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 4);
+    let summary = read_summary(&dir);
+    assert_eq!(summary["shutdown_quiesced"], false, "{summary}");
+    assert!(summary["dropped_after_shutdown"].as_u64().unwrap() >= 3);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The figures of one final write add up: every attempt was consumed, rejected by the queue,
+/// refused by the close, or is unsettled, and the verdict can cross-check it.
+#[test]
+fn the_final_accounting_adds_up_in_the_file() {
+    let dir = scratch("adds-up");
+    let transport = local_transport(2);
+    let control = Control::new();
+    let recorder = transport.recorder();
+    // Some consumed, some rejected by a full queue (no one pops before shutdown).
+    for _ in 0..5 {
+        crate::dictation_shadow::transport::mark(
+            &recorder,
+            crate::dictation_shadow::transport::Mark::Reply(ReplyKind::Ok),
+        );
+    }
+    control.request_shutdown();
+    crate::dictation_shadow::run(
+        &transport,
+        harness().comparator,
+        Some(&dir),
+        &control,
+        Duration::from_millis(1),
+    );
+    let summary = read_summary(&dir);
+    let field = |name: &str| {
+        summary[name]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{name}: {summary}"))
+    };
+    assert_eq!(field("published_attempts"), 5);
+    assert!(field("push_lost") > 0, "the queue was full: {summary}");
+    assert_eq!(
+        field("popped")
+            + field("push_lost")
+            + field("dropped_after_shutdown")
+            + field("shutdown_unsettled"),
+        field("published_attempts"),
+        "{summary}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The accounting is one read: the three settled counts and the attempts come together.
+#[test]
+fn the_accounting_derives_the_unsettled_count_from_one_read() {
+    let transport = local_transport(8);
+    let recorder = transport.recorder();
+    crate::dictation_shadow::transport::mark(
+        &recorder,
+        crate::dictation_shadow::transport::Mark::Reply(ReplyKind::Ok),
+    );
+    transport.close();
+    crate::dictation_shadow::transport::mark(
+        &recorder,
+        crate::dictation_shadow::transport::Mark::Reply(ReplyKind::Ok),
+    );
+    let accounting = transport.accounting();
+    assert_eq!(accounting.published_attempts, 2);
+    assert_eq!(accounting.rejected_after_close, 1);
+    assert_eq!(accounting.popped, 0);
+    assert_eq!(
+        accounting.unsettled(),
+        1,
+        "the queued one, not yet consumed"
+    );
+    assert!(transport.pop().is_some());
+    assert_eq!(transport.accounting().unsettled(), 0);
+}
+
 /// An attempt that does not settle by the deadline is reported: `shutdown_quiesced` is
 /// false and the count of what was unaccounted for is in the file.
 #[test]
@@ -755,6 +898,7 @@ fn a_quiet_shutdown_says_so() {
     assert_eq!(summary["dropped_after_shutdown"], 0);
     assert_eq!(summary["shutdown_unsettled"], 0);
     assert_eq!(summary["published_attempts"], 1);
+    assert_eq!(summary["popped"], 1);
     // A periodic summary has no such claim.
     let periodic = Stats::default().to_json();
     for key in [

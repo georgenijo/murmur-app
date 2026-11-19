@@ -90,6 +90,10 @@ const EXIT_WAIT: Duration = Duration::from_secs(2);
 /// accounted for before it takes its final snapshot. Inside `EXIT_WAIT`.
 const QUIESCE_WAIT: Duration = Duration::from_millis(250);
 
+/// How many more times the final summary is written when a producer published while it was
+/// being written (see [`write_final`]).
+const FINAL_REWRITES: usize = 3;
+
 /// Drain attempts the comparison thread makes at shutdown before it writes the final
 /// summary, whatever the ring still holds (D-S2c-3 e). A producer paused between
 /// reserving a slot and publishing it keeps the consumer at that slot; the summary
@@ -356,21 +360,12 @@ pub(crate) fn run(
             }
             comparator.stats.unconsumed = transport.unconsumed() as u64;
             comparator.stats.reserved_unpublished = transport.reserved_unpublished() as u64;
-            // One snapshot of the live side's books, then the shutdown accounting sampled
-            // last: an attempt after the snapshot is in `published_attempts` and shows as
-            // unsettled or refused, never absent.
+            // One snapshot of the live side's books, then the shutdown accounting, then the
+            // write, and a re-check after it (`write_final`).
             stamp(&mut comparator, true);
             #[cfg(test)]
             transport.run_boundary_hook();
-            comparator.stats.dropped_after_shutdown = transport.rejected_after_close();
-            comparator.stats.shutdown_unsettled = transport.unsettled();
-            comparator.stats.published_attempts = transport.published_attempts();
-            comparator.stats.shutdown_quiesced = Some(
-                !timed_out
-                    && comparator.stats.dropped_after_shutdown == 0
-                    && comparator.stats.shutdown_unsettled == 0,
-            );
-            write_stats(directory, &comparator.stats);
+            write_final(transport, &mut comparator, directory, timed_out, budget);
             control.finished.store(true, Ordering::Release);
             return;
         }
@@ -382,6 +377,54 @@ pub(crate) fn run(
         }
         if !progressed {
             std::thread::sleep(poll);
+        }
+    }
+}
+
+/// The final write, and the proof that the file says what the producers did (D-S2c-15
+/// review, round 3). The shutdown accounting is read once and written; the attempt counter
+/// is then read again. If it moved, a producer published (and was refused) while the file
+/// was being written: the accounting is read again, the pass is marked not quiesced and the
+/// file is written again, up to [`FINAL_REWRITES`] more times. The thread finishes only on a
+/// read that matches what it last wrote. If the count is still moving after the last
+/// rewrite, the last file says `shutdown_quiesced: false` with the accounting it read.
+/// All of it is on the comparison thread; no live thread waits for any of it.
+///
+/// What this cannot see is an attempt after the last re-check and before the process
+/// exits: nothing running in this process can account for a message nobody has sent yet.
+fn write_final(
+    transport: &Transport,
+    comparator: &mut Comparator,
+    directory: Option<&Path>,
+    timed_out: bool,
+    budget: usize,
+) {
+    let mut moved = false;
+    for round in 0..=FINAL_REWRITES {
+        let accounting = transport.accounting();
+        let stats = &mut comparator.stats;
+        stats.published_attempts = accounting.published_attempts;
+        stats.popped = accounting.popped;
+        stats.push_lost = accounting.push_lost;
+        stats.dropped_after_shutdown = accounting.rejected_after_close;
+        stats.shutdown_unsettled = accounting.unsettled();
+        stats.shutdown_quiesced = Some(
+            !timed_out
+                && !moved
+                && stats.dropped_after_shutdown == 0
+                && stats.shutdown_unsettled == 0,
+        );
+        write_stats(directory, stats);
+        #[cfg(test)]
+        transport.run_after_write_hook();
+        if transport.published_attempts() == accounting.published_attempts {
+            return;
+        }
+        // An attempt arrived while the file was written: it is not in the file. Take what
+        // reached the queue before the next read, and write again.
+        moved = true;
+        if round < FINAL_REWRITES {
+            comparator.drain_up_to(transport, budget);
         }
     }
 }
