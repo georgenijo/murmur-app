@@ -48,8 +48,10 @@
 #![allow(dead_code)]
 
 pub(crate) mod compare;
+pub(crate) mod live_counters;
 pub(crate) mod pd;
 pub(crate) mod ring;
+pub(crate) mod sites;
 pub(crate) mod summary;
 pub(crate) mod transport;
 pub(crate) mod types;
@@ -67,7 +69,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use compare::{Comparator, EventSink, MismatchEvent};
-use summary::{write_summary, EventFile, Stats};
+use summary::{write_summary, EventFile, Session, Stats};
 use transport::{ShadowRecorder, Transport, QUEUE_CAPACITY};
 
 /// The environment variable that arms the feature at process start.
@@ -283,6 +285,10 @@ pub(crate) fn spawn_thread(
             let sink = file_sink(directory.as_deref());
             let mut comparator = Comparator::production(sink);
             comparator.count_unavailable_from(unavailable);
+            // The session record (D-S2c-15 S1). `run` writes a first summary right
+            // after its first drain, so a pass can tell this launch's file from an
+            // earlier one's before the first periodic write.
+            comparator.stats.session = Some(Session::current());
             run(&transport, comparator, directory.as_deref(), control, poll);
         })
 }
@@ -310,6 +316,8 @@ pub(crate) fn run(
     poll: Duration,
 ) {
     let mut last_write = Instant::now();
+    // A session's first summary is written once, after the first drain.
+    let mut announced = comparator.stats.session.is_none();
     loop {
         // Read the stop flag *before* draining: every message pushed before the
         // request was made is then in the queue this pass drains.
@@ -328,11 +336,14 @@ pub(crate) fn run(
             }
             comparator.stats.unconsumed = transport.unconsumed() as u64;
             comparator.stats.reserved_unpublished = transport.reserved_unpublished() as u64;
+            stamp(&mut comparator, true);
             write_stats(directory, &comparator.stats);
             control.finished.store(true, Ordering::Release);
             return;
         }
-        if last_write.elapsed() >= SUMMARY_INTERVAL {
+        if !announced || last_write.elapsed() >= SUMMARY_INTERVAL {
+            announced = true;
+            stamp(&mut comparator, false);
             write_stats(directory, &comparator.stats);
             last_write = Instant::now();
         }
@@ -340,6 +351,17 @@ pub(crate) fn run(
             std::thread::sleep(poll);
         }
     }
+}
+
+/// What the comparison thread reads for each summary write (D-S2c-15 S2, S3, S4): the open
+/// flights, the persisted-core divergence count and the live shell's books. All read-only
+/// loads of counters the live side already keeps; nothing is added to the live path.
+/// `finalized` marks the one write of a clean exit.
+fn stamp(comparator: &mut Comparator, finalized: bool) {
+    comparator.stats.outstanding_at_exit = comparator.open_flights() as u64;
+    comparator.stats.core_divergences = live_counters::core_divergences();
+    comparator.stats.conservation = Some(live_counters::conservation());
+    comparator.stats.finalized = finalized;
 }
 
 fn write_stats(directory: Option<&Path>, stats: &Stats) {

@@ -11,7 +11,63 @@ fn main() {
     // (commands::permissions::check_microphone_permission). AppKit does not load it.
     println!("cargo:rustc-link-lib=framework=AVFoundation");
     build_foundation_models_bridge();
+    export_build_identity();
     tauri_build::build()
+}
+
+/// Export the build's identity to the dictation shadow's session record
+/// (`MURMUR_GIT_SHA`, `MURMUR_BUILD_PROFILE`; read with `option_env!`). The shadow's
+/// summary names the revision and profile that produced it, so a soak pass can tell a
+/// stale file from this build's. A checkout with no `git`, or no repository, gives
+/// `"unknown"`; `MURMUR_GIT_SHA` set in the environment wins (a packaged build).
+fn export_build_identity() {
+    println!("cargo:rerun-if-env-changed=MURMUR_GIT_SHA");
+    let sha = std::env::var("MURMUR_GIT_SHA")
+        .ok()
+        .filter(|sha| is_full_sha(sha))
+        .or_else(|| git_output(&["rev-parse", "HEAD"]).filter(|sha| is_full_sha(sha)))
+        .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=MURMUR_GIT_SHA={sha}");
+
+    // Re-run when HEAD moves: the file that names the branch, and the branch's ref.
+    for path in [
+        git_output(&["rev-parse", "--git-path", "HEAD"]),
+        git_output(&["symbolic-ref", "-q", "HEAD"])
+            .and_then(|head| git_output(&["rev-parse", "--git-path", &head])),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        println!("cargo:rerun-if-changed={path}");
+    }
+
+    // `PROFILE` is only `debug` or `release`; a custom profile (`shadow-soak`) is the
+    // directory name under `target/`: OUT_DIR is `target/<profile>/build/<pkg>/out`.
+    let profile = std::env::var("OUT_DIR")
+        .ok()
+        .and_then(|out| {
+            Path::new(&out)
+                .ancestors()
+                .nth(3)
+                .and_then(|dir| dir.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .or_else(|| std::env::var("PROFILE").ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=MURMUR_BUILD_PROFILE={profile}");
+}
+
+fn is_full_sha(text: &str) -> bool {
+    text.len() == 40 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn git_output(args: &[&str]) -> Option<String> {
+    let output = Command::new("git").args(args).output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|text| !text.is_empty())
 }
 
 /// Compile the small Swift bridge used by the optional homophone context pass

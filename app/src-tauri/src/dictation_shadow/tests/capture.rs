@@ -968,11 +968,11 @@ fn a_command_reply_is_witnessed_as_the_value_the_command_returned() {
     let cases: Vec<(Result<serde_json::Value, String>, ReplyKind)> = vec![
         (
             Ok(json!({"type": ReplyType::NotRecording.as_str(), "state": "idle"})),
-            ReplyKind::Typed(ReplyType::NotRecording),
+            ReplyKind::TypedAt(ReplyType::NotRecording, Status::Idle),
         ),
         (
             Ok(json!({"type": ReplyType::AlreadyRecording.as_str(), "state": "recording"})),
-            ReplyKind::Typed(ReplyType::AlreadyRecording),
+            ReplyKind::TypedAt(ReplyType::AlreadyRecording, Status::Recording),
         ),
         (Err("failed".to_string()), ReplyKind::Err),
         (
@@ -981,7 +981,21 @@ fn a_command_reply_is_witnessed_as_the_value_the_command_returned() {
         ),
         (
             Ok(json!({"type": "transcription", "text": "", "state": "idle"})),
+            ReplyKind::TranscriptionAt(Status::Idle),
+        ),
+        // The normal `process_audio` transcription returns no `state`: the kind alone.
+        (
+            Ok(json!({"type": "transcription", "text": ""})),
             ReplyKind::Transcription,
+        ),
+        // A typed reply with no readable state names a kind no decision does (S7).
+        (
+            Ok(json!({"type": ReplyType::NotRecording.as_str()})),
+            ReplyKind::Unrecognized,
+        ),
+        (
+            Ok(json!({"type": ReplyType::NotRecording.as_str(), "state": "bogus"})),
+            ReplyKind::Unrecognized,
         ),
         (Ok(json!({"state": "idle"})), ReplyKind::Ok),
     ];
@@ -1283,7 +1297,7 @@ fn a_queued_finish_closes_with_no_reply_and_a_nested_command_keeps_its_own() {
     let (replies, mut closes) = reply_and_close(&pop_all(&transport));
     assert_eq!(
         replies,
-        vec![ReplyKind::Typed(ReplyType::NotRecording)],
+        vec![ReplyKind::TypedAt(ReplyType::NotRecording, Status::Idle)],
         "only the nested command's flight has a reply"
     );
     closes.sort_unstable();

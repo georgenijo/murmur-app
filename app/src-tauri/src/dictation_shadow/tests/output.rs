@@ -38,12 +38,34 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Count {
     }
 }
 
+/// Every leaf of the summary is a number or a flag, except the session's two closed
+/// strings (the build's revision hash and its profile name), which are identifiers.
 fn leaves_are_numbers(value: &serde_json::Value) -> bool {
-    match value {
-        serde_json::Value::Number(_) => true,
-        serde_json::Value::Object(map) => map.values().all(leaves_are_numbers),
-        _ => false,
+    fn walk(value: &serde_json::Value, path: &str) -> bool {
+        match value {
+            serde_json::Value::Number(_) | serde_json::Value::Bool(_) => true,
+            serde_json::Value::String(text) => match path {
+                "session.git_sha" => {
+                    text == "unknown"
+                        || (text.len() == 40 && text.bytes().all(|b| b.is_ascii_hexdigit()))
+                }
+                "session.build_profile" => text
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+                _ => false,
+            },
+            serde_json::Value::Object(map) => map.iter().all(|(key, inner)| {
+                let at = if path.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{path}.{key}")
+                };
+                walk(inner, &at)
+            }),
+            _ => false,
+        }
     }
+    walk(value, "")
 }
 
 #[test]

@@ -15,7 +15,7 @@ use murmur_dictation_core::decision::ContKind;
 use murmur_dictation_core::effects::{Effect, Placement};
 use murmur_dictation_core::ids::{Now, OperationId, RecordingId};
 use murmur_dictation_core::inputs::Input;
-use murmur_dictation_core::replies::{Reply, ReplyType};
+use murmur_dictation_core::replies::{ErrText, ProcessAudioRefusal, Reply, ReplyType};
 use murmur_dictation_core::state::LiveObs;
 use murmur_dictation_core::status::Status;
 
@@ -369,16 +369,60 @@ pub(crate) enum ReplyKind {
     /// An `Ok` payload whose `type` literal no decision names: matches no decided kind,
     /// an `Err` included (D-S2c-8 f).
     Unrecognized,
+    /// A typed reply with its `state` literal (D-S2c-15 S7). Content-free: both are
+    /// closed enums.
+    TypedAt(ReplyType, Status),
+    /// A transcription reply with its `state` literal. The text is never captured.
+    TranscriptionAt(Status),
+    /// `Err(..)` with its [`ErrClass`] (the `ErrText` discriminant, never the text).
+    ErrAs(ErrClass),
+}
+
+/// The discriminant of a decided `ErrText` (D-S2c-15 S7): which error the core said to
+/// reply with, never the text and never a recording id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ErrClass {
+    Shell,
+    MissingContext,
+    SmartAutoWithFixedDevice,
+    SmartAuto,
+    ProcessAudio(ProcessAudioRefusal),
+}
+
+impl ErrClass {
+    pub(crate) fn of(text: &ErrText) -> Self {
+        match text {
+            ErrText::Shell => Self::Shell,
+            ErrText::MissingContext(_) => Self::MissingContext,
+            ErrText::SmartAutoWithFixedDevice => Self::SmartAutoWithFixedDevice,
+            ErrText::SmartAuto => Self::SmartAuto,
+            ErrText::ProcessAudio(refusal) => Self::ProcessAudio(*refusal),
+        }
+    }
 }
 
 impl ReplyKind {
-    /// The kind of a decided reply.
+    /// The kind of a decided reply, with the `state` or error discriminant the core
+    /// decided.
     pub(crate) fn of(reply: &Reply) -> Self {
         match reply {
             Reply::Ok => Self::Ok,
-            Reply::Err(_) => Self::Err,
-            Reply::Typed { ty, .. } => Self::Typed(*ty),
-            Reply::Transcription { .. } => Self::Transcription,
+            Reply::Err(text) => Self::ErrAs(ErrClass::of(text)),
+            Reply::Typed { ty, state, .. } => Self::TypedAt(*ty, *state),
+            Reply::Transcription { state, .. } => Self::TranscriptionAt(*state),
+        }
+    }
+
+    /// Whether the reply the live path returned (`live`) is the one the core decided
+    /// (`self`). The detailed kinds are compared on their `state` / error class too.
+    /// A live kind that carries no detail (`Typed`, `Transcription`, `Err`: the
+    /// producer could not read it) agrees on the kind alone, exactly as before D-S2c-15.
+    pub(crate) fn agrees(self, live: Self) -> bool {
+        match (self, live) {
+            (Self::TypedAt(a, _), Self::Typed(b)) => a == b,
+            (Self::TranscriptionAt(_), Self::Transcription) => true,
+            (Self::ErrAs(_), Self::Err) => true,
+            (decided, live) => decided == live,
         }
     }
 }

@@ -144,8 +144,11 @@ pub(crate) fn dictation_lock_taken<T>(at: &'static std::panic::Location<'static>
     if crate::dictation_shadow::replay::not_a_decision_section(at) {
         return;
     }
+    // A native build cannot read source files here: the acquisition's site is noted in
+    // a fixed lock-free table and classified by the comparison thread when it writes
+    // the summary (`sites::non_family_counts`).
     #[cfg(not(test))]
-    let _ = at;
+    crate::dictation_shadow::sites::note(at);
     ENTRIES.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -170,17 +173,30 @@ static UNRENDERED: AtomicU64 = AtomicU64::new(0);
 #[cfg(test)]
 static NO_REPLY: AtomicU64 = AtomicU64::new(0);
 
+/// The entry/header books so far, as the raw counters (D-S2c-15 S3: read by the comparison
+/// thread for the summary). In a native build `entries` still holds the named non-family
+/// acquisitions of D (`sites::non_family_counts` names them); test builds never count them.
+pub(crate) fn conservation_counts() -> crate::dictation_shadow::summary::ConservationCounts {
+    crate::dictation_shadow::summary::ConservationCounts {
+        entries: ENTRIES.load(Ordering::Relaxed),
+        headers: HEADERS.load(Ordering::Relaxed),
+        no_decision: NO_DECISION.load(Ordering::Relaxed),
+        unwound: UNWOUND.load(Ordering::Relaxed),
+    }
+}
+
 /// Test builds: the counters so far; a replay's report takes the difference between
 /// its end and its start.
 #[cfg(test)]
 pub(crate) fn conservation_now() -> crate::dictation_shadow::replay::Conservation {
+    let counts = conservation_counts();
     crate::dictation_shadow::replay::Conservation {
-        entries: ENTRIES.load(Ordering::Relaxed),
-        headers: HEADERS.load(Ordering::Relaxed),
-        no_decision: NO_DECISION.load(Ordering::Relaxed),
+        entries: counts.entries,
+        headers: counts.headers,
+        no_decision: counts.no_decision,
         unrendered: UNRENDERED.load(Ordering::Relaxed),
         no_reply: NO_REPLY.load(Ordering::Relaxed),
-        unwound: UNWOUND.load(Ordering::Relaxed),
+        unwound: counts.unwound,
     }
 }
 
@@ -1083,15 +1099,30 @@ fn value_kind(value: &serde_json::Value) -> ReplyKind {
         ReplyType::RecordingCancelled,
         ReplyType::RecordingStarting,
     ];
+    // The reply's `state` literal (D-S2c-15 S7), a closed set: never any content.
+    let state = value
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|literal| {
+            murmur_dictation_core::status::Status::ALL
+                .into_iter()
+                .find(|status| status.as_str() == literal)
+        });
     match value.get("type").and_then(serde_json::Value::as_str) {
         None => ReplyKind::Ok,
-        Some("transcription") => ReplyKind::Transcription,
+        // The normal `process_audio` transcription carries no `state`: compared on
+        // the kind alone then, and on the state where the command returned one.
+        Some("transcription") => state.map_or(ReplyKind::Transcription, ReplyKind::TranscriptionAt),
         // A literal no decision names is its own kind: it matches nothing the core can
-        // decide, an `Err` included (D-S2c-8 f).
+        // decide, an `Err` included (D-S2c-8 f). So is a typed reply with no readable
+        // `state`: every typed reply the core decides names one.
         Some(literal) => TYPES
             .into_iter()
             .find(|ty| ty.as_str() == literal)
-            .map_or(ReplyKind::Unrecognized, ReplyKind::Typed),
+            .zip(state)
+            .map_or(ReplyKind::Unrecognized, |(ty, state)| {
+                ReplyKind::TypedAt(ty, state)
+            }),
     }
 }
 

@@ -203,12 +203,43 @@ fn shadow_never_executes() {
     for (name, source) in &files {
         let code = production_source(source);
         for token in forbidden {
+            // `live_counters.rs` is the one file that reads the live side's counters
+            // (D-S2c-15 S3, S4); it is held to loads only, below.
+            if token == "dictation_executor" && name == "live_counters.rs" {
+                continue;
+            }
             assert!(
                 !code.contains(token),
                 "dictation_shadow/{name} names `{token}`: the shadow never executes and never logs"
             );
         }
     }
+    // The counter reader only loads: no lock, store, write or call into the executor
+    // other than the two named reads.
+    let (_, counters) = files
+        .iter()
+        .find(|(name, _)| name == "live_counters.rs")
+        .expect("live_counters.rs is scanned");
+    let counters = production_source(counters);
+    for token in [
+        ".lock(",
+        ".store(",
+        "fetch_add",
+        "swap(",
+        "write",
+        "emit",
+        "spawn",
+    ] {
+        assert!(
+            !counters.contains(token),
+            "live_counters.rs must only read: `{token}`"
+        );
+    }
+    assert_eq!(
+        counters.matches("dictation_executor::").count(),
+        2,
+        "live_counters.rs reads exactly the divergence count and the entry/header books"
+    );
     // The only thing the shadow writes is its own two files, through `summary`.
     let mut writers = Vec::new();
     for (name, source) in &files {
@@ -252,9 +283,9 @@ fn shadow_replays_live_op_ids() {
                 "dictation_shadow/{name} names `{token}`: op ids are replayed, never drawn"
             );
         }
-        // `fetch_add(1` is the transport's own seq and recorder counters and the
-        // summary's temporary-file counter, nothing else.
-        if name != "transport.rs" && name != "summary.rs" {
+        // `fetch_add(1` is the transport's own seq and recorder counters, the summary's
+        // temporary-file counter and the acquisition-site table's counts, nothing else.
+        if name != "transport.rs" && name != "summary.rs" && name != "sites.rs" {
             assert!(
                 !code.contains("fetch_add(1"),
                 "dictation_shadow/{name} counts something that looks like an op id"

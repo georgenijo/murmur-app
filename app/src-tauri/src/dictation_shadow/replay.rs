@@ -46,6 +46,16 @@ pub(crate) struct Conservation {
 }
 
 impl Conservation {
+    /// The books the summary reports (D-S2c-15 S3).
+    pub(crate) fn counts(self) -> super::summary::ConservationCounts {
+        super::summary::ConservationCounts {
+            entries: self.entries,
+            headers: self.headers,
+            no_decision: self.no_decision,
+            unwound: self.unwound,
+        }
+    }
+
     pub(crate) fn since(self, before: Self) -> Self {
         Self {
             entries: self.entries - before.entries,
@@ -322,65 +332,9 @@ impl Drop for Replay {
 
 // ------------------------------------------------ the D guard's non-family acquisitions
 
-/// Production sites that take the dictation lock D without taking a decision section: not
-/// a family entry, so no header is owed for them (D-S2c-9 a). The guard function counts
-/// **every** other acquisition while armed, and the replay requires each one to end in a
-/// header, a named no-decision outcome or an unwind. A site is named by its file and the
-/// text of its line and of the line after it (so an edit elsewhere does not shift it),
-/// with the reason.
-const NON_FAMILY: &[(&str, &str, &str, &str)] = &[
-    (
-        "src/commands/recording.rs",
-        "let dictation = app_state.dictation.lock_or_recover();",
-        "(",
-        "the code-vocabulary prompt's fast-path read of three fields",
-    ),
-    (
-        "src/commands/recording.rs",
-        "let dictation = app_state.dictation.lock_or_recover();",
-        "let Some(current_code_vocab) = cached_code_vocab_prompt(&dictation, bundle_id) else {",
-        "the context snapshot's code-vocabulary revalidation",
-    ),
-    (
-        "src/commands/recording.rs",
-        "let dictation = state.app_state.dictation.lock_or_recover();",
-        "project_lifecycle_view(&state.app_state, &dictation)",
-        "query 402, the short read after a smart-destination capture (D-S2-3)",
-    ),
-    (
-        "src/commands/recording.rs",
-        "let dictation = app_state.dictation.lock_or_recover();",
-        "if !owns_delivery(app_state, &dictation, recording_id) {",
-        "the delivery ownership fence (query 403): held across a paste, not a decision",
-    ),
-    (
-        "src/commands/recording.rs",
-        "let dictation = app_state.dictation.lock_or_recover();",
-        "drop(wait);",
-        "the timed delivery ownership fence (query 403)",
-    ),
-    (
-        "src/commands/recording.rs",
-        "let _dictation = app_state.dictation.lock_or_recover();",
-        "if app_state.recording_id.load(Ordering::SeqCst) != recording_id",
-        "the generation fence around an emit: held across it, not a decision",
-    ),
-    (
-        "src/commands/recording/lifecycle_ports.rs",
-        "let dictation = state.app_state.dictation.lock_or_recover();",
-        "register_partial_ticker_locked",
-        "the ticker registration `SD` makes inside its own section's spawn",
-    ),
-    (
-        "src/dictation_admission.rs",
-        "s.read(|o| facts::status(app_state.dictation.lock_or_recover().status, o))",
-        "});",
-        "the admission probe's read of the status",
-    ),
-];
-
-/// Whether the acquisition at `at` is test code or a named non-family site: not counted
-/// as a decision section. Cached per site; the first look reads the source file.
+/// Whether the acquisition at `at` is test code or a named non-family site
+/// ([`super::sites::NON_FAMILY`]): not counted as a decision section. Cached per site;
+/// the first look reads the source file.
 pub(crate) fn not_a_decision_section(at: &'static std::panic::Location<'static>) -> bool {
     static CACHE: Mutex<BTreeMap<(&'static str, u32), bool>> = Mutex::new(BTreeMap::new());
     let key = (at.file(), at.line());
@@ -400,63 +354,17 @@ pub(crate) fn not_a_decision_section(at: &'static std::panic::Location<'static>)
 }
 
 fn classify_site(at: &std::panic::Location<'_>) -> bool {
-    let file = at.file();
-    if file.ends_with("_tests.rs")
-        || file.ends_with("_harness.rs")
-        || file.contains("/tests/")
-        || file.contains("dictation_shadow/")
-    {
-        return true;
+    use super::sites::{classify, Site};
+    match classify(at) {
+        Site::Test | Site::NonFamily => true,
+        Site::Family => {
+            if std::env::var_os("MURMUR_E7_SITES").is_some() {
+                eprintln!("E7SITE {}:{}", at.file(), at.line());
+            }
+            false
+        }
+        Site::Unreadable => panic!("the D guard's caller file {} cannot be read", at.file()),
     }
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let name = std::path::Path::new(file);
-    let text = [name.to_path_buf(), manifest.join(name)]
-        .into_iter()
-        .chain(
-            name.strip_prefix("app/src-tauri")
-                .ok()
-                .map(|rest| manifest.join(rest)),
-        )
-        .find_map(|path| std::fs::read_to_string(path).ok())
-        .unwrap_or_else(|| panic!("the D guard's caller file {file} cannot be read"));
-    let lines: Vec<&str> = text.lines().collect();
-    let line = lines
-        .get(at.line() as usize - 1)
-        .map(|line| line.trim())
-        .unwrap_or_default();
-    // An inline `#[cfg(test)] mod x {`: its lines, up to the `}` at column 0 that rustfmt
-    // puts at its end, are test code.
-    let in_test_module = lines
-        .windows(2)
-        .enumerate()
-        .filter(|(_, pair)| {
-            pair[0].trim() == "#[cfg(test)]"
-                && pair[1].trim_start().starts_with("mod ")
-                && pair[1].trim_end().ends_with('{')
-        })
-        .any(|(start, _)| {
-            let end = lines[start + 2..]
-                .iter()
-                .position(|line| *line == "}")
-                .map_or(lines.len(), |offset| start + 2 + offset + 1);
-            (start + 2..=end).contains(&(at.line() as usize))
-        });
-    if in_test_module {
-        return true;
-    }
-    let next = lines
-        .get(at.line() as usize)
-        .map(|line| line.trim())
-        .unwrap_or_default();
-    let named = NON_FAMILY.iter().any(|(path, text, after, _)| {
-        file.ends_with(path)
-            && line == *text
-            && (next == *after || (after.len() > 1 && next.contains(*after)))
-    });
-    if !named && std::env::var_os("MURMUR_E7_SITES").is_some() {
-        eprintln!("E7SITE {file}:{} {line}", at.line());
-    }
-    named
 }
 
 /// Sub-runs that by design drive no family entry (they exercise a ledger directly), so
@@ -623,6 +531,45 @@ impl Report {
             "{what}: {} completed flights never rendered their reply at a command return",
             c.unrendered
         );
+        // The summary's own books (D-S2c-15 S2, S3), over this sub-run: the conservation
+        // the native summary reports balances exactly where the checks above say it
+        // does, E3's per-row credit is only for flights that ran to their end, and the
+        // incomplete closes the comparison names are the ones the shell counted.
+        let report = super::summary::ConservationReport {
+            total: c.counts(),
+            ..Default::default()
+        };
+        assert!(
+            report.total.balanced(),
+            "{what}: the summary's conservation does not balance: {report:?}"
+        );
+        // (A hand-built `Stats` in a gate test has no rows.)
+        if !s.per_row.is_empty() {
+            let credited: u64 = s.per_row.values().map(|row| row.matched).sum();
+            assert_eq!(
+                credited + s.abandoned,
+                s.matched,
+                "{what}: per-row `matched` credits only flights that completed ({s:?})"
+            );
+        }
+        let unexpected = s.incomplete_closes.get("abandoned").copied().unwrap_or(0);
+        assert_eq!(
+            s.named_no_reply + unexpected,
+            s.abandoned,
+            "{what}: every flight closed incomplete is the named no-reply close or counted \
+             unexpected ({s:?})"
+        );
+        if expected.abandoned == 0 {
+            assert_eq!(
+                (s.named_no_reply, unexpected),
+                (c.no_reply, 0),
+                "{what}: the comparison saw {} named no-reply closes and {} unexpected ones; \
+                 the shell counted {} named ({s:?})",
+                s.named_no_reply,
+                unexpected,
+                c.no_reply
+            );
+        }
     }
 }
 

@@ -34,11 +34,111 @@ pub(crate) const EVENTS_FILE: &str = "dictation-shadow-events.jsonl";
 /// The registered event code the sink writes (C8.4, unchanged).
 pub(crate) const EVENT_CODE: &str = "pipeline.dictation_shadow_mismatch";
 
+/// Who wrote a summary (D-S2c-15 S1): a soak pass checks that the file it reads is the
+/// one this launch wrote, on the build it meant to test. Numbers and a revision hash
+/// only.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Session {
+    pub started_unix_ms: u64,
+    pub pid: u32,
+    /// `build.rs`'s `MURMUR_GIT_SHA`; `"unknown"` when the build had no repository.
+    pub git_sha: String,
+    /// Always `true`: only an armed session writes a summary.
+    pub armed: bool,
+    /// The cargo profile directory the build came from (`shadow-soak`).
+    pub build_profile: String,
+}
+
+impl Session {
+    /// This process, now.
+    pub(crate) fn current() -> Self {
+        Self {
+            started_unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| {
+                    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+                }),
+            pid: std::process::id(),
+            git_sha: option_env!("MURMUR_GIT_SHA")
+                .unwrap_or("unknown")
+                .to_string(),
+            armed: true,
+            build_profile: option_env!("MURMUR_BUILD_PROFILE")
+                .unwrap_or("unknown")
+                .to_string(),
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "started_unix_ms": self.started_unix_ms,
+            "pid": self.pid,
+            "git_sha": self.git_sha,
+            "armed": self.armed,
+            "build_profile": self.build_profile,
+        })
+    }
+}
+
+/// The live shell's entry/header books (D-S2c-8 c): every decision section it entered
+/// must end in a header, a named no-decision outcome or an unwind.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ConservationCounts {
+    /// Decision sections entered (family entries only: the named non-family lock
+    /// acquisitions are not here).
+    pub entries: u64,
+    /// Headers the flights submitted.
+    pub headers: u64,
+    pub no_decision: u64,
+    pub unwound: u64,
+}
+
+impl ConservationCounts {
+    pub(crate) fn balanced(&self) -> bool {
+        self.entries == self.headers + self.no_decision + self.unwound
+    }
+
+    /// The counters accumulated since `before` (a replay's sub-run).
+    pub(crate) fn since(self, before: Self) -> Self {
+        Self {
+            entries: self.entries - before.entries,
+            headers: self.headers - before.headers,
+            no_decision: self.no_decision - before.no_decision,
+            unwound: self.unwound - before.unwound,
+        }
+    }
+
+    fn to_json(self) -> Value {
+        json!({
+            "entries": self.entries,
+            "headers": self.headers,
+            "no_decision": self.no_decision,
+            "unwound": self.unwound,
+            "balanced": self.balanced(),
+        })
+    }
+}
+
+/// The conservation section of the summary (D-S2c-15 S3).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ConservationReport {
+    /// The books over all family sites.
+    pub total: ConservationCounts,
+    /// D acquisitions that are not a decision section, by named site (`file:line`).
+    pub non_family: BTreeMap<String, u64>,
+    /// D acquisitions at a site that could not be classified (source unreadable): they
+    /// stay in `total.entries`, so they unbalance the books instead of hiding.
+    pub unclassified: u64,
+}
+
 /// Per C3 row: how many decisions were compared, how many mismatched and how many
 /// times a preserved defect (C7.1) was witnessed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RowStats {
     pub compared: u64,
+    /// Compared decisions whose flight ran to its end and matched (E3 credit; D-S2c-15
+    /// S2). `compared` is credited at the header, this at the close.
+    pub matched: u64,
     pub mismatched: u64,
     pub pd_witness: u64,
     /// `PostDT:SD` spawns that returned before the gate, by reason code - 1
@@ -129,11 +229,35 @@ pub(crate) struct Stats {
     pub per_row: BTreeMap<(u16, u16), RowStats>,
     /// Preserved-defect witnesses by PD number (E8).
     pub pd_witness: BTreeMap<u8, u64>,
+    /// Flights closed without completing, other than the named expected kinds
+    /// (`abandoned_pre_d`, the named no-reply close), by reason (D-S2c-15 S2). A
+    /// native pass is tainted by any entry.
+    pub incomplete_closes: BTreeMap<&'static str, u64>,
+    /// Flights that closed `completed:false` in the shape of the named no-reply close
+    /// (every decided effect ran; only the command's reply never came): expected,
+    /// counted, never a taint.
+    pub named_no_reply: u64,
+    /// Open flights when this summary was written. At the final write a clean exit
+    /// needs 0.
+    pub outstanding_at_exit: u64,
+    /// `adapter::core_divergences()` when this summary was written (E-gate: 0).
+    pub core_divergences: u64,
+    /// Whose summary this is. `None` only in the unit tests that build a bare `Stats`.
+    pub session: Option<Session>,
+    /// The live shell's entry/header books, read by the comparison thread.
+    pub conservation: Option<ConservationReport>,
+    /// This is the final write of a clean exit, not a periodic one.
+    pub finalized: bool,
 }
 
 impl Stats {
     pub(crate) fn row(&mut self, site_id: u16, row: u16) -> &mut RowStats {
         self.per_row.entry((site_id, row)).or_default()
+    }
+
+    /// A flight closed without completing, for `reason` (not an expected kind).
+    pub(crate) fn note_incomplete(&mut self, reason: &'static str) {
+        *self.incomplete_closes.entry(reason).or_default() += 1;
     }
 
     /// The sum of every way a recorder is counted out (D-S2c-4 b).
@@ -146,6 +270,32 @@ impl Stats {
             + self.abandoned_by_panic
             + self.abandoned_pre_d
             + self.skipped_incomplete
+    }
+
+    /// `conservation` (D-S2c-15 S3): the books over all family sites (`total`), the
+    /// headers the comparison applied per site, and the named non-family D acquisitions.
+    /// Entries, no-decision outcomes and unwinds are counted by the live shell without a
+    /// site (attributing them needs a site argument at every capture entry), so only
+    /// `total` carries them; the balance criterion is `total.balanced`.
+    fn conservation_json(&self) -> Option<Value> {
+        let report = self.conservation.as_ref()?;
+        let mut sites: Map<String, Value> = Map::new();
+        for ((site, _), row) in &self.per_row {
+            let entry = sites
+                .entry(site.to_string())
+                .or_insert_with(|| json!({ "headers": 0_u64 }));
+            let headers = entry["headers"].as_u64().unwrap_or(0) + row.compared;
+            entry["headers"] = json!(headers);
+        }
+        sites.insert("total".to_string(), report.total.to_json());
+        let non_family: Map<String, Value> = report
+            .non_family
+            .iter()
+            .map(|(site, count)| (site.clone(), json!(count)))
+            .collect();
+        sites.insert("non_family".to_string(), Value::Object(non_family));
+        sites.insert("unclassified".to_string(), json!(report.unclassified));
+        Some(Value::Object(sites))
     }
 
     /// The summary document. Numbers only.
@@ -168,6 +318,7 @@ impl Stats {
                     format!("{site}.{row}"),
                     json!({
                         "compared": stats.compared,
+                        "matched": stats.matched,
                         "mismatched": stats.mismatched,
                         "pd_witness": stats.pd_witness,
                         "ticker_skipped": ticker_skipped,
@@ -185,7 +336,17 @@ impl Stats {
             .iter()
             .map(|(site, count)| (site.to_string(), json!(count)))
             .collect();
-        json!({
+        let incomplete_closes: Map<String, Value> = self
+            .incomplete_closes
+            .iter()
+            .map(|(reason, count)| ((*reason).to_string(), json!(count)))
+            .collect();
+        let mut document = json!({
+            "final": self.finalized,
+            "outstanding_at_exit": self.outstanding_at_exit,
+            "incomplete_closes": incomplete_closes,
+            "named_no_reply": self.named_no_reply,
+            "core_divergences": self.core_divergences,
             "compared": self.compared,
             "matched": self.matched,
             "mismatched_root": self.mismatched_root,
@@ -214,7 +375,16 @@ impl Stats {
             "lost_by_site": lost_by_site,
             "per_row": per_row,
             "pd_witness": pd_witness,
-        })
+        });
+        if let (Some(object), Some(session)) = (document.as_object_mut(), &self.session) {
+            object.insert("session".to_string(), session.to_json());
+        }
+        if let (Some(object), Some(conservation)) =
+            (document.as_object_mut(), self.conservation_json())
+        {
+            object.insert("conservation".to_string(), conservation);
+        }
+        document
     }
 }
 
