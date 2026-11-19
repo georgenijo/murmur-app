@@ -408,7 +408,10 @@ impl Run {
             .app_state
             .recording_id
             .store(id, Ordering::SeqCst);
-        self.state.app_state.dictation.lock_or_recover().status = status;
+        let mut dictation = self.state.app_state.dictation.lock_or_recover();
+        dictation.status = status;
+        // Live is written directly, so the persisted core is seeded to match.
+        crate::dictation_executor::FieldAdapter::seed_core(&self.state.app_state, &mut dictation);
     }
 
     fn history(&self) -> (usize, usize) {
