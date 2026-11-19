@@ -44,7 +44,27 @@ pub(crate) fn core_divergences() -> u64 {
     let counted = CORE_DIVERGENCES.load(Ordering::SeqCst);
     #[cfg(test)]
     let counted = counted.saturating_sub(FORGIVEN_DIVERGENCES.load(Ordering::SeqCst));
+    #[cfg(test)]
+    let counted = counted.saturating_sub(START_FORGIVEN_DIVERGENCES.load(Ordering::SeqCst));
     counted
+}
+
+/// Divergences a **start** test planted on purpose (the start cutover's own allowance, so its
+/// tests need no other cutover's harness support): [`core_divergences`] does not count them.
+#[cfg(test)]
+static START_FORGIVEN_DIVERGENCES: AtomicU64 = AtomicU64::new(0);
+
+/// Test builds: allow `planted` more divergences to be counted without the harness's
+/// invariant seeing them; `0` clears the allowance (start cutover tests).
+#[cfg(test)]
+pub(crate) fn start_forgive_planted_divergences(planted: u64) {
+    START_FORGIVEN_DIVERGENCES.store(planted, Ordering::SeqCst);
+}
+
+/// Test builds: every divergence counted, planted ones included (start cutover tests).
+#[cfg(test)]
+pub(crate) fn raw_core_divergences() -> u64 {
+    CORE_DIVERGENCES.load(Ordering::SeqCst)
 }
 
 /// Divergences a test planted on purpose, which the golden harness's invariant

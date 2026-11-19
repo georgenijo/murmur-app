@@ -592,8 +592,9 @@ fn the_r205_5_tail_order_holds_through_the_switched_entry() {
 /// #1170's independent-start barrier (a processing cancel keeps T through its trailing
 /// `idle`, so a newer start cannot publish `starting` and then be overwritten by the old
 /// `idle`), run again through the switched entry. The cancel's entry is exact and reads the
-/// persisted core. The start that is polled from an independent task is the start family's,
-/// switched with the start cutover: no function reaches `DictationCore::project` any more.
+/// persisted core. The start that is polled from an independent task is the start family's
+/// and projects until the start cutover is applied: the functions that projected are the
+/// start's and only the start's (none once it is), and the cancel is not among them.
 #[test]
 fn the_independent_start_barrier_holds_through_the_switched_entry() {
     let _gate = serialized();
@@ -605,10 +606,13 @@ fn the_independent_start_barrier_holds_through_the_switched_entry() {
         &cancel_labelled(probe::take_cancel_entries()),
         "the independent-start run",
     );
-    assert_eq!(
-        projecting_functions(),
-        Vec::<String>::new(),
-        "the functions that reached `DictationCore::project`: none, the start is switched too"
+    let projecting = projecting_functions();
+    assert!(
+        projecting
+            .iter()
+            .all(|function| START_PROJECTING_FUNCTIONS.contains(&function.as_str())),
+        "the functions that reached `DictationCore::project`: only the start's (which stops \
+         projecting when its cutover is applied), never the cancel's: {projecting:?}"
     );
     assert_eq!(
         core_divergences_counted(),
@@ -617,6 +621,20 @@ fn the_independent_start_barrier_holds_through_the_switched_entry() {
     );
     assert_no_data_dir("the independent-start run");
 }
+
+/// The start family's own `project()` entries (it moves with the start cutover), as the
+/// independent start of the barrier test runs them, sorted.
+const START_PROJECTING_FUNCTIONS: &[&str] = &[
+    "publish_recording_ready_with",
+    // The ticker registration is the observed variant when the shadow is compiled in.
+    #[cfg(not(feature = "dictation-shadow"))]
+    "register_partial_ticker_locked",
+    #[cfg(feature = "dictation-shadow")]
+    "register_partial_ticker_locked_observed",
+    "start_after_capture",
+    "start_after_capture",
+    "start_native_recording_inner",
+];
 
 fn names_of(entries: Vec<(String, Pair, Pair)>) -> Vec<String> {
     entries.into_iter().map(|(name, _, _)| name).collect()

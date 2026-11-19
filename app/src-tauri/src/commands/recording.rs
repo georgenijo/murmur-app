@@ -7623,6 +7623,11 @@ async fn start_native_recording_inner(
         // Declared before D, so a return submits the header after D is released.
         #[cfg(feature = "dictation-shadow")]
         let after_d = AfterD::new();
+        // Test builds: D is free here, the point right before site 101's own section, where a
+        // test may put the persisted core off live with no trace line before the entry that
+        // reads it.
+        #[cfg(test)]
+        crate::barrier_hook::at("start.request");
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let view = FieldAdapter::start_view(&state.app_state, &mut dictation);
         let current = view.current_id.0;

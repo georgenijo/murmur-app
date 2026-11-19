@@ -13,9 +13,9 @@
 //! | `process_audio_inner#1` | 301.6 | the legacy import's destination row |
 //!
 //! Sites 202.1/202.2 (context present), the stale stop (R201.1) and 206 are D-less: their
-//! lock-free reads stay. The delivery and capture queries (402, 403) were shared with the
-//! start family and moved with the **start** cutover, so the import's capture check (402) no
-//! longer reaches `project()` either: no fixture below reaches it at all.
+//! lock-free reads stay. The delivery and capture queries (402, 403) are shared with the
+//! start family and move with the **start** cutover, so the import still reads `project()`
+//! once, for query 402 (counted below, by name).
 //!
 //! What each test proves, and why the golden invariant alone is not enough:
 //!
@@ -241,8 +241,9 @@ struct Case {
     body: fn(&Arc<World>),
     /// The stop entries the run reads, in order.
     entries: &'static [&'static str],
-    /// `DictationCore::project` entries the run is expected to make: none, since the start
-    /// cutover moved the queries the import shared with start (402) too.
+    /// `DictationCore::project` entries the run may still make: the other families' queries that
+    /// stay on `project()` until their own cutover (the import's 402 until the start cutover is
+    /// applied; none once it is).
     queries: u64,
     /// Where a divergence is planted so that `entries[planted_entry]` is the first read
     /// after it: `(plant, index into entries)`.
@@ -360,16 +361,8 @@ fn import_with_destination(world: &Arc<World>) {
         dictation.save_audio = false;
         dictation.save_transcript = false;
     }
-    let host = ImportHost::new();
-    if let Plant::AtPort("import.capture") = PLAN.with(|plan| *plan.borrow()) {
-        let planted = Arc::clone(world);
-        *host
-            .at_capture
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            Some(Box::new(move || planted_now(&planted)));
-    }
-    let reply = import_with(world, host, &import_audio(), "import");
+    let _plant = arm(world);
+    let reply = import_with(world, ImportHost::new(), &import_audio(), "import");
     assert!(reply.is_ok(), "{reply:?}");
 }
 
@@ -466,7 +459,7 @@ fn cases() -> Vec<Case> {
             setup: idle,
             body: import_accepted,
             entries: &[E301, E204A, E204B],
-            queries: 0,
+            queries: 1,
             plant: Some((Plant::Now, 0)),
         },
         Case {
@@ -474,7 +467,7 @@ fn cases() -> Vec<Case> {
             setup: idle,
             body: import_accepted,
             entries: &[E301, E204A, E204B],
-            queries: 0,
+            queries: 1,
             plant: Some((Plant::AtBarrier("process_audio.accepted"), 1)),
         },
         Case {
@@ -482,7 +475,7 @@ fn cases() -> Vec<Case> {
             setup: idle,
             body: import_accepted,
             entries: &[E301, E204A, E204B],
-            queries: 0,
+            queries: 1,
             plant: Some((Plant::AtBarrier("pipeline_idle_emit"), 2)),
         },
         Case {
@@ -490,19 +483,17 @@ fn cases() -> Vec<Case> {
             setup: idle,
             body: import_with_destination,
             entries: &[E301, E3016, E204A, E204B],
-            queries: 0,
-            // Not planted any more: a divergence planted at the capture is now read first by
-            // the import's capture check (402), which moved with the start cutover and
-            // re-syncs it, so 301.6 reads an equal core. 402 and 301.6 are the same
-            // `persisted_view` body; the start cutover's tests plant at this port.
-            plant: None,
+            queries: 1,
+            // Before the row's own D section: a plant at the capture is read first by the
+            // import's capture check (402), a start entry.
+            plant: Some((Plant::AtBarrier("process_audio.destination"), 1)),
         },
         Case {
             name: "an import that does not parse (301, 204a legacy parse)",
             setup: idle,
             body: import_parse_failure,
             entries: &[E301, E204A],
-            queries: 0,
+            queries: 1,
             plant: Some((Plant::AtBarrier("process_audio.accepted"), 1)),
         },
     ]
@@ -567,23 +558,24 @@ fn no_stop_entry_projects() {
     let spans = fn_spans(&source);
 
     // By source: none of the stop entries names the `project()` entry; each names the
-    // persisted one once per D entry it holds. `process_audio_inner`'s query 402 moved with
-    // the start cutover, so none of them names `project_lifecycle_view` any more.
+    // persisted one once per D entry it holds. `process_audio_inner` keeps exactly one
+    // `project_lifecycle_view`: query 402, shared with the start family.
     for (function, views, projections) in [
         ("stop_native_recording_admitted", 2, 0),
         ("run_stop_capture_rows", 1, 0),
         ("finish_section", 1, 0),
         ("run_pipeline_idle_emit", 1, 0),
-        ("process_audio_inner", 2, 0),
+        ("process_audio_inner", 2, 1),
     ] {
+        // `projections` is the most the function may still hold: the import's query 402 moves
+        // with the start cutover.
         assert_eq!(
             lines_with(&source, &spans, function, "FieldAdapter::stop_view(").len(),
             views,
             "`{function}` reads the persisted core once per D entry"
         );
-        assert_eq!(
-            lines_with(&source, &spans, function, "project_lifecycle_view").len(),
-            projections,
+        assert!(
+            lines_with(&source, &spans, function, "project_lifecycle_view").len() <= projections,
             "`{function}` still builds a view with `project()`"
         );
         assert!(
@@ -603,9 +595,9 @@ fn no_stop_entry_projects() {
             "{}: the entries it read (by name)",
             case.name
         );
-        assert_eq!(
-            run.projections, case.queries,
-            "{}: `DictationCore::project` was reached",
+        assert!(
+            run.projections <= case.queries,
+            "{}: `DictationCore::project` was reached beyond the shared query",
             case.name
         );
         assert_eq!(
@@ -623,6 +615,13 @@ fn no_stop_entry_projects() {
     }
 }
 
+/// How many effects the import's destination row (R301.6) recorded since the last call.
+fn destination_witness() -> usize {
+    super::process_audio_ports::DESTINATION
+        .with(|slot| std::mem::take(&mut *slot.borrow_mut()))
+        .len()
+}
+
 #[test]
 fn every_stop_entry_reads_the_persisted_fields_and_resyncs_a_divergence() {
     let _gate = serialized();
@@ -632,9 +631,24 @@ fn every_stop_entry_reads_the_persisted_fields_and_resyncs_a_divergence() {
             continue;
         };
         // The reference: the same fixture on an equal core.
+        destination_witness();
         let reference = run_case(&case, Plant::Nowhere);
         assert_eq!(reference.divergences, 0, "{}", case.name);
+        let reference_witness = destination_witness();
         let planted = run_case(&case, plan);
+        // The destination row's only effect leaves no trace (the host swallows the emit), so a
+        // row that counted and re-synced but then decided on the pair it read before (`Stale`,
+        // no effect) shows in nothing above: it shows in the witness it recorded, one
+        // `SmartDestinationEmit`, as in the reference run.
+        assert_eq!(
+            destination_witness(),
+            reference_witness,
+            "{}: the row decided as the equal core does",
+            case.name
+        );
+        if case.entries.contains(&E3016) {
+            assert_eq!(reference_witness, 1, "{}: the row ran its emit", case.name);
+        }
         let (pair_planted, pair_live) = PLANTED
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -680,9 +694,7 @@ fn every_stop_entry_reads_the_persisted_fields_and_resyncs_a_divergence() {
         );
         covered.insert(name.clone());
     }
-    // 301.6 (E3016) is not planted any more: the import's capture check (402), which moved with
-    // the start cutover, reads and re-syncs a divergence planted at the capture before it.
-    for entry in [E201, E202, E203, E204A, E204B, E301] {
+    for entry in [E201, E202, E203, E204A, E204B, E301, E3016] {
         assert!(covered.contains(entry), "{entry} was never planted");
     }
 }

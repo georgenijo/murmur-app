@@ -22,14 +22,18 @@
 //!
 //! What each test proves, and why the golden invariant alone is not enough:
 //!
-//! * `no_start_entry_or_query_projects` - no production function names the `project()` entry
-//!   (`FieldAdapter::project_lifecycle_view`) or `DictationCore::project`, by source and, for
-//!   every fixture, by the **count** (`probe::projections()`), so a helper that projects for an
+//! * `no_start_entry_or_query_projects` - no function in **start's scope** names the `project()`
+//!   entry (`FieldAdapter::project_lifecycle_view`) or `DictationCore::project`, by source and,
+//!   for every fixture, by the **call sites** it reached (`probe::take_projection_sites()`,
+//!   filtered to start's scope: everything in `recording.rs` but the other families' own
+//!   functions, the import's only inside its capture check), so a helper that projects for an
 //!   entry or a query is caught too, and each fixture reads exactly the entries and queries it
-//!   crosses, by name.
+//!   crosses, by name. The scope keeps the stop, cancel and lifecycle cutovers independently
+//!   revertible: a family whose cutover is not applied still projects, and says so in its own
+//!   tests. That no production code projects at all is the #1154 cleanup's check.
 //! * `every_start_entry_reads_the_persisted_fields_and_resyncs_a_divergence` - the evidence is
 //!   captured **at the entry**, from the actual persisted fields, before any adapter write could
-//!   repair them: a core planted off live is read as planted, counted once (`core_divergences`,
+//!   repair them: a core planted off live is read as planted, counted once (`raw_core_divergences`,
 //!   C8.6), re-synced before the decision, and the run then reads exactly as an equal core does.
 //! * `the_queries_follow_the_persisted_core` - queries 401 and 403 answer from the persisted
 //!   fields, count a divergence, and never project.
@@ -45,7 +49,7 @@ use super::golden_harness::*;
 use super::process_audio_ports::{ImportedAudioHost, OwnedIdleEmit};
 use super::*;
 use crate::core_history::ContinuationGuard;
-use crate::dictation_executor::adapter::core_divergences;
+use crate::dictation_executor::adapter::{raw_core_divergences, start_forgive_planted_divergences};
 use crate::dictation_executor::probe;
 use murmur_dictation_core::decision::{ContKind, ContinuationSpec};
 use murmur_dictation_core::ids::RecordingId;
@@ -266,6 +270,9 @@ impl Drop for Probes {
         probe::take_start_entries();
         probe::record_start_queries(false);
         probe::take_start_queries();
+        probe::record_projections(false);
+        probe::take_projection_sites();
+        start_forgive_planted_divergences(0);
     }
 }
 
@@ -277,6 +284,9 @@ fn serialized() -> Probes {
     crate::commands::settings_store::test_data_dir::take_returned();
     probe::record_start_entries(true);
     probe::record_start_queries(true);
+    probe::take_projection_sites();
+    probe::record_projections(true);
+    start_forgive_planted_divergences(0);
     Probes(gate)
 }
 
@@ -338,13 +348,11 @@ fn queries_read() -> Vec<(String, Pair, Pair)> {
 #[derive(Clone, Copy)]
 enum Plant {
     Nowhere,
-    /// Now, when the body starts.
+    /// Right before the request's own D section (the `start.request` barrier, D free): the
+    /// request's entry is the first read, with no trace line between.
     Now,
     /// The next time a port reaches the label (D is free at every label used).
     AtPort(&'static str),
-    /// The next time production reaches a `barrier_hook` point (D is free there): used where no
-    /// port label is reached between the entries (the import's destination row).
-    AtBarrier(&'static str),
 }
 
 thread_local! {
@@ -354,25 +362,64 @@ thread_local! {
 /// The `(planted, live)` pair the plant wrote, whichever thread ran it.
 static PLANTED: StdMutex<Option<(Pair, Pair)>> = StdMutex::new(None);
 
+/// A **planted** C8.6 divergence, start's own: put both persisted fields off live, as a write
+/// that bypassed the adapter would, and allow the run's golden invariant exactly one counted
+/// divergence (`start_forgive_planted_divergences`, the start cutover's own allowance). The
+/// entry that next reads the persisted core must count it and re-sync it; the tests assert that
+/// it did. The persisted fields are checked equal to live first, so a plant never forgives an
+/// earlier violation. No trace line may be pushed between the plant and that entry (the
+/// invariant samples the persisted core at every line). Returns the planted pair and live's.
+fn plant_core_divergence(world: &Arc<World>) -> (Pair, Pair) {
+    let state = world.state();
+    let mut dictation = state.app_state.dictation.lock_or_recover();
+    let live = (
+        crate::dictation_admission::core_status(dictation.status),
+        RecordingId(state.app_state.recording_id.load(Ordering::SeqCst)),
+    );
+    assert_eq!(
+        (dictation.core.status(), dictation.core.current_id()),
+        live,
+        "the persisted core equalled live before it was planted off"
+    );
+    let other = if live.0 == Status::Recording {
+        Status::Processing
+    } else {
+        Status::Recording
+    };
+    dictation.core.set_status(other);
+    let id = dictation.core.alloc_id();
+    start_forgive_planted_divergences(1);
+    ((other, id), live)
+}
+
 fn planted_now(world: &Arc<World>) {
-    let pair = world.plant_core_divergence();
+    let pair = plant_core_divergence(world);
     *PLANTED
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(pair);
 }
 
-/// Plants as the run asks for, called by a body right before its command.
-fn arm(world: &Arc<World>) {
+/// Plants as the run asks for, called by a body right before its command. The returned guard (a
+/// barrier hook) must live to the end of the command.
+fn arm(world: &Arc<World>) -> Option<crate::barrier_hook::Installed> {
     match PLAN.with(|plan| *plan.borrow()) {
-        Plant::Nowhere => {}
-        Plant::Now => planted_now(world),
+        Plant::Nowhere => None,
+        Plant::Now => {
+            let planted = Arc::clone(world);
+            let mut done = false;
+            Some(crate::barrier_hook::install(move |reached| {
+                if reached == "start.request" && !done {
+                    done = true;
+                    planted_now(&planted);
+                }
+            }))
+        }
         Plant::AtPort(port) => {
             let world = Arc::clone(world);
             let planted = Arc::clone(&world);
             world.on(port, move || planted_now(&planted));
+            None
         }
-        // Installed by the body that owns the guard (see `import_with_destination`).
-        Plant::AtBarrier(_) => {}
     }
 }
 
@@ -412,8 +459,10 @@ fn enable_smart_destination(world: &Arc<World>) {
 
 /// A start, announced by a marker line.
 fn start_command(world: &Arc<World>) {
-    arm(world);
+    // The marker first: a trace line samples the persisted-core invariant, so the plant is made
+    // right before the command and the entry that reads it, with no line in between.
     world.note("start requested");
+    let _plant = arm(world);
     let mut start = world.start();
     let reply = complete(&mut start);
     world.reply("start", &reply);
@@ -477,8 +526,8 @@ fn app_disabled(world: &Arc<World>) {
 }
 
 fn fixed_device_with_smart_auto(world: &Arc<World>) {
-    arm(world);
     world.note("start requested");
+    let _plant = arm(world);
     let mut start = world.start_smart_auto(Some("fixed-device".to_string()));
     let reply = complete(&mut start);
     world.reply("start", &reply);
@@ -560,47 +609,6 @@ fn import(world: &Arc<World>) {
             Some(Box::new(move || planted_now(&planted)));
     }
     run_import(world, host);
-}
-
-/// The divergences counted between the two barrier points that bracket the import's
-/// destination row (R301.6): `process_audio.destination` before its D section, and
-/// `process_audio.accepted` after it released D. Nothing else reads the core in between, so the
-/// count is the row's own.
-static ROW_DIVERGENCES: StdMutex<Option<u64>> = StdMutex::new(None);
-
-/// The import with Smart Destination on: after the capture check (402) its own destination
-/// section (R301.6, a stop-family entry) runs. A plant made at the `process_audio.destination`
-/// barrier lands between the two, so the row reads it first; the same hook counts the
-/// divergences across the row alone.
-fn import_with_destination(world: &Arc<World>) {
-    enable_smart_destination(world);
-    *ROW_DIVERGENCES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-    let plant = matches!(
-        PLAN.with(|plan| *plan.borrow()),
-        Plant::AtBarrier("process_audio.destination")
-    );
-    let planted = Arc::clone(world);
-    let mut start = None;
-    let _hook = crate::barrier_hook::install(move |reached| match reached {
-        "process_audio.destination" => {
-            if plant {
-                planted_now(&planted);
-            }
-            start = Some(core_divergences());
-        }
-        "process_audio.accepted" => {
-            if let Some(start) = start.take() {
-                *ROW_DIVERGENCES
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                    Some(core_divergences() - start);
-            }
-        }
-        _ => {}
-    });
-    run_import(world, ImportHost::new());
 }
 
 fn cases() -> Vec<Case> {
@@ -763,12 +771,12 @@ fn cases() -> Vec<Case> {
 }
 
 /// What a run read: each start entry as `(label, persisted, live)`, oldest first, the queries
-/// likewise, the `DictationCore::project` entries the command made, the divergences counted,
-/// and the trace.
+/// likewise, the start-owned `DictationCore::project` call sites the run reached (none), the
+/// divergences counted, and the trace.
 struct Run {
     entries: Vec<(String, Pair, Pair)>,
     queries: Vec<(String, Pair, Pair)>,
-    projections: u64,
+    projections: Vec<String>,
     divergences: u64,
     trace: Vec<String>,
 }
@@ -781,26 +789,27 @@ fn run_case(case: &Case, plant: Plant) -> Run {
     probe::take_start_entries();
     probe::take_start_queries();
     crate::commands::settings_store::test_data_dir::take_returned();
-    // Every `DictationCore::project` entry made anywhere while the sub-run ran (its setup, its
-    // body, the ports' hooks and the bridge's detached work): a delta of the one process-wide
-    // counter, not a count a body keeps for itself, so a body that does not keep one (the
-    // import's) or a read outside the command's own window (the bridge's 404 in
-    // `release_ready()`) is inside it too.
-    let projections = probe::projections();
-    let divergences = core_divergences();
+    // Every `project()` call site start owns that the sub-run reached (its setup, its body, the
+    // ports' hooks and the bridge's detached work), not a count a body keeps for itself: a body
+    // that does not keep one (the import's) or a read outside the command's own window (the
+    // bridge's 404 in `release_ready()`) is inside it too.
+    probe::take_projection_sites();
+    // A plant of an earlier run allowed one divergence in that run only.
+    start_forgive_planted_divergences(0);
+    let divergences = raw_core_divergences();
     let trace = run_sub_run(&SubRun {
         title: case.name,
         setup: (case.setup)(),
         body: case.body,
     });
-    let projections = probe::projections() - projections;
+    let projections = start_projection_sites();
     PLAN.with(|slot| *slot.borrow_mut() = Plant::Nowhere);
     assert_no_data_dir(case.name);
     Run {
         entries: entries_read(),
         queries: queries_read(),
         projections,
-        divergences: core_divergences() - divergences,
+        divergences: raw_core_divergences() - divergences,
         trace,
     }
 }
@@ -816,20 +825,74 @@ fn assert_no_data_dir(name: &str) {
     );
 }
 
-fn names(reads: &[(String, Pair, Pair)]) -> Vec<&str> {
-    reads.iter().map(|(name, _, _)| name.as_str()).collect()
+/// The functions of `recording.rs` that belong to the other families' entries. Each still
+/// projects while its own cutover is not applied (stop's, cancel's and the lifecycle's, so
+/// reverting one of them alone leaves this module passing), and the start cutover's tests say
+/// nothing about them: theirs do. Everything else in `recording.rs` is start's scope, helpers
+/// included, so a helper that projects for a start entry or query is caught. The legacy import's
+/// function is shared: its own entries are the other families', and only its capture check (402)
+/// is start's (see [`capture_check_lines`]).
+const OTHER_FAMILIES: [&str; 6] = [
+    "finish_section",
+    "run_pipeline_idle_emit",
+    "handle_audio_lifecycle_events",
+    "stop_native_recording_admitted",
+    "run_stop_capture_rows",
+    "cancel_native_recording_inner",
+];
+
+/// The lines of the import's capture check, query 402 (the block `let capture_is_current = {`
+/// to its `};`), the one place `process_audio_inner` is start's.
+fn capture_check_lines(source: &str) -> std::ops::RangeInclusive<usize> {
+    let lines: Vec<&str> = source.lines().collect();
+    let first = lines
+        .iter()
+        .position(|line| line.trim() == "let capture_is_current = {")
+        .expect("the import's capture check")
+        + 1;
+    let last = lines[first..]
+        .iter()
+        .position(|line| line.trim() == "};")
+        .expect("the capture check's end")
+        + first;
+    first..=last
 }
 
-/// Every `.rs` file under `dir`.
-fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-    for entry in std::fs::read_dir(dir).expect("read the source directory") {
-        let path = entry.expect("directory entry").path();
-        if path.is_dir() {
-            rust_files(&path, out);
-        } else if path.extension().is_some_and(|extension| extension == "rs") {
-            out.push(path);
-        }
+/// Whether the `project()` call at `file:line` is **start's**: in `recording.rs`, a function not
+/// listed in [`OTHER_FAMILIES`] (the import's only inside its capture check), or in any other
+/// file (start's ports and the bridge's 404 closure; no other family projects there).
+fn is_start_site(
+    spans: &[(String, usize, usize)],
+    capture: &std::ops::RangeInclusive<usize>,
+    file: &str,
+    line: usize,
+) -> bool {
+    if !file.ends_with("commands/recording.rs") {
+        return true;
     }
+    let function = enclosing(spans, line);
+    if function == "process_audio_inner" {
+        return capture.contains(&line);
+    }
+    !OTHER_FAMILIES.contains(&function.as_str())
+}
+
+/// The `file:line` of every start-owned `DictationCore::project` entry since the last
+/// `take_projection_sites`, in order. Entries other families still make (when their cutover is
+/// not applied) are not start's and not counted.
+fn start_projection_sites() -> Vec<String> {
+    let source = recording_source();
+    let spans = fn_spans(&source);
+    let capture = capture_check_lines(&source);
+    probe::take_projection_sites()
+        .into_iter()
+        .filter(|(file, line)| is_start_site(&spans, &capture, file, *line as usize))
+        .map(|(file, line)| format!("{file}:{line}"))
+        .collect()
+}
+
+fn names(reads: &[(String, Pair, Pair)]) -> Vec<&str> {
+    reads.iter().map(|(name, _, _)| name.as_str()).collect()
 }
 
 // ------------------------------------------------------------------------ the tests
@@ -840,17 +903,25 @@ fn no_start_entry_or_query_projects() {
     let source = recording_source();
     let spans = fn_spans(&source);
 
-    // By source: no function of `recording.rs` (the shell, its ports and its entries) names
-    // the `project()` entry, and the persisted entries are where the table above says.
-    for (function, _, _) in &spans {
-        assert!(
-            lines_with(&source, &spans, function, "project_lifecycle_view").is_empty(),
-            "`{function}` builds a view with `project()`"
-        );
-        assert!(
-            lines_with(&source, &spans, function, "DictationCore::project").is_empty(),
-            "`{function}` calls `DictationCore::project`"
-        );
+    // By source: no function of `recording.rs` that is start's scope (see `OTHER_FAMILIES`: the
+    // shell, its helpers, its entries; the import's capture check) names the `project()` entry,
+    // and the persisted entries are where the table above says. (That no production code
+    // projects anywhere is the #1154 cleanup's check, not this cutover's.)
+    let capture = capture_check_lines(&source);
+    for (function, first, last) in &spans {
+        if OTHER_FAMILIES.contains(&function.as_str()) {
+            continue;
+        }
+        for needle in ["project_lifecycle_view", "DictationCore::project"] {
+            let hits: Vec<usize> = lines_with(&source, &spans, function, needle)
+                .into_iter()
+                .filter(|line| function != "process_audio_inner" || capture.contains(line))
+                .collect();
+            assert!(
+                hits.is_empty(),
+                "`{function}` ({first}-{last}) names `{needle}` at {hits:?}"
+            );
+        }
     }
     for (function, views, queries) in [
         ("start_native_recording_inner", 2, 0),
@@ -872,42 +943,17 @@ fn no_start_entry_or_query_projects() {
             "`{function}` reads the persisted core once per query"
         );
     }
-    // Every production file under `src/` holds no `project()` entry either, found by walking
-    // the tree (the way `ratchet_tests` does), not by a list of the files known today. The
-    // adapter and the probe define and count the entry, test code names it to compare with it,
-    // and the shadow's comparison re-seeds its own core with the one allowed call (it projects
-    // the shadow's pre-state, not a family's entry), checked exactly below.
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let mut files = Vec::new();
-    rust_files(&src, &mut files);
-    files.sort();
-    assert!(files.len() > 50, "the walk found the tree: {}", files.len());
-    for path in files {
-        let relative = path
-            .strip_prefix(&src)
-            .expect("under src")
-            .to_string_lossy()
-            .replace('\\', "/");
-        if relative == "dictation_executor/adapter.rs"
-            || relative == "dictation_executor/probe.rs"
-            || relative.ends_with("_tests.rs")
-            || relative.ends_with("_harness.rs")
-            || relative.contains("/tests/")
-        {
-            continue;
-        }
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{relative}"));
-        if relative == "dictation_shadow/compare.rs" {
-            assert!(
-                !text.contains("project_lifecycle_view")
-                    && text.matches("DictationCore::project(").count() == 1,
-                "{relative}: the one projection of the shadow's own pre-state"
-            );
-            continue;
-        }
+    // The start ports and the bridge's 404 closure hold no `project()` entry either.
+    for file in [
+        "src/commands/recording/start_ports.rs",
+        "src/commands/recording/ready_ports.rs",
+        "src/commands/recording/lifecycle_ports.rs",
+    ] {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{file}"));
         assert!(
             !text.contains("project_lifecycle_view") && !text.contains("DictationCore::project("),
-            "{relative} reaches the `project()` entry"
+            "{file} reaches the `project()` entry"
         );
     }
 
@@ -929,7 +975,8 @@ fn no_start_entry_or_query_projects() {
             case.name
         );
         assert_eq!(
-            run.projections, 0,
+            run.projections,
+            Vec::<String>::new(),
             "{}: the start command reached `DictationCore::project`",
             case.name
         );
@@ -1025,7 +1072,7 @@ fn every_start_entry_reads_the_persisted_fields_and_resyncs_a_divergence() {
             "{}: the divergence was re-synced before the decision, not decided on",
             case.name
         );
-        assert_eq!(planted.projections, 0, "{}", case.name);
+        assert_eq!(planted.projections, Vec::<String>::new(), "{}", case.name);
         covered.insert(name.clone());
     }
     // Every start entry of the table was planted at least once, by name.
@@ -1082,19 +1129,22 @@ fn live_state(status: DictationStatus) -> AppState {
 fn the_queries_follow_the_persisted_core() {
     let _gate = serialized();
     crate::commands::dictation_preview::reset_ownership_for_test();
-    let projections = probe::projections();
 
     // 403 on an equal core: the plain answers, two entry-style reads, nothing counted.
     let app_state = live_state(DictationStatus::Processing);
     {
-        let before = core_divergences();
+        let before = raw_core_divergences();
         let mut dictation = app_state.dictation.lock_or_recover();
         assert!(owns_delivery(&app_state, &mut dictation, 5), "equal core");
         assert!(
             !owns_delivery(&app_state, &mut dictation, 6),
             "id 6 is not current"
         );
-        assert_eq!(core_divergences(), before, "an equal core is never counted");
+        assert_eq!(
+            raw_core_divergences(),
+            before,
+            "an equal core is never counted"
+        );
     }
     let reads = entries_read();
     assert_eq!(names(&reads), ["owns_delivery#0"; 2]);
@@ -1113,13 +1163,13 @@ fn the_queries_follow_the_persisted_core() {
         )
     );
     {
-        let before = core_divergences();
+        let before = raw_core_divergences();
         let mut dictation = app_state.dictation.lock_or_recover();
         assert!(
             owns_delivery(&app_state, &mut dictation, 5),
             "decided on live `Processing`, not on the stale persisted `Recording`"
         );
-        assert_eq!(core_divergences() - before, 1, "counted once");
+        assert_eq!(raw_core_divergences() - before, 1, "counted once");
         assert_eq!(
             (dictation.core.status(), dictation.core.current_id()),
             planted.1,
@@ -1136,10 +1186,10 @@ fn the_queries_follow_the_persisted_core() {
     let app_state = live_state(DictationStatus::Recording);
     let planted = diverge(&app_state, Status::Processing, false);
     {
-        let before = core_divergences();
+        let before = raw_core_divergences();
         let mut dictation = app_state.dictation.lock_or_recover();
         assert!(!owns_delivery(&app_state, &mut dictation, 5));
-        assert_eq!(core_divergences() - before, 1, "counted once");
+        assert_eq!(raw_core_divergences() - before, 1, "counted once");
         assert_eq!(
             (dictation.core.status(), dictation.core.current_id()),
             planted.1
@@ -1152,10 +1202,10 @@ fn the_queries_follow_the_persisted_core() {
     let planted = diverge(&app_state, Status::Processing, true);
     assert_eq!(planted.0, (Status::Processing, RecordingId(6)));
     {
-        let before = core_divergences();
+        let before = raw_core_divergences();
         let mut dictation = app_state.dictation.lock_or_recover();
         assert!(owns_delivery(&app_state, &mut dictation, 5));
-        assert_eq!(core_divergences() - before, 1, "counted once");
+        assert_eq!(raw_core_divergences() - before, 1, "counted once");
         assert_eq!(dictation.core.current_id(), RecordingId(5), "M2 re-synced");
     }
     entries_read();
@@ -1165,13 +1215,17 @@ fn the_queries_follow_the_persisted_core() {
     let app_state = live_state(DictationStatus::Processing);
     for timed in [None, Some(false), Some(true)] {
         diverge(&app_state, Status::Recording, false);
-        let before = core_divergences();
+        let before = raw_core_divergences();
         let ran = match timed {
             None => with_current_delivery_owner(&app_state, 5, || 7),
             Some(preparing) => with_current_delivery_owner_timed(&app_state, 5, preparing, || 7),
         };
         assert_eq!(ran, Some(7), "the fence delivered ({timed:?})");
-        assert_eq!(core_divergences() - before, 1, "counted once ({timed:?})");
+        assert_eq!(
+            raw_core_divergences() - before,
+            1,
+            "counted once ({timed:?})"
+        );
         assert_eq!(names(&entries_read()), ["owns_delivery#0"]);
         assert_eq!(core_pair(&app_state), (Status::Processing, RecordingId(5)));
     }
@@ -1181,7 +1235,7 @@ fn the_queries_follow_the_persisted_core() {
     // from live, the stored core left alone.
     let app_state = live_state(DictationStatus::Recording);
     let planted = diverge(&app_state, Status::Processing, false);
-    let before = core_divergences();
+    let before = raw_core_divergences();
     {
         let dictation = app_state.dictation.lock_or_recover();
         assert!(
@@ -1189,7 +1243,7 @@ fn the_queries_follow_the_persisted_core() {
             "decided on live `Recording`, not on the stale persisted `Processing`"
         );
     }
-    assert_eq!(core_divergences() - before, 1, "counted once");
+    assert_eq!(raw_core_divergences() - before, 1, "counted once");
     let reads = queries_read();
     assert_eq!(names(&reads), ["register_partial_ticker_locked#0"]);
     assert_eq!(reads[0].1, planted.0);
@@ -1206,7 +1260,7 @@ fn the_queries_follow_the_persisted_core() {
         let _ = owns_delivery(&app_state, &mut dictation, 5);
     }
     assert_eq!(
-        core_divergences() - before,
+        raw_core_divergences() - before,
         2,
         "the query counted it, and the next entry counted it again"
     );
@@ -1218,7 +1272,7 @@ fn the_queries_follow_the_persisted_core() {
         let _ = register_partial_ticker_locked(&app_state, &dictation, 5);
     }
     assert_eq!(
-        core_divergences() - before,
+        raw_core_divergences() - before,
         2,
         "an equal core is never counted"
     );
@@ -1233,86 +1287,12 @@ fn the_queries_follow_the_persisted_core() {
     }
     queries_read();
 
-    assert_eq!(probe::projections(), projections, "a query projected");
+    assert_eq!(
+        start_projection_sites(),
+        Vec::<String>::new(),
+        "a query projected"
+    );
     crate::commands::dictation_preview::reset_ownership_for_test();
-}
-
-/// The import's destination row (R301.6) is a stop-family entry: its own tests cannot plant at
-/// the capture any more, because the capture check (402, a start entry) reads and re-syncs that
-/// plant first. The plant moves here, to the point between the two (`process_audio.destination`),
-/// from start's own module: the row re-syncs it, counted once, and the run is the one an equal
-/// core gives. Which entry read it is shown by the counter and the reference trace, not by the
-/// stop family's probe.
-#[test]
-fn the_imports_destination_row_re_syncs_a_plant_made_after_the_capture_check() {
-    let _gate = serialized();
-    let case = Case {
-        name: "the import with Smart Destination, planted before its destination row (301.6)",
-        setup: idle,
-        body: import_with_destination,
-        entries: &[E402_IMPORT],
-        queries: &[],
-        plant: Some((Plant::AtBarrier("process_audio.destination"), 0)),
-    };
-    // The row's only effect is the destination emit, which the host swallows without a trace,
-    // so a trace comparison cannot tell a row that decided on the re-synced core from one that
-    // decided on the stale pair (which is `Stale`, with no effect). What the row decided is the
-    // witness it recorded: one `SmartDestinationEmit`, in both runs.
-    let take_witness = || {
-        super::process_audio_ports::DESTINATION
-            .with(|slot| std::mem::take(&mut *slot.borrow_mut()))
-            .len()
-    };
-    let row_divergences = || {
-        ROW_DIVERGENCES
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-    };
-    take_witness();
-    let reference = run_case(&case, Plant::Nowhere);
-    assert_eq!(
-        take_witness(),
-        1,
-        "the reference row ran its destination emit"
-    );
-    assert_eq!(row_divergences(), Some(0), "the reference row counted none");
-    assert_eq!(names(&reference.entries), case.entries);
-    assert_eq!(reference.divergences, 0);
-    assert_eq!(reference.projections, 0, "the import reached `project()`");
-    let (plan, _) = case.plant.expect("a plant");
-    let planted = run_case(&case, plan);
-    assert_eq!(
-        take_witness(),
-        1,
-        "the planted row decided on the re-synced core, not the pair it read (`Stale`, no effect)"
-    );
-    assert_eq!(
-        row_divergences(),
-        Some(1),
-        "the destination row itself counted the plant, once"
-    );
-    let (pair_planted, pair_live) = PLANTED
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .take()
-        .expect("the plant ran");
-    assert_ne!(pair_planted, pair_live);
-    assert_eq!(names(&planted.entries), case.entries);
-    let (name, persisted, live) = &planted.entries[0];
-    assert_eq!(
-        persisted, live,
-        "{name} ran before the plant and read an equal core"
-    );
-    assert_eq!(
-        planted.divergences, 1,
-        "the plant was counted once in the whole run"
-    );
-    assert_eq!(
-        planted.trace, reference.trace,
-        "the plant was re-synced before the row decided"
-    );
-    assert_eq!(planted.projections, 0, "the import reached `project()`");
 }
 
 // ------------------------------- R104.5 and the speculative capture, through the switched entries
@@ -1343,8 +1323,7 @@ fn assert_reads(entries: Vec<(String, Pair, Pair)>, expected: &[(&str, Status, u
 #[test]
 fn the_r104_5_late_publish_holds_through_the_switched_entry() {
     let _gate = serialized();
-    let projections = probe::projections();
-    let divergences = core_divergences();
+    let divergences = raw_core_divergences();
     super::start_tests::a_late_ready_publish_after_a_runtime_failure_publishes_nothing();
     assert_reads(
         entries_read(),
@@ -1356,9 +1335,13 @@ fn the_r104_5_late_publish_holds_through_the_switched_entry() {
         ],
         "R104.5",
     );
-    assert_eq!(probe::projections(), projections, "something projected");
     assert_eq!(
-        core_divergences(),
+        start_projection_sites(),
+        Vec::<String>::new(),
+        "something projected"
+    );
+    assert_eq!(
+        raw_core_divergences(),
         divergences,
         "an equal core is never counted"
     );
@@ -1369,8 +1352,7 @@ fn the_r104_5_late_publish_holds_through_the_switched_entry() {
 #[test]
 fn a_flowing_speculative_capture_holds_through_the_switched_entry() {
     let _gate = serialized();
-    let projections = probe::projections();
-    let divergences = core_divergences();
+    let divergences = raw_core_divergences();
     super::start_tests::a_flowing_speculative_capture_suppresses_the_redundant_starting_event();
     // Two starts (not flowing, then flowing), each its own world: the same four entries, each
     // reading the pair it should.
@@ -1382,9 +1364,13 @@ fn a_flowing_speculative_capture_holds_through_the_switched_entry() {
     ];
     let both: Vec<(&str, Status, u64)> = one.iter().chain(one.iter()).copied().collect();
     assert_reads(entries_read(), &both, "speculative capture");
-    assert_eq!(probe::projections(), projections, "something projected");
     assert_eq!(
-        core_divergences(),
+        start_projection_sites(),
+        Vec::<String>::new(),
+        "something projected"
+    );
+    assert_eq!(
+        raw_core_divergences(),
         divergences,
         "an equal core is never counted"
     );
@@ -1418,8 +1404,7 @@ fn persisted_and_live(world: &Arc<World>) -> (Pair, u64) {
 #[test]
 fn a_start_reply_names_the_generation_a_scoped_cancel_acts_on() {
     let _gate = serialized();
-    let projections = probe::projections();
-    let divergences = core_divergences();
+    let divergences = raw_core_divergences();
     let lines = run_sub_run(&SubRun {
         title: "scoped cancel",
         setup: Setup::idle(),
@@ -1600,9 +1585,13 @@ fn a_start_reply_names_the_generation_a_scoped_cancel_acts_on() {
             .any(|line| line == "publish_recording_ready 2 -> true"),
         "the new attempt published: {lines:#?}"
     );
-    assert_eq!(probe::projections(), projections, "something projected");
     assert_eq!(
-        core_divergences(),
+        start_projection_sites(),
+        Vec::<String>::new(),
+        "something projected"
+    );
+    assert_eq!(
+        raw_core_divergences(),
         divergences,
         "an equal core is never counted"
     );
