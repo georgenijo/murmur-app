@@ -237,6 +237,14 @@ mod pd_witness_tests;
 mod harness_findings_tests;
 
 #[cfg(test)]
+#[path = "recording_pd25_tests.rs"]
+mod pd25_tests;
+
+#[cfg(test)]
+#[path = "recording_ready_handoff_tests.rs"]
+mod ready_handoff_tests;
+
+#[cfg(test)]
 #[path = "recording_bug_replay_tests.rs"]
 mod bug_replay_tests;
 

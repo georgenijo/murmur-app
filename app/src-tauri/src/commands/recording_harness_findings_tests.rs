@@ -181,7 +181,7 @@ fn nothing_restores_idle(world: &Arc<World>) {
 }
 
 #[test]
-fn pd19_termination_unconfirmed_after_retained_pcm_leaves_recovering() {
+pub(super) fn pd19_termination_unconfirmed_after_retained_pcm_leaves_recovering() {
     repeat(&sub(
         "PD-19: TerminationUnconfirmed after retained PCM; a user stop and a start land before Interrupted",
         pd19_user_stop_then_start_before_interrupted,
@@ -246,7 +246,7 @@ fn pd19_a_dropped_start_then_a_runtime_failure_with_retained_pcm(world: &Arc<Wor
 }
 
 #[test]
-fn pd19_a_dropped_start_and_a_retained_runtime_failure_leave_recovering() {
+pub(super) fn pd19_a_dropped_start_and_a_retained_runtime_failure_leave_recovering() {
     repeat(&sub(
         "PD-19 (second entry): a dropped start, a runtime failure with retained PCM, a context-less user stop and a start",
         pd19_a_dropped_start_then_a_runtime_failure_with_retained_pcm,
@@ -361,7 +361,7 @@ fn pd19_the_auto_stop_is_refused_at_idle_and_the_capture_stays(world: &Arc<World
 }
 
 #[test]
-fn pd19_a_refused_auto_stop_leaves_the_capture_and_recovering() {
+pub(super) fn pd19_a_refused_auto_stop_leaves_the_capture_and_recovering() {
     repeat(&sub(
         "PD-19 (third entry): the auto-stop runs at Idle and is refused; the capture stays in the store, no ordinary control takes it; only the unscoped stop IPC does",
         pd19_the_auto_stop_is_refused_at_idle_and_the_capture_stays,
@@ -517,7 +517,7 @@ fn pd20_stop_empty_path_between_cancel_tail_and_perf_complete(world: &Arc<World>
 }
 
 #[test]
-fn pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree() {
+pub(super) fn pd20_cancel_terminal_and_a_short_stop_performance_outcome_disagree() {
     repeat(&sub(
         "PD-20: a stop's empty-audio path completes performance inside a cancel's tail (R205.5, R203.5)",
         pd20_stop_empty_path_between_cancel_tail_and_perf_complete,
@@ -790,7 +790,7 @@ fn pd21_timed_out_cancel_then_a_stop_that_wins_capture(world: &Arc<World>) {
 }
 
 #[test]
-fn pd21_timed_out_cancel_then_a_short_stop_disagree() {
+pub(super) fn pd21_timed_out_cancel_then_a_short_stop_disagree() {
     repeat(&sub(
         "PD-21: a capture cancel times out while a stop that won the capture is parked (R206.2, R203.4)",
         pd21_timed_out_cancel_then_a_stop_that_wins_capture,
@@ -841,7 +841,7 @@ fn pd21_timed_out_cancel_then_the_supervisor_recovers(world: &Arc<World>) {
 }
 
 #[test]
-fn pd21_timed_out_cancel_and_the_late_recovery_disagree() {
+pub(super) fn pd21_timed_out_cancel_and_the_late_recovery_disagree() {
     repeat(&sub(
         "PD-21: a capture cancel times out, then the supervisor recovers (R206.2, R209.4)",
         pd21_timed_out_cancel_then_the_supervisor_recovers,
@@ -923,7 +923,7 @@ fn pd22_cancel_wins_performance_before_the_stops_failure_tail(world: &Arc<World>
 }
 
 #[test]
-fn pd22_expired_stop_idle_supersedes_and_the_cancel_completes_performance() {
+pub(super) fn pd22_expired_stop_idle_supersedes_and_the_cancel_completes_performance() {
     repeat(&sub(
         "PD-22: an expired stop's Idle before a cancel's terminal claim; the cancel completes performance (R211.2, R205.5)",
         pd22_cancel_wins_performance_before_the_stops_failure_tail,
@@ -953,7 +953,7 @@ fn pd22_stops_failure_tail_wins_performance(world: &Arc<World>) {
 }
 
 #[test]
-fn pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance() {
+pub(super) fn pd22_expired_stop_idle_supersedes_and_the_stop_completes_performance() {
     repeat(&sub(
         "PD-22: an expired stop's Idle before a cancel's terminal claim; the stop's failure tail completes performance (R211.2, R203.2)",
         pd22_stops_failure_tail_wins_performance,
@@ -1056,7 +1056,7 @@ fn pd24_start_timeout_claims_inside_the_recovering_arms_tail(
 }
 
 #[test]
-fn pd24_start_timeout_terminal_and_the_users_cancel_arm_performance_outcome_disagree() {
+pub(super) fn pd24_start_timeout_terminal_and_the_users_cancel_arm_performance_outcome_disagree() {
     repeat(&sub(
         "PD-24: the start's 2 s timeout claims CaptureInitFailure inside the supervisor's Recovering{User} arm (R102.3, R209.3)",
         |world| {
@@ -1069,7 +1069,8 @@ fn pd24_start_timeout_terminal_and_the_users_cancel_arm_performance_outcome_disa
 }
 
 #[test]
-fn pd24_start_timeout_terminal_and_an_environmental_recovery_arm_performance_outcome_disagree() {
+pub(super) fn pd24_start_timeout_terminal_and_an_environmental_recovery_arm_performance_outcome_disagree(
+) {
     repeat(&sub(
         "PD-24: the start's 2 s timeout claims CaptureInitFailure inside the supervisor's Recovering{SystemWake} arm (R102.3, R209.5)",
         |world| {
@@ -1185,7 +1186,7 @@ fn pd23_an_empty_stop_completes_no_speech(world: &Arc<World>) {
 }
 
 #[test]
-fn pd23_superseded_terminal_and_an_empty_stop_no_speech_disagree() {
+pub(super) fn pd23_superseded_terminal_and_an_empty_stop_no_speech_disagree() {
     repeat(&sub(
         "PD-23: R207.3's Superseded for a live recording, then a stop that gets its empty reply after the owner cleared completes NoSpeech inside a cancel's tail (R207.3, R203.5)",
         pd23_an_empty_stop_completes_no_speech,
@@ -1216,7 +1217,7 @@ fn pd23_a_refused_stop_completes_failed(world: &Arc<World>) {
 }
 
 #[test]
-fn pd23_superseded_terminal_and_a_refused_stop_failed_disagree() {
+pub(super) fn pd23_superseded_terminal_and_a_refused_stop_failed_disagree() {
     repeat(&sub(
         "PD-23: R207.3's Superseded for a live recording, then a stop refused by the recovering supervisor completes Failed (R207.3, R203.1)",
         pd23_a_refused_stop_completes_failed,
@@ -1249,7 +1250,7 @@ fn pd23_a_cancel_of_a_processing_recording_completes_cancelled(world: &Arc<World
 }
 
 #[test]
-fn pd23_superseded_terminal_and_a_cancel_of_processing_cancelled_disagree() {
+pub(super) fn pd23_superseded_terminal_and_a_cancel_of_processing_cancelled_disagree() {
     repeat(&sub(
         "PD-23: R207.3's Superseded for a live recording, then a cancel of the processing recording completes Cancelled (R207.3, R205.5)",
         pd23_a_cancel_of_a_processing_recording_completes_cancelled,
