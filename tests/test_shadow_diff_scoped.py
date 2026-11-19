@@ -732,10 +732,10 @@ class LifecycleCutoverTests(unittest.TestCase):
             problems = twin_table_problems(entry(value))
             self.assertTrue(any("must be a list of strings" in problem for problem in problems), (value, problems))
 
-    def test_the_real_lifecycle_cutover_probe_passes_with_the_listed_imports(self):
-        # Sol's probe on the real files: retire the stop handler pair, its wrapper and
-        # `use super::audio_lifecycle;`. It passes because the base entry lists that import,
-        # and is a shadow change without the list.
+    def real_probe(self, command: str, following: str, import_text: str):
+        """Retire one real handler pair, its wrapper and its listed import on the real files
+        and the real table (Sol's probe). Passes because the base entry lists the import, and
+        is a shadow change without the list."""
         import copy
 
         from scripts import check_shadow_diff as module
@@ -745,21 +745,21 @@ class LifecycleCutoverTests(unittest.TestCase):
         shadow = (repo_root / self.MODULE).read_text()
         real = copy.deepcopy(module.SHADOW_TWINS)
         pair = (
-            f"            {self.GATE}\n            commands::recording::stop_native_recording,\n"
+            f"            {self.GATE}\n            commands::recording::{command},\n"
             f"            {self.FEATURE}\n"
-            "            commands::recording::shadow_commands::stop_native_recording_witnessed,\n"
+            f"            commands::recording::shadow_commands::{command}_witnessed,\n"
         )
         self.assertEqual(lib.count(pair), 1)
-        wrapper_start = shadow.index('#[tauri::command(rename = "stop_native_recording")]')
-        wrapper_end = shadow.index('#[tauri::command(rename = "cancel_native_recording")]')
-        use = "use super::audio_lifecycle;\n"
+        wrapper_start = shadow.index(f'#[tauri::command(rename = "{command}")]')
+        wrapper_end = shadow.index(f'#[tauri::command(rename = "{following}")]')
+        use = import_text + "\n"
         self.assertEqual(shadow.count(use), 1)
-        lib_after = lib.replace(pair, "            commands::recording::stop_native_recording,\n")
+        lib_after = lib.replace(pair, f"            commands::recording::{command},\n")
         shadow_after = (shadow[:wrapper_start] + shadow[wrapper_end:]).replace(use, "")
-        stop_entry = next(e for e in real[self.LIB] if e["first"] == "commands::recording::stop_native_recording,")
-        self.assertEqual(stop_entry["retire_imports"], [use.strip()])
+        entry = next(e for e in real[self.LIB] if e["first"] == f"commands::recording::{command},")
+        self.assertEqual(entry["retire_imports"], [import_text])
         after = copy.deepcopy(real)
-        after[self.LIB] = [e for e in after[self.LIB] if e is not stop_entry and e["first"] != stop_entry["first"]]
+        after[self.LIB] = [e for e in after[self.LIB] if e["first"] != entry["first"]]
 
         def probe(base_table):
             root = repo("a\n", "a\nb\n")
@@ -777,7 +777,7 @@ class LifecycleCutoverTests(unittest.TestCase):
             git(root, "merge", "-q", "main", "-m", "merge main")
             (root / self.LIB).write_text(lib_after)
             (root / self.MODULE).write_text(shadow_after)
-            git(root, "commit", "-am", "the lifecycle cutover")
+            git(root, "commit", "-am", "the cutover")
             with allowed(after):
                 return run(root)
 
@@ -785,9 +785,66 @@ class LifecycleCutoverTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("shadow change: no", out)
         unlisted = copy.deepcopy(real)
-        for entry in unlisted[self.LIB]:
-            entry.pop("retire_imports", None)
+        for item in unlisted[self.LIB]:
+            item.pop("retire_imports", None)
         self.assert_shadow(probe(unlisted))
+
+    def test_the_real_stop_cutover_probe_passes_with_its_listed_import(self):
+        self.real_probe("stop_native_recording", "cancel_native_recording", "use super::audio_lifecycle;")
+
+    def test_the_real_start_cutover_probe_passes_with_its_listed_import(self):
+        self.real_probe("start_native_recording", "stop_native_recording", "use super::SmartAutoRequest;")
+
+    # Sol round 7 (Fable): a deleted line that starts no token must not be exempt.
+    COMMENTED = (
+        "#[tauri::command]\npub async fn other_witnessed() {\n"
+        "    live();\n    /*\n    disabled();\n    */\n"
+        '    let note = "first\nsecond\nthird";\n    other().await\n}}\n'
+    ).replace("}}", "}")
+
+    def test_deleting_only_the_comment_delimiters_of_a_retained_wrapper_is_a_shadow_change(self):
+        base = f"{self.IMPORT}\n\n" + self.RETIRED + self.COMMENTED
+        control = self.outcome(self.COMMENTED, base)
+        self.assertEqual(control[0], 0, control[2])
+        # `/*` and `*/` go, the commented `disabled();` becomes live code.
+        plant = self.COMMENTED.replace("    /*\n", "").replace("    */\n", "")
+        self.assertNotEqual(plant, self.COMMENTED)
+        self.assert_shadow(self.outcome(plant, base))
+
+    def test_deleting_an_interior_line_of_a_retained_multiline_string_is_a_shadow_change(self):
+        base = f"{self.IMPORT}\n\n" + self.RETIRED + self.COMMENTED
+        plant = self.COMMENTED.replace('"first\nsecond\nthird"', '"first\nthird"')
+        self.assertNotEqual(plant, self.COMMENTED)
+        self.assert_shadow(self.outcome(plant, base))
+
+    def test_a_multiline_string_and_a_block_comment_inside_the_retired_wrapper_go_with_it(self):
+        retired = (
+            "#[tauri::command]\npub async fn process_audio_witnessed() {\n"
+            "    /*\n    note\n    */\n    let s = \"a\nb\";\n    process_audio().await\n}\n\n"
+        )
+        base = f"{self.IMPORT}\n\n" + retired + self.OTHER
+        code, out, err = self.outcome(self.OTHER, base)
+        self.assertEqual(code, 0, err)
+        self.assertIn("shadow change: no", out)
+
+    def test_an_inner_attribute_above_the_retired_wrapper_does_not_go_with_it(self):
+        base = f"{self.IMPORT}\n\n#![allow(unused)]\n" + self.RETIRED + self.OTHER
+        self.assert_shadow(self.outcome(self.OTHER, base))
+        # An outer attribute still belongs to the wrapper.
+        base = f"{self.IMPORT}\n\n#[allow(unused)]\n" + self.RETIRED + self.OTHER
+        code, out, err = self.outcome(self.OTHER, base)
+        self.assertEqual(code, 0, err)
+
+    def test_a_retire_import_that_is_not_one_whole_use_item_is_refused(self):
+        from scripts.check_shadow_diff import twin_table_problems
+
+        def entry(value):
+            return {LIVE: [{"first": "a,", "form": "handler", "twin": "b::c,", "why": "x", "retire_imports": [value]}]}
+
+        for bad in ("impl A for B {} use a;", "use a; use b;", "#![allow(x)] use a;", "fn f() {} ", "use a"):
+            self.assertTrue(twin_table_problems(entry(bad)), bad)
+        for good in ("use a;", "pub(crate) use a::b;", "#[allow(unused)]\nuse a::{b, c};"):
+            self.assertEqual(twin_table_problems(entry(good)), [], good)
 
     def test_the_table_refuses_a_glob_or_a_non_use_retire_import(self):
         from scripts.check_shadow_diff import twin_table_problems

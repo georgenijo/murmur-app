@@ -942,7 +942,9 @@ def item_start(tokens: list[tuple[str, int]], keyword: int, attributes: dict[int
                 break
     elif start > 0 and tokens[start - 1][0] == "pub":
         start -= 1
-    while start in attributes:
+    # Outer attributes belong to the item; an inner attribute (`#![..]`) above it is the
+    # module's, not the item's, and stays when the item goes.
+    while start in attributes and tokens[attributes[start] + 1][0] != "!":
         start = attributes[start]
     return start
 
@@ -989,18 +991,54 @@ def module_use_items(tokens: list[tuple[str, int]]) -> list[tuple[range, str]]:
     return items
 
 
+def lexical_layout(text: str) -> tuple[dict[int, int], list[dict]]:
+    """Where a token or a comment spans several lines: `interior` maps each later line of a
+    multi-line token (a string, a raw string) to that token's index, so an interior line is
+    attributed to its token; `comments` lists every comment with its first and last line, the
+    index of the token after it, and whether it is a `//` line comment."""
+    interior: dict[int, int] = {}
+    comments: list[dict] = []
+    count, line, at = 0, 1, 0
+    while at < len(text):
+        match = _TOKEN.match(text, at)
+        if match is None:
+            line += text[at] == "\n"
+            at += 1
+            continue
+        chunk = match.group()
+        extra = chunk.count("\n")
+        if match.lastgroup == "comment":
+            comments.append({"first": line, "last": line + extra, "next": count, "line": chunk.startswith("//")})
+        else:
+            for later in range(line + 1, line + extra + 1):
+                interior[later] = count
+            count += 1
+        line += extra
+        at = match.end()
+    return interior, comments
+
+
 def only_retired_items_go(
     tokens: list[tuple[str, int]],
     removed: set[int],
     wrappers: list[range],
     listed: set[str],
+    layout: tuple[dict[int, int], list[dict]] | None = None,
+    lines: list[str] | None = None,
 ) -> bool:
-    """Whether every token on a removed line belongs to a retired wrapper or to a whole
-    module-level `use` item a retired entry lists in `retire_imports` (compared as complete
-    token sequences, visibility and attributes included). A line is exempt only when **every**
-    token on it is: an `impl` that shares the import's line, a `pub(crate) use` of an approved
-    path, a trait import, a glob, a local `use` are all shadow edits. Nothing is inferred:
-    whether an import is exclusive to a wrapper cannot be proved from text."""
+    """Whether every removed line belongs to a retired wrapper or to a whole module-level
+    `use` item a retired entry lists in `retire_imports` (compared as complete token
+    sequences, visibility and attributes included).
+
+    A line with tokens is exempt only when **every** token on it is: an `impl` that shares the
+    import's line, a `pub(crate) use` of an approved path, a trait import, a glob, a local
+    `use` are all shadow edits. An interior line of a multi-line string goes with its token. A
+    line with no token of its own is exempt only when it is blank, a `//` comment line, or a
+    line of a block comment that lies wholly inside a removed wrapper and is itself removed
+    whole: deleting only the `/*` and `*/` lines of a retained comment, which makes the
+    commented code live, or an interior line of a retained string, is a shadow edit. Nothing
+    is inferred: whether an import is exclusive to a wrapper cannot be proved from text."""
+    interior, comments = layout if layout is not None else ({}, [])
     approved = [span for span, text in module_use_items(tokens) if text in listed]
     allowed: set[int] = set()
     for span in (*wrappers, *approved):
@@ -1008,13 +1046,31 @@ def only_retired_items_go(
     by_line: dict[int, list[int]] = {}
     for index, (_, line) in enumerate(tokens):
         by_line.setdefault(line, []).append(index)
+    for line, index in interior.items():
+        by_line.setdefault(line, []).append(index)
     for line in removed:
-        if any(index not in allowed for index in by_line.get(line, [])):
+        owned = by_line.get(line, [])
+        if owned:
+            if any(index not in allowed for index in owned):
+                return False
+            continue
+        if lines is not None and 0 < line <= len(lines) and not lines[line - 1].strip():
+            continue
+        comment = next((c for c in comments if c["first"] <= line <= c["last"]), None)
+        if comment is None:
+            # No token, no blank, no comment (a line this text does not hold): not exempt.
+            return False
+        if comment["line"]:
+            continue
+        before, after = comment["next"] - 1, comment["next"]
+        if not set(range(comment["first"], comment["last"] + 1)) <= removed:
+            return False
+        if before not in allowed or after not in allowed:
             return False
     # An approved import goes whole or not at all.
     for span in approved:
-        lines = {tokens[index][1] for index in span}
-        if lines & removed and not lines <= removed:
+        span_lines = {tokens[index][1] for index in span}
+        if span_lines & removed and not span_lines <= removed:
             return False
     return True
 
@@ -1031,7 +1087,8 @@ def is_wrapper_retirement(root: Path, base: str, path: str, names: set[str], imp
     removed = removed_lines(root, base, path)
     if not removed:
         return False
-    tokens = tokenize(show(root, base, path))
+    text = show(root, base, path)
+    tokens = tokenize(text)
     wrappers = []
     removed_names = set()
     for name in names:
@@ -1041,7 +1098,7 @@ def is_wrapper_retirement(root: Path, base: str, path: str, names: set[str], imp
             removed_names.add(name)
     if not removed_names:
         return False
-    if not only_retired_items_go(tokens, removed, wrappers, imports):
+    if not only_retired_items_go(tokens, removed, wrappers, imports, lexical_layout(text), text.splitlines()):
         return False
     for name in removed_names:
         result = subprocess.run(
@@ -1459,10 +1516,10 @@ def twin_table_problems(allow: dict[str, list[dict]] | None = None) -> list[str]
                     found.append(f"{name} retire_imports must be a list of strings, not {imports!r}")
                     imports = []
                 for statement in imports:
-                    tokens = [t for t, _ in tokenize(statement)]
-                    use_at = tokens.index("use") if "use" in tokens else -1
-                    if use_at < 0 or tokens[-1] != ";" or tokens.count(";") != 1 or "*" in tokens:
-                        found.append(f"{name} retire_imports {statement!r} is not one exact `use ...;` item without a glob")
+                    parsed = tokenize(statement)
+                    items = module_use_items(parsed)
+                    if len(items) != 1 or items[0][0] != range(len(parsed)) or "*" in [t for t, _ in parsed]:
+                        found.append(f"{name} retire_imports {statement!r} is not exactly one whole `use ...;` item without a glob")
     return found
 
 
