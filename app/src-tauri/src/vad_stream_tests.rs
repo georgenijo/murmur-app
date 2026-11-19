@@ -515,22 +515,22 @@ fn a_trusted_stream_is_used_and_the_batch_vad_never_runs() {
     assert_eq!((outcome, calls), ("used", 0));
 }
 
-/// Serializes the tests that point the model store at a temporary directory.
-static STORE_LOCK: Mutex<()> = Mutex::new(());
-
+/// Points the model store at a temporary directory for its lifetime, through the one
+/// `StoreOverride` guard (it owns the store lock and the override) that the ready-handoff
+/// cases share, so no test resets the override while another relies on it.
 struct TempStore {
-    _guard: std::sync::MutexGuard<'static, ()>,
+    // Field order: `dir` outlives the override's reset, which happens in `Drop` below.
+    _store: StoreOverride,
     dir: tempfile::TempDir,
 }
 
 impl TempStore {
     fn new() -> Self {
-        let guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let dir = tempfile::tempdir().unwrap();
-        *ROOT_OVERRIDE.lock_or_recover() = Some(dir.path().to_path_buf());
+        let store = StoreOverride::set(dir.path());
         *LAST_ERROR.lock_or_recover() = None;
         unload();
-        Self { _guard: guard, dir }
+        Self { _store: store, dir }
     }
 
     /// A file of the pinned size whose content is not the model.
@@ -544,7 +544,6 @@ impl TempStore {
 
 impl Drop for TempStore {
     fn drop(&mut self) {
-        *ROOT_OVERRIDE.lock_or_recover() = None;
         *LAST_ERROR.lock_or_recover() = None;
         let _ = &self.dir;
     }

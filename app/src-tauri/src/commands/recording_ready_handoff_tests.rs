@@ -78,16 +78,13 @@ struct Case {
     _vad_dir: tempfile::TempDir,
     _vad: crate::vad::test_seam::Installed,
     vad_starts_before: usize,
-    /// The streaming-model store, pointed at the case's directory for the case's length.
+    /// The streaming-model store, pointed at the case's directory for the case's length. The
+    /// guard owns the store lock and the override (shared with the VAD store tests), and
+    /// resets the override when the case drops.
+    _store: crate::vad_stream::StoreOverride,
     models_root: std::path::PathBuf,
     /// The durable data directory every resolution lands in (see `test_data_dir`).
     data_sandbox: std::path::PathBuf,
-}
-
-impl Drop for Case {
-    fn drop(&mut self) {
-        *crate::vad_stream::ROOT_OVERRIDE.lock_or_recover() = None;
-    }
 }
 
 impl Case {
@@ -105,9 +102,9 @@ impl Case {
         // The ticker task reads `settings.json` through the mock app, whose data directory is
         // under the real user's `Application Support` and whose bad file would be quarantined,
         // so the data directory is a process-wide temporary one.
-        *crate::vad_stream::ROOT_OVERRIDE.lock_or_recover() = Some(dir.path().to_path_buf());
+        let store = crate::vad_stream::StoreOverride::set(dir.path());
         let data_sandbox = crate::commands::settings_store::test_data_dir::install();
-        crate::commands::settings_store::test_data_dir::take_resolved();
+        crate::commands::settings_store::test_data_dir::take_returned();
         world.knobs().real_spawners = true;
         {
             let state = world.state();
@@ -120,6 +117,7 @@ impl Case {
             eligible,
             _vad_dir: dir,
             _vad: vad,
+            _store: store,
             vad_starts_before: crate::vad_stream::test_starts::count(1),
             models_root: dir_path,
             data_sandbox,
@@ -130,7 +128,7 @@ impl Case {
     /// the store is the case's temporary directory (so `start` found no model to verify or
     /// delete), and every data-directory resolution the spawners and the ticker task made
     /// is the temporary sandbox, which is under the system temporary directory.
-    fn assert_nothing_left_the_sandbox(&self) {
+    fn assert_nothing_left_the_sandbox(&self, world: &Arc<World>) {
         assert_eq!(
             crate::vad_stream::models_root().as_deref(),
             Some(self.models_root.as_path()),
@@ -143,10 +141,23 @@ impl Case {
         let temp = std::env::temp_dir();
         assert!(self.models_root.starts_with(&temp));
         assert!(self.data_sandbox.starts_with(&temp));
-        for resolved in crate::commands::settings_store::test_data_dir::take_resolved() {
+        // The ticker task resolves the data directory on a detached task, after the case
+        // cancels the recording, so whether it has done so by now is a race: it proves nothing
+        // either way. This call is the proof: the production `data_dir` on the world's own
+        // app handle returns the sandbox, not the mock app's directory under the real user's
+        // `Application Support`.
+        let resolved = crate::commands::settings_store::data_dir(&world.app_handle())
+            .expect("the data directory resolves");
+        assert_eq!(
+            resolved, self.data_sandbox,
+            "the durable data directory is the sandbox, not the real one"
+        );
+        // Every resolution so far (the spawners', the ticker task's, and the one above) is
+        // the path `data_dir` actually returned; none is outside the sandbox.
+        for returned in crate::commands::settings_store::test_data_dir::take_returned() {
             assert_eq!(
-                resolved, self.data_sandbox,
-                "the durable data directory resolved outside the sandbox"
+                returned, self.data_sandbox,
+                "a data-directory resolution left the sandbox"
             );
         }
     }
@@ -175,8 +186,8 @@ impl Case {
         }
     }
 
-    fn assert_handed_off(&self, handoff: &Handoff, entry: &str) {
-        self.assert_nothing_left_the_sandbox();
+    fn assert_handed_off(&self, world: &Arc<World>, handoff: &Handoff, entry: &str) {
+        self.assert_nothing_left_the_sandbox(world);
         assert!(
             handoff.spawns >= 1,
             "{entry} handed the pair to the spawners"
@@ -226,7 +237,7 @@ fn through_the_bridge(world: &Arc<World>, eligible: bool) {
     bridge_ready(world, &case);
     let handoff = case.handoff(world, world.bridge_side_task_spawns());
     assert_eq!(handoff.spawns, 1, "the bridge's Ready handed the pair once");
-    case.assert_handed_off(&handoff, "the bridge's Ready");
+    case.assert_handed_off(world, &handoff, "the bridge's Ready");
     if eligible {
         assert!(world.trace().contains(&REGISTERED.to_string()));
     }
@@ -238,7 +249,7 @@ fn through_the_start_command(world: &Arc<World>, eligible: bool) {
     let case = Case::new(world, eligible);
     recording(world);
     let handoff = case.handoff(world, world.side_task_spawns());
-    case.assert_handed_off(&handoff, "the start command's R104.2");
+    case.assert_handed_off(world, &handoff, "the start command's R104.2");
     if eligible {
         assert!(world.trace().contains(&REGISTERED.to_string()));
     }
