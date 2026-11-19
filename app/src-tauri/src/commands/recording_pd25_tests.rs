@@ -38,6 +38,9 @@ use super::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+type ParkedStop = Rc<RefCell<Option<Fut<Result<serde_json::Value, String>>>>>;
+type Reply = Rc<RefCell<Option<Result<serde_json::Value, String>>>>;
+
 const SUPERSEDED: (DictationTerminalOutcome, DictationErrorCode) = (
     DictationTerminalOutcome::Superseded,
     DictationErrorCode::StaleOwner,
@@ -200,10 +203,8 @@ fn pd25_scoped_stop_after_a_new_generation(world: &Arc<World>, allocate: fn(&Arc
     let requests = world.auto_stop_requests();
     assert_eq!(requests, vec![1], "the bridge scheduled the scoped stop");
     // The scoped stop (`expected = Some(1)`): built, delayed ahead of `T`, not polled.
-    let scoped: Rc<RefCell<Option<Fut<Result<serde_json::Value, String>>>>> =
-        Rc::new(RefCell::new(Some(world.stop(Some(requests[0])))));
-    let scoped_reply: Rc<RefCell<Option<Result<serde_json::Value, String>>>> =
-        Rc::new(RefCell::new(None));
+    let scoped: ParkedStop = Rc::new(RefCell::new(Some(world.stop(Some(requests[0])))));
+    let scoped_reply: Reply = Rc::new(RefCell::new(None));
     world.knobs().stop_result = Ok(16_000);
     let barrier = {
         let (world, scoped, scoped_reply) = (

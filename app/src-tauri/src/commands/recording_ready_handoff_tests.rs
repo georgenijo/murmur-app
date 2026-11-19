@@ -211,7 +211,7 @@ impl<'ast> Visit<'ast> for Calls<'ast> {
     }
 }
 
-fn calls_in<'a>(node: &'a impl CallsIn) -> Vec<(String, usize, &'a syn::ExprCall)> {
+fn calls_in(node: &impl CallsIn) -> Vec<(String, usize, &syn::ExprCall)> {
     let mut calls = Calls(Vec::new());
     node.collect(&mut calls);
     calls.0
