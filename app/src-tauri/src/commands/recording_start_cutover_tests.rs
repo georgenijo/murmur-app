@@ -1166,6 +1166,19 @@ fn a_start_reply_names_the_generation_a_scoped_cancel_acts_on() {
                 )
             });
 
+            // The start guard: a second start while this one is `Starting` is refused through
+            // the switched entry, and changes neither generation nor status.
+            let mut again = w.start();
+            let second = complete(&mut again);
+            w.reply("start while starting", &second);
+            let second = second.expect("a typed refusal");
+            assert_eq!(second["type"], "already_starting", "{second}");
+            assert_eq!(
+                persisted_and_live(w),
+                ((Status::Starting, RecordingId(generation)), generation),
+                "the refused start left the attempt alone"
+            );
+
             // A hold released for another generation is refused: nothing is cancelled.
             let before = w.trace().len();
             w.note("a cancel scoped to another generation");
@@ -1277,14 +1290,16 @@ fn a_start_reply_names_the_generation_a_scoped_cancel_acts_on() {
         divergences,
         "an equal core is never counted"
     );
-    // The entries the two starts and the cancel crossed, with the pair each read: the first
-    // start, the second after the cancel left `Idle` on generation 1, then generation 2.
+    // The entries the starts and the cancel crossed, with the pair each read: the first start, the
+    // refused second one (`Starting`, generation 1), the third after the cancel left `Idle` on
+    // generation 1, then generation 2.
     assert_reads(
         entries_read(),
         &[
             (E101, Status::Idle, 0),
             (E402, Status::Starting, 1),
             (E103, Status::Starting, 1),
+            (E101, Status::Starting, 1),
             (E101, Status::Idle, 1),
             (E402, Status::Starting, 2),
             (E103, Status::Starting, 2),
