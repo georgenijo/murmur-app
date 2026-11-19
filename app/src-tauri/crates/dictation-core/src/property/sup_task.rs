@@ -3,13 +3,14 @@
 //! runs). C7.5: the supervisor, the T-holder and the D sections are separately
 //! sequenced actors.
 
+use super::entry::once;
 use super::flights::{PipelineCfg, PipelineEnd, StopCfg, StopFlight};
 use super::model::*;
 use super::task::*;
 use crate::decision::{Continuation, ObsKind, SiteId, Verdict};
 use crate::effects::{Effect, Placement};
 use crate::ids::{Handle, Now, RecordingId};
-use crate::inputs::PipelineTerminal;
+use crate::inputs::{Input, PipelineTerminal, SupervisorEvent};
 use crate::lifecycle as lc;
 use crate::status::{AudioCancelReason, ErrCode};
 use std::collections::VecDeque;
@@ -221,7 +222,14 @@ impl Task for Bridge {
             }
             Bs::ShortIdleD => {
                 let view = cx.w.view();
-                let decision = lc::decide_sup_interrupted_short_idle(&view, id, at);
+                let direct = lc::decide_sup_interrupted_short_idle(&view, id, at);
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &view,
+                    Input::Supervisor(SupervisorEvent::InterruptedShortIdle { rid: id }),
+                    at,
+                    direct,
+                );
                 let decision = after_pre(cx, decision);
                 log_decision(cx, SiteId::SupInterruptedShortIdle, &decision, rid, None);
                 let ctx = self.ctx(cx, decision.row.0, SiteId::SupInterruptedShortIdle);
@@ -249,14 +257,29 @@ impl Bridge {
         let rid = self.rid;
         match self.step {
             SupStep::Accepted => {
-                let decision = lc::decide_sup_accepted_nolock(cx.w.facts(), id, at);
+                let direct = lc::decide_sup_accepted_nolock(cx.w.facts(), id, at);
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &cx.w.view(),
+                    Input::Supervisor(SupervisorEvent::Accepted { rid: id }),
+                    at,
+                    direct,
+                );
                 let decision = after_prefix(cx, decision, &lc::accepted_prefix());
                 log_decision(cx, SiteId::SupAccepted, &decision, rid, None);
                 let ctx = self.ctx(cx, decision.row.0, SiteId::SupAccepted);
                 queue_phase(&mut self.q, ctx, &decision, Placement::PostDT);
             }
             SupStep::StillConnecting => {
-                let decision = lc::decide_sup_still_connecting(&cx.w.view(), id, at);
+                let view = cx.w.view();
+                let direct = lc::decide_sup_still_connecting(&view, id, at);
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &view,
+                    Input::Supervisor(SupervisorEvent::StillConnecting { rid: id }),
+                    at,
+                    direct,
+                );
                 log_decision(cx, SiteId::SupStillConnecting, &decision, rid, None);
                 let ctx = self.ctx(cx, decision.row.0, SiteId::SupStillConnecting);
                 apply_in(cx, &ctx, &decision);
@@ -269,7 +292,18 @@ impl Bridge {
                     ready_received: at,
                 };
                 let decision = loop {
-                    let decision = lc::decide_sup_ready(&view, input, at);
+                    let direct = lc::decide_sup_ready(&view, input, at);
+                    let decision = once(
+                        &cx.w.handle_faults,
+                        &view,
+                        Input::Supervisor(SupervisorEvent::Ready {
+                            rid: input.rid,
+                            context_present: input.context_present,
+                            ready_received: input.ready_received,
+                        }),
+                        at,
+                        direct,
+                    );
                     match decision.verdict {
                         Verdict::NeedObservation(ObsKind::ContextPresence { .. })
                             if input.context_present.is_none() =>
@@ -285,16 +319,31 @@ impl Bridge {
                 queue_phase(&mut self.q, ctx, &decision, Placement::PostDT);
             }
             SupStep::RecoveryStalled => {
-                let decision = lc::decide_sup_stalled_nolock(cx.w.facts(), id, at);
+                let direct = lc::decide_sup_stalled_nolock(cx.w.facts(), id, at);
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &cx.w.view(),
+                    Input::Supervisor(SupervisorEvent::RecoveryStalled { rid: id }),
+                    at,
+                    direct,
+                );
                 log_decision(cx, SiteId::SupStalled, &decision, rid, None);
                 let ctx = self.ctx(cx, decision.row.0, SiteId::SupStalled);
                 queue_phase(&mut self.q, ctx, &decision, Placement::PostDT);
             }
             SupStep::Recovering(reason) => {
-                let decision = lc::decide_sup_recovering(
-                    &cx.w.view(),
+                let view = cx.w.view();
+                let direct = lc::decide_sup_recovering(
+                    &view,
                     lc::SupRecoveringInput { rid: id, reason },
                     at,
+                );
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &view,
+                    Input::Supervisor(SupervisorEvent::Recovering { rid: id, reason }),
+                    at,
+                    direct,
                 );
                 log_decision(cx, SiteId::SupRecovering, &decision, rid, None);
                 let ctx = self.ctx(cx, decision.row.0, SiteId::SupRecovering);
@@ -303,7 +352,7 @@ impl Bridge {
             }
             SupStep::InitFailed { recovery, code } => {
                 let kind = Handle(0);
-                let decision = lc::decide_sup_init_failed_nolock(
+                let direct = lc::decide_sup_init_failed_nolock(
                     cx.w.facts(),
                     lc::SupInitFailedInput {
                         rid: id,
@@ -313,6 +362,18 @@ impl Bridge {
                     },
                     at,
                 );
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &cx.w.view(),
+                    Input::Supervisor(SupervisorEvent::InitializationFailed {
+                        rid: id,
+                        kind,
+                        error_code: code,
+                        recovery_reason: recovery,
+                    }),
+                    at,
+                    direct,
+                );
                 let decision = after_prefix(cx, decision, &lc::init_failed_prefix(kind));
                 cx.out.input_code = Some(code);
                 log_decision(cx, SiteId::SupInitFailed, &decision, rid, None);
@@ -320,7 +381,7 @@ impl Bridge {
                 queue_phase(&mut self.q, ctx, &decision, Placement::PostDT);
             }
             SupStep::Interrupted(samples) => {
-                let decision = lc::decide_sup_interrupted_nolock(
+                let direct = lc::decide_sup_interrupted_nolock(
                     cx.w.facts(),
                     lc::SupInterruptedInput {
                         rid: id,
@@ -329,6 +390,18 @@ impl Bridge {
                         reason: AudioCancelReason::RuntimeFailure,
                     },
                     at,
+                );
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &cx.w.view(),
+                    Input::Supervisor(SupervisorEvent::Interrupted {
+                        rid: id,
+                        delivered_samples: samples,
+                        duration_ms: samples as u64 / 16,
+                        reason: AudioCancelReason::RuntimeFailure,
+                    }),
+                    at,
+                    direct,
                 );
                 log_decision(cx, SiteId::SupInterrupted, &decision, rid, None);
                 if let Some(spec) = decision.continuation {
@@ -342,14 +415,30 @@ impl Bridge {
                 }
             }
             SupStep::Idle => {
-                let decision = lc::decide_sup_idle(&cx.w.view(), id, at);
+                let view = cx.w.view();
+                let direct = lc::decide_sup_idle(&view, id, at);
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &view,
+                    Input::Supervisor(SupervisorEvent::Idle { rid: id }),
+                    at,
+                    direct,
+                );
                 log_decision(cx, SiteId::SupIdle, &decision, rid, None);
                 let ctx = self.ctx(cx, decision.row.0, SiteId::SupIdle);
                 apply_in(cx, &ctx, &decision);
                 cx.w.sup.busy_restored = true;
             }
             SupStep::CleanupFinished => {
-                let decision = lc::decide_sup_cleanup_finished(&cx.w.view(), id, at);
+                let view = cx.w.view();
+                let direct = lc::decide_sup_cleanup_finished(&view, id, at);
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &view,
+                    Input::Supervisor(SupervisorEvent::CleanupFinished { rid: id }),
+                    at,
+                    direct,
+                );
                 log_decision(cx, SiteId::SupCleanupFinished, &decision, rid, None);
                 let ctx = self.ctx(cx, decision.row.0, SiteId::SupCleanupFinished);
                 apply_in(cx, &ctx, &decision);

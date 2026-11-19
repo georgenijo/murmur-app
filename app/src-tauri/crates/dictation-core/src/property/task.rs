@@ -9,7 +9,7 @@
 use super::c3;
 use super::model::*;
 use crate::decision::{Decision, SiteId, Verdict};
-use crate::effects::{Effect, Placed, Placement, Terminal};
+use crate::effects::{Effect, EventKind, Placed, Placement, Terminal};
 use crate::inputs::GuardOrigin;
 use crate::status::{ErrCode, Status, TerminalOutcome};
 use std::collections::VecDeque;
@@ -127,6 +127,11 @@ pub enum Note {
         rid: Rid,
         owned: bool,
     },
+    /// The stop IPC of a window's `handleStop` returned (its guard clears).
+    WindowStopReturned {
+        window: usize,
+        tid: TaskId,
+    },
     /// The supervisor's `OwnerClear` step ran.
     OwnerCleared {
         rid: Rid,
@@ -153,10 +158,14 @@ pub struct StepOut {
     /// `ErrCode`, an interrupted capture's reason, a pipeline's no-speech code), which
     /// C3's `@in` terminal codes must equal (D-S2b-11 (b)). Taken by `log_decision`.
     pub input_code: Option<ErrCode>,
+    /// The `NeedObservation` rounds the step's flight answered, by the row the verdict names:
+    /// they are not decisions the flight acts on, and the gate counts them apart.
+    pub observations: Vec<&'static str>,
 }
 
 impl StepOut {
     pub fn clear(&mut self) {
+        self.observations.clear();
         self.stripped.clear();
         self.input_code = None;
         self.decisions.clear();
@@ -362,8 +371,12 @@ pub fn apply(cx: &mut Cx<'_>, fx: &FxCtx, at: Placement, effect: &Effect) -> boo
                     *cx.w.idle_emits.entry(fx.rid).or_default() += 1;
                 }
                 // Every window gets the event in emit order, each at its own pace.
+                let latest_generation = cx.w.gen_emitted;
                 for window in &mut cx.w.windows {
-                    window.inbox.push_back(*status);
+                    window.inbox.push_back(Inbound {
+                        status: *status,
+                        latest_generation,
+                    });
                 }
             }
         }
@@ -443,6 +456,11 @@ pub fn apply(cx: &mut Cx<'_>, fx: &FxCtx, at: Placement, effect: &Effect) -> boo
             });
         }
         // Observations and effects with no model state.
+        Effect::EmitEvent(EventKind::GenStarted) => {
+            // `dictation-generation-started`: every status event emitted after it names this
+            // generation as the newest one (`Inbound::latest_generation`).
+            cx.w.gen_emitted = cx.w.gen_emitted.max(fx.rid);
+        }
         Effect::EmitEvent(_)
         | Effect::Presentation { .. }
         | Effect::TouchLastTranscription

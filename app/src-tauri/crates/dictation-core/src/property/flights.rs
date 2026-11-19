@@ -3,6 +3,8 @@
 //! `decide_*` functions. The order of sections and the placement of each
 //! effect follow the shell (`commands/recording.rs`) and the C3 tables.
 
+use super::entry::once;
+use super::gen::{ImportPlan, Mic, StartCaller};
 use super::model::*;
 use super::supervisor::ReplyPoll;
 use super::task::*;
@@ -10,13 +12,17 @@ use crate::admission::Occupancy;
 use crate::cancel as core_cancel;
 use crate::decision::{ContKind, Continuation, ObsKind, OpStatus, SiteId, Verdict};
 use crate::effects::{Effect, Placement};
-use crate::ids::{Now, RecordingId};
+use crate::ids::{Handle, Now, RecordingId};
 use crate::inputs::{
     CancelCaptureResultInput, CancelInput, CancelOrigin, CaptureErr, CaptureResult,
-    CaptureResultInput, DeviceSel, GestureObs, GuardOrigin, InterruptedMeta, Origin,
-    PipelineTerminal, SpeculativeObs, StartContextInput, StartInput, StopCaptureResult,
-    StopCaptureResultInput, StopContextInput, StopInput,
+    CaptureResultInput, DestinationInput, DeviceSel, GestureObs, GuardOrigin, Input,
+    InterruptedMeta, Origin, PipelineTerminal, ProcessAudioFinishInput, ProcessAudioFinishKind,
+    ProcessAudioStartInput, SmartAutoFailure, SmartAutoSel, SpeculativeObs, StartContextInput,
+    StartFlightEndInput, StartInput, StopCaptureResult, StopCaptureResultInput, StopContextInput,
+    StopInput,
 };
+use crate::process_audio as core_pa;
+use crate::replies::Reply;
 use crate::start as core_start;
 use crate::status::{Status, StopTrigger};
 use crate::stop as core_stop;
@@ -81,6 +87,14 @@ pub struct StartFlight {
     audio_ready: bool,
     capture_current: bool,
     dropped: bool,
+    /// Who sent the start (#1162): the main window's `beginRecording` awaits the reply.
+    caller: StartCaller,
+    /// The reply of the last decision that carried one: the value the command returns.
+    reply: Option<Reply>,
+    /// The microphone selection the start carries.
+    mic: Mic,
+    /// The command already returned: it returns once.
+    replied: bool,
 }
 
 impl StartFlight {
@@ -105,18 +119,47 @@ impl StartFlight {
             audio_ready: false,
             capture_current: false,
             dropped: false,
+            caller: StartCaller::Ipc,
+            reply: None,
+            mic: Mic::SystemDefault,
+            replied: false,
+        }
+    }
+
+    /// This start carries microphone selection `mic`.
+    pub fn with_mic(mut self, mic: Mic) -> Self {
+        self.mic = mic;
+        self
+    }
+
+    /// This start was sent by `caller`.
+    pub fn with_caller(mut self, caller: StartCaller) -> Self {
+        self.caller = caller;
+        self
+    }
+
+    /// Remember the reply a decision carries: the command returns the last one.
+    fn note_reply(&mut self, decision: &crate::decision::Decision) {
+        if let Some(reply) = &decision.reply {
+            self.reply = Some(reply.clone());
         }
     }
 
     fn input(&self, cx: &Cx<'_>) -> StartInput {
         StartInput {
             origin: Origin::Toggle,
-            device: DeviceSel::SystemDefault,
+            device: match self.mic {
+                Mic::SystemDefault => DeviceSel::SystemDefault,
+                Mic::Explicit => DeviceSel::Explicit,
+                Mic::SmartAutoResolved | Mic::SmartAutoFailed | Mic::SmartAutoWithFixed => {
+                    DeviceSel::SmartAuto
+                }
+            },
             gesture: GestureObs::default(),
             speculative: SpeculativeObs::default(),
             kept_preview: false,
             app_disabled: self.app_disabled,
-            fixed_and_smart: false,
+            fixed_and_smart: self.mic == Mic::SmartAutoWithFixed,
             occupancy: Occupancy {
                 status: cx.w.status,
                 relaunch_committed: self.blockers.relaunch,
@@ -190,6 +233,7 @@ impl Task for StartFlight {
         self.retire_tokens(cx);
         release_t(cx);
         self.st = Ss::Finish;
+        self.send_reply(cx);
     }
 
     fn step(&mut self, cx: &mut Cx<'_>) -> Poll {
@@ -207,7 +251,17 @@ impl Task for StartFlight {
             Ss::Pre => {
                 let input = self.input(cx);
                 match core_start::decide_start_request_pre(&input, at) {
-                    Some(pre) => {
+                    Some(direct) => {
+                        // R101.1-.2 take no D, but the entry is still `handle`'s.
+                        let view = cx.w.view();
+                        let pre = once(
+                            &cx.w.handle_faults,
+                            &view,
+                            Input::StartRequest(input),
+                            at,
+                            direct,
+                        );
+                        self.note_reply(&pre);
                         log_decision(cx, SiteId::StartRequest, &pre, cx.w.current_id, None);
                         self.rid = cx.w.current_id;
                         self.leave(cx, &pre, SiteId::StartRequest);
@@ -219,20 +273,83 @@ impl Task for StartFlight {
                 let view = cx.w.view();
                 let mut input = self.input(cx);
                 let mut rounds = 0;
+                // The observation rounds, in the order the shell reads the facts: the
+                // retiring-capture check (5523), then the Smart Auto resolve (5546), which
+                // takes no D and so is answered from the model's own plan.
+                let mut smart_round = false;
                 let decision = loop {
-                    let decision = core_start::decide_start_request(&view, input.clone(), at);
+                    let direct = core_start::decide_start_request(&view, input.clone(), at);
+                    let decision = once(
+                        &cx.w.handle_faults,
+                        &view,
+                        Input::StartRequest(input.clone()),
+                        at,
+                        direct,
+                    );
                     rounds += 1;
+                    if matches!(decision.verdict, Verdict::NeedObservation(_)) {
+                        cx.out.observations.push(decision.row.0);
+                    }
                     match decision.verdict {
-                        Verdict::NeedObservation(ObsKind::CleanupPending { id }) if rounds == 1 => {
+                        Verdict::NeedObservation(ObsKind::CleanupPending { id })
+                            if input.cleanup_pending.is_none() =>
+                        {
                             input.cleanup_pending = Some(cx.w.sup.cleanup_pending(id.0));
                         }
+                        Verdict::NeedObservation(ObsKind::SmartAutoSelection)
+                            if input.smart_auto_result.is_none() =>
+                        {
+                            if input.device != DeviceSel::SmartAuto
+                                || input.cleanup_pending.is_none()
+                            {
+                                cx.out.violations.push(format!(
+                                    "R101.13: the Smart Auto resolve was asked for with device \
+                                     {:?} and the cleanup check {:?}",
+                                    input.device, input.cleanup_pending
+                                ));
+                            }
+                            smart_round = true;
+                            input.smart_auto_result = Some(if self.mic == Mic::SmartAutoFailed {
+                                Err(SmartAutoFailure::ResolveFailed)
+                            } else {
+                                Ok(SmartAutoSel { handle: Handle(1) })
+                            });
+                        }
                         Verdict::NeedObservation(kind) => {
-                            unreachable!("a start asks once for the cleanup check, not {kind:?}")
+                            unreachable!(
+                                "a start asks once for each of the cleanup check and the \
+                                 Smart Auto resolve, not {kind:?} (round {rounds})"
+                            )
                         }
                         _ => break decision,
                     }
                 };
+                // The Smart Auto round is the start gate's own (admission order: blockers,
+                // status, the retiring capture, then the resolve): a start that reached the
+                // resolve asked for it exactly once, an admitted one asked for it iff it is a
+                // Smart Auto start, and a failed resolve never admitted. These read the
+                // decisions the flight acts on, not the direct call.
+                let smart_start = input.device == DeviceSel::SmartAuto;
+                if decision.row.0 == "R101.15" && smart_start != smart_round {
+                    cx.out.violations.push(format!(
+                        "R101.13: an admitted start with device {:?} {} the Smart Auto resolve",
+                        input.device,
+                        if smart_round { "ran" } else { "skipped" }
+                    ));
+                }
+                if self.mic == Mic::SmartAutoFailed && decision.row.0 == "R101.15" {
+                    cx.out.violations.push(
+                        "R101.14: a start whose Smart Auto resolve failed was admitted".into(),
+                    );
+                }
+                if smart_round && self.mic == Mic::SmartAutoFailed && decision.row.0 != "R101.14" {
+                    cx.out.violations.push(format!(
+                        "R101.14: a failed Smart Auto resolve decided {}",
+                        decision.row.0
+                    ));
+                }
                 self.rid = cx.w.current_id;
+                self.note_reply(&decision);
                 log_decision(cx, SiteId::StartRequest, &decision, self.rid, None);
                 match decision.row.0 {
                     "R101.15" => {
@@ -324,14 +441,22 @@ impl Task for StartFlight {
                     SiteId::StartCaptureResult,
                     self.rid,
                     move |w, op_status| {
-                        core_start::decide_start_capture_result_nolock(
+                        let input = CaptureResultInput {
+                            token,
+                            op_status,
+                            result: CaptureResult::Ok,
+                        };
+                        let direct = core_start::decide_start_capture_result_nolock(
                             w.facts(),
-                            CaptureResultInput {
-                                token,
-                                op_status,
-                                result: CaptureResult::Ok,
-                            },
+                            input.clone(),
                             at,
+                        );
+                        once(
+                            &w.handle_faults,
+                            &w.view(),
+                            Input::StartCaptureResult(input),
+                            at,
+                            direct,
                         )
                     },
                 );
@@ -359,19 +484,26 @@ impl Task for StartFlight {
                     SiteId::StartCaptureResult,
                     rid,
                     move |w, op_status| {
-                        core_start::decide_start_capture_result(
-                            &w.view(),
-                            CaptureResultInput {
-                                token,
-                                op_status,
-                                result: CaptureResult::Err(error.clone()),
-                            },
+                        let input = CaptureResultInput {
+                            token,
+                            op_status,
+                            result: CaptureResult::Err(error.clone()),
+                        };
+                        let view = w.view();
+                        let direct =
+                            core_start::decide_start_capture_result(&view, input.clone(), at);
+                        once(
+                            &w.handle_faults,
+                            &view,
+                            Input::StartCaptureResult(input),
                             at,
+                            direct,
                         )
                     },
                 );
                 let decision = after_pre(cx, decision);
                 self.cap = None;
+                self.note_reply(&decision);
                 log_decision(cx, SiteId::StartCaptureResult, &decision, rid, None);
                 let ctx = fx(cx, rid, decision.row.0, SiteId::StartCaptureResult);
                 apply_in(cx, &ctx, &decision);
@@ -395,8 +527,19 @@ impl Task for StartFlight {
             Ss::SmartSde => {
                 // R103.0: the emit's own D section rechecks ownership.
                 let view = cx.w.view();
-                let decision =
+                let direct =
                     core_start::decide_start_destination(&view, RecordingId(self.rid), true, at);
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &view,
+                    Input::StartDestination(DestinationInput {
+                        rid: RecordingId(self.rid),
+                        smart_enabled: true,
+                    }),
+                    at,
+                    direct,
+                );
+                self.note_reply(&decision);
                 log_decision(cx, SiteId::StartContext, &decision, self.rid, None);
                 let ctx = fx(cx, self.rid, decision.row.0, SiteId::StartContext);
                 apply_in(cx, &ctx, &decision);
@@ -410,14 +553,20 @@ impl Task for StartFlight {
                     SiteId::StartContext,
                     self.rid,
                     move |w, op_status| {
-                        core_start::decide_start_context(
-                            &w.view(),
-                            StartContextInput { token, op_status },
+                        let input = StartContextInput { token, op_status };
+                        let view = w.view();
+                        let direct = core_start::decide_start_context(&view, input, at);
+                        once(
+                            &w.handle_faults,
+                            &view,
+                            Input::StartContext(input),
                             at,
+                            direct,
                         )
                     },
                 );
                 self.ctx = None;
+                self.note_reply(&decision);
                 log_decision(cx, SiteId::StartContext, &decision, self.rid, None);
                 if let Some(spec) = decision.continuation {
                     self.ready = Some(cx.w.register(spec));
@@ -447,20 +596,26 @@ impl Task for StartFlight {
                     let rid = self.rid;
                     let decision =
                         consume(cx, token, SiteId::ReadyPublish, rid, move |w, op_status| {
-                            core_start::decide_ready_publish_nolock(
-                                w.facts(),
-                                crate::inputs::ReadyPublishInput {
-                                    token,
-                                    op_status,
-                                    rid: RecordingId(rid),
-                                    audio_ready: false,
-                                    context_present: None,
-                                    context_ready_at: at,
-                                },
+                            let input = crate::inputs::ReadyPublishInput {
+                                token,
+                                op_status,
+                                rid: RecordingId(rid),
+                                audio_ready: false,
+                                context_present: None,
+                                context_ready_at: at,
+                            };
+                            let direct =
+                                core_start::decide_ready_publish_nolock(w.facts(), input, at);
+                            once(
+                                &w.handle_faults,
+                                &w.view(),
+                                Input::ReadyPublish(input),
                                 at,
+                                direct,
                             )
                         });
                     self.ready = None;
+                    self.note_reply(&decision);
                     log_decision(cx, SiteId::ReadyPublish, &decision, self.rid, None);
                     self.st = Ss::FlightEnd;
                 }
@@ -481,7 +636,14 @@ impl Task for StartFlight {
                         };
                         let mut rounds = 0;
                         loop {
-                            let decision = core_start::decide_ready_publish(&view, input, at);
+                            let direct = core_start::decide_ready_publish(&view, input, at);
+                            let decision = once(
+                                &w.handle_faults,
+                                &view,
+                                Input::ReadyPublish(input),
+                                at,
+                                direct,
+                            );
                             rounds += 1;
                             match decision.verdict {
                                 Verdict::NeedObservation(ObsKind::ContextPresence { id })
@@ -494,6 +656,7 @@ impl Task for StartFlight {
                         }
                     });
                 self.ready = None;
+                self.note_reply(&decision);
                 log_decision(cx, SiteId::ReadyPublish, &decision, self.rid, None);
                 let ctx = fx(cx, self.rid, decision.row.0, SiteId::ReadyPublish);
                 apply_in(cx, &ctx, &decision);
@@ -501,7 +664,17 @@ impl Task for StartFlight {
             }
             Ss::FlightEnd => {
                 // R104.7: `PDT:PM`, T released, `PT:PB`, `PT:REL`.
-                let decision = core_start::decide_start_flight_end(RecordingId(self.rid), at);
+                let direct = core_start::decide_start_flight_end(RecordingId(self.rid), at);
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &cx.w.view(),
+                    Input::StartFlightEnd(StartFlightEndInput {
+                        rid: RecordingId(self.rid),
+                    }),
+                    at,
+                    direct,
+                );
+                self.note_reply(&decision);
                 log_decision(cx, SiteId::ReadyPublish, &decision, self.rid, None);
                 let ctx = fx(cx, self.rid, decision.row.0, SiteId::ReadyPublish);
                 queue_phase(&mut self.q, ctx, &decision, Placement::PostDT);
@@ -511,6 +684,387 @@ impl Task for StartFlight {
             }
             Ss::Finish => {
                 self.retire_tokens(cx);
+                release_t(cx);
+                self.send_reply(cx);
+                return Poll::Done;
+            }
+        }
+        Poll::Progress
+    }
+}
+
+impl StartFlight {
+    /// The command returns: the main window's `beginRecording` receives the response later,
+    /// in a step of its own (#1162), and it is the response of this one start (`cx.tid`).
+    /// Only the main window awaits it: the overlay and the IPC write no window state from it.
+    /// A reply that is an `Err` (a refusal with the resolve's text, a failed capture start), or
+    /// that a dropped start future never produced, is a failed invoke: the wrapper turns it
+    /// into an error response with no `state` (`lib/dictation.ts`), so it writes nothing but
+    /// still ends the start operation.
+    fn send_reply(&mut self, cx: &mut Cx<'_>) {
+        if self.caller != StartCaller::Window(MAIN_WINDOW) || self.replied {
+            return;
+        }
+        self.replied = true;
+        let response = match self.reply.take() {
+            Some(Reply::Typed {
+                ty,
+                state,
+                recording_id,
+            }) if !self.dropped => StartResponse::Typed {
+                ty,
+                state,
+                recording_id: recording_id.map(|id| id.0),
+            },
+            _ => StartResponse::Error,
+        };
+        cx.w.start_replied(StartReply {
+            tid: cx.tid,
+            response,
+        });
+    }
+}
+
+// ----------------------------------------------------------------- import
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Is {
+    AcquireT,
+    Pre,
+    D301,
+    DestAwait,
+    Dest,
+    Parse,
+    D302Parse,
+    AwaitPipeline,
+    D302Tail,
+    Finish,
+}
+
+/// The legacy `process_audio` import (`commands/recording.rs` `process_audio_inner`), sites
+/// 301 and 302. It takes T like a start, decides R301.1-.5 (the benchmark through
+/// `NeedObservation`), drops T and runs its `PT` effects, runs its own Smart Destination
+/// section (R301.6), then either fails the parse (R302.1) or runs the pipeline and decides the
+/// tail (R302.2). No terminal is decided anywhere in it: the pipeline's guard (204a) and the
+/// tail restore `Idle`, the import never claims a terminal.
+pub struct ImportFlight {
+    st: Is,
+    q: VecDeque<QItem>,
+    plan: ImportPlan,
+    rid: Rid,
+    /// `K:Pipeline`: the import owns it until the pipeline's guard (or an exit) retires it.
+    op: Option<Continuation>,
+}
+
+impl ImportFlight {
+    pub fn new(plan: ImportPlan) -> Self {
+        Self {
+            st: Is::AcquireT,
+            q: VecDeque::new(),
+            plan,
+            rid: 0,
+            op: None,
+        }
+    }
+
+    fn input(&self, benchmark: Option<bool>) -> ProcessAudioStartInput {
+        ProcessAudioStartInput {
+            occupancy: Occupancy {
+                meeting_active: self.plan.blockers.meeting,
+                file_transcribing: self.plan.blockers.file,
+                ..Occupancy::default()
+            },
+            benchmark_running: benchmark,
+        }
+    }
+
+    /// The import's own exit: both history entries it owns are retired (`pipeline_owner`'s
+    /// `Drop`), `H2` first.
+    fn retire_owned(&mut self, cx: &mut Cx<'_>) {
+        cx.w.history.pipelines.remove(&self.rid);
+        if let Some(token) = self.op.take() {
+            cx.w.retire_op(token);
+        }
+    }
+}
+
+impl Queued for ImportFlight {
+    fn queue(&mut self) -> &mut VecDeque<QItem> {
+        &mut self.q
+    }
+
+    fn cross(&mut self, _cx: &mut Cx<'_>, _fx: &FxCtx, effect: &Effect) -> Result<(), ()> {
+        unreachable!("an import does not run {effect:?}")
+    }
+}
+
+impl Task for ImportFlight {
+    fn name(&self) -> &'static str {
+        "import"
+    }
+
+    fn step(&mut self, cx: &mut Cx<'_>) -> Poll {
+        if let Some(poll) = drain_one(self, cx) {
+            return poll;
+        }
+        let at = now(cx);
+        match self.st {
+            Is::AcquireT => {
+                if !acquire_t(cx) {
+                    return Poll::Blocked;
+                }
+                self.st = Is::Pre;
+            }
+            Is::Pre => {
+                // R301.1 (3684): a meeting owns ASR. Decided with no D, but the entry is
+                // still `handle`'s.
+                let input = self.input(None);
+                match core_pa::decide_process_audio_start_pre(&input, at) {
+                    Some(direct) => {
+                        let view = cx.w.view();
+                        let pre = once(
+                            &cx.w.handle_faults,
+                            &view,
+                            Input::ProcessAudioStart(input),
+                            at,
+                            direct,
+                        );
+                        self.rid = cx.w.current_id;
+                        log_decision(cx, SiteId::ProcessAudioStart, &pre, self.rid, None);
+                        release_t(cx);
+                        self.st = Is::Finish;
+                    }
+                    None => self.st = Is::D301,
+                }
+            }
+            Is::D301 => {
+                let view = cx.w.view();
+                let mut input = self.input(None);
+                // The benchmark is read after the file check passed (D-S1-2), through
+                // `NeedObservation(BenchmarkRunning)`: the flight answers from the plan.
+                let decision = loop {
+                    let direct = core_pa::decide_process_audio_start(&view, input.clone(), at);
+                    let decision = once(
+                        &cx.w.handle_faults,
+                        &view,
+                        Input::ProcessAudioStart(input.clone()),
+                        at,
+                        direct,
+                    );
+                    if matches!(decision.verdict, Verdict::NeedObservation(_)) {
+                        cx.out.observations.push(decision.row.0);
+                    }
+                    match decision.verdict {
+                        Verdict::NeedObservation(ObsKind::BenchmarkRunning)
+                            if input.benchmark_running.is_none() =>
+                        {
+                            input.benchmark_running = Some(self.plan.blockers.benchmark);
+                        }
+                        Verdict::NeedObservation(kind) => {
+                            unreachable!("an import asks once for the benchmark, not {kind:?}")
+                        }
+                        _ => break decision,
+                    }
+                };
+                // The refusal order of today's code (meeting before D, then the file, the
+                // benchmark, the status), read off the model, not off either entry: a decision
+                // that disagrees fails the seed whichever entry produced it.
+                let blockers = self.plan.blockers;
+                let expected = if blockers.meeting {
+                    "R301.1"
+                } else if blockers.file {
+                    "R301.2"
+                } else if blockers.benchmark {
+                    "R301.3"
+                } else if cx.w.status != Status::Idle {
+                    "R301.4"
+                } else {
+                    "R301.5"
+                };
+                if decision.row.0 != expected {
+                    cx.out.violations.push(format!(
+                        "R301: an import with meeting {}, file {}, benchmark {} on status {:?} \
+                         decided {}, not {expected}",
+                        blockers.meeting,
+                        blockers.file,
+                        blockers.benchmark,
+                        cx.w.status,
+                        decision.row.0
+                    ));
+                }
+                log_decision(
+                    cx,
+                    SiteId::ProcessAudioStart,
+                    &decision,
+                    cx.w.current_id,
+                    None,
+                );
+                if decision.row.0 != "R301.5" {
+                    release_t(cx);
+                    self.st = Is::Finish;
+                    return Poll::Progress;
+                }
+                // R301.5: `ID+` is the first `In` effect, so every `In` effect runs for the new
+                // id. The shell registers `H1` and `H2` right after the decide; the model does
+                // it once the id exists (SP6 bounds a continuation by the current id), and
+                // nothing runs between the two inside one D section.
+                let rid = cx.w.current_id + 1;
+                let ctx = fx(cx, rid, "R301.5", SiteId::ProcessAudioStart);
+                apply_in(cx, &ctx, &decision);
+                self.rid = cx.w.current_id;
+                let spec = decision.continuation.expect("R301.5 registers K:Pipeline");
+                cx.w.history.pipelines.insert(self.rid);
+                self.op = Some(cx.w.register(spec));
+                // T was dropped between D and `PT:KB(true), EV(GenStarted), EM(processing)`.
+                self.q.push_back(QItem::ReleaseT);
+                queue_phase(&mut self.q, ctx, &decision, Placement::PostT);
+                self.st = if self.plan.smart {
+                    Is::DestAwait
+                } else {
+                    Is::Parse
+                };
+            }
+            Is::DestAwait => {
+                // The smart-destination capture's await: other tasks run meanwhile.
+                self.st = Is::Dest;
+            }
+            Is::Dest => {
+                // R301.6: under D, is the capture still current?
+                let view = cx.w.view();
+                let rid = RecordingId(self.rid);
+                let direct = core_pa::decide_process_audio_destination(&view, rid, true, at);
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &view,
+                    Input::ProcessAudioDestination(DestinationInput {
+                        rid,
+                        smart_enabled: true,
+                    }),
+                    at,
+                    direct,
+                );
+                log_decision(cx, SiteId::ProcessAudioStart, &decision, self.rid, None);
+                let ctx = fx(cx, self.rid, decision.row.0, SiteId::ProcessAudioStart);
+                apply_in(cx, &ctx, &decision);
+                if matches!(decision.verdict, Verdict::Stale(_)) {
+                    // A stale return: the owner retires both entries, nothing else runs.
+                    self.retire_owned(cx);
+                    self.st = Is::Finish;
+                } else {
+                    self.st = Is::Parse;
+                }
+            }
+            Is::Parse => {
+                if self.plan.parses {
+                    // The pipeline runs in the caller: the model parks the import on it.
+                    let op = self.op.take();
+                    cx.spawn.push(Box::new(Pipeline::new(
+                        self.rid,
+                        cx.tid,
+                        op,
+                        self.plan.pipeline,
+                    )));
+                    self.st = Is::AwaitPipeline;
+                } else {
+                    // `IdleGuard::finish_owned`: `CX-` runs before D.
+                    let ctx = fx(cx, self.rid, "R302.pre", SiteId::ProcessAudioFinish);
+                    for placed in core_stop::guard_finish_pre_effects(RecordingId(self.rid)) {
+                        self.q.push_back(QItem::Fx(ctx, placed));
+                    }
+                    self.st = Is::D302Parse;
+                }
+            }
+            Is::D302Parse => {
+                // R302.1: the parse failure, `Input::GuardFinish` with `LegacyParse` through
+                // `handle`.
+                let view = cx.w.view();
+                let rid = self.rid;
+                let direct = core_pa::decide_process_audio_finish(
+                    &view,
+                    ProcessAudioFinishInput {
+                        rid: RecordingId(rid),
+                        kind: ProcessAudioFinishKind::ParseFailed,
+                        closure_emit: true,
+                    },
+                    at,
+                );
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &view,
+                    Input::GuardFinish(crate::inputs::GuardFinishInput {
+                        rid: RecordingId(rid),
+                        origin: GuardOrigin::LegacyParse,
+                        closure_emit: true,
+                    }),
+                    at,
+                    direct,
+                );
+                let decision = after_pre(cx, decision);
+                log_decision(
+                    cx,
+                    SiteId::ProcessAudioFinish,
+                    &decision,
+                    rid,
+                    Some(GuardOrigin::LegacyParse),
+                );
+                // `H2 ret` and `H1 ret op_pl` come right after the decide and before the `In`
+                // effects (C3.9).
+                self.retire_owned(cx);
+                let ctx = fx(cx, rid, decision.row.0, SiteId::ProcessAudioFinish);
+                apply_in(cx, &ctx, &decision);
+                self.st = Is::Finish;
+            }
+            Is::AwaitPipeline => {
+                let reply = cx
+                    .mailbox
+                    .iter()
+                    .position(|(tid, _)| *tid == cx.tid)
+                    .map(|index| cx.mailbox.remove(index).1);
+                let Some(reply) = reply else {
+                    return Poll::Blocked;
+                };
+                // A panic unwinds the command: no tail. An `Err` is returned after the tail
+                // (`pipeline_result?`), so the tail still runs.
+                self.st = if reply == PipelineReply::Panicked {
+                    Is::Finish
+                } else {
+                    Is::D302Tail
+                };
+            }
+            Is::D302Tail => {
+                // R302.2: the tail after the pipeline, `Input::PipelineIdleEmit` with
+                // `LegacyPost` through `handle`.
+                let view = cx.w.view();
+                let rid = self.rid;
+                let direct = core_pa::decide_process_audio_finish(
+                    &view,
+                    ProcessAudioFinishInput {
+                        rid: RecordingId(rid),
+                        kind: ProcessAudioFinishKind::PipelineDone,
+                        closure_emit: false,
+                    },
+                    at,
+                );
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &view,
+                    Input::PipelineIdleEmit(crate::inputs::PipelineIdleEmitInput {
+                        rid: RecordingId(rid),
+                        kind: crate::inputs::PostKind::LegacyPost,
+                        result: None,
+                        interrupted: None,
+                        char_count: 0,
+                    }),
+                    at,
+                    direct,
+                );
+                log_decision(cx, SiteId::ProcessAudioFinish, &decision, rid, None);
+                let ctx = fx(cx, rid, decision.row.0, SiteId::ProcessAudioFinish);
+                apply_in(cx, &ctx, &decision);
+                self.st = Is::Finish;
+            }
+            Is::Finish => {
+                self.retire_owned(cx);
                 release_t(cx);
                 return Poll::Done;
             }
@@ -696,7 +1250,15 @@ impl Task for StopFlight {
                     // capture first (D-S1-3, PD-15).
                     let stale = self.expected.expect("a stale stop has an expectation");
                     let mut input = input;
-                    let first = core_stop::decide_stop_request_stale(input, at).expect("stale");
+                    let view = cx.w.view();
+                    let direct = core_stop::decide_stop_request_stale(input, at).expect("stale");
+                    let first = once(
+                        &cx.w.handle_faults,
+                        &view,
+                        Input::StopRequest(input),
+                        at,
+                        direct,
+                    );
                     if matches!(
                         first.verdict,
                         Verdict::NeedObservation(ObsKind::TakeInterrupted { .. })
@@ -712,7 +1274,14 @@ impl Task for StopFlight {
                         });
                         input.interrupted = Some(taken.map(meta_of));
                     }
-                    let decision = core_stop::decide_stop_request_stale(input, at).expect("stale");
+                    let direct = core_stop::decide_stop_request_stale(input, at).expect("stale");
+                    let decision = once(
+                        &cx.w.handle_faults,
+                        &view,
+                        Input::StopRequest(input),
+                        at,
+                        direct,
+                    );
                     log_decision(cx, SiteId::StopRequest, &decision, stale, None);
                     let ctx = fx(cx, stale, decision.row.0, SiteId::StopRequest);
                     queue_phase(&mut self.q, ctx, &decision, Placement::Pre);
@@ -728,7 +1297,14 @@ impl Task for StopFlight {
             Ts::D201 => {
                 let view = cx.w.view();
                 let mut input = *self.input_ref();
-                let mut decision = core_stop::decide_stop_request(&view, input, at);
+                let direct = core_stop::decide_stop_request(&view, input, at);
+                let mut decision = once(
+                    &cx.w.handle_faults,
+                    &view,
+                    Input::StopRequest(input),
+                    at,
+                    direct,
+                );
                 if let Verdict::NeedObservation(ObsKind::TakeInterrupted { id }) = decision.verdict
                 {
                     let earlier = cx.w.taken_by.get(&id.0).map(|row| (*row,));
@@ -743,7 +1319,14 @@ impl Task for StopFlight {
                     self.interrupted = taken;
                     input.interrupted = Some(taken.map(meta_of));
                     *self.input_ref() = input;
-                    decision = core_stop::decide_stop_request(&view, input, at);
+                    let direct = core_stop::decide_stop_request(&view, input, at);
+                    decision = once(
+                        &cx.w.handle_faults,
+                        &view,
+                        Input::StopRequest(input),
+                        at,
+                        direct,
+                    );
                 }
                 log_decision(cx, SiteId::StopRequest, &decision, self.rid, None);
                 if self.is_auto && self.interrupted.is_none() {
@@ -800,17 +1383,27 @@ impl Task for StopFlight {
                     token,
                     SiteId::CancelCaptureResult,
                     self.rid,
-                    move |_, op_status| {
-                        core_cancel::decide_cancel_capture_result_nolock(
+                    move |w, op_status| {
+                        let input = CancelCaptureResultInput {
+                            token,
+                            op_status,
+                            rid: RecordingId(rid),
+                            result,
+                            origin: CancelOrigin::Stop,
+                        };
+                        // The direct call reads no fact of the view (`default()`), so a
+                        // `handle` that fed it the real ones must still agree.
+                        let direct = core_cancel::decide_cancel_capture_result_nolock(
                             crate::state::LockFreeFacts::default(),
-                            CancelCaptureResultInput {
-                                token,
-                                op_status,
-                                rid: RecordingId(rid),
-                                result,
-                                origin: CancelOrigin::Stop,
-                            },
+                            input,
                             at,
+                        );
+                        once(
+                            &w.handle_faults,
+                            &w.view(),
+                            Input::CancelCaptureResult(input),
+                            at,
+                            direct,
                         )
                     },
                 );
@@ -832,16 +1425,21 @@ impl Task for StopFlight {
                         SiteId::StopContextNoLock,
                         rid,
                         move |w, op_status| {
-                            core_stop::decide_stop_context_nolock(
-                                w.facts(),
-                                StopContextInput {
-                                    token,
-                                    op_status,
-                                    rid: RecordingId(rid),
-                                    context_present: true,
-                                    interrupted_error,
-                                },
+                            let input = StopContextInput {
+                                token,
+                                op_status,
+                                rid: RecordingId(rid),
+                                context_present: true,
+                                interrupted_error,
+                            };
+                            let direct =
+                                core_stop::decide_stop_context_nolock(w.facts(), input, at);
+                            once(
+                                &w.handle_faults,
+                                &w.view(),
+                                Input::StopContext(input),
                                 at,
+                                direct,
                             )
                         },
                     );
@@ -870,16 +1468,21 @@ impl Task for StopFlight {
                 let rid = self.rid;
                 let interrupted_error = self.interrupted.map(|preserved| preserved.code);
                 let decision = consume(cx, token, SiteId::StopContext, rid, move |w, op_status| {
-                    core_stop::decide_stop_context(
-                        &w.view(),
-                        StopContextInput {
-                            token,
-                            op_status,
-                            rid: RecordingId(rid),
-                            context_present: false,
-                            interrupted_error,
-                        },
+                    let input = StopContextInput {
+                        token,
+                        op_status,
+                        rid: RecordingId(rid),
+                        context_present: false,
+                        interrupted_error,
+                    };
+                    let view = w.view();
+                    let direct = core_stop::decide_stop_context(&view, input, at);
+                    once(
+                        &w.handle_faults,
+                        &view,
+                        Input::StopContext(input),
                         at,
+                        direct,
                     )
                 });
                 let decision = after_pre(cx, decision);
@@ -948,10 +1551,15 @@ impl Task for StopFlight {
                         SiteId::StopCaptureResult,
                         rid,
                         move |w, op_status| {
-                            core_stop::decide_stop_capture_result_nolock(
-                                w.facts(),
-                                StopCaptureResultInput { op_status, ..probe },
+                            let input = StopCaptureResultInput { op_status, ..probe };
+                            let direct =
+                                core_stop::decide_stop_capture_result_nolock(w.facts(), input, at);
+                            once(
+                                &w.handle_faults,
+                                &w.view(),
+                                Input::StopCaptureResult(input),
                                 at,
+                                direct,
                             )
                         },
                     );
@@ -977,14 +1585,18 @@ impl Task for StopFlight {
             Ts::PanicGuard => {
                 let view = cx.w.view();
                 let rid = self.rid;
-                let decision = core_stop::decide_guard_finish(
+                let input = crate::inputs::GuardFinishInput {
+                    rid: RecordingId(rid),
+                    origin: GuardOrigin::Dropped,
+                    closure_emit: false,
+                };
+                let direct = core_stop::decide_guard_finish(&view, input, at);
+                let decision = once(
+                    &cx.w.handle_faults,
                     &view,
-                    crate::inputs::GuardFinishInput {
-                        rid: RecordingId(rid),
-                        origin: GuardOrigin::Dropped,
-                        closure_emit: false,
-                    },
+                    Input::GuardFinish(input),
                     at,
+                    direct,
                 );
                 let decision = after_pre(cx, decision);
                 log_decision(
@@ -1015,15 +1627,20 @@ impl Task for StopFlight {
                     SiteId::StopCaptureResult,
                     rid,
                     move |w, op_status| {
-                        core_stop::decide_stop_capture_result(
-                            &w.view(),
-                            StopCaptureResultInput {
-                                token,
-                                op_status,
-                                rid: RecordingId(rid),
-                                result: capture,
-                            },
+                        let input = StopCaptureResultInput {
+                            token,
+                            op_status,
+                            rid: RecordingId(rid),
+                            result: capture,
+                        };
+                        let view = w.view();
+                        let direct = core_stop::decide_stop_capture_result(&view, input, at);
+                        once(
+                            &w.handle_faults,
+                            &view,
+                            Input::StopCaptureResult(input),
                             at,
+                            direct,
                         )
                     },
                 );
@@ -1064,16 +1681,20 @@ impl Task for StopFlight {
                 // R204b.1-.4: the second D section, id-only (`KB(false)`, `EM(idle)`).
                 let view = cx.w.view();
                 let rid = self.rid;
-                let decision = core_stop::decide_pipeline_idle_emit(
+                let input = crate::inputs::PipelineIdleEmitInput {
+                    rid: RecordingId(rid),
+                    kind: crate::inputs::PostKind::StopPost,
+                    result: None,
+                    interrupted: None,
+                    char_count: 0,
+                };
+                let direct = core_stop::decide_pipeline_idle_emit(&view, input, at);
+                let decision = once(
+                    &cx.w.handle_faults,
                     &view,
-                    crate::inputs::PipelineIdleEmitInput {
-                        rid: RecordingId(rid),
-                        kind: crate::inputs::PostKind::StopPost,
-                        result: None,
-                        interrupted: None,
-                        char_count: 0,
-                    },
+                    Input::PipelineIdleEmit(input),
                     at,
+                    direct,
                 );
                 log_decision(cx, SiteId::PipelineIdleEmit, &decision, rid, None);
                 let ctx = fx(cx, rid, decision.row.0, SiteId::PipelineIdleEmit);
@@ -1089,18 +1710,23 @@ impl Task for StopFlight {
                     }
                     _ => crate::inputs::PipelineResult::Err,
                 };
-                let decision = core_stop::decide_pipeline_idle_emit_tail(
-                    crate::inputs::PipelineIdleEmitInput {
-                        rid: RecordingId(rid),
-                        kind: crate::inputs::PostKind::StopPost,
-                        result: Some(result),
-                        interrupted: self.interrupted.map(|preserved| preserved.code),
-                        char_count: usize::from(matches!(
-                            result,
-                            crate::inputs::PipelineResult::Ok(PipelineTerminal::Success)
-                        )),
-                    },
+                let input = crate::inputs::PipelineIdleEmitInput {
+                    rid: RecordingId(rid),
+                    kind: crate::inputs::PostKind::StopPost,
+                    result: Some(result),
+                    interrupted: self.interrupted.map(|preserved| preserved.code),
+                    char_count: usize::from(matches!(
+                        result,
+                        crate::inputs::PipelineResult::Ok(PipelineTerminal::Success)
+                    )),
+                };
+                let direct = core_stop::decide_pipeline_idle_emit_tail(input, at);
+                let decision = once(
+                    &cx.w.handle_faults,
+                    &cx.w.view(),
+                    Input::PipelineIdleEmit(input),
                     at,
+                    direct,
                 );
                 // R204b.5/.6: the terminal code is the interrupted capture's, else the
                 // pipeline's own no-speech code.
@@ -1123,6 +1749,10 @@ impl Task for StopFlight {
                 release_t(cx);
                 if let Some(window) = self.window {
                     cx.w.window_stop_returned(window);
+                    cx.out.notes.push(Note::WindowStopReturned {
+                        window,
+                        tid: cx.tid,
+                    });
                 }
                 return Poll::Done;
             }
@@ -1207,12 +1837,16 @@ impl Task for CancelFlight {
             Cs::D205 => {
                 let view = cx.w.view();
                 self.rid = cx.w.current_id;
-                let decision = core_cancel::decide_cancel_request(
+                let input = CancelInput {
+                    expected: self.expected.map(RecordingId),
+                };
+                let direct = core_cancel::decide_cancel_request(&view, input, at);
+                let decision = once(
+                    &cx.w.handle_faults,
                     &view,
-                    CancelInput {
-                        expected: self.expected.map(RecordingId),
-                    },
+                    Input::CancelRequest(input),
                     at,
+                    direct,
                 );
                 log_decision(cx, SiteId::CancelRequest, &decision, self.rid, None);
                 if decision.verdict != Verdict::Applied {
@@ -1263,17 +1897,27 @@ impl Task for CancelFlight {
                     token,
                     SiteId::CancelCaptureResult,
                     rid,
-                    move |_, op_status| {
-                        core_cancel::decide_cancel_capture_result_nolock(
+                    move |w, op_status| {
+                        let input = CancelCaptureResultInput {
+                            token,
+                            op_status,
+                            rid: RecordingId(rid),
+                            result,
+                            origin: CancelOrigin::Cancel,
+                        };
+                        // The direct call reads no fact of the view (`default()`), so a
+                        // `handle` that fed it the real ones must still agree.
+                        let direct = core_cancel::decide_cancel_capture_result_nolock(
                             crate::state::LockFreeFacts::default(),
-                            CancelCaptureResultInput {
-                                token,
-                                op_status,
-                                rid: RecordingId(rid),
-                                result,
-                                origin: CancelOrigin::Cancel,
-                            },
+                            input,
                             at,
+                        );
+                        once(
+                            &w.handle_faults,
+                            &w.view(),
+                            Input::CancelCaptureResult(input),
+                            at,
+                            direct,
                         )
                     },
                 );
@@ -1436,14 +2080,18 @@ impl Task for Pipeline {
                 let view = cx.w.view();
                 let rid = self.rid;
                 let origin = self.origin();
-                let decision = core_stop::decide_guard_finish(
+                let input = crate::inputs::GuardFinishInput {
+                    rid: RecordingId(rid),
+                    origin,
+                    closure_emit: false,
+                };
+                let direct = core_stop::decide_guard_finish(&view, input, at);
+                let decision = once(
+                    &cx.w.handle_faults,
                     &view,
-                    crate::inputs::GuardFinishInput {
-                        rid: RecordingId(rid),
-                        origin,
-                        closure_emit: false,
-                    },
+                    Input::GuardFinish(input),
                     at,
+                    direct,
                 );
                 let decision = after_pre(cx, decision);
                 log_decision(cx, SiteId::GuardFinish, &decision, rid, Some(origin));
