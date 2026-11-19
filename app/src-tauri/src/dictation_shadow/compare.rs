@@ -67,8 +67,8 @@ use super::summary::Stats;
 use super::transport::Transport;
 use super::types::{
     CondWitness, DiffKind, EffectResult, HistoryAction, HistoryTable, LiveOp, MirrorField,
-    MirrorValue, MirrorWitness, ObservedFact, PredId, RecorderId, ReplyKind, ShadowHeader,
-    ShadowMsg, TickerGate, WitnessedEffect,
+    MirrorValue, MirrorWitness, NoReplyReason, ObservedFact, PredId, RecorderId, ReplyKind,
+    ShadowHeader, ShadowMsg, TickerGate, WitnessedEffect,
 };
 
 /// Early headers held while a gap is open (C8.3).
@@ -438,6 +438,8 @@ struct Record {
     /// A `PipelineGuardFinish(Completed)` ran: the successful performance outcome.
     perf_success: bool,
     reply: Option<ReplyKind>,
+    /// The producer announced that this flight closes with no reply of its own.
+    no_reply: Option<NoReplyReason>,
     /// Some comparison reported a mismatch for this record.
     mismatched: bool,
 }
@@ -524,6 +526,7 @@ impl Record {
             perf_success: false,
             token: input_token(&header.input),
             reply: None,
+            no_reply: None,
             mismatched: false,
         }
     }
@@ -1047,12 +1050,18 @@ impl Record {
                 .any(|(i, consumed)| !consumed && self.slots[*i] == Slot::Ran))
     }
 
-    /// The shape of the **named no-reply close** (D-S2c-9 b): the flight ran every
-    /// decided effect and only the command's reply never came (a deferred finish a
-    /// queued drain ran, a reply another site returns, the import's own pipeline
-    /// error). Any other flight that closed without completing is unexpected.
-    fn is_named_no_reply(&self) -> bool {
-        self.decision.reply.is_some() && self.reply.is_none() && self.all_effects_ran()
+    /// The **named no-reply close** (D-S2c-9 b): the producer announced it
+    /// ([`ShadowMsg::NoReply`], sent only at the three paths that omit a reply), the
+    /// decision does have a reply that never came, every decided effect ran, and every
+    /// history operation the row requires was witnessed. A flight that merely closed
+    /// after its effects, with no announcement or a missing witness, is unexpected.
+    fn grants_no_reply_exemption(&self) -> Option<NoReplyReason> {
+        let reason = self.no_reply?;
+        (self.decision.reply.is_some()
+            && self.reply.is_none()
+            && self.all_effects_ran()
+            && !self.missing_history(true))
+        .then_some(reason)
     }
 }
 
@@ -1701,6 +1710,10 @@ impl Comparator {
                     record.reply = Some(kind);
                     None
                 }
+                ShadowMsg::NoReply { reason, .. } => {
+                    record.no_reply = Some(reason);
+                    None
+                }
                 ShadowMsg::Close {
                     completed: done, ..
                 } => {
@@ -1733,8 +1746,19 @@ impl Comparator {
                     // E3 credit: only a flight that ran to its end and matched (D-S2c-15
                     // S2), never a header that was compared and then abandoned.
                     self.stats.row(site, row).matched += 1;
-                } else if record.is_named_no_reply() {
+                    let decided = record.decision.reply.as_ref().map(ReplyKind::of);
+                    if let (Some(decided), Some(live)) = (decided, record.reply) {
+                        if decided.is_unclassified_agreement(live) {
+                            self.stats.unclassified_err_replies += 1;
+                        }
+                    }
+                } else if let Some(reason) = record.grants_no_reply_exemption() {
                     self.stats.named_no_reply += 1;
+                    if reason == NoReplyReason::Delegated {
+                        // A delegated row's coverage: its effects and history verified
+                        // here, its reply verified at the site that returns it.
+                        self.stats.row(site, row).delegated += 1;
+                    }
                 } else {
                     self.stats.note_incomplete("abandoned");
                 }

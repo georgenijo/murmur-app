@@ -1,0 +1,212 @@
+// The dictation lock D's acquisition-site rules (D-S2c-9 a, D-S2c-15 review, minor 1).
+//
+// `include!`d by `build.rs`, which generates the complete site map from the source files
+// it builds, and by `dictation_shadow/sites.rs`, which uses the same rules to check that
+// map in tests. Pure text in, a class out: no I/O, no dependency.
+
+/// Production sites that take the dictation lock D without taking a decision section: not
+/// a family entry, so no header is owed for them (D-S2c-9 a). The guard function counts
+/// **every** other acquisition while armed, and the replay requires each one to end in a
+/// header, a named no-decision outcome or an unwind. A site is named by its file and the
+/// text of its line and of the line after it (so an edit elsewhere does not shift it),
+/// with the reason.
+#[allow(dead_code)]
+pub(crate) const NON_FAMILY: &[(&str, &str, &str, &str)] = &[
+    (
+        "src/commands/recording.rs",
+        "let dictation = app_state.dictation.lock_or_recover();",
+        "(",
+        "the code-vocabulary prompt's fast-path read of three fields",
+    ),
+    (
+        "src/commands/recording.rs",
+        "let dictation = app_state.dictation.lock_or_recover();",
+        "let Some(current_code_vocab) = cached_code_vocab_prompt(&dictation, bundle_id) else {",
+        "the context snapshot's code-vocabulary revalidation",
+    ),
+    (
+        "src/commands/recording.rs",
+        "let dictation = state.app_state.dictation.lock_or_recover();",
+        "project_lifecycle_view(&state.app_state, &dictation)",
+        "query 402, the short read after a smart-destination capture (D-S2-3)",
+    ),
+    (
+        "src/commands/recording.rs",
+        "let dictation = app_state.dictation.lock_or_recover();",
+        "if !owns_delivery(app_state, &dictation, recording_id) {",
+        "the delivery ownership fence (query 403): held across a paste, not a decision",
+    ),
+    (
+        "src/commands/recording.rs",
+        "let dictation = app_state.dictation.lock_or_recover();",
+        "drop(wait);",
+        "the timed delivery ownership fence (query 403)",
+    ),
+    (
+        "src/commands/recording.rs",
+        "let _dictation = app_state.dictation.lock_or_recover();",
+        "if app_state.recording_id.load(Ordering::SeqCst) != recording_id",
+        "the generation fence around an emit: held across it, not a decision",
+    ),
+    (
+        "src/commands/recording/lifecycle_ports.rs",
+        "let dictation = state.app_state.dictation.lock_or_recover();",
+        "register_partial_ticker_locked",
+        "the ticker registration `SD` makes inside its own section's spawn",
+    ),
+    (
+        "src/commands/recording.rs",
+        "let dictation = state.app_state.dictation.lock_or_recover();",
+        "Ok(serde_json::json!({",
+        "the overlay's status read (`get_status`): a read of three fields",
+    ),
+    (
+        "src/dictation_admission.rs",
+        "s.read(|o| facts::status(app_state.dictation.lock_or_recover().status, o))",
+        "});",
+        "the admission probe's read of the status",
+    ),
+];
+
+/// Text in a function body that makes an acquisition of D in it a decision section: the
+/// capture API the family entries call (`Flight`, `capture::entry`, the header's seal).
+/// An acquisition in a function with none of these cannot produce a header, so it owes
+/// none. Named sites ([`NON_FAMILY`]) are non-family whatever their function holds.
+#[allow(dead_code)]
+const FAMILY_MARKERS: &[&str] = &[
+    "capture::",
+    "Flight::",
+    ".decided(",
+    "seal_d",
+    "AfterD",
+    "shadow::entry",
+];
+
+/// What an acquisition site is.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Site {
+    /// Test code: never a decision section, never counted in a test build.
+    Test,
+    /// Takes D without taking a decision section (named, or in a function with no
+    /// capture call).
+    NonFamily,
+    /// A decision section, owed a header.
+    Family,
+    /// The caller's source cannot be read, or the site is not in the build's map.
+    Unmapped,
+}
+
+#[allow(dead_code)]
+impl Site {
+    pub(crate) const fn code(self) -> u8 {
+        match self {
+            Self::Test => 0,
+            Self::NonFamily => 1,
+            Self::Family => 2,
+            Self::Unmapped => 3,
+        }
+    }
+
+    pub(crate) const fn from_code(code: u8) -> Self {
+        match code {
+            0 => Self::Test,
+            1 => Self::NonFamily,
+            2 => Self::Family,
+            _ => Self::Unmapped,
+        }
+    }
+}
+
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+/// The first line of the function that holds line `at` (1-based) and one past its last,
+/// as indices into `lines`: the nearest preceding `fn` line indented less than the site,
+/// to the first `}` at that indent.
+#[allow(dead_code)]
+fn enclosing_fn(lines: &[&str], at: usize) -> Option<(usize, usize)> {
+    let site_indent = indent_of(lines.get(at.checked_sub(1)?)?);
+    let start = (0..at.saturating_sub(1)).rev().find(|&i| {
+        let line = lines[i].trim_start();
+        indent_of(lines[i]) < site_indent
+            && (line.starts_with("fn ")
+                || [
+                    "pub fn ",
+                    "pub(crate) fn ",
+                    "pub(super) fn ",
+                    "async fn ",
+                    "pub async fn ",
+                    "pub(crate) async fn ",
+                    "pub(super) async fn ",
+                    "unsafe fn ",
+                    "const fn ",
+                ]
+                .iter()
+                .any(|prefix| line.starts_with(prefix)))
+    })?;
+    let fn_indent = indent_of(lines[start]);
+    let end = (start + 1..lines.len())
+        .find(|&i| indent_of(lines[i]) == fn_indent && lines[i].trim_start().starts_with('}'))
+        .map_or(lines.len(), |i| i + 1);
+    Some((start, end))
+}
+
+/// What the acquisition of D at `file`:`line` (1-based) in source `text` is.
+#[allow(dead_code)]
+pub(crate) fn classify_text(file: &str, text: &str, line: usize) -> Site {
+    if file.ends_with("_tests.rs")
+        || file.ends_with("_harness.rs")
+        || file.contains("/tests/")
+        || file.contains("dictation_shadow/")
+    {
+        return Site::Test;
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(here) = line.checked_sub(1).and_then(|i| lines.get(i)) else {
+        return Site::Unmapped;
+    };
+    let here = here.trim();
+    // An inline `#[cfg(test)] mod x {`: its lines, up to the `}` at column 0 that rustfmt
+    // puts at its end, are test code.
+    let in_test_module = lines
+        .windows(2)
+        .enumerate()
+        .filter(|(_, pair)| {
+            pair[0].trim() == "#[cfg(test)]"
+                && pair[1].trim_start().starts_with("mod ")
+                && pair[1].trim_end().ends_with('{')
+        })
+        .any(|(start, _)| {
+            let end = lines[start + 2..]
+                .iter()
+                .position(|line| *line == "}")
+                .map_or(lines.len(), |offset| start + 2 + offset + 1);
+            (start + 2..=end).contains(&line)
+        });
+    if in_test_module {
+        return Site::Test;
+    }
+    let next = lines.get(line).map(|line| line.trim()).unwrap_or_default();
+    let named = NON_FAMILY.iter().any(|(path, text, after, _)| {
+        file.ends_with(path)
+            && here == *text
+            && (next == *after || (after.len() > 1 && next.contains(*after)))
+    });
+    if named {
+        return Site::NonFamily;
+    }
+    match enclosing_fn(&lines, line) {
+        Some((start, end)) => {
+            let body = lines[start..end].join("\n");
+            if FAMILY_MARKERS.iter().any(|marker| body.contains(marker)) {
+                Site::Family
+            } else {
+                Site::NonFamily
+            }
+        }
+        // Not inside a function we can find: counted, so it shows if it ever runs.
+        None => Site::Family,
+    }
+}

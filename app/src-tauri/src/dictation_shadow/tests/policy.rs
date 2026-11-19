@@ -235,9 +235,31 @@ fn shadow_never_executes() {
             "live_counters.rs must only read: `{token}`"
         );
     }
+    // Exactly these two calls into the live side, by full path (a substitute such as
+    // `dictation_executor::shadow::no_decision()` is a different path and fails here).
+    let mut paths: Vec<String> = counters
+        .match_indices("dictation_executor::")
+        .map(|(at, _)| {
+            let rest = &counters[at..];
+            let end = rest
+                .find(|c: char| !(c.is_alphanumeric() || c == '_' || c == ':'))
+                .unwrap_or(rest.len());
+            // The path and its empty argument list: a call, not a mention.
+            let call = if rest[end..].starts_with("()") {
+                "()"
+            } else {
+                "?"
+            };
+            format!("{}{call}", &rest[..end])
+        })
+        .collect();
+    paths.sort();
     assert_eq!(
-        counters.matches("dictation_executor::").count(),
-        2,
+        paths,
+        [
+            "dictation_executor::adapter::core_divergences()",
+            "dictation_executor::shadow::conservation_counts()",
+        ],
         "live_counters.rs reads exactly the divergence count and the entry/header books"
     );
     // The only thing the shadow writes is its own two files, through `summary`.
@@ -290,6 +312,16 @@ fn shadow_replays_live_op_ids() {
                 !code.contains("fetch_add(1"),
                 "dictation_shadow/{name} counts something that looks like an op id"
             );
+        }
+        // `sites.rs` may count only its own table: one slot's tally, and the overflow.
+        if name == "sites.rs" {
+            for line in code.lines().filter(|line| line.contains("fetch_add(1")) {
+                assert!(
+                    line.contains("slot.count.fetch_add(1")
+                        || line.contains("OVERFLOW.fetch_add(1"),
+                    "dictation_shadow/sites.rs counts something other than its table: {line}"
+                );
+            }
         }
     }
 }

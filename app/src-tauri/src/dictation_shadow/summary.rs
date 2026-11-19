@@ -139,6 +139,10 @@ pub(crate) struct RowStats {
     /// Compared decisions whose flight ran to its end and matched (E3 credit; D-S2c-15
     /// S2). `compared` is credited at the header, this at the close.
     pub matched: u64,
+    /// Flights of a **delegated** row (the reply is another site's to return) that
+    /// closed as the announced no-reply close with every effect and history operation
+    /// verified: that row's completion, since it has no `matched` of its own.
+    pub delegated: u64,
     pub mismatched: u64,
     pub pd_witness: u64,
     /// `PostDT:SD` spawns that returned before the gate, by reason code - 1
@@ -237,6 +241,17 @@ pub(crate) struct Stats {
     /// (every decided effect ran; only the command's reply never came): expected,
     /// counted, never a taint.
     pub named_no_reply: u64,
+    /// Matched flights whose decided error text is the shell's own (`Shell`, `SmartAuto`)
+    /// and whose live error text no fixed class named: agreed, but the class could not
+    /// be verified (the verdict reads this as unverified replies, not as a match).
+    pub unclassified_err_replies: u64,
+    /// Messages the producers published after shutdown began were refused (counted
+    /// here, never queued). Any is a taint: the final summary cannot have seen them.
+    pub dropped_after_shutdown: u64,
+    /// Set at the final write only: whether the producers were quiet (no push in
+    /// flight) when the final drain began. `false` is a taint: a message may have
+    /// landed after the final summary.
+    pub shutdown_quiesced: Option<bool>,
     /// Open flights when this summary was written. At the final write a clean exit
     /// needs 0.
     pub outstanding_at_exit: u64,
@@ -319,6 +334,7 @@ impl Stats {
                     json!({
                         "compared": stats.compared,
                         "matched": stats.matched,
+                        "delegated": stats.delegated,
                         "mismatched": stats.mismatched,
                         "pd_witness": stats.pd_witness,
                         "ticker_skipped": ticker_skipped,
@@ -346,6 +362,8 @@ impl Stats {
             "outstanding_at_exit": self.outstanding_at_exit,
             "incomplete_closes": incomplete_closes,
             "named_no_reply": self.named_no_reply,
+            "unclassified_err_replies": self.unclassified_err_replies,
+            "dropped_after_shutdown": self.dropped_after_shutdown,
             "core_divergences": self.core_divergences,
             "compared": self.compared,
             "matched": self.matched,
@@ -376,6 +394,9 @@ impl Stats {
             "per_row": per_row,
             "pd_witness": pd_witness,
         });
+        if let (Some(object), Some(quiesced)) = (document.as_object_mut(), self.shutdown_quiesced) {
+            object.insert("shutdown_quiesced".to_string(), json!(quiesced));
+        }
         if let (Some(object), Some(session)) = (document.as_object_mut(), &self.session) {
             object.insert("session".to_string(), session.to_json());
         }

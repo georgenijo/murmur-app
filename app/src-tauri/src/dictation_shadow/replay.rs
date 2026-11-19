@@ -126,10 +126,40 @@ pub(crate) struct Totals {
     pub mismatched_root: u64,
     pub abandoned: u64,
     pub unverifiable: u64,
+    /// Decisions **compared** per row (credited at the header). Not E3 credit: a flight
+    /// compared and then abandoned, or one whose reply is another site's, is in here
+    /// with no completed close behind it. Read [`Totals::e3_credit`] instead.
     pub per_row: BTreeMap<(u16, u16), u64>,
+    /// Flights per row that ran to their end and matched (D-S2c-15 S2).
+    pub row_matched: BTreeMap<(u16, u16), u64>,
+    /// Flights per **delegated** row that closed as the announced no-reply close with
+    /// their effects and history verified (see [`DELEGATED_ROWS`]).
+    pub row_delegated: BTreeMap<(u16, u16), u64>,
     pub pd_witness: BTreeMap<u8, u64>,
     /// Ticker skips the comparator was told of, by reason (`TickerSkipReason::index`).
     pub ticker_skipped: [u64; super::types::TickerSkipReason::ALL.len()],
+}
+
+/// The rows whose reply is another site's to return (R201.4 and R205.4 decide a reply the
+/// command does not return at that point: the capture cancel's own site returns it). Such a
+/// flight closes as the announced no-reply close, so it has no `matched` of its own: its
+/// E3 coverage is `row_delegated` (effects and history verified at its close), and the reply
+/// it delegates is covered by the receiving site's rows, which E3 requires in their own
+/// right.
+pub(crate) const DELEGATED_ROWS: &[(u16, u16)] = &[(201, 4), (205, 4)];
+
+impl Totals {
+    /// E3 credit per row: `matched` for an ordinary row, `delegated` for a delegated one.
+    /// Never the header count.
+    pub(crate) fn e3_credit(&self) -> BTreeMap<(u16, u16), u64> {
+        let mut credit = self.row_matched.clone();
+        for row in DELEGATED_ROWS {
+            if let Some(count) = self.row_delegated.get(row) {
+                *credit.entry(*row).or_default() += count;
+            }
+        }
+        credit
+    }
 }
 
 /// The totals so far.
@@ -193,6 +223,8 @@ impl Replay {
         totals.unverifiable += stats.unverifiable;
         for (row, row_stats) in &stats.per_row {
             *totals.per_row.entry(*row).or_default() += row_stats.compared;
+            *totals.row_matched.entry(*row).or_default() += row_stats.matched;
+            *totals.row_delegated.entry(*row).or_default() += row_stats.delegated;
             for (total, noted) in totals
                 .ticker_skipped
                 .iter_mut()
@@ -363,7 +395,7 @@ fn classify_site(at: &std::panic::Location<'_>) -> bool {
             }
             false
         }
-        Site::Unreadable => panic!("the D guard's caller file {} cannot be read", at.file()),
+        Site::Unmapped => panic!("the D guard's caller file {} cannot be read", at.file()),
     }
 }
 
@@ -550,6 +582,19 @@ impl Report {
                 credited + s.abandoned,
                 s.matched,
                 "{what}: per-row `matched` credits only flights that completed ({s:?})"
+            );
+        }
+        // A delegated row's completion is its verified no-reply close, and only a
+        // delegated row has one (the list is checked against what the goldens reach).
+        for (row, stats) in &s.per_row {
+            let delegated_row = DELEGATED_ROWS.contains(row);
+            assert!(
+                delegated_row || stats.delegated == 0,
+                "{what}: row {row:?} closed as a delegated no-reply but is not in DELEGATED_ROWS"
+            );
+            assert!(
+                !delegated_row || stats.matched == 0,
+                "{what}: delegated row {row:?} was credited a completed match"
             );
         }
         let unexpected = s.incomplete_closes.get("abandoned").copied().unwrap_or(0);

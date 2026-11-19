@@ -86,6 +86,9 @@ pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// The clean-exit hook waits this long for the final drain and summary.
 const EXIT_WAIT: Duration = Duration::from_secs(2);
 
+/// How long shutdown waits for a push already under way to finish before it drains.
+const QUIESCE_WAIT: Duration = Duration::from_millis(250);
+
 /// Drain attempts the comparison thread makes at shutdown before it writes the final
 /// summary, whatever the ring still holds (D-S2c-3 e). A producer paused between
 /// reserving a slot and publishing it keeps the consumer at that slot; the summary
@@ -322,6 +325,14 @@ pub(crate) fn run(
         // Read the stop flag *before* draining: every message pushed before the
         // request was made is then in the queue this pass drains.
         let stop = control.shutdown.load(Ordering::Acquire);
+        if stop {
+            // Quiesce the producers first (D-S2c-15 review, major 2): after this, a push
+            // is refused and counted, and the ones already past the check are queued,
+            // so the drain below sees every message there will ever be. A producer that
+            // does not go quiet by the deadline is reported, never assumed gone.
+            let quiet = transport.close_and_quiesce(QUIESCE_WAIT);
+            comparator.stats.shutdown_quiesced = Some(quiet);
+        }
         let budget = transport.capacity() * DRAIN_BUDGET_RINGS;
         let progressed = comparator.drain_up_to(transport, budget);
         if stop {
@@ -334,6 +345,7 @@ pub(crate) fn run(
                 std::thread::sleep(poll);
                 comparator.drain_up_to(transport, budget);
             }
+            comparator.stats.dropped_after_shutdown = transport.after_close();
             comparator.stats.unconsumed = transport.unconsumed() as u64;
             comparator.stats.reserved_unpublished = transport.reserved_unpublished() as u64;
             stamp(&mut comparator, true);

@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// The dictation lock's site rules, shared with `dictation_shadow/sites.rs`.
+include!("src/dictation_shadow/site_rules.in");
+
 fn main() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os != "macos" {
@@ -11,7 +14,13 @@ fn main() {
     // (commands::permissions::check_microphone_permission). AppKit does not load it.
     println!("cargo:rustc-link-lib=framework=AVFoundation");
     build_foundation_models_bridge();
-    export_build_identity();
+    // Only a `dictation-shadow` build records its identity and site map: a default or
+    // release build consults neither git nor the sources, and its rebuild triggers do
+    // not change.
+    if std::env::var_os("CARGO_FEATURE_DICTATION_SHADOW").is_some() {
+        export_build_identity();
+        generate_lock_site_map();
+    }
     tauri_build::build()
 }
 
@@ -55,6 +64,51 @@ fn export_build_identity() {
         .or_else(|| std::env::var("PROFILE").ok())
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=MURMUR_BUILD_PROFILE={profile}");
+}
+
+/// Write `OUT_DIR/dictation_lock_sites.rs`: every `.lock_or_recover()` call site in
+/// `src/`, as `(file, line, class)` per the shared rules, for the shadow's summary to
+/// classify the dictation lock's acquisitions without reading a file at run time.
+fn generate_lock_site_map() {
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=src/dictation_shadow/site_rules.in");
+    let mut files = Vec::new();
+    collect_sources(Path::new("src"), &mut files);
+    files.sort();
+    let mut entries = String::new();
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let name = path.to_string_lossy().replace('\\', "/");
+        for (index, line) in text.lines().enumerate() {
+            if !line.contains(".lock_or_recover()") {
+                continue;
+            }
+            let class = classify_text(&name, &text, index + 1).code();
+            entries.push_str(&format!("    ({name:?}, {}, {class}),\n", index + 1));
+        }
+    }
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
+    std::fs::write(
+        out_dir.join("dictation_lock_sites.rs"),
+        format!("pub(super) const SITES: &[(&str, u32, u8)] = &[\n{entries}];\n"),
+    )
+    .expect("write the dictation lock site map");
+}
+
+fn collect_sources(dir: &Path, files: &mut Vec<PathBuf>) {
+    let Ok(read) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_sources(&path, files);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            files.push(path);
+        }
+    }
 }
 
 fn is_full_sha(text: &str) -> bool {

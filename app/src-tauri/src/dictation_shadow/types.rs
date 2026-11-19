@@ -387,9 +387,35 @@ pub(crate) enum ErrClass {
     SmartAutoWithFixedDevice,
     SmartAuto,
     ProcessAudio(ProcessAudioRefusal),
+    /// **Live side only**: an error text no fixed class names. The dynamic Smart Auto
+    /// and shell errors carry text the shell builds at its own error site, so the
+    /// producer cannot tell them from each other; they are counted in the summary as
+    /// their own class, never matched against a fixed class (D-S2c-15 review, major 3).
+    Unclassified,
 }
 
 impl ErrClass {
+    /// The class of an `Err` text the command returned, from the closed set of fixed
+    /// texts the core decides (`ErrText::message`). Anything else is
+    /// [`ErrClass::Unclassified`]. Reads the text and keeps only the class.
+    pub(crate) fn classify_live(text: &str) -> Self {
+        const REFUSALS: [ProcessAudioRefusal; 4] = [
+            ProcessAudioRefusal::MeetingActive,
+            ProcessAudioRefusal::FileTranscription,
+            ProcessAudioRefusal::Benchmark,
+            ProcessAudioRefusal::LiveDictation,
+        ];
+        if let Some(refusal) = REFUSALS.into_iter().find(|r| r.message() == text) {
+            Self::ProcessAudio(refusal)
+        } else if ErrText::SmartAutoWithFixedDevice.message().as_deref() == Some(text) {
+            Self::SmartAutoWithFixedDevice
+        } else if text.starts_with("Missing dictation context for recording ") {
+            Self::MissingContext
+        } else {
+            Self::Unclassified
+        }
+    }
+
     pub(crate) fn of(text: &ErrText) -> Self {
         match text {
             ErrText::Shell => Self::Shell,
@@ -415,16 +441,47 @@ impl ReplyKind {
 
     /// Whether the reply the live path returned (`live`) is the one the core decided
     /// (`self`). The detailed kinds are compared on their `state` / error class too.
-    /// A live kind that carries no detail (`Typed`, `Transcription`, `Err`: the
-    /// producer could not read it) agrees on the kind alone, exactly as before D-S2c-15.
+    /// A live `Typed` or `Transcription` that carries no detail (the producer could not
+    /// read the `state`) agrees on the kind alone. A live `Err` is always classified
+    /// (`ErrAs`); an unclassifiable text agrees only with the decided classes whose text
+    /// the shell owns (`Shell`, `SmartAuto`), and is counted there. It never agrees with
+    /// a fixed class, and a plain `Err` agrees with nothing.
     pub(crate) fn agrees(self, live: Self) -> bool {
         match (self, live) {
             (Self::TypedAt(a, _), Self::Typed(b)) => a == b,
             (Self::TranscriptionAt(_), Self::Transcription) => true,
-            (Self::ErrAs(_), Self::Err) => true,
+            (
+                Self::ErrAs(ErrClass::Shell | ErrClass::SmartAuto),
+                Self::ErrAs(ErrClass::Unclassified),
+            ) => true,
             (decided, live) => decided == live,
         }
     }
+
+    /// The decided reply is an error whose text the shell owns, and the live side could
+    /// not classify the one it returned: agreed, but unverifiable, so it is counted.
+    pub(crate) fn is_unclassified_agreement(self, live: Self) -> bool {
+        matches!(
+            (self, live),
+            (
+                Self::ErrAs(ErrClass::Shell | ErrClass::SmartAuto),
+                Self::ErrAs(ErrClass::Unclassified)
+            )
+        )
+    }
+}
+
+/// Why a flight intentionally closes with no reply of its own (D-S2c-9 b, D-S2c-10): sent
+/// by the producer, at the path that decides it, before the close. The comparator
+/// grants no exemption for a close that did not announce one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NoReplyReason {
+    /// The reply is another site's to return (R201.4, R205.4).
+    Delegated,
+    /// A finish a queued drain ran after the command that queued it returned.
+    Deferred,
+    /// The import's own pipeline error, which R302.2 does not model.
+    ImportPipelineError,
 }
 
 /// The header of one decision: assembled under D, submitted right after D is
@@ -611,6 +668,12 @@ pub(crate) enum ShadowMsg {
         rec: RecorderId,
         kind: ReplyKind,
     },
+    /// The flight announces that it closes with no reply of its own, and why. Sent by
+    /// the producer before the close, only at the three paths that omit a reply.
+    NoReply {
+        rec: RecorderId,
+        reason: NoReplyReason,
+    },
     /// `completed`: the flight ran to its end.
     Close {
         rec: RecorderId,
@@ -636,6 +699,7 @@ impl ShadowMsg {
             | Self::Observed { rec, .. }
             | Self::History { rec, .. }
             | Self::Reply { rec, .. }
+            | Self::NoReply { rec, .. }
             | Self::Close { rec, .. }
             | Self::PreAbandoned { rec } => *rec,
         }

@@ -5,8 +5,6 @@
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
-use murmur_dictation_core::admission::Occupancy;
-use murmur_dictation_core::inputs::{Input, ProcessAudioStartInput};
 use murmur_dictation_core::replies::{ErrText, ProcessAudioRefusal, Reply, ReplyType};
 use murmur_dictation_core::status::Status;
 
@@ -14,7 +12,7 @@ use super::harness::*;
 use crate::dictation_shadow::summary::{
     ConservationCounts, ConservationReport, Session, Stats, EVENTS_FILE, SUMMARY_FILE,
 };
-use crate::dictation_shadow::types::{DiffKind, ErrClass, ReplyKind, ShadowMsg};
+use crate::dictation_shadow::types::{DiffKind, ErrClass, NoReplyReason, ReplyKind, ShadowMsg};
 use crate::dictation_shadow::{spawn_thread, Control};
 
 fn scratch(name: &str) -> std::path::PathBuf {
@@ -169,10 +167,37 @@ fn an_abandoned_flight_is_an_unexpected_incomplete_close_and_earns_no_credit() {
     assert_eq!(h.stats().to_json()["incomplete_closes"]["abandoned"], 1);
 }
 
-/// The named no-reply close (every decided effect ran; the command's reply never came)
-/// is expected: counted on its own, never an incomplete close.
+/// The named no-reply close: the producer announced it, every decided effect ran, the
+/// reply never came and the row's history was witnessed. Expected: counted on its own,
+/// never an incomplete close.
 #[test]
-fn the_named_no_reply_close_is_expected() {
+fn the_announced_no_reply_close_is_expected() {
+    let mut h = harness();
+    let mut flight = stale_stop(1, 1);
+    flight
+        .later
+        .retain(|msg| !matches!(msg, ShadowMsg::Reply { .. } | ShadowMsg::Close { .. }));
+    flight.later.push(ShadowMsg::NoReply {
+        rec: flight.header.rec,
+        reason: NoReplyReason::Deferred,
+    });
+    flight.later.push(ShadowMsg::Close {
+        rec: flight.header.rec,
+        completed: false,
+    });
+    h.feed(&flight);
+    let stats = h.stats();
+    assert_eq!(stats.named_no_reply, 1, "{stats:?}");
+    assert!(stats.incomplete_closes.is_empty(), "{stats:?}");
+    assert_eq!(stats.abandoned, 1);
+    assert_eq!(h.comparator.open_flights(), 0);
+}
+
+/// D-S2c-15 review, major 1: an ordinary abandoned reply is not the named close. The
+/// same flight as above (every effect ran, the reply never came) but **dropped**, with no
+/// announcement, is an unexpected incomplete close.
+#[test]
+fn an_ordinary_abandoned_reply_is_not_the_named_no_reply_close() {
     let mut h = harness();
     let mut flight = stale_stop(1, 1);
     flight
@@ -184,10 +209,87 @@ fn the_named_no_reply_close_is_expected() {
     });
     h.feed(&flight);
     let stats = h.stats();
-    assert_eq!(stats.named_no_reply, 1, "{stats:?}");
-    assert!(stats.incomplete_closes.is_empty(), "{stats:?}");
-    assert_eq!(stats.abandoned, 1);
+    assert_eq!(stats.named_no_reply, 0, "{stats:?}");
+    assert_eq!(
+        stats.incomplete_closes.get("abandoned"),
+        Some(&1),
+        "{stats:?}"
+    );
     assert_eq!(h.comparator.open_flights(), 0);
+}
+
+/// An announcement alone grants nothing: the exemption also needs the row's history
+/// witnessed. Two flights announce the same no-reply close after all their effects ran:
+/// the pipeline-owned finish that reported both of the owner's retirements is exempt; the
+/// one that did not is unexpected.
+#[test]
+fn an_announced_no_reply_close_needs_its_history_witnesses() {
+    let announce = |keep_history: bool| {
+        let mut h = harness();
+        // The owner's pipeline registers first (its token is what the finish retires).
+        h.feed(&pipeline_start(1, 1));
+        let mut finish = legacy_parse(2, 2, false);
+        assert!(
+            finish.decision.reply.is_some(),
+            "the finish decides a reply"
+        );
+        finish
+            .later
+            .retain(|msg| !matches!(msg, ShadowMsg::Reply { .. } | ShadowMsg::Close { .. }));
+        if !keep_history {
+            finish
+                .later
+                .retain(|msg| !matches!(msg, ShadowMsg::History { .. }));
+            finish.header.live_ops = Default::default();
+        }
+        finish.later.push(ShadowMsg::NoReply {
+            rec: finish.header.rec,
+            reason: NoReplyReason::Deferred,
+        });
+        finish.later.push(ShadowMsg::Close {
+            rec: finish.header.rec,
+            completed: false,
+        });
+        h.feed(&finish);
+        h
+    };
+    let with = announce(true);
+    assert_eq!(with.stats().named_no_reply, 1, "{:?}", with.stats());
+    let without = announce(false);
+    assert_eq!(without.stats().named_no_reply, 0, "{:?}", without.stats());
+    assert_eq!(
+        without.stats().incomplete_closes.get("abandoned"),
+        Some(&1),
+        "{:?}",
+        without.stats()
+    );
+}
+
+/// A delegated row's completion is its announced no-reply close, credited to the row as
+/// `delegated`: it never has a `matched` of its own.
+#[test]
+fn a_delegated_row_is_credited_delegated_not_matched() {
+    let mut h = harness();
+    let mut flight = stale_stop(1, 1);
+    let (site, row) = (flight.header.site_id, flight.header.row);
+    flight
+        .later
+        .retain(|msg| !matches!(msg, ShadowMsg::Reply { .. } | ShadowMsg::Close { .. }));
+    flight.later.push(ShadowMsg::NoReply {
+        rec: flight.header.rec,
+        reason: NoReplyReason::Delegated,
+    });
+    flight.later.push(ShadowMsg::Close {
+        rec: flight.header.rec,
+        completed: false,
+    });
+    h.feed(&flight);
+    let stats = h.stats().per_row[&(site, row)];
+    assert_eq!((stats.matched, stats.delegated), (0, 1));
+    assert_eq!(
+        h.stats().to_json()["per_row"][format!("{site}.{row}")]["delegated"],
+        1
+    );
 }
 
 /// A header with no close is outstanding, and the final summary says so: a clean exit
@@ -390,25 +492,11 @@ fn a_wrong_reply_state_is_a_reply_mismatch() {
 }
 
 /// A refusal replies `Err(ErrText::ProcessAudio(MeetingActive))`: the live reply naming
-/// another error class is `diff_kind 4`; the same class (or a live side that cannot read
-/// the class) is a match.
+/// another error class is `diff_kind 4`; the same class is a match. (The production
+/// wrapper's classification of the returned text is tested in `capture.rs`.)
 #[test]
 fn a_wrong_err_text_variant_is_a_reply_mismatch() {
-    let refusal = |seq, rec| {
-        flight(
-            seq,
-            rec,
-            view(Status::Idle, RID),
-            Input::ProcessAudioStart(ProcessAudioStartInput {
-                occupancy: Occupancy {
-                    meeting_active: true,
-                    ..Occupancy::default()
-                },
-                benchmark_running: Some(false),
-            }),
-        )
-    };
-    let mut flight_ = refusal(1, 1);
+    let mut flight_ = process_audio_refused(1, 1);
     assert_eq!(
         flight_.decision.reply,
         Some(Reply::Err(ErrText::ProcessAudio(
@@ -424,10 +512,11 @@ fn a_wrong_err_text_variant_is_a_reply_mismatch() {
         ErrClass::Shell,
         ErrClass::MissingContext,
         ErrClass::SmartAuto,
+        ErrClass::Unclassified,
         ErrClass::ProcessAudio(ProcessAudioRefusal::Benchmark),
     ] {
         let mut h = harness();
-        let mut damaged = refusal(1, 1);
+        let mut damaged = process_audio_refused(1, 1);
         *reply_slot(&mut damaged) = ReplyKind::ErrAs(wrong);
         h.feed(&damaged);
         assert_eq!(
@@ -436,18 +525,16 @@ fn a_wrong_err_text_variant_is_a_reply_mismatch() {
             "{wrong:?}"
         );
     }
+    // A plain `Err` (no class) agrees with nothing.
+    let mut h = harness();
+    let mut damaged = process_audio_refused(1, 1);
+    *reply_slot(&mut damaged) = ReplyKind::Err;
+    h.feed(&damaged);
+    assert_eq!(h.only_event().diff_kind, DiffKind::Reply.code());
 
-    // The same class, and an `Err` whose text the live path could not classify.
-    for live in [
-        ReplyKind::ErrAs(ErrClass::ProcessAudio(ProcessAudioRefusal::MeetingActive)),
-        ReplyKind::Err,
-    ] {
-        let mut h = harness();
-        let mut flight = refusal(1, 1);
-        *reply_slot(&mut flight) = live;
-        h.feed(&flight);
-        assert_clean(&h);
-    }
+    let mut h = harness();
+    h.feed(&process_audio_refused(1, 1));
+    assert_clean(&h);
 }
 
 #[test]
@@ -474,4 +561,183 @@ fn reply_kinds_carry_closed_content_free_discriminants() {
     )));
     assert!(!decided.agrees(ReplyKind::Err));
     assert!(!decided.agrees(ReplyKind::Unrecognized));
+    // Shell-owned error text: an unclassifiable live text agrees, and is counted; a fixed
+    // class never agrees with it.
+    let shell = ReplyKind::ErrAs(ErrClass::Shell);
+    let unclassified = ReplyKind::ErrAs(ErrClass::Unclassified);
+    assert!(shell.agrees(unclassified) && shell.is_unclassified_agreement(unclassified));
+    let fixed = ReplyKind::ErrAs(ErrClass::MissingContext);
+    assert!(!fixed.agrees(unclassified) && !fixed.is_unclassified_agreement(unclassified));
+}
+
+// ------------------------------------------------- major 2: shutdown quiesces the producers
+
+/// After shutdown begins, a push is refused and counted, never queued behind the final
+/// drain; nothing is lost or abandoned by it.
+#[test]
+fn a_push_after_shutdown_began_is_refused_and_counted() {
+    let transport = local_transport(8);
+    let recorder = transport.recorder();
+    assert!(transport.close_and_quiesce(Duration::from_millis(50)));
+    crate::dictation_shadow::transport::mark(
+        &recorder,
+        crate::dictation_shadow::transport::Mark::Reply(ReplyKind::Ok),
+    );
+    assert_eq!(transport.unconsumed(), 0, "nothing entered the queue");
+    assert_eq!(transport.after_close(), 1);
+    assert_eq!(transport.lost(), 0, "a refused push is not a loss");
+}
+
+/// The final summary names every message the producers published after shutdown began:
+/// a complete flight with a wrong reply that arrives at the boundary is not silently
+/// absent from a summary that says it is final and clean.
+#[test]
+fn a_flight_published_at_the_shutdown_boundary_is_reported_never_silently_absent() {
+    let dir = scratch("boundary");
+    let transport = default_transport();
+    let control = Control::new();
+    // Shutdown has begun (the producers see it) ...
+    assert!(transport.close_and_quiesce(Duration::from_millis(50)));
+    // ... and a whole flight, its reply wrong, is published behind it.
+    let recorder = transport.recorder();
+    let mut flight = stale_stop(0, 0);
+    *flight
+        .later
+        .iter_mut()
+        .find_map(|msg| match msg {
+            ShadowMsg::Reply { kind, .. } => Some(kind),
+            _ => None,
+        })
+        .unwrap() = ReplyKind::Err;
+    submit_header(&recorder, &flight);
+    send_later(&recorder, &flight);
+    let sent = transport.after_close();
+    assert!(
+        sent >= 3,
+        "header, effects, reply and close were refused: {sent}"
+    );
+    control.request_shutdown();
+    crate::dictation_shadow::run(
+        &transport,
+        harness().comparator,
+        Some(&dir),
+        &control,
+        Duration::from_millis(1),
+    );
+    let summary = read_summary(&dir);
+    assert_eq!(summary["final"], true);
+    assert_eq!(summary["dropped_after_shutdown"], sent, "{summary}");
+    assert!(summary["dropped_after_shutdown"].as_u64().unwrap() > 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A push still under way when the deadline passes is reported: `shutdown_quiesced`
+/// is false, and the pass is tainted by it.
+#[test]
+fn a_producer_that_does_not_go_quiet_by_the_deadline_is_reported() {
+    let dir = scratch("quiesce-fail");
+    let transport = default_transport();
+    let control = Control::new();
+    transport.hold_inflight_for_test();
+    control.request_shutdown();
+    crate::dictation_shadow::run(
+        &transport,
+        harness().comparator,
+        Some(&dir),
+        &control,
+        Duration::from_millis(1),
+    );
+    transport.release_inflight_for_test();
+    let summary = read_summary(&dir);
+    assert_eq!(summary["shutdown_quiesced"], false, "{summary}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_quiet_shutdown_says_so() {
+    let dir = scratch("quiesce-ok");
+    let transport = default_transport();
+    let control = Control::new();
+    control.request_shutdown();
+    crate::dictation_shadow::run(
+        &transport,
+        harness().comparator,
+        Some(&dir),
+        &control,
+        Duration::from_millis(1),
+    );
+    let summary = read_summary(&dir);
+    assert_eq!(summary["shutdown_quiesced"], true, "{summary}");
+    assert_eq!(summary["dropped_after_shutdown"], 0);
+    // A periodic summary has no such claim.
+    assert!(Stats::default()
+        .to_json()
+        .get("shutdown_quiesced")
+        .is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --------------------------------------------- minor 1: the build's complete site map
+
+#[track_caller]
+fn here() -> &'static std::panic::Location<'static> {
+    std::panic::Location::caller()
+}
+
+/// The map `build.rs` generated is exactly what the shared rules say of the source it
+/// read, and it names the sites that matter: the overlay's `get_status` read owes no
+/// header.
+#[test]
+fn the_generated_site_map_agrees_with_the_rules_and_names_get_status_non_family() {
+    use crate::dictation_shadow::sites::{classify_text, site_map, Site};
+    let map = site_map();
+    assert!(map.len() > 300, "the map is the whole tree: {}", map.len());
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut by_file: std::collections::BTreeMap<&str, String> = Default::default();
+    for (file, line, code) in map {
+        let text = by_file
+            .entry(file)
+            .or_insert_with(|| std::fs::read_to_string(manifest.join(file)).unwrap());
+        assert_eq!(
+            classify_text(file, text, *line as usize).code(),
+            *code,
+            "{file}:{line}"
+        );
+    }
+    let source = std::fs::read_to_string(manifest.join("src/commands/recording.rs")).unwrap();
+    let lines: Vec<&str> = source.lines().collect();
+    let start = lines
+        .iter()
+        .position(|line| line.contains("pub async fn get_status("))
+        .expect("get_status exists");
+    let lock = start
+        + 1
+        + lines[start + 1..]
+            .iter()
+            .position(|line| line.contains(".lock_or_recover()"))
+            .unwrap();
+    let class = map
+        .iter()
+        .find(|(file, line, _)| *file == "src/commands/recording.rs" && *line as usize == lock + 1)
+        .map(|(_, _, code)| Site::from_code(*code));
+    assert_eq!(class, Some(Site::NonFamily), "get_status's read of D");
+    // The decision sections are in the map as family entries.
+    assert!(map
+        .iter()
+        .any(|(file, _, code)| file.ends_with("commands/recording.rs")
+            && Site::from_code(*code) == Site::Family));
+}
+
+/// A location the map does not name is reported as unclassified, never assumed to be a
+/// non-family read.
+#[test]
+fn a_location_outside_the_map_is_counted_unclassified() {
+    use crate::dictation_shadow::sites::{lookup, non_family_counts, note, Site};
+    let at = here();
+    assert_eq!(lookup(at), Site::Unmapped);
+    let (_, before) = non_family_counts();
+    note(at);
+    note(at);
+    let (_, after) = non_family_counts();
+    assert_eq!(after - before, 2);
 }

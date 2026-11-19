@@ -1,107 +1,60 @@
-//! The dictation lock D's acquisition sites (D-S2c-9 a, D-S2c-15 S3).
+//! The dictation lock D's acquisition sites (D-S2c-9 a, D-S2c-15 S3 and its review).
 //!
 //! The live shell counts every acquisition of D inside the guard function
-//! (`MutexExt::lock_or_recover`), while armed. Some sites take D without taking a
-//! decision section (a read of three fields, a fence held across a paste): they owe no
-//! header and are **named** here, by file and the text of their line and of the next, so
-//! an edit elsewhere in the file does not shift them.
+//! (`MutexExt::lock_or_recover`), while armed. Most take D without taking a decision
+//! section (a read of three fields, a fence held across a paste, the overlay's
+//! `get_status`): they owe no header. [`site_rules.in`](site_rules.in) says which is which
+//! (named sites, and the rule that an acquisition in a function that never calls the
+//! capture API cannot produce a header), and `build.rs` applies it to every source file
+//! to generate the build's complete site map ([`lookup`]).
 //!
-//! * [`classify`] says what a site is. Test builds apply it in the guard (a named or test
-//!   site is not counted at all); a native build cannot read source files on the live
-//!   thread, so the guard instead notes each acquisition's location in a fixed lock-free
-//!   table ([`note`]: a few atomics, no allocation, no lock, no wait) and the comparison
-//!   thread classifies the table when it writes the summary ([`snapshot`]). The
-//!   summary's `conservation.non_family` is that table's named part, by `file:line`, and
-//!   the entries it reports are the raw count minus those (an acquisition at a site whose
-//!   source cannot be read stays in the entries, so it unbalances the books instead of
-//!   hiding).
+//! * Test builds apply the rules in the guard ([`classify`] reads the source), so a named
+//!   or test site is not counted at all.
+//! * A native build notes each acquisition's location in a fixed lock-free table
+//!   ([`note`]: a few atomics, no allocation, no lock, no wait) and the comparison thread
+//!   looks the table up in the map when it writes the summary ([`non_family_counts`]).
+//!   `conservation.non_family` is its non-family part, by `file:line`; the entries
+//!   reported are the raw count minus those. A location the map does not name stays in
+//!   the entries and is counted as unclassified, so it unbalances the books instead of
+//!   hiding.
+//!
+//! The books are reconciled in total, not by site: the entry, the header and the outcome
+//! of one decision are counted by different code with no shared site, and attributing
+//! them needs a site argument at each capture entry in `commands/recording.rs`.
 
 use std::collections::BTreeMap;
 use std::panic::Location;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::OnceLock;
 
-/// Production sites that take the dictation lock D without taking a decision section: not
-/// a family entry, so no header is owed for them (D-S2c-9 a). The guard function counts
-/// **every** other acquisition while armed, and the replay requires each one to end in a
-/// header, a named no-decision outcome or an unwind. A site is named by its file and the
-/// text of its line and of the line after it (so an edit elsewhere does not shift it),
-/// with the reason.
-pub(crate) const NON_FAMILY: &[(&str, &str, &str, &str)] = &[
-    (
-        "src/commands/recording.rs",
-        "let dictation = app_state.dictation.lock_or_recover();",
-        "(",
-        "the code-vocabulary prompt's fast-path read of three fields",
-    ),
-    (
-        "src/commands/recording.rs",
-        "let dictation = app_state.dictation.lock_or_recover();",
-        "let Some(current_code_vocab) = cached_code_vocab_prompt(&dictation, bundle_id) else {",
-        "the context snapshot's code-vocabulary revalidation",
-    ),
-    (
-        "src/commands/recording.rs",
-        "let dictation = state.app_state.dictation.lock_or_recover();",
-        "project_lifecycle_view(&state.app_state, &dictation)",
-        "query 402, the short read after a smart-destination capture (D-S2-3)",
-    ),
-    (
-        "src/commands/recording.rs",
-        "let dictation = app_state.dictation.lock_or_recover();",
-        "if !owns_delivery(app_state, &dictation, recording_id) {",
-        "the delivery ownership fence (query 403): held across a paste, not a decision",
-    ),
-    (
-        "src/commands/recording.rs",
-        "let dictation = app_state.dictation.lock_or_recover();",
-        "drop(wait);",
-        "the timed delivery ownership fence (query 403)",
-    ),
-    (
-        "src/commands/recording.rs",
-        "let _dictation = app_state.dictation.lock_or_recover();",
-        "if app_state.recording_id.load(Ordering::SeqCst) != recording_id",
-        "the generation fence around an emit: held across it, not a decision",
-    ),
-    (
-        "src/commands/recording/lifecycle_ports.rs",
-        "let dictation = state.app_state.dictation.lock_or_recover();",
-        "register_partial_ticker_locked",
-        "the ticker registration `SD` makes inside its own section's spawn",
-    ),
-    (
-        "src/dictation_admission.rs",
-        "s.read(|o| facts::status(app_state.dictation.lock_or_recover().status, o))",
-        "});",
-        "the admission probe's read of the status",
-    ),
-];
+include!("site_rules.in");
 
-/// What an acquisition site is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Site {
-    /// Test code: never a decision section, never counted in a test build.
-    Test,
-    /// A named non-family site ([`NON_FAMILY`]).
-    NonFamily,
-    /// Anything else: a decision section, owed a header.
-    Family,
-    /// The caller's source file cannot be read here, so the site cannot be told from a
-    /// family one. Treated as family.
-    Unreadable,
+/// The build's complete map of `.lock_or_recover()` sites: `(file, line, Site::code)`,
+/// generated by `build.rs` from the same rules ([`classify_text`]) over every source file
+/// it builds. A native build cannot read source files on the live thread, and does not
+/// need to: the comparison thread looks each noted location up here.
+mod generated {
+    include!(concat!(env!("OUT_DIR"), "/dictation_lock_sites.rs"));
 }
 
-/// What the acquisition at `at` is. Reads the source file (call it off the live path).
+/// The build's map (the generated table), for tests that check it against the source.
+pub(crate) fn site_map() -> &'static [(&'static str, u32, u8)] {
+    generated::SITES
+}
+
+/// What the acquisition at `at` is, from the build's map. A location the map does not
+/// name (`Unmapped`) is not assumed to be anything: it is reported as unclassified.
+pub(crate) fn lookup(at: &Location<'_>) -> Site {
+    generated::SITES
+        .iter()
+        .find(|(file, line, _)| *line == at.line() && at.file().ends_with(file))
+        .map_or(Site::Unmapped, |(_, _, code)| Site::from_code(*code))
+}
+
+/// What the acquisition at `at` is, by reading the source file (test builds: the replay
+/// applies it in the guard). Call it off the live path.
 pub(crate) fn classify(at: &Location<'_>) -> Site {
     let file = at.file();
-    if file.ends_with("_tests.rs")
-        || file.ends_with("_harness.rs")
-        || file.contains("/tests/")
-        || file.contains("dictation_shadow/")
-    {
-        return Site::Test;
-    }
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let name = std::path::Path::new(file);
     let Some(text) = [name.to_path_buf(), manifest.join(name)]
@@ -113,47 +66,13 @@ pub(crate) fn classify(at: &Location<'_>) -> Site {
         )
         .find_map(|path| std::fs::read_to_string(path).ok())
     else {
-        return Site::Unreadable;
+        // Test files need no source to be known as test code.
+        return match classify_text(file, "", 1) {
+            Site::Test => Site::Test,
+            _ => Site::Unmapped,
+        };
     };
-    let lines: Vec<&str> = text.lines().collect();
-    let line = lines
-        .get((at.line() as usize).wrapping_sub(1))
-        .map(|line| line.trim())
-        .unwrap_or_default();
-    // An inline `#[cfg(test)] mod x {`: its lines, up to the `}` at column 0 that rustfmt
-    // puts at its end, are test code.
-    let in_test_module = lines
-        .windows(2)
-        .enumerate()
-        .filter(|(_, pair)| {
-            pair[0].trim() == "#[cfg(test)]"
-                && pair[1].trim_start().starts_with("mod ")
-                && pair[1].trim_end().ends_with('{')
-        })
-        .any(|(start, _)| {
-            let end = lines[start + 2..]
-                .iter()
-                .position(|line| *line == "}")
-                .map_or(lines.len(), |offset| start + 2 + offset + 1);
-            (start + 2..=end).contains(&(at.line() as usize))
-        });
-    if in_test_module {
-        return Site::Test;
-    }
-    let next = lines
-        .get(at.line() as usize)
-        .map(|line| line.trim())
-        .unwrap_or_default();
-    let named = NON_FAMILY.iter().any(|(path, text, after, _)| {
-        file.ends_with(path)
-            && line == *text
-            && (next == *after || (after.len() > 1 && next.contains(*after)))
-    });
-    if named {
-        Site::NonFamily
-    } else {
-        Site::Family
-    }
+    classify_text(file, &text, at.line() as usize)
 }
 
 // ------------------------------------------------------ the lock-free acquisition table
@@ -232,35 +151,20 @@ pub(crate) fn snapshot() -> Vec<(&'static Location<'static>, u64)> {
         .collect()
 }
 
-/// The named non-family acquisitions noted so far, by `file:line`, and the count of
-/// those that could not be classified. Classifies each site once (the comparison thread
-/// calls this; it reads source files).
+/// The non-family acquisitions noted so far, by `file:line`, and the count of those the
+/// build's map does not name. Looks each noted site up once (the comparison thread calls
+/// this at each summary write; it reads no file).
 pub(crate) fn non_family_counts() -> (BTreeMap<String, u64>, u64) {
-    static CACHE: Mutex<BTreeMap<(&'static str, u32), Site>> = Mutex::new(BTreeMap::new());
     let mut named = BTreeMap::new();
     let mut unclassified = overflow();
     for (at, count) in snapshot() {
-        let key = (at.file(), at.line());
-        let cached = CACHE
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&key)
-            .copied();
-        let site = cached.unwrap_or_else(|| {
-            let site = classify(at);
-            CACHE
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(key, site);
-            site
-        });
-        match site {
+        match lookup(at) {
             Site::NonFamily => {
                 *named
                     .entry(format!("{}:{}", at.file(), at.line()))
                     .or_default() += count;
             }
-            Site::Unreadable => unclassified += count,
+            Site::Unmapped => unclassified += count,
             Site::Test | Site::Family => {}
         }
     }
