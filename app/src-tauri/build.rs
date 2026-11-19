@@ -38,14 +38,18 @@ fn export_build_identity() {
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=MURMUR_GIT_SHA={sha}");
 
-    // Re-run when HEAD moves: the file that names the branch, and the branch's ref.
-    for path in [
-        git_output(&["rev-parse", "--git-path", "HEAD"]),
-        git_output(&["symbolic-ref", "-q", "HEAD"])
-            .and_then(|head| git_output(&["rev-parse", "--git-path", &head])),
-    ]
-    .into_iter()
-    .flatten()
+    // Re-run when HEAD moves: the file that names the branch, and the branch's ref. Only a
+    // path that exists is named: Cargo treats a missing `rerun-if-changed` path as stale
+    // on every build. A branch whose ref is packed has no loose ref file, so
+    // `packed-refs` stands for it.
+    let head_ref = git_output(&["symbolic-ref", "-q", "HEAD"])
+        .and_then(|head| git_output(&["rev-parse", "--git-path", &head]))
+        .filter(|path| Path::new(path).exists())
+        .or_else(|| git_output(&["rev-parse", "--git-path", "packed-refs"]));
+    for path in [git_output(&["rev-parse", "--git-path", "HEAD"]), head_ref]
+        .into_iter()
+        .flatten()
+        .filter(|path| Path::new(path).exists())
     {
         println!("cargo:rerun-if-changed={path}");
     }

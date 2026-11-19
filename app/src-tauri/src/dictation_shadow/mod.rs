@@ -86,7 +86,8 @@ pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(5);
 /// The clean-exit hook waits this long for the final drain and summary.
 const EXIT_WAIT: Duration = Duration::from_secs(2);
 
-/// How long shutdown waits for a push already under way to finish before it drains.
+/// How long shutdown waits (on the comparison thread) for every publish attempt to be
+/// accounted for before it takes its final snapshot. Inside `EXIT_WAIT`.
 const QUIESCE_WAIT: Duration = Duration::from_millis(250);
 
 /// Drain attempts the comparison thread makes at shutdown before it writes the final
@@ -326,16 +327,24 @@ pub(crate) fn run(
         // request was made is then in the queue this pass drains.
         let stop = control.shutdown.load(Ordering::Acquire);
         if stop {
-            // Quiesce the producers first (D-S2c-15 review, major 2): after this, a push
-            // is refused and counted, and the ones already past the check are queued,
-            // so the drain below sees every message there will ever be. A producer that
-            // does not go quiet by the deadline is reported, never assumed gone.
-            let quiet = transport.close_and_quiesce(QUIESCE_WAIT);
-            comparator.stats.shutdown_quiesced = Some(quiet);
+            // Close, then wait on this thread (never a live one) until every publish
+            // attempt is accounted for: queued and consumed, rejected by the queue, or
+            // refused by the close. Producers only count their attempt and read `closed`.
+            transport.close();
         }
         let budget = transport.capacity() * DRAIN_BUDGET_RINGS;
         let progressed = comparator.drain_up_to(transport, budget);
         if stop {
+            let deadline = Instant::now() + QUIESCE_WAIT;
+            let mut timed_out = false;
+            while transport.unsettled() > 0 {
+                if Instant::now() >= deadline {
+                    timed_out = true;
+                    break;
+                }
+                std::thread::sleep(poll);
+                comparator.drain_up_to(transport, budget);
+            }
             // Bounded: a slot a producer reserved and never published stops the
             // consumer at it, and the final summary must still be written.
             for _ in 1..SHUTDOWN_DRAIN_ATTEMPTS {
@@ -345,10 +354,22 @@ pub(crate) fn run(
                 std::thread::sleep(poll);
                 comparator.drain_up_to(transport, budget);
             }
-            comparator.stats.dropped_after_shutdown = transport.after_close();
             comparator.stats.unconsumed = transport.unconsumed() as u64;
             comparator.stats.reserved_unpublished = transport.reserved_unpublished() as u64;
+            // One snapshot of the live side's books, then the shutdown accounting sampled
+            // last: an attempt after the snapshot is in `published_attempts` and shows as
+            // unsettled or refused, never absent.
             stamp(&mut comparator, true);
+            #[cfg(test)]
+            transport.run_boundary_hook();
+            comparator.stats.dropped_after_shutdown = transport.rejected_after_close();
+            comparator.stats.shutdown_unsettled = transport.unsettled();
+            comparator.stats.published_attempts = transport.published_attempts();
+            comparator.stats.shutdown_quiesced = Some(
+                !timed_out
+                    && comparator.stats.dropped_after_shutdown == 0
+                    && comparator.stats.shutdown_unsettled == 0,
+            );
             write_stats(directory, &comparator.stats);
             control.finished.store(true, Ordering::Release);
             return;

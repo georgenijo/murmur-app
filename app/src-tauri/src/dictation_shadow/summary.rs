@@ -245,12 +245,19 @@ pub(crate) struct Stats {
     /// and whose live error text no fixed class named: agreed, but the class could not
     /// be verified (the verdict reads this as unverified replies, not as a match).
     pub unclassified_err_replies: u64,
-    /// Messages the producers published after shutdown began were refused (counted
-    /// here, never queued). Any is a taint: the final summary cannot have seen them.
+    /// Publish attempts the producers made after shutdown began, refused and counted
+    /// (`rejected_after_close`; never queued). Any is a taint: the final summary cannot have
+    /// seen them. Sampled last, just before the write.
     pub dropped_after_shutdown: u64,
-    /// Set at the final write only: whether the producers were quiet (no push in
-    /// flight) when the final drain began. `false` is a taint: a message may have
-    /// landed after the final summary.
+    /// Final write only: every publish attempt of the session.
+    pub published_attempts: u64,
+    /// Final write only: attempts not accounted for (queued and unconsumed, still in a
+    /// push, or lost-and-not-yet-counted) when the final snapshot was taken.
+    pub shutdown_unsettled: u64,
+    /// Set at the final write only: `true` only if the comparison thread waited, within the
+    /// quit budget, until every publish attempt was accounted for, nothing was refused after
+    /// the close (`dropped_after_shutdown == 0`) and nothing was unaccounted for
+    /// (`shutdown_unsettled == 0`). `false` is a taint.
     pub shutdown_quiesced: Option<bool>,
     /// Open flights when this summary was written. At the final write a clean exit
     /// needs 0.
@@ -396,6 +403,14 @@ impl Stats {
         });
         if let (Some(object), Some(quiesced)) = (document.as_object_mut(), self.shutdown_quiesced) {
             object.insert("shutdown_quiesced".to_string(), json!(quiesced));
+            object.insert(
+                "published_attempts".to_string(),
+                json!(self.published_attempts),
+            );
+            object.insert(
+                "shutdown_unsettled".to_string(),
+                json!(self.shutdown_unsettled),
+            );
         }
         if let (Some(object), Some(session)) = (document.as_object_mut(), &self.session) {
             object.insert("session".to_string(), session.to_json());

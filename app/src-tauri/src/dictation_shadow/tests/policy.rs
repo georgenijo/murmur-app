@@ -326,6 +326,65 @@ fn shadow_replays_live_op_ids() {
     }
 }
 
+/// D-S2c-10: the live side's part of the shutdown accounting never waits, blocks or takes a
+/// lock. A producer counts its attempt and reads `closed`; everything that waits (the
+/// quiesce) is on the comparison thread.
+#[test]
+fn the_live_publish_path_never_waits() {
+    fn body(code: &str, start: &str) -> String {
+        let at = code
+            .find(start)
+            .unwrap_or_else(|| panic!("`{start}` exists"));
+        let rest = &code[at..];
+        let end = rest.find("\n    }\n").expect("the function ends");
+        rest[..end].to_string()
+    }
+    let sources = shadow_sources();
+    let source_of = |file: &str| {
+        production_source(
+            &sources
+                .iter()
+                .find(|(name, _)| name == file)
+                .unwrap_or_else(|| panic!("{file} exists"))
+                .1,
+        )
+    };
+    let transport = source_of("transport.rs");
+    let sites = source_of("sites.rs");
+    for (what, text) in [
+        ("Transport::push", body(&transport, "fn push(&self")),
+        ("sites::note", body(&sites, "pub(crate) fn note(")),
+    ] {
+        for token in [
+            "sleep",
+            "yield_now",
+            "park",
+            "wait",
+            ".lock(",
+            "Mutex",
+            "RwLock",
+            "Condvar",
+            "spin",
+            "loop {",
+            "while ",
+            "join(",
+            "recv(",
+        ] {
+            assert!(
+                !text.contains(token),
+                "{what} (a live thread) names `{token}`: it must never wait or block"
+            );
+        }
+    }
+    // The push counts its attempt once, before it does anything else.
+    let push = body(&transport, "fn push(&self");
+    assert_eq!(push.matches("published_attempts.fetch_add(1").count(), 1);
+    assert!(
+        push.find("published_attempts.fetch_add(1").unwrap()
+            < push.find("self.closed.load").unwrap()
+    );
+}
+
 #[test]
 fn shadow_off_by_default() {
     assert!(!crate::dictation_shadow::parse_flag(None));
