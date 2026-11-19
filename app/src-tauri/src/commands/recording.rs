@@ -8233,6 +8233,9 @@ async fn start_after_capture(
         let flight_103 = Flight::begin();
         #[cfg(feature = "dictation-shadow")]
         let after_d = AfterD::new();
+        // Test builds: D is free here, right before the context install (site 103).
+        #[cfg(test)]
+        crate::barrier_hook::at("start.context");
         let mut dictation = state.app_state.dictation.lock_or_recover();
         let view = FieldAdapter::start_view(&state.app_state, &mut dictation);
         #[cfg(feature = "dictation-shadow")]

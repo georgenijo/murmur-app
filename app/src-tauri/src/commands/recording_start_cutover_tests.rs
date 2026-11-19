@@ -651,7 +651,7 @@ fn cases() -> Vec<Case> {
             body: published,
             entries: &[E101, E402, E103, E104],
             queries: &[Q401],
-            plant: Some((Plant::AtPort("refresh_expired_ide_context"), 2)),
+            plant: Some((Plant::AtBarrier("start.context"), 2)),
         },
         Case {
             name: "R101.15 + R103.1 + R104.2, planted at the ready publish (104)",
