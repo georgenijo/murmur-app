@@ -85,8 +85,9 @@ def clean_summary(index: int = 0, day: int = 0, **overrides) -> dict:
         "shutdown_unsettled": 0,
         "dropped_after_shutdown": 0,
         "published_attempts": 1200,
-        "popped": 1190,
-        "push_lost": 10,
+        "popped": 1200,
+        "push_lost": 0,
+        "dropped_unavailable": 0,
         "named_no_reply": 2,
         "unclassified_err_replies": 3,
         # The shape PR #1173 writes: per-site objects hold only `headers`; the four books and
@@ -600,7 +601,7 @@ class E9Tests(unittest.TestCase):
         # that add up pass, zero included.
         self.assertTrue(self.shutdown(published_attempts=0, popped=0, push_lost=0).passed)
         self.assertTrue(self.shutdown(published_attempts=10**6, popped=10**6, push_lost=0).passed)
-        self.assertTrue(self.shutdown(published_attempts=7, popped=0, push_lost=7).passed)
+        self.assertTrue(self.shutdown(published_attempts=7, popped=0, push_lost=7, dropped=7).passed)
 
     def test_a_non_final_write_fails_closed(self):
         self.assert_tainted(self.shutdown(final=False), "not a final summary")
@@ -624,10 +625,9 @@ class E9Tests(unittest.TestCase):
         # popped + push_lost + dropped_after_shutdown + shutdown_unsettled == published_attempts,
         # read once: a file where it fails was not written from one consistent read.
         for change in (
-            {"popped": 1189},  # an attempt nobody accounts for
-            {"popped": 1191},  # an attempt counted twice
-            {"push_lost": 0},
-            {"push_lost": 11},
+            {"popped": 1199},  # an attempt nobody accounts for
+            {"popped": 1201},  # an attempt counted twice
+            {"push_lost": 1, "dropped": 1},
             {"published_attempts": 1201},
             {"published_attempts": 1199},
         ):
@@ -635,15 +635,39 @@ class E9Tests(unittest.TestCase):
             self.assert_tainted(result, "popped+push_lost+dropped_after_shutdown+shutdown_unsettled")
             self.assertIn("!= published_attempts", result.detail)
         # Every term counts: a refused or unsettled attempt balances only against attempts.
-        balanced = self.shutdown(dropped_after_shutdown=1, popped=1189)
+        balanced = self.shutdown(dropped_after_shutdown=1, popped=1199)
         self.assert_tainted(balanced, "dropped_after_shutdown=1")
         self.assertNotIn("!= published_attempts", balanced.detail)
-        balanced = self.shutdown(shutdown_unsettled=2, popped=1188)
+        balanced = self.shutdown(shutdown_unsettled=2, popped=1198)
         self.assertNotIn("!= published_attempts", balanced.detail)
         # The terms do not overlap: counting a queue rejection in `dropped_after_shutdown` as well
         # (a `push_lost` of 10 and a `dropped_after_shutdown` of 10 for the same 10 attempts) breaks it.
-        overlapping = self.shutdown(dropped_after_shutdown=10)
+        overlapping = self.shutdown(dropped_after_shutdown=10, push_lost=10, popped=1190, dropped=10)
         self.assertIn("!= published_attempts", overlapping.detail)
+
+    def test_push_lost_above_the_folded_drops_is_an_unfolded_loss(self):
+        # `push_lost` is a part of the older `dropped`: `dropped` is `push_lost` plus tickets
+        # dropped unsent plus `dropped_unavailable`, so `push_lost <= dropped - dropped_unavailable`.
+        # `dropped` is folded at the last drain and `push_lost` is read later; a rejection landing
+        # between the two shows as `push_lost` above the bound.
+        holds = self.shutdown(push_lost=3, dropped=5, dropped_unavailable=2, popped=1197)
+        self.assertNotIn("unfolded loss", holds.detail)
+        self.assertNotIn("not all counts", holds.detail)
+        self.assertNotIn("!= published_attempts", holds.detail)
+        # The bound met with equality holds too.
+        self.assertNotIn("unfolded loss", self.shutdown(push_lost=3, dropped=3, popped=1197).detail)
+        # One above the bound: the accounting still adds up, the E9 taint is the unfolded loss.
+        fails = self.shutdown(push_lost=4, dropped=5, dropped_unavailable=2, popped=1196)
+        self.assert_tainted(fails, "push_lost=4 > dropped-dropped_unavailable=3")
+        self.assertNotIn("!= published_attempts", fails.detail)
+        # `dropped_unavailable` is not the queue's: dropped=2 of which 2 unavailable leaves a bound of 0.
+        self.assert_tainted(self.shutdown(push_lost=1, dropped=2, dropped_unavailable=2, popped=1199), "unfolded loss")
+
+    def test_a_missing_or_malformed_bound_term_fails_closed(self):
+        for field in ("dropped", "dropped_unavailable"):
+            self.assert_tainted(self.shutdown(**{field: _ABSENT}), "not all counts")
+            for value in ("0", None, True, -1, 1.0):
+                self.assert_tainted(self.shutdown(**{field: value}), "not all counts")
 
     def test_a_missing_dropped_after_shutdown_fails_closed(self):
         self.assert_tainted(self.shutdown(dropped_after_shutdown=_ABSENT), "no `dropped_after_shutdown`")

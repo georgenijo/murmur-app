@@ -475,6 +475,20 @@ def evaluate_family(
                     f"{popped + lost + dropped + unsettled} != published_attempts={published} "
                     "(the accounting is not one consistent read)"
                 )
+        # `push_lost` is a part of the older top-level `dropped` (not of `dropped_after_shutdown`):
+        # `dropped` is `push_lost` plus tickets dropped unsent plus `dropped_unavailable`. So
+        # `push_lost <= dropped - dropped_unavailable`. `dropped` is folded at the last drain and
+        # `push_lost` read later: a queue rejection landing between the two shows as `push_lost`
+        # above the bound, and is a real unfolded loss. Fails closed (a missing or malformed
+        # term is taint too).
+        bound = [summary.get(k) for k in ("push_lost", "dropped", "dropped_unavailable")]
+        if not all(isinstance(v, int) and not isinstance(v, bool) and v >= 0 for v in bound):
+            taint.append(f"{name}: push_lost/dropped/dropped_unavailable are not all counts: {bound!r}")
+        elif bound[0] > bound[1] - bound[2]:
+            taint.append(
+                f"{name}: push_lost={bound[0]} > dropped-dropped_unavailable={bound[1] - bound[2]} "
+                "(a queue rejection after the last drain's fold: an unfolded loss)"
+            )
         # The books are kept over all family sites together (`conservation.total`); only the
         # headers are per site, and `non_family` (keyed by file:line) is informational.
         total = (summary.get("conservation") or {}).get("total")
