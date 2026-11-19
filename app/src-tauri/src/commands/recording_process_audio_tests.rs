@@ -11,6 +11,7 @@
 //! did before sites 301/302 moved behind `decide_*`; they hold on the base. The
 //! `history_` tests read `core_history` and need the registration of R301.5.
 #![cfg(test)]
+use super::golden_harness::commanded_reply;
 use super::*;
 use std::sync::Mutex as StdMutex;
 use std::task::{Context, Poll, Waker};
@@ -343,11 +344,31 @@ struct Run {
 fn run(body: impl FnOnce(&Run)) {
     let _serial = locked(&LOCK);
     keyboard::set_processing(false);
+    // E7 / E8 (appendix C8.5): the import's decisions (sites 301, 302, 204a, 204b) run
+    // through the shadow in sync mode; every flight is closed when the run ends.
+    #[cfg(feature = "dictation-shadow")]
+    let armed = !super::golden_harness::REPLAY_DISARMED.load(Ordering::SeqCst);
+    #[cfg(feature = "dictation-shadow")]
+    let replay = armed.then(crate::dictation_shadow::replay::Replay::begin);
+    #[cfg(feature = "dictation-shadow")]
+    let counters_before = crate::dictation_executor::shadow::conservation_now();
     let state = Arc::new(super::tests::test_state(AppState::default()));
     let host = FakeHost::new(&state);
     let run = Run { state, host };
     body(&run);
     keyboard::set_processing(false);
+    #[cfg(feature = "dictation-shadow")]
+    if let Some(replay) = replay {
+        drop(run);
+        replay
+            .end()
+            .conserved(crate::dictation_executor::shadow::conservation_now().since(counters_before))
+            .assert_clean(
+                std::thread::current()
+                    .name()
+                    .unwrap_or("process_audio test"),
+            );
+    }
 }
 
 impl Run {
@@ -367,7 +388,11 @@ impl Run {
                 }
             })
         });
-        poll_to_end(process_audio_inner(&self.host, &self.state, audio))
+        poll_to_end(commanded_reply(process_audio_inner(
+            &self.host,
+            &self.state,
+            audio,
+        )))
     }
 
     fn status(&self) -> DictationStatus {
@@ -876,7 +901,11 @@ fn a_nested_process_audio_is_refused_before_any_lock() {
         let seen = Arc::clone(&nested);
         let audio = wav_base64(8_000);
         *locked(&run.host.on_generation_started) = Some(Box::new(move |host, state| {
-            let reply = poll_to_end(process_audio_inner(host, state, "irrelevant"));
+            let reply = poll_to_end(commanded_reply(process_audio_inner(
+                host,
+                state,
+                "irrelevant",
+            )));
             locked(&seen).push(format!("{reply:?}"));
         }));
         let outer = run.process(&audio).expect("the outer import completes");
@@ -903,7 +932,9 @@ fn a_resumed_import_polled_inside_a_core_span_parks_instead_of_taking_t_and_d() 
     use std::time::Duration;
     run(|run| {
         let audio = wav_base64(8_000);
-        let mut import = Box::pin(process_audio_inner(&run.host, &run.state, &audio));
+        let mut import = Box::pin(commanded_reply(process_audio_inner(
+            &run.host, &run.state, &audio,
+        )));
         // Park ahead of T: the fake's transition is pending before it asks for the
         // lock, so no waiter is queued on T and its release leaves T free.
         run.host.hold_transition.store(true, Ordering::SeqCst);
@@ -958,10 +989,20 @@ fn dropping_a_suspended_import_in_a_core_span_queues_its_retirement_fifo() {
     use murmur_dictation_core::decision::{ContKind, ContinuationSpec};
     use murmur_dictation_core::ids::RecordingId;
     run(|run| {
+        // The dropped import's owner retires inside a span the comparator never saw
+        // registered: the test states that unverifiable close itself.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            unverifiable: 1,
+            unwound: 0,
+            ..Default::default()
+        });
         let app_state = &run.state.app_state;
         run.host.hold_capture.store(true, Ordering::SeqCst);
         let audio = wav_base64(8_000);
-        let mut import = Box::pin(process_audio_inner(&run.host, &run.state, &audio));
+        let mut import = Box::pin(commanded_reply(process_audio_inner(
+            &run.host, &run.state, &audio,
+        )));
         assert!(
             poll_once(&mut import).is_pending(),
             "suspended at the capture"
@@ -1035,7 +1076,7 @@ fn cancel_drops_a_suspended_import(world: &Arc<super::golden_harness::World>) {
         let host = Arc::clone(&host);
         async move {
             let state = world.state();
-            process_audio_inner(&*host, state.inner(), &audio).await
+            commanded_reply(process_audio_inner(&*host, state.inner(), &audio)).await
         }
     });
     let mut import = import;
@@ -1257,4 +1298,100 @@ fn a_pipeline_error_runs_the_idle_gate_and_returns_its_text_as_a_shell_tail() {
         assert_eq!(run.history(), (0, 0));
         assert!(!keyboard::is_processing());
     });
+}
+
+/// The same fixture with **no assertion of its own on the return**: whether the failed
+/// import's reply is the `Err` it models is E7's call (the replay's end), so a production
+/// change that returns a success here, a `transcription` included, is reported by the
+/// comparator and not by this test's own expectation (D-S2c-10 amendment 1 iii).
+#[cfg(feature = "dictation-shadow")]
+#[test]
+fn e7_compares_a_failed_imports_actual_return() {
+    run(|run| {
+        *locked(&run.host.pipeline) = Pipeline::Fail;
+        let _ = run.process(&wav_base64(8_000));
+    });
+}
+
+/// D-S2c-7 b, c: through the `process_audio` entry, each refusal allocates under D
+/// exactly what it allocates with the shadow compiled in and not armed, and the
+/// warning it logs is emitted at the same lock boundary.
+#[cfg(feature = "dictation-shadow")]
+#[test]
+fn the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal() {
+    use super::golden_harness::REPLAY_DISARMED;
+    use super::pd_witness_tests::under_d::count_under_d;
+    fn measured(setup: fn(&Run), disarmed: bool) -> u64 {
+        REPLAY_DISARMED.store(disarmed, Ordering::SeqCst);
+        struct Rearm;
+        impl Drop for Rearm {
+            fn drop(&mut self) {
+                REPLAY_DISARMED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _rearm = Rearm;
+        let allocations = std::cell::Cell::new(0);
+        run(|run| {
+            setup(run);
+            let (result, count) = count_under_d(&run.state.app_state.dictation, || {
+                run.process(&wav_base64(8_000))
+            });
+
+            assert!(result.is_err(), "the scenario refuses");
+            allocations.set(count);
+        });
+        allocations.get()
+    }
+    type Scenario = (&'static str, fn(&Run));
+    let scenarios: [Scenario; 4] = [
+        ("a meeting is active (before D)", |run| {
+            run.state
+                .app_state
+                .meeting_active
+                .store(true, Ordering::SeqCst);
+        }),
+        ("a file transcription (under D)", |run| {
+            run.state
+                .app_state
+                .file_transcribing
+                .store(true, Ordering::SeqCst);
+        }),
+        ("a benchmark (under D)", |run| {
+            assert!(run.state.benchmark.try_start());
+        }),
+        ("a live dictation (under D)", |run| {
+            run.state.app_state.dictation.lock_or_recover().status = DictationStatus::Recording;
+        }),
+    ];
+    const DEFAULT_BUILD_ALLOCATIONS: [(&str, u64); 4] = [
+        ("a meeting is active (before D)", 0),
+        ("a file transcription (under D)", 1),
+        ("a benchmark (under D)", 1),
+        ("a live dictation (under D)", 2),
+    ];
+    let mut counted = 0;
+    for (title, setup) in scenarios {
+        let baseline = measured(setup, true);
+        let armed = measured(setup, false);
+        assert_eq!(
+            armed, baseline,
+            "process_audio refused by {title}: armed {armed} allocations under D, disarmed {baseline}"
+        );
+        // The disarmed run is the default build's allocation (every shadow read is gated
+        // on an armed flight): a feature-only extra under D changes this number.
+        let (_, pinned) = DEFAULT_BUILD_ALLOCATIONS
+            .iter()
+            .find(|(name, _)| *name == title)
+            .expect("every scenario has a pinned default-build count");
+        assert_eq!(
+            baseline, *pinned,
+            "process_audio refused by {title}: {baseline} allocations under D with the shadow \
+             compiled in and not armed, the default build makes {pinned} (D-S2c-7 c)"
+        );
+        counted += baseline;
+    }
+    assert!(
+        counted > 0,
+        "the probe counted nothing under D: it is not measuring"
+    );
 }

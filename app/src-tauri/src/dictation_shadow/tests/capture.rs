@@ -629,3 +629,754 @@ fn the_counting_allocator_sees_frees_too() {
     assert_eq!(allocations, 0);
     assert!(frees >= 1, "the hook did not see the free");
 }
+
+/// Stage 2c-2: the producer-cost probe at the **live capture sites'** API
+/// (`dictation_executor::shadow::Flight`), the one every site in `commands/` goes
+/// through. For every input family in every status, the decision is taken outside the
+/// measurement and then replayed through the flight exactly as a site does: recorder
+/// before `Pre`, buffered `Pre` witnesses, the observed fact, the header at the
+/// decision, the `In` witnesses, `seal` (the `seq`), `submit`, the later witnesses,
+/// `finish`. The thread allocates and frees nothing; the transport's own counters
+/// show the messages were really produced.
+#[test]
+fn the_live_capture_sites_allocate_and_free_nothing() {
+    use crate::dictation_executor::shadow::{view_projection, Flight, Noted};
+    use crate::dictation_shadow::types::{EffectResult, ObservedFact};
+
+    struct Disarm;
+    impl Drop for Disarm {
+        fn drop(&mut self) {
+            crate::dictation_shadow::set_test_transport(None);
+        }
+    }
+
+    let transport = default_transport();
+    crate::dictation_shadow::set_test_transport(Some(Arc::clone(&transport)));
+    let _disarm = Disarm;
+    let mut flights = 0_u64;
+    let mut messages = 0_usize;
+    // Warm anything lazy outside the measurement.
+    drop(Flight::begin());
+    for status in Status::ALL {
+        for current in [RID, RecordingId(2), RecordingId::NONE] {
+            let core = view(status, current);
+            for input in every_input_family() {
+                let decision = core.handle(input.clone(), NOW);
+                let projection = view_projection(&core);
+                let reply = decision.reply.clone();
+                let ((), allocations, frees) = count_heap_calls(|| {
+                    let flight = Flight::begin();
+                    flight.enter_pre();
+                    flight.observed(ObservedFact::SpeculativeFlowing(true));
+                    let note = |flight: &Flight, index: usize, at: Placement| {
+                        flight.effect(Noted {
+                            index,
+                            placement: at,
+                            effect: &decision.effects[index].effect,
+                            taken: true,
+                            result: EffectResult::Ran,
+                            mirror: None,
+                            ticker: None,
+                        });
+                    };
+                    for (index, placed) in decision.effects.iter().enumerate() {
+                        if placed.at == Placement::Pre {
+                            note(&flight, index, Placement::Pre);
+                        }
+                    }
+                    flight.decided(
+                        input.clone(),
+                        projection,
+                        NOW,
+                        decision.row,
+                        reply.as_ref(),
+                        decision.effects.len(),
+                    );
+                    for (index, placed) in decision.effects.iter().enumerate() {
+                        if placed.at == Placement::In {
+                            note(&flight, index, Placement::In);
+                        }
+                    }
+                    let sealed = flight.seal(Some(projection));
+                    sealed.submit();
+                    for (index, placed) in decision.effects.iter().enumerate() {
+                        if matches!(placed.at, Placement::PostDT | Placement::PostT) {
+                            note(&flight, index, placed.at);
+                        }
+                    }
+                    flight.finish_leg(decision.effects.len());
+                });
+                assert_eq!(allocations, 0, "a live capture site allocated");
+                assert_eq!(frees, 0, "a live capture site freed");
+                flights += 1;
+                // Drain outside the measurement, so the queue never fills and the
+                // accept path is the one measured.
+                let drained = pop_all(&transport).len();
+                assert!(drained >= 2, "the flight produced no messages");
+                messages += drained;
+            }
+        }
+    }
+    assert!(flights >= 100, "{flights}");
+    assert_eq!(transport.lost(), 0, "{messages} messages, none lost");
+    // And with the queue full: the drop path is two counters, nothing else.
+    let full = local_transport(2);
+    crate::dictation_shadow::set_test_transport(Some(Arc::clone(&full)));
+    let core = view(Status::Recording, RID);
+    let input = Input::CancelRequest(CancelInput { expected: None });
+    let decision = core.handle(input.clone(), NOW);
+    let projection = view_projection(&core);
+    let ((), allocations, frees) = count_heap_calls(|| {
+        for _ in 0..4 {
+            let flight = Flight::begin();
+            flight.enter_pre();
+            flight.decided(
+                input.clone(),
+                projection,
+                NOW,
+                decision.row,
+                decision.reply.as_ref(),
+                decision.effects.len(),
+            );
+            flight.seal(None).submit();
+            flight.finish_leg(decision.effects.len());
+        }
+    });
+    assert_eq!(allocations, 0, "the drop path allocated");
+    assert_eq!(frees, 0, "the drop path freed");
+    assert!(full.lost() > 0);
+}
+
+#[test]
+fn the_live_capture_module_names_no_lock_box_channel_or_wake() {
+    // The production text of the module every live site goes through: no lock, no
+    // allocation, no wait, no wake, no environment read, no thread.
+    let source =
+        super::policy::production_source(include_str!("../../dictation_executor/shadow.rs"));
+    for token in [
+        "Mutex",
+        "RwLock",
+        ".lock(",
+        "Condvar",
+        "Barrier",
+        "mpsc",
+        "Box::new",
+        "Box<",
+        "vec!",
+        "String",
+        "format!",
+        "to_string",
+        "to_vec",
+        "Arc::new",
+        "Rc::new",
+        "unpark",
+        "notify",
+        "sleep",
+        ".recv",
+        ".wait(",
+        ".join(",
+        "thread::spawn",
+        "thread::park",
+        "thread::sleep",
+        "thread::Builder",
+        "env::var",
+        "println!",
+        "eprintln!",
+        "SystemTime",
+        "Instant::now",
+    ] {
+        assert!(
+            !source.contains(token),
+            "the live capture module names `{token}`"
+        );
+    }
+    // The module's thread-locals are `const`-initialised `Cell`s (no lazy allocation, no
+    // destructor registration), and its only `Vec` is the reply scope's, which the
+    // command wrapper opens once per invocation and a flight reaches only after its
+    // header was submitted, with D released: never on the capture path under D.
+    for (at, _) in source.match_indices("thread_local!") {
+        let block = &source[at..source[at..]
+            .find("\n}\n")
+            .map_or(source.len(), |end| at + end)];
+        for line in block
+            .lines()
+            .filter(|line| line.trim_start().starts_with("static "))
+        {
+            assert!(
+                line.contains("Cell<") && line.contains("const {"),
+                "a capture thread-local must be a const-initialised Cell: {line}"
+            );
+        }
+    }
+    let vec_lines: Vec<&str> = source
+        .lines()
+        .filter(|line| line.contains("Vec<"))
+        .collect();
+    assert_eq!(
+        vec_lines.len(),
+        1,
+        "the live capture module has one Vec, the reply scope's: {vec_lines:?}"
+    );
+    assert!(vec_lines[0].contains("REPLY_SINK") || vec_lines[0].contains("RefCell<Vec<Live>>"));
+}
+
+/// D-S2c-7 e: an unwind after the decision was taken and part of its `In` effects
+/// committed, before the header was sealed. The decision is not lost from the
+/// comparison: the flight's drop takes the header's ticket and drops it unsent, which
+/// records a loss, and the recorder does not then report a `PreAbandoned` for a
+/// decision that entered D.
+#[test]
+fn an_unwind_after_a_partial_in_commit_is_recorded_as_loss_not_pre_abandoned() {
+    use crate::dictation_executor::shadow::{view_projection, Flight, Noted};
+    use crate::dictation_shadow::replay::Replay;
+    use crate::dictation_shadow::types::EffectResult;
+
+    // A decision with at least two `In` effects: the first commits, the unwind comes
+    // before the second.
+    let (input, core, decision) = Status::ALL
+        .into_iter()
+        .flat_map(|status| {
+            [RID, RecordingId(2), RecordingId::NONE]
+                .into_iter()
+                .map(move |current| (status, current))
+        })
+        .find_map(|(status, current)| {
+            let core = view(status, current);
+            every_input_family().into_iter().find_map(|input| {
+                let decision = core.handle(input.clone(), NOW);
+                let in_effects = decision
+                    .effects
+                    .iter()
+                    .filter(|placed| placed.at == Placement::In)
+                    .count();
+                (in_effects >= 2).then_some((input, core, decision))
+            })
+        })
+        .expect("some decision has two `In` effects");
+    let replay = Replay::begin();
+    {
+        let flight = Flight::begin();
+        flight.enter_pre();
+        flight.decided(
+            input,
+            view_projection(&core),
+            NOW,
+            decision.row,
+            decision.reply.as_ref(),
+            decision.effects.len(),
+        );
+        let first_in = decision
+            .effects
+            .iter()
+            .position(|placed| placed.at == Placement::In)
+            .expect("an `In` effect");
+        flight.effect(Noted {
+            index: first_in,
+            placement: Placement::In,
+            effect: &decision.effects[first_in].effect,
+            taken: true,
+            result: EffectResult::Ran,
+            mirror: None,
+            ticker: None,
+        });
+        // The unwind: the flight is dropped with its header unsealed.
+        drop(flight);
+    }
+    let report = replay.end();
+    let stats = &report.stats;
+    assert_eq!(
+        stats.abandoned_pre_d, 0,
+        "a decision that entered D must not read as PreAbandoned: {stats:?}"
+    );
+    assert_eq!(
+        report.lost, 1,
+        "the unwind must be recorded as one lost header: {stats:?}"
+    );
+    assert_eq!(stats.compared, 0, "nothing was compared: {stats:?}");
+}
+
+// ---------------------------------------------------------------- CP4 at the return
+
+/// Arms the shadow on `transport` for the length of a test.
+struct Armed;
+impl Armed {
+    fn on(transport: &Arc<crate::dictation_shadow::transport::Transport>) -> Self {
+        crate::dictation_shadow::set_test_transport(Some(Arc::clone(transport)));
+        Self
+    }
+}
+impl Drop for Armed {
+    fn drop(&mut self) {
+        crate::dictation_shadow::set_test_transport(None);
+    }
+}
+
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime")
+        .block_on(future)
+}
+
+/// One decision that has a reply and no effect (a header that is complete the moment it
+/// is sealed), handed to the flight the way a command's section does.
+fn replying_flight(
+    reply: &murmur_dictation_core::replies::Reply,
+) -> crate::dictation_executor::shadow::Flight {
+    use crate::dictation_executor::shadow::{view_projection, Flight};
+    let core = view(Status::Idle, RID);
+    let input = Input::CancelRequest(CancelInput { expected: None });
+    let decision = core.handle(input.clone(), NOW);
+    let flight = Flight::begin();
+    flight.enter_pre();
+    flight.decided(
+        input,
+        view_projection(&core),
+        NOW,
+        decision.row,
+        Some(reply),
+        0,
+    );
+    flight.seal(None).submit();
+    flight
+}
+
+fn reply_and_close(messages: &[ShadowMsg]) -> (Vec<ReplyKind>, Vec<bool>) {
+    let mut replies = Vec::new();
+    let mut closes = Vec::new();
+    for message in messages {
+        match message {
+            ShadowMsg::Reply { kind, .. } => replies.push(*kind),
+            ShadowMsg::Close { completed, .. } => closes.push(*completed),
+            _ => {}
+        }
+    }
+    (replies, closes)
+}
+
+/// D-S2c-8 f: the reply a flight reports is the value the command **returned**, not the
+/// kind it decided: an `Err` for a typed reply, an `Ok` of a type no decision names (its
+/// own kind, never read as `Err`), a typed one, a transcription, a plain value.
+#[test]
+fn a_command_reply_is_witnessed_as_the_value_the_command_returned() {
+    use crate::dictation_executor::shadow::commanded;
+    use murmur_dictation_core::replies::{Reply, ReplyType};
+    use serde_json::json;
+
+    let decided = Reply::typed(ReplyType::NotRecording, Status::Idle);
+    let cases: Vec<(Result<serde_json::Value, String>, ReplyKind)> = vec![
+        (
+            Ok(json!({"type": ReplyType::NotRecording.as_str(), "state": "idle"})),
+            ReplyKind::Typed(ReplyType::NotRecording),
+        ),
+        (
+            Ok(json!({"type": ReplyType::AlreadyRecording.as_str(), "state": "recording"})),
+            ReplyKind::Typed(ReplyType::AlreadyRecording),
+        ),
+        (Err("failed".to_string()), ReplyKind::Err),
+        (
+            Ok(json!({"type": "no_such_reply", "state": "idle"})),
+            ReplyKind::Unrecognized,
+        ),
+        (
+            Ok(json!({"type": "transcription", "text": "", "state": "idle"})),
+            ReplyKind::Transcription,
+        ),
+        (Ok(json!({"state": "idle"})), ReplyKind::Ok),
+    ];
+    for (returned, expected) in cases {
+        let transport = default_transport();
+        let _armed = Armed::on(&transport);
+        let result = block_on(commanded(async {
+            let flight = replying_flight(&decided);
+            drop(flight);
+            // The command has not returned yet: the flight's reply and close wait.
+            let (replies, closes) = reply_and_close(&pop_all(&transport));
+            assert!(
+                replies.is_empty() && closes.is_empty(),
+                "the flight concluded before the command returned: {replies:?} {closes:?}"
+            );
+            returned.clone()
+        }));
+        assert_eq!(result, returned);
+        let (replies, closes) = reply_and_close(&pop_all(&transport));
+        assert_eq!(replies, vec![expected], "for {returned:?}");
+        assert_eq!(closes, vec![true], "the flight closes once, completed");
+    }
+}
+
+/// A reply that is another site's to return (R201.4, R205.4) has an explicit `Delegated`
+/// disposition: its flight reports no reply kind (the comparison stays at the site that
+/// renders it) and closes as the named no-reply close, never with the kind it decided
+/// (D-S2c-10 R5).
+#[test]
+fn a_delegated_reply_reports_no_kind_and_closes_as_the_named_no_reply_close() {
+    use crate::dictation_executor::shadow::commanded;
+    use murmur_dictation_core::replies::{Reply, ReplyType};
+
+    let decided = Reply::typed(ReplyType::RecordingCancelled, Status::Idle);
+    let transport = default_transport();
+    let _armed = Armed::on(&transport);
+    let _: Result<(), String> = block_on(commanded(async {
+        let flight = replying_flight(&decided);
+        flight.delegated_reply();
+        let before = crate::dictation_executor::shadow::conservation_now();
+        drop(flight);
+        let (replies, closes) = reply_and_close(&pop_all(&transport));
+        assert!(replies.is_empty(), "no kind was reported: {replies:?}");
+        assert_eq!(closes, vec![false], "closed as the named no-reply close");
+        let counted = crate::dictation_executor::shadow::conservation_now().since(before);
+        assert_eq!((counted.no_reply, counted.unrendered), (1, 0));
+        Ok(())
+    }));
+    // The command's own return credits nothing to the delegated flight.
+    assert_eq!(reply_and_close(&pop_all(&transport)), (vec![], vec![]));
+}
+
+/// A flight that no command wrapper is around (a caller that is not an IPC command) has no
+/// return to witness: it is never given the kind it decided, closes incomplete (the named
+/// no-reply close) and the test build counts it as unrendered (D-S2c-9 d).
+#[test]
+fn a_flight_outside_a_command_closes_with_no_reply_and_is_counted() {
+    use murmur_dictation_core::replies::{Reply, ReplyType};
+
+    let transport = default_transport();
+    let _armed = Armed::on(&transport);
+    let before = crate::dictation_executor::shadow::conservation_now();
+    drop(replying_flight(&Reply::typed(
+        ReplyType::NotRecording,
+        Status::Idle,
+    )));
+    let (replies, closes) = reply_and_close(&pop_all(&transport));
+    assert!(replies.is_empty(), "no reply was witnessed: {replies:?}");
+    assert!(
+        !closes.contains(&true),
+        "the flight is never closed as completed: {closes:?}"
+    );
+    let after = crate::dictation_executor::shadow::conservation_now().since(before);
+    assert_eq!(after.unrendered, 1);
+}
+
+/// D-S2c-8 amendment 1: the reply scope is one tokio task-local per invocation, and
+/// nothing a command spawns can observe it (a spawned task, a blocking task and a thread
+/// all start without it), so no continuation can read or settle a flight's reply.
+#[test]
+fn a_spawned_continuation_cannot_observe_the_reply_scope() {
+    use crate::dictation_executor::shadow::{commanded, reply_sink_visible};
+
+    let transport = default_transport();
+    let _armed = Armed::on(&transport);
+    assert!(!reply_sink_visible(), "no scope outside a command");
+    let seen: Result<serde_json::Value, String> = block_on(commanded(async {
+        let here = reply_sink_visible();
+        let spawned = tokio::spawn(async { reply_sink_visible() }).await.unwrap();
+        let blocking = tokio::task::spawn_blocking(reply_sink_visible)
+            .await
+            .unwrap();
+        let thread = std::thread::spawn(reply_sink_visible).join().unwrap();
+        Ok(serde_json::json!({
+            "here": here, "spawned": spawned, "blocking": blocking, "thread": thread
+        }))
+    }));
+    let seen = seen.unwrap();
+    assert_eq!(seen["here"], true, "the command's own task sees its scope");
+    for other in ["spawned", "blocking", "thread"] {
+        assert_eq!(
+            seen[other], false,
+            "a {other} continuation saw the reply scope"
+        );
+    }
+    assert!(!reply_sink_visible(), "the scope ends with the invocation");
+
+    // A disarmed shadow does not open the scope at all.
+    drop(_armed);
+    let seen: Result<serde_json::Value, String> = block_on(commanded(async {
+        Ok(serde_json::json!({ "here": reply_sink_visible() }))
+    }));
+    assert_eq!(
+        seen.unwrap()["here"],
+        false,
+        "disarmed: no scope, no allocation"
+    );
+}
+
+// ------------------------------------------- the flight's slots (D-S2c-9 c)
+
+/// One flight's `In` effect carrying a mirror the capture wrote into the flight's own
+/// slots (what `ObservingPorts`/the `*_observed` twins do), noted the way the executor
+/// notes it: take the slot's value, hand it to the flight.
+fn mirror_of(id: u64) -> MirrorWitness {
+    MirrorWitness {
+        field: MirrorField::CancelledThrough,
+        before: MirrorValue::Id(RecordingId(0)),
+        after: MirrorValue::Id(RecordingId(id)),
+    }
+}
+
+fn decided_flight(effects: usize) -> crate::dictation_executor::shadow::Flight {
+    use crate::dictation_executor::shadow::{view_projection, Flight};
+    let core = view(Status::Recording, RID);
+    let input = Input::CancelRequest(CancelInput { expected: None });
+    let decision = core.handle(input.clone(), NOW);
+    let flight = Flight::begin();
+    flight.enter_pre();
+    flight.decided(
+        input,
+        view_projection(&core),
+        NOW,
+        decision.row,
+        None,
+        effects,
+    );
+    flight
+}
+
+fn note_mirror(flight: &crate::dictation_executor::shadow::Flight, effect: &Effect) {
+    use crate::dictation_executor::shadow::Noted;
+    let slots = flight.slots().expect("an active flight has slots");
+    flight.effect(Noted {
+        index: 0,
+        placement: Placement::In,
+        effect,
+        taken: true,
+        result: crate::dictation_shadow::types::EffectResult::Ran,
+        mirror: slots.mirror.take(),
+        ticker: slots.ticker.take(),
+    });
+}
+
+fn header_mirrors(messages: &[ShadowMsg]) -> Vec<Vec<MirrorWitness>> {
+    messages
+        .iter()
+        .filter_map(|message| match message {
+            ShadowMsg::Header(header) => Some(header.in_d_mirrors.to_vec()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The probe that showed the thread-local flight misattributing across an `.await`: two
+/// decisions' flights live on **one thread**, their tasks interleaved at an await. Each
+/// capture writes into its own flight's slots, so each header carries its own write and
+/// nothing of the other's, whatever order the tasks run in. A capture holds nothing that
+/// names "the current flight".
+#[test]
+fn flights_interleaved_across_an_await_on_one_thread_never_see_each_others_slots() {
+    let transport = default_transport();
+    let _armed = Armed::on(&transport);
+    let effect = Effect::MarkCancelled(RecordingId(1));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("a runtime");
+    runtime.block_on(async {
+        let task = |id: u64, yields: usize| {
+            let effect = effect.clone();
+            async move {
+                let flight = decided_flight(1);
+                flight
+                    .slots()
+                    .expect("slots")
+                    .mirror
+                    .set(Some(mirror_of(id)));
+                for _ in 0..yields {
+                    // Another task runs here, on this very thread, writing its own flight.
+                    tokio::task::yield_now().await;
+                }
+                note_mirror(&flight, &effect);
+                flight.seal(None).submit();
+            }
+        };
+        tokio::join!(task(11, 3), task(22, 1), task(33, 0));
+    });
+    let mut seen: Vec<Vec<MirrorWitness>> = header_mirrors(&pop_all(&transport));
+    seen.sort_by_key(|mirrors| match mirrors.first().map(|m| m.after) {
+        Some(MirrorValue::Id(id)) => id.0,
+        _ => 0,
+    });
+    assert_eq!(
+        seen,
+        vec![
+            vec![mirror_of(11)],
+            vec![mirror_of(22)],
+            vec![mirror_of(33)]
+        ],
+        "each flight's header carries exactly its own write"
+    );
+}
+
+/// The other probe: flights dropped in an order that is not the order they began in. A
+/// dropped flight in the middle of its decision records its loss and takes nothing with
+/// it; the others still report their own writes (there is no restore of a previous
+/// "current" to dangle).
+#[test]
+fn flights_dropped_out_of_order_lose_only_themselves() {
+    let transport = default_transport();
+    let _armed = Armed::on(&transport);
+    let effect = Effect::MarkCancelled(RecordingId(1));
+    let before = crate::dictation_executor::shadow::conservation_now();
+
+    let first = decided_flight(1);
+    first.slots().expect("slots").mirror.set(Some(mirror_of(1)));
+    let second = decided_flight(1);
+    second
+        .slots()
+        .expect("slots")
+        .mirror
+        .set(Some(mirror_of(2)));
+    let third = decided_flight(1);
+    third.slots().expect("slots").mirror.set(Some(mirror_of(3)));
+
+    // The middle one is dropped first, then the first: neither reports a header.
+    drop(second);
+    drop(first);
+    note_mirror(&third, &effect);
+    third.seal(None).submit();
+    drop(third);
+
+    let after = crate::dictation_executor::shadow::conservation_now().since(before);
+    assert_eq!(
+        after.unwound, 2,
+        "the two dropped flights are recorded losses"
+    );
+    assert_eq!(
+        after.headers, 1,
+        "only the surviving flight submitted a header"
+    );
+    assert_eq!(
+        header_mirrors(&pop_all(&transport)),
+        vec![vec![mirror_of(3)]],
+        "the surviving flight's header carries its own write, nothing else"
+    );
+}
+
+// ------------------------------------------ named no-reply closes (D-S2c-9 d)
+
+/// A finish a drain ran from the deferred queue has no reply of its own: its flight closes
+/// as the named no-reply close, never with the kind it decided and never completed, even
+/// inside a command's scope. A synchronous command nested in it keeps its own reply
+/// (D-S2c-10 R6: the old depth counter lost it).
+#[test]
+fn a_queued_finish_closes_with_no_reply_and_a_nested_command_keeps_its_own() {
+    use crate::dictation_executor::shadow::{commanded, unreplied};
+    use murmur_dictation_core::replies::{Reply, ReplyType};
+    use std::future::Future;
+
+    let decided = Reply::typed(ReplyType::NotRecording, Status::Idle);
+    let transport = default_transport();
+    let _armed = Armed::on(&transport);
+    let before = crate::dictation_executor::shadow::conservation_now();
+    let _ = block_on(commanded(async {
+        unreplied(|| {
+            // The finish's own flight.
+            drop(replying_flight(&decided));
+            // A synchronous command nested inside it, returning at once.
+            let mut nested = Box::pin(commanded(async {
+                drop(replying_flight(&decided));
+                Ok::<_, String>(serde_json::json!({"type": "not_recording", "state": "idle"}))
+            }));
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(nested.as_mut().poll(&mut cx).is_ready());
+        });
+        Ok::<_, String>(serde_json::json!({"type": "not_recording", "state": "idle"}))
+    }));
+    let (replies, mut closes) = reply_and_close(&pop_all(&transport));
+    assert_eq!(
+        replies,
+        vec![ReplyKind::Typed(ReplyType::NotRecording)],
+        "only the nested command's flight has a reply"
+    );
+    closes.sort_unstable();
+    assert_eq!(
+        closes,
+        vec![false, true],
+        "the finish closes incomplete, the nested command's flight completes"
+    );
+    let counted = crate::dictation_executor::shadow::conservation_now().since(before);
+    assert_eq!((counted.no_reply, counted.unrendered), (1, 0));
+}
+
+/// The import's pipeline failure is modelled as an `Err` outcome for R302.2, and the actual
+/// return is what it is compared against (D-S2c-10 R3, amendment 1 iii): the `Err` it
+/// returns closes the waiting flights as the named no-reply close; any other return,
+/// **the decided success included**, is credited with a kind no decision names, so the
+/// comparator reports it.
+#[test]
+fn an_import_pipeline_error_is_compared_with_the_actual_return() {
+    use crate::dictation_executor::shadow::{commanded, import_pipeline_error};
+    use murmur_dictation_core::replies::{Reply, ReplyType};
+
+    for decided in [
+        Reply::typed(ReplyType::NotRecording, Status::Idle),
+        Reply::Transcription {
+            text: murmur_dictation_core::replies::TranscriptText::FromPipeline,
+            state: Status::Idle,
+        },
+    ] {
+        for (returned, credited) in [
+            (Err("the pipeline failed".to_string()), None),
+            (
+                Ok(serde_json::json!({"type": "not_recording", "state": "idle"})),
+                Some(ReplyKind::Unrecognized),
+            ),
+            (
+                Ok(serde_json::json!({"type": "transcription", "text": ""})),
+                Some(ReplyKind::Unrecognized),
+            ),
+        ] {
+            let transport = default_transport();
+            let _armed = Armed::on(&transport);
+            let result = block_on(commanded(async {
+                drop(replying_flight(&decided));
+                import_pipeline_error();
+                returned.clone()
+            }));
+            assert_eq!(result, returned);
+            let (replies, closes) = reply_and_close(&pop_all(&transport));
+            assert_eq!(replies, credited.into_iter().collect::<Vec<_>>());
+            assert_eq!(
+                closes.contains(&true),
+                credited.is_some(),
+                "for {returned:?}: {closes:?}"
+            );
+        }
+    }
+}
+
+/// The capture keeps no ambient "current flight": nothing in the shadow's live module is a
+/// thread-local flight, a scope, or a stash another site takes from (D-S2c-9 c).
+#[test]
+fn the_live_capture_module_keeps_no_ambient_flight_or_stash() {
+    let source = include_str!("../../dictation_executor/shadow.rs");
+    let code: String = source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for banned in [
+        "static CURRENT",
+        "fn with_current",
+        "fn stash_",
+        "fn take_retired_op",
+        "fn take_h2_retired_op",
+        "fn armed(",
+        "static MIRROR",
+        "static TICKER:",
+        "static H1_RETIRED",
+        "static H2_RETIRED",
+    ] {
+        assert!(!code.contains(banned), "shadow.rs still has `{banned}`");
+    }
+    // The only thread-locals left are a write sequence and a one-call mailbox: no flight.
+    for block in code.split("thread_local!").skip(1) {
+        let head: String = block.lines().take(4).collect::<Vec<_>>().join(" ");
+        assert!(
+            head.contains("KEYBOARD_WRITES") || head.contains("TICKER_SKIP"),
+            "an unexpected thread-local in the live capture: {head}"
+        );
+        assert!(
+            !head.contains("Flight"),
+            "a thread-local names a flight: {head}"
+        );
+    }
+}

@@ -33,6 +33,22 @@ impl RowId {
         };
         base + 100 * step
     }
+
+    /// [`RowId::ordinal`] without an allocation: the shadow's live capture reads it
+    /// under D (Stage 2c-2). The same result for every id (`ordinal_inline_agrees`).
+    pub fn ordinal_inline(self) -> u16 {
+        let Some((_, tail)) = self.0.split_once('.') else {
+            return 0;
+        };
+        let digits = tail.bytes().take_while(u8::is_ascii_digit).count();
+        let base = tail[..digits].parse::<u16>().unwrap_or(0);
+        let step = match tail[digits..].chars().next() {
+            Some(letter @ 'a'..='e') => u16::from(letter as u8 - b'a') + 1,
+            Some('r') => 6,
+            _ => 0,
+        };
+        base + 100 * step
+    }
 }
 
 /// The shadow `site_id` of a decision entry (C0.3). `202n`, `204a` and `204b`
@@ -370,6 +386,26 @@ impl Decision {
 mod tests {
     use super::*;
     use crate::effects::Placement;
+
+    #[test]
+    fn ordinal_inline_agrees() {
+        for id in [
+            "R101.1",
+            "R203.3a",
+            "R203.3e",
+            "R203.2r",
+            "R103.0",
+            "R12",
+            "R",
+            "R7.x",
+            "R4.12b",
+            "R9.",
+            "R1.65535",
+            "R1.99999z",
+        ] {
+            assert_eq!(RowId(id).ordinal(), RowId(id).ordinal_inline(), "{id}");
+        }
+    }
 
     fn decision(transition: Option<(Status, Status)>, effects: Vec<Placed>) -> Decision {
         Decision {

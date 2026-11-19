@@ -40,6 +40,8 @@ use super::dictation_host::{
 };
 use super::tests::test_state;
 use super::*;
+#[cfg(feature = "dictation-shadow")]
+use crate::dictation_shadow::replay as shadow_replay;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
@@ -639,6 +641,10 @@ impl World {
     }
 
     fn fire(&self, label: &str) {
+        #[cfg(feature = "dictation-shadow")]
+        if label == "supervisor.start" {
+            shadow_replay::blocking_point("supervisor.start");
+        }
         let (inline, hook) = {
             let mut hooks = locked(&self.hooks);
             let mut take = |key: &str| {
@@ -712,7 +718,15 @@ impl World {
         Box::pin(async move {
             let host = Host(Arc::clone(&world));
             let state = world.state();
-            start_native_recording_inner(&host, state.inner(), None, None, None, None).await
+            commanded_reply(start_native_recording_inner(
+                &host,
+                state.inner(),
+                None,
+                None,
+                None,
+                None,
+            ))
+            .await
         })
     }
 
@@ -726,7 +740,7 @@ impl World {
         Box::pin(async move {
             let host = Host(Arc::clone(&world));
             let state = world.state();
-            start_native_recording_inner(
+            commanded_reply(start_native_recording_inner(
                 &host,
                 state.inner(),
                 device_name,
@@ -738,7 +752,7 @@ impl World {
                 }),
                 None,
                 None,
-            )
+            ))
             .await
         })
     }
@@ -761,12 +775,12 @@ impl World {
         Box::pin(async move {
             let host = Host(Arc::clone(&world));
             let state = world.state();
-            stop_native_recording_inner(
+            commanded_reply(stop_native_recording_inner(
                 &host,
                 state.inner(),
                 expected,
                 audio_lifecycle::DictationStopTrigger::Other,
-            )
+            ))
             .await
         })
     }
@@ -782,7 +796,15 @@ impl World {
         Box::pin(async move {
             let host = Host(Arc::clone(&world));
             let state = world.state();
-            start_native_recording_inner(&host, state.inner(), None, None, None, Some(token)).await
+            commanded_reply(start_native_recording_inner(
+                &host,
+                state.inner(),
+                None,
+                None,
+                None,
+                Some(token),
+            ))
+            .await
         })
     }
 
@@ -808,6 +830,15 @@ impl World {
         };
         // The task is the one production spawns, built by the same
         // `auto_stop_dispatch`; this only unwraps its re-entrancy refusal.
+        // With the shadow, through the one function production runs it through, so its
+        // flights conclude with the result it returns.
+        #[cfg(feature = "dictation-shadow")]
+        let stop: Fut<Result<serde_json::Value, String>> = Box::pin(async move {
+            crate::commands::recording::witness_detached(task)
+                .await
+                .expect("the auto-stop was not refused as re-entrant")
+        });
+        #[cfg(not(feature = "dictation-shadow"))]
         let stop: Fut<Result<serde_json::Value, String>> = Box::pin(async move {
             task.await
                 .expect("the auto-stop was not refused as re-entrant")
@@ -820,7 +851,12 @@ impl World {
         Box::pin(async move {
             let host = Host(Arc::clone(&world));
             let state = world.state();
-            cancel_native_recording_inner(&host, state.inner(), expected).await
+            commanded_reply(cancel_native_recording_inner(
+                &host,
+                state.inner(),
+                expected,
+            ))
+            .await
         })
     }
 
@@ -966,13 +1002,7 @@ impl World {
                     // The ticker's own preconditions are production's: a recorded
                     // context and a model that supports a live preview.
                     let state = app.state::<State>();
-                    let Some(context) = state.app_state.active_context(recording_id) else {
-                        return;
-                    };
-                    let model = &context.transcription.model_name;
-                    if !transcriber::whisper::supports_live_preview(model)
-                        && !transcriber::is_coreml_model(model)
-                    {
+                    if !ticker_can_start(&state.app_state, recording_id) {
                         return;
                     }
                     let registered = register();
@@ -1816,13 +1846,7 @@ impl DictationHost for Host {
             |app, recording_id, register| {
                 world.side_task_spawns.fetch_add(1, Ordering::SeqCst);
                 let state = app.state::<State>();
-                let Some(context) = state.app_state.active_context(recording_id) else {
-                    return;
-                };
-                let model = &context.transcription.model_name;
-                if !transcriber::whisper::supports_live_preview(model)
-                    && !transcriber::is_coreml_model(model)
-                {
+                if !ticker_can_start(&state.app_state, recording_id) {
                     return;
                 }
                 let registered = register();
@@ -1973,6 +1997,58 @@ impl Setup {
     }
 }
 
+/// The partial ticker spawner's own preconditions, as the harness's two spawners apply
+/// them: with the shadow compiled in they are the production spawner's check
+/// (`ticker_start_check`, the one lookup that also hands its skip to the port); without it
+/// they are the same two conditions, read here.
+fn ticker_can_start(app_state: &AppState, recording_id: u64) -> bool {
+    #[cfg(feature = "dictation-shadow")]
+    {
+        ticker_start_check(app_state, recording_id).is_ok()
+    }
+    #[cfg(not(feature = "dictation-shadow"))]
+    {
+        let Some(context) = app_state.active_context(recording_id) else {
+            return false;
+        };
+        let model = &context.transcription.model_name;
+        transcriber::whisper::supports_live_preview(model) || transcriber::is_coreml_model(model)
+    }
+}
+
+/// A command's entry as its IPC wrapper runs it: the reply the command returns is the
+/// reply the shadow witnesses (CP4, D-S2c-8 f). Without the shadow it is the command.
+pub(super) async fn commanded_reply<T, E, F>(command: F) -> Result<T, E>
+where
+    F: Future<Output = Result<T, E>>,
+    T: ReplyValue,
+{
+    #[cfg(feature = "dictation-shadow")]
+    {
+        crate::dictation_executor::shadow::commanded(command).await
+    }
+    #[cfg(not(feature = "dictation-shadow"))]
+    {
+        command.await
+    }
+}
+
+/// What the shadow can read a returned reply as (the replies of the four commands).
+#[cfg(feature = "dictation-shadow")]
+pub(super) use crate::dictation_executor::shadow::RenderedValue as ReplyValue;
+#[cfg(not(feature = "dictation-shadow"))]
+pub(super) trait ReplyValue {}
+#[cfg(not(feature = "dictation-shadow"))]
+impl ReplyValue for () {}
+#[cfg(not(feature = "dictation-shadow"))]
+impl ReplyValue for serde_json::Value {}
+
+/// Test builds with the shadow compiled in: run sub-runs with the shadow **not** armed
+/// (the feature on, `MURMUR_SHADOW` unset), the baseline a measurement compares with.
+#[cfg(feature = "dictation-shadow")]
+pub(super) static REPLAY_DISARMED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// One named sub-run of a scenario.
 pub(super) struct SubRun {
     pub(super) title: &'static str,
@@ -2003,6 +2079,14 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
     let _runtime = runtime().enter();
     S12_TAIL.with(|slot| slot.borrow_mut().take());
     reset_process_globals();
+    // E7: the real shell runs against the real comparator, on this thread.
+    // (A test measuring what the armed shadow adds disarms it for the baseline run.)
+    #[cfg(feature = "dictation-shadow")]
+    let armed = !REPLAY_DISARMED.load(Ordering::SeqCst);
+    #[cfg(feature = "dictation-shadow")]
+    let replay = armed.then(shadow_replay::Replay::begin);
+    #[cfg(feature = "dictation-shadow")]
+    let counters_before = crate::dictation_executor::shadow::conservation_now();
     let app_state = AppState::default();
     app_state
         .recording_id
@@ -2027,11 +2111,42 @@ pub(super) fn run_sub_run_observed(sub_run: &SubRun, observe: &dyn Fn(&Arc<World
         seen.status = Some(sub_run.setup.status);
         seen.id = state.app_state.recording_id.load(Ordering::SeqCst);
     }
+    // C8.7 at the site: every header is submitted with D free, and a blocking effect
+    // runs only after its header was compared.
+    #[cfg(feature = "dictation-shadow")]
+    let probe = armed.then(|| {
+        let probed = Arc::clone(&world);
+        shadow_replay::SiteProbe::install(move || {
+            !matches!(
+                probed.state().app_state.dictation.try_lock(),
+                Err(std::sync::TryLockError::WouldBlock)
+            )
+        })
+    });
     (sub_run.body)(&world);
     let lines = world.finish();
     observe(&world);
+    #[cfg(feature = "dictation-shadow")]
+    drop(probe);
     reset_process_globals();
+    // Everything the run drove is dropped before the replay ends, so a flight that
+    // did not finish has reported its abandonment.
+    drop(world);
     drop(app);
+    #[cfg(feature = "dictation-shadow")]
+    if let Some(replay) = replay {
+        let report = replay.end().conserved(
+            crate::dictation_executor::shadow::conservation_now().since(counters_before),
+        );
+        report.assert_clean(sub_run.title);
+        let site = shadow_replay::site_totals();
+        assert!(
+            site.violations.is_empty(),
+            "{}: a capture site broke a C8.7 order: {:?}",
+            sub_run.title,
+            site.violations
+        );
+    }
     lines
 }
 

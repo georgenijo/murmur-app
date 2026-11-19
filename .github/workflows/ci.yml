@@ -87,12 +87,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The shadow's insertion-only check needs the merge base with the PR's base.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
           cache: pip
           cache-dependency-path: requirements-test.txt
+
+      - name: Shadow capture only inserts into the live path
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/check_shadow_diff.py --base "origin/${{ github.base_ref }}"
 
       - name: Validate workflow policy
         run: |
@@ -110,6 +117,7 @@ jobs:
             tests/test_markdown_links.py \
             tests/test_hunt_sites.py \
             tests/test_shadow_sites.py \
+            tests/test_shadow_diff.py \
             tests/test_release_artifacts.py \
             tests/test_release_version.py \
             tests/test_release_start.py \

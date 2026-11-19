@@ -909,6 +909,16 @@ fn the_pipeline_guard_retires_both_history_entries_on_a_cancelled_exit() {
 /// effects ran.
 #[test]
 fn a_panic_in_the_guards_in_effects_leaves_no_history_entry() {
+    // This test panics under D on purpose: the shell's unwound decision is the
+    // outcome it provokes, so it states that loss itself.
+    #[cfg(feature = "dictation-shadow")]
+    crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+        unverifiable: 0,
+        unwound: 1,
+        open: 1,
+        abandoned: 1,
+        ..Default::default()
+    });
     run_sub_run(&SubRun {
         title: "panic in the guard",
         setup: Setup::idle(),
@@ -981,6 +991,12 @@ fn a_stale_pipeline_exit_retires_both_history_entries() {
 #[test]
 fn dropping_a_parked_stop_from_an_inline_listener_defers_the_finish_until_d_is_released() {
     let lines = under_watchdog("a stop dropped from a listener under D", || {
+        // This test drops a flight mid-await on purpose: the named incomplete close.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned: 1,
+            ..Default::default()
+        });
         from_stop(trace(Setup::idle(), |w| {
             recording(w);
             w.knobs().stop_result = Ok(16_000);
@@ -1082,6 +1098,12 @@ fn a_stop_resumed_inline_under_d_waits_out_the_core_span_before_its_204b_section
 /// the original shell did, and the stop guard does not run 204a.
 #[test]
 fn a_panic_in_pe_vad_leaves_processing_because_the_guard_was_disarmed_first() {
+    // This test drops a flight mid-await on purpose: the named incomplete close.
+    #[cfg(feature = "dictation-shadow")]
+    crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+        abandoned: 1,
+        ..Default::default()
+    });
     run_sub_run(&SubRun {
         title: "panic in PE(Vad)",
         setup: Setup::idle(),
@@ -1127,6 +1149,12 @@ fn a_panic_in_pe_vad_leaves_processing_because_the_guard_was_disarmed_first() {
 #[test]
 fn a_finish_queued_in_one_stops_emit_is_applied_before_that_stop_awaits() {
     under_watchdog("a finish queued in a stop's emit", || {
+        // This test drops a flight mid-await on purpose: the named incomplete close.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned: 1,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "cross-thread drain",
             setup: Setup::idle(),
@@ -1187,6 +1215,12 @@ fn a_finish_queued_in_one_stops_emit_is_applied_before_that_stop_awaits() {
 #[test]
 fn a_stop_that_resumes_on_another_worker_registers_its_drain_there() {
     under_watchdog("a stop resumed on another worker", || {
+        // This test drops a flight mid-await on purpose: the named incomplete close.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned: 1,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "stop resumed on another thread",
             setup: Setup::idle(),
@@ -1263,6 +1297,16 @@ fn a_stop_that_resumes_on_another_worker_registers_its_drain_there() {
 #[test]
 fn a_panic_after_a_queued_finish_still_drains_it_during_the_unwind() {
     under_watchdog("a panic after a queued finish", || {
+        // This test panics under D on purpose: the shell's unwound decision is the
+        // outcome it provokes, so it states that loss itself.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            unverifiable: 0,
+            unwound: 1,
+            open: 2,
+            abandoned: 1,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "panic after queue",
             setup: Setup::idle(),
@@ -1311,6 +1355,16 @@ fn a_panic_after_a_queued_finish_still_drains_it_during_the_unwind() {
 #[test]
 fn the_204b_section_drains_a_queued_finish_when_its_listener_panics() {
     under_watchdog("204b listener panics after queueing", || {
+        // This test panics under D on purpose: the shell's unwound decision is the
+        // outcome it provokes, so it states that loss itself.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            unverifiable: 0,
+            unwound: 1,
+            open: 2,
+            abandoned: 1,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "204b unwind",
             setup: Setup::idle(),
@@ -1372,6 +1426,16 @@ fn park_stop_of_recording_1_then_start_recording_2(
 #[test]
 fn a_panic_in_one_deferred_finish_does_not_strand_the_next() {
     under_watchdog("a second panic during the drain", || {
+        // This test panics under D on purpose: the shell's unwound decision is the
+        // outcome it provokes, so it states that loss itself.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            unverifiable: 0,
+            unwound: 1,
+            open: 2,
+            abandoned: 2,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "second panic",
             setup: Setup::idle(),
@@ -1436,6 +1500,12 @@ fn a_panic_in_one_deferred_finish_does_not_strand_the_next() {
 #[test]
 fn an_early_stop_unwind_drains_after_it_releases_t() {
     under_watchdog("an early unwind drains with T held", || {
+        // This test drops a flight mid-await on purpose: the named incomplete close.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned: 2,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "unwind drains after T",
             setup: Setup::idle(),
@@ -1609,7 +1679,8 @@ fn drain_two_finishes_under_a_panicking_subscriber(
                 &state.app_state,
                 2,
                 murmur_dictation_core::inputs::PostKind::StopPost,
-                &|_| {},
+                // The real keyboard gate: the shadow compares what `KB(false)` committed.
+                &|processing| crate::keyboard::set_processing(processing),
                 &|| {
                     let (first, second) = parked.lock().expect("slot").take().expect("two");
                     drop(second);
@@ -1647,6 +1718,16 @@ fn drain_two_finishes_under_a_panicking_subscriber(
 #[test]
 fn a_panicking_subscriber_cannot_strand_the_second_finish_in_a_normal_drain() {
     under_watchdog("panicking subscriber, normal drain", || {
+        // This test panics under D on purpose: the shell's unwound decision is the
+        // outcome it provokes, so it states that loss itself.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            unverifiable: 0,
+            unwound: 1,
+            open: 2,
+            abandoned: 2,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "panicking subscriber, normal drain",
             setup: Setup::idle(),
@@ -1668,6 +1749,16 @@ fn a_panicking_subscriber_cannot_strand_the_second_finish_in_a_normal_drain() {
 #[test]
 fn a_panicking_subscriber_cannot_strand_or_abort_an_unwinding_drain() {
     under_watchdog("panicking subscriber, unwinding drain", || {
+        // This test panics under D on purpose: the shell's unwound decision is the
+        // outcome it provokes, so it states that loss itself.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            unverifiable: 0,
+            unwound: 2,
+            open: 2,
+            abandoned: 2,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "panicking subscriber, unwinding drain",
             setup: Setup::idle(),
@@ -1688,6 +1779,16 @@ fn a_panicking_subscriber_cannot_strand_or_abort_an_unwinding_drain() {
 #[test]
 fn the_panicked_finish_report_is_registered_and_content_free() {
     under_watchdog("panic report content", || {
+        // This test panics under D on purpose: the shell's unwound decision is the
+        // outcome it provokes, so it states that loss itself.
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            unverifiable: 0,
+            unwound: 1,
+            open: 2,
+            abandoned: 2,
+            ..Default::default()
+        });
         run_sub_run(&SubRun {
             title: "panic report content",
             setup: Setup::idle(),
@@ -2046,5 +2147,112 @@ mod auto_stop_log {
             logged_for(None).is_empty(),
             "a refused (re-entrant) stop logs nothing"
         );
+    }
+}
+
+/// The detached auto-stop's reply is witnessed at the return of the one function production
+/// runs it through (`run_auto_stop`), so E7 compares what that stop returned (#1171): the
+/// decided plain `Ok` reply matches a plain return, and a typed reply, a
+/// transcription or an error in its place is a reply mismatch (`diff_kind` 4).
+#[cfg(feature = "dictation-shadow")]
+mod auto_stop_reply_witness {
+    use super::*;
+    use crate::dictation_executor::shadow::{view_projection, Flight};
+    use crate::dictation_shadow::replay::Replay;
+    use murmur_dictation_core::ids::{Now, RecordingId};
+    use murmur_dictation_core::inputs::{CancelInput, Input};
+    use murmur_dictation_core::state::{DictationCore, LiveObs};
+    use murmur_dictation_core::status::Status;
+
+    /// Run an auto-stop task whose stop decided a plain `Ok` reply and returned `returned`,
+    /// through `run_auto_stop`; the diff kinds the comparator reported.
+    fn diff_kinds(returned: Option<Result<serde_json::Value, String>>) -> Vec<u8> {
+        let replay = Replay::begin();
+        let task: AutoStopTask = Box::pin(async move {
+            let core = DictationCore::project(
+                Status::Idle,
+                RecordingId(7),
+                LiveObs {
+                    cancelled_through: RecordingId(3),
+                    context_for: Some(RecordingId(7)),
+                },
+            );
+            let input = Input::CancelRequest(CancelInput { expected: None });
+            let decision = core.handle(input.clone(), Now(0));
+            let flight = Flight::begin();
+            flight.enter_pre();
+            flight.decided(
+                input,
+                view_projection(&core),
+                Now(0),
+                decision.row,
+                decision.reply.as_ref(),
+                0,
+            );
+            flight.seal(None).submit();
+            drop(flight);
+            returned
+        });
+        tauri::async_runtime::block_on(run_auto_stop(7, task));
+        replay
+            .end()
+            .events
+            .iter()
+            .map(|event| event.diff_kind)
+            .collect()
+    }
+
+    #[test]
+    fn a_wrong_auto_stop_return_is_a_reply_mismatch() {
+        assert!(
+            diff_kinds(Some(Ok(serde_json::json!({"state": "idle"})))).is_empty(),
+            "the decided reply, returned, is a match"
+        );
+        for wrong in [
+            Some(Ok(
+                serde_json::json!({"type": "transcription", "text": "", "state": "idle"}),
+            )),
+            Some(Ok(
+                serde_json::json!({"type": "not_recording", "state": "idle"}),
+            )),
+            Some(Err("failed".to_string())),
+        ] {
+            assert_eq!(diff_kinds(wrong.clone()), vec![4], "{wrong:?}");
+        }
+    }
+
+    /// Disarmed, the rebinding hands back the very task it was given (same allocation),
+    /// after exactly one enable-flag load, and polls nothing of its own.
+    #[test]
+    fn a_disarmed_auto_stop_is_the_same_task() {
+        use super::super::witness_detached;
+        use crate::dictation_executor::probe;
+        let task: AutoStopTask = Box::pin(async { Some(Ok(serde_json::json!({"state": "idle"}))) });
+        let before = &*task as *const _ as *const ();
+        let loads = probe::flag_loads();
+        let again = witness_detached(task);
+        assert_eq!(probe::flag_loads() - loads, 1, "one enable-flag load");
+        assert_eq!(&*again as *const _ as *const (), before, "the same task");
+    }
+
+    /// Armed, the wrapper witnesses and passes the result through untouched, in every shape.
+    #[test]
+    fn an_armed_auto_stop_wrapper_passes_the_result_through() {
+        use super::super::witness_detached;
+        for result in [
+            None,
+            Some(Ok(serde_json::json!({"state": "idle"}))),
+            Some(Ok(
+                serde_json::json!({"type": "transcription", "text": "a"}),
+            )),
+            Some(Err("failed".to_string())),
+        ] {
+            let replay = Replay::begin();
+            let expected = result.clone();
+            let task: AutoStopTask = Box::pin(async move { result });
+            let got = tauri::async_runtime::block_on(witness_detached(task));
+            replay.end();
+            assert_eq!(got, expected);
+        }
     }
 }

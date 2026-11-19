@@ -635,3 +635,27 @@ pub(super) fn release_and_reply(
     );
     reply_of(&decision, smart_auto_error)
 }
+
+/// [`release_and_reply`] with the flight whose decision the refusal's `PT:REL` runs for:
+/// the executor carries it (D-S2c-9 c). Called only for an **active** flight: a disarmed
+/// run takes the original helper.
+#[cfg(feature = "dictation-shadow")]
+pub(super) fn release_and_reply_observed(
+    host: &dyn DictationHost,
+    state: &State,
+    slots: &StartSlots,
+    decision: Decision,
+    recording_id: u64,
+    smart_auto_error: Option<String>,
+    flight: &crate::dictation_executor::shadow::Flight,
+) -> Result<serde_json::Value, String> {
+    let ports = StartPorts::new(host, state, slots, Some(recording_id));
+    // The executor, with its clone of the decision, is gone before the reply is rendered,
+    // as the original helper's temporary is (D-S2c-12 a).
+    {
+        let mut exec = executor(&ports, decision.clone(), false);
+        exec.bind_flight(flight);
+        run_phase(&mut exec, Placement::PostT, None, recording_id);
+    }
+    reply_of(&decision, smart_auto_error)
+}

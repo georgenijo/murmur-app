@@ -2328,11 +2328,25 @@ mod tests {
             .find("tauri::generate_handler![")
             .expect("generate_handler! in lib.rs")
             + "tauri::generate_handler![".len();
-        let end = start + lib_rs[start..].find(']').expect("handler end");
+        // The list ends at the `]` that closes the macro (`]))`): `lib.rs` source now
+        // carries `#[cfg(..)]` attributes inside it in every build, and their own `]` is not
+        // the end of the list. A named test-only exception in `check_shadow_diff.py`.
+        let end = start + lib_rs[start..].find("]))").expect("handler end");
+        // The shadow build registers a witnessing wrapper (`<name>_witnessed`, renamed to
+        // `<name>` for IPC) next to a `cfg(not(feature))` entry of the command itself: the
+        // IPC names are the commands', so a feature-only entry adds none.
         let mut registered: Vec<&str> = lib_rs[start..end]
             .split(',')
             .map(str::trim)
             .filter(|entry| !entry.is_empty())
+            .filter(|entry| {
+                let feature_only = entry.starts_with("#[cfg(feature = \"dictation-shadow\")]");
+                assert!(
+                    !feature_only || entry.ends_with("_witnessed"),
+                    "a feature-only handler entry is a witnessing wrapper: {entry}"
+                );
+                !feature_only
+            })
             .map(|entry| entry.rsplit("::").next().unwrap_or(entry))
             .collect();
         registered.sort_unstable();

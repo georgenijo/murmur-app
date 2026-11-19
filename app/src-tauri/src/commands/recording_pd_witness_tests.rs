@@ -48,6 +48,20 @@ pub(super) fn repeat(sub_run: &SubRun) {
     }
 }
 
+/// [`repeat`] for a sub-run that ends `abandoned` flights without a completed close (a
+/// task that panicked mid-flight): each repetition names them to the E7 gate.
+#[cfg_attr(not(feature = "dictation-shadow"), allow(unused_variables))]
+fn repeat_abandoning(sub_run: &SubRun, abandoned: u64) {
+    for _ in 0..repeat_count() {
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_shadow::replay::expect(crate::dictation_shadow::replay::Expect {
+            abandoned,
+            ..Default::default()
+        });
+        run_sub_run(sub_run);
+    }
+}
+
 fn status(world: &Arc<World>) -> DictationStatus {
     world.state().app_state.dictation.lock_or_recover().status
 }
@@ -596,8 +610,11 @@ fn pd13b_panic_in_the_pipeline(world: &Arc<World>) {
 
 #[test]
 fn pd13_task_panic_restores_idle_without_a_terminal() {
-    repeat(&sub("PD-13 stop task panic", pd13a_panic_in_the_stop_path));
-    repeat(&sub("PD-13 pipeline panic", pd13b_panic_in_the_pipeline));
+    repeat_abandoning(
+        &sub("PD-13 stop task panic", pd13a_panic_in_the_stop_path),
+        1,
+    );
+    repeat_abandoning(&sub("PD-13 pipeline panic", pd13b_panic_in_the_pipeline), 1);
 }
 
 // ---------------------------------------------------------------- PD-14
@@ -1048,6 +1065,1010 @@ fn c4_9_every_contract_test_is_implemented_or_owned() {
             assert_eq!(
                 name, "take_attempts_iff_recovering",
                 "`{name}` is implemented, so its owner row is stale"
+            );
+        }
+    }
+}
+
+/// A start future dropped while it is parked on the awaited capture start of a kept
+/// microphone test: the R101.15 flight ran `PR` and never reaches `CS`. As in PD-9
+/// proper, the begin-ledger row it registered stays pending with nobody to resolve it,
+/// so a completion requested afterwards is held. The spawned blocking task is parked
+/// at its supervisor call by a barrier while the ledger is read, then released.
+#[cfg(feature = "dictation-shadow")]
+fn pd09c_start_dropped_at_the_awaited_capture_start(world: &Arc<World>) {
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+    world
+        .state()
+        .app_state
+        .microphone_preview
+        .claim(50)
+        .expect("a mic test is kept");
+    let (reached_tx, reached) = channel::<()>();
+    let (go, go_rx) = channel::<()>();
+    world.on("supervisor.start", move || {
+        let _ = reached_tx.send(());
+        let _ = go_rx.recv_timeout(Duration::from_secs(30));
+    });
+    let mut start = world.start();
+    assert!(poll_once(&mut start).is_pending());
+    drop(start);
+    world.note("the start future is dropped while it waits for the capture start");
+    reached
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the blocking task reached the supervisor's capture start");
+    // The orphaned ledger row: registered, never begun, and it holds the completion.
+    let state = world.state();
+    assert!(
+        dictation_performance_begins().begin_is_pending(1),
+        "PD-9: the dropped start's begin-ledger row stays pending"
+    );
+    complete_dictation_performance(
+        &state.performance,
+        1,
+        RunOutcomeV1::Cancelled {
+            stage: PerformanceStageV1::CaptureFinalization,
+        },
+        Vec::new(),
+        None,
+        None,
+    );
+    let coordinator = dictation_performance_begins();
+    assert!(
+        !coordinator.completion_is_claimed(1),
+        "PD-9: the completion is held behind a begin that never runs"
+    );
+    assert!(coordinator.begin_is_pending(1));
+    go.send(()).expect("the blocking task is parked");
+    // The task finishes on its own thread; wait for its last act (the supervisor's
+    // acknowledgement is pushed after the barrier and after the cold start), bounded.
+    // The entry line is pushed before the barrier, so it proves nothing about the end.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !world
+        .trace()
+        .iter()
+        .any(|line| line.starts_with("supervisor.start_ack 1"))
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the blocking task never ran"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// E8 (appendix C8.5): every preserved defect whose row is in a family is witnessed by
+/// the shadow. The twelve goldens and the Stage 1 PD witness tests run through the
+/// shadow in this process (every sub-run is replayed, `run_sub_run_observed`), and each
+/// PD the allowlist credits is counted. PD-11, PD-14 and PD-17 are not row signatures
+/// (properties of an effect's implementation, or latent) and are not counted.
+#[cfg(feature = "dictation-shadow")]
+#[test]
+fn every_family_pd_is_witnessed_by_the_shadow() {
+    use super::golden_tests as g;
+    use crate::dictation_shadow::replay;
+    replay::reset_totals();
+    g::golden_s01_stop_during_start();
+    g::golden_s02_cancel_in_each_phase();
+    g::golden_s03_interruption_of_8000_samples_or_more();
+    g::golden_s04_interruption_under_8000_samples();
+    g::golden_s05_timeout_teardown();
+    g::golden_s06_stale_stop();
+    g::golden_s07_meeting_conflict();
+    g::golden_s08_preview_handoff();
+    g::golden_s09_supervisor_idle_during_processing();
+    g::golden_s10_ready_vs_context_rendezvous();
+    g::golden_s11_idle_on_a_finished_recording();
+    g::golden_s12_start_failure_vs_initialization_failed();
+    pd03_stop_missing_context_runs_unconditional_idle_effects();
+    pd05_supervisor_events_for_the_current_id_claim_superseded();
+    pd06_pipeline_guard_overwrites_recovering();
+    pd08_flushing_start_leaves_its_context_installed();
+    pd09_dropped_start_orphans_the_begin_ledger_row();
+    pd10_terminal_before_accepted_is_dropped_and_ledger_evicts();
+    pd13_task_panic_restores_idle_without_a_terminal();
+    pd18bc_start_in_the_teardown_tail_leaves_recovering();
+    // PD-9's signature in the allowlist is an R101.15 flight abandoned between `PR` and
+    // `CS`: a start future dropped while it waits for a kept preview's capture start.
+    repeat_abandoning(
+        &sub(
+            "PD-9 abandoned at the awaited capture start",
+            pd09c_start_dropped_at_the_awaited_capture_start,
+        ),
+        1,
+    );
+    let totals = replay::totals();
+    eprintln!("E8 pd_witness: {:?}", totals.pd_witness);
+    eprintln!("E7 rows compared: {:?}", totals.per_row);
+    let missing: Vec<u8> = [1_u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 15, 16, 18]
+        .into_iter()
+        .filter(|pd| totals.pd_witness.get(pd).copied().unwrap_or(0) == 0)
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "preserved defects the shadow never witnessed: {missing:?} (witnessed: {:?})",
+        totals.pd_witness
+    );
+}
+
+/// C8.7 at the live sites, over every golden: each header is submitted with D free
+/// (`shadow.submit`, a `try_lock` on D), and each blocking effect that the goldens
+/// reach (`PE(Vad)` of R203.9, the cold `supervisor.start`) runs only after its header
+/// was compared. The probe is installed by `run_sub_run_observed`, which fails the
+/// sub-run on a violation; here the evidence that the probe saw the points at all
+/// (a probe that never fires proves nothing).
+#[cfg(feature = "dictation-shadow")]
+#[test]
+fn headers_leave_d_and_precede_blocking_effects_at_every_live_site() {
+    use super::golden_tests as g;
+    use crate::dictation_shadow::replay;
+    replay::reset_site_totals();
+    g::golden_s01_stop_during_start();
+    g::golden_s02_cancel_in_each_phase();
+    g::golden_s03_interruption_of_8000_samples_or_more();
+    g::golden_s04_interruption_under_8000_samples();
+    g::golden_s05_timeout_teardown();
+    g::golden_s06_stale_stop();
+    g::golden_s07_meeting_conflict();
+    g::golden_s08_preview_handoff();
+    g::golden_s09_supervisor_idle_during_processing();
+    g::golden_s10_ready_vs_context_rendezvous();
+    g::golden_s11_idle_on_a_finished_recording();
+    g::golden_s12_start_failure_vs_initialization_failed();
+    let site = replay::site_totals();
+    eprintln!("SITE PROBE: {site:?}");
+    assert!(site.violations.is_empty(), "{:?}", site.violations);
+    assert!(site.submits > 0, "no header submission was probed");
+    for point in ["stop.perf_enter_vad", "supervisor.start"] {
+        assert!(
+            site.blocking_points.get(point).copied().unwrap_or(0) > 0,
+            "the goldens never reached `{point}`: {:?}",
+            site.blocking_points
+        );
+    }
+}
+
+// ------------------------------------------ what the armed shadow adds under D (D-S2c-7 b, c)
+
+#[cfg(feature = "dictation-shadow")]
+pub(super) mod under_d {
+    use super::*;
+    use crate::dictation_shadow::alloc_probe::count_allocations_when;
+    use std::cell::Cell;
+
+    thread_local! {
+        static D: Cell<*const std::sync::Mutex<crate::state::DictationState>> =
+            const { Cell::new(std::ptr::null()) };
+        static ALLOCATIONS_UNDER_D: Cell<u64> = const { Cell::new(0) };
+        static WARNED_UNDER_D: Cell<Vec<bool>> = const { Cell::new(Vec::new()) };
+        /// `(core_now calls, view projections)` made by the measured entries.
+        static READS_UNDER_D: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
+        /// Reads of the shadow's own per-thread state made by the measured entries.
+        static SHADOW_READS_UNDER_D: Cell<u64> = const { Cell::new(0) };
+        /// Reads of the shadow's enable flag made by the measured entries.
+        static FLAG_LOADS_UNDER_D: Cell<u64> = const { Cell::new(0) };
+    }
+
+    /// Run `f` and add the clock reads and view projections it made to [`READS_UNDER_D`].
+    fn count_reads<R>(f: impl FnOnce() -> R) -> R {
+        let before = crate::dictation_executor::probe::counts();
+        let shadow_before = crate::dictation_executor::probe::shadow_reads();
+        let loads_before = crate::dictation_executor::probe::flag_loads();
+        let result = f();
+        FLAG_LOADS_UNDER_D.with(|total| {
+            total.set(total.get() + crate::dictation_executor::probe::flag_loads() - loads_before)
+        });
+        let after = crate::dictation_executor::probe::counts();
+        SHADOW_READS_UNDER_D.with(|total| {
+            total
+                .set(total.get() + crate::dictation_executor::probe::shadow_reads() - shadow_before)
+        });
+        READS_UNDER_D.with(|total| {
+            let (now, views) = total.get();
+            total.set((now + after.0 - before.0, views + after.1 - before.1));
+        });
+        result
+    }
+
+    /// The dictation lock is held right now (by this thread: the shell is synchronous).
+    /// Performs no allocation, which the allocator calls it from requires.
+    fn d_is_held() -> bool {
+        D.try_with(|pointer| {
+            let pointer = pointer.get();
+            // SAFETY: the pointer is set by `measure` from the world's own state, which
+            // outlives the measured call, and is cleared right after it.
+            !pointer.is_null()
+                && matches!(
+                    unsafe { &*pointer }.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                )
+        })
+        .unwrap_or(false)
+    }
+
+    /// Run `f` and count the allocations this thread made while `dictation` was held.
+    pub(in crate::commands) fn count_under_d<R>(
+        dictation: &std::sync::Mutex<crate::state::DictationState>,
+        f: impl FnOnce() -> R,
+    ) -> (R, u64) {
+        D.with(|pointer| pointer.set(dictation));
+        let (result, allocations) = count_allocations_when(d_is_held, f);
+        D.with(|pointer| pointer.set(std::ptr::null()));
+        (result, allocations)
+    }
+
+    /// Drive an entry to completion and count the allocations made while D was held.
+    fn measure<T>(world: &Arc<World>, mut entry: Fut<T>) {
+        let state = world.state();
+        let (_, allocations) = count_under_d(&state.app_state.dictation, || {
+            count_reads(|| complete(&mut entry))
+        });
+        ALLOCATIONS_UNDER_D.with(|total| total.set(total.get() + allocations));
+    }
+
+    /// What each refusal allocates while D is held in the default build (counted on a
+    /// feature build with the shadow disarmed, where every shadow read is gated off).
+    /// An intended change to a refusal's own D section re-pins its line.
+    const DEFAULT_BUILD_ALLOCATIONS_UNDER_D: [(&str, u64); 10] = [
+        ("start refused before D (Smart Auto with a fixed device)", 0),
+        ("start refused under D (a meeting is active)", 6),
+        ("start refused under D (already recording)", 21),
+        ("stop refused (stale, R201.1)", 0),
+        ("stop refused (processing, R201.2)", 5),
+        ("stop refused (idle, R201.3)", 5),
+        ("stop refused (recovering, nothing preserved, R201.6)", 11),
+        ("cancel refused (stale, R205.1)", 0),
+        ("cancel no-op (idle, R205.2)", 0),
+        ("cancel no-op (recovering, R205.3)", 0),
+    ];
+
+    struct Scenario {
+        title: &'static str,
+        setup: Setup,
+        body: fn(&Arc<World>),
+    }
+
+    fn at(status: DictationStatus, recording_id: u64) -> Setup {
+        Setup {
+            status,
+            recording_id,
+        }
+    }
+
+    /// One refusal branch per entry of every family that refuses under D or before it:
+    /// start (pre-D Smart Auto + fixed device, meeting, already recording), stop
+    /// (R201.1 stale, .2 processing, .3 idle, .6 nothing preserved), cancel (R205.1
+    /// stale, R205.2 idle, R205.3 recovering).
+    fn scenarios() -> Vec<Scenario> {
+        vec![
+            Scenario {
+                title: "start refused before D (Smart Auto with a fixed device)",
+                setup: Setup::idle(),
+                body: |w| measure(w, w.start_smart_auto(Some("fixed".to_string()))),
+            },
+            Scenario {
+                title: "start refused under D (a meeting is active)",
+                setup: Setup::idle(),
+                body: |w| {
+                    w.state()
+                        .app_state
+                        .meeting_active
+                        .store(true, Ordering::SeqCst);
+                    measure(w, w.start());
+                },
+            },
+            Scenario {
+                title: "start refused under D (already recording)",
+                setup: at(DictationStatus::Recording, 1),
+                body: |w| measure(w, w.start()),
+            },
+            Scenario {
+                title: "stop refused (stale, R201.1)",
+                setup: at(DictationStatus::Recording, 2),
+                body: |w| measure(w, w.stop(Some(1))),
+            },
+            Scenario {
+                title: "stop refused (processing, R201.2)",
+                setup: at(DictationStatus::Processing, 1),
+                body: |w| measure(w, w.stop(None)),
+            },
+            Scenario {
+                title: "stop refused (idle, R201.3)",
+                setup: Setup::idle(),
+                body: |w| measure(w, w.stop(None)),
+            },
+            Scenario {
+                title: "stop refused (recovering, nothing preserved, R201.6)",
+                setup: at(DictationStatus::Recovering, 1),
+                body: |w| measure(w, w.stop(None)),
+            },
+            Scenario {
+                title: "cancel refused (stale, R205.1)",
+                setup: at(DictationStatus::Recording, 2),
+                body: |w| measure(w, w.cancel(Some(1))),
+            },
+            Scenario {
+                title: "cancel no-op (idle, R205.2)",
+                setup: Setup::idle(),
+                body: |w| measure(w, w.cancel(None)),
+            },
+            Scenario {
+                title: "cancel no-op (recovering, R205.3)",
+                setup: at(DictationStatus::Recovering, 1),
+                body: |w| measure(w, w.cancel(None)),
+            },
+        ]
+    }
+
+    fn run_measured(scenario: &Scenario, disarmed: bool) -> u64 {
+        ALLOCATIONS_UNDER_D.with(|total| total.set(0));
+        READS_UNDER_D.with(|total| total.set((0, 0)));
+        SHADOW_READS_UNDER_D.with(|total| total.set(0));
+        FLAG_LOADS_UNDER_D.with(|total| total.set(0));
+        // A disarmed run reaches the site hooks with no replay to compare against: its
+        // "violations" are not findings, and must not reach the next armed run's check.
+        crate::dictation_shadow::replay::reset_site_totals();
+        REPLAY_DISARMED.store(disarmed, Ordering::SeqCst);
+        struct Rearm;
+        impl Drop for Rearm {
+            fn drop(&mut self) {
+                REPLAY_DISARMED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _rearm = Rearm;
+        run_sub_run(&SubRun {
+            title: scenario.title,
+            setup: Setup {
+                status: scenario.setup.status,
+                recording_id: scenario.setup.recording_id,
+            },
+            body: scenario.body,
+        });
+        crate::dictation_shadow::replay::reset_site_totals();
+        ALLOCATIONS_UNDER_D.with(Cell::get)
+    }
+
+    /// D-S2c-7 b: through the shell entry point (not the `Flight` API), each refusal
+    /// branch allocates under D exactly what it allocates with the shadow compiled in and
+    /// not armed. The armed run builds no executor, clones no effect vector and sends
+    /// nothing that allocates while D is held.
+    #[test]
+    fn the_armed_shadow_adds_no_allocation_under_d_at_any_refusal() {
+        let mut counted = 0;
+        for scenario in scenarios() {
+            let baseline = run_measured(&scenario, true);
+            let armed = run_measured(&scenario, false);
+            assert_eq!(
+                armed, baseline,
+                "{}: armed {armed} allocations under D, disarmed {baseline}",
+                scenario.title
+            );
+            // The disarmed run is the default build's allocation: every shadow read is
+            // gated on an armed flight, so a feature-only extra under D (equal armed and
+            // disarmed, so the comparison above cannot see it) changes this number.
+            let (_, pinned) = DEFAULT_BUILD_ALLOCATIONS_UNDER_D
+                .iter()
+                .find(|(title, _)| *title == scenario.title)
+                .unwrap_or_else(|| panic!("{}: no pinned default-build count", scenario.title));
+            assert_eq!(
+                baseline, *pinned,
+                "{}: {baseline} allocations under D with the shadow compiled in and not armed, \
+                 the default build makes {pinned} (D-S2c-7 c)",
+                scenario.title
+            );
+            counted += baseline;
+        }
+        assert!(
+            counted > 0,
+            "the probe counted no allocation under D at all: it is not measuring"
+        );
+    }
+
+    /// What the lifecycle bridge allocates while D is held in the default build, per
+    /// notification, as `(title, first delivery on a thread, a later one)` (counted on a
+    /// feature build with the shadow disarmed). The bridge is the one live path the entry
+    /// scenarios above do not reach, and the shadow's capture sits inside it: a disarmed
+    /// shadow must not allocate there (D-S2c-8 b), and a cost that only the first delivery
+    /// pays must not hide behind a later one (D-S2c-9 f).
+    const DEFAULT_BUILD_BRIDGE_ALLOCATIONS_UNDER_D: [(&str, u64, u64); 6] = [
+        ("bridge Ready while starting (R207)", 2, 2),
+        ("bridge StillConnecting while starting (R208)", 20, 19),
+        ("bridge Recovering while recording (R209)", 9, 9),
+        ("bridge CleanupFinished while recovering (R210)", 30, 30),
+        ("bridge Idle while recording (R211)", 26, 26),
+        ("bridge Idle while idle (short idle, R215.3/R216)", 6, 5),
+    ];
+
+    fn bridge_measure(world: &Arc<World>, event: AudioLifecycleEvent) {
+        let state = world.state();
+        let (_, allocations) = count_under_d(&state.app_state.dictation, || {
+            count_reads(|| world.notify(1, event))
+        });
+        ALLOCATIONS_UNDER_D.with(|total| total.set(total.get() + allocations));
+    }
+
+    /// One scenario per bridge arm that takes a decision section: Ready (R207),
+    /// StillConnecting (R208), Recovering (R209), CleanupFinished (R210), Idle (R211)
+    /// and the short idle (R215.3/R216), plus the same notifications arriving idle.
+    fn bridge_scenarios() -> Vec<Scenario> {
+        vec![
+            Scenario {
+                title: "bridge Ready while starting (R207)",
+                setup: at(DictationStatus::Starting, 1),
+                body: |w| bridge_measure(w, AudioLifecycleEvent::Ready),
+            },
+            Scenario {
+                title: "bridge StillConnecting while starting (R208)",
+                setup: at(DictationStatus::Starting, 1),
+                body: |w| bridge_measure(w, AudioLifecycleEvent::StillConnecting),
+            },
+            Scenario {
+                title: "bridge Recovering while recording (R209)",
+                setup: at(DictationStatus::Recording, 1),
+                body: |w| {
+                    bridge_measure(
+                        w,
+                        AudioLifecycleEvent::Recovering {
+                            reason: crate::audio_lifecycle::AudioCancelReason::DeviceChanged,
+                        },
+                    )
+                },
+            },
+            Scenario {
+                title: "bridge CleanupFinished while recovering (R210)",
+                setup: at(DictationStatus::Recovering, 1),
+                body: |w| bridge_measure(w, AudioLifecycleEvent::CleanupFinished),
+            },
+            Scenario {
+                title: "bridge Idle while recording (R211)",
+                setup: at(DictationStatus::Recording, 1),
+                body: |w| bridge_measure(w, AudioLifecycleEvent::Idle),
+            },
+            Scenario {
+                title: "bridge Idle while idle (short idle, R215.3/R216)",
+                setup: Setup::idle(),
+                body: |w| bridge_measure(w, AudioLifecycleEvent::Idle),
+            },
+        ]
+    }
+
+    /// D-S2c-8 b: the lifecycle bridge, like every refusal above, is inert while the
+    /// shadow is compiled in and not armed: no shadow read, no per-notification
+    /// allocation under D, and the armed run adds none either.
+    #[test]
+    fn the_lifecycle_bridge_allocates_the_same_armed_disarmed_and_in_the_default_build() {
+        // A delivery's first run on a thread pays that thread's one-time costs (a
+        // thread-local's first use); a later one does not. Both are pinned, separately:
+        // taking the least of several runs would hide a regression only the first delivery
+        // makes. The run happens on a fresh thread under a subscriber that formats nothing,
+        // so a logged duration's digits cannot move the count (D-S2c-9 f). One throwaway
+        // delivery first warms the process-wide state (callsite registration) so the
+        // numbers do not depend on which test ran before.
+        let pair = |scenario: &Scenario, disarmed: bool| -> (u64, u64) {
+            std::thread::scope(|scope| {
+                scope
+                    .spawn(|| {
+                        let quiet = tracing_subscriber::Registry::default();
+                        tracing::subscriber::with_default(quiet, || {
+                            (
+                                run_measured(scenario, disarmed),
+                                run_measured(scenario, disarmed),
+                            )
+                        })
+                    })
+                    .join()
+                    .expect("the measuring thread panicked")
+            })
+        };
+        let mut counted = 0;
+        for scenario in bridge_scenarios() {
+            let _ = pair(&scenario, true);
+            let baseline = pair(&scenario, true);
+            let armed = pair(&scenario, false);
+            assert_eq!(
+                armed, baseline,
+                "{}: armed (first, later) {armed:?} allocations under D, disarmed {baseline:?}",
+                scenario.title
+            );
+            let (_, cold, steady) = DEFAULT_BUILD_BRIDGE_ALLOCATIONS_UNDER_D
+                .iter()
+                .find(|(title, _, _)| *title == scenario.title)
+                .unwrap_or_else(|| panic!("{}: no pinned default-build count", scenario.title));
+            assert_eq!(
+                baseline,
+                (*cold, *steady),
+                "{}: (first, later) {baseline:?} allocations under D with the shadow compiled \
+                 in and not armed, the default build makes ({cold}, {steady}) (D-S2c-9 f)",
+                scenario.title
+            );
+            counted += baseline.0 + baseline.1;
+        }
+        assert!(
+            counted > 0,
+            "the probe counted no allocation under D at all"
+        );
+    }
+
+    /// The clock reads and view projections each entry makes with the shadow compiled in
+    /// and not armed (the default build's own): `(core_now calls, view projections)`, then
+    /// the same armed. The disarmed shadow reads nothing for any entry; the armed one
+    /// reads exactly what its header needs. An extra read added under D allocates nothing,
+    /// so the allocation pins cannot see it; one of these does (D-S2c-10 R4).
+    type Reads = (u64, u64);
+    const READS: [(&str, Reads, Reads); 17] = [
+        (
+            "start refused before D (Smart Auto with a fixed device)",
+            (1, 0),
+            (1, 1),
+        ),
+        (
+            "start refused under D (a meeting is active)",
+            (1, 1),
+            (1, 1),
+        ),
+        ("start refused under D (already recording)", (1, 1), (1, 1)),
+        ("stop refused (stale, R201.1)", (1, 0), (1, 1)),
+        ("stop refused (processing, R201.2)", (1, 1), (1, 1)),
+        ("stop refused (idle, R201.3)", (1, 1), (1, 1)),
+        (
+            "stop refused (recovering, nothing preserved, R201.6)",
+            (1, 1),
+            (1, 1),
+        ),
+        ("cancel refused (stale, R205.1)", (1, 1), (1, 1)),
+        ("cancel no-op (idle, R205.2)", (1, 1), (1, 1)),
+        ("cancel no-op (recovering, R205.3)", (1, 1), (1, 1)),
+        ("bridge Ready while starting (R207)", (1, 1), (1, 1)),
+        (
+            "bridge StillConnecting while starting (R208)",
+            (1, 1),
+            (1, 1),
+        ),
+        ("bridge Recovering while recording (R209)", (1, 1), (1, 1)),
+        (
+            "bridge CleanupFinished while recovering (R210)",
+            (1, 1),
+            (1, 1),
+        ),
+        ("bridge Idle while recording (R211)", (1, 1), (1, 1)),
+        (
+            "bridge Idle while idle (short idle, R215.3/R216)",
+            (1, 1),
+            (1, 1),
+        ),
+        (
+            "start accepted (R104.2, the ticker spawner under D)",
+            (5, 8),
+            (5, 9),
+        ),
+    ];
+
+    /// The entries whose reads are pinned: every refusal, every bridge arm, and the accepted
+    /// start whose R104.2 `SD` asks the ticker spawner (the ticker mailbox's take).
+    fn read_scenarios() -> Vec<Scenario> {
+        let mut all = scenarios();
+        all.extend(bridge_scenarios());
+        all.push(Scenario {
+            title: "start accepted (R104.2, the ticker spawner under D)",
+            setup: Setup::idle(),
+            body: |w| count_reads(|| recording(w)),
+        });
+        all
+    }
+
+    fn reads_of(scenario: &Scenario, disarmed: bool) -> (u64, u64) {
+        run_measured(scenario, disarmed);
+        READS_UNDER_D.with(Cell::get)
+    }
+
+    #[test]
+    fn the_shadow_reads_the_clock_and_the_live_fields_only_as_pinned() {
+        let mut counted = (0, 0);
+        for scenario in read_scenarios() {
+            let disarmed = reads_of(&scenario, true);
+            assert_eq!(
+                SHADOW_READS_UNDER_D.with(Cell::get),
+                0,
+                "{}: the disarmed shadow read its own thread-local state",
+                scenario.title
+            );
+            let armed = reads_of(&scenario, false);
+            if std::env::var_os("MURMUR_PRINT_PINS").is_some() {
+                eprintln!("PIN (\"{}\", {disarmed:?}, {armed:?}),", scenario.title);
+                continue;
+            }
+            let (_, pinned_disarmed, pinned_armed) = READS
+                .iter()
+                .find(|(title, _, _)| *title == scenario.title)
+                .unwrap_or_else(|| panic!("{}: no pinned reads", scenario.title));
+            assert_eq!(
+                disarmed, *pinned_disarmed,
+                "{}: (core_now, views) {disarmed:?} with the shadow compiled in and not armed, \
+                 pinned {pinned_disarmed:?} (D-S2c-10 R4)",
+                scenario.title
+            );
+            assert_eq!(
+                armed, *pinned_armed,
+                "{}: (core_now, views) {armed:?} with the shadow armed, pinned {pinned_armed:?}",
+                scenario.title
+            );
+            counted = (counted.0 + disarmed.0, counted.1 + armed.1);
+        }
+        assert!(
+            counted.0 > 0 || std::env::var_os("MURMUR_PRINT_PINS").is_some(),
+            "the probe counted no clock read at all: it is not measuring"
+        );
+    }
+
+    /// What the shadow reads of **its own** state and of its enable flag per entry, as
+    /// `(state reads, flag loads)` disarmed, then armed (D-S2c-10 amendment 1 i, ii). Each
+    /// inserted block makes exactly one flag load, as its first operation, and the ticker
+    /// mailbox is taken once per spawner call: a second load, a second take or a read made
+    /// while disarmed changes a number here. Disarmed, no entry reads any state.
+    type Gates = (u64, u64);
+    const GATES: [(&str, Gates, Gates); 17] = [
+        (
+            "start refused before D (Smart Auto with a fixed device)",
+            (0, 6),
+            (1, 5),
+        ),
+        (
+            "start refused under D (a meeting is active)",
+            (0, 6),
+            (1, 5),
+        ),
+        ("start refused under D (already recording)", (0, 6), (1, 5)),
+        ("stop refused (stale, R201.1)", (0, 6), (1, 5)),
+        ("stop refused (processing, R201.2)", (0, 3), (0, 2)),
+        ("stop refused (idle, R201.3)", (0, 3), (0, 2)),
+        (
+            "stop refused (recovering, nothing preserved, R201.6)",
+            (0, 3),
+            (0, 2),
+        ),
+        ("cancel refused (stale, R205.1)", (0, 3), (0, 2)),
+        ("cancel no-op (idle, R205.2)", (0, 3), (0, 2)),
+        ("cancel no-op (recovering, R205.3)", (0, 3), (0, 2)),
+        ("bridge Ready while starting (R207)", (0, 7), (3, 6)),
+        (
+            "bridge StillConnecting while starting (R208)",
+            (0, 5),
+            (1, 4),
+        ),
+        ("bridge Recovering while recording (R209)", (0, 18), (1, 17)),
+        (
+            "bridge CleanupFinished while recovering (R210)",
+            (0, 9),
+            (1, 8),
+        ),
+        ("bridge Idle while recording (R211)", (0, 16), (3, 15)),
+        (
+            "bridge Idle while idle (short idle, R215.3/R216)",
+            (0, 5),
+            (1, 4),
+        ),
+        (
+            "start accepted (R104.2, the ticker spawner under D)",
+            (0, 75),
+            (21, 68),
+        ),
+    ];
+
+    #[test]
+    fn the_shadow_makes_only_its_one_flag_load_and_its_one_take_as_pinned() {
+        for scenario in read_scenarios() {
+            crate::dictation_executor::probe::record_flag_sites(true);
+            run_measured(&scenario, true);
+            let sites = crate::dictation_executor::probe::take_flag_sites();
+            crate::dictation_executor::probe::record_flag_sites(false);
+            let disarmed = (
+                SHADOW_READS_UNDER_D.with(Cell::get),
+                FLAG_LOADS_UNDER_D.with(Cell::get),
+            );
+            if std::env::var_os("MURMUR_PRINT_PINS").is_some() {
+                eprintln!("SITES {} disarmed: {sites:?}", scenario.title);
+            }
+            run_measured(&scenario, false);
+            let armed = (
+                SHADOW_READS_UNDER_D.with(Cell::get),
+                FLAG_LOADS_UNDER_D.with(Cell::get),
+            );
+            if std::env::var_os("MURMUR_PRINT_PINS").is_some() {
+                eprintln!("GATE (\"{}\", {disarmed:?}, {armed:?}),", scenario.title);
+                continue;
+            }
+            let (_, pinned_disarmed, pinned_armed) = GATES
+                .iter()
+                .find(|(title, _, _)| *title == scenario.title)
+                .unwrap_or_else(|| panic!("{}: no pinned gates", scenario.title));
+            assert_eq!(
+                disarmed, *pinned_disarmed,
+                "{}: (state reads, flag loads) {disarmed:?} not armed, pinned {pinned_disarmed:?}",
+                scenario.title
+            );
+            assert_eq!(
+                armed, *pinned_armed,
+                "{}: (state reads, flag loads) {armed:?} armed, pinned {pinned_armed:?}",
+                scenario.title
+            );
+        }
+    }
+
+    /// The keyboard effect reads the shadow's per-thread write sequence only for a flight
+    /// that is armed: a disarmed shadow reads none of its own state under D, even where a
+    /// keyboard write happens (D-S2c-10 R4). R211 (an idle notice while recording) writes
+    /// the keyboard under D; its armed run must read the sequence, or the scenario does not
+    /// reach the keyboard effect at all.
+    #[test]
+    fn a_disarmed_keyboard_write_reads_no_shadow_state() {
+        let scenario = bridge_scenarios()
+            .into_iter()
+            .find(|scenario| scenario.title == "bridge Idle while recording (R211)")
+            .expect("the R211 scenario");
+        run_measured(&scenario, false);
+        assert!(
+            SHADOW_READS_UNDER_D.with(Cell::get) > 0,
+            "the armed R211 never read the keyboard write sequence: the scenario does not \
+             reach the keyboard effect"
+        );
+        run_measured(&scenario, true);
+        assert_eq!(
+            SHADOW_READS_UNDER_D.with(Cell::get),
+            0,
+            "the disarmed shadow read its own state at a keyboard write under D"
+        );
+    }
+
+    struct WarnUnderD;
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnUnderD {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            // The refusal's own warning: it is emitted from inside the D section in the
+            // default build, so it must be here too, armed or not (D-S2c-7 c).
+            let text = format!("{event:?}");
+            if text.contains("blocked") || text.contains("not recording") {
+                let held = d_is_held();
+                WARNED_UNDER_D.with(|seen| {
+                    let mut all = seen.take();
+                    all.push(held);
+                    seen.set(all);
+                });
+            }
+        }
+    }
+
+    fn warning_release_points(scenario: &Scenario, disarmed: bool) -> Vec<bool> {
+        use tracing_subscriber::layer::SubscriberExt;
+        WARNED_UNDER_D.with(|seen| seen.set(Vec::new()));
+        REPLAY_DISARMED.store(disarmed, Ordering::SeqCst);
+        struct Rearm;
+        impl Drop for Rearm {
+            fn drop(&mut self) {
+                REPLAY_DISARMED.store(false, Ordering::SeqCst);
+            }
+        }
+        let _rearm = Rearm;
+        let subscriber = tracing_subscriber::Registry::default().with(WarnUnderD);
+        tracing::subscriber::with_default(subscriber, || {
+            // The measure helper points the probe at D for the run.
+            run_sub_run(&SubRun {
+                title: scenario.title,
+                setup: Setup {
+                    status: scenario.setup.status,
+                    recording_id: scenario.setup.recording_id,
+                },
+                body: scenario.body,
+            });
+        });
+        WARNED_UNDER_D.with(|seen| seen.take())
+    }
+
+    /// D-S2c-7 c: with the feature compiled in, a refusal that warns does so at the same
+    /// lock boundary armed or not: inside the D section, as the default build does.
+    #[test]
+    fn a_refusal_keeps_its_d_release_point_armed_or_not() {
+        let mut seen_any = false;
+        for scenario in scenarios() {
+            let baseline = warning_release_points(&scenario, true);
+            let armed = warning_release_points(&scenario, false);
+            assert_eq!(
+                armed, baseline,
+                "{}: the refusal's warning moved across the D release",
+                scenario.title
+            );
+            seen_any |= !baseline.is_empty();
+        }
+        assert!(seen_any, "no refusal warned: the probe saw nothing");
+    }
+}
+
+/// The production ports' ticker observation (D-S2c-9 f): the synchronous preflight the
+/// ports take before the spawn and the spawner's own early return agree, and each skip
+/// reason reaches the comparator as exactly one note. A disagreement notes nothing, so it
+/// would fail the replay instead of being guessed.
+#[cfg(feature = "dictation-shadow")]
+mod ticker_skip_notes {
+    use super::super::golden_tests::sub_from;
+    use super::*;
+    use crate::dictation_shadow::replay;
+    use crate::dictation_shadow::types::TickerSkipReason;
+
+    fn ready(world: &Arc<World>) {
+        world.notify(1, AudioLifecycleEvent::Ready);
+    }
+
+    fn with_model(world: &Arc<World>, model: &str) {
+        world.install_context(1);
+        let state = world.state();
+        let mut context = state
+            .app_state
+            .active_context(1)
+            .expect("the fixture installed a context");
+        Arc::make_mut(&mut context).transcription.model_name = model.to_string();
+        state.app_state.set_active_context(1, context);
+    }
+
+    fn no_context(world: &Arc<World>) {
+        ready(world);
+    }
+    fn no_live_preview(world: &Arc<World>) {
+        with_model(world, "small.en");
+        ready(world);
+    }
+    fn a_live_preview_model(world: &Arc<World>) {
+        with_model(world, "base.en");
+        ready(world);
+    }
+
+    /// A Core ML recording, reaching the ticker spawner through the lifecycle bridge's
+    /// `Ready` (the cold start that finishes after the context is installed).
+    fn a_coreml_model_through_the_bridge(world: &Arc<World>) {
+        with_model(world, crate::transcriber::COREML_MODEL_NAME);
+        ready(world);
+        registered(world);
+    }
+
+    /// The harness's spawner (which makes the production check) ran the registration.
+    fn registered(world: &Arc<World>) {
+        assert!(
+            world
+                .trace()
+                .contains(&"SD ticker 1 registered=true".to_string()),
+            "the Core ML recording's ticker was not registered: {:?}",
+            world.trace()
+        );
+    }
+
+    /// A Core ML recording, reaching it through the start command's own ready entry (R104.2:
+    /// the supervisor is already `Recording` when the context is installed).
+    fn a_coreml_model_through_the_start_command(world: &Arc<World>) {
+        world
+            .state()
+            .app_state
+            .dictation
+            .lock_or_recover()
+            .model_name = crate::transcriber::COREML_MODEL_NAME.to_string();
+        recording(world);
+        registered(world);
+    }
+
+    fn skipped_by(title: &'static str, body: fn(&Arc<World>)) -> ([u64; 2], u64) {
+        replay::reset_totals();
+        repeat(&sub_from(title, DictationStatus::Starting, 1, body));
+        let totals = replay::totals();
+        (totals.ticker_skipped, totals.replays)
+    }
+
+    /// The unsupported-model outcome keeps the recorded context's `Arc` for the spawner's
+    /// `unsupported_model` emit, as the original spawner's own binding does (round 9): the
+    /// lookup's clone is not dropped when the check returns `Err`.
+    #[test]
+    fn an_unsupported_model_outcome_holds_the_snapshot_through_the_emit() {
+        let app_state = AppState::default();
+        let destination = select_recording_destination(
+            &crate::frontmost::DeliveryTargetSnapshot::Incomplete,
+            crate::smart_destination::Snapshot::Disabled,
+        );
+        let mut context = resolve_recording_context(&app_state, destination);
+        Arc::make_mut(&mut context).transcription.model_name = "small.en".to_string();
+        app_state.set_active_context(1, context);
+        match ticker_start_check(&app_state, 1) {
+            Err((TickerSkipReason::NoLivePreview, Some(held))) => assert_eq!(
+                Arc::strong_count(&held),
+                2,
+                "the app state's reference and the outcome's own"
+            ),
+            other => panic!(
+                "expected the unsupported outcome with its snapshot: {:?}",
+                other.err().map(|(reason, held)| (reason, held.is_some()))
+            ),
+        }
+        // Nothing recorded: no snapshot to hold.
+        let empty = AppState::default();
+        assert!(matches!(
+            ticker_start_check(&empty, 1),
+            Err((TickerSkipReason::NoContext, None))
+        ));
+        // A supported model is the lookup's own pair.
+        let mut context = app_state.active_context(1).unwrap();
+        Arc::make_mut(&mut context).transcription.model_name = "base.en".to_string();
+        app_state.set_active_context(1, context);
+        assert!(matches!(ticker_start_check(&app_state, 1), Ok((_, true))));
+        // The lookups above only wrote the skip mailbox (when armed): leave it empty.
+        let _ = crate::dictation_executor::shadow::take_ticker_skip();
+    }
+
+    #[test]
+    fn each_skip_reason_is_noted_exactly_once_per_replay() {
+        for (reason, title, body) in [
+            (
+                TickerSkipReason::NoContext,
+                "ticker skip: no recorded context",
+                no_context as fn(&Arc<World>),
+            ),
+            (
+                TickerSkipReason::NoLivePreview,
+                "ticker skip: a model without a live preview",
+                no_live_preview as fn(&Arc<World>),
+            ),
+        ] {
+            let (skipped, replays) = skipped_by(title, body);
+            assert!(replays >= 1, "{title}: nothing was replayed");
+            let mut expected = [0; 2];
+            expected[reason.index()] = replays;
+            assert_eq!(
+                skipped, expected,
+                "{title}: exactly one {reason:?} note per replay, no other"
+            );
+        }
+        let (skipped, replays) = skipped_by("ticker: a live preview model", a_live_preview_model);
+        assert!(replays >= 1);
+        assert_eq!(skipped, [0, 0], "no skip when the spawner registers");
+    }
+
+    /// A Core ML recording registers its ticker through **both** ready entry points
+    /// (D-S2c-10 amendment 1 iii). The soak comparator accepts a `NoLivePreview` skip for any
+    /// recording, so only a replay of the production check against a Core ML context can
+    /// see a spawner that stops registering one: `if !whisper` (and a check that refuses
+    /// Core ML) leaves a skip note where a registration is required.
+    #[test]
+    fn a_coreml_recording_registers_its_ticker_through_both_ready_entry_points() {
+        // The start command's cold start reaches `Ready` before its context exists, so the
+        // bridge's own spawner call is the one `NoContext` skip of that run; R104.2 then
+        // registers.
+        for (title, status, id, body, expected) in [
+            (
+                "ticker: a Core ML model through the bridge's Ready",
+                DictationStatus::Starting,
+                1,
+                a_coreml_model_through_the_bridge as fn(&Arc<World>),
+                [0, 0],
+            ),
+            (
+                "ticker: a Core ML model through the start command (R104.2)",
+                DictationStatus::Idle,
+                0,
+                a_coreml_model_through_the_start_command as fn(&Arc<World>),
+                [1, 0],
+            ),
+        ] {
+            replay::reset_totals();
+            repeat(&sub_from(title, status, id, body));
+            let totals = replay::totals();
+            assert!(totals.replays >= 1, "{title}: nothing was replayed");
+            let mut per_replay = expected;
+            for count in &mut per_replay {
+                *count *= totals.replays;
+            }
+            assert_eq!(
+                totals.ticker_skipped, per_replay,
+                "{title}: a Core ML recording must register its ticker, not skip it as \
+                 `NoLivePreview`"
             );
         }
     }

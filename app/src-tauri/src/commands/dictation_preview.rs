@@ -199,6 +199,17 @@ impl HideOwnership {
         recording_id > 0 && self.ticker.fetch_max(recording_id, Ordering::SeqCst) <= recording_id
     }
 
+    /// [`TickerOwnership::ticker_started`], also returning the high-water mark the
+    /// one `fetch_max` replaced (the shadow's `ticker_before`, appendix C8.2).
+    #[cfg(feature = "dictation-shadow")]
+    pub(crate) fn ticker_started_observed(&self, recording_id: u64) -> (bool, u64) {
+        if recording_id == 0 {
+            return (false, 0);
+        }
+        let before = self.ticker.fetch_max(recording_id, Ordering::SeqCst);
+        (before <= recording_id, before)
+    }
+
     /// Called under the dictation lock at the accepted stop transition, before
     /// status leaves `Recording`, so the ticker sees the claim whenever it
     /// sees the stop. Only a recording with a ticker can have a shown preview.
@@ -227,6 +238,12 @@ static OWNERSHIP: HideOwnership = HideOwnership::new();
 /// Called under the dictation lock (see `register_partial_ticker_locked`).
 pub(crate) fn note_ticker_started(recording_id: u64) -> bool {
     OWNERSHIP.ticker_started(recording_id)
+}
+
+/// [`note_ticker_started`] with the ticker high-water mark before the registration.
+#[cfg(feature = "dictation-shadow")]
+pub(crate) fn note_ticker_started_observed(recording_id: u64) -> (bool, u64) {
+    OWNERSHIP.ticker_started_observed(recording_id)
 }
 
 /// Forget every registration, so a golden scenario starts from the same

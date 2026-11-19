@@ -140,4 +140,43 @@ impl<R: tauri::Runtime> Ports for ReadyPorts<'_, R> {
         );
         Ok(())
     }
+
+    /// R104.2's `SD` with the flight's slots (see `LifecyclePorts::detached_observed`).
+    #[cfg(feature = "dictation-shadow")]
+    fn detached_under_d_observed(
+        &self,
+        effect: &Effect,
+        dictation: &DictationState,
+        slots: &crate::dictation_executor::shadow::ShadowSlots,
+    ) -> PortResult {
+        let Effect::StartSideTasks = effect else {
+            return self.detached_under_d(effect, dictation);
+        };
+        let spawn = self
+            .spawn_ready_tasks
+            .borrow_mut()
+            .take()
+            .ok_or(PortFailure)?;
+        let app_state = &self.state.app_state;
+        let recording_id = self.recording_id;
+        let gate = std::cell::Cell::new(None);
+        spawn(
+            self.app_handle,
+            recording_id,
+            Box::new(|| {
+                super::register_partial_ticker_locked_observed(
+                    app_state,
+                    dictation,
+                    recording_id,
+                    &gate,
+                )
+            }),
+        );
+        slots.ticker.set(super::ticker_note(
+            recording_id,
+            crate::dictation_executor::shadow::take_ticker_skip(),
+            gate.take(),
+        ));
+        Ok(())
+    }
 }

@@ -482,6 +482,35 @@ impl AppState {
         });
     }
 
+    /// With the shadow compiled in: [`Self::set_active_context`] that also hands back
+    /// the slot's id before and after, read inside the same lock section (C8.2).
+    #[cfg(feature = "dictation-shadow")]
+    pub(crate) fn set_active_context_observed(
+        &self,
+        recording_id: u64,
+        snapshot: Arc<crate::dictation_context::DictationContextSnapshot>,
+    ) -> crate::dictation_shadow::types::MirrorWitness {
+        use crate::dictation_shadow::types::{MirrorField, MirrorValue, MirrorWitness};
+        use murmur_dictation_core::ids::RecordingId;
+        // The leaf guard is held exactly as long as the original holds it: only the scalar
+        // inputs of the witness leave the block, and the witness is built after the release
+        // (D-S2c-12 a).
+        let before = {
+            let mut active = self.active_context.lock_or_recover();
+            let before = active.as_ref().map(|context| context.recording_id);
+            *active = Some(ActiveDictationContext {
+                recording_id,
+                snapshot,
+            });
+            before
+        };
+        MirrorWitness {
+            field: MirrorField::ActiveContext,
+            before: MirrorValue::Slot(before.map(RecordingId)),
+            after: MirrorValue::Slot(Some(RecordingId(recording_id))),
+        }
+    }
+
     /// The recording id the installed context belongs to, if one is installed
     /// (the M4 observation, appendix C1.2). One leaf-mutex read.
     pub(crate) fn active_context_id(&self) -> Option<u64> {
@@ -519,9 +548,62 @@ impl AppState {
         }
     }
 
+    /// With the shadow compiled in: [`Self::clear_active_context`] that also hands back
+    /// the slot's id before and after, read inside the same lock section.
+    #[cfg(feature = "dictation-shadow")]
+    pub(crate) fn clear_active_context_observed(
+        &self,
+        recording_id: u64,
+    ) -> (bool, crate::dictation_shadow::types::MirrorWitness) {
+        use crate::dictation_shadow::types::{MirrorField, MirrorValue, MirrorWitness};
+        use murmur_dictation_core::ids::RecordingId;
+        // As the original: the guard is held across the two clears, and only the scalars
+        // leave it; the witness is built after the release (D-S2c-12 a).
+        let (before, cleared) = {
+            let mut active = self.active_context.lock_or_recover();
+            let before = active.as_ref().map(|context| context.recording_id);
+            let cleared = before == Some(recording_id);
+            if cleared {
+                *active = None;
+                self.vad_stream.clear(recording_id);
+                self.stream_reuse.lock_or_recover().clear(recording_id);
+            }
+            (before, cleared)
+        };
+        (
+            cleared,
+            MirrorWitness {
+                field: MirrorField::ActiveContext,
+                before: MirrorValue::Slot(before.map(RecordingId)),
+                after: MirrorValue::Slot(if cleared {
+                    None
+                } else {
+                    before.map(RecordingId)
+                }),
+            },
+        )
+    }
+
     /// Mark a recording as cancelled by storing its ID.
     pub fn cancel_recording(&self, id: u64) {
         self.cancelled_id.fetch_max(id, Ordering::SeqCst);
+    }
+
+    /// With the shadow compiled in: [`Self::cancel_recording`], whose `fetch_max` returns
+    /// the high-water mark before the write: the witness's before value.
+    #[cfg(feature = "dictation-shadow")]
+    pub(crate) fn cancel_recording_observed(
+        &self,
+        id: u64,
+    ) -> crate::dictation_shadow::types::MirrorWitness {
+        use crate::dictation_shadow::types::{MirrorField, MirrorValue, MirrorWitness};
+        use murmur_dictation_core::ids::RecordingId;
+        let before = self.cancelled_id.fetch_max(id, Ordering::SeqCst);
+        MirrorWitness {
+            field: MirrorField::CancelledThrough,
+            before: MirrorValue::Id(RecordingId(before)),
+            after: MirrorValue::Id(RecordingId(before.max(id))),
+        }
     }
 
     /// Check whether a given recording ID has been cancelled.

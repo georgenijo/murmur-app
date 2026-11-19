@@ -1687,6 +1687,10 @@ static LAST_TAP_SILENCE_WARNING_AT_MS: AtomicU64 = AtomicU64::new(0);
 pub fn set_processing(processing: bool) {
     let caller = std::panic::Location::caller();
     let was_processing = IS_PROCESSING.swap(processing, Ordering::SeqCst);
+    // The shadow's witness is the value this one atomic write returned, never a later
+    // read (D-S2c-8 e): the executor brackets the port call with this write's sequence.
+    #[cfg(feature = "dictation-shadow")]
+    crate::dictation_executor::shadow::keyboard_written(was_processing, processing);
     tracing::debug!(
         target: "keyboard",
         processing = processing,

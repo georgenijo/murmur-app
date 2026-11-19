@@ -184,6 +184,7 @@ use tauri::{Emitter, Manager};
 
 /// Helper trait to recover from poisoned mutexes
 pub(crate) trait MutexExt<T> {
+    #[track_caller]
     fn lock_or_recover(&self) -> MutexGuard<'_, T>;
 
     /// Non-blocking sibling of [`MutexExt::lock_or_recover`]: recovers from
@@ -195,7 +196,12 @@ pub(crate) trait MutexExt<T> {
 }
 
 impl<T> MutexExt<T> for Mutex<T> {
+    #[track_caller]
     fn lock_or_recover(&self) -> MutexGuard<'_, T> {
+        // The shadow counts every acquisition of the dictation lock D here, in the guard
+        // function itself, so a site cannot take D without being counted (D-S2c-9 a).
+        #[cfg(feature = "dictation-shadow")]
+        crate::dictation_executor::shadow::dictation_lock_taken::<T>(std::panic::Location::caller());
         self.lock().unwrap_or_else(|poisoned| {
             tracing::warn!(target: "system", "Mutex was poisoned, recovering data");
             poisoned.into_inner()
@@ -313,13 +319,25 @@ pub fn run() {
         .invoke_handler(main_thread_watch::instrument_invoke_handler(tauri::generate_handler![
             commands::recording::init_dictation,
             delivery_recovery::retry_last_delivery,
+            #[cfg(not(feature = "dictation-shadow"))]
             commands::recording::process_audio,
+            #[cfg(feature = "dictation-shadow")]
+            commands::recording::shadow_commands::process_audio_witnessed,
             commands::recording::get_status,
             commands::recording::configure_dictation,
             commands::recording::report_start_cue_finished,
+            #[cfg(not(feature = "dictation-shadow"))]
             commands::recording::start_native_recording,
+            #[cfg(feature = "dictation-shadow")]
+            commands::recording::shadow_commands::start_native_recording_witnessed,
+            #[cfg(not(feature = "dictation-shadow"))]
             commands::recording::stop_native_recording,
+            #[cfg(feature = "dictation-shadow")]
+            commands::recording::shadow_commands::stop_native_recording_witnessed,
+            #[cfg(not(feature = "dictation-shadow"))]
             commands::recording::cancel_native_recording,
+            #[cfg(feature = "dictation-shadow")]
+            commands::recording::shadow_commands::cancel_native_recording_witnessed,
             commands::recording::cancel_audio_initialization,
             commands::recording::preview_vocabulary_aliases,
             commands::recording::transcribe_file,

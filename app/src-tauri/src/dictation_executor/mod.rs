@@ -6,6 +6,10 @@
 pub(crate) mod adapter;
 pub(crate) mod convert;
 pub(crate) mod executor;
+#[cfg(test)]
+pub(crate) mod probe;
+#[cfg(feature = "dictation-shadow")]
+pub(crate) mod shadow;
 
 pub(crate) use adapter::FieldAdapter;
 

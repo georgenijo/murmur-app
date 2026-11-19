@@ -366,6 +366,9 @@ pub(crate) enum ReplyKind {
     Typed(ReplyType),
     /// `{"type":"transcription",..}`.
     Transcription,
+    /// An `Ok` payload whose `type` literal no decision names: matches no decided kind,
+    /// an `Err` included (D-S2c-8 f).
+    Unrecognized,
 }
 
 impl ReplyKind {

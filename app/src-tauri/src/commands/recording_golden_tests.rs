@@ -741,7 +741,7 @@ pub(super) fn sub_from(
 fn nothing(_: &str) {}
 
 #[test]
-fn golden_s01_stop_during_start() {
+pub(super) fn golden_s01_stop_during_start() {
     check_golden(
         "s01-stop-during-start",
         "1 stop during start",
@@ -765,7 +765,7 @@ fn golden_s01_stop_during_start() {
 }
 
 #[test]
-fn golden_s02_cancel_in_each_phase() {
+pub(super) fn golden_s02_cancel_in_each_phase() {
     check_golden(
         "s02-cancel-in-each-phase",
         "2 cancel in each phase",
@@ -792,7 +792,7 @@ fn golden_s02_cancel_in_each_phase() {
 }
 
 #[test]
-fn golden_s03_interruption_of_8000_samples_or_more() {
+pub(super) fn golden_s03_interruption_of_8000_samples_or_more() {
     check_golden(
         "s03-interruption-8000-or-more",
         "3 interruption of 8,000 samples or more",
@@ -817,7 +817,7 @@ fn golden_s03_interruption_of_8000_samples_or_more() {
 }
 
 #[test]
-fn golden_s04_interruption_under_8000_samples() {
+pub(super) fn golden_s04_interruption_under_8000_samples() {
     check_golden(
         "s04-interruption-under-8000",
         "4 interruption under 8,000 samples",
@@ -843,7 +843,7 @@ fn golden_s04_interruption_under_8000_samples() {
 }
 
 #[test]
-fn golden_s05_timeout_teardown() {
+pub(super) fn golden_s05_timeout_teardown() {
     check_golden(
         "s05-timeout-teardown",
         "5 timeout teardown (#384)",
@@ -858,7 +858,7 @@ fn golden_s05_timeout_teardown() {
 }
 
 #[test]
-fn golden_s06_stale_stop() {
+pub(super) fn golden_s06_stale_stop() {
     check_golden(
         "s06-stale-stop",
         "6 stale stop",
@@ -881,7 +881,7 @@ fn golden_s06_stale_stop() {
 }
 
 #[test]
-fn golden_s07_meeting_conflict() {
+pub(super) fn golden_s07_meeting_conflict() {
     check_golden(
         "s07-meeting-conflict",
         "7 meeting conflict",
@@ -902,7 +902,7 @@ fn golden_s07_meeting_conflict() {
 }
 
 #[test]
-fn golden_s08_preview_handoff() {
+pub(super) fn golden_s08_preview_handoff() {
     check_golden(
         "s08-preview-handoff",
         "8 preview handoff",
@@ -917,7 +917,7 @@ fn golden_s08_preview_handoff() {
 }
 
 #[test]
-fn golden_s09_supervisor_idle_during_processing() {
+pub(super) fn golden_s09_supervisor_idle_during_processing() {
     check_golden(
         "s09-supervisor-idle-during-processing",
         "9 supervisor Idle during Processing",
@@ -962,7 +962,7 @@ fn assert_c8_recorded(text: &str) {
 }
 
 #[test]
-fn golden_s10_ready_vs_context_rendezvous() {
+pub(super) fn golden_s10_ready_vs_context_rendezvous() {
     check_golden(
         "s10-ready-vs-context",
         "10 ready vs context rendezvous, both orders",
@@ -981,7 +981,7 @@ fn golden_s10_ready_vs_context_rendezvous() {
 }
 
 #[test]
-fn golden_s11_idle_on_a_finished_recording() {
+pub(super) fn golden_s11_idle_on_a_finished_recording() {
     check_golden(
         "s11-idle-on-finished-recording",
         "11 Idle on an already-finished recording (C9)",
@@ -1002,7 +1002,7 @@ fn golden_s11_idle_on_a_finished_recording() {
 }
 
 #[test]
-fn golden_s12_start_failure_vs_initialization_failed() {
+pub(super) fn golden_s12_start_failure_vs_initialization_failed() {
     check_golden(
         "s12-start-failure-vs-initialization-failed",
         "12 start failure vs InitializationFailed + Idle",
