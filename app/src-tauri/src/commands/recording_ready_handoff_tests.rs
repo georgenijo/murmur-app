@@ -23,7 +23,16 @@
 //!   a spawner that registers the ticker and drops the task, a loop in a nested future nobody
 //!   polls, an inverted VAD guard, and the rest.
 //!
-//! The spawners themselves run only in the lifecycle cutover PR's runtime check (D-S2c-16).
+//! * **Pins (D-S2c-16 amendment 1).** The structural check cannot be complete against
+//!   ordinary edits, so the normalised-token digest of the two ticker spawners, the VAD
+//!   spawner and both ready callbacks is pinned, with `check_shadow_diff.py`'s own
+//!   normalisation. Any edit fails `the_ticker_and_vad_starting_code_is_the_pinned_code`;
+//!   a re-pin needs a reviewed justification that the ticker and VAD still start for every
+//!   eligible recording. `CONTROLS` are the mutations that must break their pin. The
+//!   structural check stays as documentation and an extra guard.
+//!
+//! The spawners themselves run only in the lifecycle cutover PR's runtime check (D-S2c-16:
+//! a cutover blocker).
 #![cfg(test)]
 
 use super::golden_harness::*;
@@ -520,6 +529,331 @@ fn handoff_defects(source: &str) -> Vec<String> {
         }
     }
     defects
+}
+
+// ------------------------------------------------------------------------ the pins
+
+/// The normalised-token digests of the production code that starts the ticker and the VAD,
+/// pinned (D-S2c-16 amendment 1). The structural check above cannot be complete against
+/// ordinary edits (an `if whisper` around the spawn, an inverted `register()` guard, an
+/// inverted model-file check, a start inside `if false` each passed it), so **any** edit to
+/// these fails here, and a re-pin needs a reviewed justification that the ticker and the
+/// VAD still start for every eligible recording. The digest is `check_shadow_diff.py`'s own
+/// (its tokenizer, its trailing-comma normalisation and its `pair_hash`, called from the
+/// test), so comments, whitespace and rustfmt's commas do not move it, and nothing else does.
+const PINS: [(&str, &str); 5] = [
+    (
+        "the ticker spawner, default build (`spawn_dictation_partial_ticker`, cfg(not(feature)))",
+        "0c896bdc613ea45a",
+    ),
+    (
+        "the ticker spawner, dictation-shadow build (`spawn_dictation_partial_ticker`, cfg(feature))",
+        "ad397eed99fc8e72",
+    ),
+    ("the VAD spawner (`spawn_vad_stream`)", "916425f266e46c7e"),
+    (
+        "the bridge `Ready` ready callback (`handle_audio_lifecycle`)",
+        "f9e709a6da9034c2",
+    ),
+    (
+        "the start command's R104.2 ready callback (`publish_recording_ready_if_audio_ready`)",
+        "d562ab70fc542119",
+    ),
+];
+
+/// The source text of a node between two `proc_macro2` locations (1-based line, 0-based
+/// character column).
+fn text_between(
+    source: &str,
+    start: proc_macro2::LineColumn,
+    end: proc_macro2::LineColumn,
+) -> String {
+    let offset = |at: proc_macro2::LineColumn| -> usize {
+        let line_start: usize = source
+            .split_inclusive('\n')
+            .take(at.line - 1)
+            .map(str::len)
+            .sum();
+        let line = source[line_start..].split('\n').next().unwrap_or("");
+        line_start
+            + line
+                .char_indices()
+                .nth(at.column)
+                .map_or(line.len(), |(byte, _)| byte)
+    };
+    source[offset(start)..offset(end)].to_string()
+}
+
+/// The texts of the five pinned items of `source`, in [`PINS`] order.
+fn pinned_texts(source: &str) -> Vec<String> {
+    let file = syn::parse_file(source).expect("recording.rs parses");
+    let function_text = |function: &syn::ItemFn| {
+        let start = function.attrs.first().map_or_else(
+            || function.span().start(),
+            |attribute| attribute.span().start(),
+        );
+        text_between(source, start, function.span().end())
+    };
+    let is_default_build = |function: &syn::ItemFn| {
+        function.attrs.iter().any(|attribute| {
+            attribute.path().is_ident("cfg")
+                && attribute
+                    .meta
+                    .require_list()
+                    .is_ok_and(|list| list.tokens.to_string().starts_with("not"))
+        })
+    };
+    let tickers = functions(&file, "spawn_dictation_partial_ticker");
+    let default_build: Vec<_> = tickers.iter().filter(|f| is_default_build(f)).collect();
+    let feature_build: Vec<_> = tickers.iter().filter(|f| !is_default_build(f)).collect();
+    let vads = functions(&file, "spawn_vad_stream");
+    let callback = |entry: &str, receiver: &str| -> String {
+        let functions = functions(&file, entry);
+        assert_eq!(functions.len(), 1, "one `{entry}`");
+        let executed = executed_in_fn(functions[0]);
+        let callback = executed
+            .iter()
+            .find(|(path, _, _, _)| path == receiver)
+            .and_then(|(_, _, _, call)| call.args.last());
+        let Some(syn::Expr::Closure(closure)) = callback else {
+            return format!("NO-CALLBACK {entry}");
+        };
+        text_between(source, closure.span().start(), closure.span().end())
+    };
+    // A missing item is its own text, so the pin fails on it instead of the test panicking.
+    let one = |found: Vec<String>, name: &str| -> String {
+        match found.as_slice() {
+            [only] => only.clone(),
+            other => format!("{} `{name}` items found", other.len()),
+        }
+    };
+    vec![
+        one(
+            default_build.iter().map(|f| function_text(f)).collect(),
+            "default-build ticker spawner",
+        ),
+        one(
+            feature_build.iter().map(|f| function_text(f)).collect(),
+            "feature-build ticker spawner",
+        ),
+        one(
+            vads.iter().map(|f| function_text(f)).collect(),
+            "VAD spawner",
+        ),
+        callback("handle_audio_lifecycle", "handle_audio_lifecycle_events"),
+        callback(
+            "publish_recording_ready_if_audio_ready",
+            "publish_recording_ready_with",
+        ),
+    ]
+}
+
+/// `check_shadow_diff.py`'s normalised-token digest of each text, computed by that script's
+/// own `tokenize`, `normalised` and `pair_hash` (the frozen-pair digest, with an empty twin).
+/// A Python 3 that cannot be run fails the test: the pins fail closed.
+fn normalised_digests(texts: &[String]) -> Vec<String> {
+    use std::io::Write;
+    const PROGRAM: &str = "import sys, json, importlib.util\n\
+        spec = importlib.util.spec_from_file_location('check_shadow_diff', sys.argv[1])\n\
+        module = importlib.util.module_from_spec(spec)\n\
+        spec.loader.exec_module(module)\n\
+        texts = json.load(sys.stdin)\n\
+        json.dump([module.pair_hash(module.normalised([t for t, _ in module.tokenize(x)]), []) \
+        for x in texts], sys.stdout)\n";
+    let script =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/check_shadow_diff.py");
+    let mut child = std::process::Command::new("python3")
+        .args(["-I", "-c", PROGRAM])
+        .arg(script)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("python3 runs check_shadow_diff.py's normaliser");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(serde_json::to_string(texts).expect("texts").as_bytes())
+        .expect("the texts reach the normaliser");
+    let output = child.wait_with_output().expect("the normaliser finishes");
+    assert!(
+        output.status.success(),
+        "check_shadow_diff.py's normaliser failed"
+    );
+    serde_json::from_slice(&output.stdout).expect("the digests")
+}
+
+/// The pins `source` breaks, as messages that name the pin and the re-pin rule.
+fn pin_defects(source: &str) -> Vec<String> {
+    let digests = normalised_digests(&pinned_texts(source));
+    PINS.iter()
+        .zip(digests)
+        .filter(|((_, pinned), digest)| digest != pinned)
+        .map(|((name, pinned), digest)| {
+            format!(
+                "S8 pin: {name} changed (digest {digest}, pinned {pinned}). Re-pin only with a \
+                 reviewed justification that the ticker and the VAD still start for every \
+                 eligible recording (D-S2c-16 amendment 1)."
+            )
+        })
+        .collect()
+}
+
+/// The production ticker and VAD code is exactly the code a reviewer pinned, and each pin
+/// is on the text it names (not on a failed lookup).
+#[test]
+fn the_ticker_and_vad_starting_code_is_the_pinned_code() {
+    let texts = pinned_texts(&production_source());
+    for (text, needles) in texts.iter().zip([
+        &[
+            "fn spawn_dictation_partial_ticker",
+            "run_partial_ticker_loop",
+            "not(feature",
+        ][..],
+        &[
+            "fn spawn_dictation_partial_ticker",
+            "run_partial_ticker_loop",
+            "ticker_start_check",
+        ],
+        &["fn spawn_vad_stream", "vad_stream::start", "vad_model_path"],
+        &[
+            "spawn_vad_stream",
+            "spawn_dictation_partial_ticker",
+            "register",
+        ],
+        &[
+            "spawn_vad_stream",
+            "spawn_dictation_partial_ticker",
+            "register",
+        ],
+    ]) {
+        for needle in needles {
+            assert!(
+                text.contains(needle),
+                "a pinned text is not the item it names (missing `{needle}`): {text}"
+            );
+        }
+    }
+    let defects = pin_defects(&production_source());
+    assert!(defects.is_empty(), "{defects:#?}");
+}
+
+/// A control: a change to the production source, with the pins it must break (by a fragment
+/// of the pin's name).
+type Control = (
+    &'static str,
+    &'static [(&'static str, &'static str)],
+    &'static [&'static str],
+);
+
+/// Sol's round-2 mutations, which the structural check let through, and the callbacks'
+/// own. Each is a source mutation of the real `recording.rs`, and each must fail by its pin.
+const CONTROLS: &[Control] = &[
+    (
+        "the ticker spawn behind `if whisper` (an eligible Core ML recording loses its ticker)",
+        &[
+            (
+                "    drop(tauri::async_runtime::spawn(async move {\n        let window_app",
+                "    if whisper { drop(tauri::async_runtime::spawn(async move {\n        let window_app",
+            ),
+            (
+                "        .await;\n    }));\n}",
+                "        .await;\n    })); }\n}",
+            ),
+        ],
+        &["default build", "dictation-shadow build"],
+    ),
+    (
+        "an unconditional return before the ticker spawn",
+        &[(
+            "    let preview: WhisperPreview = Arc::new(Mutex::new(None));\n",
+            "    let preview: WhisperPreview = Arc::new(Mutex::new(None));\n    return;\n",
+        )],
+        &["default build", "dictation-shadow build"],
+    ),
+    (
+        "an inverted `register()` guard",
+        &[("    if !register() {", "    if register() {")],
+        &["default build", "dictation-shadow build"],
+    ),
+    (
+        "an inverted VAD model-file check (VAD suppressed when the model is installed)",
+        &[(
+            "        || !vad::vad_model_path().is_some_and(|path| path.exists())",
+            "        || vad::vad_model_path().is_some_and(|path| path.exists())",
+        )],
+        &["the VAD spawner"],
+    ),
+    (
+        "`vad_stream::start` inside `if false`",
+        &[(
+            "    crate::vad_stream::start(app, recording_id, dictation_partial_is_current);\n}",
+            "    if false {\n        crate::vad_stream::start(app, recording_id, dictation_partial_is_current);\n    }\n}",
+        )],
+        &["the VAD spawner"],
+    ),
+    (
+        "the bridge's ready callback starts the ticker only `if false`",
+        &[(
+            "            spawn_dictation_partial_ticker(app_handle, recording_id, register);",
+            "            if false { spawn_dictation_partial_ticker(app_handle, recording_id, register); }",
+        )],
+        &["the bridge `Ready` ready callback"],
+    ),
+    (
+        "the start command's ready callback starts the VAD only `if false`",
+        &[(
+            "            spawn_vad_stream(app_handle.clone(), recording_id);\n            spawn_dictation_partial_ticker(app_handle.clone(), recording_id, register);",
+            "            if false { spawn_vad_stream(app_handle.clone(), recording_id); }\n            spawn_dictation_partial_ticker(app_handle.clone(), recording_id, register);",
+        )],
+        &["R104.2 ready callback"],
+    ),
+];
+
+/// Every control fails by the pin it names (and by no pin it does not), with the re-pin rule.
+#[test]
+fn every_control_mutation_fails_its_pin() {
+    let source = production_source();
+    for (name, replacements, expected) in CONTROLS {
+        let planted = replacements
+            .iter()
+            .fold(source.clone(), |text, (from, to)| mutated(&text, from, to));
+        let defects = pin_defects(&planted);
+        assert_eq!(
+            defects.len(),
+            expected.len(),
+            "control `{name}` must break exactly {expected:?}: {defects:#?}"
+        );
+        for fragment in *expected {
+            assert!(
+                defects
+                    .iter()
+                    .any(|defect| defect.contains(fragment)
+                        && defect.contains("reviewed justification")),
+                "control `{name}` did not break the pin for `{fragment}`: {defects:#?}"
+            );
+        }
+    }
+}
+
+/// The digest is `check_shadow_diff.py`'s normalisation: comments, whitespace and a trailing
+/// comma do not move it, a changed token does.
+#[test]
+fn the_pin_digest_is_the_shadow_diff_normalisation() {
+    let base = "fn f(a: u8) { if a > 1 { g(a, 2) } }".to_string();
+    let reflowed = "fn f(a: u8) {\n    // why\n    if a > 1 {\n        g(\n            a,\n            2,\n        )\n    }\n}"
+        .to_string();
+    let changed = "fn f(a: u8) { if a < 1 { g(a, 2) } }".to_string();
+    let digests = normalised_digests(&[base, reflowed, changed]);
+    assert_eq!(
+        digests[0], digests[1],
+        "formatting and comments move the pin"
+    );
+    assert_ne!(
+        digests[0], digests[2],
+        "a changed token does not move the pin"
+    );
+    assert_eq!(digests[0].len(), 16);
 }
 
 fn production_source() -> String {
