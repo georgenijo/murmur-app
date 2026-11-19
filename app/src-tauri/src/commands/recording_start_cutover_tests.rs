@@ -40,17 +40,203 @@
 //!   refused, and the cancel scoped to this one cancels exactly this attempt.
 #![cfg(test)]
 
+use super::dictation_host::HostFuture;
 use super::golden_harness::*;
-use super::pd25_tests::{import_audio, terminal, ImportHost};
-use super::stop_cutover_tests::{fn_spans, lines_with, recording_source, Pair};
+use super::process_audio_ports::{ImportedAudioHost, OwnedIdleEmit};
 use super::*;
+use crate::core_history::ContinuationGuard;
 use crate::dictation_executor::adapter::core_divergences;
 use crate::dictation_executor::probe;
+use murmur_dictation_core::decision::{ContKind, ContinuationSpec};
 use murmur_dictation_core::ids::RecordingId;
 use murmur_dictation_core::status::Status;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Mutex as StdMutex;
+
+/// A `(status, generation)` pair, as an entry read it of the persisted core or of live.
+type Pair = (Status, RecordingId);
+
+/// `recording.rs`, read from the source tree.
+fn recording_source() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/recording.rs");
+    std::fs::read_to_string(path).expect("recording.rs")
+}
+
+/// Every free function and method of `recording.rs` (not those of its test modules), as
+/// `(name, first line, last line)`.
+fn fn_spans(source: &str) -> Vec<(String, usize, usize)> {
+    use syn::spanned::Spanned;
+    let file = syn::parse_file(source).expect("recording.rs parses");
+    let mut spans = Vec::new();
+    for item in &file.items {
+        match item {
+            syn::Item::Fn(function) => spans.push((
+                function.sig.ident.to_string(),
+                function.span().start().line,
+                function.span().end().line,
+            )),
+            syn::Item::Impl(implementation) => {
+                for member in &implementation.items {
+                    if let syn::ImplItem::Fn(function) = member {
+                        spans.push((
+                            function.sig.ident.to_string(),
+                            function.span().start().line,
+                            function.span().end().line,
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    spans
+}
+
+/// The lines of `source` (1-based) that hold `needle`, inside the function `name`.
+fn lines_with(
+    source: &str,
+    spans: &[(String, usize, usize)],
+    name: &str,
+    needle: &str,
+) -> Vec<usize> {
+    let (_, first, last) = spans
+        .iter()
+        .find(|(candidate, _, _)| candidate == name)
+        .unwrap_or_else(|| panic!("`{name}` is in recording.rs"));
+    source
+        .lines()
+        .enumerate()
+        .filter(|(at, line)| (*first..=*last).contains(&(at + 1)) && line.contains(needle))
+        .map(|(at, _)| at + 1)
+        .collect()
+}
+
+/// The terminal the telemetry ledger holds for `id`.
+fn terminal(world: &Arc<World>, id: u64) -> Option<(DictationTerminalOutcome, DictationErrorCode)> {
+    world
+        .state()
+        .app_state
+        .dictation_telemetry
+        .terminal_for_test(id)
+}
+
+/// A WAV of 8,000 silent-ish 16 kHz samples, as the import command receives it.
+fn import_audio() -> String {
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::new(&mut bytes, spec).expect("wav writer");
+        for index in 0..8_000_usize {
+            writer
+                .write_sample(((index % 100) as i16) * 50)
+                .expect("sample");
+        }
+        writer.finalize().expect("finalize");
+    }
+    base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        bytes.into_inner(),
+    )
+}
+
+/// The legacy import's host (`process_audio_inner`'s own seam): what the import needs from
+/// outside the shell, and the real pipeline `IdleGuard` its fake pipeline takes.
+struct ImportHost {
+    /// Runs once, when the import reaches its destination capture: after its first D section
+    /// (301) and before the capture check (402).
+    at_capture: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl ImportHost {
+    fn new() -> Self {
+        Self {
+            at_capture: std::sync::Mutex::new(None),
+        }
+    }
+}
+
+impl ImportedAudioHost for ImportHost {
+    fn emit_import_json(
+        &self,
+        _event: &str,
+        _payload: serde_json::Value,
+    ) -> Result<(), super::dictation_host::HostEmitError> {
+        Ok(())
+    }
+
+    fn idle_emitter(&self) -> OwnedIdleEmit {
+        OwnedIdleEmit::new(|| Ok(()))
+    }
+
+    fn transition<'a>(
+        &'a self,
+        state: &'a State,
+    ) -> HostFuture<'a, Result<tokio::sync::MutexGuard<'a, ()>, String>> {
+        Box::pin(async move { Ok(state.app_state.recording_transition.lock().await) })
+    }
+
+    fn capture_delivery_target_snapshot(&self) -> crate::frontmost::DeliveryTargetSnapshot {
+        crate::frontmost::DeliveryTargetSnapshot::Incomplete
+    }
+
+    fn set_processing(&self, processing: bool) {
+        keyboard::set_processing(processing);
+    }
+
+    fn capture_smart_destination<'a>(
+        &'a self,
+        _expected: &'a crate::frontmost::DeliveryTargetSnapshot,
+        _enabled: bool,
+    ) -> HostFuture<'a, crate::smart_destination::Snapshot> {
+        let hook = self
+            .at_capture
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        Box::pin(async move {
+            if let Some(hook) = hook {
+                hook();
+            }
+            crate::smart_destination::Snapshot::Disabled
+        })
+    }
+
+    fn emit_smart_destination(
+        &self,
+        _recording_id: u64,
+        _context: &DictationContextSnapshot,
+        _accepted_target: &crate::frontmost::DeliveryTargetSnapshot,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn run_transcription_pipeline<'a>(
+        &'a self,
+        _samples: &'a [f32],
+        app_state: &'a AppState,
+        recording_id: u64,
+        _performance_guard: &'a mut PerformanceRunGuard,
+        _context: Arc<DictationContextSnapshot>,
+        stop: PipelineStopContext,
+    ) -> HostFuture<'a, Result<PipelineResult, String>> {
+        Box::pin(async move {
+            let mut guard = IdleGuard::for_pipeline(app_state, recording_id, stop.pipeline_op);
+            guard.finish(|_| {});
+            Ok(PipelineResult {
+                text: String::new(),
+                timings: PipelineTimings::default(),
+                terminal: PipelineTerminal::Success,
+                history: None,
+            })
+        })
+    }
+}
 
 // ----------------------------------------------------------------------- entry labels
 
@@ -65,13 +251,10 @@ const Q401: &str = "register_partial_ticker_locked#0";
 
 // ------------------------------------------------------------------------ probes
 
-/// Tests share the process-global probes; one cutover test at a time. The stop family's gate
-/// is the one gate (an import fixture reads the stop entries too), so this module and the stop
-/// and cancel cutovers' never interleave. The entry and query reads are remembered only while
-/// the guard lives (remembering allocates, which the allocation pins under D must not see).
-struct Probes {
-    _stop: super::stop_cutover_tests::Probes,
-}
+/// Tests share the process-global probes; one start cutover test at a time. The entry and query
+/// reads are remembered only while the guard lives (remembering allocates, which the allocation
+/// pins under D must not see), and cleared when it starts and ends.
+struct Probes(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
 
 impl Drop for Probes {
     fn drop(&mut self) {
@@ -79,19 +262,18 @@ impl Drop for Probes {
         probe::take_start_entries();
         probe::record_start_queries(false);
         probe::take_start_queries();
-        probe::record_projections(false);
-        probe::take_projection_sites();
     }
 }
 
 fn serialized() -> Probes {
-    let stop = super::stop_cutover_tests::serialized();
+    static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let gate = GATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     probe::take_start_entries();
     probe::take_start_queries();
     crate::commands::settings_store::test_data_dir::take_returned();
     probe::record_start_entries(true);
     probe::record_start_queries(true);
-    Probes { _stop: stop }
+    Probes(gate)
 }
 
 fn enclosing(spans: &[(String, usize, usize)], line: usize) -> String {
@@ -116,7 +298,7 @@ fn label(source: &str, spans: &[(String, usize, usize)], line: usize, needle: &s
     format!("{name}#{ordinal}")
 }
 
-fn labelled(reads: Vec<probe::StopEntryRead>, needle: &str) -> Vec<(String, Pair, Pair)> {
+fn labelled(reads: Vec<probe::StartEntryRead>, needle: &str) -> Vec<(String, Pair, Pair)> {
     let source = recording_source();
     let spans = fn_spans(&source);
     reads
@@ -144,23 +326,6 @@ fn queries_read() -> Vec<(String, Pair, Pair)> {
         probe::take_start_queries(),
         "FieldAdapter::start_query_view(",
     )
-}
-
-/// The functions the `DictationCore::project` entries since the last `take_projection_sites`
-/// were made in.
-fn projecting_functions() -> Vec<String> {
-    let source = recording_source();
-    let spans = fn_spans(&source);
-    probe::take_projection_sites()
-        .into_iter()
-        .map(|(file, line)| {
-            assert!(
-                file.ends_with("commands/recording.rs"),
-                "a projection outside recording.rs: {file}:{line}"
-            );
-            enclosing(&spans, line as usize)
-        })
-        .collect()
 }
 
 // ------------------------------------------------------------------------ the plants
@@ -693,6 +858,30 @@ fn no_start_entry_or_query_projects() {
                 case.name
             );
         }
+        // The request's entry reads the pair the fixture started from, generation included. (The
+        // import's capture check runs after its own request allocated generation 1.)
+        if let Some((name, persisted, _)) = run.entries.first() {
+            if name == E101 {
+                let setup = (case.setup)();
+                assert_eq!(
+                    *persisted,
+                    (
+                        crate::dictation_admission::core_status(setup.status),
+                        RecordingId(setup.recording_id)
+                    ),
+                    "{}: {name} read the setup's pair",
+                    case.name
+                );
+            } else {
+                assert_eq!(name, E402_IMPORT, "{}", case.name);
+                assert_eq!(
+                    *persisted,
+                    (Status::Processing, RecordingId(1)),
+                    "{}: the import's capture check read generation 1 in `Processing`",
+                    case.name
+                );
+            }
+        }
     }
 }
 
@@ -768,8 +957,6 @@ fn every_start_entry_reads_the_persisted_fields_and_resyncs_a_divergence() {
 fn the_queries_follow_the_persisted_core() {
     use crate::dictation_executor::FieldAdapter;
     let _gate = serialized();
-    probe::record_projections(true);
-    probe::take_projection_sites();
     let projections = probe::projections();
 
     // 403: live says `Processing` for id 5 (the old code answers true); the persisted core
@@ -844,35 +1031,50 @@ fn the_queries_follow_the_persisted_core() {
     }
 
     assert_eq!(probe::projections(), projections, "a query projected");
-    assert!(projecting_functions().is_empty());
 }
 
 // ------------------------------- R104.5 and the speculative capture, through the switched entries
 
+/// Every read `entries` holds, in order: its label, and the persisted and the live pair it read
+/// (equal here: an equal core), generation included.
+fn assert_reads(entries: Vec<(String, Pair, Pair)>, expected: &[(&str, Status, u64)], what: &str) {
+    let got: Vec<(String, Pair, Pair)> = entries;
+    assert_eq!(
+        got.len(),
+        expected.len(),
+        "{what}: the switched entries that ran: {:?}",
+        names(&got)
+    );
+    for ((name, persisted, live), (want, status, generation)) in got.iter().zip(expected) {
+        assert_eq!(name, want, "{what}: the entry that ran");
+        let pair = (*status, RecordingId(*generation));
+        assert_eq!(*persisted, pair, "{what}: {name} read the persisted pair");
+        assert_eq!(*live, pair, "{what}: {name} read the live pair");
+    }
+}
+
 /// #1170's late-publish test (R104.5: the runtime fails between the audio check and the
 /// publish's D section, so the publish reads `Recovering` and publishes nothing), run again
-/// through the switched entry. The entries that ran are exact, and the publish's own entry read
-/// the persisted `Recovering`, which is what R104.5 decided on.
+/// through the switched entry. The entries that ran are exact, with the pair each read, and the
+/// publish's own entry read the persisted `Recovering` of generation 1, which is what R104.5
+/// decided on.
 #[test]
 fn the_r104_5_late_publish_holds_through_the_switched_entry() {
     let _gate = serialized();
-    probe::record_projections(true);
-    probe::take_projection_sites();
+    let projections = probe::projections();
     let divergences = core_divergences();
     super::start_tests::a_late_ready_publish_after_a_runtime_failure_publishes_nothing();
-    let entries = entries_read();
-    assert_eq!(
-        names(&entries),
-        [E101, E402, E103, E104],
-        "the switched entries that ran"
+    assert_reads(
+        entries_read(),
+        &[
+            (E101, Status::Idle, 0),
+            (E402, Status::Starting, 1),
+            (E103, Status::Starting, 1),
+            (E104, Status::Recovering, 1),
+        ],
+        "R104.5",
     );
-    let (_, persisted, live) = &entries[3];
-    assert_eq!(
-        (persisted.0, live.0),
-        (Status::Recovering, Status::Recovering),
-        "the publish decided on a persisted `Recovering`"
-    );
-    assert!(projecting_functions().is_empty(), "something projected");
+    assert_eq!(probe::projections(), projections, "something projected");
     assert_eq!(
         core_divergences(),
         divergences,
@@ -885,27 +1087,25 @@ fn the_r104_5_late_publish_holds_through_the_switched_entry() {
 #[test]
 fn a_flowing_speculative_capture_holds_through_the_switched_entry() {
     let _gate = serialized();
-    probe::record_projections(true);
-    probe::take_projection_sites();
+    let projections = probe::projections();
     let divergences = core_divergences();
     super::start_tests::a_flowing_speculative_capture_suppresses_the_redundant_starting_event();
-    let entries = names_of(entries_read());
-    // Two starts (not flowing, then flowing), each through the same four entries.
-    assert_eq!(
-        entries,
-        [E101, E402, E103, E104, E101, E402, E103, E104],
-        "the switched entries that ran"
-    );
-    assert!(projecting_functions().is_empty(), "something projected");
+    // Two starts (not flowing, then flowing), each its own world: the same four entries, each
+    // reading the pair it should.
+    let one = [
+        (E101, Status::Idle, 0),
+        (E402, Status::Starting, 1),
+        (E103, Status::Starting, 1),
+        (E104, Status::Starting, 1),
+    ];
+    let both: Vec<(&str, Status, u64)> = one.iter().chain(one.iter()).copied().collect();
+    assert_reads(entries_read(), &both, "speculative capture");
+    assert_eq!(probe::projections(), projections, "something projected");
     assert_eq!(
         core_divergences(),
         divergences,
         "an equal core is never counted"
     );
-}
-
-fn names_of(entries: Vec<(String, Pair, Pair)>) -> Vec<String> {
-    entries.into_iter().map(|(name, _, _)| name).collect()
 }
 
 // ------------------------------------------------- the generation-scoped cancel
@@ -936,8 +1136,7 @@ fn persisted_and_live(world: &Arc<World>) -> (Pair, u64) {
 #[test]
 fn a_start_reply_names_the_generation_a_scoped_cancel_acts_on() {
     let _gate = serialized();
-    probe::record_projections(true);
-    probe::take_projection_sites();
+    let projections = probe::projections();
     let divergences = core_divergences();
     let lines = run_sub_run(&SubRun {
         title: "scoped cancel",
@@ -953,6 +1152,19 @@ fn a_start_reply_names_the_generation_a_scoped_cancel_acts_on() {
             let (persisted, live) = persisted_and_live(w);
             assert_eq!(persisted, (Status::Starting, RecordingId(generation)));
             assert_eq!(live, generation, "the reply, the core and live agree");
+
+            // Another owner's capture-cancel operations, named by `(recording id, kind)`: the
+            // cancel of this generation must neither consume nor retire any of them.
+            let history = w.state().app_state.core_history.clone();
+            let decoys = [generation + 1, generation + 2].map(|id| {
+                ContinuationGuard::register(
+                    &history,
+                    ContinuationSpec {
+                        recording_id: RecordingId(id),
+                        kind: ContKind::CaptureCancel,
+                    },
+                )
+            });
 
             // A hold released for another generation is refused: nothing is cancelled.
             let before = w.trace().len();
@@ -984,6 +1196,12 @@ fn a_start_reply_names_the_generation_a_scoped_cancel_acts_on() {
                 0,
                 "nothing was marked cancelled"
             );
+            for decoy in &decoys {
+                assert!(
+                    history.is_outstanding(decoy.token()),
+                    "a refused cancel consumed another generation's operation"
+                );
+            }
 
             // The cancel scoped to this generation cancels exactly this attempt.
             w.note("a cancel scoped to this generation");
@@ -1014,6 +1232,13 @@ fn a_start_reply_names_the_generation_a_scoped_cancel_acts_on() {
                     DictationErrorCode::CancelledStarting
                 ))
             );
+            for decoy in &decoys {
+                assert!(
+                    history.is_outstanding(decoy.token()),
+                    "the cancel of generation {generation} consumed another owner's operation"
+                );
+            }
+            drop(decoys);
             w.release_cancel_finish();
             assert_eq!(
                 persisted_and_live(w),
@@ -1046,10 +1271,25 @@ fn a_start_reply_names_the_generation_a_scoped_cancel_acts_on() {
             .any(|line| line == "publish_recording_ready 2 -> true"),
         "the new attempt published: {lines:#?}"
     );
-    assert!(projecting_functions().is_empty(), "something projected");
+    assert_eq!(probe::projections(), projections, "something projected");
     assert_eq!(
         core_divergences(),
         divergences,
         "an equal core is never counted"
+    );
+    // The entries the two starts and the cancel crossed, with the pair each read: the first
+    // start, the second after the cancel left `Idle` on generation 1, then generation 2.
+    assert_reads(
+        entries_read(),
+        &[
+            (E101, Status::Idle, 0),
+            (E402, Status::Starting, 1),
+            (E103, Status::Starting, 1),
+            (E101, Status::Idle, 1),
+            (E402, Status::Starting, 2),
+            (E103, Status::Starting, 2),
+            (E104, Status::Starting, 2),
+        ],
+        "scoped cancel",
     );
 }

@@ -189,9 +189,27 @@ pub(crate) fn take_cancel_entries() -> Vec<StopEntryRead> {
     )
 }
 
-static START_ENTRIES: std::sync::Mutex<Vec<StopEntryRead>> = std::sync::Mutex::new(Vec::new());
+/// What a start entry's (or query's) C8.6 read saw, and where: the persisted and the live
+/// `(status, recording id)` **as read**, before the entry re-synced a divergence or ran any
+/// effect, and the `(file, line)` of the `start_view` / `start_query_view` call. The start
+/// cutover owns this type (D-S2c-18 amendment 1): no other cutover's probe types are shared.
+pub(crate) type StartEntryRead = (
+    (
+        (
+            murmur_dictation_core::status::Status,
+            murmur_dictation_core::ids::RecordingId,
+        ),
+        (
+            murmur_dictation_core::status::Status,
+            murmur_dictation_core::ids::RecordingId,
+        ),
+    ),
+    (&'static str, u32),
+);
+
+static START_ENTRIES: std::sync::Mutex<Vec<StartEntryRead>> = std::sync::Mutex::new(Vec::new());
 static START_ENTRIES_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static START_QUERIES: std::sync::Mutex<Vec<StopEntryRead>> = std::sync::Mutex::new(Vec::new());
+static START_QUERIES: std::sync::Mutex<Vec<StartEntryRead>> = std::sync::Mutex::new(Vec::new());
 static START_QUERIES_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// [`record_lifecycle_entries`] for the start family's entries (`FieldAdapter::start_view`).
@@ -222,7 +240,7 @@ pub(crate) fn start_entry(
 }
 
 /// Every start entry's read since the last call, oldest first.
-pub(crate) fn take_start_entries() -> Vec<StopEntryRead> {
+pub(crate) fn take_start_entries() -> Vec<StartEntryRead> {
     std::mem::take(
         &mut *START_ENTRIES
             .lock()
@@ -257,7 +275,7 @@ pub(crate) fn start_query(
 }
 
 /// Every query read since the last call, oldest first.
-pub(crate) fn take_start_queries() -> Vec<StopEntryRead> {
+pub(crate) fn take_start_queries() -> Vec<StartEntryRead> {
     std::mem::take(
         &mut *START_QUERIES
             .lock()
