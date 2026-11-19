@@ -78,6 +78,16 @@ struct Case {
     _vad_dir: tempfile::TempDir,
     _vad: crate::vad::test_seam::Installed,
     vad_starts_before: usize,
+    /// The streaming-model store, pointed at the case's directory for the case's length.
+    models_root: std::path::PathBuf,
+    /// The durable data directory every resolution lands in (see `test_data_dir`).
+    data_sandbox: std::path::PathBuf,
+}
+
+impl Drop for Case {
+    fn drop(&mut self) {
+        *crate::vad_stream::ROOT_OVERRIDE.lock_or_recover() = None;
+    }
 }
 
 impl Case {
@@ -87,7 +97,17 @@ impl Case {
             std::fs::write(dir.path().join(crate::vad::VAD_MODEL_FILENAME), b"vad")
                 .expect("the VAD model file the spawner checks");
         }
+        let dir_path = dir.path().to_path_buf();
         let vad = crate::vad::test_seam::install(dir.path());
+        // Nothing the real spawners reach may leave the sandbox. `vad_stream::start` checks the
+        // streaming model store, and `load_verified(.., true)` deletes an installed model that
+        // fails verification, so the store is the case's empty directory, never the real one.
+        // The ticker task reads `settings.json` through the mock app, whose data directory is
+        // under the real user's `Application Support` and whose bad file would be quarantined,
+        // so the data directory is a process-wide temporary one.
+        *crate::vad_stream::ROOT_OVERRIDE.lock_or_recover() = Some(dir.path().to_path_buf());
+        let data_sandbox = crate::commands::settings_store::test_data_dir::install();
+        crate::commands::settings_store::test_data_dir::take_resolved();
         world.knobs().real_spawners = true;
         {
             let state = world.state();
@@ -101,6 +121,33 @@ impl Case {
             _vad_dir: dir,
             _vad: vad,
             vad_starts_before: crate::vad_stream::test_starts::count(1),
+            models_root: dir_path,
+            data_sandbox,
+        }
+    }
+
+    /// Neither the streaming-model store nor the durable data directory is the real one:
+    /// the store is the case's temporary directory (so `start` found no model to verify or
+    /// delete), and every data-directory resolution the spawners and the ticker task made
+    /// is the temporary sandbox, which is under the system temporary directory.
+    fn assert_nothing_left_the_sandbox(&self) {
+        assert_eq!(
+            crate::vad_stream::models_root().as_deref(),
+            Some(self.models_root.as_path()),
+            "the streaming-model store is the case's directory"
+        );
+        assert!(
+            !crate::vad_stream::model_installed(),
+            "no model is installed in the sandbox, so `start` has nothing to verify or delete"
+        );
+        let temp = std::env::temp_dir();
+        assert!(self.models_root.starts_with(&temp));
+        assert!(self.data_sandbox.starts_with(&temp));
+        for resolved in crate::commands::settings_store::test_data_dir::take_resolved() {
+            assert_eq!(
+                resolved, self.data_sandbox,
+                "the durable data directory resolved outside the sandbox"
+            );
         }
     }
 
@@ -129,6 +176,7 @@ impl Case {
     }
 
     fn assert_handed_off(&self, handoff: &Handoff, entry: &str) {
+        self.assert_nothing_left_the_sandbox();
         assert!(
             handoff.spawns >= 1,
             "{entry} handed the pair to the spawners"

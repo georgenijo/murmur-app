@@ -171,9 +171,17 @@ fn no_lifecycle_entry_projects() {
             from_the_bridge.is_empty(),
             "{name}: `DictationCore::project` was called from the lifecycle bridge at {from_the_bridge:?}"
         );
-        // Other callers (the ticker's `register` query) are other families' reads and
-        // stay on `project()`; this entry added none of its own.
-        let _ = before;
+        // The count, not only the bridge's line span: a plant that keeps the
+        // `lifecycle_view` call but decides on a view a helper outside the bridge builds
+        // with `project_lifecycle_view` is caught here. `run_with_core`'s spawn closure
+        // never calls `register`, so the other family's reads of `project()` (the ticker's
+        // registration query, which moves with the start cutover) do not run: the expected
+        // count is zero for every entry.
+        assert_eq!(
+            probe::projections(),
+            before,
+            "{name}: `DictationCore::project` was reached while the entry ran"
+        );
     }
     probe::record_projections(false);
 }
@@ -291,16 +299,31 @@ fn auto_stop_through_the_switched_entries(w: &Arc<World>) {
     w.reply("auto-stop", &reply);
     assert!(reply.is_ok(), "{reply:?}");
     w.release_owner_clear();
+    // The recording's start and the runtime failure ran two D entries (207 `Ready`, 209
+    // `Recovering`); drop what the stop's own family recorded, then count each trailing
+    // supervisor event's entry by itself, so an entry that stopped reading the persisted core
+    // is missed by name, not hidden in a total.
+    let first = probe::take_lifecycle_entries();
+    assert!(
+        first.len() >= 2,
+        "Ready and Recovering are D entries: {first:?}"
+    );
     // The supervisor's trailing events for the attempt, through the switched entries.
     w.notify(1, AudioLifecycleEvent::CleanupFinished);
+    let cleanup = probe::take_lifecycle_entries();
     w.notify(1, AudioLifecycleEvent::Idle);
-
-    let reads = probe::take_lifecycle_entries();
-    assert!(
-        reads.len() >= 3,
-        "Ready, Recovering, CleanupFinished and Idle are D entries: {reads:?}"
+    let idle = probe::take_lifecycle_entries();
+    assert_eq!(
+        cleanup.len(),
+        1,
+        "210 CleanupFinished read the persisted core once: {cleanup:?}"
     );
-    for (persisted, live) in &reads {
+    assert_eq!(
+        idle.len(),
+        1,
+        "211 Idle read the persisted core once: {idle:?}"
+    );
+    for (persisted, live) in first.iter().chain(&cleanup).chain(&idle) {
         assert_eq!(
             persisted, live,
             "every switched entry read persisted == live: nothing had to repair it"

@@ -264,6 +264,12 @@ fn delete_blob(dir: &Path, spec: BlobSpec) -> Result<(), String> {
 /// file. Shared so non-command hosts (the capture backend memo) publish beside
 /// `settings.json` instead of resolving their own directory.
 pub(crate) fn data_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    // Test builds: once a test has installed a sandbox, every resolution lands in it (a mock
+    // app's own data directory is under the real user's `Application Support`) and is recorded.
+    #[cfg(test)]
+    if let Some(dir) = test_data_dir::resolve() {
+        return Ok(dir);
+    }
     let dir = app
         .path()
         .app_data_dir()
@@ -271,6 +277,43 @@ pub(crate) fn data_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<P
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Failed to create durable data directory: {e}"))?;
     Ok(dir)
+}
+
+/// Test-only data-directory sandbox. A test that runs code which resolves the durable data
+/// directory through a mock app (the Live Words ticker task reads `settings.json`) installs it
+/// first, so that read, and the quarantine a bad file would get, stay in a temporary directory.
+/// Process-global and never uninstalled: a detached task can outlive the test that started it,
+/// and must not fall back to the real directory when the test ends.
+#[cfg(test)]
+pub(crate) mod test_data_dir {
+    use super::*;
+
+    static SANDBOX: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    static RESOLVED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+    /// The sandbox, created on first use and installed for the rest of the process.
+    pub(crate) fn install() -> PathBuf {
+        SANDBOX
+            .get_or_init(|| {
+                // One fixed directory (the tests only read it, so processes share it and
+                // nothing accumulates per run).
+                let dir = std::env::temp_dir().join("murmur-test-data-dir");
+                std::fs::create_dir_all(&dir).expect("the test data directory");
+                dir
+            })
+            .clone()
+    }
+
+    pub(super) fn resolve() -> Option<PathBuf> {
+        let dir = SANDBOX.get()?.clone();
+        RESOLVED.lock_or_recover().push(dir.clone());
+        Some(dir)
+    }
+
+    /// Every directory `data_dir` resolved since the last call.
+    pub(crate) fn take_resolved() -> Vec<PathBuf> {
+        std::mem::take(&mut *RESOLVED.lock_or_recover())
+    }
 }
 
 /// Runs between a rejected read and the quarantine decision, so a test can

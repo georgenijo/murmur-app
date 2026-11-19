@@ -138,6 +138,9 @@ SHADOW_TEST_SELECTIONS = (
     # The ready-handoff module, with the feature-only skip-reason test. A term that matches
     # nothing is harmless in the union (nextest fails only on an empty selection).
     "ready_handoff_tests::",
+    # The lifecycle cutover module (switched entries, the C8.6 re-sync, the not-called checks),
+    # which runs in both configs; the shadow step runs it with the comparator armed.
+    "lifecycle_cutover_tests::",
 )
 SEMVER = re.compile(
     r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"

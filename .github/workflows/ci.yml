@@ -427,7 +427,7 @@ jobs:
         run: >-
           cd app/src-tauri &&
           cargo nextest run --lib --features dictation-shadow
-          -E 'test(/dictation_shadow::/) | test(/dictation_shadow_policy_tests::/) | test(/every_family_pd_is_witnessed/) | test(/headers_leave_d/) | test(/pd_witness_tests::under_d::/) | test(/the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal/) | test(/pd_witness_tests::/) | test(/ready_handoff_tests::/)'
+          -E 'test(/dictation_shadow::/) | test(/dictation_shadow_policy_tests::/) | test(/every_family_pd_is_witnessed/) | test(/headers_leave_d/) | test(/pd_witness_tests::under_d::/) | test(/the_armed_shadow_adds_nothing_under_d_at_a_process_audio_refusal/) | test(/pd_witness_tests::/) | test(/ready_handoff_tests::/) | test(/lifecycle_cutover_tests::/)'
 
       - name: Run golden dictation scenarios 100 times with the dictation shadow
         if: needs.changes.outputs.verified != 'true'

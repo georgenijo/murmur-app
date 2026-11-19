@@ -663,7 +663,13 @@ struct Nested {
 fn nested_entry_outcome(nested: fn() -> AudioLifecycleEvent) -> Nested {
     let app_state = AppState::default();
     app_state.recording_id.store(RID, Ordering::SeqCst);
-    app_state.dictation.lock_or_recover().status = Recovering;
+    {
+        let mut dictation = app_state.dictation.lock_or_recover();
+        dictation.status = Recovering;
+        // Live fields written directly: seed the persisted core to match, as
+        // `run_with_core` does, so a normal run counts no divergence.
+        crate::dictation_executor::FieldAdapter::seed_core(&app_state, &mut dictation);
+    }
     app_state.dictation_telemetry.accepted(RID);
     let app = tauri::test::mock_builder()
         .manage(test_state(app_state))
