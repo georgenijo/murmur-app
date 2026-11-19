@@ -2,6 +2,7 @@
 
 mod c3;
 mod checks;
+mod entry;
 mod flights;
 mod gen;
 mod mirror_table;

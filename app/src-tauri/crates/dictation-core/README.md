@@ -380,15 +380,37 @@ model world (M1-M4, the telemetry ledger, the performance and diagnostics sinks,
 `core_history` H1/H2, the supervisor's owner and phase). It has no dependency: a
 splitmix64 generator turns a seed into the whole run.
 
-**What the harness is evidence for.** It calls the `decide_*` functions directly, not
-through `DictationCore::handle`, so it gives no signal about the cutover's routing. The
-cutover evidence is the goldens, the replays, the harness-findings shell tests
-(`recording_harness_findings_tests.rs`) and the shadow comparison E1-E9. Routing the
-harness through `handle` is tracked in #1160.
+**What the harness is evidence for.** Every flight and every supervisor arm decides
+through `DictationCore::handle` (`entry.rs`, #1160), so the 10,000 seeds exercise the D /
+D-less entry choice (`202`/`202n`, `204b`, the `*_nolock` entries) and every
+`NeedObservation` round trip, the harness answering each observation from the model world
+where the shell reads it. The flight keeps its old direct `decide_*` call as a cross-check:
+a `handle` decision that differs from it fails the seed (`handle: ...` violation), and the
+flight acts on the `handle` decision, so a routing defect also shows downstream. The
+cutover evidence is that, the goldens, the replays, the harness-findings shell tests
+(`recording_harness_findings_tests.rs`) and the shadow comparison E1-E9.
 
 * **Generator** (`gen.rs`, `supervisor.rs`): commands (start, stop, cancel; ids
   `current`, `current-1`, `current+1`, unscoped) and, per start, one word of the C7.3
-  `Attempt` grammar. Every supervisor word ends with an explicit `OwnerClear` step
+  `Attempt` grammar. A start has a caller (the main window, the overlay or the IPC) and a
+  stop has one; the main window's start reply is delivered to it as a step of its own that
+  writes the reply's status unless it is a stale `starting` (`useRecordingState.ts:465-486`,
+  #1162), so a late reply can put `Recording` back over the window's local `Processing`. The
+  reply is tied to the one start that produced it: the main window's `beginRecording` keeps
+  `startOperationRef` until the reply is processed, so a second main-window start gesture
+  meanwhile is coalesced and issues no IPC (`:456-459`); the reply carries its recording id,
+  and the window tracks the newest generation it saw start and end (`:174-178`, `:244`), so
+  a delayed `starting` reply of an ended generation is ignored (`:474-476`). An `Err` reply is
+  a failed invoke that `lib/dictation.ts` turns into an error response with no `state`: it
+  writes no status and ends the start operation. A start also carries its microphone selection
+  (system default, a fixed device, Smart Auto resolved or failed, Smart Auto with a fixed
+  device), so the gate's Smart Auto observation round (R101.13, R101.14, R101.2) is exercised;
+  and a seed in four has a legacy `process_audio` import (sites 301 and 302: the meeting, file
+  and benchmark refusals with the benchmark read through `NeedObservation`, the status
+  refusal, the accepted import, its Smart Destination recheck, the parse failure and the
+  pipeline tail), which is decided through `handle` like every other site. What the microphone
+  and the imports draw comes from a second RNG stream (`extra`), so it moves none of the
+  scenario's or the scheduler's other draws. Every supervisor word ends with an explicit `OwnerClear` step
   (followed by `CleanupFinished` for a sealed stop only); `cleanup_pending` is derived
   from the model (owner set and phase `Stopping`/`Recovering`), never generated.
 * **Supervisor mirror** (D-S2b-9 (a), `mirror_table.rs`): `MIRROR` is a table in which
@@ -539,12 +561,17 @@ harness through `handle` is tracked in #1160.
   state, uses the production strings, and the test asserts the exact replies, statuses
   and ledger outcomes.
 * **Seeds**: 10,000 in CI (about a second and a half, budget 20 s), fixed whatever the
-  environment says: `0..9,992` and eight fixed seeds (`FIXED_SEEDS`: 10,724, 19,737,
-  39,219, 52,153, 101,117, 259,286, 262,762, 273,164) that take the PD-18 (unsealed stop),
-  PD-19 (`TerminationUnconfirmed`, dropped start, refused auto-stop), PD-24 (the user's
-  cancel), PD-22 (both rows) and PD-21 (short stop) entries no seed of the plain range
-  takes, so the converse
-  check (every PD and every signature row is witnessed) has no pinned exception. The deeper
+  environment says: `0..9,991` and nine fixed seeds (`FIXED_SEEDS`: 14,033, 81,584, 492,192,
+  2,071,065, 289,110, 31,086, 154,052, 24,199, 73,499) that take the PD-18 (unsealed stop),
+  PD-19 (dropped start, `TerminationUnconfirmed`, refused auto-stop), PD-21 (short stop),
+  PD-22 (both rows), PD-24 (an environmental recovery) and the late main-window start reply
+  with its second stop (#1162) entries no seed of the plain range takes, so the converse
+  check (every PD and every signature row is witnessed) has no pinned exception. The same
+  check requires the gated seeds to decide every row of the Smart Auto round (R101.2, R101.14)
+  and of the legacy import (R301.1-R301.6, R302.1, R302.2), to answer the R101.13 and R301.3
+  observation rounds, and to have a start reply put `Recording` over the `Processing` of a stop
+  in flight, so a `handle` that stops asking for one of those, or a model that stops writing
+  that reply, fails the gate. The deeper
   sweep is a separate ignored test, `cargo test -p murmur-dictation-core --lib --release --
   --ignored the_deep_sweep --nocapture` (300,000 seeds; `DEEP_SWEEP_SEEDS=3000000` sets
   another size). `TRACE_SEED=<n> cargo test -p
